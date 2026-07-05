@@ -754,7 +754,11 @@ def workspace(
 
             provider = KvgitProvider.open(base / "kvgit", session=session)
         elif backend == "agentfs":
-            raise NotImplementedError("agentfs backend is a spike milestone")
+            from .providers.agentfs import AgentFSProvider
+
+            provider = AgentFSProvider(
+                base / f"{session}.db", session=session
+            )
         else:
             raise ValueError(f"Unknown backend: {backend!r}")
 

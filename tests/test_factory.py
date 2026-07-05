@@ -18,9 +18,9 @@ def test_session_validated(tmp_path):
         workspace("../etc", store=tmp_path, backend="dir")
 
 
-def test_agentfs_backend_not_yet(tmp_path):
-    with pytest.raises(NotImplementedError):
-        workspace("s1", store=tmp_path, backend="agentfs")
+def test_unknown_backend_rejected(tmp_path):
+    with pytest.raises(ValueError):
+        workspace("s1", store=tmp_path, backend="docker")  # type: ignore[arg-type]
 
 
 def test_provider_override(tmp_path):

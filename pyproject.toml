@@ -34,6 +34,9 @@ dependencies = [
 "Source" = "https://github.com/ashenfad/nontainer"
 
 [project.optional-dependencies]
+agentfs = [
+    "agentfs-sdk>=0.6",
+]
 agno = [
     "agno>=1.0",
 ]

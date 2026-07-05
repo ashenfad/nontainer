@@ -5,9 +5,10 @@ sandboxed Python -- as tools for any Python-based agent harness. No Docker,
 no cloud sandbox, no infra. `pip install nontainer`.
 
 > **Status: pre-alpha, core working.** Workspace + terminal + run_python
-> over the kvgit (versioned) and dir (plain) backends, with agno and MCP
-> adapters — implemented and tested. AgentFS backend and the `[apps]`
-> extra (testApp, handlers) are not yet built. APIs will still move.
+> over three backends — kvgit (versioned), dir (plain), and AgentFS
+> (SQLite artifact; unversioned spike) — with agno and MCP adapters.
+> The `[apps]` extra (testApp, handlers) is not yet built. APIs will
+> still move.
 
 ## The pitch
 
@@ -111,7 +112,7 @@ restore` plus **capability flags** rather than pretended equivalence:
 | Provider | `cheap_fork` | `staging` | `merge` | `sql_audit` | `fuse` |
 |---|---|---|---|---|---|
 | kvgit (default) | ✅ O(1), shared storage | ✅ | ✅ key-level | ❌ | ❌ |
-| AgentFS | ❌ file copy | ❌ | ❌ | ✅ | ✅ (opt-in) |
+| AgentFS (spike) | ❌ file copy | ❌ | ❌ | ✅ | ❌ (not in py SDK) |
 | plain dir (`IsolatedFS`) | ❌ | ❌ | ❌ | ❌ | n/a |
 
 Guidance: kvgit for fork-heavy / multi-session / scientific-data workloads
@@ -122,8 +123,12 @@ tools against a normal folder.
 
 - Session ids are validated (`[A-Za-z0-9_-][A-Za-z0-9_.-]*`) before touching
   any storage path -- session ids often flow from untrusted input.
-- v1 ships the protocol + the kvgit provider. The AgentFS adapter is the
-  protocol's validation spike; it graduates to "supported" only if clean.
+- The AgentFS spike is DONE and clean: terminal + python + cache work
+  unchanged over one SQLite file per session (`agentfs-sdk`; async SDK
+  behind a sync facade). Spike scope: unversioned — wiring AgentFS
+  whole-file snapshots as checkpoint/restore is future work. Cache
+  values pass through as JSON when they round-trip identically (SQL-
+  inspectable) and fall back to pickle-b64 otherwise.
 
 ### App handlers (the `[apps]` extra, trails v1)
 
@@ -211,7 +216,7 @@ pip install nontainer            # workspace + terminal + run_python
 pip install nontainer[agno]     # + agno Toolkit adapter
 pip install nontainer[mcp]      # + MCP server (python -m nontainer.adapters.mcp)
 pip install nontainer[apps]     # (planned) Playwright testApp + handler serving
-pip install nontainer[agentfs]  # (planned) AgentFS substrate
+pip install nontainer[agentfs]  # + AgentFS substrate (agentfs-sdk)
 ```
 
 ## License
