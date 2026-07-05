@@ -4,8 +4,10 @@ A fake little computer for your agent: versioned filesystem, shell, and
 sandboxed Python -- as tools for any Python-based agent harness. No Docker,
 no cloud sandbox, no infra. `pip install nontainer`.
 
-> **Status: design sketch.** Nothing here is implemented yet. This README
-> records the intended design; expect everything below to change.
+> **Status: pre-alpha, core working.** Workspace + terminal + run_python
+> over the kvgit (versioned) and dir (plain) backends, with agno and MCP
+> adapters — implemented and tested. AgentFS backend and the `[apps]`
+> extra (testApp, handlers) are not yet built. APIs will still move.
 
 ## The pitch
 
@@ -202,13 +204,14 @@ useful, each zero/minimal-dep. [agex](https://github.com/ashenfad/agex) is
 the full agent framework over the same substrate; nontainer is the
 environment layer alone, offered to someone else's loop.
 
-## Install (aspirational)
+## Install
 
 ```bash
 pip install nontainer            # workspace + terminal + run_python
-pip install nontainer[apps]     # + Playwright testApp + handler serving
 pip install nontainer[agno]     # + agno Toolkit adapter
-pip install nontainer[agentfs]  # + AgentFS substrate
+pip install nontainer[mcp]      # + MCP server (python -m nontainer.adapters.mcp)
+pip install nontainer[apps]     # (planned) Playwright testApp + handler serving
+pip install nontainer[agentfs]  # (planned) AgentFS substrate
 ```
 
 ## License
