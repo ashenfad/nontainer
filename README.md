@@ -132,6 +132,10 @@ tools against a normal folder.
 
 ### App handlers (the `[apps]` extra, trails v1)
 
+> Full design: [docs/apps.md](docs/apps.md) — the handler contract,
+> execution model, test_app DSL, serving/threat model, and milestones.
+> Where this summary and that doc disagree, the doc wins.
+
 Agents author full-stack apps: a Preact/HTM frontend plus **request handlers**
 -- serverless semantics, not resident servers. No processes to babysit, and
 multi-tenancy reduces to one static catch-all route.
