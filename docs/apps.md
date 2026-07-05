@@ -118,6 +118,41 @@ Consumers:
    workspace via an embedder-supplied lookup. Same dispatch, same
    static serving.
 
+## Frontend tooling
+
+Structural constraint first: termish commands are pure-Python over the
+`FileSystem` protocol — **external binaries (esbuild, node) cannot see
+a virtual filesystem**. That wall sorts the options:
+
+Supported in v1 (all zero-machinery — conventions in the app template
+that ships in the tool description, plus the CDN allowlist):
+
+1. **HTM + Preact, no build** — `import from 'https://esm.sh/preact'`
+   + `html\`...\`` templates. The default idiom.
+2. **Vanilla ESM + import maps** — multi-file module structure with
+   bare specifiers mapped to esm.sh in `index.html`. Just modern JS.
+3. **JSX via Babel-standalone** — `<script type="text/babel"
+   data-type="module">`; the browser transpiles at load. Real JSX
+   (the most-trained frontend idiom) with zero server tooling. ~2MB +
+   transpile-at-load is irrelevant at agent-app scale. This is the
+   answer to "agents keep writing JSX": let them.
+
+Deliberately NOT in v1:
+
+- **esbuild as a termish command** — needs real files; viable later
+  as an opt-in injected command restricted to the `dir` backend or a
+  writable `Mount` ("external binaries need real files" — the same
+  rule as sqlite app state). The materialize-shuttle variant (export
+  /app to a temp dir, build, re-import dist/) is explicitly rejected:
+  mostly-works complexity of exactly the kind this design keeps
+  killing.
+- **Node toolchains** (vite/npm) — same verdict as run-ts; deferred.
+
+The insight: agents don't need build *tooling*, they need build
+*semantics* — and at agent-app scale the browser supplies those
+itself. test_app is indifferent to all of this; it serves whatever is
+under /app.
+
 ## Namespace access from app code
 
 Three tiers, three mechanisms (all reuse existing machinery):
