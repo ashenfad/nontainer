@@ -264,11 +264,14 @@ class Workspace:
         # -- python sandbox: policy + sandbox built once (frozen) --
         self._sandbox = self._build_sandbox()
 
-        # -- stateful cwd: restore from framework key if present --
+        # -- stateful cwd: restore from framework key if present.
+        # Guarded so a no-op restore doesn't dirty staging providers
+        # (which would turn read-only tool calls into commits).
         stored_cwd = provider.kv.get(_CWD_KEY)
         if stored_cwd:
             try:
-                self._fs.chdir(stored_cwd)
+                if self._fs.getcwd() != stored_cwd:
+                    self._fs.chdir(stored_cwd)
             except Exception:
                 pass  # path may no longer exist; start at root
 
@@ -652,8 +655,12 @@ class Workspace:
             raise WorkspaceError("Workspace is closed")
 
     def _save_cwd(self) -> None:
+        # Guarded: an unconditional write would dirty staging providers
+        # on every call, turning read-only `ls` into a commit.
         try:
-            self._provider.kv[_CWD_KEY] = self._fs.getcwd()
+            cwd = self._fs.getcwd()
+            if self._provider.kv.get(_CWD_KEY) != cwd:
+                self._provider.kv[_CWD_KEY] = cwd
         except Exception:
             pass
 
@@ -701,10 +708,9 @@ def workspace(
 
             provider = DirProvider(base / session, session=session)
         elif backend == "kvgit":
-            raise NotImplementedError(
-                "kvgit backend lands in the next milestone; "
-                "use backend='dir' for now"
-            )
+            from .providers.kvgit import KvgitProvider
+
+            provider = KvgitProvider.open(base / "kvgit", session=session)
         elif backend == "agentfs":
             raise NotImplementedError("agentfs backend is a spike milestone")
         else:

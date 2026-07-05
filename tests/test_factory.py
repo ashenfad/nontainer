@@ -18,9 +18,9 @@ def test_session_validated(tmp_path):
         workspace("../etc", store=tmp_path, backend="dir")
 
 
-def test_kvgit_backend_not_yet(tmp_path):
+def test_agentfs_backend_not_yet(tmp_path):
     with pytest.raises(NotImplementedError):
-        workspace("s1", store=tmp_path, backend="kvgit")
+        workspace("s1", store=tmp_path, backend="agentfs")
 
 
 def test_provider_override(tmp_path):
