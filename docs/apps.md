@@ -206,6 +206,26 @@ Actions (the studio DSL, pruned): `{"click": selector}`,
 - One shared Playwright browser per process, fresh context per call
   (contexts are ~10ms; isolation between tests for free).
 
+## Delivery (where nontainer's concern ends)
+
+nontainer's delivery surface is exactly: the `/app` convention, the
+dispatch function, the mountable `APIRouter`, and the token shape.
+Hosting, TLS, domains, user auth, deploy targets — the harness's.
+Composable paths that already exist with no new API:
+
+- **Export**: `tar -czf app.tgz app` in the terminal + `ws.get(...)`
+  — a frontend-only app is deliverable to any static host today.
+  (No "freeze the API into static JSON" export: a degraded copy of
+  an app masquerading as the app — rejected for the usual reason.)
+- **Share-by-URL**: mount the router, hand out the capability URL.
+
+The ONE delivery opinion nontainer owns, because it must be baked
+into authoring: **apps are relocatable**. They are served under an
+arbitrary prefix (`/apps/{token}/`), so the convention mandates
+relative URLs — `fetch('api/scores')`, never `/api/scores`; relative
+asset paths — and `test_app` serves under a synthetic prefix so
+violations fail during verification, not at delivery.
+
 ## Live serving & multi-tenancy
 
 - The router is an `APIRouter` the embedder mounts — nontainer never
