@@ -118,6 +118,37 @@ Consumers:
    workspace via an embedder-supplied lookup. Same dispatch, same
    static serving.
 
+## Namespace access from app code
+
+Three tiers, three mechanisms (all reuse existing machinery):
+
+1. **Handlers (backend) get the agent namespace by construction.**
+   Dispatch runs through the same `_exec_python` path as `run_python`:
+   same policy, same injected `cache` and `host_objects`. A handler
+   calling `db.query(...)` or reading `cache['scores']` needs no new
+   mechanism — the symmetry rule delivers it. Purity refinement: GET
+   handlers get a **read-only cache view** to match their read-only
+   filesystem (a GET that writes cache raises, same lesson).
+2. **Host objects do real I/O naturally when they're C-backed.** An
+   embedder-provided sqlite client in `host_objects` works against
+   real files with no grant: C extensions bypass monkeyfs's
+   Python-level patches. Caveat: *Python-level* `open()` inside a
+   host object's methods runs while the patch context is active and
+   hits the VFS — C-level I/O is the clean path. (Known gap: no
+   per-host-object grant flags yet, parallel to `ModuleGrant`; add a
+   `HostObjectGrant` if a pure-Python host resource needs real fs.)
+3. **Frontends read cache over a built-in endpoint** — the HTTP
+   analog of agex-ts/studio's `getCacheValue()` postMessage bridge:
+   `GET /api/_cache/{key}` is served by dispatch itself (no
+   agent-written handler), read-only, JSON-round-trippable values
+   only (the same rule as the AgentFS kv encoding — anything else is
+   404-equivalent), riding the same capability token. This is what
+   makes cache-as-UI-data-model concrete: the frontend binds to cache
+   keys via fetch; the agent updates cache; the UI re-reads. Config:
+   `AppsConfig.expose_cache` (default True; live-serving embedders
+   can disable). The `_cache` path segment is reserved — a handler
+   file named `_cache.py` is already non-routable by the `_` rule.
+
 ## test_app
 
 Tool signature (exposed by adapters alongside terminal/run_python when
