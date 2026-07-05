@@ -404,6 +404,14 @@ class Workspace:
     def caps(self) -> Capabilities:
         return self._provider.caps
 
+    @property
+    def cache_enabled(self) -> bool:
+        return self._cache_enabled
+
+    @property
+    def python_config(self) -> PythonConfig:
+        return self._python_config
+
     # ------------------------------------------------------------------
     # the two tools
     # ------------------------------------------------------------------

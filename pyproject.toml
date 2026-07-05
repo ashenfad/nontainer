@@ -34,9 +34,16 @@ dependencies = [
 "Source" = "https://github.com/ashenfad/nontainer"
 
 [project.optional-dependencies]
+agno = [
+    "agno>=1.0",
+]
+mcp = [
+    "mcp>=1.0",
+]
 dev = [
     "ruff",
     "pytest",
+    "pytest-asyncio",
 ]
 
 [build-system]
@@ -45,3 +52,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
