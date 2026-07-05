@@ -568,6 +568,40 @@ class Workspace:
         (seeding inputs, harvesting artifacts) without the sandbox."""
         return self._fs
 
+    def put(self, src: str | Path, dest: str | None = None) -> str:
+        """Copy a host file INTO the workspace ("upload"). Returns the
+        workspace path written.
+
+        Sugar over ``ws.fs.write`` — whole-bytes, so sized for
+        documents/datasets, not multi-GB blobs (use a :class:`Mount`
+        for those). ``dest`` defaults to the source's basename at the
+        workspace root; parent directories are created. Overwrites.
+        """
+        self._check_open()
+        src_path = Path(src).expanduser()
+        data = src_path.read_bytes()
+        ws_path = dest or src_path.name
+        parent = str(Path(ws_path).parent)
+        if parent not in (".", "/", ""):
+            self._fs.makedirs(parent, exist_ok=True)
+        self._fs.write(ws_path, data)
+        self._maybe_checkpoint("put")
+        return ws_path
+
+    def get(self, src: str, dest: str | Path | None = None) -> bytes:
+        """Copy a workspace file OUT ("download"). Returns the bytes;
+        also writes them to ``dest`` on the host when given.
+
+        Read-only against the workspace — never checkpoints.
+        """
+        self._check_open()
+        data = self._fs.read(src)
+        if dest is not None:
+            out = Path(dest).expanduser()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
+        return data
+
     @property
     def cache(self) -> MutableMapping[str, Any]:
         """The agent's persistent dict, host-side view. Key rules: str
