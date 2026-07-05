@@ -137,17 +137,14 @@ Three tiers, three mechanisms (all reuse existing machinery):
    hits the VFS — C-level I/O is the clean path. (Known gap: no
    per-host-object grant flags yet, parallel to `ModuleGrant`; add a
    `HostObjectGrant` if a pure-Python host resource needs real fs.)
-3. **Frontends read cache over a built-in endpoint** — the HTTP
-   analog of agex-ts/studio's `getCacheValue()` postMessage bridge:
-   `GET /api/_cache/{key}` is served by dispatch itself (no
-   agent-written handler), read-only, JSON-round-trippable values
-   only (the same rule as the AgentFS kv encoding — anything else is
-   404-equivalent), riding the same capability token. This is what
-   makes cache-as-UI-data-model concrete: the frontend binds to cache
-   keys via fetch; the agent updates cache; the UI re-reads. Config:
-   `AppsConfig.expose_cache` (default True; live-serving embedders
-   can disable). The `_cache` path segment is reserved — a handler
-   file named `_cache.py` is already non-routable by the `_` rule.
+3. **Frontends get NO framework bridge — they talk to agent-written
+   handlers, period.** (Studio's `getCacheValue()` postMessage bridge
+   existed because studio apps had no backend; that reason doesn't
+   survive into a design where handlers are first-class.) An agent
+   exposing cache data to its UI writes the two-line handler and
+   thereby chooses *which* keys are visible, with what shaping — a
+   deliberate API instead of a blanket cache-enumeration surface. No
+   reserved routes, no exposure config, one fewer boundary to secure.
 
 ## test_app
 
