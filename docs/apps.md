@@ -228,6 +228,30 @@ violations fail during verification, not at delivery.
 
 ## Live serving & multi-tenancy
 
+Embedder interface (all of it):
+
+```python
+from nontainer.apps import build_router, mint_token, AppsConfig
+
+router = build_router(
+    resolve,                # (token: str) -> Workspace | None — embedder-owned
+    config=AppsConfig(
+        request_timeout=5.0,
+        request_tick_limit=200_000,
+        queue_depth=8,          # per-session; overflow → 429
+        rate_limit_per_min=120, # per-session
+        max_response_bytes=2_000_000,
+    ),
+)
+app.include_router(router, prefix="/apps")   # serves /apps/{token}/...
+```
+
+Internals: one static catch-all pair — `/{token}/api/{path}` →
+`dispatch(ws, Request)` (the same function curl and test_app use) and
+`/{token}/{path}` → static files from `/app` (`/` → `index.html`).
+`mint_token()` is sugar; the token→session map is the embedder's.
+The router acquires the same per-workspace lock as tool calls.
+
 - The router is an `APIRouter` the embedder mounts — nontainer never
   owns an app or a port.
 - `{token}` is a capability: long, unguessable, minted by the embedder,
