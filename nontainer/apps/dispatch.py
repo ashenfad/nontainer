@@ -189,6 +189,19 @@ class AppRuntime:
             self._log(f"[{name}:{verb}] BAD RETURN: {e}")
             return WireResponse(500, str(e).encode(), "text/plain")
 
+    def test_app(
+        self,
+        actions: list[dict[str, Any]] | None = None,
+        *,
+        viewport: str | dict[str, int] = "desktop",
+        **kwargs: Any,
+    ) -> Any:
+        """Headless verification via Playwright (see testapp.py).
+        Requires the [apps] extra + `playwright install chromium`."""
+        from .testapp import run_test_app
+
+        return run_test_app(self, actions, viewport=viewport, **kwargs)
+
     # -- static ------------------------------------------------------------
 
     def _dispatch_static(self, request: Request) -> WireResponse:

@@ -37,6 +37,9 @@ dependencies = [
 agentfs = [
     "agentfs-sdk>=0.6",
 ]
+apps = [
+    "playwright>=1.40",
+]
 agno = [
     "agno>=1.0",
 ]

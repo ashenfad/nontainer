@@ -28,6 +28,7 @@ from .contract import (
     normalize,
 )
 from .dispatch import AppRuntime, AppsConfig, enable_apps, request
+from .testapp import ActionResult, TestAppResult, render_test_app
 
 __all__ = [
     "AppRuntime",
@@ -40,4 +41,7 @@ __all__ = [
     "WireResponse",
     "make_request",
     "normalize",
+    "TestAppResult",
+    "ActionResult",
+    "render_test_app",
 ]
