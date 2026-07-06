@@ -1191,7 +1191,7 @@ requires-dist = [
     { name = "playwright", marker = "extra == 'apps'", specifier = ">=1.40" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "reprobate", specifier = ">=0.1" },
+    { name = "reprobate", specifier = ">=0.1.1" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sandtrap", specifier = ">=0.2.2" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
