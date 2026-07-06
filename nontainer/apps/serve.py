@@ -37,7 +37,7 @@ from collections import deque
 from typing import Any, Callable
 
 from ..workspace import Workspace
-from .contract import make_request
+from .contract import filter_headers, make_request
 from .dispatch import AppRuntime, AppsConfig
 
 _CSP = (
@@ -105,6 +105,7 @@ def build_router(
     queue_depth: int = 8,
     rate_limit_per_min: int = 120,
     quiesce_seconds: float = 5.0,
+    max_sessions: int = 64,
     csp: str | None = _CSP,
 ) -> Any:
     """Build the mountable ASGI router. See module docstring."""
@@ -118,25 +119,48 @@ def build_router(
 
     import anyio
 
+    from collections import OrderedDict
+
     cfg = config or AppsConfig()
-    entries: dict[str, _Entry] = {}
+    entries: OrderedDict[str, _Entry] = OrderedDict()
     entries_lock = threading.Lock()
+
+    def _evict_lru() -> None:
+        """Bounded cache (PR#1 review): workspaces hold real resources
+        (db handles, AgentFS loop threads). Evict least-recently-used
+        idle entries; busy ones (lock held) are skipped this round."""
+        for token in list(entries):
+            if len(entries) < max_sessions:
+                return
+            candidate = entries[token]
+            if candidate.gate.lock.locked():
+                continue
+            del entries[token]
+            try:
+                candidate.ws.close()
+            except Exception:
+                pass
 
     def _entry_for(token: str) -> _Entry | None:
         with entries_lock:
             entry = entries.get(token)
-        if entry is not None:
-            return entry
+            if entry is not None:
+                entries.move_to_end(token)
+                return entry
         ws = resolve(token)
         if ws is None:
             return None
         new = _Entry(ws, AppRuntime(ws, cfg), _Gate(queue_depth, rate_limit_per_min))
         with entries_lock:
-            # lost race → prefer the existing entry
-            entry = entries.setdefault(token, new)
+            entry = entries.setdefault(token, new)  # lost race → existing
+            entries.move_to_end(token)
+            if len(entries) > max_sessions:
+                _evict_lru()
         return entry
 
-    def _handle_sync(entry: _Entry, method: str, url: str, body: bytes) -> Any:
+    def _handle_sync(
+        entry: _Entry, method: str, url: str, body: bytes, headers: dict
+    ) -> Any:
         with entry.gate.lock:
             # Lazy quiesce checkpoint (requests never mint commits).
             provider = entry.ws._provider
@@ -150,7 +174,9 @@ def build_router(
                     provider.checkpoint(info={"source": "api"})
                 except Exception:
                     pass
-            wire = entry.runtime.dispatch(make_request(method, url, body=body))
+            wire = entry.runtime.dispatch(
+                make_request(method, url, body=body, headers=headers)
+            )
             if method.upper() != "GET":
                 entry.gate.last_mutation = time.monotonic()
             return wire
@@ -171,7 +197,12 @@ def build_router(
                 f"?{request.url.query}" if request.url.query else ""
             )
             wire = await anyio.to_thread.run_sync(
-                _handle_sync, entry, request.method, url, body
+                _handle_sync,
+                entry,
+                request.method,
+                url,
+                body,
+                filter_headers(request.headers),
             )
         finally:
             entry.gate.leave()

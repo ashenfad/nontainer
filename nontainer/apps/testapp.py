@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from .contract import make_request
+from .contract import filter_headers, make_request
 
 if TYPE_CHECKING:
     from .dispatch import AppRuntime
@@ -149,7 +149,7 @@ def run_test_app(
                     request.method,
                     url,
                     body=request.post_data_buffer or b"",
-                    headers={},
+                    headers=filter_headers(request.headers),
                 )
             )
             route.fulfill(status=wire.status, body=wire.content,
@@ -187,8 +187,16 @@ def run_test_app(
                 return
             page.wait_for_timeout(25)
 
-    with sync_playwright() as pw:
+    try:
+        pw_ctx = sync_playwright()
+        pw = pw_ctx.__enter__()
         browser = pw.chromium.launch()
+    except Exception as e:
+        return TestAppResult(
+            ok=False,
+            load_error=f"Playwright/Chromium initialization failed: {e}",
+        )
+    try:
         try:
             context = browser.new_context(viewport=vp)
             page = context.new_page()
@@ -281,6 +289,8 @@ def run_test_app(
             )
         finally:
             browser.close()
+    finally:
+        pw_ctx.__exit__(None, None, None)
 
 
 def render_test_app(result: TestAppResult) -> str:

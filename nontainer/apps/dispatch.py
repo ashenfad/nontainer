@@ -17,8 +17,9 @@ agent's repair loop is ``tail``, edit, retry.
 
 from __future__ import annotations
 
+import re
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -63,8 +64,12 @@ class AppsConfig:
     max_response_bytes: int = 2_000_000
 
 
-class _ReadOnlyCache(Mapping):
-    """Read-only cache view for GET handlers (structural REST)."""
+class _ReadOnlyCache(MutableMapping):
+    """Read-only cache view for GET handlers (structural REST).
+
+    Inherits MutableMapping so derived mutators (pop, clear, update,
+    setdefault) route through __setitem__/__delitem__ and raise
+    PermissionError instead of AttributeError (PR#1 review)."""
 
     def __init__(self, cache: Mapping) -> None:
         self._cache = cache
@@ -142,7 +147,7 @@ class AppRuntime:
             raise HttpError(405, f"unsupported method: {request.method}")
         source = fs.read(handler_path).decode("utf-8")
         # Cheap verb check before spending a sandbox execution.
-        if f"def {verb}(" not in source:
+        if not re.search(rf"^[ \t]*def[ \t]+{verb}[ \t]*\(", source, re.M):
             raise HttpError(405, f"{request.method} not supported by {name}")
 
         readonly = verb == "get"

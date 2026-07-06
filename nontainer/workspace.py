@@ -34,7 +34,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -677,7 +677,8 @@ class Workspace:
         by adapters as the ``file_write`` tool. Checkpointed."""
         self._check_open()
         data = content.encode() if isinstance(content, str) else content
-        parent = str(Path(path).parent)
+        # PurePosixPath: workspace paths are POSIX regardless of host OS
+        parent = str(PurePosixPath(path).parent)
         if parent not in (".", "/", ""):
             self._fs.makedirs(parent, exist_ok=True)
         self._fs.write(path, data)
@@ -732,7 +733,7 @@ class Workspace:
         src_path = Path(src).expanduser()
         data = src_path.read_bytes()
         ws_path = dest or src_path.name
-        parent = str(Path(ws_path).parent)
+        parent = str(PurePosixPath(ws_path).parent)
         if parent not in (".", "/", ""):
             self._fs.makedirs(parent, exist_ok=True)
         self._fs.write(ws_path, data)

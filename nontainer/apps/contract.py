@@ -58,6 +58,24 @@ class Request:
         return value
 
 
+_HEADER_ALLOW = frozenset(
+    {"content-type", "accept", "authorization", "user-agent"}
+)
+
+
+def filter_headers(raw: Any) -> dict[str, str]:
+    """The allowlisted-subset rule from the Request contract: standard
+    content/auth headers plus any ``x-*`` custom header, lowercased.
+    Hop-by-hop and ambient-credential headers (host, cookie, ...) never
+    reach handlers."""
+    out: dict[str, str] = {}
+    for k, v in dict(raw or {}).items():
+        lk = str(k).lower()
+        if lk in _HEADER_ALLOW or lk.startswith("x-"):
+            out[lk] = str(v)
+    return out
+
+
 def make_request(
     method: str,
     url: str,

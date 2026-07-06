@@ -179,22 +179,41 @@ class _AgentFsFS:
             self.write(p, b"")
 
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
-        """File-like objects for the monkeyfs open() patch."""
+        """File-like objects for the monkeyfs open() patch.
+
+        Mode semantics (PR#1 review): plain "r" is a read-only buffer;
+        any of w/a/x/+ makes it a write-back buffer flushed on close.
+        Preload rules follow real files: r+/a/a+ start from existing
+        content, w/w+ TRUNCATE. Position: append modes start at end,
+        everything else at 0.
+        """
         binary = "b" in mode
-        writing = any(c in mode for c in "wax")
+        writing = any(c in mode for c in "wax+")
         appending = "a" in mode
         p = self.resolve_path(path)
 
-        if not writing and "r" in mode:
+        if not writing:
             data = self.read(p)  # raises FileNotFoundError if missing
             return io.BytesIO(data) if binary else io.StringIO(data.decode())
 
+        if "r" in mode and not self.exists(p):
+            raise FileNotFoundError(f"No such file: '{path}'")
+
         adapter = self
+        preload = b""
+        if ("r" in mode or appending) and self.exists(p):
+            preload = self.read(p)  # r+/a/a+ keep content; w/w+ truncate
 
         class _WriteBuffer(io.BytesIO if binary else io.StringIO):  # type: ignore[misc]
+            def __init__(inner) -> None:  # noqa: N805
+                super().__init__(
+                    preload if binary else preload.decode("utf-8", "replace")
+                )
+                inner.seek(0, 2 if appending else 0)
+
             def close(inner) -> None:  # noqa: N805
                 content = inner.getvalue()
-                adapter.write(p, content, mode="a" if appending else "w")
+                adapter.write(p, content, mode="w")
                 super().close()
 
             def __exit__(inner, *exc: Any) -> None:  # noqa: N805

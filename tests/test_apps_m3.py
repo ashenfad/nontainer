@@ -124,3 +124,53 @@ def test_relative_urls_work_under_mount_prefix():
     r = client.get(f"/apps/{token}/api/scores")
     assert r.status_code == 200
     ws.close()
+
+
+def test_headers_reach_handlers():
+    """PR#1 review: allowlisted headers must flow through the router."""
+    ws, token, client = make_served()
+    ws.fs.write(
+        "/app/api/echo_hdr.py",
+        b"def get(req):\n"
+        b"    return {'ct': req.headers.get('content-type'),\n"
+        b"            'x': req.headers.get('x-custom'),\n"
+        b"            'cookie': req.headers.get('cookie')}\n",
+    )
+    r = client.get(
+        f"/apps/{token}/api/echo_hdr",
+        headers={"Content-Type": "text/csv", "X-Custom": "yes", "Cookie": "no"},
+    )
+    body = r.json()
+    assert body["ct"] == "text/csv"
+    assert body["x"] == "yes"
+    assert body["cookie"] is None  # ambient credentials never reach handlers
+    ws.close()
+
+
+def test_session_cache_bounded_and_closes():
+    """PR#1 review: LRU eviction closes evicted workspaces."""
+    from nontainer.providers import KvgitProvider
+    from nontainer import Workspace
+    from nontainer.apps import build_router, enable_apps
+    from starlette.applications import Starlette
+    from starlette.testclient import TestClient
+
+    workspaces = {}
+    for name in ("t-one", "t-two", "t-three"):
+        ws = Workspace(KvgitProvider.open(None, session=name.replace("t-", "s")))
+        enable_apps(ws)
+        ws.fs.makedirs("/app", exist_ok=True)
+        ws.fs.write("/app/index.html", b"<html>x</html>")
+        ws.checkpoint()
+        workspaces[name] = ws
+
+    router = build_router(lambda t: workspaces.get(t), max_sessions=2)
+    app = Starlette()
+    app.mount("/apps", router)
+    client = TestClient(app)
+
+    for t in ("t-one", "t-two", "t-three"):
+        assert client.get(f"/apps/{t}/").status_code == 200
+    # oldest evicted AND closed
+    assert workspaces["t-one"]._closed
+    assert not workspaces["t-three"]._closed

@@ -269,3 +269,25 @@ curl /api/health"""
     assert r, r.stderr
     assert json.loads(r.stdout) == {"status": "alive"}
     ws.close()
+
+
+def test_verb_in_comment_is_405():
+    """PR#1 review: 'def get(' in a comment must not pass the verb check."""
+    ws, rt = make_ws()
+    write_handler(ws, "cmt", "# def get(req): old idea\ndef post(req):\n    return {}\n")
+    assert rt.dispatch(request("GET", "/api/cmt")).status == 405
+    ws.close()
+
+
+def test_get_cache_pop_is_permission_error_not_attribute_error():
+    """PR#1 review: derived mutators must raise PermissionError."""
+    ws, rt = make_ws()
+    ws.cache["k"] = 1
+    ws.checkpoint()
+    write_handler(ws, "popper", "def get(req):\n    cache.pop('k')\n    return {}\n")
+    resp = rt.dispatch(request("GET", "/api/popper"))
+    assert resp.status == 500
+    log = ws.fs.read("/app/logs/api.log").decode()
+    assert "PermissionError" in log and "AttributeError" not in log
+    assert ws.cache["k"] == 1
+    ws.close()

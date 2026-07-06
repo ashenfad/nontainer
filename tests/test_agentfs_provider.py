@@ -137,3 +137,29 @@ def test_factory_agentfs_backend(tmp_path):
         ws.terminal("echo hi > f.txt")
         assert ws.terminal("cat f.txt").stdout.strip() == "hi"
     assert (tmp_path / "user-1.db").exists()
+
+
+def test_open_plus_modes_round_trip(tmp_path):
+    """PR#1 review: r+/w+/a+ must preserve/truncate correctly."""
+    p = AgentFSProvider(tmp_path / "s1.db", session="s1")
+    fs = p.fs
+    fs.write("/f.txt", b"hello world")
+
+    with fs.open("/f.txt", "r+") as f:  # preserves, writes back
+        f.write("HELLO")
+    assert fs.read("/f.txt") == b"HELLO world"
+
+    with fs.open("/f.txt", "a") as f:  # appends
+        f.write("+more")
+    assert fs.read("/f.txt") == b"HELLO world+more"
+
+    with fs.open("/f.txt", "w+") as f:  # TRUNCATES
+        f.write("fresh")
+    assert fs.read("/f.txt") == b"fresh"
+
+    try:
+        fs.open("/missing.txt", "r+")
+        raise AssertionError("r+ on missing file should raise")
+    except FileNotFoundError:
+        pass
+    p.close()
