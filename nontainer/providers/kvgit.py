@@ -143,14 +143,9 @@ class KvgitProvider:
         """Drop VirtualFS's lazy caches after state changed underneath
         it (restore/discard). The SAME fs instance must survive —
         Workspace and the sandbox hold references to it.
-
-        TODO(monkeyfs): promote to a public ``VirtualFS.invalidate()``.
         """
-        fs = self._fs
-        if fs is not None:
-            fs._dir_cache = None
-            fs._metadata_cache = None
-            fs._current_size = None
+        if self._fs is not None:
+            self._fs.invalidate()
 
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
         return self._history_iter(limit)
