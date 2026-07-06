@@ -1,4 +1,4 @@
-"""M3: live serving — a mountable router over the same dispatch.
+"""Live serving — a mountable router over the same dispatch.
 
 Embedder interface (all of it)::
 

@@ -1,7 +1,7 @@
 """AppRuntime: dispatch requests into agent-authored handlers.
 
-One core function, three consumers (curl builtin → M1, test_app → M2,
-live router → M3); see docs/apps.md. Handlers execute through the
+One core function, three consumers (the curl builtin, test_app, and
+the live router); see docs/apps.md. Handlers execute through the
 workspace's ``_exec_python`` machinery with dedicated sandboxes:
 
 - GET → a sandbox over ``ReadOnlyFS`` + a read-only cache view (a GET
@@ -261,7 +261,7 @@ class AppRuntime:
 def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     """Wire the apps runtime into a workspace: builds the AppRuntime
     and registers the ``curl`` terminal builtin. Returns the runtime
-    (also the M3 router's dispatch source)."""
+    (also the live router's dispatch source)."""
     runtime = AppRuntime(ws, config)
     from .curl import make_curl_command
 

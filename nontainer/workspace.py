@@ -1030,11 +1030,10 @@ def workspace(
 
     - ``"kvgit"``: one shared store at ``store`` (default
       ``~/.nontainer``); ``session`` is a branch. Forks share storage.
-      (Not yet implemented — landing in the next milestone.)
     - ``"dir"``: ``store/<session>/`` as a plain directory
       (``IsolatedFS``). No versioning; time-travel verbs raise.
     - ``"agentfs"``: ``store/<session>.db``, one AgentFS file per
-      session. (Spike milestone.)
+      session (unversioned spike).
 
     ``provider`` overrides ``backend``/``store`` entirely (bring your
     own substrate). ``session`` is validated against ``SESSION_ID_RE``
