@@ -202,12 +202,27 @@ def _env_notes(ws: Workspace) -> str:
             f"- injected objects available by name: {names} (live host "
             "resources; call them directly, do not try to construct them)"
         )
-    module_names = []
-    for entry in cfg.modules:
-        mod = getattr(entry, "module", entry)
-        module_names.append(getattr(mod, "__name__", str(mod)))
-    if module_names:
-        lines.append(f"- importable modules: {', '.join(sorted(module_names))}")
+    from ..workspace import _flatten_grants
+
+    stdlib_names = set()
+    if cfg.stdlib:
+        from ..presets import STDLIB
+
+        stdlib_names = {g.name or g.module.__name__ for g in STDLIB}
+    extra_names = sorted(
+        {
+            (g.name or g.module.__name__)
+            for g in _flatten_grants(cfg)
+            if (g.name or g.module.__name__) not in stdlib_names
+        }
+    )
+    if cfg.stdlib:
+        note = "- importable: safe stdlib (math, json, csv, datetime, re, os, pathlib, ...)"
+        if extra_names:
+            note += f" plus {', '.join(extra_names)}"
+        lines.append(note)
+    elif extra_names:
+        lines.append(f"- importable modules: {', '.join(extra_names)}")
     else:
         lines.append("- no importable modules beyond builtins")
     return "\n".join(lines)

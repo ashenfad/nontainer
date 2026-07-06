@@ -101,6 +101,22 @@ class ModuleGrant:
     controlled) API. Distinct from ``Mount``, which deliberately
     shares host data *with* the agent."""
 
+    include: str | Sequence[str] = "*"
+    """Member whitelist patterns (sandtrap ``include``)."""
+
+    exclude: str | Sequence[str] = ("_*", "*._*")
+    """Member blacklist patterns (sandtrap ``exclude``). Replaces the
+    default, so custom lists should usually re-include ``_*`` /
+    ``*._*``."""
+
+    recursive: bool = False
+    """Register submodules recursively (sandtrap ``recursive``) — for
+    big libraries agents already know (pandas, matplotlib)."""
+
+    name: str | None = None
+    """Registration name override. Needed for submodules reached as
+    attributes (``ModuleGrant(os.path, name="os.path")``)."""
+
 
 @dataclass(frozen=True)
 class TerminalResult:
@@ -160,13 +176,29 @@ class PythonConfig:
     the sugar entirely.
     """
 
-    modules: Sequence[ModuleType | ModuleGrant] = ()
+    modules: Sequence[
+        ModuleType | ModuleGrant | Sequence[ModuleType | ModuleGrant]
+    ] = ()
     """Whitelisted importable modules (``import pandas`` works iff
-    pandas is listed). Bare modules get no passthroughs; wrap in
-    :class:`ModuleGrant` to grant network / host-fs per module.
-    Registration semantics follow sandtrap. Note: monkeyfs's safe-path
-    passthrough is always on — stdlib and site-packages stay readable
-    so registered libraries can load their own resources."""
+    pandas is listed — or covered by ``stdlib``). Bare modules get no
+    passthroughs; wrap in :class:`ModuleGrant` to grant network /
+    host-fs / member patterns per module. Nested sequences flatten one
+    level, so preset grant lists splice in directly::
+
+        PythonConfig(modules=[dataframes(), plotting(), my_module])
+
+    Entries registered after the stdlib set — an explicit grant for a
+    stdlib module overrides its stdlib-set registration. Note:
+    monkeyfs's safe-path passthrough is always on — stdlib and
+    site-packages stay readable so registered libraries can load their
+    own resources."""
+
+    stdlib: bool = True
+    """Grant the curated safe-stdlib set (math, json, csv, datetime,
+    re, os-over-VFS, pathlib, gzip/zipfile/tarfile, ...) — see
+    ``nontainer.presets.STDLIB``. A plain computer's python can do
+    arithmetic and read files; disable for a truly bare cell (minimal
+    surface, policy audits)."""
 
     host_objects: Mapping[str, Any] = field(default_factory=dict)
     """Live host resources injected into the namespace by name — the
@@ -245,6 +277,32 @@ def _render_error(exc: BaseException) -> str:
 def _is_plain_data(obj: Any) -> bool:
     """Builtin-typed values need no policy registration."""
     return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
+
+
+def _flatten_grants(cfg: "PythonConfig") -> list[ModuleGrant]:
+    """Normalize ``cfg.modules`` to a flat ModuleGrant list: the stdlib
+    set first (when enabled), then user entries — nested sequences
+    (preset grant lists) flatten one level, bare modules wrap. A later
+    registration of the same module name wins in sandtrap, so explicit
+    user grants override the stdlib set's."""
+    entries: list[ModuleType | ModuleGrant] = []
+    if cfg.stdlib:
+        from .presets import STDLIB
+
+        entries.extend(STDLIB)
+    for entry in cfg.modules:
+        if isinstance(entry, (ModuleType, ModuleGrant)):
+            entries.append(entry)
+        elif isinstance(entry, Sequence) and not isinstance(entry, (str, bytes)):
+            entries.extend(entry)
+        else:
+            raise TypeError(
+                f"PythonConfig.modules entry {entry!r} is not a module, "
+                "ModuleGrant, or sequence of them"
+            )
+    return [
+        e if isinstance(e, ModuleGrant) else ModuleGrant(e) for e in entries
+    ]
 
 
 class Workspace:
@@ -344,6 +402,7 @@ class Workspace:
         from sandtrap import Policy, sandbox
 
         cfg = self._python_config
+        grants = _flatten_grants(cfg)
         if cfg.policy is not None:
             policy = cfg.policy
         else:
@@ -353,15 +412,16 @@ class Workspace:
                 memory_limit=cfg.memory_limit_mb,
                 allow_network=cfg.network,
             )
-            for entry in cfg.modules:
-                if isinstance(entry, ModuleGrant):
-                    policy.module(
-                        entry.module,
-                        network_access=entry.network,
-                        host_fs_access=entry.host_fs,
-                    )
-                else:
-                    policy.module(entry)
+            for grant in grants:
+                policy.module(
+                    grant.module,
+                    name=grant.name,
+                    include=grant.include,
+                    exclude=grant.exclude,
+                    recursive=grant.recursive,
+                    network_access=grant.network,
+                    host_fs_access=grant.host_fs,
+                )
 
         for klass in extra_classes:
             policy.cls(klass)
@@ -374,12 +434,8 @@ class Workspace:
         # Loud construction-time warning when a kernel sandbox's policy
         # degrades a kernel restriction (seccomp/Landlock are monotonic).
         if cfg.isolation == "kernel":
-            grants_network = cfg.network or any(
-                isinstance(m, ModuleGrant) and m.network for m in cfg.modules
-            )
-            grants_host_fs = any(
-                isinstance(m, ModuleGrant) and m.host_fs for m in cfg.modules
-            )
+            grants_network = cfg.network or any(g.network for g in grants)
+            grants_host_fs = any(g.host_fs for g in grants)
             if grants_network or grants_host_fs:
                 degraded = [
                     n

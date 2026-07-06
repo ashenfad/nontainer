@@ -132,7 +132,8 @@ ws.python_config: PythonConfig
 ```python
 @dataclass(frozen=True)
 class PythonConfig:
-    modules: Sequence[ModuleType | ModuleGrant] = ()
+    modules: Sequence[ModuleType | ModuleGrant | Sequence[...]] = ()
+    stdlib: bool = True                     # curated safe-stdlib set
     host_objects: Mapping[str, Any] = {}
     network: bool = False
     isolation: "none" | "process" | "kernel" = "none"
@@ -142,16 +143,50 @@ class PythonConfig:
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
 
-- `ModuleGrant(module, network=False, host_fs=False)` — per-module
-  passthroughs. `host_fs` lets a library's own code manage real-fs
-  state (download caches, temp files); it is NOT how you share data
-  with the agent (that's `Mount`).
+- `stdlib=True` (default) grants the curated safe-stdlib set
+  (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions,
+  random (minus global seed/state), collections/itertools,
+  datetime/time/calendar/zoneinfo, re/string/textwrap,
+  json/csv/pickle/base64/uuid/hashlib, traceback formatters, typing,
+  io, VFS-routed os/os.path/pathlib/glob/fnmatch, and
+  gzip/zipfile/tarfile. `stdlib=False` for a truly bare cell.
+- `modules` extends the stdlib set and flattens one level of nesting,
+  so preset grant lists splice in directly:
+  `modules=[dataframes(), plotting(), my_module]`. Explicit grants
+  for a stdlib module override its stdlib-set registration.
+- `ModuleGrant(module, network=False, host_fs=False, include="*",
+  exclude=("_*", "*._*"), recursive=False, name=None)` — per-module
+  passthroughs and member patterns (sandtrap semantics). `host_fs`
+  lets a library's own code manage real-fs state (download caches,
+  temp files); it is NOT how you share data with the agent (that's
+  `Mount`). `name` is for submodules reached as attributes
+  (`ModuleGrant(os.path, name="os.path")`); note excludes do NOT
+  propagate through `recursive=True` — grant the submodule
+  explicitly.
 - Kernel caveat: with `isolation="kernel"`, ANY network/host-fs grant
   disables that kernel restriction for the whole worker (seccomp/
   Landlock are monotonic). nontainer emits a `RuntimeWarning` at
   construction when this happens.
 - `Mount(path, readonly=True)` — a real directory in the workspace
   tree, visible to both tools, NOT versioned/forked.
+
+## Presets (`nontainer.presets`)
+
+Curated grant lists for the heavy libraries, with agex's accumulated
+exclude lists (global RNG state, memory-mapped host files, display
+calls). Presets run at config-construction time — host level — which
+is when their environment side effects must happen.
+
+```python
+from nontainer.presets import dataframes, plotting
+
+PythonConfig(modules=[dataframes(), plotting()])
+
+STDLIB                    # the stdlib=True grant tuple, reusable
+dataframes()              # numpy + pandas (ImportError if missing)
+plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
+                          # plotly: None=if installed, True=required, False=skip
+```
 
 ## Providers (`nontainer.providers`)
 

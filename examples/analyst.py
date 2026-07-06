@@ -9,13 +9,11 @@ Run:  ANTHROPIC_API_KEY=... uv run python examples/analyst.py
 Deps: pip install nontainer[agno] anthropic
 """
 
-import csv
-import statistics
 import tempfile
 
 from agno.agent import Agent
 
-from nontainer import PythonConfig, workspace
+from nontainer import workspace
 from nontainer.adapters.agno import WorkspaceTools
 
 from _model import pick_model
@@ -38,11 +36,8 @@ Then show me the report."""
 
 
 def main() -> None:
-    with workspace(
-        "analyst-demo",
-        store=tempfile.mkdtemp(),
-        python=PythonConfig(modules=[csv, statistics]),
-    ) as ws:
+    # csv/statistics need no config — the safe stdlib set is on by default
+    with workspace("analyst-demo", store=tempfile.mkdtemp()) as ws:
         ws.fs.makedirs("data", exist_ok=True)
         ws.fs.write("data/sales.csv", SALES.encode())
         ws.checkpoint(info={"seed": "sales.csv"})

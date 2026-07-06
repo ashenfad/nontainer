@@ -1,0 +1,269 @@
+"""Curated module-grant presets for :class:`~nontainer.PythonConfig`.
+
+Each preset returns a list of :class:`~nontainer.ModuleGrant` that
+splices into ``PythonConfig.modules`` (nested sequences flatten)::
+
+    from nontainer.presets import dataframes, plotting
+
+    PythonConfig(modules=[dataframes(), plotting()])
+
+The exclude lists are ported from agex's registration helpers — the
+accumulated knowledge of what trips up sandboxed LLM-written code
+(global random state, VFS-bypassing pathlib methods, backend switching)
+lives here so embedders don't rediscover it.
+
+The safe-stdlib set (:data:`STDLIB`) is granted by default via
+``PythonConfig(stdlib=True)``; presets carry only the optional heavy
+libraries. Presets run at config-construction time — host level,
+before any sandboxed code — which is exactly when environment side
+effects (matplotlib's Agg backend, font-cache warm-up) must happen.
+"""
+
+from __future__ import annotations
+
+import base64
+import calendar
+import collections
+import csv
+import datetime
+import decimal
+import fnmatch
+import fractions
+import glob
+import gzip
+import hashlib
+import io
+import itertools
+import json
+import math
+import os
+import pathlib
+import pickle
+import random
+import re
+import statistics
+import string
+import tarfile
+import textwrap
+import time
+import traceback
+import typing
+import uuid
+import warnings
+import zipfile
+import zoneinfo
+
+from .workspace import ModuleGrant
+
+__all__ = ["STDLIB", "dataframes", "plotting"]
+
+
+# -- the always-on set (PythonConfig.stdlib) ---------------------------------
+
+# random minus process-global state: agents in a shared interpreter
+# must not reseed or capture the host's RNG.
+_RANDOM_EXCLUDE = ("_*", "*._*", "seed", "getstate", "setstate", "SystemRandom")
+
+STDLIB: tuple[ModuleGrant, ...] = (
+    # math & numbers
+    ModuleGrant(math),
+    ModuleGrant(statistics),
+    ModuleGrant(decimal),
+    ModuleGrant(fractions),
+    ModuleGrant(random, exclude=_RANDOM_EXCLUDE),
+    # containers & iteration
+    ModuleGrant(collections),
+    ModuleGrant(itertools),
+    # dates & time
+    ModuleGrant(time),
+    ModuleGrant(calendar),
+    ModuleGrant(datetime),
+    ModuleGrant(zoneinfo),
+    # text
+    ModuleGrant(re),
+    ModuleGrant(string),
+    ModuleGrant(textwrap),
+    # data formats
+    ModuleGrant(json),
+    ModuleGrant(csv),
+    ModuleGrant(pickle),
+    ModuleGrant(base64),
+    ModuleGrant(uuid),
+    ModuleGrant(hashlib),
+    # debugging: safe formatters only
+    ModuleGrant(
+        traceback, include=("format_exc", "format_exception", "print_exc")
+    ),
+    # typing.io / typing.re: deprecated, removed in 3.13
+    ModuleGrant(typing, exclude=("_*", "*._*", "io", "re")),
+    # file IO — routed through the workspace VFS by the sandbox
+    ModuleGrant(io, include=("BytesIO", "StringIO", "TextIOWrapper")),
+    ModuleGrant(
+        os,
+        include=(
+            "listdir", "walk", "remove", "unlink", "mkdir", "makedirs",
+            "rename", "stat", "getcwd", "chdir",
+        ),
+    ),
+    ModuleGrant(
+        os.path,
+        name="os.path",
+        include=(
+            "exists", "isfile", "isdir", "islink", "lexists", "samefile",
+            "realpath", "join", "basename", "dirname", "splitext",
+        ),
+    ),
+    # pathlib is fully VFS-routed (monkeyfs patches it), so no method
+    # excludes — agex excluded Path.read_*/write_* because ITS
+    # interception layer didn't cover pathlib; ours does.
+    ModuleGrant(pathlib),
+    ModuleGrant(glob),
+    ModuleGrant(fnmatch),
+    # archives — all open() under the hood, so VFS-routed
+    ModuleGrant(gzip),
+    ModuleGrant(zipfile),
+    ModuleGrant(tarfile),
+)
+
+
+# -- optional heavy libraries -------------------------------------------------
+
+_NUMPY_EXCLUDE = (
+    "_*",
+    "*._*",
+    # memory-mapped host files
+    "memmap",
+    "DataSource*",
+)
+
+# Process-global RNG state. Excludes don't propagate through a
+# recursive registration, so numpy.random gets its own grant (same
+# name → it overrides the recursive crawl's entry).
+_NUMPY_RANDOM_EXCLUDE = ("_*", "*._*", "seed", "set_state", "get_state")
+
+_PANDAS_EXCLUDE = (
+    "_*",
+    "*._*",
+    "eval",  # pd.eval: string-expression evaluation outside the AST sandbox
+    "pandas.core*",
+    "pandas.plotting*",
+    "pandas.testing*",
+    "pandas.util*",
+)
+
+
+def dataframes() -> list[ModuleGrant]:
+    """numpy + pandas, recursively, with the agex exclude lists.
+
+    Raises ImportError if either library is missing — presets fail
+    loudly at config time, not on the agent's first import.
+    """
+    import numpy
+    import pandas
+
+    return [
+        ModuleGrant(numpy, recursive=True, exclude=_NUMPY_EXCLUDE),
+        ModuleGrant(
+            numpy.random, name="numpy.random", exclude=_NUMPY_RANDOM_EXCLUDE
+        ),
+        ModuleGrant(pandas, recursive=True, exclude=_PANDAS_EXCLUDE),
+    ]
+
+
+_MATPLOTLIB_EXCLUDE = (
+    "_*",
+    "*._*",
+    # interactive-display calls: no-ops under Agg, but invite
+    # REPL-style usage from agents
+    "show",
+    "pause",
+    "ion",
+    "ioff",
+    "isinteractive",
+    # backend pinned to Agg below; agents can't flip it mid-session
+    "switch_backend",
+)
+
+_PLOTLY_EXCLUDE = (
+    "_*",
+    "*._*",
+    "show",
+    "plot",  # plotly.offline.plot
+    "iplot",
+    "kaleido",
+    "orca",
+    "print_grid",
+    "mpl_to_plotly",
+    "get_config_*",
+    "warning_*",
+)
+
+
+def _warm_font_cache() -> None:
+    """Render a tiny figure with text so matplotlib builds its
+    ``fontlist.json`` cache now, at host level. Deferred to the first
+    sandboxed ``savefig``, the cache build acquires a lock file inside
+    matplotlib's package directory — a write the sandbox blocks."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots()
+    try:
+        ax.text(0.5, 0.5, "warm")
+        fig.savefig(io.BytesIO(), format="png")
+    finally:
+        plt.close(fig)
+
+
+def plotting(*, plotly: bool | None = None) -> list[ModuleGrant]:
+    """matplotlib (Agg-pinned, font cache pre-warmed) — plus plotly.
+
+    Args:
+        plotly: ``None`` (default) includes plotly iff installed;
+            ``True`` requires it (ImportError if missing); ``False``
+            skips it.
+
+    Environment side effects happen here, at call time — host level,
+    before any sandboxed execution: the backend is forced to Agg
+    (headless environments can't probe a GUI backend) and the font
+    cache is warmed (best-effort; warns on failure).
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    try:
+        _warm_font_cache()
+    except Exception as e:  # pragma: no cover
+        warnings.warn(
+            f"matplotlib font cache warm-up failed: {e}. First savefig() "
+            "inside the sandbox may fail.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    import matplotlib.pyplot
+
+    grants = [
+        ModuleGrant(matplotlib, recursive=True, exclude=_MATPLOTLIB_EXCLUDE),
+        # excludes don't propagate through the recursive crawl; pyplot
+        # (where show/ion/switch_backend live) needs its own grant
+        ModuleGrant(
+            matplotlib.pyplot,
+            name="matplotlib.pyplot",
+            exclude=_MATPLOTLIB_EXCLUDE,
+        ),
+    ]
+
+    if plotly is not False:
+        try:
+            import plotly as plotly_mod
+            import plotly.express
+            import plotly.subplots  # loaded before the recursive crawl  # noqa: F401
+        except ImportError:
+            if plotly is True:
+                raise
+        else:
+            grants.append(
+                ModuleGrant(plotly_mod, recursive=True, exclude=_PLOTLY_EXCLUDE)
+            )
+            grants.append(ModuleGrant(plotly.express, recursive=True))
+    return grants
