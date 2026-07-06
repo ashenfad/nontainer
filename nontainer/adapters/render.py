@@ -127,13 +127,16 @@ def python_description(ws: Workspace) -> str:
 FILE_WRITE_DESCRIPTION = """\
 Write a file in the workspace (parents created, overwrites). Use this
 for any multiline content — scripts, handlers, HTML — instead of shell
-redirects with tricky quoting."""
+redirects with tricky quoting. Writing several files? Issue several
+file_write calls in the same turn — that's fine."""
 
 FILE_EDIT_DESCRIPTION = """\
 Replace an exact string in a workspace file. old_string must match the
 file EXACTLY (including whitespace) and appear exactly once — include
 enough surrounding context to make it unique, or set replace_all=true
-to replace every occurrence. Prefer this over sed for code edits."""
+to replace every occurrence. Prefer this over sed for code edits.
+Edits to DIFFERENT files may share a turn; multiple edits to the SAME
+file should be sequential turns (parallel order is not guaranteed)."""
 
 
 APPS_NOTES = """\

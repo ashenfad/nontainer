@@ -49,9 +49,12 @@ from .render import (
 
 _INSTRUCTIONS = """\
 You have a persistent workspace (files, shell{and_python}). Make ONE
-workspace tool call per turn and batch related commands/code within it —
-mutations are then safely sequential. The workspace persists across the
-whole session{versioned_note}."""
+terminal{or_python} call per turn, batching related commands/code within
+it — mutations are then safely sequential. file_write/file_edit are
+different: you MAY issue several in one turn (they execute safely), but
+keep edits to the SAME file to one per turn since parallel-call order
+is not guaranteed. The workspace persists across the whole
+session{versioned_note}."""
 
 
 class WorkspaceTools(Toolkit):
@@ -153,6 +156,7 @@ class WorkspaceTools(Toolkit):
 
         instructions = _INSTRUCTIONS.format(
             and_python=", and sandboxed python" if split else "",
+            or_python=" / run_python" if split else "",
             versioned_note=(
                 "; every mutating call is checkpointed"
                 if workspace.caps.versioned

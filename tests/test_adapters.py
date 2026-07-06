@@ -300,3 +300,27 @@ def test_edit_file_agent_tolerant_matching():
     assert out.count == 1
     assert r"\1 \g<0>" in ws.fs.read("d.txt").decode()
     ws.close()
+
+
+def test_parallel_file_writes_are_safe():
+    """The Claude-Code idiom: several file_write calls in one turn.
+    Under agno arun they run on threads; the lock keeps them safe."""
+    pytest.importorskip("agno")
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nontainer.adapters.agno import WorkspaceTools
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    fw = tk.functions["file_write"].entrypoint
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(
+            lambda i: fw(path=f"src/mod_{i}.py", content=f"X = {i}\n"),
+            range(6),
+        ))
+
+    for i in range(6):
+        assert ws.fs.read(f"src/mod_{i}.py").decode() == f"X = {i}\n"
+    assert len(list(ws.history())) >= 7  # each write checkpointed
+    ws.close()
