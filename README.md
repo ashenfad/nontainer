@@ -22,7 +22,7 @@ forkable workspace** that installs with pip and runs wherever Python runs.
 |---|---|
 | **Versioned workspace** | Files, agent cache, and logs move together. Checkpoint per tool call; fork, roll back, and audit any session. |
 | **Terminal tool** | 33 shell builtins (grep, sed, jq, tar, ...) over the virtual filesystem via [termish](https://github.com/ashenfad/termish). |
-| **Python tool** | Policy-gated sandboxed execution via [sandtrap](https://github.com/ashenfad/sandtrap) -- stdlib `open()` routes to the workspace via [monkeyfs](https://github.com/ashenfad/monkeyfs). |
+| **Python tool** | Policy-gated sandboxed execution via [sandtrap](https://github.com/ashenfad/sandtrap) -- safe stdlib on by default, `open()`/`os`/`pathlib` route to the workspace via [monkeyfs](https://github.com/ashenfad/monkeyfs). |
 | **In-process** | Agent code can call *your* whitelisted host objects -- the live model, the db pool -- under policy. No cloud sandbox can do this. |
 | **Pluggable substrate** | [kvgit](https://github.com/ashenfad/kvgit) (default), [AgentFS](https://github.com/tursodatabase/agentfs), or a plain directory. |
 | **Thin adapters** | [agno](https://github.com/agno-agi/agno) toolkit and an MCP server over the same core. |

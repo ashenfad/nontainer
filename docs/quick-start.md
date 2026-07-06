@@ -63,27 +63,32 @@ Three persistence planes, one job each:
 
 ## Configuring the python sandbox
 
+A safe stdlib set (math, json, csv, datetime, re, VFS-routed os/pathlib,
+archives, ...) is granted by default — `import math` just works. Add
+heavy libraries via presets, and anything else via modules/grants:
+
 ```python
-import math, pandas as pd
 import httpx
 from nontainer import workspace, PythonConfig, ModuleGrant, Mount
+from nontainer.presets import dataframes, plotting
 
 ws = workspace(
     "analyst",
     python=PythonConfig(
-        modules=[math, pd, ModuleGrant(httpx, network=True)],
+        modules=[dataframes(), plotting(), ModuleGrant(httpx, network=True)],
         host_objects={"db": my_connection_pool},   # live objects, in-process
         timeout=30.0,
     ),
     mounts={"/data": Mount("/srv/datasets")},      # read-only host volume
 )
 
-r = ws.run_python("df = pd.read_csv('/data/big.csv'); n = len(df)")
+r = ws.run_python("import pandas as pd; df = pd.read_csv('/data/big.csv')")
 r = ws.run_python("rows = db.query('select 1')")   # your REAL pool
 ```
 
 Notes:
 
+- `stdlib=False` gives a truly bare cell (no imports at all).
 - Bare modules get no passthroughs; `ModuleGrant(..., network=True)`
   or `host_fs=True` grants per module. `host_objects` are live host
   resources — a superpower no cloud sandbox has.
