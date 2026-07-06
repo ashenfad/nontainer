@@ -77,7 +77,9 @@ class WorkspaceTools(Toolkit):
             with self._lock:
                 return render_terminal(self._ws.terminal(command))
 
-        terminal.__doc__ = terminal_description(workspace, split=split)
+        terminal.__doc__ = terminal_description(
+            workspace, split=split, apps=apps is not None
+        )
 
         registered = [terminal]
 

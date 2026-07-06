@@ -163,3 +163,31 @@ async def test_mcp_terminal_only_mode():
     tools = {t.name for t in await server.list_tools()}
     assert tools == {"terminal"}
     ws.close()
+
+
+def test_terminal_description_includes_apps_contract():
+    from nontainer.adapters.render import terminal_description
+
+    ws = make_ws()
+    plain = terminal_description(ws, split=True, apps=False)
+    with_apps = terminal_description(ws, split=True, apps=True)
+    assert "def get(req)" not in plain
+    for marker in ("def get(req)", "HttpError", "curl /api/scores",
+                   "RELATIVE urls", "/app/logs/api.log", "READ-ONLY"):
+        assert marker in with_apps, marker
+    ws.close()
+
+
+def test_agno_toolkit_with_apps_mentions_curl_in_terminal():
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+    from nontainer.apps import enable_apps
+
+    ws = make_ws()
+    rt = enable_apps(ws)
+    tk = WorkspaceTools(ws, apps=rt)
+    # agno parses the docstring into .description lazily at schema-build
+    term_desc = tk.functions["terminal"].entrypoint.__doc__ or ""
+    assert "curl" in term_desc and "def get(req)" in term_desc
+    assert "test_app" in tk.functions  # the verify tool rides along
+    ws.close()

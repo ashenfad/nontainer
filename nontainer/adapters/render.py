@@ -103,13 +103,15 @@ _ONE_CALL_NOTE = """\
 Make ONE call per turn; put all the code for a step in a single call."""
 
 
-def terminal_description(ws: Workspace, *, split: bool) -> str:
+def terminal_description(ws: Workspace, *, split: bool, apps: bool = False) -> str:
     desc = _TERMINAL_CORE
     if not split:
         desc += _PYTHON_IN_TERMINAL
         extras = _env_notes(ws)
         if extras:
             desc += "\n\nInside `python`:\n" + extras
+    if apps:
+        desc += APPS_NOTES
     return desc
 
 
@@ -120,6 +122,42 @@ def python_description(ws: Workspace) -> str:
         desc += "\n" + extras
     desc += _ONE_CALL_NOTE
     return desc
+
+
+APPS_NOTES = """\
+
+You can build a web app in this workspace (frontend + backend):
+
+/app/index.html          <- entry page (served at the app root)
+/app/api/<name>.py       <- backend endpoint at api/<name>
+/app/api/_helpers.py     <- _-prefixed files: importable, not routable
+/app/logs/api.log        <- handler errors + prints (tail it to debug)
+
+Handlers export verb functions; example /app/api/scores.py:
+
+    def get(req):
+        limit = int(req.params.get("limit", 10))
+        return {"scores": cache.get("scores", [])[:limit]}
+
+    def post(req):
+        name = req.require("name")     # 400 if missing from JSON body
+        scores = cache.get("scores", []) + [name]
+        cache["scores"] = scores       # NOT allowed in get() (read-only)
+        return {"ok": True}
+
+Rules: return dict/list (JSON), str (text), bytes, or Response(status=,
+body=); raise HttpError(404, 'msg') for error responses. GET handlers
+have a READ-ONLY filesystem and cache. Handlers see the same
+environment as your python code (cache, files via open(), injected
+objects). Use `with open(...)` for writes.
+
+Test endpoints instantly with curl (no server): curl /api/scores?limit=3,
+curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
+curl /api/scores | jq .
+
+Frontend: plain HTML/JS. Use RELATIVE urls (fetch('api/scores'), never
+fetch('/api/x')). For components use Preact via https://esm.sh, or JSX
+via <script type="text/babel" data-type="module"> with Babel standalone."""
 
 
 TEST_APP_DESCRIPTION = """\

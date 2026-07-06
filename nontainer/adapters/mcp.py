@@ -52,7 +52,9 @@ def build_server(
 
     @server.tool(
         name="terminal",
-        description=terminal_description(workspace, split=split),
+        description=terminal_description(
+            workspace, split=split, apps=apps is not None
+        ),
     )
     def terminal(command: str) -> str:
         with lock:
