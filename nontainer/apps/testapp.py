@@ -115,6 +115,15 @@ def _locked_dispatch(runtime: "AppRuntime", request: Any) -> Any:
         return runtime.dispatch(request)
 
 
+def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
+    """Write a screenshot to the workspace fs — off the browser loop and
+    under the SAME lock as dispatch, since ``ws.fs`` is shared with the
+    executor-hopped route dispatch (concurrent writes would race)."""
+    with runtime._dispatch_lock:
+        runtime._ws.fs.makedirs("/app/screenshots", exist_ok=True)
+        runtime._ws.fs.write(path, png)
+
+
 async def _run_actions(
     browser: Any,
     sema: "asyncio.Semaphore",
@@ -129,7 +138,6 @@ async def _run_actions(
 ) -> TestAppResult:
     """Run one test against a fresh context on the shared browser.
     Runs on the browser loop-thread; bounded by ``sema``."""
-    ws = runtime._ws
     vp = (
         VIEWPORTS.get(viewport, VIEWPORTS["desktop"])
         if isinstance(viewport, str)
@@ -267,9 +275,12 @@ async def _run_actions(
                             )
                         shot_counter += 1
                         png = await page.screenshot()
-                        ws.fs.makedirs("/app/screenshots", exist_ok=True)
                         path = f"/app/screenshots/shot-{shot_counter}.png"
-                        ws.fs.write(path, png)
+                        # off the loop AND under the dispatch lock (ws.fs
+                        # is shared with executor-hopped dispatch)
+                        await loop.run_in_executor(
+                            None, _save_screenshot, runtime, path, png
+                        )
                         screenshots.append(path)
                         value = path
                     elif "wait" in action:
