@@ -160,9 +160,10 @@ class PythonConfig:
   lets a library's own code manage real-fs state (download caches,
   temp files); it is NOT how you share data with the agent (that's
   `Mount`). `name` is for submodules reached as attributes
-  (`ModuleGrant(os.path, name="os.path")`); note excludes do NOT
-  propagate through `recursive=True` — grant the submodule
-  explicitly.
+  (`ModuleGrant(os.path, name="os.path")`). Filters propagate through
+  `recursive=True` to submodules, and dotted patterns match qualified
+  names (`"DataFrame.eval"`, `"pandas.core*"`) — sandtrap ≥ 0.2.2
+  semantics.
 - Kernel caveat: with `isolation="kernel"`, ANY network/host-fs grant
   disables that kernel restriction for the whole worker (seccomp/
   Landlock are monotonic). nontainer emits a `RuntimeWarning` at
