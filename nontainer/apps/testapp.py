@@ -86,6 +86,7 @@ def run_test_app(
     cdn_allowlist: tuple[str, ...] = _DEFAULT_CDN_ALLOWLIST,
     max_screenshots: int = 5,
     load_timeout_ms: int = 10_000,
+    assert_timeout_ms: int = 2_000,
 ) -> TestAppResult:
     try:
         from playwright.sync_api import sync_playwright
@@ -200,11 +201,25 @@ def run_test_app(
                     elif "eval" in action:
                         value = repr(page.evaluate(action["eval"]))
                     elif "assert" in action:
-                        passed = bool(page.evaluate(action["assert"]))
+                        # Web-first assertion (THE Playwright idiom):
+                        # retry the predicate until truthy or timeout —
+                        # click→assert is robust independent of settle.
+                        try:
+                            page.wait_for_function(
+                                action["assert"], timeout=assert_timeout_ms
+                            )
+                            passed, why = True, None
+                        except Exception:
+                            passed = False
+                            try:
+                                page.evaluate(action["assert"])
+                                why = "assertion is falsy"
+                            except Exception as inner:
+                                why = f"assertion errored: {inner}"
                         results.append(ActionResult(
                             i, action, ok=passed,
                             value=str(passed),
-                            error=None if passed else "assertion is falsy",
+                            error=why,
                         ))
                         ok = ok and passed
                         continue

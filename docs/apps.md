@@ -194,11 +194,15 @@ Actions (the studio DSL, pruned): `{"click": selector}`,
 `{"type": [selector, text]}`, `{"read": selector}`, `{"eval": js}`,
 `{"assert": js}`, `{"screenshot": true}`, `{"wait": ms}`.
 
-- Settling: studio's idle-gap heuristic, ported (implementation
-  finding: Playwright's `networkidle` is STICKY after navigation and
-  never waits for click-triggered fetches — locator auto-waiting does
-  NOT replace the heuristic). In-flight requests are tracked; settle
-  waits for a 300ms quiet gap, capped; slow apps use `{"wait": ms}`.
+- Waiting, two-tier (implementation finding): Playwright's real
+  idiom is OUTCOME-based — web-first assertions that retry — and our
+  `assert` action follows it (`wait_for_function`, retry until truthy
+  or ~2s). But expectation-free `read` observations have no outcome
+  to retry against (`networkidle` is sticky post-navigation and
+  discouraged upstream), so click/type settle via studio's idle-gap
+  heuristic: track in-flight requests, wait for a 300ms quiet gap,
+  capped. Slow apps use `{"wait": ms}`. Prefer `assert` over
+  `read`-and-check when a condition is known — it's the robust form.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/app/screenshots/` and return workspace paths in the observation —
