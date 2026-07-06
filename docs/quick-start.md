@@ -138,6 +138,11 @@ Agents also get `file_write` / `file_edit` tools in every mode — the
 quoting-free path for multiline files and surgical exact-string edits
 (the Claude-Code Write/Edit contract models already know).
 
+Commit granularity is yours: the default checkpoints every mutating
+call (max durability); `WorkspaceTools(ws, checkpoint="turn")` plus
+`Agent(post_hooks=[tk.end_turn])` gives the agex model — one commit
+per agent turn, so `rollback(1)` undoes a whole turn.
+
 Tool exposure is automatic: a plain python environment gets ONE
 `terminal` tool (with a `python` builtin); an augmented one (cache or
 host objects) gets a separate `run_python` tool whose description

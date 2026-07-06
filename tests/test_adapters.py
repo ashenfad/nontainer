@@ -324,3 +324,32 @@ def test_parallel_file_writes_are_safe():
         assert ws.fs.read(f"src/mod_{i}.py").decode() == f"X = {i}\n"
     assert len(list(ws.history())) >= 7  # each write checkpointed
     ws.close()
+
+
+def test_turn_checkpoint_mode():
+    """agex-style granularity: one commit per turn via end_turn."""
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws, checkpoint="turn")
+    before = len(list(ws.history()))
+
+    # a "turn": several mutations, zero commits until end_turn
+    tk.functions["file_write"].entrypoint(path="a.py", content="A = 1\n")
+    tk.functions["file_write"].entrypoint(path="b.py", content="B = 2\n")
+    tk.functions["terminal"].entrypoint("echo hi > c.txt")
+    assert len(list(ws.history())) == before
+
+    tk.end_turn()   # the post_hooks boundary
+    entries = list(ws.history())
+    assert len(entries) == before + 1
+    assert entries[0].info == {"tool": "turn"}
+
+    tk.end_turn()   # idle turn → no empty commit
+    assert len(list(ws.history())) == before + 1
+
+    # rollback rewinds the WHOLE turn
+    ws.rollback(1)
+    assert not ws.fs.exists("a.py") and not ws.fs.exists("c.txt")
+    ws.close()

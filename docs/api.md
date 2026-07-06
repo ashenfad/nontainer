@@ -192,8 +192,13 @@ WorkspaceTools(
     *,
     tools: "auto" | "terminal" | "split" = "auto",
     apps: AppRuntime | None = None,     # adds the test_app tool
+    checkpoint: "call" | "turn" = "call",
     **toolkit_kwargs,
 )
+# checkpoint="turn": one commit per agent turn (the agex model) — wire
+# tk.end_turn into Agent(post_hooks=[...]). Crash mid-turn can lose
+# the turn's staged work; "call" trades chattier history for max
+# durability. Workspace.autocheckpoint is also publicly settable.
 ```
 
 `"auto"`: plain python env → one `terminal` tool; cache or host

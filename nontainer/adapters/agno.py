@@ -60,20 +60,48 @@ session{versioned_note}."""
 class WorkspaceTools(Toolkit):
     """agno Toolkit over a nontainer :class:`Workspace`."""
 
+    def _end_turn(self, *args: Any, **kwargs: Any) -> None:
+        """Commit the turn's staged work (one commit per agent turn).
+        Tolerant signature so it slots into agno ``post_hooks``; also
+        callable directly by embedders after ``agent.run(...)``. No-op
+        when nothing changed or the workspace is unversioned."""
+        ws = self._ws
+        if ws.caps.versioned and ws._provider.dirty:
+            with self._lock:
+                ws.checkpoint(info={"tool": "turn"})
+
     def __init__(
         self,
         workspace: Workspace,
         *,
         tools: ToolsMode = "auto",
         apps: Any = None,
+        checkpoint: str = "call",
         **kwargs,
     ) -> None:
         """``apps``: an ``AppRuntime`` (from ``nontainer.apps.
         enable_apps``) — when given, a ``test_app`` tool is registered
         whose screenshots come back as real images (agno ``ToolResult``
-        media) in addition to being saved under /app/screenshots/."""
+        media) in addition to being saved under /app/screenshots/.
+
+        ``checkpoint``: commit granularity on versioned workspaces.
+        ``"call"`` (default) commits after each mutating tool call —
+        maximum durability, chattier history. ``"turn"`` is the agex
+        model — one commit per agent turn; wire :meth:`end_turn` as an
+        agno run-level hook::
+
+            tk = WorkspaceTools(ws, checkpoint="turn")
+            agent = Agent(model=..., tools=[tk], post_hooks=[tk.end_turn])
+
+        Turn mode defers commits to the hook, so a crash mid-turn can
+        lose that turn's staged work (kvgit staging is in-memory)."""
         self._ws = workspace
         self._lock = threading.Lock()
+        if checkpoint not in ("call", "turn"):
+            raise ValueError(f"checkpoint must be 'call' or 'turn': {checkpoint!r}")
+        self._turn_checkpoints = checkpoint == "turn"
+        if self._turn_checkpoints:
+            workspace.autocheckpoint = False
         mode = resolve_tools_mode(workspace, tools)
         split = mode == "split"
 
@@ -163,6 +191,8 @@ class WorkspaceTools(Toolkit):
                 else ""
             ),
         )
+
+        self.end_turn = self._end_turn  # bindable as an agno post_hook
 
         super().__init__(
             name="nontainer_workspace",

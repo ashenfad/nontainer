@@ -423,6 +423,20 @@ class Workspace:
         return self._provider.caps
 
     @property
+    def autocheckpoint(self) -> bool:
+        """Whether each successful mutating tool call commits. Settable:
+        flip to False for turn-granularity commit policies (the agex
+        model — one commit per agent turn), where the embedder or an
+        adapter hook calls :meth:`checkpoint` at turn boundaries.
+        Tradeoff: kvgit's staged buffer is in-memory, so deferring
+        commits means a crash can lose the current turn's work."""
+        return self._autocheckpoint
+
+    @autocheckpoint.setter
+    def autocheckpoint(self, value: bool) -> None:
+        self._autocheckpoint = bool(value) and self._provider.caps.versioned
+
+    @property
     def cache_enabled(self) -> bool:
         return self._cache_enabled
 
