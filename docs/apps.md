@@ -1,14 +1,9 @@
-# The `[apps]` extra — design
+# App handlers (the `[apps]` extra)
 
-> Status: IMPLEMENTED (M1 dispatch+curl, M2 test_app, M3 serving).
-> This doc is the design record; where README summary conflicts, this
-> doc wins. Remaining: adapter exposure of test_app as a tool.
-
-## Goal
-
-An agent authors a full-stack app inside its workspace — a no-build
-frontend plus Python request handlers — and can **verify it headlessly**
-before any human sees it. Embedders can optionally serve it live.
+The optional `[apps]` extra lets an agent author a full-stack app inside
+its workspace — a no-build frontend plus Python request handlers — **verify
+it headlessly** before any human sees it, and (optionally) serve it live.
+This is the design and reference for that extra.
 
 Serverless semantics throughout: there is no resident app process. A
 "backend" is handler files on the (versioned) filesystem; requests are
@@ -16,12 +11,13 @@ dispatched into sandboxed executions on demand. No processes to babysit,
 multi-tenancy reduces to routing, and the whole app — code and state —
 forks/rolls back with the session.
 
-## v1 scope
+## Scope
 
-In: the dispatch core, the handler contract, a `curl` terminal builtin,
-`test_app` via Playwright, a Starlette `APIRouter` for live serving.
+Supported: the dispatch core, the handler contract, a `curl` terminal
+builtin, `test_app` via Playwright, a Starlette `APIRouter` for live
+serving.
 
-Out (deliberately): websockets/SSE/streaming, background tasks,
+Deliberately out of scope: websockets/SSE/streaming, background tasks,
 middleware/auth hooks, `llm()` inside handlers, dynamic route segments
 (`[id].py`), multi-file frontend bundling (esbuild/JSX — the no-build
 HTM+Preact path only).
@@ -67,11 +63,11 @@ def post(req):
 - **Transactions**: a mutating handler that raises leaves nothing
   behind (staged writes discarded for that request). Successful writes
   fold into the session's normal commit flow — requests do NOT mint
-  commits (per the README's commit-granularity decision). The serving
-  layer checkpoints periodically / on quiesce with
-  `info={"source": "api"}`.
-- **App state guidance** (goes in the agent-facing description): tiny
-  state → `cache` or JSON files (versioned, works on all backends);
+  commits (see the commit-granularity note in the
+  [design notes](design.md)). The serving layer checkpoints
+  periodically / on quiesce with `info={"source": "api"}`.
+- **App state guidance**: tiny state → `cache` or JSON files
+  (versioned, works on all backends);
   high-tempo or relational state → sqlite in a real directory — which
   requires the `dir` backend or a writable `Mount`, because `sqlite3`
   is a C extension that bypasses the virtual fs. This is a documented
@@ -125,8 +121,8 @@ Structural constraint first: termish commands are pure-Python over the
 `FileSystem` protocol — **external binaries (esbuild, node) cannot see
 a virtual filesystem**. That wall sorts the options:
 
-Supported in v1 (all zero-machinery — conventions in the app template
-that ships in the tool description, plus the CDN allowlist):
+Supported (all zero-machinery — conventions in the app template that
+ships in the tool description, plus the CDN allowlist):
 
 1. **HTM + Preact, no build** — `import from 'https://esm.sh/preact'`
    + `html\`...\`` templates. The default idiom.
@@ -138,7 +134,7 @@ that ships in the tool description, plus the CDN allowlist):
    transpile-at-load is irrelevant at agent-app scale. This is the
    answer to "agents keep writing JSX": let them.
 
-Deliberately NOT in v1:
+Deliberately out of scope:
 
 - **esbuild as a termish command** — needs real files; viable later
   as an opt-in injected command restricted to the `dir` backend or a
@@ -162,9 +158,9 @@ Three tiers, three mechanisms (all reuse existing machinery):
    Dispatch runs through the same `_exec_python` path as `run_python`:
    same policy, same injected `cache` and `host_objects`. A handler
    calling `db.query(...)` or reading `cache['scores']` needs no new
-   mechanism — the symmetry rule delivers it. Purity refinement: GET
-   handlers get a **read-only cache view** to match their read-only
-   filesystem (a GET that writes cache raises, same lesson).
+   mechanism. Purity refinement: GET handlers get a **read-only cache
+   view** to match their read-only filesystem (a GET that writes cache
+   raises, same lesson).
 2. **Host objects do real I/O naturally when they're C-backed.** An
    embedder-provided sqlite client in `host_objects` works against
    real files with no grant: C extensions bypass monkeyfs's
@@ -174,10 +170,10 @@ Three tiers, three mechanisms (all reuse existing machinery):
    per-host-object grant flags yet, parallel to `ModuleGrant`; add a
    `HostObjectGrant` if a pure-Python host resource needs real fs.)
 3. **Frontends get NO framework bridge — they talk to agent-written
-   handlers, period.** (Studio's `getCacheValue()` postMessage bridge
-   existed because studio apps had no backend; that reason doesn't
-   survive into a design where handlers are first-class.) An agent
-   exposing cache data to its UI writes the two-line handler and
+   handlers, period.** A blanket "read a cache key from the frontend"
+   bridge only makes sense when apps have no backend; here handlers are
+   first-class, so it's unnecessary. An agent exposing cache data to
+   its UI writes the two-line handler and
    thereby chooses *which* keys are visible, with what shaping — a
    deliberate API instead of a blanket cache-enumeration surface. No
    reserved routes, no exposure config, one fewer boundary to secure.
@@ -191,19 +187,19 @@ Tool signature (exposed by adapters alongside terminal/run_python when
 test_app(actions: list[Action], viewport: str|dict = "desktop") -> TestAppResult
 ```
 
-Actions (the studio DSL, pruned): `{"click": selector}`,
-`{"type": [selector, text]}`, `{"read": selector}`, `{"eval": js}`,
-`{"assert": js}`, `{"screenshot": true}`, `{"wait": ms}`.
+Actions: `{"click": selector}`, `{"type": [selector, text]}`,
+`{"read": selector}`, `{"eval": js}`, `{"assert": js}`,
+`{"screenshot": true}`, `{"wait": ms}`.
 
-- Waiting, two-tier (implementation finding): Playwright's real
-  idiom is OUTCOME-based — web-first assertions that retry — and our
-  `assert` action follows it (`wait_for_function`, retry until truthy
-  or ~2s). But expectation-free `read` observations have no outcome
-  to retry against (`networkidle` is sticky post-navigation and
-  discouraged upstream), so click/type settle via studio's idle-gap
-  heuristic: track in-flight requests, wait for a 300ms quiet gap,
-  capped. Slow apps use `{"wait": ms}`. Prefer `assert` over
-  `read`-and-check when a condition is known — it's the robust form.
+- Waiting is two-tier. Playwright's idiom is OUTCOME-based — web-first
+  assertions that retry — and the `assert` action follows it
+  (`wait_for_function`, retry until truthy or ~2s). But
+  expectation-free `read` observations have no outcome to retry
+  against (`networkidle` is sticky post-navigation and discouraged
+  upstream), so click/type settle via an idle-gap heuristic: track
+  in-flight requests, wait for a 300ms quiet gap, capped. Slow apps
+  use `{"wait": ms}`. Prefer `assert` over `read`-and-check when a
+  condition is known — it's the robust form.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/app/screenshots/` and return workspace paths in the observation —
@@ -277,32 +273,21 @@ never served as a file). So neither `/../cache-internals` nor
   request timeout, response size cap. Egress: handlers inherit the
   sandbox policy — no network unless the workspace's PythonConfig
   granted it (the kernel-degradation warning story applies unchanged).
-- Threat framing for the docs: enabling live serving means anonymous
-  HTTP can trigger agent-authored code under YOUR sandbox policy.
-  The default posture (no network, workspace-only fs, tight budgets)
-  makes that boring; every grant you add makes it less boring.
+- Threat framing: enabling live serving means anonymous HTTP can
+  trigger agent-authored code under YOUR sandbox policy. The default
+  posture (no network, workspace-only fs, tight budgets) makes that
+  boring; every grant you add makes it less boring.
 
-## Milestones
+## Known gaps
 
-1. **M1 — dispatch + curl** (no new heavy deps): handler contract,
-   Request/Response/HttpError, log file, curl builtin, conformance
-   tests. The agent can build and test a backend entirely in-terminal.
-2. **M2 — test_app** (`playwright` dep + `playwright install
-   chromium`): route interception, action DSL, screenshots, adapter
-   exposure.
-3. **M3 — serving**: APIRouter, tokens, quotas. Ships last because
-   it's the only piece with an anonymous-input threat model.
-
-Each milestone is independently useful; M1 alone closes the
-write→verify loop for backends, and M1+M2 close it for frontends.
-
-## Open questions (resolve during M1/M2)
-
-- Does the `python` builtin's script-semantics rule imply `curl` should
-  also exist in split-tools mode as part of the terminal (yes, leaning:
-  curl is shell-native and carries no namespace magic)?
-- `Response` headers allowlist for live serving (CSP for served HTML
-  in particular — probably a strict default CSP with esm.sh allowed).
-- RESOLVED: `test_app` lives on `AppRuntime` (it needs dispatch, and
-  `Workspace` must not depend on the apps extra); embedders reach it
-  via the runtime `enable_apps` returns.
+- **No per-host-object fs grant.** Pure-Python host resources that need
+  the real filesystem have no flag yet (parallel to `ModuleGrant`); a
+  `HostObjectGrant` would fill it. C-backed clients (sqlite) already do
+  real I/O and don't need one.
+- **Served-HTML CSP.** `Response(headers=)` sets per-response headers
+  today; a strict default Content-Security-Policy for served HTML (with
+  the esm.sh CDN allowed) is not yet baked in.
+- **App state on a virtual filesystem.** Relational / high-tempo state
+  wants sqlite, a C extension that bypasses the virtual fs — so it needs
+  the `dir` backend or a writable `Mount`. A documented sharp edge, not
+  a solvable one.
