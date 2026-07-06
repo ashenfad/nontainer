@@ -1,7 +1,8 @@
 # The `[apps]` extra — design
 
-> Status: design, pre-implementation. Decisions here extend the README's
-> "App handlers" section; where they conflict, this doc wins.
+> Status: IMPLEMENTED (M1 dispatch+curl, M2 test_app, M3 serving).
+> This doc is the design record; where README summary conflicts, this
+> doc wins. Remaining: adapter exposure of test_app as a tool.
 
 ## Goal
 

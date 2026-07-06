@@ -621,9 +621,12 @@ agno = [
     { name = "agno" },
 ]
 apps = [
+    { name = "anyio" },
     { name = "playwright" },
+    { name = "starlette" },
 ]
 dev = [
+    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -636,6 +639,8 @@ mcp = [
 requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=1.0" },
+    { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
+    { name = "httpx", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
     { name = "monkeyfs", specifier = ">=0.1.4" },
@@ -644,6 +649,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sandtrap", specifier = ">=0.2.1" },
+    { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.1.6" },
 ]
 provides-extras = ["agentfs", "apps", "agno", "mcp", "dev"]

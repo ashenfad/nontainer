@@ -39,6 +39,8 @@ agentfs = [
 ]
 apps = [
     "playwright>=1.40",
+    "starlette>=0.37",
+    "anyio>=4",
 ]
 agno = [
     "agno>=1.0",
@@ -50,6 +52,7 @@ dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
+    "httpx",
 ]
 
 [build-system]

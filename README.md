@@ -4,11 +4,11 @@ A fake little computer for your agent: versioned filesystem, shell, and
 sandboxed Python -- as tools for any Python-based agent harness. No Docker,
 no cloud sandbox, no infra. `pip install nontainer`.
 
-> **Status: pre-alpha, core working.** Workspace + terminal + run_python
-> over three backends — kvgit (versioned), dir (plain), and AgentFS
-> (SQLite artifact; unversioned spike) — with agno and MCP adapters.
-> The `[apps]` extra (testApp, handlers) is not yet built. APIs will
-> still move.
+> **Status: pre-alpha, feature-complete for v1.** Workspace + terminal
+> + run_python over three backends — kvgit (versioned), dir (plain),
+> AgentFS (SQLite artifact; unversioned spike) — agno and MCP adapters,
+> and the `[apps]` extra: handler dispatch + curl, headless test_app
+> (Playwright), and a mountable serving router. APIs will still move.
 
 ## The pitch
 
@@ -219,7 +219,7 @@ environment layer alone, offered to someone else's loop.
 pip install nontainer            # workspace + terminal + run_python
 pip install nontainer[agno]     # + agno Toolkit adapter
 pip install nontainer[mcp]      # + MCP server (python -m nontainer.adapters.mcp)
-pip install nontainer[apps]     # (planned) Playwright testApp + handler serving
+pip install nontainer[apps]     # + handlers/curl, Playwright test_app, serving router
 pip install nontainer[agentfs]  # + AgentFS substrate (agentfs-sdk)
 ```
 

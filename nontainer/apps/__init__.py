@@ -30,6 +30,15 @@ from .contract import (
 from .dispatch import AppRuntime, AppsConfig, enable_apps, request
 from .testapp import ActionResult, TestAppResult, render_test_app
 
+def __getattr__(name):
+    # Lazy: serving needs the optional starlette dependency.
+    if name in ("build_router", "mint_token"):
+        from . import serve
+
+        return getattr(serve, name)
+    raise AttributeError(name)
+
+
 __all__ = [
     "AppRuntime",
     "AppsConfig",
@@ -44,4 +53,6 @@ __all__ = [
     "TestAppResult",
     "ActionResult",
     "render_test_app",
+    "build_router",
+    "mint_token",
 ]
