@@ -205,6 +205,31 @@ class PythonConfig:
     except ``host_objects``."""
 
 
+def _render_prints(prints: list[tuple[Any, ...]], budget: int) -> str:
+    """Budget-aware stdout reconstruction from snapshotted print args.
+
+    Each print gets an even share of the budget (floored so early
+    prints stay legible when there are many); every value renders via
+    reprobate with a hard per-value budget. Approximation caveat:
+    print's sep/end kwargs aren't snapshotted — args join with a
+    space, prints with newlines (the overwhelmingly common case).
+    """
+    import reprobate
+
+    per_print = max(200, budget // max(1, len(prints)))
+    lines: list[str] = []
+    used = 0
+    for i, args in enumerate(prints):
+        if used + per_print > budget:
+            lines.append(f"[...{len(prints) - i} more print(s) elided]")
+            break
+        per_arg = max(40, per_print // max(1, len(args)))
+        rendered = " ".join(reprobate.render(a, budget=per_arg) for a in args)
+        lines.append(rendered)
+        used += len(rendered) + 1
+    return "\n".join(lines)
+
+
 def _truncate(text: str, limit: int) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
@@ -382,6 +407,10 @@ class Workspace:
             mode="raw",
             filesystem=filesystem if filesystem is not None else self._fs,
             rpc_handlers=rpc_handlers,
+            # Snapshot print() ARGUMENTS (objects, not text) so oversized
+            # stdout can be re-rendered budget-aware via reprobate — see
+            # _render_prints. Structural elision beats a mid-token cut.
+            snapshot_prints=True,
         )
 
     def _cache_rpc_handler(self) -> Callable[[str, tuple, dict], Any]:
@@ -559,7 +588,18 @@ class Workspace:
             and k not in namespace
         }
 
-        stdout, trunc_out = _truncate(exec_result.stdout, self._max_observation)
+        raw_stdout = exec_result.stdout
+        if (
+            len(raw_stdout) > self._max_observation
+            and getattr(exec_result, "prints", None)
+        ):
+            # Oversized stdout + snapshotted print objects: rebuild the
+            # view with reprobate's structural elision (hard budget,
+            # "...N more" markers) instead of a mid-token head-cut.
+            stdout = _render_prints(exec_result.prints, self._max_observation)
+            trunc_out = True
+        else:
+            stdout, trunc_out = _truncate(raw_stdout, self._max_observation)
         stderr, trunc_err = _truncate(stderr_buf.getvalue(), self._max_observation)
         return PythonResult(
             stdout=stdout,

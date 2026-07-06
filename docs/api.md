@@ -75,6 +75,11 @@ class PythonResult:
     # truthy iff error is None
 ```
 
+Oversized stdout from `print()` is re-rendered **budget-aware** via
+[reprobate](https://github.com/ashenfad/reprobate): structural elision
+(`[0, 1, 2, ...996 more]`) instead of a mid-token cut. Small output
+stays byte-exact; non-print writes fall back to a head-cut.
+
 ### Host-side access
 
 ```python

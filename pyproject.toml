@@ -26,6 +26,7 @@ dependencies = [
     "monkeyfs>=0.1.4",
     "sandtrap>=0.2.1",
     "kvgit[disk]>=0.3.0",
+    "reprobate>=0.1",
 ]
 
 [project.urls]

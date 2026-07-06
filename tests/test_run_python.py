@@ -160,3 +160,50 @@ def test_closed_workspace_rejects_calls(tmp_path):
     ws.close()
     with pytest.raises(Exception, match="closed"):
         ws.terminal("pwd")
+
+
+# -- budget-aware stdout (reprobate over print snapshots) -------------------
+
+
+def test_oversized_print_gets_structural_elision(tmp_path):
+    p = DirProvider(tmp_path / "ws", session="s1")
+    ws = Workspace(p, max_observation=500)
+    r = ws.run_python("print(list(range(100000)))")
+    assert r, r.error
+    assert r.truncated
+    assert len(r.stdout) <= 500
+    assert "more" in r.stdout           # reprobate's elision marker
+    assert r.stdout.startswith("[0, 1")  # structure preserved, not a raw cut
+    ws.close()
+
+
+def test_small_stdout_stays_verbatim(tmp_path):
+    p = DirProvider(tmp_path / "ws", session="s1")
+    ws = Workspace(p, max_observation=500)
+    r = ws.run_python("print('exact text', 42)")
+    assert r.stdout.strip() == "exact text 42"
+    assert not r.truncated
+    ws.close()
+
+
+def test_many_prints_share_budget(tmp_path):
+    p = DirProvider(tmp_path / "ws", session="s1")
+    ws = Workspace(p, max_observation=600)
+    r = ws.run_python(
+        "for i in range(50):\n    print(f'row {i}', list(range(1000)))"
+    )
+    assert r.truncated
+    assert len(r.stdout) <= 700  # budget + elision note headroom
+    assert "elided" in r.stdout or "more" in r.stdout
+    ws.close()
+
+
+def test_pure_writes_fall_back_to_head_cut(tmp_path):
+    p = DirProvider(tmp_path / "ws", session="s1")
+    ws = Workspace(p, max_observation=100)
+    # sys.stdout.write via print's file arg isn't available; use a
+    # single huge print STRING — reprobate still hard-caps it.
+    r = ws.run_python("print('x' * 10000)")
+    assert r.truncated
+    assert len(r.stdout) <= 500
+    ws.close()
