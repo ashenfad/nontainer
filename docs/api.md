@@ -37,11 +37,24 @@ manager (`with ... as ws:` closes on exit).
 ```python
 ws.terminal(command: str) -> TerminalResult
 ws.run_python(code: str, *, inputs: dict | None = None) -> PythonResult
+
+# async host facades — run the sync execution in a thread so an
+# event-loop host (FastAPI, etc.) stays responsive. Same results,
+# same semantics; the agent's code is unchanged (still sync).
+await ws.aterminal(command) -> TerminalResult
+await ws.arun_python(code, *, inputs=None) -> PythonResult
 ```
 
 Neither raises for agent-code failure — check truthiness. `inputs`
 must be picklable data (per-call counterpart to the construction-time
 `host_objects`, which are live resources).
+
+Use the `a*` variants when embedding in an async server — they're
+just `run_in_executor` wrappers, so CPU-bound sandbox work never
+blocks your loop. A workspace is single-writer: serialize calls to one
+workspace yourself (the adapters' per-session lock does this for agent
+use). `run_in_threadpool(ws.run_python, code)` from Starlette works
+too if you'd rather not use the facade.
 
 `terminal` executes pipes, redirects (`> >> <`), `&&`/`||`/`;`,
 quoting, ~33 builtins (via termish) plus injected commands. `cd`

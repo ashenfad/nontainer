@@ -634,6 +634,42 @@ class Workspace:
         cp = self._maybe_checkpoint("run_python")
         return replace(result, checkpoint=cp) if cp else result
 
+    # -- async host facades ---------------------------------------------
+    #
+    # These exist for event-loop embedders (FastAPI, etc.): they run the
+    # SYNC execution in a thread so the caller's loop stays responsive.
+    # They change nothing about the sandbox — agent code is still sync;
+    # this is purely how the HOST invokes it. (sandtrap has an async
+    # aexec, but it only yields at the agent code's await points, so it
+    # would still block the loop on the common CPU-bound handler —
+    # threading is the robust choice and keeps the agent surface uniform.)
+    #
+    # A workspace is single-writer, same as the sync API: the caller
+    # serializes calls to one workspace (the adapters' per-session lock
+    # does this for agent use). Threading makes accidental concurrency
+    # easier to reach, so it's called out here rather than silently
+    # guarded.
+
+    async def aterminal(self, command: str) -> TerminalResult:
+        """Async facade over :meth:`terminal` — runs it in a thread so an
+        event-loop host doesn't block. Same result, same semantics."""
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.terminal, command)
+
+    async def arun_python(
+        self, code: str, *, inputs: Mapping[str, Any] | None = None
+    ) -> PythonResult:
+        """Async facade over :meth:`run_python` — see :meth:`aterminal`."""
+        import asyncio
+        from functools import partial
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, partial(self.run_python, code, inputs=inputs)
+        )
+
     def _exec_python(
         self,
         code: str,
