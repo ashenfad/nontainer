@@ -248,10 +248,13 @@ def plotting(*, plotly: bool | None = None) -> list[ModuleGrant]:
     ]
 
     if plotly is not False:
+        # Alias every import so the `plotly` parameter (bool | None) is
+        # never rebound to the module — bare `import plotly.express` /
+        # `import plotly.subplots` would both bind the top-level name.
         try:
             import plotly as plotly_mod
-            import plotly.express
-            import plotly.subplots  # loaded before the recursive crawl  # noqa: F401
+            import plotly.express as plotly_express
+            import plotly.subplots as _  # force-load before the crawl  # noqa: F401
         except ImportError:
             if plotly is True:
                 raise
@@ -259,5 +262,5 @@ def plotting(*, plotly: bool | None = None) -> list[ModuleGrant]:
             grants.append(
                 ModuleGrant(plotly_mod, recursive=True, exclude=_PLOTLY_EXCLUDE)
             )
-            grants.append(ModuleGrant(plotly.express, recursive=True))
+            grants.append(ModuleGrant(plotly_express, recursive=True))
     return grants
