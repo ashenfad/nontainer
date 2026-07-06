@@ -45,6 +45,7 @@ from .protocol import Capabilities, CheckpointInfo, WorkspaceProvider
 Isolation = Literal["none", "process", "kernel"]
 
 _CWD_KEY = "__cwd__"
+_UNSET = object()
 RESERVED_COMMANDS = frozenset({"python"})
 
 
@@ -300,7 +301,18 @@ class Workspace:
             mounted[point] = sub
         return MountFS(base, mounted)
 
-    def _build_sandbox(self) -> Any:
+    def _build_sandbox(
+        self,
+        *,
+        timeout: float | None = None,
+        tick_limit: int | None = None,
+        extra_classes: tuple[type, ...] = (),
+        filesystem: Any | None = None,
+    ) -> Any:
+        """Build a sandbox from the frozen PythonConfig. The keyword
+        overrides exist for the apps extra: handler sandboxes share the
+        registration config but carry tighter budgets, contract classes
+        (Request/Response/HttpError), and a read-only fs view for GET."""
         from sandtrap import Policy, sandbox
 
         cfg = self._python_config
@@ -308,8 +320,8 @@ class Workspace:
             policy = cfg.policy
         else:
             policy = Policy(
-                timeout=cfg.timeout,
-                tick_limit=cfg.tick_limit,
+                timeout=timeout if timeout is not None else cfg.timeout,
+                tick_limit=tick_limit if tick_limit is not None else cfg.tick_limit,
                 memory_limit=cfg.memory_limit_mb,
                 allow_network=cfg.network,
             )
@@ -322,6 +334,9 @@ class Workspace:
                     )
                 else:
                     policy.module(entry)
+
+        for klass in extra_classes:
+            policy.cls(klass)
 
         # Live (non-plain-data) host objects need attribute-level policy.
         for name, obj in cfg.host_objects.items():
@@ -362,7 +377,7 @@ class Workspace:
             policy,
             isolation=cfg.isolation,
             mode="raw",
-            filesystem=self._fs,
+            filesystem=filesystem if filesystem is not None else self._fs,
             rpc_handlers=rpc_handlers,
         )
 
@@ -467,11 +482,17 @@ class Workspace:
         return result
 
     def _exec_python(
-        self, code: str, *, inputs: Mapping[str, Any] | None = None
+        self,
+        code: str,
+        *,
+        inputs: Mapping[str, Any] | None = None,
+        sandbox: Any | None = None,
+        cache_override: Any = _UNSET,
     ) -> PythonResult:
-        """Shared execution path (no checkpoint) — used by both
-        ``run_python`` and the terminal ``python`` builtin so a
-        pipeline invocation doesn't double-checkpoint."""
+        """Shared execution path (no checkpoint) — used by
+        ``run_python``, the terminal ``python`` builtin, and the apps
+        dispatch (which passes its own sandbox and, for GET, a
+        read-only cache view via ``cache_override``)."""
         namespace: dict[str, Any] = {}
 
         for name, value in (inputs or {}).items():
@@ -487,7 +508,10 @@ class Workspace:
 
         namespace.update(self._python_config.host_objects)
 
-        if self._cache_enabled:
+        if cache_override is not _UNSET:
+            if cache_override is not None:
+                namespace["cache"] = cache_override
+        elif self._cache_enabled:
             if self._python_config.isolation == "none":
                 namespace["cache"] = Cache(self._provider.kv)
             else:
@@ -495,10 +519,11 @@ class Workspace:
 
                 namespace["cache"] = RpcProxyMarker(target="cache")
 
+        sb = sandbox if sandbox is not None else self._sandbox
         stderr_buf = io.StringIO()
         start = time.monotonic()
         with contextlib.redirect_stderr(stderr_buf):
-            exec_result = self._sandbox.exec(code, namespace=namespace)
+            exec_result = sb.exec(code, namespace=namespace)
         duration = time.monotonic() - start
 
         error = (
@@ -565,6 +590,17 @@ class Workspace:
         if result.stderr:
             return CommandResult(exit_code=0, stderr=result.stderr)
         return None
+
+    def register_command(self, name: str, fn: Callable[..., Any]) -> None:
+        """Add a terminal command after construction (termish
+        ``CommandFunc`` signature). Used by extras (e.g. apps' `curl`);
+        also public for embedders. Reserved names and collisions with
+        existing injections are rejected."""
+        if name in RESERVED_COMMANDS:
+            raise ValueError(f"Reserved terminal command name: {name!r}")
+        if name in self._commands:
+            raise ValueError(f"Terminal command already registered: {name!r}")
+        self._commands[name] = fn
 
     # ------------------------------------------------------------------
     # direct (host-side) access

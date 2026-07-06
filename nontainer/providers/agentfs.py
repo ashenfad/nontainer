@@ -433,6 +433,10 @@ class AgentFSProvider:
     def kv(self) -> MutableMapping[str, Any]:
         return self._kv
 
+    @property
+    def dirty(self) -> bool:
+        return False  # no staging: writes are durable immediately
+
     # -- versioning: not in the spike ------------------------------------
 
     def _unsupported(self, op: str) -> NotSupportedError:

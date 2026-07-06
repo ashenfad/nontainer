@@ -141,6 +141,14 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
+    @property
+    def dirty(self) -> bool:
+        """Staged-but-uncommitted changes exist. Always False for
+        providers without ``caps.staging``. Used by the apps extra to
+        decide whether a failed handler can be rolled back atomically
+        (``discard()``) without destroying unrelated pending work."""
+        ...
+
     # -- versioning (gated by caps.versioned) --------------------------
 
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:

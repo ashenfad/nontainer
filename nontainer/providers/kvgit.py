@@ -113,6 +113,10 @@ class KvgitProvider:
     def kv(self) -> MutableMapping[str, Any]:
         return self._staged
 
+    @property
+    def dirty(self) -> bool:
+        return bool(self._staged.has_changes)
+
     # -- versioning ----------------------------------------------------
 
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:
