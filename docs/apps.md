@@ -207,8 +207,18 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   the file).
 - Result caps mirror `max_observation`; screenshot count capped per
   call.
-- One shared Playwright browser per process, fresh context per call
-  (contexts are ~10ms; isolation between tests for free).
+- **One shared Chromium per process, a fresh context per call.** Sync
+  Playwright pins a browser to one thread, so instead we run *async*
+  Playwright on a dedicated loop-thread and marshal every call to it
+  (`nontainer.apps.browser`). That means many sessions verify
+  concurrently on one browser — a context per concurrent test, not a
+  browser per test — so memory scales with concurrency, not with
+  sessions. A semaphore bounds concurrent contexts (default 8;
+  `configure_browser(max_concurrent=…)`). The browser is lazy-launched,
+  relaunched transparently if Chromium crashes, and torn down at exit.
+  The route dispatch is synchronous, so it's hopped off the browser
+  loop into a thread and serialized per workspace, so a page's parallel
+  fetches never reenter the sandbox.
 
 ## Delivery (where nontainer's concern ends)
 

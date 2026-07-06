@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import threading
 import time
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
@@ -103,6 +104,13 @@ class AppRuntime:
     def __init__(self, ws: Workspace, config: AppsConfig | None = None) -> None:
         self._ws = ws
         self._config = config or AppsConfig()
+        # Serializes dispatch for THIS workspace. Under test_app's shared
+        # browser, a page's parallel fetches produce concurrent route
+        # callbacks → concurrent dispatch on one workspace; the sandbox
+        # isn't reentrant, so same-workspace dispatch serializes here
+        # (different workspaces run in parallel — different runtimes,
+        # different locks).
+        self._dispatch_lock = threading.Lock()
         contract = (Request, Response, HttpError)
         budgets = dict(
             timeout=self._config.request_timeout,

@@ -307,6 +307,13 @@ AppRuntime.dispatch(request: Request) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", ...) -> TestAppResult
 
 request(method, url, *, body=b"", headers=None) -> Request  # convenience
+
+# test_app shares one Chromium across all calls (async Playwright on a
+# dedicated loop-thread); concurrent tests get their own contexts,
+# bounded by a semaphore. Tune before the first test_app:
+configure_browser(max_concurrent=8)
+await arun_test_app(runtime, actions, ...)   # async entry (no waiting thread)
+shutdown_browser()                           # close browser + loop (also atexit)
 ```
 
 Handler contract (agent-authored files under `/app/api/`):
