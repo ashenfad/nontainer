@@ -63,6 +63,7 @@ via `result.namespace`.
 @dataclass(frozen=True)
 class TerminalResult:
     stdout: str; exit_code: int; stderr: str = ""; truncated: bool = False
+    checkpoint: str | None = None       # commit this call created
     # truthy iff exit_code == 0
 
 @dataclass(frozen=True)
@@ -72,8 +73,21 @@ class PythonResult:
     ticks: int = 0; duration: float = 0.0; truncated: bool = False
     namespace: Mapping[str, Any] = {}   # for the HOST; adapters never
                                         # inline it into observations
+    checkpoint: str | None = None       # commit this call created
     # truthy iff error is None
+
+@dataclass(frozen=True)
+class WriteOutcome:                     # from write_file / put
+    path: str; size: int; created: bool
+    checkpoint: str | None = None
 ```
+
+Every mutating call's result pins the commit its autocheckpoint
+created — `ws.restore(result.checkpoint)` is compensation by identity,
+no step counting. `checkpoint` is `None` when nothing was committed:
+read-only call, no-op edit, turn-mode checkpointing (the id comes from
+`end_turn()` instead), or an unversioned provider. Host-facing like
+`namespace` — adapters never render it into the model's observation.
 
 Oversized stdout from `print()` is re-rendered **budget-aware** via
 [reprobate](https://github.com/ashenfad/reprobate): structural elision
@@ -85,15 +99,16 @@ stays byte-exact; non-print writes fall back to a head-cut.
 ```python
 ws.fs                 # termish-protocol filesystem (seed/harvest directly)
 ws.cache              # MutableMapping; raises NotSupportedError if disabled
-ws.write_file(path, content) -> str    # parents created; checkpointed
+ws.write_file(path, content) -> WriteOutcome   # parents created; checkpointed
 ws.edit_file(path, old, new, replace_all=False) -> EditOutcome
     # exact-string replacement with agent-tolerant fallbacks (the agex
     # strategy set, ported): exact → trailing-ws-flexible →
     # indent-flexible (replacement re-indented to the file's baseline);
     # replacement-already-present → no-op (count=0, "already_applied").
     # Unique-match-or-replace_all; WorkspaceError with a "did you mean
-    # these lines?" snippet otherwise
-ws.put(src, dest=None) -> str          # host file → workspace (checkpointed)
+    # these lines?" snippet otherwise. Carries `checkpoint` when the
+    # edit committed.
+ws.put(src, dest=None) -> WriteOutcome # host file → workspace (checkpointed)
 ws.get(src, dest=None) -> bytes        # workspace → host (never checkpoints)
 ws.register_command(name, fn)          # add a termish command post-construction
 ```

@@ -62,15 +62,17 @@ session{versioned_note}."""
 class WorkspaceTools(Toolkit):
     """agno Toolkit over a nontainer :class:`Workspace`."""
 
-    def _end_turn(self, *args: Any, **kwargs: Any) -> None:
+    def _end_turn(self, *args: Any, **kwargs: Any) -> str | None:
         """Commit the turn's staged work (one commit per agent turn).
         Tolerant signature so it slots into agno ``post_hooks``; also
-        callable directly by embedders after ``agent.run(...)``. No-op
-        when nothing changed or the workspace is unversioned."""
+        callable directly by embedders after ``agent.run(...)``.
+        Returns the turn's commit id, or None when nothing changed or
+        the workspace is unversioned."""
         ws = self._ws
         if ws.caps.versioned and ws._provider.dirty:
             with self._lock:
-                ws.checkpoint(info={"tool": "turn"})
+                return ws.checkpoint(info={"tool": "turn"})
+        return None
 
     def __init__(
         self,
@@ -120,7 +122,7 @@ class WorkspaceTools(Toolkit):
             """Write a file in the workspace."""
             with self._lock:
                 written = self._ws.write_file(path, content)
-                return f"wrote {written}"
+                return f"wrote {written.path} ({written.size} bytes)"
 
         file_write.__doc__ = FILE_WRITE_DESCRIPTION
 

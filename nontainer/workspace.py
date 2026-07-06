@@ -33,7 +33,7 @@ import traceback
 import warnings
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
@@ -129,6 +129,14 @@ class TerminalResult:
     stderr: str = ""
     truncated: bool = False
 
+    checkpoint: str | None = None
+    """Id of the commit this call's autocheckpoint created — pins the
+    workspace state after the call (``ws.restore(result.checkpoint)``).
+    ``None`` when nothing was committed: read-only call, autocheckpoint
+    off (turn mode), or an unversioned provider. HOST-facing, like
+    ``PythonResult.namespace`` — adapters must not render it into the
+    model's observation."""
+
     def __bool__(self) -> bool:
         return self.exit_code == 0
 
@@ -164,8 +172,33 @@ class PythonResult:
     reads ``result.namespace.get("ui")`` — no bespoke emission channel,
     no schema imposed by core."""
 
+    checkpoint: str | None = None
+    """Id of the commit this call's autocheckpoint created (``None``
+    when nothing was committed) — see ``TerminalResult.checkpoint``."""
+
     def __bool__(self) -> bool:
         return self.error is None
+
+
+@dataclass(frozen=True)
+class WriteOutcome:
+    """Outcome of ``write_file`` / ``put``."""
+
+    path: str
+    """Workspace path written."""
+
+    size: int
+    """Bytes written."""
+
+    created: bool
+    """True for a new file, False for an overwrite."""
+
+    checkpoint: str | None = None
+    """Commit created by this call's autocheckpoint (``None`` when
+    nothing was committed) — see ``TerminalResult.checkpoint``."""
+
+    def __str__(self) -> str:  # f"wrote {outcome}" reads as the path
+        return self.path
 
 
 @dataclass(frozen=True)
@@ -554,14 +587,13 @@ class Workspace:
         self._save_cwd()
         stdout, trunc_out = _truncate(output, self._max_observation)
         stderr, trunc_err = _truncate(stderr, self._max_observation)
-        result = TerminalResult(
+        return TerminalResult(
             stdout=stdout,
             exit_code=exit_code,
             stderr=stderr,
             truncated=trunc_out or trunc_err,
+            checkpoint=self._maybe_checkpoint("terminal"),
         )
-        self._maybe_checkpoint("terminal")
-        return result
 
     def run_python(
         self, code: str, *, inputs: Mapping[str, Any] | None = None
@@ -582,8 +614,8 @@ class Workspace:
         self._check_open()
         result = self._exec_python(code, inputs=inputs)
         self._save_cwd()
-        self._maybe_checkpoint("run_python")
-        return result
+        cp = self._maybe_checkpoint("run_python")
+        return replace(result, checkpoint=cp) if cp else result
 
     def _exec_python(
         self,
@@ -727,19 +759,24 @@ class Workspace:
         (seeding inputs, harvesting artifacts) without the sandbox."""
         return self._fs
 
-    def write_file(self, path: str, content: str | bytes) -> str:
+    def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
         """Write a file (parents created, overwrites). The quoting-free
         alternative to shell redirects for multiline content; exposed
         by adapters as the ``file_write`` tool. Checkpointed."""
         self._check_open()
         data = content.encode() if isinstance(content, str) else content
+        created = not self._fs.exists(path)
         # PurePosixPath: workspace paths are POSIX regardless of host OS
         parent = str(PurePosixPath(path).parent)
         if parent not in (".", "/", ""):
             self._fs.makedirs(parent, exist_ok=True)
         self._fs.write(path, data)
-        self._maybe_checkpoint("file_write")
-        return path
+        return WriteOutcome(
+            path=path,
+            size=len(data),
+            created=created,
+            checkpoint=self._maybe_checkpoint("file_write"),
+        )
 
     def edit_file(
         self,
@@ -773,12 +810,13 @@ class Workspace:
             raise WorkspaceError(str(e)) from e
         if outcome.count:
             self._fs.write(path, outcome.content.encode())
-            self._maybe_checkpoint("file_edit")
+            cp = self._maybe_checkpoint("file_edit")
+            if cp:
+                outcome = replace(outcome, checkpoint=cp)
         return outcome
 
-    def put(self, src: str | Path, dest: str | None = None) -> str:
-        """Copy a host file INTO the workspace ("upload"). Returns the
-        workspace path written.
+    def put(self, src: str | Path, dest: str | None = None) -> WriteOutcome:
+        """Copy a host file INTO the workspace ("upload").
 
         Sugar over ``ws.fs.write`` — whole-bytes, so sized for
         documents/datasets, not multi-GB blobs (use a :class:`Mount`
@@ -789,12 +827,17 @@ class Workspace:
         src_path = Path(src).expanduser()
         data = src_path.read_bytes()
         ws_path = dest or src_path.name
+        created = not self._fs.exists(ws_path)
         parent = str(PurePosixPath(ws_path).parent)
         if parent not in (".", "/", ""):
             self._fs.makedirs(parent, exist_ok=True)
         self._fs.write(ws_path, data)
-        self._maybe_checkpoint("put")
-        return ws_path
+        return WriteOutcome(
+            path=ws_path,
+            size=len(data),
+            created=created,
+            checkpoint=self._maybe_checkpoint("put"),
+        )
 
     def get(self, src: str, dest: str | Path | None = None) -> bytes:
         """Copy a workspace file OUT ("download"). Returns the bytes;
@@ -906,9 +949,13 @@ class Workspace:
         except Exception:
             pass
 
-    def _maybe_checkpoint(self, tool: str) -> None:
-        if self._autocheckpoint:
-            self._provider.checkpoint(info={"tool": tool})
+    def _maybe_checkpoint(self, tool: str) -> str | None:
+        """Commit this call's staged changes. Returns the created
+        commit's id, or None when nothing was committed (no changes,
+        autocheckpoint off, unversioned provider)."""
+        if self._autocheckpoint and self._provider.dirty:
+            return self._provider.checkpoint(info={"tool": tool})
+        return None
 
 
 def workspace(

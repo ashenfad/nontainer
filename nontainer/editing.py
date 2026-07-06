@@ -40,6 +40,12 @@ class EditOutcome:
     count: int
     mode: str  # "exact" | "trailing_ws" | "indent_flexible" | "already_applied"
 
+    checkpoint: str | None = None
+    """Commit created when the workspace applied this edit (``None``
+    when nothing was committed: no-op edit, turn mode, unversioned
+    provider). Attached by ``Workspace.edit_file``; ``apply_edit``
+    itself is a pure text transform and leaves it unset."""
+
 
 def find_similar_lines(
     search: str, content: str, threshold: float = 0.6, context: int = 3

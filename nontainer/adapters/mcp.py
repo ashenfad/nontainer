@@ -65,7 +65,8 @@ def build_server(
     @server.tool(name="file_write", description=FILE_WRITE_DESCRIPTION)
     def file_write(path: str, content: str) -> str:
         with lock:
-            return f"wrote {workspace.write_file(path, content)}"
+            out = workspace.write_file(path, content)
+            return f"wrote {out.path} ({out.size} bytes)"
 
     @server.tool(name="file_edit", description=FILE_EDIT_DESCRIPTION)
     def file_edit(

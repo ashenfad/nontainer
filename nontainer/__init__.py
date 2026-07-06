@@ -5,7 +5,7 @@ Public surface:
     workspace(...)      -- factory; the one-liner entry point
     Workspace           -- files + shell + python + cache, versioned
     PythonConfig        -- what sandboxed code may touch
-    TerminalResult, PythonResult
+    TerminalResult, PythonResult, WriteOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Capabilities, CheckpointInfo
     errors: WorkspaceError, NotSupportedError, SessionIdError,
@@ -31,6 +31,7 @@ from .protocol import (
     WorkspaceProvider,
     validate_session_id,
 )
+from .editing import EditOutcome
 from .workspace import (
     ModuleGrant,
     Mount,
@@ -38,6 +39,7 @@ from .workspace import (
     PythonResult,
     TerminalResult,
     Workspace,
+    WriteOutcome,
     workspace,
 )
 
@@ -49,6 +51,8 @@ __all__ = [
     "ModuleGrant",
     "TerminalResult",
     "PythonResult",
+    "WriteOutcome",
+    "EditOutcome",
     "WorkspaceProvider",
     "Capabilities",
     "CheckpointInfo",
