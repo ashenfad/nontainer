@@ -93,10 +93,10 @@ serving/threat model: [docs/apps.md](docs/apps.md).
 - **[mcp-run-python](https://github.com/pydantic/mcp-run-python)** (Pydantic):
   the incumbent local run-python (Pyodide-in-Deno). Stateless per call, no
   workspace, needs Deno.
-- **[AgentFS](https://turso.tech/blog/agentfs)** (Turso): the closest cousin
-  -- SQLite-backed agent FS + KV + SQL-queryable audit, snapshots by file
-  copy. Storage-up where nontainer is execution-down; we'd rather interop
-  (it's a substrate above) than compete.
+- **[AgentFS](https://turso.tech/blog/agentfs)** (Turso): SQLite-backed
+  agent FS + KV + SQL-queryable audit, snapshots by file copy. It comes at
+  the problem from storage where nontainer comes from execution -- and
+  nontainer runs on it as one of its backends.
 - **[Val Town](https://www.val.town/)**: agents-deploying-endpoints as a
   polished cloud product (TS). The handler design here is the self-hosted,
   session-scoped, Python, versioned take on the same instinct.
