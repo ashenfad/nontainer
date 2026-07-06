@@ -27,12 +27,12 @@ forkable workspace** that installs with pip and runs wherever Python runs.
 | **Pluggable substrate** | [kvgit](https://github.com/ashenfad/kvgit) (default), [AgentFS](https://github.com/tursodatabase/agentfs), or a plain directory. |
 | **Thin adapters** | [agno](https://github.com/agno-agi/agno) toolkit and an MCP server over the same core. |
 
-## Sketch of the API
+## The API in one glance
 
 ```python
-from nontainer import Workspace
+from nontainer import workspace
 
-ws = Workspace(session="user-42", store="~/.nontainer")  # kvgit branch per session
+ws = workspace("user-42")   # kvgit branch per session, store at ~/.nontainer
 
 ws.terminal("mkdir -p data && echo 'a,b\n1,2' > data/in.csv")
 ws.run_python("""
@@ -51,7 +51,7 @@ Adapters are one import away:
 
 ```python
 from nontainer.adapters.agno import WorkspaceTools   # agno Toolkit
-# or:  python -m nontainer.mcp                        # MCP server (stdio)
+# or:  python -m nontainer.adapters.mcp --session s1  # MCP server (stdio)
 ```
 
 ## Design decisions (recorded here so we stop re-deciding them)
@@ -212,6 +212,14 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit),
 useful, each zero/minimal-dep. [agex](https://github.com/ashenfad/agex) is
 the full agent framework over the same substrate; nontainer is the
 environment layer alone, offered to someone else's loop.
+
+## Documentation
+
+- [Quick Start](docs/quick-start.md) -- first workspace, sandbox config,
+  backends, adapters, the apps loop; runnable examples
+- [API Reference](docs/api.md) -- every class, method, and flag
+- [Apps design](docs/apps.md) -- handler contract, execution model,
+  test_app, serving/threat model
 
 ## Install
 
