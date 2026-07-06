@@ -595,11 +595,11 @@ wheels = [
 
 [[package]]
 name = "monkeyfs"
-version = "0.1.4"
+version = "0.1.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8f/2b/02349d5bac2711b9f58e6f2110d2b258544dcbba9e00591a0ae88725a3a1/monkeyfs-0.1.4.tar.gz", hash = "sha256:4d21477bc4208e4e19b911773981c0b7f7b1ee6dc826c272ecc668369f7688c6", size = 58616, upload-time = "2026-03-12T22:15:13.2Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9e/e0/86af3cc41fec6fad27243eaa213a19583e67ef4e37845b0190975bd994d6/monkeyfs-0.1.5.tar.gz", hash = "sha256:ba2dbf7b2f3f8ce61b5078aef467891215f0e570579888d543414541be867c0e", size = 60138, upload-time = "2026-07-06T13:09:37.141Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/3b/e4cd021fa2b5d0fdd87266e0b93a4ef31be931144828374ebdf4923178c1/monkeyfs-0.1.4-py3-none-any.whl", hash = "sha256:d63d2dab8ad39cd5598ba1e8984d82f05aea4478939afbc78ccc861e8506d572", size = 37357, upload-time = "2026-03-12T22:15:12.287Z" },
+    { url = "https://files.pythonhosted.org/packages/43/1b/9f913f8de66e43c92fe10bb3fd06ead70d7fe40ab00a4b0b7cf5e3d05a3b/monkeyfs-0.1.5-py3-none-any.whl", hash = "sha256:abbf4a05253b721d9f959ad6c1c878af094af0285622b67bc7fbfdc0ecbde7c6", size = 37996, upload-time = "2026-07-06T13:09:36.036Z" },
 ]
 
 [[package]]
@@ -644,7 +644,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
-    { name = "monkeyfs", specifier = ">=0.1.4" },
+    { name = "monkeyfs", specifier = ">=0.1.5" },
     { name = "playwright", marker = "extra == 'apps'", specifier = ">=1.40" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
