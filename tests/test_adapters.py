@@ -353,3 +353,33 @@ def test_turn_checkpoint_mode():
     ws.rollback(1)
     assert not ws.fs.exists("a.py") and not ws.fs.exists("c.txt")
     ws.close()
+
+
+def test_agno_test_app_schema_parses():
+    """Regression: local ToolResult import + string annotations broke
+    agno's signature parsing → degraded schema → model chaos. The
+    schema must actually parse."""
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+    from nontainer.apps import enable_apps
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws, apps=enable_apps(ws))
+    fn = tk.functions["test_app"]
+    fn.process_entrypoint()  # what agno does at agent-prep time
+    params = fn.parameters or {}
+    props = params.get("properties", {})
+    assert "actions" in props, f"schema failed to parse: {params}"
+    ws.close()
+
+
+def test_coerce_actions_handles_model_sloppiness():
+    from nontainer.apps.testapp import coerce_actions
+
+    assert coerce_actions('[{"click": "#a"}]') == [{"click": "#a"}]
+    assert coerce_actions({"screenshot": True}) == [{"screenshot": True}]
+    assert coerce_actions(None) == []
+    with pytest.raises(ValueError, match="list of objects"):
+        coerce_actions("not json at all") if False else coerce_actions([1, 2])
+    with pytest.raises(ValueError, match="JSON"):
+        coerce_actions("{not json")

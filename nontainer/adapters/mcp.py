@@ -103,6 +103,12 @@ def build_server(
 
         @server.tool(name="test_app", description=TEST_APP_DESCRIPTION)
         async def test_app(actions: list[dict], viewport: str = "desktop") -> list:
+            from ..apps.testapp import coerce_actions
+
+            try:
+                actions = coerce_actions(actions)
+            except ValueError as e:
+                return [f"test_app failed: {e}"]
             # async + to_thread: Playwright's sync API refuses to run on
             # a live asyncio loop thread (FastMCP executes sync tools
             # in-loop), so the browser work must be off-loop.

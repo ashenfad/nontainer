@@ -33,7 +33,9 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from agno.media import Image
 from agno.tools import Toolkit
+from agno.tools.function import ToolResult
 
 from ..workspace import Workspace
 from .render import (
@@ -158,16 +160,19 @@ class WorkspaceTools(Toolkit):
             registered.append(run_python)
 
         if apps is not None:
-            from agno.media import Image
-            from agno.tools.function import ToolResult
-
-            from .render import TEST_APP_DESCRIPTION
             from ..apps import render_test_app
+            from .render import TEST_APP_DESCRIPTION
 
             def test_app(
                 actions: list[dict], viewport: str = "desktop"
             ) -> ToolResult:
                 """Verify the app headlessly."""
+                from ..apps.testapp import coerce_actions
+
+                try:
+                    actions = coerce_actions(actions)
+                except ValueError as e:
+                    return ToolResult(content=f"test_app failed: {e}")
                 with self._lock:
                     result = apps.test_app(actions, viewport=viewport)
                     shots = [

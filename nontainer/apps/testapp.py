@@ -52,6 +52,33 @@ _ABSOLUTE_PATH_HINT = (
 )
 
 
+def coerce_actions(actions: Any) -> list[dict[str, Any]]:
+    """Normalize loosely-typed model arguments: JSON strings decode,
+    a bare dict becomes a one-action list. Raises ValueError with an
+    agent-actionable message otherwise."""
+    import json
+
+    if isinstance(actions, str):
+        try:
+            actions = json.loads(actions)
+        except ValueError as e:
+            raise ValueError(
+                f"actions must be a JSON list of action objects ({e})"
+            ) from e
+    if isinstance(actions, dict):
+        actions = [actions]
+    if actions is None:
+        return []
+    if not isinstance(actions, list) or not all(
+        isinstance(a, dict) for a in actions
+    ):
+        raise ValueError(
+            'actions must be a list of objects like {"click": "#sel"} — '
+            f"got {type(actions).__name__}"
+        )
+    return actions
+
+
 @dataclass(frozen=True)
 class ActionResult:
     index: int
@@ -262,8 +289,12 @@ def render_test_app(result: TestAppResult) -> str:
     if result.load_error:
         parts.append(f"[load error] {result.load_error}")
     for r in result.results:
-        desc = next(iter(r.action.items()))
-        line = f"  {r.index}. {desc[0]}({desc[1]!r}): {'ok' if r.ok else 'FAILED'}"
+        if isinstance(r.action, dict) and r.action:
+            key, val = next(iter(r.action.items()))
+            desc = f"{key}({val!r})"
+        else:
+            desc = repr(r.action)
+        line = f"  {r.index}. {desc}: {'ok' if r.ok else 'FAILED'}"
         if r.value not in (None, "None"):
             line += f" -> {r.value}"
         if r.error:
