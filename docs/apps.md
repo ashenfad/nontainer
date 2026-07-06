@@ -194,8 +194,11 @@ Actions (the studio DSL, pruned): `{"click": selector}`,
 `{"type": [selector, text]}`, `{"read": selector}`, `{"eval": js}`,
 `{"assert": js}`, `{"screenshot": true}`, `{"wait": ms}`.
 
-- Playwright locators' auto-waiting replaces studio's idle heuristics;
-  a `networkidle` settle runs after load and after each click/type.
+- Settling: studio's idle-gap heuristic, ported (implementation
+  finding: Playwright's `networkidle` is STICKY after navigation and
+  never waits for click-triggered fetches — locator auto-waiting does
+  NOT replace the heuristic). In-flight requests are tracked; settle
+  waits for a 300ms quiet gap, capped; slow apps use `{"wait": ms}`.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/app/screenshots/` and return workspace paths in the observation —
@@ -289,5 +292,6 @@ write→verify loop for backends, and M1+M2 close it for frontends.
   curl is shell-native and carries no namespace magic)?
 - `Response` headers allowlist for live serving (CSP for served HTML
   in particular — probably a strict default CSP with esm.sh allowed).
-- Whether `test_app` belongs on `Workspace` (like put/get) or only in
-  adapters — leaning `Workspace.test_app()` for embedder parity.
+- RESOLVED: `test_app` lives on `AppRuntime` (it needs dispatch, and
+  `Workspace` must not depend on the apps extra); embedders reach it
+  via the runtime `enable_apps` returns.
