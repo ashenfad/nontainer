@@ -16,9 +16,13 @@ def kv_ws():
 def test_put_defaults_to_basename(kv_ws, tmp_path):
     src = tmp_path / "report.csv"
     src.write_bytes(b"a,b\n1,2\n")
-    path = kv_ws.put(src)
-    assert path == "report.csv"
+    out = kv_ws.put(src)
+    assert out.path == "report.csv"
+    assert out.size == 8 and out.created
+    assert out.checkpoint  # versioned provider: the upload's commit
     assert kv_ws.terminal("cat report.csv").stdout == "a,b\n1,2\n"
+    # overwrite: created flips
+    assert not kv_ws.put(src).created
 
 
 def test_put_nested_dest_creates_parents(kv_ws, tmp_path):
