@@ -18,6 +18,7 @@ agno adapter — see protocol.py's concurrency note).
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -36,9 +37,14 @@ def build_server(
     workspace: Workspace,
     *,
     tools: ToolsMode = "auto",
+    apps: Any = None,
     name: str = "nontainer",
 ) -> FastMCP:
-    """Build a FastMCP server over an existing Workspace."""
+    """Build a FastMCP server over an existing Workspace.
+
+    ``apps``: an ``AppRuntime`` — when given, a ``test_app`` tool is
+    registered; screenshots return as MCP ImageContent AND persist
+    under /app/screenshots/."""
     server = FastMCP(name)
     lock = threading.Lock()
     mode = resolve_tools_mode(workspace, tools)
@@ -61,6 +67,31 @@ def build_server(
         def run_python(code: str) -> str:
             with lock:
                 return render_python(workspace.run_python(code))
+
+    if apps is not None:
+        from mcp.server.fastmcp import Image
+
+        from ..apps import render_test_app
+        from .render import TEST_APP_DESCRIPTION
+
+        @server.tool(name="test_app", description=TEST_APP_DESCRIPTION)
+        async def test_app(actions: list[dict], viewport: str = "desktop") -> list:
+            # async + to_thread: Playwright's sync API refuses to run on
+            # a live asyncio loop thread (FastMCP executes sync tools
+            # in-loop), so the browser work must be off-loop.
+            import anyio
+
+            def work() -> tuple[Any, list]:
+                with lock:
+                    result = apps.test_app(actions, viewport=viewport)
+                    shots = [
+                        Image(data=workspace.fs.read(p), format="png")
+                        for p in result.screenshots
+                    ]
+                    return result, shots
+
+            result, shots = await anyio.to_thread.run_sync(work)
+            return [render_test_app(result), *shots]
 
     return server
 

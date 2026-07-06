@@ -122,6 +122,22 @@ def python_description(ws: Workspace) -> str:
     return desc
 
 
+TEST_APP_DESCRIPTION = """\
+Verify the app under /app in a headless browser — no server needed.
+Pass a list of actions, executed in order:
+  {"click": "#selector"}          {"type": ["#selector", "text"]}
+  {"read": "#selector"}           {"eval": "js expression"}
+  {"assert": "js expression"}     (retries until truthy, ~2s)
+  {"screenshot": true}            {"wait": ms}
+viewport: "desktop" | "tablet" | "mobile".
+
+The app is served under a path prefix: frontend code MUST use relative
+URLs (fetch('api/x'), never fetch('/api/x')). Prefer {"assert": ...}
+over read-and-check when you know the expected condition. Screenshots
+are returned as images AND saved to /app/screenshots/. Backend errors
+land in /app/logs/api.log (tail it to debug)."""
+
+
 def _env_notes(ws: Workspace) -> str:
     lines: list[str] = []
     if ws.cache_enabled:

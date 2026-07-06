@@ -174,3 +174,42 @@ def test_viewport_preset(app_ws):
     )
     assert result.ok
     assert result.results[0].value == "390"
+
+
+# -- adapter exposure: test_app as a tool with image content -------------------
+
+
+def test_agno_test_app_tool_returns_images(app_ws):
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+
+    ws, rt = app_ws
+    tk = WorkspaceTools(ws, apps=rt)
+    assert "test_app" in tk.functions
+
+    out = tk.functions["test_app"].entrypoint(
+        actions=[{"read": "#title"}, {"screenshot": True}]
+    )
+    assert "PASS" in out.content
+    assert out.images and out.images[0].content[:8] == b"\x89PNG\r\n\x1a\n"
+    # and the file artifact persists in the workspace too
+    assert ws.fs.exists("/app/screenshots/shot-1.png")
+
+
+@pytest.mark.asyncio
+async def test_mcp_test_app_tool_returns_image_content(app_ws):
+    pytest.importorskip("mcp")
+    from nontainer.adapters.mcp import build_server
+
+    ws, rt = app_ws
+    server = build_server(ws, apps=rt)
+    tools = {t.name for t in await server.list_tools()}
+    assert "test_app" in tools
+
+    result = await server.call_tool(
+        "test_app", {"actions": [{"screenshot": True}]}
+    )
+    contents = result[0] if isinstance(result, tuple) else result
+    types = {type(c).__name__ for c in contents}
+    assert "ImageContent" in types
+    assert any("PASS" in getattr(c, "text", "") for c in contents)

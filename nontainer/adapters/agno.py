@@ -31,6 +31,7 @@ dedicated ``run_python`` tool whose description announces the magic.
 from __future__ import annotations
 
 import threading
+from typing import Any
 
 from agno.tools import Toolkit
 
@@ -59,8 +60,13 @@ class WorkspaceTools(Toolkit):
         workspace: Workspace,
         *,
         tools: ToolsMode = "auto",
+        apps: Any = None,
         **kwargs,
     ) -> None:
+        """``apps``: an ``AppRuntime`` (from ``nontainer.apps.
+        enable_apps``) — when given, a ``test_app`` tool is registered
+        whose screenshots come back as real images (agno ``ToolResult``
+        media) in addition to being saved under /app/screenshots/."""
         self._ws = workspace
         self._lock = threading.Lock()
         mode = resolve_tools_mode(workspace, tools)
@@ -84,6 +90,31 @@ class WorkspaceTools(Toolkit):
 
             run_python.__doc__ = python_description(workspace)
             registered.append(run_python)
+
+        if apps is not None:
+            from agno.media import Image
+            from agno.tools.function import ToolResult
+
+            from .render import TEST_APP_DESCRIPTION
+            from ..apps import render_test_app
+
+            def test_app(
+                actions: list[dict], viewport: str = "desktop"
+            ) -> ToolResult:
+                """Verify the app headlessly."""
+                with self._lock:
+                    result = apps.test_app(actions, viewport=viewport)
+                    shots = [
+                        Image(content=self._ws.fs.read(p), format="png", id=p)
+                        for p in result.screenshots
+                    ]
+                return ToolResult(
+                    content=render_test_app(result),
+                    images=shots or None,
+                )
+
+            test_app.__doc__ = TEST_APP_DESCRIPTION
+            registered.append(test_app)
 
         instructions = _INSTRUCTIONS.format(
             and_python=", and sandboxed python" if split else "",
