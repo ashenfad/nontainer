@@ -151,6 +151,13 @@ class WorkspaceProvider(Protocol):
 
     # -- versioning (gated by caps.versioned) --------------------------
 
+    @property
+    def head(self) -> str:
+        """Id of the current (latest) checkpoint. Staged-but-uncommitted
+        changes are NOT captured by it — check ``dirty``. Raises
+        ``NotSupportedError`` for unversioned providers."""
+        ...
+
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:
         """Atomically capture fs + kv as one checkpoint; return its id.
 

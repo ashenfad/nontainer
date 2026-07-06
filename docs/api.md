@@ -120,6 +120,10 @@ reusable code belongs in `helpers/` files.
 ### Versioning (gated by `ws.caps`)
 
 ```python
+ws.head: str | None      # current checkpoint id; None if unversioned.
+                         # Pins read-only observations (reads don't move
+                         # it) — exact iff not ws.dirty
+ws.dirty: bool           # staged-but-uncommitted changes exist
 ws.checkpoint(info: dict | None = None) -> str   # atomic: files + cache + cwd
 ws.restore(checkpoint_id: str) -> None
 ws.rollback(steps: int = 1) -> str

@@ -61,4 +61,25 @@ def test_unversioned_provider_yields_none(tmp_path):
     ws = Workspace(DirProvider(tmp_path / "ws", session="s1"))
     assert ws.terminal("echo x > f.txt").checkpoint is None
     assert ws.write_file("g.txt", "y").checkpoint is None
+    assert ws.head is None and not ws.dirty
     ws.close()
+
+
+# -- head/dirty: pinning read-only observations ---------------------------------
+
+
+def test_head_pins_readonly_observations(kv_ws):
+    r = kv_ws.terminal("echo one > f.txt")
+    assert kv_ws.head == r.checkpoint  # mutating call advanced the head
+    ls = kv_ws.terminal("ls")
+    assert ls.checkpoint is None  # read-only: no commit...
+    assert kv_ws.head == r.checkpoint  # ...and the head is its pin
+    assert not kv_ws.dirty  # exact pin: nothing staged
+
+
+def test_head_with_staged_changes_is_flagged_dirty(kv_ws):
+    kv_ws.terminal("echo committed > f.txt")
+    pinned = kv_ws.head
+    kv_ws.fs.write("staged.txt", b"pending")  # host write, no checkpoint
+    assert kv_ws.head == pinned  # head unchanged...
+    assert kv_ws.dirty  # ...but flagged: the pin is not exact

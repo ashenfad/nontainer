@@ -119,6 +119,10 @@ class KvgitProvider:
 
     # -- versioning ----------------------------------------------------
 
+    @property
+    def head(self) -> str:
+        return self._staged.current_commit
+
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged fs + kv writes atomically; returns the commit
         hash. No staged changes → no new commit (returns current)."""
