@@ -16,14 +16,17 @@ Screenshots are written to ``/app/screenshots/`` in the workspace and
 returned as paths — bytes never ride in model-facing observations,
 and the screenshots version/fork/roll back with the session.
 
-Implementation note: Playwright's sync API is thread-bound, so M2
-launches a browser per call (~300ms) rather than sharing one across
-calls. Fine at verification cadence; a persistent browser thread is a
-recorded optimization, not a design change.
+Execution: one Chromium is shared across all test_app calls, on a
+dedicated async loop-thread (see ``browser.py``); each call runs on its
+own fresh context, bounded by a concurrency semaphore. The synchronous
+route dispatch is CPU-bound, so it's hopped off the browser loop into a
+thread and serialized per workspace (``AppRuntime._dispatch_lock``) —
+so a page's parallel fetches don't reenter the sandbox.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -105,9 +108,18 @@ class TestAppResult:
         return self.ok
 
 
-def run_test_app(
+def _locked_dispatch(runtime: "AppRuntime", request: Any) -> Any:
+    """Sync dispatch under the workspace's dispatch lock — runs in a
+    thread (off the browser loop), serialized per workspace."""
+    with runtime._dispatch_lock:
+        return runtime.dispatch(request)
+
+
+async def _run_actions(
+    browser: Any,
+    sema: "asyncio.Semaphore",
     runtime: "AppRuntime",
-    actions: list[dict[str, Any]] | None = None,
+    actions: list[dict[str, Any]] | None,
     *,
     viewport: str | dict[str, int] = "desktop",
     cdn_allowlist: tuple[str, ...] = _DEFAULT_CDN_ALLOWLIST,
@@ -115,58 +127,58 @@ def run_test_app(
     load_timeout_ms: int = 10_000,
     assert_timeout_ms: int = 2_000,
 ) -> TestAppResult:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError as e:
-        raise ImportError(
-            "test_app requires the apps extra: pip install nontainer[apps] "
-            "&& playwright install chromium"
-        ) from e
-
+    """Run one test against a fresh context on the shared browser.
+    Runs on the browser loop-thread; bounded by ``sema``."""
     ws = runtime._ws
-    vp = VIEWPORTS.get(viewport, VIEWPORTS["desktop"]) if isinstance(
-        viewport, str
-    ) else {"width": int(viewport.get("width", 1280)),
-            "height": int(viewport.get("height", 800))}
+    vp = (
+        VIEWPORTS.get(viewport, VIEWPORTS["desktop"])
+        if isinstance(viewport, str)
+        else {
+            "width": int(viewport.get("width", 1280)),
+            "height": int(viewport.get("height", 800)),
+        }
+    )
 
     console: list[str] = []
     page_errors: list[str] = []
     results: list[ActionResult] = []
     screenshots: list[str] = []
     shot_counter = 0
+    loop = asyncio.get_running_loop()
 
-    def route_handler(route: Any, request: Any) -> None:
+    async def route_handler(route: Any, request: Any) -> None:
         parts = urlsplit(request.url)
         if parts.netloc == _HOST:
             if not parts.path.startswith(_PREFIX + "/") and parts.path != _PREFIX:
-                route.fulfill(status=404, body=_ABSOLUTE_PATH_HINT,
-                              content_type="text/plain")
+                await route.fulfill(
+                    status=404, body=_ABSOLUTE_PATH_HINT, content_type="text/plain"
+                )
                 return
             rel = parts.path[len(_PREFIX):] or "/"
             url = rel + (f"?{parts.query}" if parts.query else "")
-            wire = runtime.dispatch(
-                make_request(
-                    request.method,
-                    url,
-                    body=request.post_data_buffer or b"",
-                    headers=filter_headers(request.headers),
-                )
+            req = make_request(
+                request.method,
+                url,
+                body=request.post_data_buffer or b"",
+                headers=filter_headers(request.headers),
             )
-            route.fulfill(status=wire.status, body=wire.content,
-                          content_type=wire.content_type)
+            # sync + CPU-bound: run off the browser loop, serialized per
+            # workspace so parallel fetches don't reenter the sandbox
+            wire = await loop.run_in_executor(
+                None, _locked_dispatch, runtime, req
+            )
+            await route.fulfill(
+                status=wire.status, body=wire.content, content_type=wire.content_type
+            )
         elif parts.netloc in cdn_allowlist:
-            route.continue_()
+            await route.continue_()
         else:
-            route.abort()
+            await route.abort()
 
-    # Idle-gap settling (ported from agex-studio's app-control design).
-    # Playwright's networkidle is STICKY — once reached after navigation
-    # it resolves immediately and never waits for click-triggered
-    # fetches. So we track in-flight requests ourselves and wait for a
-    # quiet gap measured from settle() entry: a click's async handler
-    # gets `gap` ms to fire its first fetch; request chains keep
-    # extending the window; the cap bounds slow apps (use {"wait": ms}
-    # for known-slow paths).
+    # Idle-gap settling: Playwright's networkidle is STICKY — once
+    # reached after navigation it resolves immediately and never waits
+    # for click-triggered fetches. So we track in-flight requests and
+    # wait for a quiet gap measured from settle() entry.
     import time as _time
 
     net = {"inflight": 0, "last": 0.0}
@@ -179,37 +191,28 @@ def run_test_app(
         net["inflight"] = max(0, net["inflight"] - 1)
         net["last"] = _time.monotonic()
 
-    def settle(page: Any, gap: float = 0.3, cap: float = 5.0) -> None:
+    async def settle(page: Any, gap: float = 0.3, cap: float = 5.0) -> None:
         start = _time.monotonic()
         while _time.monotonic() - start < cap:
             quiet_since = max(net["last"], start)
             if net["inflight"] == 0 and _time.monotonic() - quiet_since >= gap:
                 return
-            page.wait_for_timeout(25)
+            await page.wait_for_timeout(25)
 
-    try:
-        pw_ctx = sync_playwright()
-        pw = pw_ctx.__enter__()
-        browser = pw.chromium.launch()
-    except Exception as e:
-        return TestAppResult(
-            ok=False,
-            load_error=f"Playwright/Chromium initialization failed: {e}",
-        )
-    try:
+    async with sema:
+        context = await browser.new_context(viewport=vp)
         try:
-            context = browser.new_context(viewport=vp)
-            page = context.new_page()
+            page = await context.new_page()
             page.on("console", lambda m: console.append(f"[{m.type}] {m.text}"))
             page.on("pageerror", lambda e: page_errors.append(str(e)))
             page.on("request", _track_start)
             page.on("requestfinished", _track_end)
             page.on("requestfailed", _track_end)
-            context.route("**/*", route_handler)
+            await context.route("**/*", route_handler)
 
             try:
-                page.goto(_BASE_URL, timeout=load_timeout_ms)
-                settle(page)
+                await page.goto(_BASE_URL, timeout=load_timeout_ms)
+                await settle(page)
             except Exception as e:
                 return TestAppResult(
                     ok=False,
@@ -223,39 +226,38 @@ def run_test_app(
                 try:
                     value: str | None = None
                     if "click" in action:
-                        page.click(action["click"], timeout=5_000)
-                        settle(page)
+                        await page.click(action["click"], timeout=5_000)
+                        await settle(page)
                     elif "type" in action:
                         sel, text = action["type"]
-                        page.fill(sel, text, timeout=5_000)
-                        settle(page)
+                        await page.fill(sel, text, timeout=5_000)
+                        await settle(page)
                     elif "read" in action:
-                        value = page.text_content(
+                        value = await page.text_content(
                             action["read"], timeout=5_000
                         )
                     elif "eval" in action:
-                        value = repr(page.evaluate(action["eval"]))
+                        value = repr(await page.evaluate(action["eval"]))
                     elif "assert" in action:
                         # Web-first assertion (THE Playwright idiom):
-                        # retry the predicate until truthy or timeout —
-                        # click→assert is robust independent of settle.
+                        # retry the predicate until truthy or timeout.
                         try:
-                            page.wait_for_function(
+                            await page.wait_for_function(
                                 action["assert"], timeout=assert_timeout_ms
                             )
                             passed, why = True, None
                         except Exception:
                             passed = False
                             try:
-                                page.evaluate(action["assert"])
+                                await page.evaluate(action["assert"])
                                 why = "assertion is falsy"
                             except Exception as inner:
                                 why = f"assertion errored: {inner}"
-                        results.append(ActionResult(
-                            i, action, ok=passed,
-                            value=str(passed),
-                            error=why,
-                        ))
+                        results.append(
+                            ActionResult(
+                                i, action, ok=passed, value=str(passed), error=why
+                            )
+                        )
                         ok = ok and passed
                         continue
                     elif "screenshot" in action:
@@ -264,14 +266,14 @@ def run_test_app(
                                 f"screenshot cap ({max_screenshots}) reached"
                             )
                         shot_counter += 1
-                        png = page.screenshot()
+                        png = await page.screenshot()
                         ws.fs.makedirs("/app/screenshots", exist_ok=True)
                         path = f"/app/screenshots/shot-{shot_counter}.png"
                         ws.fs.write(path, png)
                         screenshots.append(path)
                         value = path
                     elif "wait" in action:
-                        page.wait_for_timeout(int(action["wait"]))
+                        await page.wait_for_timeout(int(action["wait"]))
                     else:
                         raise ValueError(f"unknown action: {action!r}")
                     results.append(ActionResult(i, action, ok=True, value=value))
@@ -288,9 +290,60 @@ def run_test_app(
                 screenshots=tuple(screenshots),
             )
         finally:
-            browser.close()
-    finally:
-        pw_ctx.__exit__(None, None, None)
+            await context.close()
+
+
+def _require_playwright() -> None:
+    try:
+        import playwright.async_api  # noqa: F401
+    except ImportError as e:
+        raise ImportError(
+            "test_app requires the apps extra: pip install nontainer[apps] "
+            "&& playwright install chromium"
+        ) from e
+
+
+def _submit(runtime: "AppRuntime", actions, kwargs):
+    from .browser import submit_job
+
+    return submit_job(
+        lambda browser, sema: _run_actions(
+            browser, sema, runtime, actions, **kwargs
+        )
+    )
+
+
+def run_test_app(
+    runtime: "AppRuntime",
+    actions: list[dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> TestAppResult:
+    """Blocking entry: submit to the shared browser and wait. A
+    browser/launch failure comes back as ``load_error`` (test_app never
+    raises for app problems); a missing package raises ImportError."""
+    _require_playwright()
+    try:
+        return _submit(runtime, actions, kwargs).result()
+    except Exception as e:  # launch/worker failure → a result, not a raise
+        return TestAppResult(
+            ok=False, load_error=f"Playwright/Chromium unavailable: {e}"
+        )
+
+
+async def arun_test_app(
+    runtime: "AppRuntime",
+    actions: list[dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> TestAppResult:
+    """Async entry for event-loop hosts (MCP): awaits the browser-loop
+    Future without burning a waiting thread."""
+    _require_playwright()
+    try:
+        return await asyncio.wrap_future(_submit(runtime, actions, kwargs))
+    except Exception as e:
+        return TestAppResult(
+            ok=False, load_error=f"Playwright/Chromium unavailable: {e}"
+        )
 
 
 def render_test_app(result: TestAppResult) -> str:

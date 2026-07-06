@@ -1,7 +1,6 @@
 """The apps extra: agent-authored backends + frontends, testable
-without a server. Design: docs/apps.md. M1 = dispatch + curl (pure
-Python, no extra deps); M2 adds test_app (Playwright); M3 adds the
-live router (Starlette).
+without a server. Design: docs/apps.md. Dispatch + curl are pure
+Python; test_app needs Playwright; the live router needs Starlette.
 
 Usage::
 
@@ -27,8 +26,9 @@ from .contract import (
     make_request,
     normalize,
 )
+from .browser import configure_browser, shutdown_browser
 from .dispatch import AppRuntime, AppsConfig, enable_apps, request
-from .testapp import ActionResult, TestAppResult, render_test_app
+from .testapp import ActionResult, TestAppResult, arun_test_app, render_test_app
 
 def __getattr__(name):
     # Lazy: serving needs the optional starlette dependency.
@@ -53,6 +53,9 @@ __all__ = [
     "TestAppResult",
     "ActionResult",
     "render_test_app",
+    "arun_test_app",
+    "configure_browser",
+    "shutdown_browser",
     "build_router",
     "mint_token",
 ]
