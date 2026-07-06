@@ -555,6 +555,23 @@ class Workspace:
         self._autocheckpoint = bool(value) and self._provider.caps.versioned
 
     @property
+    def head(self) -> str | None:
+        """Id of the current (latest) checkpoint — pins the state a
+        read-only call observed, since reads never move it. ``None``
+        for unversioned providers. Caveat: staged-but-uncommitted
+        changes (turn mode, manual ``ws.fs`` writes) are NOT in the
+        head — check :attr:`dirty`; the pin is exact iff clean."""
+        if not self._provider.caps.versioned:
+            return None
+        return self._provider.head
+
+    @property
+    def dirty(self) -> bool:
+        """Staged-but-uncommitted changes exist (always False without
+        ``caps.staging``)."""
+        return self._provider.dirty
+
+    @property
     def cache_enabled(self) -> bool:
         return self._cache_enabled
 

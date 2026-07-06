@@ -69,7 +69,7 @@ class WorkspaceTools(Toolkit):
         Returns the turn's commit id, or None when nothing changed or
         the workspace is unversioned."""
         ws = self._ws
-        if ws.caps.versioned and ws._provider.dirty:
+        if ws.caps.versioned and ws.dirty:
             with self._lock:
                 return ws.checkpoint(info={"tool": "turn"})
         return None

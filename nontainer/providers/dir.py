@@ -139,6 +139,10 @@ class DirProvider:
             "Use the kvgit backend for checkpoints, history, and forking."
         )
 
+    @property
+    def head(self) -> str:
+        raise self._unsupported("head")
+
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:
         raise self._unsupported("checkpoint")
 
