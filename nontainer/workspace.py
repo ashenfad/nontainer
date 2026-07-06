@@ -612,6 +612,60 @@ class Workspace:
         (seeding inputs, harvesting artifacts) without the sandbox."""
         return self._fs
 
+    def write_file(self, path: str, content: str | bytes) -> str:
+        """Write a file (parents created, overwrites). The quoting-free
+        alternative to shell redirects for multiline content; exposed
+        by adapters as the ``file_write`` tool. Checkpointed."""
+        self._check_open()
+        data = content.encode() if isinstance(content, str) else content
+        parent = str(Path(path).parent)
+        if parent not in (".", "/", ""):
+            self._fs.makedirs(parent, exist_ok=True)
+        self._fs.write(path, data)
+        self._maybe_checkpoint("file_write")
+        return path
+
+    def edit_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> int:
+        """Exact-string replacement (the Claude-Code Edit contract):
+        ``old_string`` must appear EXACTLY ONCE unless ``replace_all``.
+        Returns the replacement count; raises ``WorkspaceError`` with an
+        agent-actionable message on missing file / no match / ambiguous
+        match. Checkpointed."""
+        self._check_open()
+        if old_string == new_string:
+            raise WorkspaceError("old_string and new_string are identical")
+        try:
+            text = self._fs.read(path).decode("utf-8")
+        except Exception as e:
+            raise WorkspaceError(f"cannot read {path!r}: {e}") from e
+        count = text.count(old_string)
+        if count == 0:
+            raise WorkspaceError(
+                f"old_string not found in {path!r} — it must match the file "
+                "exactly, including whitespace"
+            )
+        if count > 1 and not replace_all:
+            raise WorkspaceError(
+                f"old_string appears {count} times in {path!r}; include more "
+                "surrounding context to make it unique, or pass replace_all"
+            )
+        replaced = count if replace_all else 1
+        text = (
+            text.replace(old_string, new_string)
+            if replace_all
+            else text.replace(old_string, new_string, 1)
+        )
+        self._fs.write(path, text.encode())
+        self._maybe_checkpoint("file_edit")
+        return replaced
+
     def put(self, src: str | Path, dest: str | None = None) -> str:
         """Copy a host file INTO the workspace ("upload"). Returns the
         workspace path written.

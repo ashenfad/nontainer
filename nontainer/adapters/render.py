@@ -84,8 +84,8 @@ _PYTHON_IN_TERMINAL = """\
 
 A `python` command is available (script semantics): `python -c 'code'`,
 `python file.py`, or pipe code via stdin. Its stdout flows into pipelines.
-Prefer writing scripts to files and running `python script.py` over
-complex -c quoting."""
+For multiline files/scripts use the file_write tool, then run
+`python script.py` — avoid complex -c quoting."""
 
 _PYTHON_TOOL_CORE = """\
 Run Python code in a sandboxed environment attached to the same workspace
@@ -122,6 +122,18 @@ def python_description(ws: Workspace) -> str:
         desc += "\n" + extras
     desc += _ONE_CALL_NOTE
     return desc
+
+
+FILE_WRITE_DESCRIPTION = """\
+Write a file in the workspace (parents created, overwrites). Use this
+for any multiline content — scripts, handlers, HTML — instead of shell
+redirects with tricky quoting."""
+
+FILE_EDIT_DESCRIPTION = """\
+Replace an exact string in a workspace file. old_string must match the
+file EXACTLY (including whitespace) and appear exactly once — include
+enough surrounding context to make it unique, or set replace_all=true
+to replace every occurrence. Prefer this over sed for code edits."""
 
 
 APPS_NOTES = """\

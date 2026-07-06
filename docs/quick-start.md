@@ -134,6 +134,10 @@ agent = Agent(model=..., tools=[WorkspaceTools(ws)])
 python -m nontainer.adapters.mcp --session my-project --module math
 ```
 
+Agents also get `file_write` / `file_edit` tools in every mode — the
+quoting-free path for multiline files and surgical exact-string edits
+(the Claude-Code Write/Edit contract models already know).
+
 Tool exposure is automatic: a plain python environment gets ONE
 `terminal` tool (with a `python` builtin); an augmented one (cache or
 host objects) gets a separate `run_python` tool whose description

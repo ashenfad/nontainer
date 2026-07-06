@@ -37,6 +37,8 @@ from agno.tools import Toolkit
 
 from ..workspace import Workspace
 from .render import (
+    FILE_EDIT_DESCRIPTION,
+    FILE_WRITE_DESCRIPTION,
     ToolsMode,
     python_description,
     render_python,
@@ -81,7 +83,35 @@ class WorkspaceTools(Toolkit):
             workspace, split=split, apps=apps is not None
         )
 
-        registered = [terminal]
+        def file_write(path: str, content: str) -> str:
+            """Write a file in the workspace."""
+            with self._lock:
+                written = self._ws.write_file(path, content)
+                return f"wrote {written}"
+
+        file_write.__doc__ = FILE_WRITE_DESCRIPTION
+
+        def file_edit(
+            path: str,
+            old_string: str,
+            new_string: str,
+            replace_all: bool = False,
+        ) -> str:
+            """Exact-string replacement in a workspace file."""
+            from ..errors import WorkspaceError
+
+            with self._lock:
+                try:
+                    n = self._ws.edit_file(
+                        path, old_string, new_string, replace_all=replace_all
+                    )
+                except WorkspaceError as e:
+                    return f"edit failed: {e}"
+                return f"replaced {n} occurrence(s) in {path}"
+
+        file_edit.__doc__ = FILE_EDIT_DESCRIPTION
+
+        registered = [terminal, file_write, file_edit]
 
         if split:
 

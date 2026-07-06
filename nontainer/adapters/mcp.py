@@ -24,6 +24,8 @@ from mcp.server.fastmcp import FastMCP
 
 from ..workspace import Workspace
 from .render import (
+    FILE_EDIT_DESCRIPTION,
+    FILE_WRITE_DESCRIPTION,
     ToolsMode,
     python_description,
     render_python,
@@ -59,6 +61,26 @@ def build_server(
     def terminal(command: str) -> str:
         with lock:
             return render_terminal(workspace.terminal(command))
+
+    @server.tool(name="file_write", description=FILE_WRITE_DESCRIPTION)
+    def file_write(path: str, content: str) -> str:
+        with lock:
+            return f"wrote {workspace.write_file(path, content)}"
+
+    @server.tool(name="file_edit", description=FILE_EDIT_DESCRIPTION)
+    def file_edit(
+        path: str, old_string: str, new_string: str, replace_all: bool = False
+    ) -> str:
+        from ..errors import WorkspaceError
+
+        with lock:
+            try:
+                n = workspace.edit_file(
+                    path, old_string, new_string, replace_all=replace_all
+                )
+            except WorkspaceError as e:
+                return f"edit failed: {e}"
+            return f"replaced {n} occurrence(s) in {path}"
 
     if split:
 

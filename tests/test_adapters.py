@@ -90,7 +90,7 @@ def test_agno_toolkit_split_mode():
     ws = make_ws()
     tk = WorkspaceTools(ws)
     names = set(tk.functions)
-    assert names == {"terminal", "run_python"}
+    assert names == {"terminal", "run_python", "file_write", "file_edit"}
     assert "ONE" in (tk.instructions or "")
 
     out = tk.functions["terminal"].entrypoint("echo hello | tr a-z A-Z")
@@ -106,7 +106,7 @@ def test_agno_toolkit_terminal_only():
 
     ws = make_ws(cache=False)
     tk = WorkspaceTools(ws)
-    assert set(tk.functions) == {"terminal"}
+    assert set(tk.functions) == {"terminal", "file_write", "file_edit"}
     # python still reachable as a terminal builtin
     out = tk.functions["terminal"].entrypoint("python -c 'print(2+2)'")
     assert out.strip() == "4"
@@ -146,7 +146,7 @@ async def test_mcp_server_tools_and_call():
     ws = make_ws()
     server = build_server(ws)
     tools = {t.name for t in await server.list_tools()}
-    assert tools == {"terminal", "run_python"}
+    assert tools == {"terminal", "run_python", "file_write", "file_edit"}
 
     result = await server.call_tool("terminal", {"command": "echo mcp-works"})
     text = result[0][0].text if isinstance(result, tuple) else result[0].text
@@ -161,7 +161,7 @@ async def test_mcp_terminal_only_mode():
     ws = make_ws(cache=False)
     server = build_server(ws)
     tools = {t.name for t in await server.list_tools()}
-    assert tools == {"terminal"}
+    assert tools == {"terminal", "file_write", "file_edit"}
     ws.close()
 
 
@@ -190,4 +190,71 @@ def test_agno_toolkit_with_apps_mentions_curl_in_terminal():
     term_desc = tk.functions["terminal"].entrypoint.__doc__ or ""
     assert "curl" in term_desc and "def get(req)" in term_desc
     assert "test_app" in tk.functions  # the verify tool rides along
+    ws.close()
+
+
+# -- file_write / file_edit ------------------------------------------------
+
+
+def test_workspace_write_and_edit_file():
+    from nontainer import WorkspaceError
+
+    ws = make_ws()
+    ws.write_file("src/app.py", "def main():\n    return 1\n")
+    assert ws.fs.read("src/app.py").decode().endswith("return 1\n")
+
+    n = ws.edit_file("src/app.py", "return 1", "return 2")
+    assert n == 1
+    assert "return 2" in ws.fs.read("src/app.py").decode()
+
+    with pytest.raises(WorkspaceError, match="not found"):
+        ws.edit_file("src/app.py", "no such text", "x")
+
+    ws.write_file("dup.txt", "a a a")
+    with pytest.raises(WorkspaceError, match="3 times"):
+        ws.edit_file("dup.txt", "a", "b")
+    assert ws.edit_file("dup.txt", "a", "b", replace_all=True) == 3
+
+    infos = [c.info.get("tool") for c in ws.history(limit=6)]
+    assert "file_write" in infos and "file_edit" in infos
+    ws.close()
+
+
+def test_agno_file_tools_registered_both_modes():
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+
+    for kwargs in ({}, {"cache": False}):
+        ws = make_ws(**kwargs)
+        tk = WorkspaceTools(ws)
+        assert {"file_write", "file_edit"} <= set(tk.functions)
+        out = tk.functions["file_write"].entrypoint(
+            path="notes.md", content="# hi\nline two\n"
+        )
+        assert "wrote" in out
+        out = tk.functions["file_edit"].entrypoint(
+            path="notes.md", old_string="line two", new_string="line 2"
+        )
+        assert "replaced 1" in out
+        # agent-actionable failure comes back as text, not an exception
+        out = tk.functions["file_edit"].entrypoint(
+            path="notes.md", old_string="absent", new_string="x"
+        )
+        assert "edit failed" in out
+        ws.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_file_tools():
+    from nontainer.adapters.mcp import build_server
+
+    ws = make_ws()
+    server = build_server(ws)
+    tools = {t.name for t in await server.list_tools()}
+    assert {"file_write", "file_edit"} <= tools
+    await server.call_tool("file_write", {"path": "f.txt", "content": "abc"})
+    result = await server.call_tool(
+        "file_edit", {"path": "f.txt", "old_string": "abc", "new_string": "xyz"}
+    )
+    assert ws.fs.read("f.txt") == b"xyz"
     ws.close()

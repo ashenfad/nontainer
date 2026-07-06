@@ -80,6 +80,10 @@ class PythonResult:
 ```python
 ws.fs                 # termish-protocol filesystem (seed/harvest directly)
 ws.cache              # MutableMapping; raises NotSupportedError if disabled
+ws.write_file(path, content) -> str    # parents created; checkpointed
+ws.edit_file(path, old, new, replace_all=False) -> int
+    # exact-string replacement (Claude-Code Edit contract): old must
+    # appear exactly once unless replace_all; WorkspaceError otherwise
 ws.put(src, dest=None) -> str          # host file → workspace (checkpointed)
 ws.get(src, dest=None) -> bytes        # workspace → host (never checkpoints)
 ws.register_command(name, fn)          # add a termish command post-construction
