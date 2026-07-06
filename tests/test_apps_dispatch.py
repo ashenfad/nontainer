@@ -216,10 +216,44 @@ def test_static_serving():
     ws.fs.makedirs("/app", exist_ok=True)
     ws.fs.write("/app/index.html", b"<h1>app</h1>")
     ws.fs.write("/app/app.js", b"export const x = 1")
+    ws.fs.write("/app/sub/page.html", b"<p>sub</p>")
     assert rt.dispatch(request("GET", "/")).content_type.startswith("text/html")
     assert rt.dispatch(request("GET", "/app.js")).ok
+    # `.` segments and redundant slashes normalize, stay inside /app
+    assert rt.dispatch(request("GET", "/./app.js")).ok
+    assert rt.dispatch(request("GET", "//app.js")).ok
+    assert rt.dispatch(request("GET", "/sub/../app.js")).ok
+    assert rt.dispatch(request("GET", "/sub/page.html")).ok
     assert rt.dispatch(request("GET", "/nope.css")).status == 404
     assert rt.dispatch(request("POST", "/index.html")).status == 405
+    ws.close()
+
+
+def test_static_path_traversal_is_contained():
+    """The static server must not escape /app/ nor serve backend source
+    — normalized `.`/`..` segments were the hole."""
+    ws, rt = make_ws()
+    ws.fs.makedirs("/app/api", exist_ok=True)
+    ws.fs.write("/app/index.html", b"<h1>app</h1>")
+    ws.fs.write("/app/api/scores.py", b"API_KEY = 'sk-secret'")
+    ws.fs.write("/app/api/_shared.py", b"DB_PASSWORD = 'hunter2'")
+    ws.fs.write("/private.md", b"workspace-root file")
+    ws.fs.write("/apple", b"sibling-prefix file")  # must not slip a prefix check
+
+    escapes = [
+        "/../private.md",         # workspace-root escape
+        "/../../private.md",      # multi-level escape
+        "/../apple",              # sibling of /app sharing its prefix
+        "/./api/scores.py",       # backend source via `.`
+        "/x/../api/_shared.py",   # non-routable shared code via `..`
+        "/api/scores.py",         # backend source as a literal static path
+        "/app/index.html",        # the /app prefix is not part of the URL space
+    ]
+    for path in escapes:
+        resp = rt.dispatch(request("GET", path))
+        assert resp.status == 404, f"{path} leaked: {resp.status} {resp.content!r}"
+        assert b"secret" not in resp.content and b"hunter2" not in resp.content
+        assert b"workspace-root" not in resp.content
     ws.close()
 
 

@@ -260,6 +260,12 @@ Internals: one static catch-all pair — `/{token}/api/{path}` →
 `mint_token()` is sugar; the token→session map is the embedder's.
 The router acquires the same per-workspace lock as tool calls.
 
+Static requests are normalized and confined: `.`/`..` segments are
+collapsed, the resolved path must stay strictly under `/app/`, and
+anything resolving into `/app/api/` is refused (backend source is
+never served as a file). So neither `/../cache-internals` nor
+`/./api/handler.py` escapes the frontend tree.
+
 - The router is an `APIRouter` the embedder mounts — nontainer never
   owns an app or a port.
 - `{token}` is a capability: long, unguessable, minted by the embedder,

@@ -17,6 +17,7 @@ agent's repair loop is ``tail``, edit, retry.
 
 from __future__ import annotations
 
+import posixpath
 import re
 import time
 from collections.abc import Mapping, MutableMapping
@@ -213,11 +214,27 @@ class AppRuntime:
         if request.method.upper() != "GET":
             raise HttpError(405, "static paths are GET-only")
         rel = request.path.strip("/") or "index.html"
-        path = f"{APP_ROOT}/{rel}"
+        # Normalize `.`/`..` and confine to APP_ROOT. Without this,
+        # traversal segments escape: `/../secret.md` reads any workspace
+        # file and `/./api/h.py` serves backend source (defeating the
+        # /api/ split and the _-prefix non-routable rule). normpath
+        # collapses the segments; the path must then sit strictly under
+        # /app/ (so `/app` itself and a sibling like `/apple` are both
+        # rejected).
+        path = posixpath.normpath(f"{APP_ROOT}/{rel}")
+        if not path.startswith(APP_ROOT + "/"):
+            raise HttpError(404, f"not found: {request.path}")
+        # Backend is never served as static. The /api/ URL prefix routes
+        # to handlers, but a static request that normalizes INTO api/
+        # (e.g. `/./api/h.py`, `/x/../api/_shared.py`) would otherwise
+        # serve raw handler source — the frontend/backend boundary.
+        if path == API_ROOT or path.startswith(API_ROOT + "/"):
+            raise HttpError(404, f"not found: {request.path}")
         fs = self._ws.fs
         if not fs.exists(path) or not fs.isfile(path):
             raise HttpError(404, f"not found: {request.path}")
-        ext = "." + rel.rsplit(".", 1)[-1] if "." in rel else ""
+        name = path.rsplit("/", 1)[-1]
+        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
         ctype = _STATIC_TYPES.get(ext, "application/octet-stream")
         return WireResponse(200, fs.read(path), ctype)
 
