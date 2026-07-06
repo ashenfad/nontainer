@@ -73,7 +73,10 @@ class _BrowserWorker:
                 self._sema = asyncio.Semaphore(self._max_concurrent)
                 self._launch_lock = asyncio.Lock()
                 ready.set()
-                loop.run_forever()
+                try:
+                    loop.run_forever()
+                finally:
+                    loop.close()  # release selector/fds; shutdown discards it
 
             t = threading.Thread(
                 target=run, name="nontainer-browser", daemon=True
