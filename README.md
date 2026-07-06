@@ -220,6 +220,8 @@ environment layer alone, offered to someone else's loop.
 - [API Reference](docs/api.md) -- every class, method, and flag
 - [Apps design](docs/apps.md) -- handler contract, execution model,
   test_app, serving/threat model
+- [Examples](examples/) -- live agno agents: a data analyst
+  (`analyst.py`) and a build-and-verify web app (`webapp.py`)
 
 ## Install
 
