@@ -53,7 +53,7 @@ dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
-    "httpx",
+    "httpx2",
 ]
 
 [build-system]

@@ -1,4 +1,4 @@
-"""Apps M1: handler contract, dispatch, transactionality, curl."""
+"""App handlers: request contract, dispatch, transactionality, curl."""
 
 import json
 

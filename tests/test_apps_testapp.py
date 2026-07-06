@@ -1,4 +1,4 @@
-"""Apps M2: test_app — headless verification via Playwright."""
+"""test_app: headless app verification via Playwright, plus its action DSL."""
 
 import pytest
 
@@ -6,11 +6,10 @@ from nontainer import Workspace
 from nontainer.apps import enable_apps, render_test_app
 from nontainer.providers import KvgitProvider
 
-pytest.importorskip("playwright")
-
 
 @pytest.fixture(scope="module")
 def chromium_available():
+    pytest.importorskip("playwright")
     from playwright.sync_api import sync_playwright
 
     try:
@@ -174,6 +173,21 @@ def test_viewport_preset(app_ws):
     )
     assert result.ok
     assert result.results[0].value == "390"
+
+
+# -- action DSL (pure; no browser needed) --------------------------------------
+
+
+def test_coerce_actions_handles_model_sloppiness():
+    from nontainer.apps.testapp import coerce_actions
+
+    assert coerce_actions('[{"click": "#a"}]') == [{"click": "#a"}]
+    assert coerce_actions({"screenshot": True}) == [{"screenshot": True}]
+    assert coerce_actions(None) == []
+    with pytest.raises(ValueError, match="list of objects"):
+        coerce_actions([1, 2])
+    with pytest.raises(ValueError, match="JSON"):
+        coerce_actions("{not json")
 
 
 # -- adapter exposure: test_app as a tool with image content -------------------

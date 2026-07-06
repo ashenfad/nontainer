@@ -1,4 +1,4 @@
-"""Apps M3: live serving — build_router, tokens, gating, quiesce."""
+"""Live app serving: build_router, tokens, gating, quiesce."""
 
 import json
 
