@@ -128,23 +128,27 @@ STDLIB: tuple[ModuleGrant, ...] = (
 
 # -- optional heavy libraries -------------------------------------------------
 
+# sandtrap >= 0.2.2: excludes on a recursive grant propagate to
+# submodules (and their classes' instances), and dotted patterns match
+# owner-qualified names — so one grant per library suffices.
 _NUMPY_EXCLUDE = (
     "_*",
     "*._*",
     # memory-mapped host files
     "memmap",
     "DataSource*",
+    # process-global RNG state (numpy.random.seed and friends;
+    # also blocks RandomState().seed — an agent-created Generator
+    # via default_rng() is unaffected and the better idiom anyway)
+    "seed",
+    "set_state",
+    "get_state",
 )
-
-# Process-global RNG state. Excludes don't propagate through a
-# recursive registration, so numpy.random gets its own grant (same
-# name → it overrides the recursive crawl's entry).
-_NUMPY_RANDOM_EXCLUDE = ("_*", "*._*", "seed", "set_state", "get_state")
 
 _PANDAS_EXCLUDE = (
     "_*",
     "*._*",
-    "eval",  # pd.eval: string-expression evaluation outside the AST sandbox
+    "eval",  # pd.eval / DataFrame.eval: string-expression evaluation
     "pandas.core*",
     "pandas.plotting*",
     "pandas.testing*",
@@ -163,9 +167,6 @@ def dataframes() -> list[ModuleGrant]:
 
     return [
         ModuleGrant(numpy, recursive=True, exclude=_NUMPY_EXCLUDE),
-        ModuleGrant(
-            numpy.random, name="numpy.random", exclude=_NUMPY_RANDOM_EXCLUDE
-        ),
         ModuleGrant(pandas, recursive=True, exclude=_PANDAS_EXCLUDE),
     ]
 
@@ -240,17 +241,10 @@ def plotting(*, plotly: bool | None = None) -> list[ModuleGrant]:
             stacklevel=2,
         )
 
-    import matplotlib.pyplot
-
     grants = [
+        # excludes propagate to submodules (sandtrap >= 0.2.2), so this
+        # covers matplotlib.pyplot's show/ion/switch_backend too
         ModuleGrant(matplotlib, recursive=True, exclude=_MATPLOTLIB_EXCLUDE),
-        # excludes don't propagate through the recursive crawl; pyplot
-        # (where show/ion/switch_backend live) needs its own grant
-        ModuleGrant(
-            matplotlib.pyplot,
-            name="matplotlib.pyplot",
-            exclude=_MATPLOTLIB_EXCLUDE,
-        ),
     ]
 
     if plotly is not False:
