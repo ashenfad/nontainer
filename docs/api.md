@@ -81,9 +81,13 @@ class PythonResult:
 ws.fs                 # termish-protocol filesystem (seed/harvest directly)
 ws.cache              # MutableMapping; raises NotSupportedError if disabled
 ws.write_file(path, content) -> str    # parents created; checkpointed
-ws.edit_file(path, old, new, replace_all=False) -> int
-    # exact-string replacement (Claude-Code Edit contract): old must
-    # appear exactly once unless replace_all; WorkspaceError otherwise
+ws.edit_file(path, old, new, replace_all=False) -> EditOutcome
+    # exact-string replacement with agent-tolerant fallbacks (the agex
+    # strategy set, ported): exact → trailing-ws-flexible →
+    # indent-flexible (replacement re-indented to the file's baseline);
+    # replacement-already-present → no-op (count=0, "already_applied").
+    # Unique-match-or-replace_all; WorkspaceError with a "did you mean
+    # these lines?" snippet otherwise
 ws.put(src, dest=None) -> str          # host file → workspace (checkpointed)
 ws.get(src, dest=None) -> bytes        # workspace → host (never checkpoints)
 ws.register_command(name, fn)          # add a termish command post-construction

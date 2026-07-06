@@ -102,12 +102,15 @@ class WorkspaceTools(Toolkit):
 
             with self._lock:
                 try:
-                    n = self._ws.edit_file(
+                    out = self._ws.edit_file(
                         path, old_string, new_string, replace_all=replace_all
                     )
                 except WorkspaceError as e:
                     return f"edit failed: {e}"
-                return f"replaced {n} occurrence(s) in {path}"
+                if out.mode == "already_applied":
+                    return f"no-op: replacement already present in {path}"
+                note = "" if out.mode == "exact" else f" (matched via {out.mode})"
+                return f"replaced {out.count} occurrence(s) in {path}{note}"
 
         file_edit.__doc__ = FILE_EDIT_DESCRIPTION
 

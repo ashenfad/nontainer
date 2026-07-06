@@ -36,11 +36,14 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .cache import Cache
 from .errors import CheckpointNotFoundError, NotSupportedError, WorkspaceError
 from .protocol import Capabilities, CheckpointInfo, WorkspaceProvider
+
+if TYPE_CHECKING:
+    from .editing import EditOutcome
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -632,39 +635,33 @@ class Workspace:
         new_string: str,
         *,
         replace_all: bool = False,
-    ) -> int:
-        """Exact-string replacement (the Claude-Code Edit contract):
-        ``old_string`` must appear EXACTLY ONCE unless ``replace_all``.
-        Returns the replacement count; raises ``WorkspaceError`` with an
-        agent-actionable message on missing file / no match / ambiguous
-        match. Checkpointed."""
+    ) -> "EditOutcome":
+        """Exact-string replacement with agent-tolerant fallbacks (the
+        agex strategy set — see ``nontainer.editing``): exact match,
+        then trailing-whitespace-flexible, then indent-flexible with a
+        re-indented replacement; a search that fails but whose
+        replacement is already present is an idempotent no-op
+        (``count == 0``). Raises ``WorkspaceError`` with an
+        agent-actionable message (including a "did you mean these
+        lines?" snippet) otherwise. Checkpointed when it changes the
+        file."""
+        from .editing import EditError, apply_edit
+
         self._check_open()
-        if old_string == new_string:
-            raise WorkspaceError("old_string and new_string are identical")
         try:
             text = self._fs.read(path).decode("utf-8")
         except Exception as e:
             raise WorkspaceError(f"cannot read {path!r}: {e}") from e
-        count = text.count(old_string)
-        if count == 0:
-            raise WorkspaceError(
-                f"old_string not found in {path!r} — it must match the file "
-                "exactly, including whitespace"
+        try:
+            outcome = apply_edit(
+                text, old_string, new_string, replace_all=replace_all, path=path
             )
-        if count > 1 and not replace_all:
-            raise WorkspaceError(
-                f"old_string appears {count} times in {path!r}; include more "
-                "surrounding context to make it unique, or pass replace_all"
-            )
-        replaced = count if replace_all else 1
-        text = (
-            text.replace(old_string, new_string)
-            if replace_all
-            else text.replace(old_string, new_string, 1)
-        )
-        self._fs.write(path, text.encode())
-        self._maybe_checkpoint("file_edit")
-        return replaced
+        except EditError as e:
+            raise WorkspaceError(str(e)) from e
+        if outcome.count:
+            self._fs.write(path, outcome.content.encode())
+            self._maybe_checkpoint("file_edit")
+        return outcome
 
     def put(self, src: str | Path, dest: str | None = None) -> str:
         """Copy a host file INTO the workspace ("upload"). Returns the
