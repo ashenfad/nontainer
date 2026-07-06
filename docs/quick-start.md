@@ -54,7 +54,7 @@ ws.rollback(1)                          # files + cache + cwd rewind together
 ```
 
 Each `run_python` is a **fresh execution** — there's no resident REPL
-holding your variables between calls. State persists in three planes
+holding variables between calls. State persists in three planes
 instead, each with one job:
 
 | plane | lifetime | what for |
@@ -63,9 +63,10 @@ instead, each with one job:
 | `cache` | session, **versioned** | data (picklable values) |
 | files | session, versioned | artifacts; reusable code goes in `helpers/` |
 
-So reusable code is a file you write once and `import` on later calls,
-not something you paste each turn — see [design notes](design.md) for
-why that shape. Data you want to carry forward goes in `cache`.
+So an agent's reusable code becomes a file under `helpers/` that later
+calls `import`, and data it carries forward lands in `cache` — rather
+than a REPL namespace surviving between calls. See the
+[design notes](design.md) for why that shape.
 
 ## Configuring the python sandbox
 
