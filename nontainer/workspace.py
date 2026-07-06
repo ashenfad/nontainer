@@ -491,7 +491,9 @@ class Workspace:
         except ParseError as e:
             output, exit_code, stderr = "", 2, f"parse error: {e}"
         except TerminalError as e:
-            output, exit_code, stderr = e.partial_output, 1, e.message
+            # termish >= 0.1.7 preserves command exit codes (127 for
+            # not-found, a CommandResult's own code — curl's 22 survives)
+            output, exit_code, stderr = e.partial_output, e.exit_code, e.message
 
         self._save_cwd()
         stdout, trunc_out = _truncate(output, self._max_observation)

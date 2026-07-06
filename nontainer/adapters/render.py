@@ -72,8 +72,8 @@ def render_python(result: PythonResult) -> str:
 
 _TERMINAL_CORE = """\
 Run shell commands in your persistent workspace (a virtual computer with
-its own filesystem). Supports pipes, redirects (> >> <), && || ;, quoting,
-and these commands: ls, cat, echo, head, tail, tee, grep, find, sed, tr,
+its own filesystem). Supports pipes, redirects (> >> <), heredocs
+(cmd <<EOF ... EOF), && || ;, quoting, comments, and these commands: ls, cat, echo, head, tail, tee, grep, find, sed, tr,
 sort, uniq, cut, wc, diff, jq, xargs, tar, gzip, zip, mkdir, cp, mv, rm,
 touch, pwd, cd, basename, dirname. cwd persists between calls.
 

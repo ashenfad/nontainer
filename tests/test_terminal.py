@@ -130,3 +130,21 @@ def test_python_sees_workspace_files(dir_ws):
     r = dir_ws.terminal("python -c 'print(open(\"note.txt\").read().strip())'")
     assert r
     assert r.stdout.strip() == "hello"
+
+
+def test_heredoc_through_workspace(dir_ws):
+    r = dir_ws.terminal("cat <<'EOF' | tr a-z A-Z\nhello heredoc\nEOF")
+    assert r, r.stderr
+    assert r.stdout.strip() == "HELLO HEREDOC"
+
+
+def test_heredoc_python_idiom(dir_ws):
+    """The idiom the heredoc work was for: multiline python, no quoting."""
+    r = dir_ws.terminal("python <<'PY'\nfor i in range(3):\n    print(i * 10)\nPY")
+    assert r, r.stderr
+    assert r.stdout.split() == ["0", "10", "20"]
+
+
+def test_command_not_found_is_127(dir_ws):
+    r = dir_ws.terminal("no_such_cmd")
+    assert r.exit_code == 127

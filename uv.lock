@@ -652,7 +652,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sandtrap", specifier = ">=0.2.1" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
-    { name = "termish", specifier = ">=0.1.6" },
+    { name = "termish", specifier = ">=0.1.7" },
 ]
 provides-extras = ["agentfs", "apps", "agno", "mcp", "dev"]
 
@@ -1421,11 +1421,11 @@ wheels = [
 
 [[package]]
 name = "termish"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/c5/bf/24442fb9d299aff973275616ec53d68487962d9192afb8ca79bc9456139a/termish-0.1.6.tar.gz", hash = "sha256:e99918069a4a6bd74c265f09770dc027faecaaa54310fabd39bfbf76bfc50529", size = 78775, upload-time = "2026-04-29T20:21:49.223Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e5/3d/55ddd9bc9bcd76673a0b9ca21150f90c3a705664d7e1309a65b93830d115/termish-0.1.7.tar.gz", hash = "sha256:5e910bbc377afbed1d20954655f4d21e49e1fb10eff10e3ba340564e0aca5cde", size = 87486, upload-time = "2026-07-06T04:02:59.716Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a1/0c/8c95d6b2e8b83279f098a9ba9eb4f2922b0cb4c4703ff61ffaaef3589b80/termish-0.1.6-py3-none-any.whl", hash = "sha256:b8cd2a75df11b0b50021d52b19edf811253b9ad1848ad1f7f8fe242543f6c93c", size = 60908, upload-time = "2026-04-29T20:21:48.24Z" },
+    { url = "https://files.pythonhosted.org/packages/32/d4/be1bbf725523482f4ca173d1c191716caff7a796da0a4bd1b81399f52727/termish-0.1.7-py3-none-any.whl", hash = "sha256:94036d53334474a4da9a598d1ddc62a47eaf323abd721bc09b34fd65ce70ffcc", size = 66724, upload-time = "2026-07-06T04:02:58.626Z" },
 ]
 
 [[package]]

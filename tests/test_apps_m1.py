@@ -251,8 +251,8 @@ def test_curl_post_with_data():
 def test_curl_failure_exit_code():
     ws, rt = make_ws()
     r = ws.terminal("curl /api/absent")
-    assert not r  # exit code fidelity through termish is coarse (TerminalError
-    # collapses to 1) — preserving command exit codes is a termish TODO
+    assert not r
+    assert r.exit_code == 22  # curl --fail convention, preserved by termish>=0.1.7
     assert "HTTP 404" in r.stderr
     ws.close()
 
