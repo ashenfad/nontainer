@@ -47,11 +47,15 @@ def main() -> None:
         ws.fs.write("data/sales.csv", SALES.encode())
         ws.checkpoint(info={"seed": "sales.csv"})
 
+        # checkpoint="turn": the whole run lands as ONE commit (the agex
+        # model) — contrast with webapp.py's per-call default.
+        tk = WorkspaceTools(ws, checkpoint="turn")
         agent = Agent(
             model=pick_model(),
-            tools=[WorkspaceTools(ws)],
+            tools=[tk],
             tool_call_limit=12,
             markdown=False,
+            post_hooks=[tk.end_turn],
         )
         run = agent.run(TASK)
         print("=== agent ===\n", run.content)
