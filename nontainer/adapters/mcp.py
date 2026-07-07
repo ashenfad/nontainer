@@ -41,21 +41,37 @@ def build_server(
     tools: ToolsMode = "auto",
     apps: Any = None,
     name: str = "nontainer",
+    terminal_primer: str | None = None,
+    python_primer: str | None = None,
 ) -> FastMCP:
     """Build a FastMCP server over an existing Workspace.
 
     ``apps``: an ``AppRuntime`` — when given, a ``test_app`` tool is
     registered; screenshots return as MCP ImageContent AND persist
-    under /app/screenshots/."""
+    under /app/screenshots/. ``terminal_primer``/``python_primer``
+    append host guidance to the respective tool descriptions."""
     server = FastMCP(name)
     lock = threading.Lock()
     mode = resolve_tools_mode(workspace, tools)
     split = mode == "split"
+    if python_primer and not split:
+        import warnings
+
+        warnings.warn(
+            "python_primer set but tools resolved to terminal-only "
+            "(no run_python tool); it appears in the terminal tool's "
+            "python section instead.",
+            stacklevel=2,
+        )
 
     @server.tool(
         name="terminal",
         description=terminal_description(
-            workspace, split=split, apps=apps is not None
+            workspace,
+            split=split,
+            apps=apps is not None,
+            primer=terminal_primer,
+            python_primer=None if split else python_primer,
         ),
     )
     def terminal(command: str) -> str:
@@ -90,7 +106,7 @@ def build_server(
 
         @server.tool(
             name="run_python",
-            description=python_description(workspace),
+            description=python_description(workspace, primer=python_primer),
         )
         def run_python(code: str) -> str:
             with lock:
