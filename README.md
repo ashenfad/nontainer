@@ -75,12 +75,13 @@ or bring your own provider. Full guidance in the [API reference](docs/api.md).
 Agents author full-stack apps: a Preact/HTM frontend plus **request
 handlers** -- serverless semantics, not resident servers. A file's path is
 its route (`/app/api/scores.py` → `/api/scores`), its exported `get`/`post`
-are the verbs; GET handlers see a read-only filesystem, mutating verbs get
-atomic staged writes. The agent builds and verifies entirely in-loop: a
-`curl` builtin hits the dispatcher from the terminal, and `test_app` runs the
-app headlessly through Playwright with the workspace as the origin -- no
-server, no Node. Live serving ships as a Starlette/FastAPI router the host
-mounts at `/apps/{session_token}/...`.
+are the verbs. The agent builds and verifies entirely in-loop: a `curl`
+builtin hits the dispatcher from the terminal, and `test_app` runs the app
+headlessly through Playwright with the workspace as the origin -- no server,
+no Node. To share it, publish a **frozen snapshot**: `build_router` serves
+the app read-only and concurrently at `/apps/{token}/...`; mutable app state
+lives in an external store injected via `host_objects`, not the (frozen)
+workspace.
 
 Full design -- handler contract, execution model, test_app DSL,
 serving/threat model: [docs/apps.md](docs/apps.md).

@@ -185,15 +185,21 @@ test_app([{"click": "#add"}, {"assert": "..."}, {"screenshot": true}])
 `playwright install chromium`. Screenshots come back as real images
 to vision models AND persist at `/app/screenshots/`.
 
-To serve an app live, mount the router in your web app:
+To share an app, publish a **frozen snapshot** and mount the router:
 
 ```python
 from nontainer.apps import build_router, mint_token
 
-router = build_router(lambda token: my_tokens.get(token))
+# resolve returns a read-only Workspace pinned to the published commit
+router = build_router(lambda token: my_snapshots.get(token))
 app.mount("/apps", router)     # FastAPI or Starlette
 # hand out: https://your.host/apps/{token}/
 ```
 
-See [apps.md](apps.md) for the full design (handler contract, threat
-model, quiesce checkpointing) and [api.md](api.md) for every signature.
+Serving is read-only and concurrent. Mutable app state does **not** go
+in the workspace — it goes to an external store (a sqlite/postgres
+client) injected via `host_objects`, and you tell the agent about it
+with a `python_primer`. See the `webapp` example for the full pattern.
+
+See [apps.md](apps.md) for the full design (handler contract, frozen
+serving, threat model) and [api.md](api.md) for every signature.
