@@ -111,19 +111,10 @@ def test_handler_error_is_500_and_logged_to_sink():
     ws.close()
 
 
-def test_rate_limit_429():
-    ws, token, client = make_served(rate_limit_per_min=3)
-    for _ in range(3):
-        assert client.get(f"/apps/{token}/api/scores").status_code == 200
-    r = client.get(f"/apps/{token}/api/scores")
-    assert r.status_code == 429 and "rate limit" in r.text
-    ws.close()
-
-
 def test_concurrent_requests_to_one_snapshot():
     """The frozen payoff: many requests to one snapshot run without a
     per-session lock — fresh read-only sandbox each, no corruption."""
-    ws, token, client = make_served(rate_limit_per_min=1000)
+    ws, token, client = make_served()
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(
             pool.map(
@@ -158,60 +149,23 @@ def test_served_handler_can_call_host_objects():
     ws.close()
 
 
-def test_eviction_defers_close_while_a_request_is_active():
-    """A snapshot evicted mid-request must not be closed until the
-    in-flight request finishes (else it fails with 'workspace closed')."""
-    from nontainer.apps.serve import _RateLimit, _Snapshot
+def test_serving_is_stateless():
+    """resolve is called per request (no snapshot cache), and the router
+    does not close the returned workspace (embedder owns lifecycle)."""
+    ws, token, _ = make_served()
+    calls = {"n": 0}
 
-    class FakeWs:
-        def __init__(self):
-            self.closed = False
+    def resolve(t):
+        calls["n"] += 1
+        return ws if t == token else None
 
-        def close(self):
-            self.closed = True
-
-    ws = FakeWs()
-    snap = _Snapshot(ws, runtime=None, rate=_RateLimit(100))
-
-    snap.acquire()  # a request is in flight
-    snap.evict()  # LRU wants it gone
-    assert not ws.closed  # deferred — still serving
-    snap.release()  # request finishes
-    assert ws.closed  # now closed
-
-
-def test_eviction_closes_idle_snapshot_immediately():
-    from nontainer.apps.serve import _RateLimit, _Snapshot
-
-    class FakeWs:
-        def __init__(self):
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    ws = FakeWs()
-    snap = _Snapshot(ws, runtime=None, rate=_RateLimit(100))
-    snap.evict()  # no active requests
-    assert ws.closed
-
-
-def test_snapshot_cache_bounded_and_closes():
-    workspaces = {}
-    for i in range(4):
-        ws = Workspace(KvgitProvider.open(None, session=f"s{i}"))
-        enable_apps(ws)
-        ws.fs.makedirs("/app", exist_ok=True)
-        ws.fs.write("/app/index.html", f"<h1>app {i}</h1>".encode())
-        ws.checkpoint()
-        workspaces[f"tok{i}"] = ws
-
-    router = build_router(lambda t: workspaces.get(t), max_snapshots=2)
     app = Starlette()
-    app.mount("/apps", router)
+    app.mount("/apps", build_router(resolve))
     client = TestClient(app)
 
-    for i in range(4):  # touch all 4; cache holds only 2
-        assert client.get(f"/apps/tok{i}/").status_code == 200
-    for ws in workspaces.values():
-        ws.close()
+    for _ in range(3):
+        assert client.get(f"/apps/{token}/api/scores").status_code == 200
+    assert calls["n"] == 3  # resolve called every request, no cache
+    # the workspace is still open — the router never closed it
+    assert ws.terminal("echo alive").stdout.strip() == "alive"
+    ws.close()
