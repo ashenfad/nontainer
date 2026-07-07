@@ -336,22 +336,25 @@ dispatch. Logs: `/app/logs/api.log`.
 `{"screenshot": true}` (→ `/app/screenshots/`) · `{"wait": ms}`.
 Viewports: `"desktop"`/`"tablet"`/`"mobile"` or `{width, height}`.
 
-Serving:
+Serving (frozen snapshots — read-only, concurrent):
 
 ```python
 build_router(
-    resolve: Callable[[str], Workspace | None],   # token → workspace
+    resolve: Callable[[str], Workspace | None],   # token → read-only ws @ commit
     *,
     config: AppsConfig | None = None,
-    queue_depth: int = 8,             # per-token; overflow → 429
     rate_limit_per_min: int = 120,    # per-token; overflow → 429
-    quiesce_seconds: float = 5.0,     # lazy checkpoint window
+    max_snapshots: int = 64,          # benign LRU cache of snapshots
     csp: str | None = <default>,      # CSP header on served HTML
+    on_log: Callable[[str], None] | None = None,  # default: nontainer.apps logger
 ) -> Router                            # ASGI; app.mount("/apps", router)
 
 mint_token(nbytes: int = 32) -> str    # capability-grade token
 ```
 
-The router calls `resolve` once per unseen token and caches the
-workspace + runtime. Requests never mint commits; the router
-checkpoints lazily on quiesce with `info={"source": "api"}`.
+Serving is read-only: `resolve` returns a Workspace pinned to a
+published commit, and handlers may read it + call `host_objects` but
+cannot mutate the VFS (a write → 500). Requests to one snapshot run
+**concurrently** (fresh read-only sandbox each — no lock, no
+checkpointing, lossless eviction). Mutable app state goes to an
+external store via `host_objects`, not the served VFS.

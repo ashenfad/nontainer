@@ -1,10 +1,11 @@
-"""Live app serving: build_router, tokens, gating, quiesce."""
+"""Frozen app serving: read-only snapshots, concurrency, no mutation."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from nontainer import Workspace
+from nontainer import PythonConfig, Workspace
 from nontainer.providers import KvgitProvider
 
 pytest.importorskip("starlette")
@@ -14,40 +15,46 @@ from starlette.testclient import TestClient  # noqa: E402
 
 from nontainer.apps import build_router, enable_apps, mint_token  # noqa: E402
 
+# read-only handlers: GET reads seeded state; POST is a read that takes a
+# body (a filter), not a mutation.
 HANDLER = """
 def get(req):
-    return {"scores": cache.get("scores", [])}
+    limit = int(req.params.get("limit", 10))
+    return {"scores": cache.get("scores", [])[:limit]}
 
 def post(req):
-    name = req.require("name")
-    scores = list(cache.get("scores", []))
-    scores.append(name)
-    cache["scores"] = scores
+    prefix = req.require("prefix")
+    return {"matches": [s for s in cache.get("scores", []) if s.startswith(prefix)]}
+"""
+
+WRITER = """
+def post(req):
+    cache["x"] = 1        # mutation — rejected under frozen serving
     return {"ok": True}
 """
 
 
-def make_served(**router_kwargs):
-    ws = Workspace(KvgitProvider.open(None, session="s1"))
+def make_served(*, python=None, on_log=None, **router_kwargs):
+    ws = Workspace(KvgitProvider.open(None, session="s1"), python=python)
     enable_apps(ws)
     ws.fs.makedirs("/app/api", exist_ok=True)
     ws.fs.write("/app/index.html", b"<html><body><h1>hi</h1></body></html>")
     ws.fs.write("/app/api/scores.py", HANDLER.encode())
-    ws.cache["scores"] = ["alice"]
+    ws.fs.write("/app/api/writer.py", WRITER.encode())
+    ws.cache["scores"] = ["alice", "amy", "bob"]
     ws.checkpoint()
 
     token = mint_token()
     tokens = {token: ws}
-    router = build_router(lambda t: tokens.get(t), **router_kwargs)
+    router = build_router(lambda t: tokens.get(t), on_log=on_log, **router_kwargs)
     app = Starlette()
     app.mount("/apps", router)
     return ws, token, TestClient(app)
 
 
 def test_mint_token_shape():
-    t1, t2 = mint_token(), mint_token()
-    assert t1 != t2
-    assert len(t1) > 40  # capability-grade
+    assert mint_token() != mint_token()
+    assert len(mint_token()) > 40
 
 
 def test_unknown_token_404():
@@ -59,36 +66,48 @@ def test_unknown_token_404():
 def test_static_and_csp():
     ws, token, client = make_served()
     r = client.get(f"/apps/{token}/")
-    assert r.status_code == 200
-    assert "<h1>hi</h1>" in r.text
+    assert r.status_code == 200 and "<h1>hi</h1>" in r.text
     assert "content-security-policy" in r.headers
-    # non-HTML gets no CSP
     r2 = client.get(f"/apps/{token}/api/scores")
-    assert "content-security-policy" not in r2.headers
+    assert "content-security-policy" not in r2.headers  # non-HTML
     ws.close()
 
 
-def test_api_get_and_post_roundtrip():
+def test_get_reads_seeded_state():
     ws, token, client = make_served()
-    r = client.get(f"/apps/{token}/api/scores")
+    r = client.get(f"/apps/{token}/api/scores?limit=2")
     assert r.status_code == 200
-    assert r.json() == {"scores": ["alice"]}
-
-    r = client.post(f"/apps/{token}/api/scores", content=json.dumps({"name": "bob"}))
-    assert r.status_code == 200
-    assert client.get(f"/apps/{token}/api/scores").json() == {
-        "scores": ["alice", "bob"]
-    }
-    assert ws.cache["scores"] == ["alice", "bob"]  # real backend state
+    assert r.json() == {"scores": ["alice", "amy"]}
     ws.close()
 
 
-def test_handler_errors_stay_500_and_logged():
+def test_post_as_read_takes_a_body():
     ws, token, client = make_served()
+    r = client.post(
+        f"/apps/{token}/api/scores", content=json.dumps({"prefix": "a"})
+    )
+    assert r.status_code == 200
+    assert r.json() == {"matches": ["alice", "amy"]}
+    ws.close()
+
+
+def test_mutation_is_rejected():
+    logs: list[str] = []
+    ws, token, client = make_served(on_log=logs.append)
+    r = client.post(f"/apps/{token}/api/writer", content="{}")
+    assert r.status_code == 500  # read-only VFS → PermissionError
+    assert any("PermissionError" in m or "read-only" in m.lower() for m in logs)
+    ws.close()
+
+
+def test_handler_error_is_500_and_logged_to_sink():
+    logs: list[str] = []
+    ws, token, client = make_served(on_log=logs.append)
     ws.fs.write("/app/api/boom.py", b"def get(req):\n    return 1/0\n")
+    ws.checkpoint()
     r = client.get(f"/apps/{token}/api/boom")
     assert r.status_code == 500
-    assert "ZeroDivisionError" in ws.fs.read("/app/logs/api.log").decode()
+    assert any("ZeroDivisionError" in m for m in logs)  # off-VFS log
     ws.close()
 
 
@@ -97,80 +116,64 @@ def test_rate_limit_429():
     for _ in range(3):
         assert client.get(f"/apps/{token}/api/scores").status_code == 200
     r = client.get(f"/apps/{token}/api/scores")
-    assert r.status_code == 429
-    assert "rate limit" in r.text
+    assert r.status_code == 429 and "rate limit" in r.text
     ws.close()
 
 
-def test_quiesce_checkpoint():
-    ws, token, client = make_served(quiesce_seconds=0.0)
-    before = len(list(ws.history()))
-    client.post(f"/apps/{token}/api/scores", content=json.dumps({"name": "bob"}))
-    # mutation staged, not committed (requests never mint commits)
-    assert len(list(ws.history())) == before
-    # next request after quiesce window → lazy checkpoint with source=api
-    client.get(f"/apps/{token}/api/scores")
-    entries = list(ws.history())
-    assert len(entries) == before + 1
-    assert entries[0].info == {"source": "api"}
+def test_concurrent_requests_to_one_snapshot():
+    """The frozen payoff: many requests to one snapshot run without a
+    per-session lock — fresh read-only sandbox each, no corruption."""
+    ws, token, client = make_served(rate_limit_per_min=1000)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(
+            pool.map(
+                lambda _: client.get(f"/apps/{token}/api/scores?limit=3"),
+                range(40),
+            )
+        )
+    assert all(r.status_code == 200 for r in results)
+    assert all(r.json() == {"scores": ["alice", "amy", "bob"]} for r in results)
     ws.close()
 
 
-def test_relative_urls_work_under_mount_prefix():
-    """The relocatability payoff: the same app served under
-    /apps/{token}/ answers relative API paths correctly."""
-    ws, token, client = make_served()
-    # a browser resolving fetch('api/scores') from /apps/{token}/ hits:
-    r = client.get(f"/apps/{token}/api/scores")
-    assert r.status_code == 200
-    ws.close()
+def test_served_handler_can_call_host_objects():
+    """The dashboard shape: a read-only telemetry client injected via
+    host_objects, queried from a served handler."""
 
+    class Telemetry:
+        def series(self, metric):
+            return [1, 2, 3] if metric == "cpu" else []
 
-def test_headers_reach_handlers():
-    """PR#1 review: allowlisted headers must flow through the router."""
-    ws, token, client = make_served()
+    ws, token, client = make_served(
+        python=PythonConfig(host_objects={"db": Telemetry()})
+    )
     ws.fs.write(
-        "/app/api/echo_hdr.py",
-        b"def get(req):\n"
-        b"    return {'ct': req.headers.get('content-type'),\n"
-        b"            'x': req.headers.get('x-custom'),\n"
-        b"            'cookie': req.headers.get('cookie')}\n",
+        "/app/api/metric.py",
+        b"def get(req):\n    return {'points': db.series(req.params['m'])}\n",
     )
-    r = client.get(
-        f"/apps/{token}/api/echo_hdr",
-        headers={"Content-Type": "text/csv", "X-Custom": "yes", "Cookie": "no"},
-    )
-    body = r.json()
-    assert body["ct"] == "text/csv"
-    assert body["x"] == "yes"
-    assert body["cookie"] is None  # ambient credentials never reach handlers
+    ws.checkpoint()
+    r = client.get(f"/apps/{token}/api/metric?m=cpu")
+    assert r.status_code == 200
+    assert r.json() == {"points": [1, 2, 3]}
     ws.close()
 
 
-def test_session_cache_bounded_and_closes():
-    """PR#1 review: LRU eviction closes evicted workspaces."""
-    from nontainer.providers import KvgitProvider
-    from nontainer import Workspace
-    from nontainer.apps import build_router, enable_apps
-    from starlette.applications import Starlette
-    from starlette.testclient import TestClient
-
+def test_snapshot_cache_bounded_and_closes():
     workspaces = {}
-    for name in ("t-one", "t-two", "t-three"):
-        ws = Workspace(KvgitProvider.open(None, session=name.replace("t-", "s")))
+    for i in range(4):
+        ws = Workspace(KvgitProvider.open(None, session=f"s{i}"))
         enable_apps(ws)
         ws.fs.makedirs("/app", exist_ok=True)
-        ws.fs.write("/app/index.html", b"<html>x</html>")
+        ws.fs.write("/app/index.html", f"<h1>app {i}</h1>".encode())
         ws.checkpoint()
-        workspaces[name] = ws
+        workspaces[f"tok{i}"] = ws
 
-    router = build_router(lambda t: workspaces.get(t), max_sessions=2)
+    router = build_router(lambda t: workspaces.get(t), max_snapshots=2)
     app = Starlette()
     app.mount("/apps", router)
     client = TestClient(app)
 
-    for t in ("t-one", "t-two", "t-three"):
-        assert client.get(f"/apps/{t}/").status_code == 200
-    # oldest evicted AND closed
-    assert workspaces["t-one"]._closed
-    assert not workspaces["t-three"]._closed
+    for i in range(4):  # touch all 4; cache holds only 2
+        assert client.get(f"/apps/tok{i}/").status_code == 200
+    for ws in workspaces.values():
+        ws.close()

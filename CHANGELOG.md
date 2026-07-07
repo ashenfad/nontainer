@@ -36,6 +36,18 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   `input()` work, via sandtrap's synthetic safe `sys`. No `import`
   quoting workarounds; dangerous `sys` internals stay unreachable.
 
+### Changed
+- **Live app serving is now frozen (read-only) snapshots.** `build_router`
+  serves a Workspace pinned to a published commit: handlers read the VFS
+  and call `host_objects` but can't mutate it (write → 500). This makes
+  serving **concurrent** (fresh read-only sandbox per request, no
+  per-session lock, no staged buffer, no checkpointing) and lossless to
+  evict. Mutable app state belongs in an external store via
+  `host_objects`. Removed: per-session serialization, quiesce
+  checkpointing, `queue_depth`/`quiesce_seconds`. Added: `max_snapshots`,
+  `on_log` (handler logs route off the read-only VFS; default: the
+  `nontainer.apps` logger). `AppRuntime(..., frozen=True, log_sink=...)`.
+
 ### Fixed
 - **App static serving path traversal** — `.`/`..` segments can no
   longer escape `/app/`, and backend source under `/app/api/` is never

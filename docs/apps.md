@@ -240,53 +240,50 @@ relative URLs — `fetch('api/scores')`, never `/api/scores`; relative
 asset paths — and `test_app` serves under a synthetic prefix so
 violations fail during verification, not at delivery.
 
-## Live serving & multi-tenancy
+## Live serving: frozen snapshots
 
-Embedder interface (all of it):
+Serving is **read-only by design.** The agent authors an app in its
+mutable workspace; to share it, you publish a **frozen snapshot** — a
+Workspace pinned to a commit — and the router serves that. Handlers may
+READ the workspace and call injected `host_objects` (a read-only
+telemetry client, say), but they cannot mutate the VFS: a write attempt
+is a 500. Mutable app state belongs in an **external store** reached
+through `host_objects` (a sqlite/postgres client), not the served VFS —
+at which point you've graduated from "shared dashboard" to "small real
+app," and the store owns its own concurrency.
+
+Because nothing mutates, serving is simple and concurrent:
 
 ```python
-from nontainer.apps import build_router, mint_token, AppsConfig
+from nontainer.apps import build_router, mint_token
 
 router = build_router(
-    resolve,                # (token: str) -> Workspace | None — embedder-owned
-    config=AppsConfig(
-        request_timeout=5.0,
-        request_tick_limit=200_000,
-        queue_depth=8,          # per-session; overflow → 429
-        rate_limit_per_min=120, # per-session
-        max_response_bytes=2_000_000,
-    ),
+    resolve,                    # (token) -> read-only Workspace @ commit | None
+    rate_limit_per_min=120,
+    max_snapshots=64,           # benign LRU cache of snapshots
+    on_log=None,                # handler stdout/errors sink (default: logging)
 )
-app.include_router(router, prefix="/apps")   # serves /apps/{token}/...
+app.mount("/apps", router)      # serves /apps/{token}/...
 ```
 
-Internals: one static catch-all pair — `/{token}/api/{path}` →
-`dispatch(ws, Request)` (the same function curl and test_app use) and
-`/{token}/{path}` → static files from `/app` (`/` → `index.html`).
-`mint_token()` is sugar; the token→session map is the embedder's.
-The router acquires the same per-workspace lock as tool calls.
-
-Static requests are normalized and confined: `.`/`..` segments are
-collapsed, the resolved path must stay strictly under `/app/`, and
-anything resolving into `/app/api/` is refused (backend source is
-never served as a file). So neither `/../cache-internals` nor
-`/./api/handler.py` escapes the frontend tree.
-
-- The router is an `APIRouter` the embedder mounts — nontainer never
-  owns an app or a port.
-- `{token}` is a capability: long, unguessable, minted by the embedder,
-  distinct from session ids (which may be guessable). nontainer ships
-  `mint_token()` sugar but the embedder owns the token→workspace map.
-- Per-session serialization via the workspace lock; a bounded queue
-  with 429 overflow (config: `queue_depth`).
-- Quotas are config with enforced defaults: requests/min per session,
-  request timeout, response size cap. Egress: handlers inherit the
-  sandbox policy — no network unless the workspace's PythonConfig
-  granted it (the kernel-degradation warning story applies unchanged).
-- Threat framing: enabling live serving means anonymous HTTP can
-  trigger agent-authored code under YOUR sandbox policy. The default
-  posture (no network, workspace-only fs, tight budgets) makes that
-  boring; every grant you add makes it less boring.
+- **Concurrent, no per-session lock.** Each request runs on a *fresh
+  read-only sandbox*, so requests to one snapshot run in parallel — no
+  staged buffer, no checkpointing, no durability surface. This is what
+  the frozen guarantee buys.
+- **Snapshots are a benign cache.** `max_snapshots` bounds residency;
+  eviction just closes a read-only workspace (lossless — there's
+  nothing dirty to persist).
+- **`{token}` is a capability** — long, unguessable, minted with
+  `mint_token()`, mapped to snapshots in the embedder's storage.
+- **Logs go off the VFS** (it's read-only): `on_log` receives handler
+  stdout/errors, defaulting to the `nontainer.apps` logger.
+- **Static requests are confined** (unchanged): `.`/`..` collapse, the
+  path must stay under `/app/`, and `/app/api/` is never served as a
+  file — so backend source and workspace internals can't leak.
+- **Threat framing:** anonymous HTTP triggers agent-authored code under
+  your sandbox policy. The default posture keeps it boring — read-only
+  VFS, no network unless the PythonConfig granted it, per-request
+  budgets, a rate limit, and a strict-ish CSP on served HTML.
 
 ## Known gaps
 
