@@ -266,6 +266,8 @@ WorkspaceTools(
     tools: "auto" | "terminal" | "split" = "auto",
     apps: AppRuntime | None = None,     # adds the test_app tool
     checkpoint: "call" | "turn" = "call",
+    terminal_primer: str | None = None, # host guidance → terminal tool
+    python_primer: str | None = None,   # host guidance → run_python tool
     **toolkit_kwargs,
 )
 # checkpoint="turn": one commit per agent turn (the agex model) — wire
@@ -281,10 +283,20 @@ threads; parallel calls serialize safely). With `apps=`, `test_app`
 returns `ToolResult(content=..., images=[...])` — screenshots as real
 images for vision models.
 
+**Primers** append embedder guidance to a tool's description — the
+place to tell the agent about conventions the core can't infer (e.g.
+"`db` is a SQLite store injected via host_objects — use it, not
+`cache`, for shared state"). Strict 1-to-1 with the exposed tools:
+`terminal_primer` → the `terminal` tool, `python_primer` → the
+`run_python` tool. In terminal-only mode there is no `run_python`
+tool, so a `python_primer` lands in the `terminal` tool's `python`
+section (and warns). Same params on `build_server`.
+
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
 ```python
-build_server(workspace, *, tools="auto", apps=None, name="nontainer") -> FastMCP
+build_server(workspace, *, tools="auto", apps=None, name="nontainer",
+             terminal_primer=None, python_primer=None) -> FastMCP
 ```
 
 CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]

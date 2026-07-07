@@ -56,22 +56,23 @@ def post(req):
   extension sniff · `bytes` → octet-stream · `Response(status=, body=,
   headers=)` for control · `raise HttpError(404, "msg")` for error
   paths. Anything else → 500 + logged.
-- **Structural REST**: `get` handlers execute against a read-only
-  filesystem view (`ReadOnlyFS`) — a GET that writes gets a
+- **Structural REST (authoring)**: `get` handlers execute against a
+  read-only filesystem view (`ReadOnlyFS`) — a GET that writes gets a
   `PermissionError`, which teaches the agent better than a style rule.
-  Mutating verbs get normal staged writes.
-- **Transactions**: a mutating handler that raises leaves nothing
-  behind (staged writes discarded for that request). Successful writes
-  fold into the session's normal commit flow — requests do NOT mint
-  commits (see the commit-granularity note in the
-  [design notes](design.md)). The serving layer checkpoints
-  periodically / on quiesce with `info={"source": "api"}`.
-- **App state guidance**: tiny state → `cache` or JSON files
-  (versioned, works on all backends);
-  high-tempo or relational state → sqlite in a real directory — which
-  requires the `dir` backend or a writable `Mount`, because `sqlite3`
-  is a C extension that bypasses the virtual fs. This is a documented
-  sharp edge, not a solvable one.
+  During *authoring* (curl / test_app) mutating verbs get staged writes,
+  atomic per request (a raise discards them). But **serving is frozen**
+  (see below): a served handler is read-only regardless of verb, so a
+  VFS write is always a 500.
+- **App state guidance — this is the load-bearing convention.** The
+  workspace (`cache`, files) is **not** the app's database. It's the
+  agent's authoring scratchpad, and the served snapshot is read-only, so
+  anything a served app must *remember or share* has to live in an
+  **external store injected via `host_objects`** — a sqlite/postgres
+  client the handlers call. `cache`/files are for single-session,
+  authoring-time state only; shared mutable state goes to the store,
+  which owns its own concurrency (serving is lock-free). Tell the agent
+  about the injected store with a **primer** (see the adapters). The
+  `webapp` example shows the whole pattern.
 
 ## Execution model (how a handler actually runs)
 
