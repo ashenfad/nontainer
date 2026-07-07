@@ -780,6 +780,19 @@ class Workspace:
             code = args[1]
             argv = ["-c", *args[2:]]
             stdin = ctx.stdin.read()  # piped data (empty when no pipe)
+        elif args and args[0] == "-":
+            # explicit "read program from stdin"; trailing args → argv
+            code = ctx.stdin.read()
+            if not code.strip():
+                return CommandResult(exit_code=2, stderr="python: no code on stdin")
+            argv = ["-", *args[1:]]
+            stdin = ""  # program consumed stdin
+        elif args and args[0].startswith("-"):
+            return CommandResult(
+                exit_code=2,
+                stderr=f"python: unsupported option {args[0]!r} "
+                "(only -c and - are supported)",
+            )
         elif args:
             path = args[0]
             try:
