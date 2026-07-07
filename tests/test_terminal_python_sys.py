@@ -67,6 +67,20 @@ EOF""")
     assert r.stdout == "argv0: ''\n0\n1\n"
 
 
+def test_dash_reads_stdin_with_args(ws):
+    # `python - x y` runs the piped program with argv = ['-', 'x', 'y']
+    r = ws.terminal("echo 'import sys; print(sys.argv)' | python - x y")
+    assert r, r.stderr
+    assert r.stdout.strip() == "['-', 'x', 'y']"
+
+
+def test_unsupported_option_rejected(ws):
+    r = ws.terminal("python -u foo.py")
+    assert not r
+    assert r.exit_code == 2
+    assert "unsupported option" in r.stderr
+
+
 def test_dangerous_sys_still_blocked(ws):
     r = ws.terminal("python -c 'import sys; print(sys.modules)'")
     assert not r  # sys.modules unreachable even with synthetic sys
