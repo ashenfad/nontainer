@@ -677,11 +677,15 @@ class Workspace:
         inputs: Mapping[str, Any] | None = None,
         sandbox: Any | None = None,
         cache_override: Any = _UNSET,
+        stdin: str | None = None,
+        argv: list[str] | None = None,
     ) -> PythonResult:
         """Shared execution path (no checkpoint) — used by
         ``run_python``, the terminal ``python`` builtin, and the apps
         dispatch (which passes its own sandbox and, for GET, a
-        read-only cache view via ``cache_override``)."""
+        read-only cache view via ``cache_override``). ``stdin``/``argv``
+        expose sandtrap's synthetic ``sys`` (the terminal ``python``
+        builtin wires the pipeline into it)."""
         namespace: dict[str, Any] = {}
 
         for name, value in (inputs or {}).items():
@@ -712,7 +716,7 @@ class Workspace:
         stderr_buf = io.StringIO()
         start = time.monotonic()
         with contextlib.redirect_stderr(stderr_buf):
-            exec_result = sb.exec(code, namespace=namespace)
+            exec_result = sb.exec(code, namespace=namespace, stdin=stdin, argv=argv)
         duration = time.monotonic() - start
 
         error = (
@@ -762,28 +766,38 @@ class Workspace:
         namespace-out belongs to the direct ``run_python`` surface).
 
         Forms: ``python -c 'code'`` | ``python file.py`` | piped stdin.
+        Piped input reaches the code as ``sys.stdin`` (real-shell
+        idiom: ``cat data | python script.py``), and ``sys.argv`` is
+        populated — via sandtrap's synthetic ``sys``.
         """
         from termish import CommandResult
 
         args = list(ctx.args)
+        # argv is always set so `sys`/argv are available in every form.
         if args and args[0] == "-c":
             if len(args) < 2:
                 return CommandResult(exit_code=2, stderr="python: -c needs code")
             code = args[1]
+            argv = ["-c", *args[2:]]
+            stdin = ctx.stdin.read()  # piped data (empty when no pipe)
         elif args:
             path = args[0]
             try:
                 code = self._fs.read(path).decode("utf-8")
             except Exception as e:
                 return CommandResult(exit_code=1, stderr=f"python: {path}: {e}")
+            argv = [path, *args[1:]]
+            stdin = ctx.stdin.read()
         else:
-            code = ctx.stdin.read()
+            code = ctx.stdin.read()  # stdin IS the code here (consumed)
             if not code.strip():
                 return CommandResult(
                     exit_code=2, stderr="python: no code (use -c, a file, or stdin)"
                 )
+            argv = [""]
+            stdin = ""
 
-        result = self._exec_python(code)
+        result = self._exec_python(code, stdin=stdin, argv=argv)
         ctx.stdout.write(result.stdout)
         if result.error is not None:
             return CommandResult(exit_code=1, stderr=result.error)

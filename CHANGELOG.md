@@ -31,12 +31,17 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   concurrency, not sessions.
 - **`py.typed`** — the package now ships its PEP 561 marker.
 
+- **Faithful `sys` in terminal `python`** — piped input reaches the code
+  as `sys.stdin` (`cat data | python script.py`), and `sys.argv` /
+  `input()` work, via sandtrap's synthetic safe `sys`. No `import`
+  quoting workarounds; dangerous `sys` internals stay unreachable.
+
 ### Fixed
 - **App static serving path traversal** — `.`/`..` segments can no
   longer escape `/app/`, and backend source under `/app/api/` is never
   served as a static file.
 
 ### Changed
-- Requires **sandtrap ≥ 0.2.2** (recursive-registration filter
-  propagation + dotted patterns) and **monkeyfs ≥ 0.1.5**
-  (`VirtualFS.invalidate()`).
+- Requires **sandtrap ≥ 0.2.3** (recursive-registration filter
+  propagation, dotted patterns, synthetic `sys`/stdin) and **monkeyfs
+  ≥ 0.1.5** (`VirtualFS.invalidate()`).

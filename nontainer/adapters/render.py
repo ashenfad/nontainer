@@ -83,9 +83,11 @@ multiline script with ; or && — mutations are then safely sequential."""
 _PYTHON_IN_TERMINAL = """\
 
 A `python` command is available (script semantics): `python -c 'code'`,
-`python file.py`, or pipe code via stdin. Its stdout flows into pipelines.
-For multiline files/scripts use the file_write tool, then run
-`python script.py` — avoid complex -c quoting."""
+`python file.py`, or a heredoc `python <<'EOF' ... EOF` for multiline
+code without a file. Its stdout flows into pipelines, and piped input is
+readable via `sys.stdin` (e.g. `cat data.json | python script.py`);
+`sys.argv` and `input()` work too. For anything multiline, prefer the
+heredoc or the file_write tool over complex `-c` quoting."""
 
 _PYTHON_TOOL_CORE = """\
 Run Python code in a sandboxed environment attached to the same workspace
