@@ -53,6 +53,10 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   checkpointing, `queue_depth`/`quiesce_seconds`. Added: `max_snapshots`,
   `on_log` (handler logs route off the read-only VFS; default: the
   `nontainer.apps` logger). `AppRuntime(..., frozen=True, log_sink=...)`.
+  The router is **stateless** — `resolve → dispatch`, no snapshot cache,
+  no residency/lifecycle (cache inside `resolve` if it's expensive; the
+  router doesn't close its result). Rate limiting is an edge concern;
+  `rate_limit_per_min`/`max_snapshots`/`queue_depth` are gone.
 
 ### Fixed
 - **App static serving path traversal** — `.`/`..` segments can no

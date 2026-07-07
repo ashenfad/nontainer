@@ -355,8 +355,6 @@ build_router(
     resolve: Callable[[str], Workspace | None],   # token → read-only ws @ commit
     *,
     config: AppsConfig | None = None,
-    rate_limit_per_min: int = 120,    # per-token; overflow → 429
-    max_snapshots: int = 64,          # benign LRU cache of snapshots
     csp: str | None = <default>,      # CSP header on served HTML
     on_log: Callable[[str], None] | None = None,  # default: nontainer.apps logger
 ) -> Router                            # ASGI; app.mount("/apps", router)
@@ -364,9 +362,10 @@ build_router(
 mint_token(nbytes: int = 32) -> str    # capability-grade token
 ```
 
-Serving is read-only: `resolve` returns a Workspace pinned to a
-published commit, and handlers may read it + call `host_objects` but
-cannot mutate the VFS (a write → 500). Requests to one snapshot run
-**concurrently** (fresh read-only sandbox each — no lock, no
-checkpointing, lossless eviction). Mutable app state goes to an
-external store via `host_objects`, not the served VFS.
+Serving is **stateless and read-only**: `resolve` is called per request
+(cache inside it if expensive; the router does not close its result),
+and handlers may read the workspace + call `host_objects` but cannot
+mutate the VFS (a write → 500). Requests run **concurrently** (fresh
+read-only sandbox each — no cache, no lock, no lifecycle). Mutable app
+state goes to an external store via `host_objects`. Rate limiting is an
+edge concern.

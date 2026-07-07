@@ -253,38 +253,40 @@ through `host_objects` (a sqlite/postgres client), not the served VFS —
 at which point you've graduated from "shared dashboard" to "small real
 app," and the store owns its own concurrency.
 
-Because nothing mutates, serving is simple and concurrent:
+Because a frozen snapshot is immutable, serving is **stateless** — the
+router keeps nothing:
 
 ```python
 from nontainer.apps import build_router, mint_token
 
 router = build_router(
-    resolve,                    # (token) -> read-only Workspace @ commit | None
-    rate_limit_per_min=120,
-    max_snapshots=64,           # benign LRU cache of snapshots
-    on_log=None,                # handler stdout/errors sink (default: logging)
+    resolve,          # (token) -> read-only Workspace @ commit | None
+    on_log=None,      # handler stdout/errors sink (default: logging)
 )
 app.mount("/apps", router)      # serves /apps/{token}/...
 ```
 
-- **Concurrent, no per-session lock.** Each request runs on a *fresh
-  read-only sandbox*, so requests to one snapshot run in parallel — no
-  staged buffer, no checkpointing, no durability surface. This is what
-  the frozen guarantee buys.
-- **Snapshots are a benign cache.** `max_snapshots` bounds residency;
-  eviction just closes a read-only workspace (lossless — there's
-  nothing dirty to persist).
+- **Stateless: `resolve → dispatch`.** Each request calls `resolve` and
+  dispatches on a fresh read-only sandbox — no session cache, no
+  residency, no lifecycle. `resolve` is called per request and its
+  result is NOT closed by the router; if resolving is expensive, cache
+  the read-only Workspace *inside* `resolve` (safe — it's immutable).
+- **Concurrent, no per-session lock.** Fresh sandbox per request → no
+  staged buffer, no shared instance to race, no durability surface.
+  This is what the frozen guarantee buys.
 - **`{token}` is a capability** — long, unguessable, minted with
   `mint_token()`, mapped to snapshots in the embedder's storage.
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler
   stdout/errors, defaulting to the `nontainer.apps` logger.
-- **Static requests are confined** (unchanged): `.`/`..` collapse, the
-  path must stay under `/app/`, and `/app/api/` is never served as a
-  file — so backend source and workspace internals can't leak.
+- **Static requests are confined**: `.`/`..` collapse, the path must
+  stay under `/app/`, and `/app/api/` is never served as a file — so
+  backend source and workspace internals can't leak.
+- **Rate limiting / quotas are edge concerns** — put them at your
+  gateway; the router doesn't presume to.
 - **Threat framing:** anonymous HTTP triggers agent-authored code under
   your sandbox policy. The default posture keeps it boring — read-only
   VFS, no network unless the PythonConfig granted it, per-request
-  budgets, a rate limit, and a strict-ish CSP on served HTML.
+  budgets, and a strict-ish CSP on served HTML.
 
 ## Known gaps
 
