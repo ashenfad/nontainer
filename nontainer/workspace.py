@@ -679,6 +679,7 @@ class Workspace:
         cache_override: Any = _UNSET,
         stdin: str | None = None,
         argv: list[str] | None = None,
+        capture_stderr: bool = True,
     ) -> PythonResult:
         """Shared execution path (no checkpoint) — used by
         ``run_python``, the terminal ``python`` builtin, and the apps
@@ -715,8 +716,18 @@ class Workspace:
         sb = sandbox if sandbox is not None else self._sandbox
         stderr_buf = io.StringIO()
         start = time.monotonic()
-        with contextlib.redirect_stderr(stderr_buf):
-            exec_result = sb.exec(code, namespace=namespace, stdin=stdin, argv=argv)
+        if capture_stderr:
+            # redirect_stderr swaps the PROCESS-global sys.stderr, so it
+            # is only safe when calls are serialized. Concurrent callers
+            # (frozen app serving) pass capture_stderr=False.
+            with contextlib.redirect_stderr(stderr_buf):
+                exec_result = sb.exec(
+                    code, namespace=namespace, stdin=stdin, argv=argv
+                )
+        else:
+            exec_result = sb.exec(
+                code, namespace=namespace, stdin=stdin, argv=argv
+            )
         duration = time.monotonic() - start
 
         error = (

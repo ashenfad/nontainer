@@ -21,7 +21,7 @@ import posixpath
 import re
 import threading
 import time
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any, Iterator
 
@@ -101,29 +101,49 @@ class _ReadOnlyCache(MutableMapping):
 class AppRuntime:
     """Dispatch for one workspace's ``/app``. Build once, reuse."""
 
-    def __init__(self, ws: Workspace, config: AppsConfig | None = None) -> None:
+    def __init__(
+        self,
+        ws: Workspace,
+        config: AppsConfig | None = None,
+        *,
+        frozen: bool = False,
+        log_sink: "Callable[[str], None] | None" = None,
+    ) -> None:
+        """``frozen=True`` (live serving of a published snapshot): every
+        verb runs against a fresh read-only sandbox — no mutation, so
+        requests are concurrent and need no lock. ``log_sink`` routes
+        handler stdout/errors off the (read-only) VFS; default is the
+        VFS log at ``/app/logs/api.log`` for the authoring loop."""
         self._ws = ws
         self._config = config or AppsConfig()
-        # Serializes dispatch for THIS workspace. Under test_app's shared
-        # browser, a page's parallel fetches produce concurrent route
-        # callbacks → concurrent dispatch on one workspace; the sandbox
-        # isn't reentrant, so same-workspace dispatch serializes here
-        # (different workspaces run in parallel — different runtimes,
-        # different locks).
+        self._frozen = frozen
+        self._log_sink = log_sink
+        # Serializes dispatch for THIS workspace in the MUTABLE path
+        # (test_app: a page's parallel fetches → concurrent route
+        # callbacks on one workspace; the sandbox isn't reentrant).
+        # Unused when frozen — fresh per-request sandboxes are safe.
         self._dispatch_lock = threading.Lock()
-        contract = (Request, Response, HttpError)
-        budgets = dict(
+        self._contract = (Request, Response, HttpError)
+        self._budgets = dict(
             timeout=self._config.request_timeout,
             tick_limit=self._config.request_tick_limit,
         )
         from monkeyfs import ReadOnlyFS
 
-        self._rw_sandbox = ws._build_sandbox(extra_classes=contract, **budgets)
-        self._ro_sandbox = ws._build_sandbox(
-            extra_classes=contract,
-            filesystem=ReadOnlyFS(ws.fs),
-            **budgets,
-        )
+        self._ReadOnlyFS = ReadOnlyFS
+        if frozen:
+            # Fresh read-only sandbox built per request (in _dispatch_api).
+            self._rw_sandbox = None
+            self._ro_sandbox = None
+        else:
+            self._rw_sandbox = ws._build_sandbox(
+                extra_classes=self._contract, **self._budgets
+            )
+            self._ro_sandbox = ws._build_sandbox(
+                extra_classes=self._contract,
+                filesystem=ReadOnlyFS(ws.fs),
+                **self._budgets,
+            )
 
     # -- the core --------------------------------------------------------
 
@@ -159,7 +179,10 @@ class AppRuntime:
         if not re.search(rf"^[ \t]*def[ \t]+{verb}[ \t]*\(", source, re.M):
             raise HttpError(405, f"{request.method} not supported by {name}")
 
-        readonly = verb == "get"
+        # Frozen serving: every verb is read-only (no mutation, so
+        # requests are concurrent). Authoring: GET is read-only, mutating
+        # verbs stage writes with per-request atomicity.
+        readonly = self._frozen or verb == "get"
         provider = self._ws._provider
         atomic = (
             not readonly
@@ -167,18 +190,31 @@ class AppRuntime:
             and not provider.dirty
         )
 
-        # GET: read-only cache view (when cache is enabled at all).
         from ..workspace import _UNSET
 
-        cache_override: Any = _UNSET  # default behavior
+        cache_override: Any = _UNSET  # default: live cache
         if readonly and self._ws.cache_enabled:
             cache_override = _ReadOnlyCache(self._ws.cache)
+
+        if self._frozen:
+            # A fresh read-only sandbox per request — no shared instance
+            # to race, so no lock. (Rebuilds the policy; a reuse
+            # optimization is a clean follow-up if it ever measures hot.)
+            sandbox = self._ws._build_sandbox(
+                extra_classes=self._contract,
+                filesystem=self._ReadOnlyFS(self._ws.fs),
+                **self._budgets,
+            )
+        else:
+            sandbox = self._ro_sandbox if readonly else self._rw_sandbox
 
         result = self._ws._exec_python(
             source + _TRAILER.format(verb=verb),
             inputs={"nt__req": request},
-            sandbox=self._ro_sandbox if readonly else self._rw_sandbox,
+            sandbox=sandbox,
             cache_override=cache_override,
+            # frozen requests run concurrently → no global stderr redirect
+            capture_stderr=not self._frozen,
         )
 
         if result.stdout:
@@ -250,6 +286,10 @@ class AppRuntime:
 
     def _log(self, message: str) -> None:
         try:
+            if self._log_sink is not None:
+                # frozen serving: VFS is read-only, so route off it
+                self._log_sink(message.rstrip())
+                return
             fs = self._ws.fs
             fs.makedirs(f"{APP_ROOT}/logs", exist_ok=True)
             stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
