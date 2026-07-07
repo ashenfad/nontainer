@@ -85,10 +85,43 @@ class _RateLimit:
 
 
 class _Snapshot:
+    """A cached read-only snapshot. Reference-counted so eviction never
+    closes a workspace mid-request: eviction marks it closed, and the
+    last in-flight request to finish does the actual close."""
+
     def __init__(self, ws: Workspace, runtime: AppRuntime, rate: _RateLimit) -> None:
         self.ws = ws
         self.runtime = runtime
         self.rate = rate
+        self._active = 0
+        self._evicted = False
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        with self._lock:
+            self._active += 1
+
+    def release(self) -> None:
+        with self._lock:
+            self._active -= 1
+            close = self._evicted and self._active == 0
+        if close:
+            self._close()
+
+    def evict(self) -> None:
+        """Called under the cache lock; closes now iff idle, else defers
+        the close to the last in-flight request."""
+        with self._lock:
+            self._evicted = True
+            close = self._active == 0
+        if close:
+            self._close()
+
+    def _close(self) -> None:
+        try:
+            self.ws.close()
+        except Exception:
+            pass
 
 
 def build_router(
@@ -123,10 +156,13 @@ def build_router(
     snap_lock = threading.Lock()
 
     def _snapshot_for(token: str) -> _Snapshot | None:
+        """Return a snapshot with an acquired reference (caller must
+        release). None if the token is unknown."""
         with snap_lock:
             snap = snapshots.get(token)
             if snap is not None:
                 snapshots.move_to_end(token)
+                snap.acquire()
                 return snap
         ws = resolve(token)
         if ws is None:
@@ -138,16 +174,15 @@ def build_router(
         )
         with snap_lock:
             snap = snapshots.setdefault(token, fresh)  # lost race → existing
+            if snap is not fresh:
+                fresh._close()  # our resolved ws lost the race — don't leak it
             snapshots.move_to_end(token)
-            # Benign cache: read-only snapshots are lossless to drop; close
-            # to release store handles.
+            snap.acquire()
+            # Benign cache: read-only snapshots are lossless to drop; evict
+            # (deferred close) to release store handles once idle.
             while len(snapshots) > max_snapshots:
                 _, evicted = snapshots.popitem(last=False)
-                if evicted is not snap:
-                    try:
-                        evicted.ws.close()
-                    except Exception:
-                        pass
+                evicted.evict()
         return snap
 
     def _handle_sync(
@@ -162,22 +197,24 @@ def build_router(
     async def endpoint(request: Any) -> Any:
         token = request.path_params["token"]
         path = "/" + request.path_params.get("path", "")
-        snap = _snapshot_for(token)
+        snap = _snapshot_for(token)  # acquires a reference (release below)
         if snap is None:
             return HttpResponse("unknown token", status_code=404)
-        if not snap.rate.allow():
-            return HttpResponse("rate limit exceeded", status_code=429)
-
-        body = await request.body()
-        url = path + (f"?{request.url.query}" if request.url.query else "")
-        wire = await anyio.to_thread.run_sync(
-            _handle_sync,
-            snap,
-            request.method,
-            url,
-            body,
-            filter_headers(request.headers),
-        )
+        try:
+            if not snap.rate.allow():
+                return HttpResponse("rate limit exceeded", status_code=429)
+            body = await request.body()
+            url = path + (f"?{request.url.query}" if request.url.query else "")
+            wire = await anyio.to_thread.run_sync(
+                _handle_sync,
+                snap,
+                request.method,
+                url,
+                body,
+                filter_headers(request.headers),
+            )
+        finally:
+            snap.release()
         headers = dict(wire.headers)
         if csp and wire.content_type.startswith("text/html"):
             headers.setdefault("content-security-policy", csp)

@@ -158,6 +158,44 @@ def test_served_handler_can_call_host_objects():
     ws.close()
 
 
+def test_eviction_defers_close_while_a_request_is_active():
+    """A snapshot evicted mid-request must not be closed until the
+    in-flight request finishes (else it fails with 'workspace closed')."""
+    from nontainer.apps.serve import _RateLimit, _Snapshot
+
+    class FakeWs:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    ws = FakeWs()
+    snap = _Snapshot(ws, runtime=None, rate=_RateLimit(100))
+
+    snap.acquire()  # a request is in flight
+    snap.evict()  # LRU wants it gone
+    assert not ws.closed  # deferred — still serving
+    snap.release()  # request finishes
+    assert ws.closed  # now closed
+
+
+def test_eviction_closes_idle_snapshot_immediately():
+    from nontainer.apps.serve import _RateLimit, _Snapshot
+
+    class FakeWs:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    ws = FakeWs()
+    snap = _Snapshot(ws, runtime=None, rate=_RateLimit(100))
+    snap.evict()  # no active requests
+    assert ws.closed
+
+
 def test_snapshot_cache_bounded_and_closes():
     workspaces = {}
     for i in range(4):
