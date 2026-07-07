@@ -81,6 +81,8 @@ class WorkspaceTools(Toolkit):
         tools: ToolsMode = "auto",
         apps: Any = None,
         checkpoint: str = "call",
+        terminal_primer: str | None = None,
+        python_primer: str | None = None,
         **kwargs,
     ) -> None:
         """``apps``: an ``AppRuntime`` (from ``nontainer.apps.
@@ -108,6 +110,16 @@ class WorkspaceTools(Toolkit):
             workspace.autocheckpoint = False
         mode = resolve_tools_mode(workspace, tools)
         split = mode == "split"
+        if python_primer and not split:
+            import warnings
+
+            warnings.warn(
+                "python_primer set but tools resolved to terminal-only "
+                "(no run_python tool); it will appear in the terminal "
+                "tool's python section. Put python-tool guidance in "
+                "terminal_primer if that's not intended.",
+                stacklevel=2,
+            )
 
         def terminal(command: str) -> str:
             """Run a shell script in the persistent workspace."""
@@ -115,7 +127,11 @@ class WorkspaceTools(Toolkit):
                 return render_terminal(self._ws.terminal(command))
 
         terminal.__doc__ = terminal_description(
-            workspace, split=split, apps=apps is not None
+            workspace,
+            split=split,
+            apps=apps is not None,
+            primer=terminal_primer,
+            python_primer=None if split else python_primer,
         )
 
         def file_write(path: str, content: str) -> str:
@@ -158,7 +174,7 @@ class WorkspaceTools(Toolkit):
                 with self._lock:
                     return render_python(self._ws.run_python(code))
 
-            run_python.__doc__ = python_description(workspace)
+            run_python.__doc__ = python_description(workspace, primer=python_primer)
             registered.append(run_python)
 
         if apps is not None:

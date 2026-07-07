@@ -105,23 +105,39 @@ _ONE_CALL_NOTE = """\
 Make ONE call per turn; put all the code for a step in a single call."""
 
 
-def terminal_description(ws: Workspace, *, split: bool, apps: bool = False) -> str:
+def terminal_description(
+    ws: Workspace,
+    *,
+    split: bool,
+    apps: bool = False,
+    primer: str | None = None,
+    python_primer: str | None = None,
+) -> str:
+    """``primer`` = the terminal tool's host guidance. ``python_primer``
+    is only used in terminal-only mode (no separate run_python tool), so
+    it lands in the ``python`` builtin section."""
     desc = _TERMINAL_CORE
     if not split:
         desc += _PYTHON_IN_TERMINAL
         extras = _env_notes(ws)
         if extras:
             desc += "\n\nInside `python`:\n" + extras
+        if python_primer:
+            desc += "\n\n" + python_primer
     if apps:
         desc += APPS_NOTES
+    if primer:
+        desc += "\n\n" + primer
     return desc
 
 
-def python_description(ws: Workspace) -> str:
+def python_description(ws: Workspace, *, primer: str | None = None) -> str:
     desc = _PYTHON_TOOL_CORE
     extras = _env_notes(ws)
     if extras:
         desc += "\n" + extras
+    if primer:
+        desc += "\n\n" + primer
     desc += _ONE_CALL_NOTE
     return desc
 

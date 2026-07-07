@@ -30,6 +30,12 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   `arun_test_app` and `shutdown_browser`. Memory scales with
   concurrency, not sessions.
 - **`py.typed`** — the package now ships its PEP 561 marker.
+- **Tool primers** — `WorkspaceTools`/`build_server` accept
+  `terminal_primer` / `python_primer`: embedder guidance appended to the
+  respective tool's description (e.g. "`db` is a SQLite store — use it,
+  not `cache`, for shared state"). Strict 1-to-1 with the exposed tools;
+  a `python_primer` in terminal-only mode lands in the terminal tool's
+  `python` section (with a warning).
 
 - **Faithful `sys` in terminal `python`** — piped input reaches the code
   as `sys.stdin` (`cat data | python script.py`), and `sys.argv` /
