@@ -28,6 +28,17 @@ session in O(1), roll back to any commit, audit the history. All in-process,
 | **Pluggable substrate** | [kvgit](https://github.com/ashenfad/kvgit) (versioned), [AgentFS](https://github.com/tursodatabase/agentfs), or a plain directory -- same tools. |
 | **Thin adapters** | [agno](https://github.com/agno-agi/agno) toolkit and an MCP server over one core. |
 
+> **What the sandbox is (and isn't).** In-process, the Python sandbox
+> ([sandtrap](https://github.com/ashenfad/sandtrap)) is a **walled garden
+> for cooperative LLM-generated code** — it gates what agent code can
+> reach (modules, host objects, the filesystem) to an allowlist you
+> control (safe stdlib on by default, everything else opt-in), not a
+> hardened boundary against code *trying* to escape. That's the right
+> posture for your own agent's code. When you need a real boundary
+> (untrusted code, or serving to anonymous clients), escalate with
+> `isolation="process"` / `"kernel"`. Full framing in the
+> [design notes](docs/design.md).
+
 ## The API in one glance
 
 ```python
