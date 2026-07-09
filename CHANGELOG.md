@@ -100,6 +100,20 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   `rate_limit_per_min`/`max_snapshots`/`queue_depth` are gone.
 
 ### Fixed
+- **Agent-set response headers are matched case-insensitively.**
+  `normalize()` lowercases `Response.headers` keys on the way to the
+  wire, so the idiomatic `"Content-Type": "text/csv"` overrides the
+  inferred content type instead of being silently ignored, and an
+  agent-set `Content-Security-Policy` makes the served router defer
+  its default instead of emitting a duplicate header (browsers apply
+  the intersection). `WireResponse.headers` keys are now canonical
+  lowercase.
+- **`Request.require()` coerces symmetrically across sources.** JSON
+  has one number type, so `require("x", float)` accepts JSON `5` and
+  `require("n", int)` accepts `2.0` (non-integral floats still 400);
+  bools are never numbers (JSON `true` no longer passes an `int`
+  check); JSON strings coerce like query params; and query-param bools
+  parse `true/1/false/0` instead of Python's `bool("false") is True`.
 - **App static serving path traversal** — `.`/`..` segments can no
   longer escape `/app/`, and backend source under `/app/api/` is never
   served as a static file.

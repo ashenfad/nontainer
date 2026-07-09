@@ -368,8 +368,16 @@ Handler contract (agent-authored files under `/app/api/`):
 
 ```python
 Request(method, path, params, headers, body, json)
-    .require(name, typ=str)     # HttpError(400) if missing/mistyped
+    .require(name, typ=str)     # HttpError(400) if missing/mistyped.
+    # Liberal-in, symmetric across JSON body and query params: strings
+    # coerce through typ (bool: true/1/false/0); JSON's single number
+    # type means int passes for float and integral float for int;
+    # bools are never numbers.
 Response(status=200, body=None, headers={})
+    # header keys may be any casing; normalized (lowercased) on the
+    # wire — an agent-set Content-Type wins over the inferred type,
+    # and an agent-set Content-Security-Policy defers the served
+    # default instead of duplicating it.
 HttpError(status, message)
 ```
 

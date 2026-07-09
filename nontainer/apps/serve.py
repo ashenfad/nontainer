@@ -120,6 +120,9 @@ def build_router(
             body,
             filter_headers(request.headers),
         )
+        # wire.headers keys are lowercased by normalize(), so this
+        # setdefault correctly defers to an agent-set CSP (any casing)
+        # instead of emitting a duplicate header.
         headers = dict(wire.headers)
         if csp and wire.content_type.startswith("text/html"):
             headers.setdefault("content-security-policy", csp)
