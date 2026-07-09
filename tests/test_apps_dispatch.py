@@ -377,3 +377,43 @@ def test_get_cache_pop_is_permission_error_not_attribute_error():
     assert "PermissionError" in log and "AttributeError" not in log
     assert ws.cache["k"] == 1
     ws.close()
+
+
+def test_log_failure_warns_once():
+    """A broken log path must not break dispatch, but must not go
+    silently blind either: one RuntimeWarning per runtime, then quiet."""
+    import warnings
+
+    from nontainer.apps import AppRuntime
+
+    ws, _ = make_ws()
+
+    def broken_sink(message: str) -> None:
+        raise OSError("disk full")
+
+    rt = AppRuntime(ws, log_sink=broken_sink)
+    with pytest.warns(RuntimeWarning, match="log write failed"):
+        rt._log("first")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # a second warning would raise
+        rt._log("second")
+    ws.close()
+
+
+def test_log_failure_does_not_break_dispatch():
+    import warnings
+
+    from nontainer.apps import AppRuntime
+
+    ws, _ = make_ws()
+
+    def broken_sink(message: str) -> None:
+        raise OSError("disk full")
+
+    rt = AppRuntime(ws, log_sink=broken_sink)
+    write_handler(ws, "boom", "def get(req):\n    raise ValueError('x')\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        resp = rt.dispatch(request("GET", "/api/boom"))
+    assert resp.status == 500  # handler error surfaced despite dead logs
+    ws.close()

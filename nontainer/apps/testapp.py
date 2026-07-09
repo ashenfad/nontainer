@@ -266,9 +266,21 @@ async def _run_actions(
                         continue
                     elif "screenshot" in action:
                         if shot_counter >= max_screenshots:
-                            raise RuntimeError(
-                                f"screenshot cap ({max_screenshots}) reached"
+                            # Soft skip, not a failure: hitting the cap
+                            # must not abort the test — later actions
+                            # (especially asserts) still run and count.
+                            results.append(
+                                ActionResult(
+                                    i,
+                                    action,
+                                    ok=True,
+                                    error=(
+                                        "skipped: screenshot cap "
+                                        f"({max_screenshots}) reached"
+                                    ),
+                                )
                             )
+                            continue
                         shot_counter += 1
                         png = await page.screenshot()
                         path = f"/app/screenshots/shot-{shot_counter}.png"
