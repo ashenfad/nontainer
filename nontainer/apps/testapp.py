@@ -132,6 +132,7 @@ async def _run_actions(
     max_screenshots: int = 5,
     load_timeout_ms: int = 10_000,
     assert_timeout_ms: int = 2_000,
+    settle_cap: float = 5.0,
 ) -> TestAppResult:
     """Run one test against a fresh context on the shared browser.
     Runs on the browser loop-thread; bounded by ``sema``."""
@@ -195,13 +196,28 @@ async def _run_actions(
         net["inflight"] = max(0, net["inflight"] - 1)
         net["last"] = _time.monotonic()
 
-    async def settle(page: Any, gap: float = 0.3, cap: float = 5.0) -> None:
+    async def settle(page: Any, gap: float = 0.3) -> str | None:
+        """Wait for network quiet; returns None when settled, or a
+        stale-risk note when the cap expired first. A cap exit means
+        the page was still busy — the one case where a following
+        read/screenshot is genuinely untrustworthy, so it's surfaced
+        on the action result instead of silently swallowed."""
         start = _time.monotonic()
-        while _time.monotonic() - start < cap:
+        while _time.monotonic() - start < settle_cap:
             quiet_since = max(net["last"], start)
             if net["inflight"] == 0 and _time.monotonic() - quiet_since >= gap:
-                return
+                return None
             await page.wait_for_timeout(25)
+        n = net["inflight"]
+        detail = (
+            f"{n} request(s) still in flight"
+            if n
+            else "network activity never went quiet"
+        )
+        return (
+            f"page did not settle within {settle_cap:.1f}s ({detail}); "
+            'results may be stale -- prefer {"assert": ...} (it retries)'
+        )
 
     async with sema:
         context = await browser.new_context(viewport=vp)
@@ -229,14 +245,20 @@ async def _run_actions(
             for i, action in enumerate(actions or []):
                 try:
                     value: str | None = None
+                    note: str | None = None
                     if "click" in action:
                         await page.click(action["click"], timeout=5_000)
-                        await settle(page)
+                        note = await settle(page)
                     elif "type" in action:
                         sel, text = action["type"]
                         await page.fill(sel, text, timeout=5_000)
-                        await settle(page)
+                        note = await settle(page)
                     elif "read" in action:
+                        # Settle first: a fetch that STARTED after the
+                        # previous action's settle returned (debounce,
+                        # setTimeout) would otherwise be read as stale
+                        # DOM — the false-green an agent can't catch.
+                        note = await settle(page)
                         value = await page.text_content(
                             action["read"], timeout=5_000
                         )
@@ -295,7 +317,9 @@ async def _run_actions(
                         await page.wait_for_timeout(int(action["wait"]))
                     else:
                         raise ValueError(f"unknown action: {action!r}")
-                    results.append(ActionResult(i, action, ok=True, value=value))
+                    results.append(
+                        ActionResult(i, action, ok=True, value=value, error=note)
+                    )
                 except Exception as e:
                     results.append(ActionResult(i, action, ok=False, error=str(e)))
                     ok = False

@@ -131,6 +131,70 @@ def test_screenshot_cap_soft_skips(app_ws):
     assert "skipped" in render_test_app(result)
 
 
+DEBOUNCED_HTML = """<!doctype html>
+<html><body>
+<div id="out">stale</div>
+<button id="go">go</button>
+<script>
+document.querySelector('#go').addEventListener('click', () => {
+  setTimeout(async () => {                    // fetch STARTS after the
+    const r = await fetch('api/scores');      // click-settle gap (300ms)
+    const d = await r.json();
+    document.querySelector('#out').textContent = 'fresh:' + d.scores.length;
+  }, 400);
+});
+</script>
+</body></html>"""
+
+
+def test_read_settles_past_delayed_fetch(chromium_available):
+    """A debounced/setTimeout'd fetch starts after click's settle
+    returns; read's own settle must catch it instead of reading stale
+    DOM (the false-green an agent can't catch)."""
+    ws = Workspace(KvgitProvider.open(None, session="s-debounce"))
+    rt = enable_apps(ws)
+    ws.fs.makedirs("/app/api", exist_ok=True)
+    ws.fs.write("/app/index.html", DEBOUNCED_HTML.encode())
+    ws.fs.write("/app/api/scores.py", HANDLER.encode())
+    ws.cache["scores"] = ["alice", "bob"]
+    ws.checkpoint()
+    try:
+        result = rt.test_app([{"click": "#go"}, {"read": "#out"}])
+        assert result.ok, render_test_app(result)
+        assert result.results[1].value == "fresh:2"  # not "stale"
+    finally:
+        ws.close()
+
+
+CHURN_HTML = """<!doctype html>
+<html><body>
+<div id="x">hi</div>
+<script>setInterval(() => fetch('api/scores'), 120);</script>
+</body></html>"""
+
+
+def test_unsettled_cap_attaches_stale_note(chromium_available):
+    """Network activity that never goes quiet: settle exits via the cap
+    and the action carries a stale-risk note instead of silently
+    passing (the run itself still passes — it's a note, not a verdict)."""
+    ws = Workspace(KvgitProvider.open(None, session="s-churn"))
+    rt = enable_apps(ws)
+    ws.fs.makedirs("/app/api", exist_ok=True)
+    ws.fs.write("/app/index.html", CHURN_HTML.encode())
+    ws.fs.write("/app/api/scores.py", HANDLER.encode())
+    ws.checkpoint()
+    try:
+        result = rt.test_app([{"read": "#x"}], settle_cap=1.0)
+        assert result.ok, render_test_app(result)
+        read = result.results[0]
+        assert read.value == "hi"
+        assert "did not settle" in (read.error or "")
+        assert "assert" in read.error  # the note points at the robust form
+        assert "did not settle" in render_test_app(result)
+    finally:
+        ws.close()
+
+
 def test_page_error_captured(app_ws, chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s2"))
     rt = enable_apps(ws)
