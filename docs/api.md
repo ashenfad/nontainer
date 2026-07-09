@@ -56,9 +56,10 @@ mutating calls hold an internal lock, so parallel calls to one
 workspace serialize safely (each atomic + checkpointed) instead of
 corrupting staged state. Read-only accessors don't take the lock —
 and neither do the host-side escape hatches (`ws.fs` writes, `ws.cache`
-mutation), so a host thread using those while agent calls run
-serializes itself. `run_in_threadpool(ws.run_python, code)` from
-Starlette works too if you'd rather not use the facade.
+mutation), so a host thread using those while agent calls run holds
+`ws.lock` itself (see the extension surface below).
+`run_in_threadpool(ws.run_python, code)` from Starlette works too if
+you'd rather not use the facade.
 
 `terminal` executes pipes, redirects (`> >> <`), `&&`/`||`/`;`,
 quoting, ~33 builtins (via termish) plus injected commands. `cd`
@@ -161,6 +162,36 @@ ws.session: str
 ws.caps: Capabilities
 ws.cache_enabled: bool
 ws.python_config: PythonConfig
+```
+
+### Extension surface
+
+For embedders composing execution features *on top of* the workspace —
+the apps extra is the reference consumer. Most callers never need
+these; they are a documented, kept-stable contract so extensions don't
+reach into internals (and stay portable across providers):
+
+```python
+ws.exec_python(code, *, inputs=None, sandbox=None, cache=None,
+               stdin=None, argv=None) -> PythonResult
+    # the raw execution path: no checkpoint, no lock. `sandbox`
+    # overrides the default sandbox (from build_sandbox); `cache`
+    # overrides the agent-visible cache mapping (None = workspace
+    # default); stdin/argv expose sandtrap's synthetic `sys`. Safe to
+    # call concurrently with distinct sandboxes (frozen app serving
+    # does); callers whose work mutates the workspace hold ws.lock.
+ws.build_sandbox(*, timeout=None, tick_limit=None,
+                 extra_classes=(), filesystem=None) -> Sandbox
+    # a sandbox sharing the frozen PythonConfig's registrations, with
+    # per-purpose overrides: budgets, extra registered classes (e.g. a
+    # request/response contract), a filesystem view (e.g. ReadOnlyFS).
+    # The built Policy is memoized per parameter set, so minting a
+    # fresh sandbox per request is cheap.
+ws.lock: threading.RLock
+    # the single-writer lock the mutating public methods hold. Hold it
+    # for host-side/extension work that mutates the workspace (ws.fs
+    # writes, ws.cache mutation, read-modify-write) and must serialize
+    # with tool calls. RLock: safe to hold around locked public calls.
 ```
 
 ## `PythonConfig`

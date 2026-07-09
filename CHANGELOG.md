@@ -42,6 +42,26 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   `input()` work, via sandtrap's synthetic safe `sys`. No `import`
   quoting workarounds; dangerous `sys` internals stay unreachable.
 
+### Added
+- **Workspace extension surface: `exec_python` / `build_sandbox` /
+  `lock`.** A small, documented contract for embedders composing
+  execution features on top of the workspace: `exec_python(code, *,
+  inputs, sandbox, cache, stdin, argv)` is the raw execution path (no
+  checkpoint, no lock; `cache=` overrides the agent-visible cache —
+  the old private `_UNSET` sentinel is gone); `build_sandbox(*,
+  timeout, tick_limit, extra_classes, filesystem)` mints per-purpose
+  sandboxes sharing the frozen config, memoizing the built `Policy`
+  per parameter set so a fresh sandbox per request is cheap; `lock`
+  exposes the single-writer RLock for host/extension work that must
+  serialize with tool calls. The apps extra now talks exclusively to
+  this surface (no private attribute access — enforced by a test), so
+  it runs unchanged on any `WorkspaceProvider`; frozen serving's
+  per-request policy rebuild (a latency + DoS-amplification papercut
+  on the anonymous path) is fixed by the memo; mutable (authoring)
+  dispatch now serializes under the workspace's own lock, so test_app
+  route callbacks and screenshot writes can't race ordinary tool
+  calls.
+
 ### Changed
 - **Workspace enforces its single-writer invariant internally.**
   Mutating public calls (`terminal`, `run_python`, `write_file`,

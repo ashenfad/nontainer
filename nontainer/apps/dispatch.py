@@ -2,7 +2,8 @@
 
 One core function, three consumers (the curl builtin, test_app, and
 the live router); see docs/apps.md. Handlers execute through the
-workspace's ``_exec_python`` machinery with dedicated sandboxes:
+workspace's EXTENSION SURFACE (``exec_python`` / ``build_sandbox`` /
+``lock`` — no private access) with dedicated sandboxes:
 
 - GET → a sandbox over ``ReadOnlyFS`` + a read-only cache view (a GET
   that writes raises — structural REST);
@@ -19,7 +20,6 @@ from __future__ import annotations
 
 import posixpath
 import re
-import threading
 import time
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass
@@ -118,11 +118,6 @@ class AppRuntime:
         self._config = config or AppsConfig()
         self._frozen = frozen
         self._log_sink = log_sink
-        # Serializes dispatch for THIS workspace in the MUTABLE path
-        # (test_app: a page's parallel fetches → concurrent route
-        # callbacks on one workspace; the sandbox isn't reentrant).
-        # Unused when frozen — fresh per-request sandboxes are safe.
-        self._dispatch_lock = threading.Lock()
         self._contract = (Request, Response, HttpError)
         self._budgets = dict(
             timeout=self._config.request_timeout,
@@ -136,10 +131,10 @@ class AppRuntime:
             self._rw_sandbox = None
             self._ro_sandbox = None
         else:
-            self._rw_sandbox = ws._build_sandbox(
+            self._rw_sandbox = ws.build_sandbox(
                 extra_classes=self._contract, **self._budgets
             )
-            self._ro_sandbox = ws._build_sandbox(
+            self._ro_sandbox = ws.build_sandbox(
                 extra_classes=self._contract,
                 filesystem=ReadOnlyFS(ws.fs),
                 **self._budgets,
@@ -148,6 +143,19 @@ class AppRuntime:
     # -- the core --------------------------------------------------------
 
     def dispatch(self, request: Request) -> WireResponse:
+        if self._frozen:
+            # Frozen serving: read-only VFS, fresh per-request sandbox —
+            # concurrent by design, no lock.
+            return self._dispatch(request)
+        # Mutable (authoring) dispatch is a mutating workspace call and
+        # serializes like one, under the workspace's own single-writer
+        # lock: with ordinary tool calls, with test_app's concurrent
+        # route callbacks, and with screenshot writes. RLock — the curl
+        # builtin dispatches from inside a locked terminal() call.
+        with self._ws.lock:
+            return self._dispatch(request)
+
+    def _dispatch(self, request: Request) -> WireResponse:
         try:
             if request.path.startswith("/api/"):
                 resp = self._dispatch_api(request)
@@ -183,43 +191,38 @@ class AppRuntime:
         # requests are concurrent). Authoring: GET is read-only, mutating
         # verbs stage writes with per-request atomicity.
         readonly = self._frozen or verb == "get"
-        provider = self._ws._provider
-        atomic = (
-            not readonly
-            and provider.caps.staging
-            and not provider.dirty
-        )
+        ws = self._ws
+        atomic = not readonly and ws.caps.staging and not ws.dirty
 
-        from ..workspace import _UNSET
-
-        cache_override: Any = _UNSET  # default: live cache
-        if readonly and self._ws.cache_enabled:
-            cache_override = _ReadOnlyCache(self._ws.cache)
+        cache: Any = None  # None: the workspace's live cache
+        if readonly and ws.cache_enabled:
+            cache = _ReadOnlyCache(ws.cache)
 
         if self._frozen:
             # A fresh read-only sandbox per request — no shared instance
-            # to race, so no lock. (Rebuilds the policy; a reuse
-            # optimization is a clean follow-up if it ever measures hot.)
-            sandbox = self._ws._build_sandbox(
+            # to race, so no lock. Cheap: build_sandbox memoizes the
+            # built policy per parameter set, so per-request cost is
+            # sandbox construction, not policy registration.
+            sandbox = ws.build_sandbox(
                 extra_classes=self._contract,
-                filesystem=self._ReadOnlyFS(self._ws.fs),
+                filesystem=self._ReadOnlyFS(ws.fs),
                 **self._budgets,
             )
         else:
             sandbox = self._ro_sandbox if readonly else self._rw_sandbox
 
-        result = self._ws._exec_python(
+        result = ws.exec_python(
             source + _TRAILER.format(verb=verb),
             inputs={"nt__req": request},
             sandbox=sandbox,
-            cache_override=cache_override,
+            cache=cache,
         )
 
         if result.stdout:
             self._log(f"[{name}:{verb}] stdout:\n{result.stdout}")
         if result.error is not None:
             if atomic:
-                provider.discard()
+                ws.discard()
             self._log(f"[{name}:{verb}] ERROR:\n{result.error}")
             return WireResponse(500, b"internal error (see /app/logs/api.log)",
                                 "text/plain")
@@ -233,7 +236,7 @@ class AppRuntime:
             return normalize(result.namespace.get("nt__resp"))
         except TypeError as e:
             if atomic:
-                provider.discard()
+                ws.discard()
             self._log(f"[{name}:{verb}] BAD RETURN: {e}")
             return WireResponse(500, str(e).encode(), "text/plain")
 

@@ -50,7 +50,6 @@ if TYPE_CHECKING:
 Isolation = Literal["none", "process", "kernel"]
 
 _CWD_KEY = "__cwd__"
-_UNSET = object()
 RESERVED_COMMANDS = frozenset({"python"})
 
 
@@ -369,10 +368,12 @@ class Workspace:
         # lock, so concurrent calls from a threading harness serialize
         # (each atomic + checkpointed) instead of interleaving writes
         # into the provider's staged buffer. Invariants: the lock is
-        # taken ONLY in public method bodies — never in _exec_python /
-        # _build_sandbox / _maybe_checkpoint (the internal paths the
-        # apps extra also drives) — and read-only accessors don't take
-        # it. RLock, not Lock: agent code can call injected
+        # taken ONLY in mutating public method bodies — never in
+        # exec_python / build_sandbox / _maybe_checkpoint (the
+        # extension paths the apps extra drives; extensions take
+        # ws.lock themselves when their work mutates) — and read-only
+        # accessors don't take it. RLock, not Lock: agent code can
+        # call injected
         # host_objects, and a host object that calls back into this
         # workspace's public API must serialize, not deadlock.
         self._lock = threading.RLock()
@@ -396,7 +397,11 @@ class Workspace:
         self._commands = user_commands
 
         # -- python sandbox: policy + sandbox built once (frozen) --
-        self._sandbox = self._build_sandbox()
+        # build_sandbox memoizes built policies per parameter set (the
+        # registration loop is the expensive part); seed the memo with
+        # the default sandbox's build.
+        self._policy_memo: dict[Any, Any] = {}
+        self._sandbox = self.build_sandbox()
 
         # -- stateful cwd: restore from framework key if present.
         # Guarded so a no-op restore doesn't dirty staging providers
@@ -434,7 +439,7 @@ class Workspace:
             mounted[point] = sub
         return MountFS(base, mounted)
 
-    def _build_sandbox(
+    def build_sandbox(
         self,
         *,
         timeout: float | None = None,
@@ -442,11 +447,59 @@ class Workspace:
         extra_classes: tuple[type, ...] = (),
         filesystem: Any | None = None,
     ) -> Any:
-        """Build a sandbox from the frozen PythonConfig. The keyword
-        overrides exist for the apps extra: handler sandboxes share the
-        registration config but carry tighter budgets, contract classes
-        (Request/Response/HttpError), and a read-only fs view for GET."""
-        from sandtrap import Policy, sandbox
+        """EXTENSION SURFACE: build a sandbox from the frozen
+        PythonConfig, for embedders composing execution features on top
+        of the workspace (the apps extra is the reference consumer;
+        most callers never need this — ``run_python`` uses the default
+        sandbox). The keyword overrides parameterize per-purpose
+        sandboxes that share the registration config: tighter budgets,
+        extra registered classes (e.g. a request/response contract), a
+        filesystem override (e.g. a read-only view).
+
+        The built ``Policy`` is memoized per ``(timeout, tick_limit,
+        extra_classes)`` — the registration loop is the expensive part,
+        and the config is frozen, so the build is deterministic. That
+        makes minting a fresh sandbox per request cheap (frozen app
+        serving does), without sharing sandbox *instances* across
+        concurrent executions. The memo is intentionally tolerant of
+        races: a duplicate build is wasted work, not corruption."""
+        from sandtrap import sandbox
+
+        cfg = self._python_config
+        key = (timeout, tick_limit, extra_classes)
+        policy = self._policy_memo.get(key)
+        if policy is None:
+            policy = self._build_policy(
+                timeout=timeout, tick_limit=tick_limit, extra_classes=extra_classes
+            )
+            self._policy_memo[key] = policy
+
+        rpc_handlers = None
+        if cfg.isolation != "none" and self._cache_enabled:
+            rpc_handlers = {"cache": self._cache_rpc_handler()}
+
+        return sandbox(
+            policy,
+            isolation=cfg.isolation,
+            mode="raw",
+            filesystem=filesystem if filesystem is not None else self._fs,
+            rpc_handlers=rpc_handlers,
+            # Snapshot print() ARGUMENTS (objects, not text) so oversized
+            # stdout can be re-rendered budget-aware via reprobate — see
+            # _render_prints. Structural elision beats a mid-token cut.
+            snapshot_prints=True,
+        )
+
+    def _build_policy(
+        self,
+        *,
+        timeout: float | None,
+        tick_limit: int | None,
+        extra_classes: tuple[type, ...],
+    ) -> Any:
+        """One policy build: registration loop + extra classes + live
+        host objects + the kernel-degradation warning."""
+        from sandtrap import Policy
 
         cfg = self._python_config
         grants = _flatten_grants(cfg)
@@ -497,24 +550,10 @@ class Workspace:
                     "the corresponding kernel restriction is disabled for the "
                     "ENTIRE worker; only Python-level gating remains for it.",
                     RuntimeWarning,
-                    stacklevel=3,
+                    stacklevel=4,
                 )
 
-        rpc_handlers = None
-        if cfg.isolation != "none" and self._cache_enabled:
-            rpc_handlers = {"cache": self._cache_rpc_handler()}
-
-        return sandbox(
-            policy,
-            isolation=cfg.isolation,
-            mode="raw",
-            filesystem=filesystem if filesystem is not None else self._fs,
-            rpc_handlers=rpc_handlers,
-            # Snapshot print() ARGUMENTS (objects, not text) so oversized
-            # stdout can be re-rendered budget-aware via reprobate — see
-            # _render_prints. Structural elision beats a mid-token cut.
-            snapshot_prints=True,
-        )
+        return policy
 
     def _cache_rpc_handler(self) -> Callable[[str, tuple, dict], Any]:
         """RPC dispatch onto the parent-side live cache (the agex
@@ -593,6 +632,17 @@ class Workspace:
     def python_config(self) -> PythonConfig:
         return self._python_config
 
+    @property
+    def lock(self) -> threading.RLock:
+        """EXTENSION SURFACE: the workspace's single-writer lock.
+        Mutating public methods hold it; hold it yourself for
+        host-side or extension work that mutates the workspace
+        (``ws.fs`` writes, ``ws.cache`` mutation, multi-step
+        read-modify-write) and must serialize with tool calls. It is
+        an ``RLock``, so taking it around a block that calls locked
+        public methods is safe."""
+        return self._lock
+
     # ------------------------------------------------------------------
     # the two tools
     # ------------------------------------------------------------------
@@ -646,7 +696,7 @@ class Workspace:
         """
         self._check_open()
         with self._lock:
-            result = self._exec_python(code, inputs=inputs)
+            result = self.exec_python(code, inputs=inputs)
             self._save_cwd()
             cp = self._maybe_checkpoint("run_python")
         return replace(result, checkpoint=cp) if cp else result
@@ -687,25 +737,31 @@ class Workspace:
             None, partial(self.run_python, code, inputs=inputs)
         )
 
-    def _exec_python(
+    def exec_python(
         self,
         code: str,
         *,
         inputs: Mapping[str, Any] | None = None,
         sandbox: Any | None = None,
-        cache_override: Any = _UNSET,
+        cache: Mapping[str, Any] | None = None,
         stdin: str | None = None,
         argv: list[str] | None = None,
     ) -> PythonResult:
-        """Shared execution path (no checkpoint, no lock) — used by
-        ``run_python``, the terminal ``python`` builtin, and the apps
-        dispatch (which passes its own sandbox and, for GET, a
-        read-only cache view via ``cache_override``). ``stdin``/``argv``
-        expose sandtrap's synthetic ``sys`` (the terminal ``python``
-        builtin wires the pipeline into it). Safe to call concurrently
-        with distinct sandboxes (frozen app serving does): stderr is
-        captured per-execution by sandtrap, not by a process-global
-        redirect."""
+        """EXTENSION SURFACE: the raw execution path — no checkpoint,
+        no lock. For embedders composing execution features on top of
+        the workspace; most callers want :meth:`run_python`. Consumers:
+        ``run_python`` itself, the terminal ``python`` builtin, and the
+        apps dispatch (which passes a :meth:`build_sandbox` sandbox
+        and, for GET, a read-only cache view).
+
+        ``sandbox`` overrides the default sandbox; ``cache`` overrides
+        the agent-visible ``cache`` mapping (``None`` = the workspace
+        default); ``stdin``/``argv`` expose sandtrap's synthetic
+        ``sys`` (the terminal ``python`` builtin wires the pipeline
+        into it). Safe to call concurrently with distinct sandboxes
+        (frozen app serving does): stderr is captured per-execution by
+        sandtrap, not by a process-global redirect. Callers whose work
+        mutates the workspace serialize via :attr:`lock`."""
         namespace: dict[str, Any] = {}
 
         for name, value in (inputs or {}).items():
@@ -721,9 +777,8 @@ class Workspace:
 
         namespace.update(self._python_config.host_objects)
 
-        if cache_override is not _UNSET:
-            if cache_override is not None:
-                namespace["cache"] = cache_override
+        if cache is not None:
+            namespace["cache"] = cache
         elif self._cache_enabled:
             if self._python_config.isolation == "none":
                 namespace["cache"] = Cache(self._provider.kv)
@@ -778,7 +833,7 @@ class Workspace:
 
     def _python_command(self, ctx: Any) -> Any:
         """The reserved ``python`` terminal builtin: a thin bridge over
-        ``_exec_python`` with script semantics — stdout flows to the
+        ``exec_python`` with script semantics — stdout flows to the
         pipeline, errors become exit code 1 + stderr, and the result
         namespace is deliberately DROPPED (pipelines are text;
         namespace-out belongs to the direct ``run_python`` surface).
@@ -828,7 +883,7 @@ class Workspace:
             argv = [""]
             stdin = ""
 
-        result = self._exec_python(code, stdin=stdin, argv=argv)
+        result = self.exec_python(code, stdin=stdin, argv=argv)
         ctx.stdout.write(result.stdout)
         if result.error is not None:
             return CommandResult(exit_code=1, stderr=result.error)
@@ -856,7 +911,7 @@ class Workspace:
         """The termish-protocol filesystem, for host-side reads/writes
         (seeding inputs, harvesting artifacts) without the sandbox.
         Bypasses the workspace's single-writer lock — a host thread
-        writing here while agent calls run serializes itself."""
+        writing here while agent calls run holds :attr:`lock`."""
         return self._fs
 
     def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
@@ -961,7 +1016,7 @@ class Workspace:
         """The agent's persistent dict, host-side view. Key rules: str
         keys, no ``__`` prefix, no ``/``. Writes bypass the workspace's
         single-writer lock (they hit the same staged buffer) — a host
-        thread mutating it while agent calls run serializes itself."""
+        thread mutating it while agent calls run holds :attr:`lock`."""
         if not self._cache_enabled:
             raise NotSupportedError(
                 "cache is disabled for this workspace (cache=False)"
