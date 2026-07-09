@@ -144,6 +144,7 @@ agent = Agent(model=..., tools=[WorkspaceTools(ws)])
 
 ```bash
 python -m nontainer.adapters.mcp --session my-project --module math
+python -m nontainer.adapters.mcp --session webdev --apps  # + curl & test_app
 ```
 
 Agents also get `file_write` / `file_edit` tools in every mode — the
