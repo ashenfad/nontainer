@@ -124,6 +124,15 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   raising `on_log` sink) now emits one `RuntimeWarning` per runtime —
   previously every handler diagnostic vanished while the agent's
   documented repair loop ("tail `/app/logs/api.log`") debugged blind.
+- **`test_app` false-PASS window closed (as far as heuristics can).**
+  `read` now settles before observing, so a fetch that *starts* after
+  the previous action's settle returned (debounce, `setTimeout`) is
+  waited for instead of read as stale DOM. And a settle that exits via
+  its cap (`settle_cap`, default 5s — now a `test_app` parameter)
+  attaches a stale-risk note to the action's result instead of
+  silently passing, pointing the agent at `{"assert": ...}` — the
+  retrying form no heuristic can replace, since nothing can wait for a
+  fetch that hasn't started yet.
 - **Browser shutdown no longer stalls interpreter exit.** The shared
   test_app browser's atexit teardown deadlines dropped from 10s+5s to
   3s+2s — a healthy Chromium closes in milliseconds, and a wedged one

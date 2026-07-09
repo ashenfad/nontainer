@@ -197,10 +197,15 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   (`wait_for_function`, retry until truthy or ~2s). But
   expectation-free `read` observations have no outcome to retry
   against (`networkidle` is sticky post-navigation and discouraged
-  upstream), so click/type settle via an idle-gap heuristic: track
-  in-flight requests, wait for a 300ms quiet gap, capped. Slow apps
-  use `{"wait": ms}`. Prefer `assert` over `read`-and-check when a
-  condition is known — it's the robust form.
+  upstream), so click/type — and `read` itself, before observing —
+  settle via an idle-gap heuristic: track in-flight requests, wait for
+  a 300ms quiet gap, capped (`settle_cap`, default 5s). A settle that
+  exits via the cap attaches a stale-risk note to that action's result
+  instead of silently passing — false-green is the failure an agent
+  can't catch. Slow apps use `{"wait": ms}`. Prefer `assert` over
+  `read`-and-check when a condition is known — it's the robust form
+  (no heuristic can wait for a fetch that hasn't *started* yet; retry
+  semantics can).
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/app/screenshots/` and return workspace paths in the observation —
