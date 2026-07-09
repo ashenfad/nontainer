@@ -131,13 +131,16 @@ class _BrowserWorker:
                 except Exception:
                     pass
 
+        # Short deadlines: a healthy browser closes in milliseconds, and
+        # when it's wedged, waiting longer helps nobody — this runs at
+        # interpreter exit (atexit) and must not stall shutdown.
         try:
-            asyncio.run_coroutine_threadsafe(_close(), loop).result(timeout=10)
+            asyncio.run_coroutine_threadsafe(_close(), loop).result(timeout=3)
         except Exception:
             pass
         loop.call_soon_threadsafe(loop.stop)
         if self._thread is not None:
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=2)
         self._loop = self._thread = None
         self._browser = self._playwright = self._pw_ctx = None
         self._sema = self._launch_lock = None
@@ -148,7 +151,15 @@ _worker = _BrowserWorker()
 
 def configure_browser(*, max_concurrent: int = _DEFAULT_MAX_CONCURRENT) -> None:
     """Set the ceiling on concurrent test_app contexts (default 8).
-    Must be called before the first test_app runs."""
+    Must be called before the first test_app runs.
+
+    PROCESS-GLOBAL, first-caller-wins: there is one shared Chromium
+    (and one config) per process — the right shape for the standard
+    one-embedder deployment. Concurrent *sessions* are fine (each
+    test_app gets its own isolated browser context); what can't
+    coexist is two independent embedders in one process wanting
+    different configs. Calling this after the browser started raises
+    rather than silently ignoring the setting."""
     _worker.configure(max_concurrent=max_concurrent)
 
 

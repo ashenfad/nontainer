@@ -124,6 +124,11 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   raising `on_log` sink) now emits one `RuntimeWarning` per runtime —
   previously every handler diagnostic vanished while the agent's
   documented repair loop ("tail `/app/logs/api.log`") debugged blind.
+- **Browser shutdown no longer stalls interpreter exit.** The shared
+  test_app browser's atexit teardown deadlines dropped from 10s+5s to
+  3s+2s — a healthy Chromium closes in milliseconds, and a wedged one
+  isn't worth holding process exit for. `configure_browser` now
+  documents its process-global, first-caller-wins contract.
 - **App static serving path traversal** — `.`/`..` segments can no
   longer escape `/app/`, and backend source under `/app/api/` is never
   served as a static file.
