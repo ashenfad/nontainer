@@ -213,8 +213,6 @@ class AppRuntime:
             inputs={"nt__req": request},
             sandbox=sandbox,
             cache_override=cache_override,
-            # frozen requests run concurrently → no global stderr redirect
-            capture_stderr=not self._frozen,
         )
 
         if result.stdout:

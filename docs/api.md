@@ -51,10 +51,14 @@ must be picklable data (per-call counterpart to the construction-time
 
 Use the `a*` variants when embedding in an async server — they're
 just `run_in_executor` wrappers, so CPU-bound sandbox work never
-blocks your loop. A workspace is single-writer: serialize calls to one
-workspace yourself (the adapters' per-session lock does this for agent
-use). `run_in_threadpool(ws.run_python, code)` from Starlette works
-too if you'd rather not use the facade.
+blocks your loop. A workspace is single-writer and enforces it:
+mutating calls hold an internal lock, so parallel calls to one
+workspace serialize safely (each atomic + checkpointed) instead of
+corrupting staged state. Read-only accessors don't take the lock —
+and neither do the host-side escape hatches (`ws.fs` writes, `ws.cache`
+mutation), so a host thread using those while agent calls run
+serializes itself. `run_in_threadpool(ws.run_python, code)` from
+Starlette works too if you'd rather not use the facade.
 
 `terminal` executes pipes, redirects (`> >> <`), `&&`/`||`/`;`,
 quoting, ~33 builtins (via termish) plus injected commands. `cd`
@@ -277,9 +281,10 @@ WorkspaceTools(
 ```
 
 `"auto"`: plain python env → one `terminal` tool; cache or host
-objects → split `terminal` + `run_python`. All tool calls hold a
-per-workspace lock (agno `arun()` runs sync tools concurrently on
-threads; parallel calls serialize safely). With `apps=`, `test_app`
+objects → split `terminal` + `run_python`. Parallel tool calls
+serialize safely (agno `arun()` runs sync tools concurrently on
+threads; the workspace's internal lock enforces single-writer, and
+the adapter's own lock fences its surrounding work). With `apps=`, `test_app`
 returns `ToolResult(content=..., images=[...])` — screenshots as real
 images for vision models.
 

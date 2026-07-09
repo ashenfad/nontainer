@@ -26,15 +26,14 @@ Planned implementations:
   sql_audit=True, fuse=True (opt-in mount); fork by file copy
   (cheap_fork=False).
 
-Concurrency note: providers are NOT thread-safe. One provider per
-session per process; serialize access per session above this layer
-(the serving extra does). This is not hypothetical for adapters:
-agno's ``arun()`` executes sync tools CONCURRENTLY on separate
-threads — including parallel tool calls from one model turn — so the
-agno adapter must expose ``async def`` tool methods that hold a
-per-session ``asyncio.Lock`` around an ``asyncio.to_thread`` of the
-sync core. Do not hand raw sync methods to an async harness and let
-it thread them.
+Concurrency note: providers are NOT thread-safe, and don't need to
+be — ``Workspace`` owns the single-writer invariant: its mutating
+public methods hold an internal ``RLock``, so a harness that threads
+parallel tool calls onto one session (not hypothetical: agno's
+``arun()`` executes sync tools concurrently, including parallel calls
+from one model turn) serializes safely instead of corrupting staged
+state. Embedders driving a *provider* directly (bypassing Workspace)
+take on serialization themselves.
 """
 
 from __future__ import annotations
