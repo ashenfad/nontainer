@@ -110,3 +110,20 @@ def test_build_sandbox_memoizes_policy():
         assert other.policy is not sb1.policy  # distinct budgets, distinct policy
     finally:
         ws.close()
+
+
+def test_build_sandbox_accepts_list_extra_classes():
+    """Extension-surface callers may pass a list; it must not blow up
+    on the memo key, and it shares the equivalent tuple's memo entry
+    (PR #7 review)."""
+
+    class Marker:
+        pass
+
+    ws = Workspace(KvgitProvider.open(None, session="memo-list"))
+    try:
+        as_list = ws.build_sandbox(extra_classes=[Marker])
+        as_tuple = ws.build_sandbox(extra_classes=(Marker,))
+        assert as_list.policy is as_tuple.policy
+    finally:
+        ws.close()

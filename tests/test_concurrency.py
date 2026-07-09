@@ -171,6 +171,40 @@ def test_reads_do_not_take_the_lock(kv_ws):
     assert finished.is_set(), "read-only accessors blocked behind the lock"
 
 
+def test_close_during_call_is_clean(kv_ws):
+    """close() holds the lock, and mutating calls check open-ness
+    INSIDE it — a call racing close either completes fully or raises
+    WorkspaceError, never a provider-level error mid-execution
+    (PR #7 review)."""
+    from nontainer import WorkspaceError
+
+    outcomes: list[str] = []
+    barrier = threading.Barrier(2)
+
+    def caller() -> None:
+        barrier.wait()
+        for i in range(20):
+            try:
+                kv_ws.terminal(f"echo {i} > /r{i}.txt")
+                outcomes.append("ok")
+            except WorkspaceError:
+                outcomes.append("closed")
+            except Exception as e:  # pragma: no cover
+                outcomes.append(f"BAD: {type(e).__name__}: {e}")
+
+    def closer() -> None:
+        barrier.wait()
+        kv_ws.close()
+
+    threads = [threading.Thread(target=caller), threading.Thread(target=closer)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert all(o in ("ok", "closed") for o in outcomes), outcomes
+
+
 # -- stderr isolation ---------------------------------------------------------
 
 

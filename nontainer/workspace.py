@@ -466,6 +466,9 @@ class Workspace:
         from sandtrap import sandbox
 
         cfg = self._python_config
+        # Coerce: extension-surface callers may pass a list, which
+        # would be unhashable as part of the memo key (PR #7).
+        extra_classes = tuple(extra_classes)
         key = (timeout, tick_limit, extra_classes)
         policy = self._policy_memo.get(key)
         if policy is None:
@@ -654,8 +657,11 @@ class Workspace:
         from termish import TerminalError, execute
         from termish.parser import ParseError
 
-        self._check_open()
         with self._lock:
+            # Inside the lock: close() also holds it, so a call that
+            # wins the lock either sees the workspace open for its
+            # whole execution or raises cleanly — no TOCTOU (PR #7).
+            self._check_open()
             try:
                 output = execute(command, self._fs, commands=self._commands)
                 exit_code, stderr = 0, ""
@@ -694,8 +700,8 @@ class Workspace:
         fs, and imports from ``helpers/`` on the fs. Never raises for
         sandboxed-code failure — check ``error`` / truthiness.
         """
-        self._check_open()
         with self._lock:
+            self._check_open()
             result = self.exec_python(code, inputs=inputs)
             self._save_cwd()
             cp = self._maybe_checkpoint("run_python")
@@ -918,9 +924,9 @@ class Workspace:
         """Write a file (parents created, overwrites). The quoting-free
         alternative to shell redirects for multiline content; exposed
         by adapters as the ``file_write`` tool. Checkpointed."""
-        self._check_open()
         data = content.encode() if isinstance(content, str) else content
         with self._lock:
+            self._check_open()
             created = not self._fs.exists(path)
             # PurePosixPath: workspace paths are POSIX regardless of host OS
             parent = str(PurePosixPath(path).parent)
@@ -953,8 +959,8 @@ class Workspace:
         file."""
         from .editing import EditError, apply_edit
 
-        self._check_open()
         with self._lock:
+            self._check_open()
             try:
                 text = self._fs.read(path).decode("utf-8")
             except Exception as e:
@@ -980,11 +986,11 @@ class Workspace:
         for those). ``dest`` defaults to the source's basename at the
         workspace root; parent directories are created. Overwrites.
         """
-        self._check_open()
         src_path = Path(src).expanduser()
         data = src_path.read_bytes()
         ws_path = dest or src_path.name
         with self._lock:
+            self._check_open()
             created = not self._fs.exists(ws_path)
             parent = str(PurePosixPath(ws_path).parent)
             if parent not in (".", "/", ""):

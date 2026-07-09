@@ -175,8 +175,11 @@ def normalize(value: Any) -> WireResponse:
         )
         # Lowercase the agent-supplied header keys: HTTP headers are
         # case-insensitive, and agents type the idiomatic Content-Type —
-        # a cased lookup would silently ignore it.
-        headers = {str(k).lower(): str(v) for k, v in value.headers.items()}
+        # a cased lookup would silently ignore it. Tolerate an explicit
+        # headers=None (agents write it; the field default is {}).
+        headers = {
+            str(k).lower(): str(v) for k, v in (value.headers or {}).items()
+        }
         return WireResponse(
             status=value.status,
             content=inner.content,

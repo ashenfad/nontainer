@@ -93,6 +93,13 @@ def test_require_json_null_is_missing():
     assert "missing" in e.value.message
 
 
+def test_normalize_tolerates_none_headers():
+    """Agents write Response(headers=None); it must mean 'no headers',
+    not an AttributeError → 500 (PR #7 review)."""
+    r = normalize(Response(body={"a": 1}, headers=None))
+    assert r.status == 200 and r.headers == {}
+
+
 def test_normalize_header_casing():
     """Agents type the idiomatic Content-Type — any casing must win
     over the inferred type, and wire keys come out lowercased."""
