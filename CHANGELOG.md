@@ -43,6 +43,27 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   quoting workarounds; dangerous `sys` internals stay unreachable.
 
 ### Changed
+- **Workspace enforces its single-writer invariant internally.**
+  Mutating public calls (`terminal`, `run_python`, `write_file`,
+  `edit_file`, `put`, `checkpoint`, `restore`, `rollback`, `discard`,
+  `fork`, `close`) hold an internal `RLock`, so a harness that threads
+  parallel tool calls onto one session serializes safely — each call
+  atomic + checkpointed — instead of corrupting staged state. Custom
+  harnesses no longer need to supply their own lock (the adapters keep
+  theirs as a fence for adapter-level work). Read-only accessors stay
+  lock-free; host-side escape hatches (`ws.fs` writes, `ws.cache`
+  mutation) bypass the lock and remain the caller's concurrency
+  problem. RLock so a `host_object` that calls back into the public
+  API serializes instead of deadlocking.
+- **stderr capture is per-execution, not a process-global redirect.**
+  `run_python` stderr now comes from sandtrap 0.2.4's ContextVar-routed
+  capture (`ExecResult.stderr`): concurrent executions — other sessions
+  in the same process, frozen app serving — no longer cross-contaminate
+  stderr or risk leaving `sys.stderr` pointing at a dead buffer. The
+  internal `capture_stderr` escape hatch is gone; served (frozen) app
+  handlers get stderr capture back. Sandboxed `sys.stderr` writes in
+  the terminal `python` builtin now surface as stderr instead of
+  leaking into pipeline stdout.
 - **Live app serving is now frozen (read-only) snapshots.** `build_router`
   serves a Workspace pinned to a published commit: handlers read the VFS
   and call `host_objects` but can't mutate it (write → 500). This makes
@@ -64,6 +85,7 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   served as a static file.
 
 ### Changed
-- Requires **sandtrap ≥ 0.2.3** (recursive-registration filter
-  propagation, dotted patterns, synthetic `sys`/stdin) and **monkeyfs
-  ≥ 0.1.5** (`VirtualFS.invalidate()`).
+- Requires **sandtrap ≥ 0.2.4** (per-execution stderr capture;
+  recursive-registration filter propagation, dotted patterns,
+  synthetic `sys`/stdin) and **monkeyfs ≥ 0.1.5**
+  (`VirtualFS.invalidate()`).

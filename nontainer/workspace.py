@@ -7,13 +7,16 @@ Design notes (see README "Design decisions"):
   VFS imports), and files (artifacts). No resident interpreter state.
 - **Sync core.** termish and kvgit are synchronous (sandtrap is NOT
   the constraint — it has ``aexec()``); async harnesses wrap calls in
-  ``asyncio.to_thread`` (the adapters do this). One workspace must not
-  be driven from two threads concurrently. Open question for v1.x: an
-  ``arun_python`` passing through to sandtrap ``aexec`` would let
-  *agent code* use top-level ``await`` (parallel host-object calls) —
-  but it would still not be host-loop-safe end-to-end, since sandboxed
-  file I/O hits sync kvgit under monkeyfs; async harnesses off-loop
-  the call regardless.
+  ``asyncio.to_thread`` (the adapters do this). A workspace is
+  single-writer and enforces it: mutating calls hold an internal
+  ``RLock``, so a harness that threads parallel tool calls onto one
+  session serializes safely (each call atomic + checkpointed) instead
+  of corrupting staged state. Read-only accessors don't take the
+  lock. Open question for v1.x: an ``arun_python`` passing through to
+  sandtrap ``aexec`` would let *agent code* use top-level ``await``
+  (parallel host-object calls) — but it would still not be
+  host-loop-safe end-to-end, since sandboxed file I/O hits sync kvgit
+  under monkeyfs; async harnesses off-loop the call regardless.
 - **Observations are bounded.** Tool results are truncated to
   ``max_observation`` characters with an explicit ``truncated`` flag —
   agents handle "output was cut" far better than silent loss or a
@@ -25,9 +28,8 @@ Design notes (see README "Design decisions"):
 
 from __future__ import annotations
 
-import contextlib
-import io
 import pickle
+import threading
 import time
 import traceback
 import warnings
@@ -363,6 +365,18 @@ class Workspace:
         self._max_observation = max_observation
         self._closed = False
 
+        # Single-writer enforcement: mutating public methods hold this
+        # lock, so concurrent calls from a threading harness serialize
+        # (each atomic + checkpointed) instead of interleaving writes
+        # into the provider's staged buffer. Invariants: the lock is
+        # taken ONLY in public method bodies — never in _exec_python /
+        # _build_sandbox / _maybe_checkpoint (the internal paths the
+        # apps extra also drives) — and read-only accessors don't take
+        # it. RLock, not Lock: agent code can call injected
+        # host_objects, and a host object that calls back into this
+        # workspace's public API must serialize, not deadlock.
+        self._lock = threading.RLock()
+
         # autocheckpoint is meaningless (and forced off) when the
         # provider can't checkpoint.
         self._autocheckpoint = autocheckpoint and provider.caps.versioned
@@ -591,17 +605,19 @@ class Workspace:
         from termish.parser import ParseError
 
         self._check_open()
-        try:
-            output = execute(command, self._fs, commands=self._commands)
-            exit_code, stderr = 0, ""
-        except ParseError as e:
-            output, exit_code, stderr = "", 2, f"parse error: {e}"
-        except TerminalError as e:
-            # termish >= 0.1.7 preserves command exit codes (127 for
-            # not-found, a CommandResult's own code — curl's 22 survives)
-            output, exit_code, stderr = e.partial_output, e.exit_code, e.message
+        with self._lock:
+            try:
+                output = execute(command, self._fs, commands=self._commands)
+                exit_code, stderr = 0, ""
+            except ParseError as e:
+                output, exit_code, stderr = "", 2, f"parse error: {e}"
+            except TerminalError as e:
+                # termish >= 0.1.7 preserves command exit codes (127 for
+                # not-found, a CommandResult's own code — curl's 22 survives)
+                output, exit_code, stderr = e.partial_output, e.exit_code, e.message
 
-        self._save_cwd()
+            self._save_cwd()
+            checkpoint = self._maybe_checkpoint("terminal")
         stdout, trunc_out = _truncate(output, self._max_observation)
         stderr, trunc_err = _truncate(stderr, self._max_observation)
         return TerminalResult(
@@ -609,7 +625,7 @@ class Workspace:
             exit_code=exit_code,
             stderr=stderr,
             truncated=trunc_out or trunc_err,
-            checkpoint=self._maybe_checkpoint("terminal"),
+            checkpoint=checkpoint,
         )
 
     def run_python(
@@ -629,9 +645,10 @@ class Workspace:
         sandboxed-code failure — check ``error`` / truthiness.
         """
         self._check_open()
-        result = self._exec_python(code, inputs=inputs)
-        self._save_cwd()
-        cp = self._maybe_checkpoint("run_python")
+        with self._lock:
+            result = self._exec_python(code, inputs=inputs)
+            self._save_cwd()
+            cp = self._maybe_checkpoint("run_python")
         return replace(result, checkpoint=cp) if cp else result
 
     # -- async host facades ---------------------------------------------
@@ -644,11 +661,11 @@ class Workspace:
     # would still block the loop on the common CPU-bound handler —
     # threading is the robust choice and keeps the agent surface uniform.)
     #
-    # A workspace is single-writer, same as the sync API: the caller
-    # serializes calls to one workspace (the adapters' per-session lock
-    # does this for agent use). Threading makes accidental concurrency
-    # easier to reach, so it's called out here rather than silently
-    # guarded.
+    # A workspace is single-writer, same as the sync API — but the
+    # workspace enforces it: threading makes accidental concurrency
+    # easy to reach, and these facades go through the locked public
+    # methods, so concurrent awaits serialize safely (at the cost of a
+    # blocked executor thread each while they wait).
 
     async def aterminal(self, command: str) -> TerminalResult:
         """Async facade over :meth:`terminal` — runs it in a thread so an
@@ -679,14 +696,16 @@ class Workspace:
         cache_override: Any = _UNSET,
         stdin: str | None = None,
         argv: list[str] | None = None,
-        capture_stderr: bool = True,
     ) -> PythonResult:
-        """Shared execution path (no checkpoint) — used by
+        """Shared execution path (no checkpoint, no lock) — used by
         ``run_python``, the terminal ``python`` builtin, and the apps
         dispatch (which passes its own sandbox and, for GET, a
         read-only cache view via ``cache_override``). ``stdin``/``argv``
         expose sandtrap's synthetic ``sys`` (the terminal ``python``
-        builtin wires the pipeline into it)."""
+        builtin wires the pipeline into it). Safe to call concurrently
+        with distinct sandboxes (frozen app serving does): stderr is
+        captured per-execution by sandtrap, not by a process-global
+        redirect."""
         namespace: dict[str, Any] = {}
 
         for name, value in (inputs or {}).items():
@@ -714,20 +733,8 @@ class Workspace:
                 namespace["cache"] = RpcProxyMarker(target="cache")
 
         sb = sandbox if sandbox is not None else self._sandbox
-        stderr_buf = io.StringIO()
         start = time.monotonic()
-        if capture_stderr:
-            # redirect_stderr swaps the PROCESS-global sys.stderr, so it
-            # is only safe when calls are serialized. Concurrent callers
-            # (frozen app serving) pass capture_stderr=False.
-            with contextlib.redirect_stderr(stderr_buf):
-                exec_result = sb.exec(
-                    code, namespace=namespace, stdin=stdin, argv=argv
-                )
-        else:
-            exec_result = sb.exec(
-                code, namespace=namespace, stdin=stdin, argv=argv
-            )
+        exec_result = sb.exec(code, namespace=namespace, stdin=stdin, argv=argv)
         duration = time.monotonic() - start
 
         error = (
@@ -758,7 +765,7 @@ class Workspace:
             trunc_out = True
         else:
             stdout, trunc_out = _truncate(raw_stdout, self._max_observation)
-        stderr, trunc_err = _truncate(stderr_buf.getvalue(), self._max_observation)
+        stderr, trunc_err = _truncate(exec_result.stderr, self._max_observation)
         return PythonResult(
             stdout=stdout,
             stderr=stderr,
@@ -847,7 +854,9 @@ class Workspace:
     @property
     def fs(self) -> Any:
         """The termish-protocol filesystem, for host-side reads/writes
-        (seeding inputs, harvesting artifacts) without the sandbox."""
+        (seeding inputs, harvesting artifacts) without the sandbox.
+        Bypasses the workspace's single-writer lock — a host thread
+        writing here while agent calls run serializes itself."""
         return self._fs
 
     def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
@@ -856,18 +865,19 @@ class Workspace:
         by adapters as the ``file_write`` tool. Checkpointed."""
         self._check_open()
         data = content.encode() if isinstance(content, str) else content
-        created = not self._fs.exists(path)
-        # PurePosixPath: workspace paths are POSIX regardless of host OS
-        parent = str(PurePosixPath(path).parent)
-        if parent not in (".", "/", ""):
-            self._fs.makedirs(parent, exist_ok=True)
-        self._fs.write(path, data)
-        return WriteOutcome(
-            path=path,
-            size=len(data),
-            created=created,
-            checkpoint=self._maybe_checkpoint("file_write"),
-        )
+        with self._lock:
+            created = not self._fs.exists(path)
+            # PurePosixPath: workspace paths are POSIX regardless of host OS
+            parent = str(PurePosixPath(path).parent)
+            if parent not in (".", "/", ""):
+                self._fs.makedirs(parent, exist_ok=True)
+            self._fs.write(path, data)
+            return WriteOutcome(
+                path=path,
+                size=len(data),
+                created=created,
+                checkpoint=self._maybe_checkpoint("file_write"),
+            )
 
     def edit_file(
         self,
@@ -889,22 +899,23 @@ class Workspace:
         from .editing import EditError, apply_edit
 
         self._check_open()
-        try:
-            text = self._fs.read(path).decode("utf-8")
-        except Exception as e:
-            raise WorkspaceError(f"cannot read {path!r}: {e}") from e
-        try:
-            outcome = apply_edit(
-                text, old_string, new_string, replace_all=replace_all, path=path
-            )
-        except EditError as e:
-            raise WorkspaceError(str(e)) from e
-        if outcome.count:
-            self._fs.write(path, outcome.content.encode())
-            cp = self._maybe_checkpoint("file_edit")
-            if cp:
-                outcome = replace(outcome, checkpoint=cp)
-        return outcome
+        with self._lock:
+            try:
+                text = self._fs.read(path).decode("utf-8")
+            except Exception as e:
+                raise WorkspaceError(f"cannot read {path!r}: {e}") from e
+            try:
+                outcome = apply_edit(
+                    text, old_string, new_string, replace_all=replace_all, path=path
+                )
+            except EditError as e:
+                raise WorkspaceError(str(e)) from e
+            if outcome.count:
+                self._fs.write(path, outcome.content.encode())
+                cp = self._maybe_checkpoint("file_edit")
+                if cp:
+                    outcome = replace(outcome, checkpoint=cp)
+            return outcome
 
     def put(self, src: str | Path, dest: str | None = None) -> WriteOutcome:
         """Copy a host file INTO the workspace ("upload").
@@ -918,17 +929,18 @@ class Workspace:
         src_path = Path(src).expanduser()
         data = src_path.read_bytes()
         ws_path = dest or src_path.name
-        created = not self._fs.exists(ws_path)
-        parent = str(PurePosixPath(ws_path).parent)
-        if parent not in (".", "/", ""):
-            self._fs.makedirs(parent, exist_ok=True)
-        self._fs.write(ws_path, data)
-        return WriteOutcome(
-            path=ws_path,
-            size=len(data),
-            created=created,
-            checkpoint=self._maybe_checkpoint("put"),
-        )
+        with self._lock:
+            created = not self._fs.exists(ws_path)
+            parent = str(PurePosixPath(ws_path).parent)
+            if parent not in (".", "/", ""):
+                self._fs.makedirs(parent, exist_ok=True)
+            self._fs.write(ws_path, data)
+            return WriteOutcome(
+                path=ws_path,
+                size=len(data),
+                created=created,
+                checkpoint=self._maybe_checkpoint("put"),
+            )
 
     def get(self, src: str, dest: str | Path | None = None) -> bytes:
         """Copy a workspace file OUT ("download"). Returns the bytes;
@@ -947,7 +959,9 @@ class Workspace:
     @property
     def cache(self) -> MutableMapping[str, Any]:
         """The agent's persistent dict, host-side view. Key rules: str
-        keys, no ``__`` prefix, no ``/``."""
+        keys, no ``__`` prefix, no ``/``. Writes bypass the workspace's
+        single-writer lock (they hit the same staged buffer) — a host
+        thread mutating it while agent calls run serializes itself."""
         if not self._cache_enabled:
             raise NotSupportedError(
                 "cache is disabled for this workspace (cache=False)"
@@ -959,25 +973,28 @@ class Workspace:
     # ------------------------------------------------------------------
 
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:
-        return self._provider.checkpoint(info)
+        with self._lock:
+            return self._provider.checkpoint(info)
 
     def restore(self, checkpoint_id: str) -> None:
-        self._provider.restore(checkpoint_id)
+        with self._lock:
+            self._provider.restore(checkpoint_id)
 
     def rollback(self, steps: int = 1) -> str:
         """Restore the Nth-previous checkpoint; returns its id.
         Sugar over ``history()`` + ``restore()``."""
         if steps < 1:
             raise ValueError("steps must be >= 1")
-        entries = list(self._provider.history(limit=steps + 1))
-        if len(entries) <= steps:
-            raise CheckpointNotFoundError(
-                f"Cannot roll back {steps} step(s): only "
-                f"{len(entries)} checkpoint(s) in history"
-            )
-        target = entries[steps]
-        self._provider.restore(target.id)
-        return target.id
+        with self._lock:
+            entries = list(self._provider.history(limit=steps + 1))
+            if len(entries) <= steps:
+                raise CheckpointNotFoundError(
+                    f"Cannot roll back {steps} step(s): only "
+                    f"{len(entries)} checkpoint(s) in history"
+                )
+            target = entries[steps]
+            self._provider.restore(target.id)
+            return target.id
 
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
         return self._provider.history(limit=limit)
@@ -986,7 +1003,10 @@ class Workspace:
         """Independent session seeded from current state. Inherits this
         workspace's python config, commands, and settings. Cost varies
         by backend (see ``caps.cheap_fork`` and the README tradeoffs)."""
-        forked = self._provider.fork(name)
+        # Mutating despite appearances: providers may checkpoint pending
+        # staged changes so the fork sees current state (kvgit does).
+        with self._lock:
+            forked = self._provider.fork(name)
         user_commands = {
             k: v for k, v in self._commands.items() if k not in RESERVED_COMMANDS
         }
@@ -1001,7 +1021,8 @@ class Workspace:
 
     def discard(self) -> None:
         """Drop writes since the last checkpoint (staging providers)."""
-        self._provider.discard()
+        with self._lock:
+            self._provider.discard()
 
     # ------------------------------------------------------------------
     # power modes / lifecycle
@@ -1012,9 +1033,10 @@ class Workspace:
         return self._provider.mount()
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._provider.close()
+        with self._lock:  # don't close the provider mid-call
+            if not self._closed:
+                self._closed = True
+                self._provider.close()
 
     def __enter__(self) -> "Workspace":
         return self

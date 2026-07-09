@@ -10,8 +10,10 @@ Or embed: :func:`build_server` returns the ``FastMCP`` instance for a
 Workspace you constructed yourself (custom PythonConfig, mounts,
 host objects — CLI flags only cover the config-file-able subset).
 
-Concurrency: FastMCP may run sync tools on worker threads; every tool
-call holds a per-workspace ``threading.Lock`` (same rationale as the
+Concurrency: FastMCP may run sync tools on worker threads. ``Workspace``
+enforces its own single-writer invariant (mutating calls hold an
+internal lock); the adapter's per-workspace ``threading.Lock`` stays as
+a fence for adapter-level work around the call (same rationale as the
 agno adapter — see protocol.py's concurrency note).
 """
 

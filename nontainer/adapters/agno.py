@@ -15,12 +15,14 @@ conversation (kvgit branches make this cheap).
 
 Concurrency: agno's ``arun()`` executes sync tools CONCURRENTLY on
 separate threads — including parallel tool calls from a single model
-turn — while nontainer workspaces are single-threaded by contract.
-Every tool call therefore holds a per-workspace ``threading.Lock``:
-parallel calls serialize safely (each atomic + checkpointed) instead
-of corrupting staged state. Under sync ``run()`` the lock is
-uncontended. The toolkit ``instructions`` carry the one-call-per-turn
-convention so serialization stays a backstop, not the norm.
+turn. ``Workspace`` enforces its own single-writer invariant (mutating
+calls hold an internal lock), so parallel calls serialize safely (each
+atomic + checkpointed) even without adapter help. The toolkit keeps a
+per-workspace ``threading.Lock`` anyway: it additionally fences
+adapter-level work around the call (``test_app`` + screenshot reads,
+turn-commit checks) and is uncontended under sync ``run()``. The
+toolkit ``instructions`` carry the one-call-per-turn convention so
+serialization stays a backstop, not the norm.
 
 Exposure follows ``resolve_tools_mode`` (``"auto"`` default): a plain
 python environment gets a single ``terminal`` tool (with the `python`
