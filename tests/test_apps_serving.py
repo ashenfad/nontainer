@@ -33,6 +33,19 @@ def post(req):
     return {"ok": True}
 """
 
+# agent-set headers, idiomatically cased — the served response must
+# honor them (content type) and defer to them (CSP), not duplicate.
+HTMLER = """
+def get(req):
+    return Response(
+        body="<html><body>custom</body></html>",
+        headers={
+            "Content-Type": "text/html",
+            "Content-Security-Policy": "default-src 'none'",
+        },
+    )
+"""
+
 
 def make_served(*, python=None, on_log=None, **router_kwargs):
     ws = Workspace(KvgitProvider.open(None, session="s1"), python=python)
@@ -41,6 +54,7 @@ def make_served(*, python=None, on_log=None, **router_kwargs):
     ws.fs.write("/app/index.html", b"<html><body><h1>hi</h1></body></html>")
     ws.fs.write("/app/api/scores.py", HANDLER.encode())
     ws.fs.write("/app/api/writer.py", WRITER.encode())
+    ws.fs.write("/app/api/page.py", HTMLER.encode())
     ws.cache["scores"] = ["alice", "amy", "bob"]
     ws.checkpoint()
 
@@ -70,6 +84,18 @@ def test_static_and_csp():
     assert "content-security-policy" in r.headers
     r2 = client.get(f"/apps/{token}/api/scores")
     assert "content-security-policy" not in r2.headers  # non-HTML
+    ws.close()
+
+
+def test_agent_headers_win_over_defaults():
+    """Cased agent headers are honored: Content-Type overrides the
+    inferred type; an agent CSP defers the router default (once, not
+    a duplicate pair, which browsers would intersect)."""
+    ws, token, client = make_served()
+    r = client.get(f"/apps/{token}/api/page")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    assert r.headers.get_list("content-security-policy") == ["default-src 'none'"]
     ws.close()
 
 

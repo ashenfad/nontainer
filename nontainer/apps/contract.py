@@ -38,24 +38,51 @@ class Request:
 
     def require(self, name: str, typ: type = str) -> Any:
         """Fetch ``name`` from the JSON body (preferred) or query
-        params; raise ``HttpError(400)`` when missing or mistyped."""
-        value: Any = None
+        params; raise ``HttpError(400)`` when missing or mistyped.
+
+        Coercion is liberal-in and symmetric across both sources:
+        strings coerce through ``typ`` (so a query param and a JSON
+        string behave alike; bool accepts ``true/1/false/0``), and
+        numerics follow JSON's single number type — an int passes for
+        ``float``, an integral float for ``int``. bools are never
+        numbers (JSON ``true`` is not a valid ``int``)."""
         if isinstance(self.json, dict) and name in self.json:
             value = self.json[name]
         elif name in self.params:
             value = self.params[name]
-            if typ is not str:
-                try:
-                    value = typ(value)
-                except (TypeError, ValueError):
-                    value = None
-        if value is None:
+        else:
             raise HttpError(400, f"missing required field: {name!r}")
-        if not isinstance(value, typ):
-            raise HttpError(
-                400, f"field {name!r} must be {typ.__name__}"
-            )
-        return value
+        if value is None:  # JSON null ≙ absent
+            raise HttpError(400, f"missing required field: {name!r}")
+        ok, coerced = _coerce(value, typ)
+        if not ok:
+            raise HttpError(400, f"field {name!r} must be {typ.__name__}")
+        return coerced
+
+
+_BOOL_STRINGS = {"true": True, "1": True, "false": False, "0": False}
+
+
+def _coerce(value: Any, typ: type) -> tuple[bool, Any]:
+    """``(ok, coerced)`` for :meth:`Request.require` — see its
+    docstring for the rules."""
+    if isinstance(value, str) and typ is not str:
+        if typ is bool:  # bool("false") is True; map words instead
+            b = _BOOL_STRINGS.get(value.lower())
+            return b is not None, b
+        try:
+            return True, typ(value)
+        except (TypeError, ValueError):
+            return False, None
+    if typ in (int, float) and isinstance(value, bool):
+        return False, None
+    if isinstance(value, typ):
+        return True, value
+    if typ is float and isinstance(value, int):
+        return True, float(value)
+    if typ is int and isinstance(value, float) and value.is_integer():
+        return True, int(value)
+    return False, None
 
 
 _HEADER_ALLOW = frozenset(
@@ -113,6 +140,9 @@ class Response:
     status: int = 200
     body: Any = None
     headers: dict[str, str] = field(default_factory=dict)
+    """HTTP headers are case-insensitive: keys here may be any casing
+    (``Content-Type`` and ``content-type`` alike); :func:`normalize`
+    lowercases them on the way to the wire."""
 
 
 @dataclass(frozen=True)
@@ -124,6 +154,8 @@ class WireResponse:
     content: bytes
     content_type: str
     headers: dict[str, str] = field(default_factory=dict)
+    """Lowercased keys (canonicalized by :func:`normalize`), so
+    consumers can look up / merge headers without case games."""
 
     @property
     def text(self) -> str:
@@ -141,11 +173,15 @@ def normalize(value: Any) -> WireResponse:
         inner = normalize(value.body) if value.body is not None else WireResponse(
             204, b"", "text/plain"
         )
+        # Lowercase the agent-supplied header keys: HTTP headers are
+        # case-insensitive, and agents type the idiomatic Content-Type —
+        # a cased lookup would silently ignore it.
+        headers = {str(k).lower(): str(v) for k, v in value.headers.items()}
         return WireResponse(
             status=value.status,
             content=inner.content,
-            content_type=value.headers.get("content-type", inner.content_type),
-            headers=dict(value.headers),
+            content_type=headers.get("content-type", inner.content_type),
+            headers=headers,
         )
     if value is None:
         return WireResponse(204, b"", "text/plain")

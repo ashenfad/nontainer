@@ -52,6 +52,58 @@ def test_request_require():
     assert req2.require("limit", int) == 5  # coerced from query string
 
 
+def test_require_json_numeric_coercion():
+    """JSON has one number type: int passes for float, integral float
+    for int; bools are never numbers; strings coerce like params."""
+    req = request(
+        "POST",
+        "/api/x",
+        body=b'{"n": 5, "r": 2.0, "half": 2.5, "on": true, "s": "7"}',
+    )
+    assert req.require("n", float) == 5.0
+    assert req.require("r", int) == 2
+    assert req.require("s", int) == 7  # JSON string ≙ query-param string
+    with pytest.raises(HttpError):
+        req.require("half", int)  # non-integral float
+    with pytest.raises(HttpError):
+        req.require("on", int)  # bool is not a number
+    with pytest.raises(HttpError):
+        req.require("on", float)
+    assert req.require("on", bool) is True
+    with pytest.raises(HttpError):
+        req.require("n", bool)  # nor is a number a bool
+
+
+def test_require_param_coercion():
+    req = request("GET", "/api/x?n=5&half=2.5&on=true&off=0&word=maybe")
+    assert req.require("n", int) == 5
+    assert req.require("half", float) == 2.5
+    assert req.require("on", bool) is True
+    assert req.require("off", bool) is False  # bool("0") would be True
+    with pytest.raises(HttpError):
+        req.require("word", bool)
+    with pytest.raises(HttpError):
+        req.require("half", int)
+
+
+def test_require_json_null_is_missing():
+    req = request("POST", "/api/x", body=b'{"n": null}')
+    with pytest.raises(HttpError) as e:
+        req.require("n")
+    assert "missing" in e.value.message
+
+
+def test_normalize_header_casing():
+    """Agents type the idiomatic Content-Type — any casing must win
+    over the inferred type, and wire keys come out lowercased."""
+    r = normalize(Response(body="a,b\n1,2", headers={"Content-Type": "text/csv"}))
+    assert r.content_type == "text/csv"
+    assert r.headers == {"content-type": "text/csv"}
+    r = normalize(Response(body={"a": 1}, headers={"X-Custom": "1"}))
+    assert r.content_type == "application/json"  # inferred; keys lowered
+    assert r.headers == {"x-custom": "1"}
+
+
 # -- dispatch: routing -----------------------------------------------------
 
 
