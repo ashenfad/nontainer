@@ -20,8 +20,10 @@ Execution: one Chromium is shared across all test_app calls, on a
 dedicated async loop-thread (see ``browser.py``); each call runs on its
 own fresh context, bounded by a concurrency semaphore. The synchronous
 route dispatch is CPU-bound, so it's hopped off the browser loop into a
-thread and serialized per workspace (``AppRuntime._dispatch_lock``) —
-so a page's parallel fetches don't reenter the sandbox.
+thread; ``AppRuntime.dispatch`` serializes it under the workspace's
+own single-writer lock (``ws.lock``) — a page's parallel fetches don't
+reenter the sandbox, and dispatch/screenshot writes can't race
+ordinary tool calls on the same workspace.
 """
 
 from __future__ import annotations
@@ -108,20 +110,15 @@ class TestAppResult:
         return self.ok
 
 
-def _locked_dispatch(runtime: "AppRuntime", request: Any) -> Any:
-    """Sync dispatch under the workspace's dispatch lock — runs in a
-    thread (off the browser loop), serialized per workspace."""
-    with runtime._dispatch_lock:
-        return runtime.dispatch(request)
-
-
 def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
     """Write a screenshot to the workspace fs — off the browser loop and
-    under the SAME lock as dispatch, since ``ws.fs`` is shared with the
-    executor-hopped route dispatch (concurrent writes would race)."""
-    with runtime._dispatch_lock:
-        runtime._ws.fs.makedirs("/app/screenshots", exist_ok=True)
-        runtime._ws.fs.write(path, png)
+    under the workspace's single-writer lock, since ``ws.fs`` is shared
+    with the executor-hopped route dispatch (which serializes under the
+    same lock inside ``AppRuntime.dispatch``)."""
+    ws = runtime._ws
+    with ws.lock:
+        ws.fs.makedirs("/app/screenshots", exist_ok=True)
+        ws.fs.write(path, png)
 
 
 async def _run_actions(
@@ -170,11 +167,10 @@ async def _run_actions(
                 body=request.post_data_buffer or b"",
                 headers=filter_headers(request.headers),
             )
-            # sync + CPU-bound: run off the browser loop, serialized per
-            # workspace so parallel fetches don't reenter the sandbox
-            wire = await loop.run_in_executor(
-                None, _locked_dispatch, runtime, req
-            )
+            # sync + CPU-bound: run off the browser loop; dispatch
+            # serializes under ws.lock so parallel fetches don't
+            # reenter the sandbox (or race tool calls)
+            wire = await loop.run_in_executor(None, runtime.dispatch, req)
             await route.fulfill(
                 status=wire.status, body=wire.content, content_type=wire.content_type
             )

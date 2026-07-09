@@ -83,8 +83,8 @@ dispatch(ws, Request) -> Response
 ```
 
 Dispatch resolves `/api/<name>` → `/app/api/<name>.py`, loads the file
-source from the workspace fs, and executes it via the existing
-`Workspace._exec_python` machinery (no checkpoint) with:
+source from the workspace fs, and executes it via the workspace's
+extension surface (`Workspace.exec_python`, no checkpoint) with:
 
 - the handler source prepended, the verb function invoked in a small
   trailer, `req` passed via the established `inputs=` channel
@@ -156,7 +156,7 @@ under /app.
 Three tiers, three mechanisms (all reuse existing machinery):
 
 1. **Handlers (backend) get the agent namespace by construction.**
-   Dispatch runs through the same `_exec_python` path as `run_python`:
+   Dispatch runs through the same `exec_python` path as `run_python`:
    same policy, same injected `cache` and `host_objects`. A handler
    calling `db.query(...)` or reading `cache['scores']` needs no new
    mechanism. Purity refinement: GET handlers get a **read-only cache
@@ -273,7 +273,9 @@ app.mount("/apps", router)      # serves /apps/{token}/...
   the read-only Workspace *inside* `resolve` (safe — it's immutable).
 - **Concurrent, no per-session lock.** Fresh sandbox per request → no
   staged buffer, no shared instance to race, no durability surface.
-  This is what the frozen guarantee buys.
+  This is what the frozen guarantee buys. Cheap when `resolve` caches
+  its Workspace: `build_sandbox` memoizes the built policy, so the
+  per-request cost is sandbox construction, not policy registration.
 - **`{token}` is a capability** — long, unguessable, minted with
   `mint_token()`, mapped to snapshots in the embedder's storage.
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler

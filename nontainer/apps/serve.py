@@ -95,6 +95,9 @@ def build_router(
     ) -> Any:
         # Frozen dispatch builds a fresh read-only sandbox per request, so
         # concurrent requests (even to one snapshot) are safe with no lock.
+        # Cheap when `resolve` caches its Workspace: build_sandbox memoizes
+        # the built policy per workspace, so per-request cost is sandbox
+        # construction, not policy registration.
         runtime = AppRuntime(ws, cfg, frozen=True, log_sink=log_sink)
         return runtime.dispatch(
             make_request(method, url, body=body, headers=headers)
