@@ -48,3 +48,35 @@ async def test_mcp_file_tools():
     )
     assert ws.fs.read("f.txt") == b"xyz"
     ws.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_apps_exposure():
+    """The apps wiring the CLI's --apps flag enables: a test_app tool
+    plus the curl terminal builtin, over one workspace."""
+    from nontainer.apps import enable_apps
+
+    ws = make_ws()
+    runtime = enable_apps(ws)
+    server = build_server(ws, apps=runtime)
+    tools = {t.name for t in await server.list_tools()}
+    assert "test_app" in tools
+
+    ws.fs.makedirs("/app/api", exist_ok=True)
+    ws.fs.write("/app/api/ping.py", b"def get(req):\n    return {'pong': True}\n")
+    result = await server.call_tool("terminal", {"command": "curl /api/ping"})
+    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+    assert "pong" in text
+    ws.close()
+
+
+def test_cli_flags_parse():
+    """The CLI parser accepts the documented flags (main() itself
+    would block serving stdio, so parse-level only)."""
+    from nontainer.adapters.mcp import _build_parser
+
+    args = _build_parser().parse_args(
+        ["--session", "s", "--apps", "--module", "math", "--tools", "split"]
+    )
+    assert args.apps and args.module == ["math"] and args.tools == "split"
+    assert not _build_parser().parse_args([]).apps  # off by default

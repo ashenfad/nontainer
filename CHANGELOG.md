@@ -62,6 +62,13 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   route callbacks and screenshot writes can't race ordinary tool
   calls.
 
+### Added
+- **`--apps` flag on the MCP CLI.** `python -m nontainer.adapters.mcp
+  --apps` enables the apps loop without writing an embed script: the
+  `curl` terminal builtin plus a `test_app` tool whose screenshots
+  return as MCP image content. Previously test_app over MCP required
+  calling `build_server(ws, apps=...)` from Python.
+
 ### Changed
 - **Workspace enforces its single-writer invariant internally.**
   Mutating public calls (`terminal`, `run_python`, `write_file`,

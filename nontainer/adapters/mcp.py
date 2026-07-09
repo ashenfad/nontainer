@@ -5,6 +5,7 @@ Run over stdio (the common local-agent shape)::
     python -m nontainer.adapters.mcp --session my-project
     python -m nontainer.adapters.mcp --backend dir --store ./scratch \\
         --module math --module json --tools split
+    python -m nontainer.adapters.mcp --session webdev --apps  # + curl/test_app
 
 Or embed: :func:`build_server` returns the ``FastMCP`` instance for a
 Workspace you constructed yourself (custom PythonConfig, mounts,
@@ -148,11 +149,8 @@ def build_server(
     return server
 
 
-def main(argv: list[str] | None = None) -> None:
+def _build_parser() -> "Any":
     import argparse
-    import importlib
-
-    from ..workspace import PythonConfig, workspace as make_workspace
 
     parser = argparse.ArgumentParser(
         prog="python -m nontainer.adapters.mcp",
@@ -174,7 +172,22 @@ def main(argv: list[str] | None = None) -> None:
         metavar="NAME",
         help="whitelist an importable module (repeatable), e.g. --module math",
     )
-    args = parser.parse_args(argv)
+    parser.add_argument(
+        "--apps",
+        action="store_true",
+        help="enable the apps loop: the curl terminal builtin plus a "
+        "test_app tool (requires the [apps] extra; test_app needs "
+        "`playwright install chromium` — checked lazily at first use)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    import importlib
+
+    from ..workspace import PythonConfig, workspace as make_workspace
+
+    args = _build_parser().parse_args(argv)
 
     modules = [importlib.import_module(m) for m in args.module]
     ws = make_workspace(
@@ -184,8 +197,13 @@ def main(argv: list[str] | None = None) -> None:
         python=PythonConfig(modules=modules),
         cache=not args.no_cache,
     )
+    runtime = None
+    if args.apps:
+        from ..apps import enable_apps
+
+        runtime = enable_apps(ws)
     try:
-        build_server(ws, tools=args.tools).run()
+        build_server(ws, tools=args.tools, apps=runtime).run()
     finally:
         ws.close()
 

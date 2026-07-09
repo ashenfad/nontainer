@@ -337,8 +337,12 @@ build_server(workspace, *, tools="auto", apps=None, name="nontainer",
 
 CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]
 [--backend kvgit|dir] [--tools auto|terminal|split] [--no-cache]
-[--module NAME ...]` (stdio transport). `build_server` for anything
-the flags don't cover.
+[--module NAME ...] [--apps]` (stdio transport). `--apps` enables the
+apps loop — the `curl` terminal builtin plus a `test_app` tool
+(screenshots return as MCP image content; needs the `[apps]` extra +
+`playwright install chromium`, checked lazily at first `test_app`).
+`build_server` for anything the flags don't cover (module grants with
+network/host-fs, mounts, host objects, primers).
 
 ## Apps (`nontainer.apps`, serving/test_app need the `[apps]` extra)
 
