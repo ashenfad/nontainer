@@ -115,6 +115,22 @@ def test_screenshot_written_to_workspace(app_ws):
     assert path in rendered  # paths in observations, never bytes
 
 
+def test_screenshot_cap_soft_skips(app_ws):
+    """Hitting max_screenshots must not abort the test: the capped
+    action is a noted no-op and later actions still run and count."""
+    ws, rt = app_ws
+    result = rt.test_app(
+        [{"screenshot": True}, {"screenshot": True}, {"read": "#title"}],
+        max_screenshots=1,
+    )
+    assert result.ok, render_test_app(result)
+    assert len(result.screenshots) == 1
+    skipped = result.results[1]
+    assert skipped.ok and "cap" in (skipped.error or "")
+    assert result.results[2].value == "Scores"  # ran despite the cap
+    assert "skipped" in render_test_app(result)
+
+
 def test_page_error_captured(app_ws, chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s2"))
     rt = enable_apps(ws)

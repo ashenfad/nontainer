@@ -114,6 +114,16 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   bools are never numbers (JSON `true` no longer passes an `int`
   check); JSON strings coerce like query params; and query-param bools
   parse `true/1/false/0` instead of Python's `bool("false") is True`.
+- **Screenshot cap no longer aborts the test.** A `test_app` action
+  hitting `max_screenshots` is a noted soft skip (`ok`, with a
+  "skipped: screenshot cap reached" note) instead of a hard failure
+  that discarded every later action — asserts after the cap now run
+  and count.
+- **Handler-log failures warn instead of going silently blind.**
+  `_log` still never breaks dispatch, but a broken/full fs (or a
+  raising `on_log` sink) now emits one `RuntimeWarning` per runtime —
+  previously every handler diagnostic vanished while the agent's
+  documented repair loop ("tail `/app/logs/api.log`") debugged blind.
 - **App static serving path traversal** — `.`/`..` segments can no
   longer escape `/app/`, and backend source under `/app/api/` is never
   served as a static file.

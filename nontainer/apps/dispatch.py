@@ -118,6 +118,7 @@ class AppRuntime:
         self._config = config or AppsConfig()
         self._frozen = frozen
         self._log_sink = log_sink
+        self._log_broken = False  # warn once when logging fails
         self._contract = (Request, Response, HttpError)
         self._budgets = dict(
             timeout=self._config.request_timeout,
@@ -295,8 +296,21 @@ class AppRuntime:
             fs.makedirs(f"{APP_ROOT}/logs", exist_ok=True)
             stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
             fs.write(LOG_PATH, f"[{stamp}] {message.rstrip()}\n".encode(), mode="a")
-        except Exception:
-            pass  # logging must never break dispatch
+        except Exception as e:
+            # Logging must never break dispatch — but going silently
+            # blind is worse: the agent's documented repair loop is
+            # tailing this log. Warn the host once per runtime so a
+            # broken/full fs (or a raising log_sink) is visible.
+            if not self._log_broken:
+                self._log_broken = True
+                import warnings
+
+                warnings.warn(
+                    f"apps: handler log write failed ({e!r}); further "
+                    "handler diagnostics from this runtime will be dropped",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
 
 def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
