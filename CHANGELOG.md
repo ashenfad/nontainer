@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0; the API is still moving. Notable changes since the initial cut:
 
 ### Added
+- **Artifact channels: binary in, images and files out.** Three
+  pieces close the "artifacts are stranded in the workspace" gap:
+  a `view_image` tool in both adapters (the agent views a saved
+  plot/chart — returned as real image content for vision models;
+  png/jpeg/gif/webp, 10MB cap); MCP **resources** exposing every
+  workspace file as `workspace://{path}` (text as text, binary as
+  blob) with a `workspace://-/tree` index — the client-side window
+  for extracting what the agent produced; and a `--mount
+  POINT=DIR[:rw]` flag on the MCP CLI (read-only by default) — the
+  inbound channel for seeding real host files without base64 games.
 - **Safe stdlib by default** — `PythonConfig(stdlib=True)` grants a
   curated stdlib set (see `nontainer.presets.STDLIB`), so a plain
   workspace's Python can `import math`/`json`/`csv`/... out of the box.

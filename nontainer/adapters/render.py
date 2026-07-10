@@ -193,6 +193,46 @@ fetch('/api/x')). For components use Preact via https://esm.sh, or JSX
 via <script type="text/babel" data-type="module"> with Babel standalone."""
 
 
+VIEW_IMAGE_DESCRIPTION = """\
+View an image file from the workspace — a saved matplotlib plot, a
+generated chart, a downloaded figure. Returns the image itself, so
+you can see what you produced. Supported: png, jpeg, gif, webp."""
+
+_IMAGE_FORMATS = {
+    ".png": "png",
+    ".jpg": "jpeg",
+    ".jpeg": "jpeg",
+    ".gif": "gif",
+    ".webp": "webp",
+}
+
+_MAX_IMAGE_BYTES = 10_000_000
+
+
+def read_workspace_image(ws: Workspace, path: str) -> tuple[bytes, str]:
+    """Read + validate an image for the view_image tool. Returns
+    ``(bytes, format)``; raises ``ValueError`` with an agent-actionable
+    message (unknown extension, missing file, oversized)."""
+    name = path.rsplit("/", 1)[-1]
+    ext = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+    fmt = _IMAGE_FORMATS.get(ext)
+    if fmt is None:
+        raise ValueError(
+            f"not a viewable image: {path!r} (supported: "
+            f"{', '.join(sorted(_IMAGE_FORMATS))})"
+        )
+    try:
+        data = ws.fs.read(path)
+    except Exception as e:
+        raise ValueError(f"cannot read {path!r}: {e}") from e
+    if len(data) > _MAX_IMAGE_BYTES:
+        raise ValueError(
+            f"{path!r} is {len(data)} bytes (cap {_MAX_IMAGE_BYTES}); "
+            "downscale or re-save it smaller"
+        )
+    return data, fmt
+
+
 TEST_APP_DESCRIPTION = """\
 Verify the app under /app in a headless browser — no server needed.
 Pass a list of actions, executed in order:

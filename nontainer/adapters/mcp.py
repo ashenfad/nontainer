@@ -29,6 +29,7 @@ from ..workspace import Workspace
 from .render import (
     FILE_EDIT_DESCRIPTION,
     FILE_WRITE_DESCRIPTION,
+    VIEW_IMAGE_DESCRIPTION,
     ToolsMode,
     python_description,
     render_python,
@@ -105,6 +106,78 @@ def build_server(
             note = "" if out.mode == "exact" else f" (matched via {out.mode})"
             return f"replaced {out.count} occurrence(s) in {path}{note}"
 
+    @server.tool(name="view_image", description=VIEW_IMAGE_DESCRIPTION)
+    def view_image(path: str) -> list:
+        from mcp.server.fastmcp import Image
+
+        from .render import read_workspace_image
+
+        with lock:
+            try:
+                data, fmt = read_workspace_image(workspace, path)
+            except ValueError as e:
+                return [f"view_image failed: {e}"]
+        return [f"{path} ({fmt}, {len(data)} bytes)", Image(data=data, format=fmt)]
+
+    # -- workspace files as MCP resources -------------------------------
+    # The outbound artifact channel: any workspace file is readable as
+    # workspace://{path} (bytes for binary, str for utf-8 text), and
+    # workspace://-/tree lists what exists. Tools are the agent's hands;
+    # resources are the CLIENT's window into the artifacts they produce.
+
+    @server.resource(
+        "workspace://-/tree",
+        name="workspace-tree",
+        description="Recursive file listing of the workspace (one path "
+        "per line) — the index for workspace://{path} resources.",
+        mime_type="text/plain",
+    )
+    def workspace_tree() -> str:
+        with lock:
+            lines: list[str] = []
+
+            def walk(d: str) -> None:
+                for name in sorted(workspace.fs.list(d)):
+                    full = f"{d.rstrip('/')}/{name}"
+                    if workspace.fs.isdir(full):
+                        walk(full)
+                    else:
+                        lines.append(full)
+
+            walk("/")
+            return "\n".join(lines)
+
+    def workspace_file(path: str) -> "str | bytes":
+        with lock:
+            data = workspace.fs.read("/" + path.lstrip("/"))
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data
+
+    # FastMCP's template params match single URI segments ([^/]+), but
+    # workspace paths have slashes — register a template whose params
+    # match greedily instead. from_function constructs via cls(), so
+    # the subclass rides the normal path; the _templates insert is the
+    # one version-coupled touch (pinned by test_mcp_resources).
+    import re as _re
+
+    from mcp.server.fastmcp.resources.templates import ResourceTemplate
+
+    class _MultiSegmentTemplate(ResourceTemplate):
+        def matches(self, uri: str) -> "dict[str, Any] | None":
+            pattern = self.uri_template.replace("{", "(?P<").replace("}", ">.+)")
+            m = _re.match(f"^{pattern}$", uri)
+            return m.groupdict() if m else None
+
+    template = _MultiSegmentTemplate.from_function(
+        workspace_file,
+        uri_template="workspace://{path}",
+        name="workspace-file",
+        description="Read a workspace file by path (see workspace://-/tree).",
+    )
+    server._resource_manager._templates[template.uri_template] = template
+
     if split:
 
         @server.tool(
@@ -179,7 +252,34 @@ def _build_parser() -> "Any":
         "test_app tool (requires the [apps] extra; test_app needs "
         "`playwright install chromium` — checked lazily at first use)",
     )
+    parser.add_argument(
+        "--mount",
+        action="append",
+        default=[],
+        metavar="POINT=DIR[:rw]",
+        help="expose a host directory inside the workspace (repeatable), "
+        "e.g. --mount /data=~/datasets. Read-only unless :rw. Mounts "
+        "are live views: not versioned, not captured by checkpoints.",
+    )
     return parser
+
+
+def _parse_mounts(specs: list[str]) -> dict:
+    """``POINT=DIR[:rw]`` → ``{point: Mount(dir, readonly=...)}``."""
+    from ..workspace import Mount
+
+    mounts = {}
+    for spec in specs:
+        point, sep, rest = spec.partition("=")
+        if not sep or not point.startswith("/"):
+            raise SystemExit(
+                f"--mount expects POINT=DIR[:rw] with an absolute point, got {spec!r}"
+            )
+        readonly = True
+        if rest.endswith(":rw"):
+            readonly, rest = False, rest[: -len(":rw")]
+        mounts[point] = Mount(rest, readonly=readonly)
+    return mounts
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -195,6 +295,7 @@ def main(argv: list[str] | None = None) -> None:
         store=args.store,
         backend=args.backend,
         python=PythonConfig(modules=modules),
+        mounts=_parse_mounts(args.mount) or None,
         cache=not args.no_cache,
     )
     runtime = None
