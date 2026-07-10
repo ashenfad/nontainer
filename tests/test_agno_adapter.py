@@ -21,7 +21,7 @@ def test_agno_toolkit_split_mode():
     ws = make_ws()
     tk = WorkspaceTools(ws)
     names = set(tk.functions)
-    assert names == {"terminal", "run_python", "file_write", "file_edit"}
+    assert names == {"terminal", "run_python", "file_write", "file_edit", "view_image"}
     assert "ONE" in (tk.instructions or "")
 
     out = tk.functions["terminal"].entrypoint("echo hello | tr a-z A-Z")
@@ -35,7 +35,7 @@ def test_agno_toolkit_split_mode():
 def test_agno_toolkit_terminal_only():
     ws = make_ws(cache=False)
     tk = WorkspaceTools(ws)
-    assert set(tk.functions) == {"terminal", "file_write", "file_edit"}
+    assert set(tk.functions) == {"terminal", "file_write", "file_edit", "view_image"}
     # python still reachable as a terminal builtin
     out = tk.functions["terminal"].entrypoint("python -c 'print(2+2)'")
     assert out.strip() == "4"
@@ -164,4 +164,23 @@ def test_agno_test_app_schema_parses():
     params = fn.parameters or {}
     props = params.get("properties", {})
     assert "actions" in props, f"schema failed to parse: {params}"
+    ws.close()
+
+
+def test_agno_view_image():
+    png = bytes.fromhex(  # 1x1 red PNG
+        "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
+        "7753de0000000c49444154089963f8cfc000000301010018dd8db0000000"
+        "0049454e44ae426082"
+    )
+
+    ws = make_ws()
+    ws.fs.write("/plot.png", png)
+    tk = WorkspaceTools(ws)
+    result = tk.functions["view_image"].entrypoint(path="/plot.png")
+    assert result.images and result.images[0].format == "png"
+    assert "/plot.png" in result.content
+
+    miss = tk.functions["view_image"].entrypoint(path="/nope.png")
+    assert not miss.images and "cannot read" in miss.content
     ws.close()

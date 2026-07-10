@@ -337,12 +337,26 @@ build_server(workspace, *, tools="auto", apps=None, name="nontainer",
 
 CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]
 [--backend kvgit|dir] [--tools auto|terminal|split] [--no-cache]
-[--module NAME ...] [--apps]` (stdio transport). `--apps` enables the
-apps loop — the `curl` terminal builtin plus a `test_app` tool
-(screenshots return as MCP image content; needs the `[apps]` extra +
-`playwright install chromium`, checked lazily at first `test_app`).
+[--module NAME ...] [--apps] [--mount POINT=DIR[:rw] ...]` (stdio
+transport). `--apps` enables the apps loop — the `curl` terminal
+builtin plus a `test_app` tool (screenshots return as MCP image
+content; needs the `[apps]` extra + `playwright install chromium`,
+checked lazily at first `test_app`). `--mount /data=~/datasets`
+exposes a host directory inside the workspace (read-only unless
+`:rw`) — the inbound channel for real files, no base64 games.
 `build_server` for anything the flags don't cover (module grants with
-network/host-fs, mounts, host objects, primers).
+network/host-fs, host objects, primers).
+
+**Artifact channels.** Every server also registers:
+
+- a `view_image` tool (both adapters): the agent views a workspace
+  image — a saved plot, a chart — returned as real image content for
+  vision models (png/jpeg/gif/webp, 10MB cap).
+- MCP **resources** (MCP adapter): any workspace file is readable as
+  `workspace://{path}` — text files as text, binary as blob — and
+  `workspace://-/tree` lists all paths. Tools are the agent's hands;
+  resources are the client's window into the artifacts it produced
+  (datasets out, plots out, zips out).
 
 ## Apps (`nontainer.apps`, serving/test_app need the `[apps]` extra)
 

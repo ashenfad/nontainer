@@ -43,6 +43,7 @@ from ..workspace import Workspace
 from .render import (
     FILE_EDIT_DESCRIPTION,
     FILE_WRITE_DESCRIPTION,
+    VIEW_IMAGE_DESCRIPTION,
     ToolsMode,
     python_description,
     render_python,
@@ -167,7 +168,22 @@ class WorkspaceTools(Toolkit):
 
         file_edit.__doc__ = FILE_EDIT_DESCRIPTION
 
-        registered = [terminal, file_write, file_edit]
+        def view_image(path: str) -> ToolResult:
+            """View an image file from the workspace."""
+            from .render import read_workspace_image
+
+            try:
+                data, fmt = read_workspace_image(self._ws, path)
+            except ValueError as e:
+                return ToolResult(content=f"view_image failed: {e}")
+            return ToolResult(
+                content=f"{path} ({fmt}, {len(data)} bytes)",
+                images=[Image(content=data, format=fmt, id=path)],
+            )
+
+        view_image.__doc__ = VIEW_IMAGE_DESCRIPTION
+
+        registered = [terminal, file_write, file_edit, view_image]
 
         if split:
 
