@@ -155,16 +155,26 @@ def build_server(
     def workspace_tree() -> str:
         with lock:
             lines: list[str] = []
+            elided = False
 
-            def walk(d: str) -> None:
+            # Depth-capped against symlink cycles (the VFS supports
+            # symlinks) — and the cap announces itself rather than
+            # silently truncating (PR #8 review).
+            def walk(d: str, depth: int = 0) -> None:
+                nonlocal elided
+                if depth > 32:
+                    elided = True
+                    return
                 for name in sorted(workspace.fs.list(d)):
                     full = f"{d.rstrip('/')}/{name}"
                     if workspace.fs.isdir(full):
-                        walk(full)
+                        walk(full, depth + 1)
                     else:
                         lines.append(full)
 
             walk("/")
+            if elided:
+                lines.append("[... directories deeper than 32 levels elided]")
             return "\n".join(lines)
 
     def workspace_file(path: str) -> "str | bytes":
@@ -186,8 +196,13 @@ def build_server(
 
     class _MultiSegmentTemplate(ResourceTemplate):
         def matches(self, uri: str) -> "dict[str, Any] | None":
+            # RFC 3986: query/fragment aren't part of the path — strip
+            # them so a client appending ?params still resolves. (Files
+            # with literal ?/# in the name were never resource-
+            # addressable without percent-encoding anyway.)
+            clean = uri.split("?", 1)[0].split("#", 1)[0]
             pattern = self.uri_template.replace("{", "(?P<").replace("}", ">.+)")
-            m = _re.match(f"^{pattern}$", uri)
+            m = _re.match(f"^{pattern}$", clean)
             return m.groupdict() if m else None
 
     template = _MultiSegmentTemplate.from_function(
@@ -299,6 +314,13 @@ def _parse_mounts(specs: list[str]) -> dict:
         readonly = True
         if rest.endswith(":rw"):
             readonly, rest = False, rest[: -len(":rw")]
+        if not rest:
+            # An empty DIR would Path("").resolve() to the server's
+            # cwd — silently mounting wherever it was launched from.
+            raise SystemExit(
+                f"--mount expects POINT=DIR[:rw] with a non-empty "
+                f"directory, got {spec!r}"
+            )
         mounts[point] = Mount(rest, readonly=readonly)
     return mounts
 
