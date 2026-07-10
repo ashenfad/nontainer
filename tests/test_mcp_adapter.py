@@ -156,3 +156,32 @@ def test_cli_mount_flag_parses():
 
     args = _build_parser().parse_args(["--mount", "/data=/tmp/d"])
     assert args.mount == ["/data=/tmp/d"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_file_write_returns_resource_link():
+    """file_write's result carries a ground-truth ResourceLink to the
+    artifact — the link exists because the write succeeded."""
+    ws = make_ws()
+    server = build_server(ws)
+    result = await server.call_tool(
+        "file_write", {"path": "/out/report.md", "content": "# done\n"}
+    )
+    blocks = result[0] if isinstance(result, tuple) else result
+    link = next(b for b in blocks if b.type == "resource_link")
+    assert str(link.uri) == "workspace://out/report.md"
+    assert link.name == "report.md"
+    # and the link resolves through the resource template
+    content = list(await server.read_resource(str(link.uri)))[0]
+    assert content.content == "# done\n"
+    ws.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_descriptions_coach_resource_uris():
+    ws = make_ws()
+    server = build_server(ws)
+    descs = {t.name: t.description for t in await server.list_tools()}
+    for name in ("terminal", "run_python", "file_write"):
+        assert "workspace://" in descs[name], name
+    ws.close()

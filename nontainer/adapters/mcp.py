@@ -58,6 +58,14 @@ def build_server(
     lock = threading.Lock()
     mode = resolve_tools_mode(workspace, tools)
     split = mode == "split"
+
+    # MCP-only coaching: workspace files are addressable as resources,
+    # so the agent can hand the user real URIs for its artifacts.
+    resource_note = (
+        "\n\nWorkspace files are readable by your user as MCP resources "
+        "at workspace://{path} — when you produce an artifact for them "
+        "(a report, a plot, a dataset), mention its workspace:// URI."
+    )
     if python_primer and not split:
         import warnings
 
@@ -76,17 +84,29 @@ def build_server(
             apps=apps is not None,
             primer=terminal_primer,
             python_primer=None if split else python_primer,
-        ),
+        )
+        + resource_note,
     )
     def terminal(command: str) -> str:
         with lock:
             return render_terminal(workspace.terminal(command))
 
-    @server.tool(name="file_write", description=FILE_WRITE_DESCRIPTION)
-    def file_write(path: str, content: str) -> str:
+    @server.tool(name="file_write", description=FILE_WRITE_DESCRIPTION + resource_note)
+    def file_write(path: str, content: str) -> list:
+        import mcp.types as types
+
         with lock:
             out = workspace.write_file(path, content)
-            return f"wrote {out.path} ({out.size} bytes)"
+        # Ground-truth artifact handle: the link exists because the
+        # write succeeded — clients can fetch it without trusting prose.
+        return [
+            f"wrote {out.path} ({out.size} bytes)",
+            types.ResourceLink(
+                type="resource_link",
+                uri=f"workspace://{out.path.lstrip('/')}",
+                name=out.path.rsplit("/", 1)[-1],
+            ),
+        ]
 
     @server.tool(name="file_edit", description=FILE_EDIT_DESCRIPTION)
     def file_edit(
@@ -182,7 +202,8 @@ def build_server(
 
         @server.tool(
             name="run_python",
-            description=python_description(workspace, primer=python_primer),
+            description=python_description(workspace, primer=python_primer)
+            + resource_note,
         )
         def run_python(code: str) -> str:
             with lock:

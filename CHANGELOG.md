@@ -20,6 +20,10 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   for extracting what the agent produced; and a `--mount
   POINT=DIR[:rw]` flag on the MCP CLI (read-only by default) — the
   inbound channel for seeding real host files without base64 games.
+  `file_write` results additionally carry a ground-truth
+  `ResourceLink` to the written file (the link exists because the
+  write succeeded), and the MCP tool descriptions coach the agent to
+  mention `workspace://` URIs when it produces artifacts.
 - **Safe stdlib by default** — `PythonConfig(stdlib=True)` grants a
   curated stdlib set (see `nontainer.presets.STDLIB`), so a plain
   workspace's Python can `import math`/`json`/`csv`/... out of the box.
