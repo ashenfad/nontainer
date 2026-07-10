@@ -356,7 +356,10 @@ network/host-fs, host objects, primers).
   `workspace://{path}` — text files as text, binary as blob — and
   `workspace://-/tree` lists all paths. Tools are the agent's hands;
   resources are the client's window into the artifacts it produced
-  (datasets out, plots out, zips out).
+  (datasets out, plots out, zips out). `file_write` results carry a
+  ground-truth `ResourceLink` to the written file, and the tool
+  descriptions coach the agent to mention `workspace://` URIs when it
+  produces an artifact for the user.
 
 ## Apps (`nontainer.apps`, serving/test_app need the `[apps]` extra)
 
