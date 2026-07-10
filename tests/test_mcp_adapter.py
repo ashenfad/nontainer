@@ -136,6 +136,24 @@ async def test_mcp_resources():
     assert csv.content == "a,b\n1,2\n"
     blob = list(await server.read_resource("workspace://blob.bin"))[0]
     assert blob.content == bytes([0, 255, 128])
+    # RFC 3986: query/fragment aren't part of the path (PR #8 review)
+    q = list(await server.read_resource("workspace://data/deep/x.csv?reload=1"))[0]
+    assert q.content == "a,b\n1,2\n"
+    ws.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_tree_elides_beyond_depth_cap():
+    ws = make_ws()
+    deep = "/" + "/".join(f"d{i}" for i in range(40))
+    ws.fs.makedirs(deep, exist_ok=True)
+    ws.fs.write(f"{deep}/leaf.txt", b"x")
+    ws.fs.write("/top.txt", b"y")
+    server = build_server(ws)
+    tree = list(await server.read_resource("workspace://-/tree"))[0].content
+    assert "/top.txt" in tree
+    assert "leaf.txt" not in tree  # beyond the cap...
+    assert "elided" in tree  # ...and the cap announces itself
     ws.close()
 
 
@@ -149,6 +167,10 @@ def test_parse_mounts():
         _parse_mounts(["data=~/x"])  # point must be absolute
     with pytest.raises(SystemExit):
         _parse_mounts(["/data"])  # missing =DIR
+    with pytest.raises(SystemExit):
+        _parse_mounts(["/data="])  # empty DIR would mount the cwd
+    with pytest.raises(SystemExit):
+        _parse_mounts(["/data=:rw"])  # ditto after :rw strip
 
 
 def test_cli_mount_flag_parses():
