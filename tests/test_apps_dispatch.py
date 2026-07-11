@@ -344,6 +344,48 @@ def test_curl_post_with_data():
     ws.close()
 
 
+def test_curl_absorbs_real_curl_reflexes():
+    """The glm-5.2 lesson: agents type -v/--max-time/-w from habit, and
+    a rejected flag mid-`;`-sequence fails invisibly. Network-only
+    flags are accepted no-ops; -w/-i/-o do what they say."""
+    ws, rt = make_ws()
+    write_handler(ws, "nums", "def get(req):\n    return {'nums': [1]}\n")
+
+    # no-op flags don't break the call
+    r = ws.terminal("curl -s -v -L --max-time 10 --connect-timeout 5 /api/nums")
+    assert r, r.stderr
+    assert json.loads(r.stdout) == {"nums": [1]}
+
+    # -w substitutes %{http_code} (with \n escapes, curl-style)
+    r = ws.terminal("curl -s -w 'code=%{http_code}\\n' /api/nums")
+    assert r, r.stderr
+    assert "code=200" in r.stdout
+
+    # -i prepends status + headers
+    r = ws.terminal("curl -i /api/nums")
+    assert r.stdout.startswith("HTTP/1.1 200")
+    assert "content-type:" in r.stdout.lower()
+
+    # -o writes the body to the workspace fs (cwd-relative)
+    r = ws.terminal("cd /app && curl -o out.json /api/nums && cat out.json")
+    assert r, r.stderr
+    assert json.loads(ws.fs.read("/app/out.json")) == {"nums": [1]}
+
+    # --json sets the content type
+    write_handler(
+        ws, "echo3", "def post(req):\n    return {'ct': req.headers.get('content-type')}\n"
+    )
+    r = ws.terminal("curl --json '{\"a\": 1}' /api/echo3")
+    assert r, r.stderr
+    assert json.loads(r.stdout)["ct"] == "application/json"
+
+    # unknown flags still fail LOUDLY, now with the supported list
+    r = ws.terminal("curl --resolve foo:80:1.2.3.4 /api/nums")
+    assert not r
+    assert "unknown flag --resolve" in r.stderr and "supported:" in r.stderr
+    ws.close()
+
+
 def test_curl_failure_exit_code():
     ws, rt = make_ws()
     r = ws.terminal("curl /api/absent")
