@@ -49,7 +49,9 @@ VIEWPORTS = {
     "mobile": {"width": 390, "height": 844},
 }
 
-_DEFAULT_CDN_ALLOWLIST = ("esm.sh", "unpkg.com", "cdn.jsdelivr.net")
+# Must stay in sync with serve._CSP (pinned by test): what test_app
+# permits headlessly must match what published serving permits live.
+_DEFAULT_CDN_ALLOWLIST = ("esm.sh", "unpkg.com", "cdn.jsdelivr.net", "cdn.plot.ly")
 
 _ABSOLUTE_PATH_HINT = (
     b"nontainer: absolute path -- apps are served under a prefix and must "
@@ -74,9 +76,7 @@ def coerce_actions(actions: Any) -> list[dict[str, Any]]:
         actions = [actions]
     if actions is None:
         return []
-    if not isinstance(actions, list) or not all(
-        isinstance(a, dict) for a in actions
-    ):
+    if not isinstance(actions, list) or not all(isinstance(a, dict) for a in actions):
         raise ValueError(
             'actions must be a list of objects like {"click": "#sel"} — '
             f"got {type(actions).__name__}"
@@ -160,7 +160,7 @@ async def _run_actions(
                     status=404, body=_ABSOLUTE_PATH_HINT, content_type="text/plain"
                 )
                 return
-            rel = parts.path[len(_PREFIX):] or "/"
+            rel = parts.path[len(_PREFIX) :] or "/"
             url = rel + (f"?{parts.query}" if parts.query else "")
             req = make_request(
                 request.method,
@@ -176,6 +176,17 @@ async def _run_actions(
                 status=wire.status, body=wire.content, content_type=wire.content_type
             )
         elif parts.netloc in cdn_allowlist:
+            await route.continue_()
+        elif parts.scheme == "https" and request.resource_type in (
+            "image",
+            "xhr",
+            "fetch",
+            "stylesheet",
+            "font",
+        ):
+            # Mirror the serving CSP: scripts only from the allowlist,
+            # but data/imagery (map tiles!) from any https host — so
+            # what verifies here matches what serves published.
             await route.continue_()
         else:
             await route.abort()
@@ -259,9 +270,7 @@ async def _run_actions(
                         # setTimeout) would otherwise be read as stale
                         # DOM — the false-green an agent can't catch.
                         note = await settle(page)
-                        value = await page.text_content(
-                            action["read"], timeout=5_000
-                        )
+                        value = await page.text_content(action["read"], timeout=5_000)
                     elif "eval" in action:
                         value = repr(await page.evaluate(action["eval"]))
                     elif "assert" in action:
@@ -350,9 +359,7 @@ def _submit(runtime: "AppRuntime", actions, kwargs):
     from .browser import submit_job
 
     return submit_job(
-        lambda browser, sema: _run_actions(
-            browser, sema, runtime, actions, **kwargs
-        )
+        lambda browser, sema: _run_actions(browser, sema, runtime, actions, **kwargs)
     )
 
 

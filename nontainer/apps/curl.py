@@ -50,14 +50,25 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
 
         if url is None:
             return CommandResult(exit_code=2, stderr="curl: no URL")
+        if url.startswith(("http://", "https://")):
+            # The single most expensive discovery an agent can make by
+            # trial and error — say it outright instead (curl exit 6:
+            # could not resolve host).
+            return CommandResult(
+                exit_code=6,
+                stderr="curl: external URLs are unreachable — this curl "
+                "dispatches only into the workspace app (try: curl "
+                "/api/...). The workspace has no internet access; "
+                "BROWSER-side code may load scripts from the CDN "
+                "allowlist (esm.sh, unpkg.com, cdn.jsdelivr.net, "
+                "cdn.plot.ly).",
+            )
         if not url.startswith("/"):
             url = "/" + url
         if method is None:
             method = "POST" if body else "GET"
 
-        resp = runtime.dispatch(
-            make_request(method, url, body=body, headers=headers)
-        )
+        resp = runtime.dispatch(make_request(method, url, body=body, headers=headers))
         ctx.stdout.write(resp.text)
         if resp.text and not resp.text.endswith("\n"):
             ctx.stdout.write("\n")

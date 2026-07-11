@@ -157,8 +157,7 @@ def test_http_error_is_structured():
     write_handler(
         ws,
         "guarded",
-        "def get(req):\n"
-        "    raise HttpError(403, 'not yours')\n",
+        "def get(req):\n    raise HttpError(403, 'not yours')\n",
     )
     resp = rt.dispatch(request("GET", "/api/guarded"))
     assert resp.status == 403
@@ -178,7 +177,9 @@ def test_crash_is_500_and_logged():
 
 def test_handler_print_lands_in_log():
     ws, rt = make_ws()
-    write_handler(ws, "chatty", "def get(req):\n    print('debugging')\n    return {}\n")
+    write_handler(
+        ws, "chatty", "def get(req):\n    print('debugging')\n    return {}\n"
+    )
     rt.dispatch(request("GET", "/api/chatty"))
     assert "debugging" in ws.fs.read("/app/logs/api.log").decode()
     ws.close()
@@ -205,7 +206,9 @@ def test_handler_sees_cache_and_files():
 def test_get_cannot_write_files():
     ws, rt = make_ws()
     write_handler(
-        ws, "sneaky", "def get(req):\n    open('/x.txt', 'w').write('no')\n    return {}\n"
+        ws,
+        "sneaky",
+        "def get(req):\n    open('/x.txt', 'w').write('no')\n    return {}\n",
     )
     resp = rt.dispatch(request("GET", "/api/sneaky"))
     assert resp.status == 500
@@ -300,13 +303,13 @@ def test_static_path_traversal_is_contained():
     ws.fs.write("/apple", b"sibling-prefix file")  # must not slip a prefix check
 
     escapes = [
-        "/../private.md",         # workspace-root escape
-        "/../../private.md",      # multi-level escape
-        "/../apple",              # sibling of /app sharing its prefix
-        "/./api/scores.py",       # backend source via `.`
-        "/x/../api/_shared.py",   # non-routable shared code via `..`
-        "/api/scores.py",         # backend source as a literal static path
-        "/app/index.html",        # the /app prefix is not part of the URL space
+        "/../private.md",  # workspace-root escape
+        "/../../private.md",  # multi-level escape
+        "/../apple",  # sibling of /app sharing its prefix
+        "/./api/scores.py",  # backend source via `.`
+        "/x/../api/_shared.py",  # non-routable shared code via `..`
+        "/api/scores.py",  # backend source as a literal static path
+        "/app/index.html",  # the /app prefix is not part of the URL space
     ]
     for path in escapes:
         resp = rt.dispatch(request("GET", path))
@@ -335,7 +338,7 @@ def test_curl_post_with_data():
         "echo2",
         "def post(req):\n    return {'got': req.require('msg')}\n",
     )
-    r = ws.terminal("curl -X POST -d '{\"msg\": \"hi\"}' /api/echo2")
+    r = ws.terminal('curl -X POST -d \'{"msg": "hi"}\' /api/echo2')
     assert r, r.stderr
     assert json.loads(r.stdout) == {"got": "hi"}
     ws.close()
@@ -367,7 +370,9 @@ curl /api/health"""
 def test_verb_in_comment_is_405():
     """PR#1 review: 'def get(' in a comment must not pass the verb check."""
     ws, rt = make_ws()
-    write_handler(ws, "cmt", "# def get(req): old idea\ndef post(req):\n    return {}\n")
+    write_handler(
+        ws, "cmt", "# def get(req): old idea\ndef post(req):\n    return {}\n"
+    )
     assert rt.dispatch(request("GET", "/api/cmt")).status == 405
     ws.close()
 
@@ -423,4 +428,15 @@ def test_log_failure_does_not_break_dispatch():
         warnings.simplefilter("ignore")
         resp = rt.dispatch(request("GET", "/api/boom"))
     assert resp.status == 500  # handler error surfaced despite dead logs
+    ws.close()
+
+
+def test_curl_external_url_says_offline():
+    """The most expensive trial-and-error discovery, said outright:
+    absolute URLs get an explicit no-internet error, not a confusing
+    404 from dispatching the URL as a path."""
+    ws, rt = make_ws()
+    r = ws.terminal("curl https://cdn.plot.ly/plotly.min.js")
+    assert r.exit_code == 6
+    assert "no internet" in r.stderr and "cdn.jsdelivr.net" in r.stderr
     ws.close()

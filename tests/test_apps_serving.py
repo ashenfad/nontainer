@@ -109,9 +109,7 @@ def test_get_reads_seeded_state():
 
 def test_post_as_read_takes_a_body():
     ws, token, client = make_served()
-    r = client.post(
-        f"/apps/{token}/api/scores", content=json.dumps({"prefix": "a"})
-    )
+    r = client.post(f"/apps/{token}/api/scores", content=json.dumps({"prefix": "a"}))
     assert r.status_code == 200
     assert r.json() == {"matches": ["alice", "amy"]}
     ws.close()
@@ -195,3 +193,17 @@ def test_serving_is_stateless():
     # the workspace is still open — the router never closed it
     assert ws.terminal("echo alive").stdout.strip() == "alive"
     ws.close()
+
+
+def test_csp_and_testapp_allowlist_stay_in_sync():
+    """What test_app permits headlessly must equal what published
+    serving permits live — divergence means apps verify green and
+    break in production (the cdn.plot.ly lesson)."""
+    import re
+
+    from nontainer.apps.serve import _CSP
+    from nontainer.apps.testapp import _DEFAULT_CDN_ALLOWLIST
+
+    script_src = re.search(r"script-src ([^;]+);", _CSP).group(1)
+    csp_hosts = set(re.findall(r"https://([\w.-]+)", script_src))
+    assert csp_hosts == set(_DEFAULT_CDN_ALLOWLIST)
