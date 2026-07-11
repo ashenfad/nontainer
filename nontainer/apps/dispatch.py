@@ -132,12 +132,17 @@ class AppRuntime:
             self._rw_sandbox = None
             self._ro_sandbox = None
         else:
+            # App handlers run IN-PROCESS regardless of the workspace's
+            # isolation config: process-isolated serving needs worker
+            # entry/pooling (a later phase), and handler code is the
+            # same trust tier as the rest of the app surface.
             self._rw_sandbox = ws.build_sandbox(
-                extra_classes=self._contract, **self._budgets
+                extra_classes=self._contract, isolation="none", **self._budgets
             )
             self._ro_sandbox = ws.build_sandbox(
                 extra_classes=self._contract,
                 filesystem=ReadOnlyFS(ws.fs),
+                isolation="none",
                 **self._budgets,
             )
 
@@ -207,6 +212,7 @@ class AppRuntime:
             sandbox = ws.build_sandbox(
                 extra_classes=self._contract,
                 filesystem=self._ReadOnlyFS(ws.fs),
+                isolation="none",  # see AppRuntime.__init__
                 **self._budgets,
             )
         else:
