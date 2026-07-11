@@ -22,9 +22,9 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "termish>=0.1.7",
+    "termish>=0.1.8",
     "monkeyfs>=0.1.5",
-    "sandtrap>=0.2.6",
+    "sandtrap>=0.2.7",
     "kvgit[disk]>=0.3.1",
     "reprobate>=0.1.1",
 ]
