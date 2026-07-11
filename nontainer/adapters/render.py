@@ -180,7 +180,10 @@ Handlers export verb functions; example /app/api/scores.py:
         cache["scores"] = scores       # NOT allowed in get() (read-only)
         return {"ok": True}
 
-Rules: return dict/list (JSON), str (text), bytes, or Response(status=,
+Rules: ONLY verb functions (get/post/put/delete/patch) are routed — a
+function with any other name (def query(), def search()) is NEVER
+called by requests; read filters/actions from params inside a verb.
+Return dict/list (JSON), str (text), bytes, or Response(status=,
 body=); raise HttpError(404, 'msg') for error responses. GET handlers
 have a READ-ONLY filesystem and cache. Handlers see the same
 environment as your python code (cache, files via open(), injected

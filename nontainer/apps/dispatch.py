@@ -119,6 +119,7 @@ class AppRuntime:
         self._frozen = frozen
         self._log_sink = log_sink
         self._log_broken = False  # warn once when logging fails
+        self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._contract = (Request, Response, HttpError)
         self._budgets = dict(
             timeout=self._config.request_timeout,
@@ -208,6 +209,7 @@ class AppRuntime:
         if verb not in _VERBS:
             raise HttpError(405, f"unsupported method: {request.method}")
         source = fs.read(handler_path).decode("utf-8")
+        self._note_nonverb_functions(name, source)
         # Cheap verb check before spending a sandbox execution.
         if not re.search(rf"^[ \t]*def[ \t]+{verb}[ \t]*\(", source, re.M):
             raise HttpError(405, f"{request.method} not supported by {name}")
@@ -313,6 +315,31 @@ class AppRuntime:
         ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
         ctype = _STATIC_TYPES.get(ext, "application/octet-stream")
         return WireResponse(200, fs.read(path), ctype)
+
+    _TOP_DEF_RE = re.compile(r"^def[ \t]+([A-Za-z]\w*)[ \t]*\(", re.M)
+
+    def _note_nonverb_functions(self, name: str, source: str) -> None:
+        """Agents write RPC-style handlers (``def query(req)``) that
+        dispatch never routes — silently dead endpoints they then debug
+        from the frontend. Note it in api.log, once per module version
+        (the log is the documented repair loop)."""
+        marker = hash(source)
+        if self._verb_notes.get(name) == marker:
+            return
+        self._verb_notes[name] = marker
+        stray = [
+            fn
+            for fn in self._TOP_DEF_RE.findall(source)
+            if fn not in _VERBS and not fn.startswith("_")
+        ]
+        if stray:
+            listing = ", ".join(f"{fn}()" for fn in dict.fromkeys(stray))
+            self._log(
+                f"[{name}] note: {listing} defined but not an HTTP verb — "
+                f"requests only ever call {'/'.join(sorted(_VERBS))}; an "
+                "endpoint action must live inside a verb function (or its "
+                "own api file)"
+            )
 
     # -- logging -------------------------------------------------------------
 

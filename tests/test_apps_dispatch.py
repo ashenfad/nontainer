@@ -319,6 +319,36 @@ def test_static_path_traversal_is_contained():
     ws.close()
 
 
+def test_nonverb_functions_noted_in_log_once():
+    """`def query(req)` is never routed — the gemma lesson: the filter
+    logic sat in a dead function while get() ignored the params. The
+    log (the documented repair loop) names it, once per module version."""
+    ws, rt = make_ws()
+    write_handler(
+        ws,
+        "stats",
+        "def get(req):\n    return {'n': 1}\n\n"
+        "def query(req):\n    return {'filtered': True}\n\n"
+        "def _helper():\n    pass\n",
+    )
+    rt.dispatch(request("GET", "/api/stats"))
+    rt.dispatch(request("GET", "/api/stats"))  # same version: no repeat
+    log = ws.fs.read("/app/logs/api.log").decode()
+    assert log.count("query() defined but not an HTTP verb") == 1
+    assert "_helper" not in log  # underscore-private: fine, unnoted
+
+    # a new module version re-evaluates
+    write_handler(
+        ws,
+        "stats",
+        "def get(req):\n    return {'n': 1}\n\ndef search(req):\n    pass\n",
+    )
+    rt.dispatch(request("GET", "/api/stats"))
+    log = ws.fs.read("/app/logs/api.log").decode()
+    assert "search() defined but not an HTTP verb" in log
+    ws.close()
+
+
 # -- curl --------------------------------------------------------------------------
 
 
