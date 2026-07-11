@@ -236,6 +236,30 @@ def test_absolute_urls_fail_verification(chromium_available):
     ws.close()
 
 
+def test_page_errors_carry_locations(chromium_available):
+    """Runtime errors keep their `at url:line:col` (the agent can open
+    that line of its own file); parse errors — where the browser
+    reports nothing — say so instead of a bare token message. The
+    gemma blank-page loop: four full rewrites debugging errors that
+    had no location."""
+    ws = Workspace(KvgitProvider.open(None, session="s3c"))
+    rt = enable_apps(ws)
+    ws.fs.makedirs("/app", exist_ok=True)
+    ws.fs.write(
+        "/app/index.html",
+        b"<html><body><div id='x'>hi</div>\n"
+        b"<script>\nusePreactHooks();\n</script>\n"
+        b"<script>\nlet a = );\n</script>\n"
+        b"</body></html>",
+    )
+    result = rt.test_app([{"read": "#x"}])
+    runtime_err = next(e for e in result.page_errors if "usePreactHooks" in e)
+    assert "at https://" in runtime_err and ":3:" in runtime_err
+    parse_err = next(e for e in result.page_errors if "SyntaxError" in e)
+    assert "bisect" in parse_err
+    ws.close()
+
+
 def test_blocked_script_named_in_rejections(chromium_available):
     """A non-allowlisted CDN script fails as an anonymous ERR_FAILED in
     the console — the rejection report names the URL and the allowlist."""

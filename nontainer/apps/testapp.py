@@ -269,9 +269,35 @@ async def _run_actions(
     async with sema:
         context = await browser.new_context(viewport=vp)
         try:
+            def _page_error(e: Any) -> None:
+                # Runtime errors carry "at <url>:line:col" in the stack
+                # — keep it (the agent can open that line of its own
+                # file). Parse errors carry NOTHING through pageerror;
+                # say so instead of leaving a bare token message.
+                text = f"{getattr(e, 'name', '') or 'Error'}: " + (
+                    getattr(e, "message", None) or str(e)
+                )
+                stack = getattr(e, "stack", "") or ""
+                at = next(
+                    (
+                        ln.strip()
+                        for ln in stack.splitlines()
+                        if ln.strip().startswith("at ")
+                    ),
+                    None,
+                )
+                if at:
+                    text += f" ({at})"
+                elif getattr(e, "name", "") == "SyntaxError":
+                    text += (
+                        " (parse error: the browser reports no line — "
+                        "bisect the <script> blocks to find it)"
+                    )
+                page_errors.append(text)
+
             page = await context.new_page()
             page.on("console", lambda m: console.append(f"[{m.type}] {m.text}"))
-            page.on("pageerror", lambda e: page_errors.append(str(e)))
+            page.on("pageerror", _page_error)
             page.on("request", _track_start)
             page.on("requestfinished", _track_end)
             page.on("requestfailed", _track_end)
