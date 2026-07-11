@@ -147,16 +147,23 @@ class AppRuntime:
                 cache_object=self._ro_cache,
                 **self._budgets,
             )
-            for sb in (self._rw_sandbox, self._ro_sandbox):
-                if hasattr(sb, "shutdown"):  # process/kernel worker
-                    sb.__enter__()
+            try:
+                for sb in (self._rw_sandbox, self._ro_sandbox):
+                    if hasattr(sb, "shutdown"):  # process/kernel worker
+                        sb.__enter__()
+            except Exception:
+                self.close()  # don't orphan an already-entered worker
+                raise
 
     def close(self) -> None:
         """Reap long-lived process workers (no-op in-process/frozen).
         Idempotent; daemon workers die with the host either way."""
         for sb in (self._rw_sandbox, self._ro_sandbox):
             if sb is not None and hasattr(sb, "shutdown"):
-                sb.shutdown()
+                try:
+                    sb.shutdown()
+                except Exception:
+                    pass  # the other worker still gets its turn
 
     # -- the core --------------------------------------------------------
 

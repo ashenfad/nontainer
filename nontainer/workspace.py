@@ -421,13 +421,6 @@ class Workspace:
         # the default sandbox's build.
         self._policy_memo: dict[Any, Any] = {}
         self._sandbox = self.build_sandbox()
-        # Process/kernel sandboxes fork a persistent worker; the
-        # Workspace owns its lifecycle (shutdown in close()). Entering
-        # HERE — at construction, typically before an embedder's
-        # server threads exist — is deliberate: forking a multithreaded
-        # process can deadlock on macOS.
-        if self._python_config.isolation != "none":
-            self._sandbox.__enter__()
 
         # -- stateful cwd: restore from framework key if present.
         # Guarded so a no-op restore doesn't dirty staging providers
@@ -439,6 +432,15 @@ class Workspace:
                     self._fs.chdir(stored_cwd)
             except Exception:
                 pass  # path may no longer exist; start at root
+
+        # Process/kernel sandboxes fork a persistent worker; the
+        # Workspace owns its lifecycle (shutdown in close()). Entering
+        # at construction — typically before an embedder's server
+        # threads exist — is deliberate (forking a multithreaded
+        # process can deadlock on macOS), and entering LAST means no
+        # later __init__ failure can orphan the worker (PR #10 review).
+        if self._python_config.isolation != "none":
+            self._sandbox.__enter__()
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -1169,7 +1171,10 @@ class Workspace:
                 self._closed = True
                 shutdown = getattr(self._sandbox, "shutdown", None)
                 if callable(shutdown):  # process/kernel worker
-                    shutdown()
+                    try:
+                        shutdown()
+                    except Exception:
+                        pass  # the provider must still close (PR #10)
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
