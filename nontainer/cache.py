@@ -87,3 +87,38 @@ class Cache(MutableMapping[str, Any]):
         except Exception:
             return "Cache(<unreadable>)"
         return f"Cache({keys!r})"
+
+
+class RemoteCache(MutableMapping[str, Any]):
+    """Worker-side cache stub for process/kernel isolation.
+
+    A bare ``RpcProxy`` can't serve mapping syntax — dunder lookup
+    bypasses ``__getattr__`` — so the parent ships
+    ``RpcProxyMarker(wrapper="nontainer.cache:RemoteCache")`` and the
+    worker wraps the proxy in this MutableMapping. Method names match
+    ``Workspace._cache_rpc_handler``'s dispatch; the real ``Cache``
+    (and its versioned kv) stays in the parent."""
+
+    def __init__(self, proxy: Any) -> None:
+        self._proxy = proxy
+
+    def __getitem__(self, key: str) -> Any:
+        return self._proxy._call("getitem", key)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._proxy._call("setitem", key, value)
+
+    def __delitem__(self, key: str) -> None:
+        self._proxy._call("delitem", key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._proxy._call("iter"))
+
+    def __len__(self) -> int:
+        return self._proxy._call("len")
+
+    def __contains__(self, key: object) -> bool:
+        return self._proxy._call("contains", key)
+
+    def __repr__(self) -> str:
+        return "RemoteCache()"

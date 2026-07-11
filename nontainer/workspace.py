@@ -402,6 +402,13 @@ class Workspace:
         # the default sandbox's build.
         self._policy_memo: dict[Any, Any] = {}
         self._sandbox = self.build_sandbox()
+        # Process/kernel sandboxes fork a persistent worker; the
+        # Workspace owns its lifecycle (shutdown in close()). Entering
+        # HERE — at construction, typically before an embedder's
+        # server threads exist — is deliberate: forking a multithreaded
+        # process can deadlock on macOS.
+        if self._python_config.isolation != "none":
+            self._sandbox.__enter__()
 
         # -- stateful cwd: restore from framework key if present.
         # Guarded so a no-op restore doesn't dirty staging providers
@@ -446,6 +453,7 @@ class Workspace:
         tick_limit: int | None = None,
         extra_classes: tuple[type, ...] = (),
         filesystem: Any | None = None,
+        isolation: Isolation | None = None,
     ) -> Any:
         """EXTENSION SURFACE: build a sandbox from the frozen
         PythonConfig, for embedders composing execution features on top
@@ -477,13 +485,14 @@ class Workspace:
             )
             self._policy_memo[key] = policy
 
+        effective_isolation = isolation if isolation is not None else cfg.isolation
         rpc_handlers = None
-        if cfg.isolation != "none" and self._cache_enabled:
+        if effective_isolation != "none" and self._cache_enabled:
             rpc_handlers = {"cache": self._cache_rpc_handler()}
 
         return sandbox(
             policy,
-            isolation=cfg.isolation,
+            isolation=effective_isolation,
             mode="raw",
             filesystem=filesystem if filesystem is not None else self._fs,
             rpc_handlers=rpc_handlers,
@@ -791,7 +800,11 @@ class Workspace:
             else:
                 from sandtrap import RpcProxyMarker
 
-                namespace["cache"] = RpcProxyMarker(target="cache")
+                # wrapper (imported in the worker) restores mapping
+                # syntax — a bare RpcProxy can't serve cache[k]
+                namespace["cache"] = RpcProxyMarker(
+                    target="cache", wrapper="nontainer.cache:RemoteCache"
+                )
 
         sb = sandbox if sandbox is not None else self._sandbox
         start = time.monotonic()
@@ -1097,6 +1110,9 @@ class Workspace:
         with self._lock:  # don't close the provider mid-call
             if not self._closed:
                 self._closed = True
+                shutdown = getattr(self._sandbox, "shutdown", None)
+                if callable(shutdown):  # process/kernel worker
+                    shutdown()
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
