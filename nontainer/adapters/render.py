@@ -195,13 +195,20 @@ fetch('/api/x')). For components use Preact via https://esm.sh, or JSX
 via <script type="text/babel" data-type="module"> with Babel standalone.
 
 Shared backend code: put modules in /helpers (e.g. /helpers/data.py,
-then `import data` in any handler) — imports between /app/api files do
-NOT work. Browser SCRIPTS may only load from these CDNs (enforced by
-test_app AND published serving): esm.sh, unpkg.com, cdn.jsdelivr.net,
-cdn.plot.ly — plotly.js lives at
+then `from helpers import data` in any handler — imports resolve from
+the workspace root, so a bare `import data` will NOT find it) —
+imports between /app/api files do NOT work. Browser SCRIPTS may only
+load from these CDNs (enforced by test_app AND published serving):
+esm.sh, unpkg.com, cdn.jsdelivr.net, cdn.plot.ly, cdn.tailwindcss.com
+— plotly.js lives at
 https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2. Images, fetches,
 styles, and fonts may use any https host (map tiles work); for maps,
-plotly's tile-free scattergeo/choropleth need no tiles at all."""
+plotly's tile-free scattergeo/choropleth need no tiles at all.
+
+After changing the app, ALWAYS verify with the test_app tool before
+telling the user it works — it catches what curl can't (frontend
+wiring, absolute-URL mistakes, blocked scripts) and reports exactly
+what it rejected and why."""
 
 
 VIEW_IMAGE_DESCRIPTION = """\
