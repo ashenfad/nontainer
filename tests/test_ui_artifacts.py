@@ -110,3 +110,27 @@ def test_agno_run_python_notes_ui_artifacts():
     # and the tool description teaches the convention
     assert "ui = " in (tk.functions["run_python"].entrypoint.__doc__ or "")
     ws.close()
+
+
+def test_string_path_to_existing_file_passes_through(ws):
+    """The near-miss: the agent saved the file itself (savefig) and put
+    its PATH in `ui`. A pointer, not content — honor it as-is."""
+    ws.fs.makedirs("/ui", exist_ok=True)
+    ws.fs.write("/ui/plot.png", b"\x89PNG\r\n\x1a\nfake")
+    out = materialize_ui(ws, {"plot": "/ui/plot.png"})
+    assert out == [("plot", "/ui/plot.png")]
+    # untouched: no re-encode, no sidecar artifact
+    assert ws.fs.read("/ui/plot.png") == b"\x89PNG\r\n\x1a\nfake"
+
+
+def test_string_path_to_missing_file_falls_to_data_tier(ws):
+    out = materialize_ui(ws, {"ghost": "/nope/missing.png"})
+    assert out == [("ghost", "/ui/ghost.json")]
+    assert json.loads(ws.fs.read("/ui/ghost.json")) == "/nope/missing.png"
+
+
+def test_plain_strings_stay_data(ws):
+    """Only rooted paths get the pointer treatment — ordinary prose
+    strings still land as json artifacts."""
+    out = materialize_ui(ws, {"note": "all done"})
+    assert out == [("note", "/ui/note.json")]

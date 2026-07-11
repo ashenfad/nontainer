@@ -314,12 +314,14 @@ def _env_notes(ws: Workspace) -> str:
 
 PYTHON_UI_NOTE = """
 
-Rich reply artifacts: assign `ui = {"name": value}` at top level —
-plotly figures, pandas DataFrames, matplotlib figures, images, dicts.
-Each is saved under /ui/ and the result notes its path; embed one in
-your reply with markdown image syntax, e.g. ![name](/ui/name.plotly.json),
-using the exact path from the note. Unreferenced artifacts display
-after your reply."""
+Rich reply artifacts: assign `ui = {"name": value}` at top level, with
+the OBJECT as the value — a plotly figure, pandas DataFrame, matplotlib
+figure, image, or dict. The harness saves each under /ui/ (no savefig,
+no writing into /ui/ yourself) and the result notes its path; embed one
+in your reply with markdown image syntax, e.g.
+![name](/ui/name.plotly.json), using the exact path from the note.
+Unreferenced artifacts display after your reply. (A value that is the
+path of a file you already saved is honored too.)"""
 
 _MAX_ARTIFACT_BYTES = 8_000_000
 _IMAGE_MAGIC = {
@@ -345,6 +347,17 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     import json as _json
 
     mod = type(value).__module__ or ""
+
+    # reference tier: a string naming an existing workspace file is a
+    # POINTER, not content. Agents predictably save a file themselves
+    # (plt.savefig(...)) and put its path in `ui` — honor the near-miss
+    # instead of json-encoding the path string.
+    if isinstance(value, str) and value.startswith("/"):
+        try:
+            if ws.fs.exists(value) and not ws.fs.isdir(value):
+                return value
+        except Exception:
+            pass  # unreadable path: fall through to the data tier
 
     # spec tier: shell-rendered, shell-themed
     if mod.startswith("plotly") and hasattr(value, "to_json"):

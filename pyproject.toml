@@ -25,7 +25,7 @@ dependencies = [
     "termish>=0.1.7",
     "monkeyfs>=0.1.5",
     "sandtrap>=0.2.4",
-    "kvgit[disk]>=0.3.0",
+    "kvgit[disk]>=0.3.1",
     "reprobate>=0.1.1",
 ]
 
