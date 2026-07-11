@@ -1193,9 +1193,9 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.1" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", specifier = ">=0.2.6" },
+    { name = "sandtrap", specifier = ">=0.2.7" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
-    { name = "termish", specifier = ">=0.1.7" },
+    { name = "termish", specifier = ">=0.1.8" },
 ]
 provides-extras = ["agentfs", "apps", "agno", "mcp", "dev"]
 
@@ -2374,14 +2374,14 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.2.6"
+version = "0.2.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/8d/7ada1c94ae748a32ddd0d8422a306cebed27579ec93688f673df4df4cac6/sandtrap-0.2.6.tar.gz", hash = "sha256:154387d00d1303ea4c57e3c1da4d6c497d227cd114ee00c9c90981cba64c7074", size = 107546, upload-time = "2026-07-11T13:05:19.98Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a5/68/a172d029d2ea873e7214d56c7ab1bd2fc7e6539448b8ec8e2156e455affb/sandtrap-0.2.7.tar.gz", hash = "sha256:2ba8bece5bd7504d74f651eb5c9f5af59f40487d080f748fd7537e27d71509a0", size = 109122, upload-time = "2026-07-11T16:57:27.338Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a1/5a/5ca34cfa49690e229af9d3fe5e657498d22136a001e6b9d3fb8f4a02850f/sandtrap-0.2.6-py3-none-any.whl", hash = "sha256:58685b35bc8df2cfa00bcdb56cb263015f3f59a1ac626cab895e28417f89753d", size = 67129, upload-time = "2026-07-11T13:05:19.032Z" },
+    { url = "https://files.pythonhosted.org/packages/02/8b/a1fa325f554172d433a586ccd2559b7e2e22b69f77e7ae64ff7e2e38f0fa/sandtrap-0.2.7-py3-none-any.whl", hash = "sha256:82a2e4b90baf49074137ff98e8ae18c1a60f7032b690929ecb643e6ec58c8810", size = 68017, upload-time = "2026-07-11T16:57:26.174Z" },
 ]
 
 [[package]]
@@ -2439,11 +2439,11 @@ wheels = [
 
 [[package]]
 name = "termish"
-version = "0.1.7"
+version = "0.1.8"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e5/3d/55ddd9bc9bcd76673a0b9ca21150f90c3a705664d7e1309a65b93830d115/termish-0.1.7.tar.gz", hash = "sha256:5e910bbc377afbed1d20954655f4d21e49e1fb10eff10e3ba340564e0aca5cde", size = 87486, upload-time = "2026-07-06T04:02:59.716Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/71/1eba74d75a910382c57975239ebeb5fff49c3698aca7456408dfeca7e8b6/termish-0.1.8.tar.gz", hash = "sha256:0233fe9986ddc6c03d929812a1747b5a1c2ac85405b72a50b84821fade8756ee", size = 97772, upload-time = "2026-07-11T17:03:01.559Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/d4/be1bbf725523482f4ca173d1c191716caff7a796da0a4bd1b81399f52727/termish-0.1.7-py3-none-any.whl", hash = "sha256:94036d53334474a4da9a598d1ddc62a47eaf323abd721bc09b34fd65ce70ffcc", size = 66724, upload-time = "2026-07-06T04:02:58.626Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/3d/f1ea5731880a44b65ac1c53ec0c980476419ec3b53ea0579604ef81e0c98/termish-0.1.8-py3-none-any.whl", hash = "sha256:23b6f325681b644690cf033d286f8d33da9b927721d6cb95696e638a5bc901d1", size = 71445, upload-time = "2026-07-11T17:03:00.478Z" },
 ]
 
 [[package]]
