@@ -51,7 +51,13 @@ VIEWPORTS = {
 
 # Must stay in sync with serve._CSP (pinned by test): what test_app
 # permits headlessly must match what published serving permits live.
-_DEFAULT_CDN_ALLOWLIST = ("esm.sh", "unpkg.com", "cdn.jsdelivr.net", "cdn.plot.ly")
+_DEFAULT_CDN_ALLOWLIST = (
+    "esm.sh",
+    "unpkg.com",
+    "cdn.jsdelivr.net",
+    "cdn.plot.ly",
+    "cdn.tailwindcss.com",
+)
 
 _ABSOLUTE_PATH_HINT = (
     b"nontainer: absolute path -- apps are served under a prefix and must "
@@ -104,6 +110,11 @@ class TestAppResult:
     screenshots: tuple[str, ...] = ()
     """Workspace paths under /app/screenshots/."""
 
+    rejected: tuple[str, ...] = ()
+    """Requests the harness refused (absolute paths, blocked scripts),
+    each with WHY and the fix — the browser console only shows the
+    symptom (a truncated JSON parse error, an anonymous ERR_FAILED)."""
+
     load_error: str | None = None
 
     def __bool__(self) -> bool:
@@ -149,13 +160,23 @@ async def _run_actions(
     page_errors: list[str] = []
     results: list[ActionResult] = []
     screenshots: list[str] = []
+    rejected: dict[str, None] = {}  # ordered de-dupe
     shot_counter = 0
     loop = asyncio.get_running_loop()
+
+    def _reject(note: str) -> None:
+        if len(rejected) < 20:
+            rejected.setdefault(note)
 
     async def route_handler(route: Any, request: Any) -> None:
         parts = urlsplit(request.url)
         if parts.netloc == _HOST:
             if not parts.path.startswith(_PREFIX + "/") and parts.path != _PREFIX:
+                _reject(
+                    f"{parts.path} -> 404: absolute path (apps serve under "
+                    "a prefix — use relative URLs: fetch('api/x'), not "
+                    "fetch('/api/x'))"
+                )
                 await route.fulfill(
                     status=404, body=_ABSOLUTE_PATH_HINT, content_type="text/plain"
                 )
@@ -189,6 +210,16 @@ async def _run_actions(
             # what verifies here matches what serves published.
             await route.continue_()
         else:
+            if request.resource_type == "script":
+                _reject(
+                    f"{request.url} -> blocked: scripts may only load "
+                    f"from the CDN allowlist ({', '.join(cdn_allowlist)})"
+                )
+            else:
+                _reject(
+                    f"{request.url} -> blocked "
+                    f"({request.resource_type}; https-only environment)"
+                )
             await route.abort()
 
     # Idle-gap settling: Playwright's networkidle is STICKY — once
@@ -249,6 +280,7 @@ async def _run_actions(
                     ok=False,
                     console=tuple(console[:100]),
                     page_errors=tuple(page_errors[:20]),
+                    rejected=tuple(rejected),
                     load_error=str(e),
                 )
 
@@ -340,6 +372,7 @@ async def _run_actions(
                 console=tuple(console[:100]),
                 page_errors=tuple(page_errors[:20]),
                 screenshots=tuple(screenshots),
+                rejected=tuple(rejected),
             )
         finally:
             await context.close()
@@ -415,6 +448,8 @@ def render_test_app(result: TestAppResult) -> str:
         parts.append(line)
     if result.screenshots:
         parts.append(f"screenshots: {', '.join(result.screenshots)}")
+    if result.rejected:
+        parts.append("[rejected requests]\n" + "\n".join(result.rejected))
     if result.page_errors:
         parts.append("[page errors]\n" + "\n".join(result.page_errors))
     if result.console:

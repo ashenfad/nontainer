@@ -55,7 +55,7 @@ _logger = logging.getLogger("nontainer.apps")
 _CSP = (
     "default-src 'self'; "
     "script-src 'self' 'unsafe-inline' https://esm.sh https://unpkg.com "
-    "https://cdn.jsdelivr.net https://cdn.plot.ly; "
+    "https://cdn.jsdelivr.net https://cdn.plot.ly https://cdn.tailwindcss.com; "
     "style-src 'self' 'unsafe-inline' https:; "
     "connect-src 'self' https:; "
     "font-src 'self' https: data:; "
