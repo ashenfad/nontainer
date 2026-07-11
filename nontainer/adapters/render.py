@@ -94,7 +94,9 @@ Run Python code in a sandboxed environment attached to the same workspace
 as the terminal (shared files and cwd). Script semantics per call:
 variables do NOT persist between calls. What does persist:
 - files: read/write with normal open(), visible to the terminal too
-- helpers/: put reusable code in .py files there and import it"""
+- helpers/: put reusable code in .py files there and import it QUALIFIED
+  from the workspace root — `from helpers import mymod`, never a bare
+  `import mymod` (imports resolve from '/'; works in app handlers too)"""
 
 _CACHE_NOTE = """\
 - cache: a persistent dict for DATA (picklable values), e.g.
