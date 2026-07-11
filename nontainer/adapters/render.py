@@ -436,7 +436,18 @@ def materialize_ui(ws: Workspace, ui: object) -> list[tuple[str, str]]:
             path = _materialize_one(ws, name, value)
         except Exception:
             try:
-                path = _ui_write(ws, f"/ui/{name}.txt", repr(value)[:10_000].encode())
+                # slice sized values BEFORE repr — the fallback fires
+                # exactly when something was too big (>8MB artifact
+                # cap), and repr of a huge bytes/str builds the whole
+                # representation in memory first
+                preview = (
+                    value[:10_000]
+                    if isinstance(value, (str, bytes, bytearray))
+                    else value
+                )
+                path = _ui_write(
+                    ws, f"/ui/{name}.txt", repr(preview)[:10_000].encode()
+                )
             except Exception:
                 continue
         out.append((str(raw_name), path))
