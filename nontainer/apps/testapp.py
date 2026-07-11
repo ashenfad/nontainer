@@ -59,9 +59,12 @@ _DEFAULT_CDN_ALLOWLIST = (
     "cdn.tailwindcss.com",
 )
 
+# JSON (not plain text): the app's own res.json() error path can then
+# actually read and display it
 _ABSOLUTE_PATH_HINT = (
-    b"nontainer: absolute path -- apps are served under a prefix and must "
-    b"use RELATIVE urls (fetch('api/x'), not fetch('/api/x'))"
+    b'{"error": "nontainer: absolute path -- apps are served under a '
+    b"prefix and must use RELATIVE urls (fetch('api/x'), not "
+    b"fetch('/api/x'))\"}"
 )
 
 
@@ -178,7 +181,9 @@ async def _run_actions(
                     "fetch('/api/x'))"
                 )
                 await route.fulfill(
-                    status=404, body=_ABSOLUTE_PATH_HINT, content_type="text/plain"
+                    status=404,
+                    body=_ABSOLUTE_PATH_HINT,
+                    content_type="application/json",
                 )
                 return
             rel = parts.path[len(_PREFIX) :] or "/"

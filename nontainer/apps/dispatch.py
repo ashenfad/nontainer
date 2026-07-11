@@ -18,6 +18,7 @@ agent's repair loop is ``tail``, edit, retry.
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 import time
@@ -33,6 +34,15 @@ API_ROOT = f"{APP_ROOT}/api"
 LOG_PATH = f"{APP_ROOT}/logs/api.log"
 
 _VERBS = frozenset({"get", "post", "put", "delete", "patch"})
+
+
+def _error_response(status: int, message: str, **extra: str) -> WireResponse:
+    """Error bodies ride as JSON: model-written frontends call
+    res.json() unconditionally, so a plain-text error cascades into a
+    second, misleading SyntaxError in the app console. JSON keeps
+    their catch-blocks functional ({"error": ..., ...})."""
+    body = json.dumps({"error": message, **extra}).encode()
+    return WireResponse(int(status), body, "application/json")
 
 _STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -188,10 +198,10 @@ class AppRuntime:
             else:
                 resp = self._dispatch_static(request)
         except HttpError as e:
-            resp = WireResponse(e.status, e.message.encode(), "text/plain")
+            resp = _error_response(e.status, e.message)
         cap = self._config.max_response_bytes
         if len(resp.content) > cap:
-            return WireResponse(500, b"response too large", "text/plain")
+            return _error_response(500, "response too large")
         return resp
 
     # -- api -------------------------------------------------------------
@@ -257,13 +267,14 @@ class AppRuntime:
             if atomic:
                 ws.discard()
             self._log(f"[{name}:{verb}] ERROR:\n{result.error}")
-            return WireResponse(500, b"internal error (see /app/logs/api.log)",
-                                "text/plain")
+            return _error_response(
+                500, "internal error", log="/app/logs/api.log"
+            )
 
         http = result.namespace.get("nt__http")
         if http is not None:
             status, message = http
-            return WireResponse(int(status), str(message).encode(), "text/plain")
+            return _error_response(int(status), str(message))
 
         try:
             return normalize(result.namespace.get("nt__resp"))
@@ -271,7 +282,7 @@ class AppRuntime:
             if atomic:
                 ws.discard()
             self._log(f"[{name}:{verb}] BAD RETURN: {e}")
-            return WireResponse(500, str(e).encode(), "text/plain")
+            return _error_response(500, str(e))
 
     def test_app(
         self,

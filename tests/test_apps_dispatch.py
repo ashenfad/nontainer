@@ -319,6 +319,31 @@ def test_static_path_traversal_is_contained():
     ws.close()
 
 
+def test_error_responses_are_json():
+    """Model-written frontends call res.json() unconditionally; a
+    plain-text error body cascades into a second, misleading
+    SyntaxError. Every dispatch error path answers as JSON."""
+    ws, rt = make_ws()
+    write_handler(ws, "boom", "def get(req):\n    return 1/0\n")
+    write_handler(
+        ws, "teapot", "def get(req):\n    raise HttpError(418, 'short and stout')\n"
+    )
+
+    r = rt.dispatch(request("GET", "/api/boom"))  # handler crash
+    assert r.status == 500 and r.content_type == "application/json"
+    body = json.loads(r.content)
+    assert body["error"] == "internal error" and body["log"] == "/app/logs/api.log"
+
+    r = rt.dispatch(request("GET", "/api/teapot"))  # intentional HttpError
+    assert r.status == 418
+    assert json.loads(r.content) == {"error": "short and stout"}
+
+    r = rt.dispatch(request("GET", "/api/absent"))  # dispatch-level 404
+    assert r.status == 404
+    assert "no such endpoint" in json.loads(r.content)["error"]
+    ws.close()
+
+
 def test_nonverb_functions_noted_in_log_once():
     """`def query(req)` is never routed — the gemma lesson: the filter
     logic sat in a dead function while get() ignored the params. The
