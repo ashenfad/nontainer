@@ -473,6 +473,7 @@ class Workspace:
         extra_classes: tuple[type, ...] = (),
         filesystem: Any | None = None,
         isolation: Isolation | None = None,
+        cache_object: Any | None = None,
     ) -> Any:
         """EXTENSION SURFACE: build a sandbox from the frozen
         PythonConfig, for embedders composing execution features on top
@@ -508,7 +509,11 @@ class Workspace:
         rpc_handlers = None
         if effective_isolation != "none":
             rpc_handlers = {}
-            if self._cache_enabled:
+            if cache_object is not None:
+                # a caller-supplied cache view (e.g. apps' read-only
+                # wrapper) — the worker's `cache` proxy dispatches here
+                rpc_handlers["cache"] = self._cache_rpc_handler(cache_object)
+            elif self._cache_enabled:
                 rpc_handlers["cache"] = self._cache_rpc_handler()
             for name, obj in cfg.host_objects.items():
                 if not _is_plain_data(obj):
@@ -591,10 +596,16 @@ class Workspace:
 
         return policy
 
-    def _cache_rpc_handler(self) -> Callable[[str, tuple, dict], Any]:
-        """RPC dispatch onto the parent-side live cache (the agex
-        pattern) for process/kernel isolation."""
-        cache = Cache(self._provider.kv)
+    def _cache_rpc_handler(
+        self, cache: Any | None = None
+    ) -> Callable[[str, tuple, dict], Any]:
+        """RPC dispatch onto a parent-side live cache (the agex
+        pattern) for process/kernel isolation. Default: the
+        workspace's own cache; callers may hand in a view (apps pass
+        their read-only wrapper) — its exceptions cross to the worker
+        and re-raise at the call site."""
+        if cache is None:
+            cache = Cache(self._provider.kv)
 
         def handler(method: str, args: tuple, kwargs: dict) -> Any:
             match method:
@@ -832,7 +843,16 @@ class Workspace:
                 namespace[name] = obj
 
         if cache is not None:
-            namespace["cache"] = cache
+            if bridged and not _is_plain_data(cache):
+                from sandtrap import RpcProxyMarker
+
+                # contract: the caller built this sandbox with
+                # cache_object=<this cache> so the handler is registered
+                namespace["cache"] = RpcProxyMarker(
+                    target="cache", wrapper="nontainer.cache:RemoteCache"
+                )
+            else:
+                namespace["cache"] = cache
         elif self._cache_enabled:
             if not bridged:
                 namespace["cache"] = Cache(self._provider.kv)

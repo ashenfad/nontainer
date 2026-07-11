@@ -127,24 +127,36 @@ class AppRuntime:
         from monkeyfs import ReadOnlyFS
 
         self._ReadOnlyFS = ReadOnlyFS
+        self._ro_cache = _ReadOnlyCache(ws.cache) if ws.cache_enabled else None
         if frozen:
             # Fresh read-only sandbox built per request (in _dispatch_api).
             self._rw_sandbox = None
             self._ro_sandbox = None
         else:
-            # App handlers run IN-PROCESS regardless of the workspace's
-            # isolation config: process-isolated serving needs worker
-            # entry/pooling (a later phase), and handler code is the
-            # same trust tier as the rest of the app surface.
+            # Handler code is the same trust tier as run_python code,
+            # so it inherits the workspace's isolation. Authoring
+            # dispatch is serialized under ws.lock, so ONE long-lived
+            # worker per sandbox suffices (entered here, before server
+            # threads pile up; reaped by close()).
             self._rw_sandbox = ws.build_sandbox(
-                extra_classes=self._contract, isolation="none", **self._budgets
+                extra_classes=self._contract, **self._budgets
             )
             self._ro_sandbox = ws.build_sandbox(
                 extra_classes=self._contract,
                 filesystem=ReadOnlyFS(ws.fs),
-                isolation="none",
+                cache_object=self._ro_cache,
                 **self._budgets,
             )
+            for sb in (self._rw_sandbox, self._ro_sandbox):
+                if hasattr(sb, "shutdown"):  # process/kernel worker
+                    sb.__enter__()
+
+    def close(self) -> None:
+        """Reap long-lived process workers (no-op in-process/frozen).
+        Idempotent; daemon workers die with the host either way."""
+        for sb in (self._rw_sandbox, self._ro_sandbox):
+            if sb is not None and hasattr(sb, "shutdown"):
+                sb.shutdown()
 
     # -- the core --------------------------------------------------------
 
@@ -202,28 +214,33 @@ class AppRuntime:
 
         cache: Any = None  # None: the workspace's live cache
         if readonly and ws.cache_enabled:
-            cache = _ReadOnlyCache(ws.cache)
+            cache = self._ro_cache
 
         if self._frozen:
             # A fresh read-only sandbox per request — no shared instance
-            # to race, so no lock. Cheap: build_sandbox memoizes the
-            # built policy per parameter set, so per-request cost is
-            # sandbox construction, not policy registration.
+            # to race, so no lock, and full request concurrency. Under
+            # process/kernel isolation that's a fork per request
+            # (~2ms: COW fork, memoized policy, everything pre-imported)
+            # — frozen state is immutable, so nothing needs sharing.
             sandbox = ws.build_sandbox(
                 extra_classes=self._contract,
                 filesystem=self._ReadOnlyFS(ws.fs),
-                isolation="none",  # see AppRuntime.__init__
+                cache_object=cache,
                 **self._budgets,
             )
         else:
             sandbox = self._ro_sandbox if readonly else self._rw_sandbox
 
-        result = ws.exec_python(
-            source + _TRAILER.format(verb=verb),
-            inputs={"nt__req": request},
-            sandbox=sandbox,
-            cache=cache,
-        )
+        from contextlib import nullcontext
+
+        per_request_worker = self._frozen and hasattr(sandbox, "shutdown")
+        with sandbox if per_request_worker else nullcontext():
+            result = ws.exec_python(
+                source + _TRAILER.format(verb=verb),
+                inputs={"nt__req": request},
+                sandbox=sandbox,
+                cache=cache,
+            )
 
         if result.stdout:
             self._log(f"[{name}:{verb}] stdout:\n{result.stdout}")

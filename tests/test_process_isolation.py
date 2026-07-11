@@ -105,3 +105,71 @@ def test_live_host_objects_bridge_as_proxies():
         assert counter.n == 11  # the PARENT's instance moved
     finally:
         w.close()
+
+
+# -- apps under isolation ----------------------------------------------------------
+
+_COUNTER = b"""
+def get(req):
+    return {"n": cache.get("n", 0)}
+
+def post(req):
+    cache["n"] = cache.get("n", 0) + 1
+    return {"n": cache["n"]}
+"""
+
+
+def _seed_app(w):
+    w.fs.makedirs("/app/api", exist_ok=True)
+    w.fs.write("/app/index.html", b"<html><body>hi</body></html>")
+    w.fs.write("/app/api/count.py", _COUNTER)
+    w.checkpoint()
+
+
+def test_authoring_dispatch_runs_in_workers(ws):
+    """Preview dispatch inherits the workspace's isolation: handlers
+    execute in the runtime's long-lived workers, cache crossing the
+    bridge both read-write and read-only."""
+    import json
+
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(ws)
+    runtime = enable_apps(ws)
+    try:
+        assert hasattr(runtime._rw_sandbox, "_process")  # really a worker
+
+        r = runtime.dispatch(request("POST", "/api/count"))
+        assert r.status == 200 and json.loads(r.content) == {"n": 1}
+        r = runtime.dispatch(request("GET", "/api/count"))
+        assert r.status == 200 and json.loads(r.content) == {"n": 1}
+        assert ws.cache["n"] == 1  # landed in the PARENT's cache
+    finally:
+        runtime.close()
+
+
+def test_frozen_serving_forks_per_request(ws):
+    """Frozen serving under isolation: each request gets its own
+    worker (full concurrency, ~2ms fork), reads work, mutation is
+    still rejected through the bridged read-only cache."""
+    import json
+
+    from nontainer.apps import AppRuntime, request
+
+    _seed_app(ws)
+    ws.cache["n"] = 41
+    ws.checkpoint()
+    snapshot = ws.fork("frozen-iso")
+    try:
+        runtime = AppRuntime(snapshot, frozen=True, log_sink=lambda msg: None)
+        r = runtime.dispatch(request("GET", "/api/count"))
+        assert r.status == 200 and json.loads(r.content) == {"n": 41}
+        # a second request forks its own worker and agrees
+        r = runtime.dispatch(request("GET", "/api/count"))
+        assert r.status == 200 and json.loads(r.content) == {"n": 41}
+        # mutation dies at the read-only cache, across the bridge
+        r = runtime.dispatch(request("POST", "/api/count"))
+        assert r.status == 500
+        assert snapshot.cache["n"] == 41
+    finally:
+        snapshot.close()
