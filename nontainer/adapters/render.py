@@ -193,9 +193,20 @@ Test endpoints instantly with curl (no server): curl /api/scores?limit=3,
 curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
 curl /api/scores | jq .
 
-Frontend: plain HTML/JS. Use RELATIVE urls (fetch('api/scores'), never
-fetch('/api/x')). For components use Preact via https://esm.sh, or JSX
-via <script type="text/babel" data-type="module"> with Babel standalone.
+Frontend: for most apps, plain HTML + DOM + fetch is the MOST RELIABLE
+choice. Use RELATIVE urls (fetch('api/scores'), never fetch('/api/x')).
+If you want components, use Preact as ES MODULES — copy this known-good
+pattern exactly (no UMD <script src> builds, no guessing globals like
+`preactHooks`):
+
+    <script type="module">
+      import { h, render } from 'https://esm.sh/preact@10';
+      import { useState, useEffect } from 'https://esm.sh/preact@10/hooks';
+      import htm from 'https://esm.sh/htm';
+      const html = htm.bind(h);
+      function App() { return html`<h1>hi</h1>`; }
+      render(h(App), document.getElementById('app'));
+    </script>
 
 Shared backend code: put modules in /helpers (e.g. /helpers/data.py,
 then `from helpers import data` in any handler — imports resolve from
@@ -265,9 +276,11 @@ viewport: "desktop" | "tablet" | "mobile".
 
 The app is served under a path prefix: frontend code MUST use relative
 URLs (fetch('api/x'), never fetch('/api/x')). Prefer {"assert": ...}
-over read-and-check when you know the expected condition. Screenshots
-are returned as images AND saved to /app/screenshots/. Backend errors
-land in /app/logs/api.log (tail it to debug)."""
+over read-and-check when you know the expected condition. When an
+assert fails, fix the APP, not the assert — weakening an assertion
+until it cannot fail (e.g. `x !== '0' || x === '0'`) verifies nothing.
+Screenshots are returned as images AND saved to /app/screenshots/.
+Backend errors land in /app/logs/api.log (tail it to debug)."""
 
 
 def _env_notes(ws: Workspace) -> str:
