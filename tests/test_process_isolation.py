@@ -78,3 +78,30 @@ def test_close_shuts_down_the_worker():
     w.close()
     proc.join(timeout=5.0)
     assert not proc.is_alive()
+
+
+def test_live_host_objects_bridge_as_proxies():
+    """The docstring promise: host_objects cross process isolation as
+    RPC proxies — method calls hit the PARENT's live object."""
+
+    class Counter:
+        def __init__(self):
+            self.n = 0
+
+        def bump(self, by=1):
+            self.n += by
+            return self.n
+
+    counter = Counter()
+    w = Workspace(
+        KvgitProvider.open(None, session="iso-host"),
+        python=PythonConfig(isolation="process", host_objects={"counter": counter}),
+    )
+    try:
+        r = w.run_python("a = counter.bump()\nb = counter.bump(10)")
+        assert r.error is None, r.error
+        assert r.namespace["a"] == 1
+        assert r.namespace["b"] == 11
+        assert counter.n == 11  # the PARENT's instance moved
+    finally:
+        w.close()

@@ -308,6 +308,25 @@ def _render_error(exc: BaseException) -> str:
     ).rstrip()
 
 
+def _host_object_rpc_handler(obj: Any):
+    """Parent-side dispatch for one bridged host object: the worker's
+    proxy calls methods by name; the live object never crosses. Public
+    methods only — the proxy can't reach dunders or privates."""
+
+    def handler(method: str, args: tuple, kwargs: dict) -> Any:
+        if method.startswith("_"):
+            raise AttributeError(method)
+        attr = getattr(obj, method)
+        if not callable(attr):
+            raise AttributeError(
+                f"{method!r} is not a method (attribute reads don't cross "
+                "the process-isolation bridge)"
+            )
+        return attr(*args, **kwargs)
+
+    return handler
+
+
 def _is_plain_data(obj: Any) -> bool:
     """Builtin-typed values need no policy registration."""
     return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
@@ -487,8 +506,13 @@ class Workspace:
 
         effective_isolation = isolation if isolation is not None else cfg.isolation
         rpc_handlers = None
-        if effective_isolation != "none" and self._cache_enabled:
-            rpc_handlers = {"cache": self._cache_rpc_handler()}
+        if effective_isolation != "none":
+            rpc_handlers = {}
+            if self._cache_enabled:
+                rpc_handlers["cache"] = self._cache_rpc_handler()
+            for name, obj in cfg.host_objects.items():
+                if not _is_plain_data(obj):
+                    rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(obj)
 
         return sandbox(
             policy,
@@ -790,12 +814,27 @@ class Workspace:
                 ) from exc
             namespace[name] = value
 
-        namespace.update(self._python_config.host_objects)
+        sb = sandbox if sandbox is not None else self._sandbox
+        # Process/kernel sandboxes expose an RPC-handler registry; live
+        # objects cross as proxies, never by pickle. Duck-typed off the
+        # SANDBOX (not the config): callers may pass an in-process
+        # sandbox (apps do) while the workspace default is isolated.
+        bridged = hasattr(sb, "_rpc_handlers")
+
+        for name, obj in self._python_config.host_objects.items():
+            if bridged and not _is_plain_data(obj):
+                from sandtrap import RpcProxyMarker
+
+                # methods RPC to the parent's live object (attribute
+                # READS don't cross — a documented limit of bridging)
+                namespace[name] = RpcProxyMarker(target=f"host:{name}")
+            else:
+                namespace[name] = obj
 
         if cache is not None:
             namespace["cache"] = cache
         elif self._cache_enabled:
-            if self._python_config.isolation == "none":
+            if not bridged:
                 namespace["cache"] = Cache(self._provider.kv)
             else:
                 from sandtrap import RpcProxyMarker
@@ -805,8 +844,6 @@ class Workspace:
                 namespace["cache"] = RpcProxyMarker(
                     target="cache", wrapper="nontainer.cache:RemoteCache"
                 )
-
-        sb = sandbox if sandbox is not None else self._sandbox
         start = time.monotonic()
         exec_result = sb.exec(code, namespace=namespace, stdin=stdin, argv=argv)
         duration = time.monotonic() - start
