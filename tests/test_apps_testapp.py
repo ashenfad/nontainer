@@ -226,6 +226,32 @@ def test_absolute_urls_fail_verification(chromium_available):
     )
     result = rt.test_app([{"read": "#out"}])
     assert result.results[0].value == "failed:404"
+    # the harness names the rejection + fix (the console-side hint
+    # arrives truncated inside a JSON parse error — see the glm-5.2
+    # session post-mortem)
+    assert any(
+        "/api/data" in r and "relative URLs" in r for r in result.rejected
+    )
+    assert "[rejected requests]" in render_test_app(result)
+    ws.close()
+
+
+def test_blocked_script_named_in_rejections(chromium_available):
+    """A non-allowlisted CDN script fails as an anonymous ERR_FAILED in
+    the console — the rejection report names the URL and the allowlist."""
+    ws = Workspace(KvgitProvider.open(None, session="s3b"))
+    rt = enable_apps(ws)
+    ws.fs.makedirs("/app", exist_ok=True)
+    ws.fs.write(
+        "/app/index.html",
+        b"""<html><body><div id="out">ok</div>
+        <script src="https://evil.example.com/lib.js"></script>
+        </body></html>""",
+    )
+    result = rt.test_app([{"read": "#out"}])
+    assert result.results[0].value == "ok"
+    note = next(r for r in result.rejected if "evil.example.com" in r)
+    assert "allowlist" in note and "esm.sh" in note
     ws.close()
 
 
