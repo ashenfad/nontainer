@@ -190,7 +190,16 @@ curl /api/scores | jq .
 
 Frontend: plain HTML/JS. Use RELATIVE urls (fetch('api/scores'), never
 fetch('/api/x')). For components use Preact via https://esm.sh, or JSX
-via <script type="text/babel" data-type="module"> with Babel standalone."""
+via <script type="text/babel" data-type="module"> with Babel standalone.
+
+Shared backend code: put modules in /helpers (e.g. /helpers/data.py,
+then `import data` in any handler) — imports between /app/api files do
+NOT work. Browser SCRIPTS may only load from these CDNs (enforced by
+test_app AND published serving): esm.sh, unpkg.com, cdn.jsdelivr.net,
+cdn.plot.ly — plotly.js lives at
+https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2. Images, fetches,
+styles, and fonts may use any https host (map tiles work); for maps,
+plotly's tile-free scattergeo/choropleth need no tiles at all."""
 
 
 VIEW_IMAGE_DESCRIPTION = """\
@@ -274,6 +283,19 @@ def _env_notes(ws: Workspace) -> str:
             if (g.name or g.module.__name__) not in stdlib_names
         }
     )
+    network_mods = sorted(
+        (g.name or g.module.__name__) for g in _flatten_grants(cfg) if g.network
+    )
+    if cfg.network:
+        lines.append("- network: enabled for sandboxed code")
+    elif network_mods:
+        lines.append(f"- network: only via {', '.join(network_mods)}")
+    else:
+        lines.append(
+            "- network: NONE — the workspace is offline; do not attempt "
+            "downloads (browser-side app code may still load scripts "
+            "from allowed CDNs)"
+        )
     if cfg.stdlib:
         note = "- importable: safe stdlib (math, json, csv, datetime, re, os, pathlib, ...)"
         if extra_names:
@@ -284,3 +306,125 @@ def _env_notes(ws: Workspace) -> str:
     else:
         lines.append("- no importable modules beyond builtins")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# rich reply artifacts: the `ui = {...}` namespace convention
+# ---------------------------------------------------------------------------
+
+PYTHON_UI_NOTE = """
+
+Rich reply artifacts: assign `ui = {"name": value}` at top level —
+plotly figures, pandas DataFrames, matplotlib figures, images, dicts.
+Each is saved under /ui/ and the result notes its path; embed one in
+your reply with markdown image syntax, e.g. ![name](/ui/name.plotly.json),
+using the exact path from the note. Unreferenced artifacts display
+after your reply."""
+
+_MAX_ARTIFACT_BYTES = 8_000_000
+_IMAGE_MAGIC = {
+    b"\x89PNG\r\n\x1a\n": "png",
+    b"\xff\xd8\xff": "jpg",
+    b"GIF8": "gif",
+    b"RIFF": "webp",
+}
+
+
+def _ui_write(ws: Workspace, path: str, data: bytes) -> str:
+    if len(data) > _MAX_ARTIFACT_BYTES:
+        raise ValueError(f"artifact too large ({len(data)} bytes)")
+    ws.write_file(path, data)
+    return path
+
+
+def _materialize_one(ws: Workspace, name: str, value: object) -> str:
+    """One value -> one workspace file. The sniff order is a THEMING
+    hierarchy, most-declarative first: spec formats let the shell
+    render (and theme) the artifact itself; html gives it partial say;
+    pixels give it none. See the adapter docs in docs/api.md."""
+    import json as _json
+
+    mod = type(value).__module__ or ""
+
+    # spec tier: shell-rendered, shell-themed
+    if mod.startswith("plotly") and hasattr(value, "to_json"):
+        return _ui_write(ws, f"/ui/{name}.plotly.json", value.to_json().encode())
+    if mod.startswith("pandas") and hasattr(value, "columns"):
+        total = len(value)
+        payload = _json.loads(
+            value.head(200).to_json(orient="split", date_format="iso")
+        )
+        payload["total"] = total  # renderers say "showing N of total"
+        return _ui_write(ws, f"/ui/{name}.table.json", _json.dumps(payload).encode())
+
+    # pixel tier
+    if mod.startswith("matplotlib") and hasattr(value, "savefig"):
+        import io as _io
+
+        buf = _io.BytesIO()
+        value.savefig(buf, format="png", bbox_inches="tight")
+        return _ui_write(ws, f"/ui/{name}.png", buf.getvalue())
+    if mod.startswith("PIL") and hasattr(value, "save"):
+        import io as _io
+
+        buf = _io.BytesIO()
+        value.save(buf, format="PNG")
+        return _ui_write(ws, f"/ui/{name}.png", buf.getvalue())
+    if isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+        for magic, ext in _IMAGE_MAGIC.items():
+            if data.startswith(magic):
+                return _ui_write(ws, f"/ui/{name}.{ext}", data)
+        return _ui_write(ws, f"/ui/{name}.bin", data)
+
+    # html tier: the scientific-python display ecosystem for free
+    bundle_fn = getattr(value, "_repr_mimebundle_", None)
+    if callable(bundle_fn):
+        try:
+            bundle = bundle_fn()
+            if isinstance(bundle, tuple):
+                bundle = bundle[0]
+        except Exception:
+            bundle = {}
+        if isinstance(bundle, dict):
+            if "text/html" in bundle:
+                return _ui_write(
+                    ws, f"/ui/{name}.html", str(bundle["text/html"]).encode()
+                )
+            if "image/png" in bundle:
+                import base64 as _b64
+
+                raw = bundle["image/png"]
+                data = _b64.b64decode(raw) if isinstance(raw, str) else raw
+                return _ui_write(ws, f"/ui/{name}.png", data)
+    html_fn = getattr(value, "_repr_html_", None)
+    if callable(html_fn):
+        return _ui_write(ws, f"/ui/{name}.html", str(html_fn()).encode())
+
+    # data tier: never fail — always render SOMETHING
+    text = _json.dumps(value, indent=2, default=str)
+    return _ui_write(ws, f"/ui/{name}.json", text.encode())
+
+
+def materialize_ui(ws: Workspace, ui: object) -> list[tuple[str, str]]:
+    """Turn the agent's ``ui = {name: value}`` namespace binding into
+    workspace artifacts under ``/ui/`` (checkpointed writes). Returns
+    ``[(name, path)]`` for the observation note. Values that defeat
+    every renderer land as a capped ``repr`` — a debuggable floor, not
+    a silent drop."""
+    import re as _re
+
+    if not isinstance(ui, dict):
+        return []
+    out: list[tuple[str, str]] = []
+    for raw_name, value in list(ui.items())[:20]:
+        name = _re.sub(r"[^\w.-]+", "-", str(raw_name)).strip("-.") or "artifact"
+        try:
+            path = _materialize_one(ws, name, value)
+        except Exception:
+            try:
+                path = _ui_write(ws, f"/ui/{name}.txt", repr(value)[:10_000].encode())
+            except Exception:
+                continue
+        out.append((str(raw_name), path))
+    return out

@@ -91,9 +91,7 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(uuid),
     ModuleGrant(hashlib),
     # debugging: safe formatters only
-    ModuleGrant(
-        traceback, include=("format_exc", "format_exception", "print_exc")
-    ),
+    ModuleGrant(traceback, include=("format_exc", "format_exception", "print_exc")),
     # typing.io / typing.re: deprecated, removed in 3.13
     ModuleGrant(typing, exclude=("_*", "*._*", "io", "re")),
     # file IO — routed through the workspace VFS by the sandbox
@@ -101,16 +99,33 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(
         os,
         include=(
-            "listdir", "walk", "remove", "unlink", "mkdir", "makedirs",
-            "rename", "stat", "getcwd", "chdir",
+            "listdir",
+            "walk",
+            "remove",
+            "unlink",
+            "mkdir",
+            "makedirs",
+            "rename",
+            "stat",
+            "getcwd",
+            "chdir",
         ),
     ),
     ModuleGrant(
         os.path,
         name="os.path",
         include=(
-            "exists", "isfile", "isdir", "islink", "lexists", "samefile",
-            "realpath", "join", "basename", "dirname", "splitext",
+            "exists",
+            "isfile",
+            "isdir",
+            "islink",
+            "lexists",
+            "samefile",
+            "realpath",
+            "join",
+            "basename",
+            "dirname",
+            "splitext",
         ),
     ),
     # pathlib is fully VFS-routed (monkeyfs patches it), so no method
@@ -165,10 +180,21 @@ def dataframes() -> list[ModuleGrant]:
     import numpy
     import pandas
 
-    return [
+    grants = [
         ModuleGrant(numpy, recursive=True, exclude=_NUMPY_EXCLUDE),
         ModuleGrant(pandas, recursive=True, exclude=_PANDAS_EXCLUDE),
     ]
+    # pandas 3 backs its default string dtype with pyarrow; when it's
+    # installed, grant it so agent-level `import pyarrow` works too
+    # (pandas' own internal use never needed the grant — registered
+    # library code runs natively).
+    try:
+        import pyarrow
+
+        grants.append(ModuleGrant(pyarrow, recursive=True))
+    except ImportError:
+        pass
+    return grants
 
 
 _MATPLOTLIB_EXCLUDE = (

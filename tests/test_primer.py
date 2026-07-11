@@ -28,9 +28,7 @@ def test_primers_land_in_their_own_surface_when_split():
 
 def test_python_primer_lands_in_terminal_when_terminal_only():
     ws = make_ws(cache=False)  # plain → terminal-only
-    term = terminal_description(
-        ws, split=False, primer=_TP, python_primer=_PP
-    )
+    term = terminal_description(ws, split=False, primer=_TP, python_primer=_PP)
     assert _TP in term and _PP in term  # both in the single terminal tool
 
 
@@ -65,4 +63,23 @@ def test_agno_warns_when_python_primer_but_terminal_only():
         tk = WorkspaceTools(ws, python_primer=_PP)
     # it still lands (in the terminal tool's python section)
     assert _PP in (tk.functions["terminal"].entrypoint.__doc__ or "")
+    ws.close()
+
+
+def test_env_notes_state_network_status():
+    from nontainer import ModuleGrant, PythonConfig, Workspace
+    from nontainer.adapters.render import _env_notes
+    from nontainer.providers import KvgitProvider
+
+    ws = Workspace(KvgitProvider.open(None, session="net-none"))
+    assert "network: NONE" in _env_notes(ws)
+    ws.close()
+
+    import json as json_mod
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="net-mod"),
+        python=PythonConfig(modules=[ModuleGrant(json_mod, network=True)]),
+    )
+    assert "network: only via json" in _env_notes(ws)
     ws.close()

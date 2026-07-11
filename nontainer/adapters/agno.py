@@ -43,6 +43,7 @@ from ..workspace import Workspace
 from .render import (
     FILE_EDIT_DESCRIPTION,
     FILE_WRITE_DESCRIPTION,
+    PYTHON_UI_NOTE,
     VIEW_IMAGE_DESCRIPTION,
     ToolsMode,
     python_description,
@@ -189,19 +190,29 @@ class WorkspaceTools(Toolkit):
 
             def run_python(code: str) -> str:
                 """Run Python in the sandboxed workspace environment."""
-                with self._lock:
-                    return render_python(self._ws.run_python(code))
+                from .render import materialize_ui
 
-            run_python.__doc__ = python_description(workspace, primer=python_primer)
+                with self._lock:
+                    result = self._ws.run_python(code)
+                    text = render_python(result)
+                    # the `ui = {...}` convention: namespace values become
+                    # workspace artifacts the model can embed in its reply
+                    artifacts = materialize_ui(self._ws, result.namespace.get("ui"))
+                    if artifacts:
+                        listing = ", ".join(f"{n} -> {p}" for n, p in artifacts)
+                        text += f"\n[ui artifacts: {listing}]"
+                    return text
+
+            run_python.__doc__ = (
+                python_description(workspace, primer=python_primer) + PYTHON_UI_NOTE
+            )
             registered.append(run_python)
 
         if apps is not None:
             from ..apps import render_test_app
             from .render import TEST_APP_DESCRIPTION
 
-            def test_app(
-                actions: list[dict], viewport: str = "desktop"
-            ) -> ToolResult:
+            def test_app(actions: list[dict], viewport: str = "desktop") -> ToolResult:
                 """Verify the app headlessly."""
                 from ..apps.testapp import coerce_actions
 
