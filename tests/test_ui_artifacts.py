@@ -134,3 +134,14 @@ def test_plain_strings_stay_data(ws):
     strings still land as json artifacts."""
     out = materialize_ui(ws, {"note": "all done"})
     assert out == [("note", "/ui/note.json")]
+
+
+def test_oversize_value_falls_back_without_full_repr(ws):
+    """The fallback fires when the 8MB artifact cap rejects a value —
+    it must not then build the FULL repr of that value in memory."""
+    big = b"\x00" + b"x" * 9_000_000  # non-image magic, over the cap
+    out = materialize_ui(ws, {"blob": big})
+    assert out == [("blob", "/ui/blob.txt")]
+    text = ws.fs.read("/ui/blob.txt")
+    assert len(text) <= 10_000
+    assert text.startswith(b"b'")  # still a repr-shaped preview
