@@ -87,12 +87,19 @@ class WorkspaceTools(Toolkit):
         checkpoint: str = "call",
         terminal_primer: str | None = None,
         python_primer: str | None = None,
+        vision: bool = True,
         **kwargs,
     ) -> None:
         """``apps``: an ``AppRuntime`` (from ``nontainer.apps.
         enable_apps``) — when given, a ``test_app`` tool is registered
         whose screenshots come back as real images (agno ``ToolResult``
         media) in addition to being saved under /app/screenshots/.
+
+        ``vision``: whether the driving model accepts image input.
+        With ``False``, ``view_image`` isn't registered and ``test_app``
+        screenshots stay path-only (still saved to the workspace) —
+        attaching media a model can't take errors the whole next call
+        ("no endpoints support image input"), losing the turn.
 
         ``checkpoint``: commit granularity on versioned workspaces.
         ``"call"`` (default) commits after each mutating tool call —
@@ -184,7 +191,9 @@ class WorkspaceTools(Toolkit):
 
         view_image.__doc__ = VIEW_IMAGE_DESCRIPTION
 
-        registered = [terminal, file_write, file_edit, view_image]
+        registered = [terminal, file_write, file_edit]
+        if vision:
+            registered.append(view_image)
 
         if split:
 
@@ -222,10 +231,14 @@ class WorkspaceTools(Toolkit):
                     return ToolResult(content=f"test_app failed: {e}")
                 with self._lock:
                     result = apps.test_app(actions, viewport=viewport)
-                    shots = [
-                        Image(content=self._ws.fs.read(p), format="png", id=p)
-                        for p in result.screenshots
-                    ]
+                    shots = (
+                        [
+                            Image(content=self._ws.fs.read(p), format="png", id=p)
+                            for p in result.screenshots
+                        ]
+                        if vision
+                        else []
+                    )
                 return ToolResult(
                     content=render_test_app(result),
                     images=shots or None,

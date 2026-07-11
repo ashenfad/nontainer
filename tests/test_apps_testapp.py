@@ -316,6 +316,25 @@ def test_agno_test_app_tool_returns_images(app_ws):
     assert ws.fs.exists("/app/screenshots/shot-1.png")
 
 
+def test_agno_vision_false_keeps_screenshots_path_only(app_ws):
+    """A text-only model must not receive image media (providers 400
+    the NEXT call: 'no endpoints support image input' — the glm-5.2
+    lesson). vision=False drops the attachment and the view_image tool;
+    screenshots still land in the workspace."""
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+
+    ws, rt = app_ws
+    tk = WorkspaceTools(ws, apps=rt, vision=False)
+    assert "view_image" not in tk.functions
+
+    out = tk.functions["test_app"].entrypoint(actions=[{"screenshot": True}])
+    assert "PASS" in out.content
+    assert not out.images
+    assert "/app/screenshots/" in out.content  # the path still rides the text
+    assert ws.fs.exists("/app/screenshots/shot-1.png")
+
+
 @pytest.mark.asyncio
 async def test_mcp_test_app_tool_returns_image_content(app_ws):
     pytest.importorskip("mcp")
