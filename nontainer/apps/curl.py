@@ -61,7 +61,9 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             elif a in ("-d", "--data", "--data-raw", "--data-binary") and i + 1 < len(
                 args
             ):
-                body = args[i + 1].encode()
+                # repeated -d concatenates with '&', like real curl
+                chunk = args[i + 1].encode()
+                body = body + b"&" + chunk if body else chunk
                 i += 2
             elif a == "--json" and i + 1 < len(args):
                 body = args[i + 1].encode()

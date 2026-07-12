@@ -426,6 +426,14 @@ def test_curl_absorbs_real_curl_reflexes():
     assert r, r.stderr
     assert json.loads(ws.fs.read("/app/out.json")) == {"nums": [1]}
 
+    # repeated -d concatenates with '&', like real curl
+    write_handler(
+        ws, "echoraw", "def post(req):\n    return {'raw': req.body.decode()}\n"
+    )
+    r = ws.terminal("curl -d a=1 -d b=2 /api/echoraw")
+    assert r, r.stderr
+    assert json.loads(r.stdout)["raw"] == "a=1&b=2"
+
     # --json sets the content type
     write_handler(
         ws, "echo3", "def post(req):\n    return {'ct': req.headers.get('content-type')}\n"
