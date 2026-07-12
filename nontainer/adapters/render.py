@@ -346,9 +346,23 @@ no writing into /ui/ yourself) and the result notes its path; embed one
 in your reply with markdown image syntax, e.g.
 ![name](/ui/name.plotly.json), using the exact path from the note.
 Unreferenced artifacts display after your reply. (A value that is the
-path of a file you already saved is honored too.)"""
+path of a file you already saved is honored too.)
+Artifacts are capped at 8MB. For large scatter/map data use WebGL
+traces (scattergl, scattermapbox) and keep the spec lean: per-point
+customdata/hover text is the usual size killer — aggregate or sample
+it rather than shipping every row."""
 
 _MAX_ARTIFACT_BYTES = 8_000_000
+
+
+class _ArtifactTooLarge(ValueError):
+    """A materialized value blew the artifact cap — carries the size so
+    the observation can say WHY (and how to shrink it) instead of
+    silently degrading to a repr."""
+
+    def __init__(self, size: int) -> None:
+        super().__init__(f"artifact too large ({size} bytes)")
+        self.size = size
 _IMAGE_MAGIC = {
     b"\x89PNG\r\n\x1a\n": "png",
     b"\xff\xd8\xff": "jpg",
@@ -359,9 +373,27 @@ _IMAGE_MAGIC = {
 
 def _ui_write(ws: Workspace, path: str, data: bytes) -> str:
     if len(data) > _MAX_ARTIFACT_BYTES:
-        raise ValueError(f"artifact too large ({len(data)} bytes)")
+        raise _ArtifactTooLarge(len(data))
     ws.write_file(path, data)
     return path
+
+
+def _too_large_note(name: str, size: int, mod: str) -> str:
+    """Actionable diagnosis for the cap: the agent reads this in the
+    tool result and self-corrects; the human sees it where the figure
+    would have been."""
+    note = (
+        f"ui artifact {name!r} NOT rendered: too large "
+        f"({size / 1e6:.1f}MB > {_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
+    )
+    if mod.startswith("plotly"):
+        return note + (
+            " The usual culprit is per-point customdata/hover text — drop or"
+            " aggregate it. Coordinates are cheap (binary-encoded); WebGL"
+            " traces (scattergl, scattermapbox) render 100k+ points fine,"
+            " but the spec must still fit the cap."
+        )
+    return note + " Downsample or aggregate before assigning to `ui`."
 
 
 def _materialize_one(ws: Workspace, name: str, value: object) -> str:
@@ -444,27 +476,40 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     return _ui_write(ws, f"/ui/{name}.json", text.encode())
 
 
-def materialize_ui(ws: Workspace, ui: object) -> list[tuple[str, str]]:
+def materialize_ui(
+    ws: Workspace, ui: object
+) -> tuple[list[tuple[str, str]], list[str]]:
     """Turn the agent's ``ui = {name: value}`` namespace binding into
     workspace artifacts under ``/ui/`` (checkpointed writes). Returns
-    ``[(name, path)]`` for the observation note. Values that defeat
-    every renderer land as a capped ``repr`` — a debuggable floor, not
-    a silent drop."""
+    ``(artifacts, problems)``: ``[(name, path)]`` for the observation
+    note, plus diagnosis strings for values that could not be rendered
+    as intended (today: the size cap) — the adapter puts those in the
+    tool result so the agent can self-correct. Values that defeat every
+    renderer land as a capped ``repr`` — a debuggable floor, not a
+    silent drop."""
     import re as _re
 
     if not isinstance(ui, dict):
-        return []
+        return [], []
     out: list[tuple[str, str]] = []
+    problems: list[str] = []
     for raw_name, value in list(ui.items())[:20]:
         name = _re.sub(r"[^\w.-]+", "-", str(raw_name)).strip("-.") or "artifact"
         try:
             path = _materialize_one(ws, name, value)
+        except _ArtifactTooLarge as e:
+            # the one failure agents hit in practice — say WHY, in both
+            # the artifact slot (human) and the problems note (agent)
+            msg = _too_large_note(str(raw_name), e.size, type(value).__module__ or "")
+            problems.append(msg)
+            try:
+                path = _ui_write(ws, f"/ui/{name}.txt", msg.encode())
+            except Exception:
+                continue
         except Exception:
             try:
-                # slice sized values BEFORE repr — the fallback fires
-                # exactly when something was too big (>8MB artifact
-                # cap), and repr of a huge bytes/str builds the whole
-                # representation in memory first
+                # slice sized values BEFORE repr — repr of a huge
+                # bytes/str builds the whole representation in memory
                 preview = (
                     value[:10_000]
                     if isinstance(value, (str, bytes, bytearray))
@@ -476,4 +521,4 @@ def materialize_ui(ws: Workspace, ui: object) -> list[tuple[str, str]]:
             except Exception:
                 continue
         out.append((str(raw_name), path))
-    return out
+    return out, problems

@@ -206,10 +206,14 @@ class WorkspaceTools(Toolkit):
                     text = render_python(result)
                     # the `ui = {...}` convention: namespace values become
                     # workspace artifacts the model can embed in its reply
-                    artifacts = materialize_ui(self._ws, result.namespace.get("ui"))
+                    artifacts, problems = materialize_ui(
+                        self._ws, result.namespace.get("ui")
+                    )
                     if artifacts:
                         listing = ", ".join(f"{n} -> {p}" for n, p in artifacts)
                         text += f"\n[ui artifacts: {listing}]"
+                    for problem in problems:  # e.g. the 8MB cap, with the fix
+                        text += f"\n[ui note: {problem}]"
                     return text
 
             run_python.__doc__ = (
