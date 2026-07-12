@@ -257,6 +257,13 @@ class WorkspaceTools(Toolkit):
             ),
         )
 
+        # skills discovery: catalog /skills/*/SKILL.md frontmatter —
+        # access needs no tools (the terminal reads them; scripts run
+        # sandboxed through the normal tools)
+        from ..skills import catalog as skills_catalog
+
+        instructions += skills_catalog(workspace)
+
         self.end_turn = self._end_turn  # bindable as an agno post_hook
 
         super().__init__(
