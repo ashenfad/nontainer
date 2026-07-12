@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 Isolation = Literal["none", "process", "kernel"]
 
 _CWD_KEY = "__cwd__"
-RESERVED_COMMANDS = frozenset({"python"})
+RESERVED_COMMANDS = frozenset({"python", "python3"})
 
 
 @dataclass(frozen=True)
@@ -413,6 +413,7 @@ class Workspace:
                 "'python' is nontainer's bridge into run_python."
             )
         user_commands["python"] = self._python_command
+        user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
 
         # -- python sandbox: policy + sandbox built once (frozen) --

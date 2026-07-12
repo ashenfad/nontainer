@@ -92,6 +92,12 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(hashlib),
     # debugging: safe formatters only
     ModuleGrant(traceback, include=("format_exc", "format_exception", "print_exc")),
+    # warnings: libraries emit them constantly and agents reach for
+    # filterwarnings to quiet pandas/sklearn deprecation noise
+    ModuleGrant(
+        warnings,
+        include=("warn", "filterwarnings", "simplefilter", "catch_warnings"),
+    ),
     # typing.io / typing.re: deprecated, removed in 3.13
     ModuleGrant(typing, exclude=("_*", "*._*", "io", "re")),
     # file IO — routed through the workspace VFS by the sandbox

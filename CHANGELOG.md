@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0; the API is still moving. Notable changes since the initial cut:
 
 ### Added
+- **`python3` terminal alias.** The reserved `python` bridge now also
+  answers to `python3` — the reflex spelling agents type first. Both
+  names are reserved against user command injection.
+- **`warnings` in the STDLIB preset.** `warn`, `filterwarnings`,
+  `simplefilter`, and `catch_warnings` are granted — agents reach for
+  `warnings.filterwarnings("ignore")` the moment pandas/sklearn start
+  emitting deprecation noise, and the module was imported by the
+  presets but never granted.
 - **Artifact channels: binary in, images and files out.** Three
   pieces close the "artifacts are stranded in the workspace" gap:
   a `view_image` tool in both adapters (the agent views a saved

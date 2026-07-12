@@ -40,6 +40,24 @@ def test_stdlib_io_routes_through_vfs():
     ws.close()
 
 
+def test_stdlib_warnings_can_quiet_library_noise():
+    """Agents reach for warnings.filterwarnings('ignore') the moment
+    pandas/sklearn start shouting deprecations — the module is granted
+    (warn/filterwarnings/simplefilter/catch_warnings)."""
+    ws = make_ws()
+    r = ws.run_python(
+        "import warnings\n"
+        "warnings.filterwarnings('ignore')\n"
+        "with warnings.catch_warnings():\n"
+        "    warnings.simplefilter('ignore')\n"
+        "    warnings.warn('noise')\n"
+        "print('quiet')"
+    )
+    assert r, r.error
+    assert "quiet" in r.stdout
+    ws.close()
+
+
 def test_stdlib_excludes_global_random_state():
     ws = make_ws()
     r = ws.run_python("import random; random.seed(1)")
