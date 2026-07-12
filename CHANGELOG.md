@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0; the API is still moving. Notable changes since the initial cut:
 
 ### Added
+- **The 8MB `ui` artifact cap explains itself.** An oversize value used
+  to silently degrade to a truncated `repr` `.txt` — a 280k-point
+  plotly map showed up as a wall of text with no hint why. Now the
+  tool result carries a `[ui note: ...]` diagnosis (size vs cap, and
+  for plotly the actual usual culprit: per-point customdata/hover
+  strings — coordinates are cheap, WebGL traces render 100k+ points
+  fine) so the agent self-corrects, and the `.txt` artifact shows the
+  same message to the human where the figure would have been.
+  `materialize_ui` now returns `(artifacts, problems)`. The tool
+  description also teaches the cap + lean-spec guidance up front.
 - **`python3` terminal alias.** The reserved `python` bridge now also
   answers to `python3` — the reflex spelling agents type first. Both
   names are reserved against user command injection.
