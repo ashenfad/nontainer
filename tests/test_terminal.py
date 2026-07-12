@@ -73,6 +73,8 @@ def test_reserved_python_command_rejected(tmp_path):
     p = DirProvider(tmp_path / "ws", session="s1")
     with pytest.raises(ValueError, match="Reserved"):
         Workspace(p, commands={"python": lambda ctx: None})
+    with pytest.raises(ValueError, match="Reserved"):
+        Workspace(p, commands={"python3": lambda ctx: None})
 
 
 def test_truncation(tmp_path):
@@ -89,6 +91,12 @@ def test_truncation(tmp_path):
 
 def test_python_dash_c(dir_ws):
     r = dir_ws.terminal("python -c 'print(sum(range(10)))'")
+    assert r
+    assert r.stdout.strip() == "45"
+
+
+def test_python3_is_the_same_bridge(dir_ws):
+    r = dir_ws.terminal("python3 -c 'print(sum(range(10)))'")
     assert r
     assert r.stdout.strip() == "45"
 
