@@ -22,7 +22,7 @@ def ws():
 def test_plotly_figure_becomes_spec(ws):
     plotly = pytest.importorskip("plotly.graph_objects")
     fig = plotly.Figure(data=[plotly.Scatter(x=[1, 2], y=[3, 4])])
-    out = materialize_ui(ws, {"trend": fig})
+    out, _ = materialize_ui(ws, {"trend": fig})
     assert out == [("trend", "/ui/trend.plotly.json")]
     spec = json.loads(ws.fs.read("/ui/trend.plotly.json"))
     assert spec["data"][0]["x"] == [1, 2]  # the SPEC, not baked output
@@ -31,7 +31,7 @@ def test_plotly_figure_becomes_spec(ws):
 def test_dataframe_becomes_capped_table(ws):
     pd = pytest.importorskip("pandas")
     df = pd.DataFrame({"a": range(500), "b": range(500)})
-    out = materialize_ui(ws, {"rows": df})
+    out, _ = materialize_ui(ws, {"rows": df})
     assert out == [("rows", "/ui/rows.table.json")]
     table = json.loads(ws.fs.read("/ui/rows.table.json"))
     assert table["columns"] == ["a", "b"]
@@ -43,7 +43,7 @@ def test_matplotlib_figure_becomes_png(ws):
     plt = pytest.importorskip("matplotlib.pyplot")
     fig, ax = plt.subplots()
     ax.plot([1, 2], [3, 4])
-    out = materialize_ui(ws, {"chart": fig})
+    out, _ = materialize_ui(ws, {"chart": fig})
     plt.close(fig)
     assert out == [("chart", "/ui/chart.png")]
     assert ws.fs.read("/ui/chart.png")[:8] == b"\x89PNG\r\n\x1a\n"
@@ -69,7 +69,7 @@ def test_bytes_and_html_and_json_tiers(ws):
                 "stats": {"mean": 2.5},
                 "blob": b"\x00\x01\x02",
             },
-        )
+        )[0]
     )
     assert out["shot"] == "/ui/shot.png"
     assert out["widget"] == "/ui/widget.html"
@@ -86,16 +86,16 @@ def test_unrenderable_lands_as_repr_not_silence(ws):
         def __repr__(self):
             return "<Cursed>"
 
-    out = materialize_ui(ws, {"x": Cursed()})
+    out, _ = materialize_ui(ws, {"x": Cursed()})
     assert out == [("x", "/ui/x.txt")]
     assert ws.fs.read("/ui/x.txt") == b"<Cursed>"
 
 
 def test_name_sanitization_and_non_dict(ws):
-    out = materialize_ui(ws, {"my plot / v2": {"a": 1}})
+    out, _ = materialize_ui(ws, {"my plot / v2": {"a": 1}})
     assert out == [("my plot / v2", "/ui/my-plot-v2.json")]
-    assert materialize_ui(ws, "not a dict") == []
-    assert materialize_ui(ws, None) == []
+    assert materialize_ui(ws, "not a dict") == ([], [])
+    assert materialize_ui(ws, None) == ([], [])
 
 
 def test_agno_run_python_notes_ui_artifacts():
@@ -117,14 +117,14 @@ def test_string_path_to_existing_file_passes_through(ws):
     its PATH in `ui`. A pointer, not content — honor it as-is."""
     ws.fs.makedirs("/ui", exist_ok=True)
     ws.fs.write("/ui/plot.png", b"\x89PNG\r\n\x1a\nfake")
-    out = materialize_ui(ws, {"plot": "/ui/plot.png"})
+    out, _ = materialize_ui(ws, {"plot": "/ui/plot.png"})
     assert out == [("plot", "/ui/plot.png")]
     # untouched: no re-encode, no sidecar artifact
     assert ws.fs.read("/ui/plot.png") == b"\x89PNG\r\n\x1a\nfake"
 
 
 def test_string_path_to_missing_file_falls_to_data_tier(ws):
-    out = materialize_ui(ws, {"ghost": "/nope/missing.png"})
+    out, _ = materialize_ui(ws, {"ghost": "/nope/missing.png"})
     assert out == [("ghost", "/ui/ghost.json")]
     assert json.loads(ws.fs.read("/ui/ghost.json")) == "/nope/missing.png"
 
@@ -132,16 +132,37 @@ def test_string_path_to_missing_file_falls_to_data_tier(ws):
 def test_plain_strings_stay_data(ws):
     """Only rooted paths get the pointer treatment — ordinary prose
     strings still land as json artifacts."""
-    out = materialize_ui(ws, {"note": "all done"})
+    out, _ = materialize_ui(ws, {"note": "all done"})
     assert out == [("note", "/ui/note.json")]
 
 
-def test_oversize_value_falls_back_without_full_repr(ws):
-    """The fallback fires when the 8MB artifact cap rejects a value —
-    it must not then build the FULL repr of that value in memory."""
+def test_oversize_value_reports_why(ws):
+    """The 8MB cap must produce a DIAGNOSIS, not a silent repr: the
+    problems note reaches the agent (self-correct), and the .txt slot
+    shows the human why there's no figure."""
     big = b"\x00" + b"x" * 9_000_000  # non-image magic, over the cap
-    out = materialize_ui(ws, {"blob": big})
+    out, problems = materialize_ui(ws, {"blob": big})
     assert out == [("blob", "/ui/blob.txt")]
-    text = ws.fs.read("/ui/blob.txt")
-    assert len(text) <= 10_000
-    assert text.startswith(b"b'")  # still a repr-shaped preview
+    (problem,) = problems
+    assert "NOT rendered: too large" in problem and "9.0MB > 8MB" in problem
+    assert ws.fs.read("/ui/blob.txt").decode() == problem
+
+
+def test_oversize_plotly_gets_the_customdata_hint(ws):
+    """The 280k-point map lesson: coordinates are cheap (binary bdata),
+    per-point hover strings are what blow the cap — the note must steer
+    there, not at the point count."""
+    plotly = pytest.importorskip("plotly.graph_objects")
+    fig = plotly.Figure(
+        data=[
+            plotly.Scatter(
+                x=[0],
+                y=[0],
+                customdata=[["y" * 9_000_000]],  # the usual culprit, distilled
+            )
+        ]
+    )
+    out, problems = materialize_ui(ws, {"map": fig})
+    assert out == [("map", "/ui/map.txt")]
+    (problem,) = problems
+    assert "customdata" in problem and "scattergl" in problem
