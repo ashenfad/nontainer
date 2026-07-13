@@ -151,6 +151,11 @@ Pre-1.0; the API is still moving. Notable changes since the initial cut:
   `rate_limit_per_min`/`max_snapshots`/`queue_depth` are gone.
 
 ### Fixed
+- **`test_app` accepts a stringified actions list.** Models routinely
+  send the nested list as a JSON string; the pydantic layer agno wraps
+  entrypoints in rejected it on the annotation before the existing
+  `coerce_actions` tolerance could run. The annotation is loosened so
+  coercion gets its chance.
 - **Agent-set response headers are matched case-insensitively.**
   `normalize()` lowercases `Response.headers` keys on the way to the
   wire, so the idiomatic `"Content-Type": "text/csv"` overrides the
