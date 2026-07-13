@@ -112,6 +112,31 @@ def test_agno_run_python_notes_ui_artifacts():
     ws.close()
 
 
+def test_agno_run_python_adopts_direct_ui_writes():
+    """The near-miss one step further out: agents write INTO /ui
+    themselves (fig.write_json('/ui/x.json')) instead of assigning
+    objects to `ui`. New files the call created join the artifacts
+    note — without it they display nowhere; materialized values are
+    not double-listed."""
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+
+    ws = Workspace(KvgitProvider.open(None, session="ui-adopt"))
+    ws.fs.makedirs("/ui", exist_ok=True)
+    tk = WorkspaceTools(ws)
+    out = tk.functions["run_python"].entrypoint(
+        code=(
+            "with open('/ui/chart.json', 'w') as f:\n"
+            "    f.write('{\"data\": [], \"layout\": {}}')\n"
+            "ui = {'stats': {'n': 3}}"
+        )
+    )
+    assert "[ui artifacts:" in out
+    assert "chart.json -> /ui/chart.json" in out
+    assert out.count("/ui/stats.json") == 1  # materialized, not re-adopted
+    ws.close()
+
+
 def test_string_path_to_existing_file_passes_through(ws):
     """The near-miss: the agent saved the file itself (savefig) and put
     its PATH in `ui`. A pointer, not content — honor it as-is."""

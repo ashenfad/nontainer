@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0; the API is still moving. Notable changes since the initial cut:
 
 ### Added
+- **Direct `/ui` writes are adopted as artifacts.** Agents predictably
+  write into `/ui` themselves (`fig.write_json('/ui/x.json')`,
+  savefig) instead of assigning objects to `ui = {...}` — and those
+  files displayed nowhere. `run_python` now diffs the `/ui` listing
+  around the call and appends files the code created to the
+  `[ui artifacts: ...]` note (deduped against materialized values),
+  extending the existing path-pointer near-miss forgiveness.
 - **The walls label their doors.** Three predictable agent collisions
   now redirect instead of dead-ending:
   a 404 on `/api/<name>.py` says endpoints are module names without

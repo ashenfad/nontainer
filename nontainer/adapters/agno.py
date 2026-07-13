@@ -202,6 +202,10 @@ class WorkspaceTools(Toolkit):
                 from .render import materialize_ui
 
                 with self._lock:
+                    try:
+                        ui_before = set(self._ws.fs.list("/ui"))
+                    except Exception:
+                        ui_before = set()
                     result = self._ws.run_python(code)
                     text = render_python(result)
                     # the `ui = {...}` convention: namespace values become
@@ -209,6 +213,20 @@ class WorkspaceTools(Toolkit):
                     artifacts, problems = materialize_ui(
                         self._ws, result.namespace.get("ui")
                     )
+                    # near-miss adoption: agents predictably write INTO
+                    # /ui themselves (fig.write_json('/ui/x.json'),
+                    # savefig) instead of assigning objects to `ui` —
+                    # without a note those files display nowhere. New
+                    # files the call created join the artifacts note.
+                    try:
+                        ui_after = set(self._ws.fs.list("/ui"))
+                    except Exception:
+                        ui_after = set()
+                    claimed = {p for _, p in artifacts}
+                    for fname in sorted(ui_after - ui_before):
+                        path = f"/ui/{fname}"
+                        if path not in claimed and self._ws.fs.isfile(path):
+                            artifacts.append((fname, path))
                     if artifacts:
                         listing = ", ".join(f"{n} -> {p}" for n, p in artifacts)
                         text += f"\n[ui artifacts: {listing}]"
