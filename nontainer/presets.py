@@ -48,6 +48,8 @@ import textwrap
 import time
 import traceback
 import typing
+import urllib
+import urllib.parse
 import uuid
 import warnings
 import zipfile
@@ -86,6 +88,29 @@ STDLIB: tuple[ModuleGrant, ...] = (
     # data formats
     ModuleGrant(json),
     ModuleGrant(csv),
+    # url/query-string wrangling: pure string functions only — the
+    # network-touching side of urllib (request/error) stays out. The
+    # bare package rides along so `import urllib.parse` resolves, but
+    # exposes nothing beyond parse.
+    ModuleGrant(urllib, include=("parse",)),
+    ModuleGrant(
+        urllib.parse,
+        name="urllib.parse",
+        include=(
+            "quote",
+            "quote_plus",
+            "unquote",
+            "unquote_plus",
+            "urlencode",
+            "parse_qs",
+            "parse_qsl",
+            "urlparse",
+            "urlunparse",
+            "urlsplit",
+            "urlunsplit",
+            "urljoin",
+        ),
+    ),
     ModuleGrant(pickle),
     ModuleGrant(base64),
     ModuleGrant(uuid),

@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0; the API is still moving. Notable changes since the initial cut:
 
 ### Added
+- **The walls label their doors.** Three predictable agent collisions
+  now redirect instead of dead-ending:
+  a 404 on `/api/<name>.py` says endpoints are module names without
+  the extension (and suggests the real path when it exists) — agents
+  reliably mirror the filename into `fetch()` and then debug the
+  backend; blocked imports of `subprocess`/`requests`/`urllib.request`/
+  `httpx`/`socket` get a `[hint: ...]` in both run_python observations
+  and api.log pointing at the terminal's curl; and `urllib.parse` is
+  granted in the STDLIB preset (pure string functions only — `quote`,
+  `urlencode`, `parse_qs`, `urlparse`, ... — the network side of
+  urllib stays out). The apps primer also states the no-`.py`-in-URL
+  rule explicitly.
 - **The 8MB `ui` artifact cap explains itself.** An oversize value used
   to silently degrade to a truncated `repr` `.txt` — a 280k-point
   plotly map showed up as a wall of text with no hint why. Now the

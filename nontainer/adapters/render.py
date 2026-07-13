@@ -56,6 +56,11 @@ def render_python(result: PythonResult) -> str:
         parts.append(result.stdout.rstrip("\n"))
     if result.error:
         parts.append(f"[error]\n{result.error.rstrip()}")
+        from ..hints import blocked_import_hint
+
+        hint = blocked_import_hint(result.error)
+        if hint:
+            parts.append(f"[hint: {hint}]")
     if result.stderr:
         parts.append(f"[stderr]\n{result.stderr.rstrip()}")
     if result.namespace:
@@ -164,7 +169,8 @@ APPS_NOTES = """\
 You can build a web app in this workspace (frontend + backend):
 
 /app/index.html          <- entry page (served at the app root)
-/app/api/<name>.py       <- backend endpoint at api/<name>
+/app/api/<name>.py       <- backend endpoint at api/<name> (the URL has
+                            NO .py: /app/api/scores.py serves api/scores)
 /app/api/_helpers.py     <- _-prefixed files: importable, not routable
 /app/logs/api.log        <- handler errors + prints (tail it to debug)
 
@@ -194,7 +200,8 @@ curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
 curl /api/scores | jq .
 
 Frontend: for most apps, plain HTML + DOM + fetch is the MOST RELIABLE
-choice. Use RELATIVE urls (fetch('api/scores'), never fetch('/api/x')).
+choice. Use RELATIVE urls and module names: fetch('api/scores') — never
+fetch('/api/x') (absolute) and never fetch('api/scores.py') (404).
 If you want components, use Preact as ES MODULES — copy this known-good
 pattern exactly (no UMD <script src> builds, no guessing globals like
 `preactHooks`):
