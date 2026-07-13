@@ -35,7 +35,9 @@ SKILLS_ROOT = "/skills"
 def frontmatter(content: bytes) -> dict[str, str]:
     """Top-level ``key: value`` pairs from a leading ``---`` block
     (minimal on purpose — no yaml dependency)."""
-    text = content.decode("utf-8", errors="replace")
+    # utf-8-sig: a Windows-authored SKILL.md's BOM would otherwise
+    # defeat the startswith("---") check and silently drop the fields
+    text = content.decode("utf-8-sig", errors="replace")
     if not text.startswith("---"):
         return {}
     end = text.find("\n---", 3)
@@ -66,7 +68,7 @@ def _walk(source: Any) -> dict[str, bytes]:
             rel = f"{prefix}/{child.name}" if prefix else child.name
             if child.is_dir():
                 walk(child, rel)
-            else:
+            elif child.is_file():  # skips broken symlinks, fifos, sockets
                 files[rel] = child.read_bytes()
 
     walk(source, "")
