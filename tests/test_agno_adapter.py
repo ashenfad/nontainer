@@ -167,6 +167,24 @@ def test_agno_test_app_schema_parses():
     ws.close()
 
 
+def test_agno_test_app_accepts_stringified_actions():
+    """Models routinely send nested lists as JSON STRINGS; the pydantic
+    validation agno wraps entrypoints in must not reject them before
+    coerce_actions gets its chance. (Invalid JSON exercises the path
+    without launching a browser: coercion fails first, as a ToolResult,
+    not a validation explosion.)"""
+    from pydantic import validate_call
+
+    from nontainer.apps import enable_apps
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws, apps=enable_apps(ws))
+    entry = validate_call(tk.functions["test_app"].entrypoint)  # agno's wrapper
+    result = entry(actions='[{"screenshot": true')  # torn JSON string
+    assert "test_app failed" in result.content
+    ws.close()
+
+
 def test_agno_view_image():
     png = bytes.fromhex(  # 1x1 red PNG
         "89504e470d0a1a0a0000000d494844520000000100000001080200000090"

@@ -225,7 +225,12 @@ class WorkspaceTools(Toolkit):
             from ..apps import render_test_app
             from .render import TEST_APP_DESCRIPTION
 
-            def test_app(actions: list[dict], viewport: str = "desktop") -> ToolResult:
+            # actions is annotated loose: models routinely send the list
+            # as a JSON STRING, and agno's pydantic layer would reject it
+            # on the annotation BEFORE coerce_actions gets its chance
+            def test_app(
+                actions: "list[dict] | str", viewport: str = "desktop"
+            ) -> ToolResult:
                 """Verify the app headlessly."""
                 from ..apps.testapp import coerce_actions
 
