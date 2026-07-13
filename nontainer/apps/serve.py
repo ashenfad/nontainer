@@ -44,23 +44,26 @@ from .dispatch import AppRuntime, AppsConfig
 _logger = logging.getLogger("nontainer.apps")
 
 # The CSP's job here is SCRIPT supply-chain pinning: executable code
-# only from the named CDNs (must stay in sync with
-# testapp._DEFAULT_CDN_ALLOWLIST — pinned by test — or apps verify
-# green and break published). Images/fetches/styles/fonts are open to
-# any https host: data apps legitimately need map tiles, remote
-# imagery, and third-party APIs, and there is no proxy path inside
-# the walls (handlers have no network). The cost is reopening
-# beacon-style exfiltration channels — embedders serving untrusted
-# audiences should tighten via build_router(csp=...).
-_CSP = (
-    "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' https://esm.sh https://unpkg.com "
-    "https://cdn.jsdelivr.net https://cdn.plot.ly https://cdn.tailwindcss.com; "
-    "style-src 'self' 'unsafe-inline' https:; "
-    "connect-src 'self' https:; "
-    "font-src 'self' https: data:; "
-    "img-src 'self' https: data:"
-)
+# only from ``AppsConfig.script_hosts`` — the same declaration
+# test_app's interception enforces, so apps can't verify green and
+# break published. Images/fetches/styles/fonts are open to any https
+# host: data apps legitimately need map tiles, remote imagery, and
+# third-party APIs, and there is no proxy path inside the walls
+# (handlers have no network). The cost is reopening beacon-style
+# exfiltration channels — embedders serving untrusted audiences
+# should tighten via build_router(csp=...).
+def build_csp(script_hosts: tuple[str, ...]) -> str:
+    """The default served-HTML Content-Security-Policy for a given
+    script-host allowlist."""
+    hosts = " ".join(f"https://{h}" for h in script_hosts)
+    return (
+        "default-src 'self'; "
+        f"script-src 'self' 'unsafe-inline' {hosts}; "
+        "style-src 'self' 'unsafe-inline' https:; "
+        "connect-src 'self' https:; "
+        "font-src 'self' https: data:; "
+        "img-src 'self' https: data:"
+    )
 
 
 def mint_token(nbytes: int = 32) -> str:
@@ -74,7 +77,7 @@ def build_router(
     resolve: Callable[[str], Workspace | None],
     *,
     config: AppsConfig | None = None,
-    csp: str | None = _CSP,
+    csp: str | None = None,
     on_log: Callable[[str], None] | None = None,
 ) -> Any:
     """Build the mountable ASGI router serving frozen snapshots.
@@ -85,6 +88,10 @@ def build_router(
     resolving is expensive). Requests are served concurrently; ``on_log``
     receives handler stdout/errors (default: the ``nontainer.apps``
     logger).
+
+    ``csp``: the Content-Security-Policy set on served HTML. Default
+    (``None``) derives from ``config.script_hosts`` via ``build_csp``;
+    pass a full policy string to override, or ``""`` to disable.
     """
     try:
         from starlette.responses import Response as HttpResponse
@@ -97,6 +104,8 @@ def build_router(
     import anyio
 
     cfg = config or AppsConfig()
+    if csp is None:
+        csp = build_csp(cfg.script_hosts)
     log_sink = on_log or (lambda m: _logger.warning("app: %s", m))
 
     def _handle_sync(

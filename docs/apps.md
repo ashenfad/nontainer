@@ -109,8 +109,9 @@ Consumers:
 2. **`test_app`** (headless verify): Playwright intercepts ALL requests
    from a fresh browser context via `page.route` — static paths served
    from the workspace fs, `/api/*` through dispatch, external hosts
-   default-denied with a small CDN allowlist (esm.sh, unpkg for HTM/
-   Preact). The workspace IS the origin; no port, no server.
+   default-denied except `AppsConfig.script_hosts` (default: esm.sh
+   and friends for HTM/Preact). The workspace IS the origin; no port,
+   no server.
 3. **Live serving** (embedder opt-in): a Starlette `APIRouter` mounted
    by the host app at `/apps/{token}/{path}`, resolving token →
    workspace via an embedder-supplied lookup. Same dispatch, same
@@ -150,6 +151,49 @@ The insight: agents don't need build *tooling*, they need build
 *semantics* — and at agent-app scale the browser supplies those
 itself. test_app is indifferent to all of this; it serves whatever is
 under /app.
+
+### Script hosts: one declaration, four surfaces
+
+`AppsConfig.script_hosts` is the single statement of where browser
+scripts may load from. Everything that used to be hand-synced derives
+from it: test_app's request interception, the served-HTML CSP's
+`script-src` (`serve.build_csp`), the allowlist sentence in the
+agent-facing apps notes, and curl's external-URL error. What verifies
+headlessly, what serves published, and what the agent is *told* cannot
+disagree.
+
+`AppsConfig.apps_primer` is embedder guidance appended to those notes —
+the place to teach a private component library's known-good import
+block, in the same copy-this-exactly style as the built-in Preact
+pattern:
+
+```python
+config = AppsConfig(
+    script_hosts=(*DEFAULT_SCRIPT_HOSTS, "esm.corp.internal"),
+    apps_primer=(
+        "House design system: import { Button, DataGrid } from "
+        "'https://esm.corp.internal/@acme/design-system@3' — "
+        "copy this import exactly."
+    ),
+)
+runtime = enable_apps(ws, config)
+```
+
+A private npm registry (Artifactory etc.) is not directly usable here:
+registries serve package *tarballs* (CJS, bare specifiers), not
+browser-loadable ES modules. The working pattern is a self-hosted
+esm.sh instance configured with the private registry as its upstream,
+added to `script_hosts` as above — or prebuilt ESM bundles vendored
+into the workspace (`/vendor/lib.js`), which needs no config at all
+since `'self'` is always allowed.
+
+Air-gapped deployments, where agents' trained reflexes point at public
+hosts that don't resolve, are a designed-for-later shape (a
+`script_mirrors` host→mirror map: test_app reroutes intercepted
+requests; served HTML gets an injected import map remapping the URL
+prefixes). Where the deployment can manage split-horizon DNS plus an
+internal CA, that solves it below nontainer with no config at all —
+only the test_app browser's CA trust needs care.
 
 ## Namespace access from app code
 
@@ -301,9 +345,6 @@ app.mount("/apps", router)      # serves /apps/{token}/...
   the real filesystem have no flag yet (parallel to `ModuleGrant`); a
   `HostObjectGrant` would fill it. C-backed clients (sqlite) already do
   real I/O and don't need one.
-- **Served-HTML CSP.** `Response(headers=)` sets per-response headers
-  today; a strict default Content-Security-Policy for served HTML (with
-  the esm.sh CDN allowed) is not yet baked in.
 - **App state on a virtual filesystem.** Relational / high-tempo state
   wants sqlite, a C extension that bypasses the virtual fs — so it needs
   the `dir` backend or a writable `Mount`. A documented sharp edge, not

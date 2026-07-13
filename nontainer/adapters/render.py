@@ -12,7 +12,7 @@ Rendering rules (design decisions, README):
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from ..workspace import PythonResult, TerminalResult, Workspace
 
@@ -116,13 +116,15 @@ def terminal_description(
     ws: Workspace,
     *,
     split: bool,
-    apps: bool = False,
+    apps: Any = None,
     primer: str | None = None,
     python_primer: str | None = None,
 ) -> str:
     """``primer`` = the terminal tool's host guidance. ``python_primer``
     is only used in terminal-only mode (no separate run_python tool), so
-    it lands in the ``python`` builtin section."""
+    it lands in the ``python`` builtin section. ``apps``: the
+    ``AppsConfig`` when the apps loop is enabled (``True`` accepted for
+    the defaults; ``None``/``False`` = no apps section)."""
     desc = _TERMINAL_CORE
     if not split:
         desc += _PYTHON_IN_TERMINAL
@@ -132,7 +134,7 @@ def terminal_description(
         if python_primer:
             desc += "\n\n" + python_primer
     if apps:
-        desc += APPS_NOTES
+        desc += apps_notes(None if isinstance(apps, bool) else apps)
     if primer:
         desc += "\n\n" + primer
     return desc
@@ -164,7 +166,11 @@ Edits to DIFFERENT files may share a turn; multiple edits to the SAME
 file should be sequential turns (parallel order is not guaranteed)."""
 
 
-APPS_NOTES = """\
+# Template, not prose: __SCRIPT_HOSTS__ is filled from
+# AppsConfig.script_hosts (.replace, not .format — the handler examples
+# are full of literal braces) so the agent is told exactly what the
+# walls enforce.
+_APPS_NOTES_TEMPLATE = """\
 
 You can build a web app in this workspace (frontend + backend):
 
@@ -219,8 +225,8 @@ Shared backend code: put modules in /helpers (e.g. /helpers/data.py,
 then `from helpers import data` in any handler — imports resolve from
 the workspace root, so a bare `import data` will NOT find it) —
 imports between /app/api files do NOT work. Browser SCRIPTS may only
-load from these CDNs (enforced by test_app AND published serving):
-esm.sh, unpkg.com, cdn.jsdelivr.net, cdn.plot.ly, cdn.tailwindcss.com
+load from these hosts (enforced by test_app AND published serving):
+__SCRIPT_HOSTS__
 — plotly.js lives at
 https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2. Images, fetches,
 styles, and fonts may use any https host (map tiles work); for maps,
@@ -230,6 +236,23 @@ After changing the app, ALWAYS verify with the test_app tool before
 telling the user it works — it catches what curl can't (frontend
 wiring, absolute-URL mistakes, blocked scripts) and reports exactly
 what it rejected and why."""
+
+
+def apps_notes(config: Any = None) -> str:
+    """The apps section of the terminal tool description, derived from
+    an ``AppsConfig``: the script-host sentence states what the walls
+    actually enforce, and ``apps_primer`` (embedder guidance — private
+    component libs, house conventions) lands at the end."""
+    if config is None:
+        from ..apps import AppsConfig
+
+        config = AppsConfig()
+    notes = _APPS_NOTES_TEMPLATE.replace(
+        "__SCRIPT_HOSTS__", ", ".join(config.script_hosts)
+    )
+    if config.apps_primer:
+        notes += "\n\n" + config.apps_primer
+    return notes
 
 
 VIEW_IMAGE_DESCRIPTION = """\

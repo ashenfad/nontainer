@@ -195,15 +195,50 @@ def test_serving_is_stateless():
     ws.close()
 
 
-def test_csp_and_testapp_allowlist_stay_in_sync():
+def test_csp_derives_from_script_hosts():
     """What test_app permits headlessly must equal what published
     serving permits live — divergence means apps verify green and
-    break in production (the cdn.plot.ly lesson)."""
+    break in production (the cdn.plot.ly lesson). Both walls now
+    derive from the ONE declaration, AppsConfig.script_hosts."""
     import re
 
-    from nontainer.apps.serve import _CSP
-    from nontainer.apps.testapp import _DEFAULT_CDN_ALLOWLIST
+    from nontainer.apps import DEFAULT_SCRIPT_HOSTS
+    from nontainer.apps.serve import build_csp
 
-    script_src = re.search(r"script-src ([^;]+);", _CSP).group(1)
-    csp_hosts = set(re.findall(r"https://([\w.-]+)", script_src))
-    assert csp_hosts == set(_DEFAULT_CDN_ALLOWLIST)
+    def script_hosts_of(csp):
+        script_src = re.search(r"script-src ([^;]+);", csp).group(1)
+        return set(re.findall(r"https://([\w.-]+)", script_src))
+
+    assert script_hosts_of(build_csp(DEFAULT_SCRIPT_HOSTS)) == set(
+        DEFAULT_SCRIPT_HOSTS
+    )
+    assert script_hosts_of(build_csp(("esm.corp.internal",))) == {
+        "esm.corp.internal"
+    }
+
+
+def test_served_csp_reflects_config_hosts():
+    """A private registry host added via AppsConfig reaches the served
+    CSP without touching build_router's csp override."""
+    from nontainer.apps import AppsConfig
+
+    cfg = AppsConfig(script_hosts=("esm.corp.internal",))
+    ws, token, client = make_served(config=cfg)
+    r = client.get(f"/apps/{token}/")
+    csp = r.headers["content-security-policy"]
+    assert "https://esm.corp.internal" in csp
+    assert "esm.sh" not in csp  # replaced, not appended
+    ws.close()
+
+
+def test_csp_override_and_disable():
+    """csp= still overrides wholesale; empty string disables."""
+    ws, token, client = make_served(csp="default-src 'none'")
+    r = client.get(f"/apps/{token}/")
+    assert r.headers["content-security-policy"] == "default-src 'none'"
+    ws.close()
+
+    ws, token, client = make_served(csp="")
+    r = client.get(f"/apps/{token}/")
+    assert "content-security-policy" not in r.headers
+    ws.close()

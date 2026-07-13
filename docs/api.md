@@ -370,7 +370,12 @@ enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
     # builds handler sandboxes + registers the `curl` terminal builtin
 
 AppsConfig(request_timeout=5.0, request_tick_limit=200_000,
-           max_response_bytes=2_000_000)
+           max_response_bytes=2_000_000,
+           script_hosts=DEFAULT_SCRIPT_HOSTS,  # where browser scripts may
+           #   load from — drives test_app interception, the served CSP,
+           #   and the agent-facing allowlist sentence (one declaration)
+           apps_primer=None)  # embedder guidance appended to the apps
+           #   notes (private component libs, house conventions)
 
 AppRuntime.dispatch(request: Request) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", ...) -> TestAppResult
@@ -420,7 +425,8 @@ build_router(
     resolve: Callable[[str], Workspace | None],   # token → read-only ws @ commit
     *,
     config: AppsConfig | None = None,
-    csp: str | None = <default>,      # CSP header on served HTML
+    csp: str | None = None,  # None → derived from config.script_hosts
+    #   (build_csp); a string overrides wholesale; "" disables
     on_log: Callable[[str], None] | None = None,  # default: nontainer.apps logger
 ) -> Router                            # ASGI; app.mount("/apps", router)
 

@@ -27,7 +27,13 @@ from .contract import (
     normalize,
 )
 from .browser import configure_browser, shutdown_browser
-from .dispatch import AppRuntime, AppsConfig, enable_apps, request
+from .dispatch import (
+    DEFAULT_SCRIPT_HOSTS,
+    AppRuntime,
+    AppsConfig,
+    enable_apps,
+    request,
+)
 from .testapp import ActionResult, TestAppResult, arun_test_app, render_test_app
 
 def __getattr__(name):
@@ -42,6 +48,7 @@ def __getattr__(name):
 __all__ = [
     "AppRuntime",
     "AppsConfig",
+    "DEFAULT_SCRIPT_HOSTS",
     "enable_apps",
     "request",
     "Request",

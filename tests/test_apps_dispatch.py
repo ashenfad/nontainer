@@ -573,3 +573,18 @@ def test_curl_external_url_says_offline():
     assert r.exit_code == 6
     assert "no internet" in r.stderr and "cdn.jsdelivr.net" in r.stderr
     ws.close()
+
+
+def test_curl_external_url_error_names_configured_hosts():
+    """The offline message quotes AppsConfig.script_hosts, not a
+    hardcoded list — a private-registry embedder's agents are pointed
+    at the hosts that actually work."""
+    from nontainer.apps import AppsConfig
+
+    ws = Workspace(KvgitProvider.open(None, session="apps"))
+    enable_apps(ws, AppsConfig(script_hosts=("esm.corp.internal",)))
+    r = ws.terminal("curl https://esm.sh/preact@10")
+    assert r.exit_code == 6
+    assert "esm.corp.internal" in r.stderr
+    assert "unpkg.com" not in r.stderr
+    ws.close()

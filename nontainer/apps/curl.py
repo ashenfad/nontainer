@@ -107,8 +107,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
                 "dispatches only into the workspace app (try: curl "
                 "/api/...). The workspace has no internet access; "
                 "BROWSER-side code may load scripts from the CDN "
-                "allowlist (esm.sh, unpkg.com, cdn.jsdelivr.net, "
-                "cdn.plot.ly).",
+                f"allowlist ({', '.join(runtime.config.script_hosts)}).",
             )
         if not url.startswith("/"):
             url = "/" + url

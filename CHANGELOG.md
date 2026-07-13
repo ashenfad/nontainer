@@ -10,7 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Pre-1.0; the API is still moving. Notable changes since the initial cut:
 
 ### Added
-- **Direct `/ui` writes are adopted as artifacts.** Agents predictably
+- **`AppsConfig.script_hosts` + `apps_primer`: the script allowlist is
+  one declaration.** The hosts browser scripts may load from used to
+  live in four hand-synced places — test_app's interception, the served
+  CSP, the agent-facing notes, curl's error message — kept honest only
+  by a test. All four now derive from `AppsConfig.script_hosts`
+  (default unchanged: `DEFAULT_SCRIPT_HOSTS`), so an embedder adding a
+  private registry host (e.g. a self-hosted esm.sh over an internal
+  npm registry) changes one tuple and the walls, the verifier, and the
+  agent's instructions stay in agreement. `apps_primer` appends
+  embedder guidance to the apps notes — the place to teach a private
+  component lib's known-good import block. `build_router(csp=...)`
+  now defaults to deriving from the config (`build_csp`); pass a string
+  to override or `""` to disable. Removed: `test_app`'s per-call
+  `cdn_allowlist` parameter (set it on the config instead). Agents predictably
   write into `/ui` themselves (`fig.write_json('/ui/x.json')`,
   savefig) instead of assigning objects to `ui = {...}` — and those
   files displayed nowhere. `run_python` now diffs the `/ui` listing
