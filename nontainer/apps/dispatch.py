@@ -213,6 +213,22 @@ class AppRuntime:
         handler_path = f"{API_ROOT}/{name}.py"
         fs = self._ws.fs
         if not fs.exists(handler_path):
+            # agents mirror the FILENAME into the url
+            # (fetch('api/explorer.py')) and then debug the backend for
+            # an hour — label the door
+            if name.endswith(".py"):
+                bare = name[:-3]
+                if bare and fs.exists(f"{API_ROOT}/{bare}.py"):
+                    raise HttpError(
+                        404,
+                        f"no such endpoint: {request.path} — endpoints are"
+                        f" module names WITHOUT .py: try /api/{bare}",
+                    )
+                raise HttpError(
+                    404,
+                    f"no such endpoint: {request.path} — endpoints are"
+                    " module names WITHOUT the .py extension",
+                )
             raise HttpError(404, f"no such endpoint: {request.path}")
 
         verb = request.method.lower()
@@ -266,7 +282,11 @@ class AppRuntime:
         if result.error is not None:
             if atomic:
                 ws.discard()
-            self._log(f"[{name}:{verb}] ERROR:\n{result.error}")
+            from ..hints import blocked_import_hint
+
+            hint = blocked_import_hint(result.error)
+            suffix = f"\n[hint: {hint}]" if hint else ""
+            self._log(f"[{name}:{verb}] ERROR:\n{result.error}{suffix}")
             return _error_response(
                 500, "internal error", log="/app/logs/api.log"
             )

@@ -58,6 +58,37 @@ def test_stdlib_warnings_can_quiet_library_noise():
     ws.close()
 
 
+def test_stdlib_urllib_parse_is_granted():
+    """Handlers/data code reach for query-string helpers reflexively.
+    The pure string side is granted; the network side (urllib.request)
+    stays out."""
+    ws = make_ws()
+    r = ws.run_python(
+        "import urllib.parse\n"
+        "print(urllib.parse.urlencode({'a': 'b c'}))\n"
+        "print(urllib.parse.parse_qs('x=1&x=2'))\n"
+        "print(urllib.parse.urlparse('http://h/p?q=1').path)"
+    )
+    assert r, r.error
+    assert "a=b+c" in r.stdout and "{'x': ['1', '2']}" in r.stdout
+    r = ws.run_python("import urllib.request")
+    assert not r and "urllib.request" in (r.error or "")
+    ws.close()
+
+
+def test_blocked_import_renders_redirect_hint():
+    """subprocess-to-curl is a predictable collision — the rendered
+    observation must label the door (terminal curl), not just say no."""
+    from nontainer.adapters.render import render_python
+
+    ws = make_ws()
+    text = render_python(ws.run_python("import subprocess"))
+    assert "[hint: " in text and "terminal" in text and "curl" in text
+    text = render_python(ws.run_python("import requests"))
+    assert "[hint: " in text and "curl" in text
+    ws.close()
+
+
 def test_stdlib_excludes_global_random_state():
     ws = make_ws()
     r = ws.run_python("import random; random.seed(1)")

@@ -120,6 +120,34 @@ def test_404_no_handler():
     ws.close()
 
 
+def test_404_py_suffix_gets_did_you_mean():
+    """Agents mirror the FILENAME into the url (fetch('api/explorer.py'))
+    and then debug the backend for ages — the 404 must label the door."""
+    ws, rt = make_ws()
+    write_handler(ws, "explorer", "def get(req): return {'ok': True}")
+    r = rt.dispatch(request("GET", "/api/explorer.py"))
+    assert r.status == 404
+    err = json.loads(r.content)["error"]
+    assert "WITHOUT .py" in err and "try /api/explorer" in err
+    # no handler either way: convention hint, no bogus suggestion
+    r = rt.dispatch(request("GET", "/api/ghost.py"))
+    err = json.loads(r.content)["error"]
+    assert "WITHOUT the .py extension" in err and "try" not in err
+    ws.close()
+
+
+def test_blocked_import_in_handler_logs_hint():
+    """subprocess/requests inside a handler: the api.log entry (the
+    documented repair loop) redirects to the terminal's curl."""
+    ws, rt = make_ws()
+    write_handler(ws, "probe", "import requests\ndef get(req): return {}")
+    r = rt.dispatch(request("GET", "/api/probe"))
+    assert r.status == 500
+    log = ws.fs.read("/app/logs/api.log").decode()
+    assert "[hint: " in log and "curl" in log
+    ws.close()
+
+
 def test_underscore_files_not_routable():
     ws, rt = make_ws()
     write_handler(ws, "_lib", "def get(req): return {'leak': True}")
