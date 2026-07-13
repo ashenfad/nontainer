@@ -33,6 +33,25 @@ def test_install_bytes_names_from_frontmatter(ws):
     assert skills.install(ws, SKILL_MD) == "ev-data-cleaning"
 
 
+def test_frontmatter_tolerates_utf8_bom(ws):
+    """A Windows-authored SKILL.md leads with a BOM; the frontmatter
+    fields must still parse instead of failing startswith('---')."""
+    bom_skill = b"\xef\xbb\xbf" + SKILL_MD
+    assert skills.frontmatter(bom_skill)["name"] == "EV Data Cleaning"
+    assert skills.install(ws, bom_skill) == "ev-data-cleaning"
+
+
+def test_install_skips_non_regular_files(ws, tmp_path):
+    """A broken symlink (or fifo) in a skill directory is skipped, not
+    read — read_bytes on it would raise (or block, for pipes)."""
+    d = tmp_path / "my-skill"
+    d.mkdir()
+    (d / "SKILL.md").write_bytes(b"---\nname: linky\n---\nbody")
+    (d / "dangling").symlink_to(tmp_path / "does-not-exist")
+    assert skills.install(ws, d) == "linky"
+    assert not ws.fs.exists("/skills/linky/dangling")
+
+
 def test_install_directory_with_references(ws, tmp_path):
     d = tmp_path / "my-skill"
     (d / "references").mkdir(parents=True)
