@@ -140,7 +140,7 @@ class WorkspaceTools(Toolkit):
         terminal.__doc__ = terminal_description(
             workspace,
             split=split,
-            apps=apps is not None,
+            apps=apps.config if apps is not None else None,
             primer=terminal_primer,
             python_primer=None if split else python_primer,
         )

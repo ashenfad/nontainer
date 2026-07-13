@@ -69,11 +69,32 @@ except HttpError as nt__e:
 """
 
 
+# Where browser SCRIPTS may load from. One declaration drives all four
+# surfaces that used to be hand-synced: test_app's request interception,
+# the served-HTML CSP script-src, the agent-facing APPS_NOTES sentence,
+# and curl's external-URL error message — so what verifies headlessly,
+# what serves published, and what the agent is TOLD can never disagree.
+DEFAULT_SCRIPT_HOSTS = (
+    "esm.sh",
+    "unpkg.com",
+    "cdn.jsdelivr.net",
+    "cdn.plot.ly",
+    "cdn.tailwindcss.com",
+)
+
+
 @dataclass(frozen=True)
 class AppsConfig:
     request_timeout: float = 5.0
     request_tick_limit: int = 200_000
     max_response_bytes: int = 2_000_000
+    script_hosts: tuple[str, ...] = DEFAULT_SCRIPT_HOSTS
+    """Hosts browser scripts may load from (test_app enforcement, served
+    CSP, and the agent guidance all derive from this one tuple)."""
+    apps_primer: str | None = None
+    """Embedder guidance appended to the apps notes in the tool
+    description — e.g. a private component lib's known-good import
+    block, available endpoints, house frontend conventions."""
 
 
 class _ReadOnlyCache(MutableMapping):
@@ -165,6 +186,12 @@ class AppRuntime:
             except Exception:
                 self.close()  # don't orphan an already-entered worker
                 raise
+
+    @property
+    def config(self) -> AppsConfig:
+        """The runtime's config — adapters read ``script_hosts`` /
+        ``apps_primer`` from here to build tool descriptions."""
+        return self._config
 
     def close(self) -> None:
         """Reap long-lived process workers (no-op in-process/frozen).

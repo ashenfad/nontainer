@@ -89,3 +89,37 @@ def test_terminal_description_includes_apps_contract():
                    "RELATIVE urls", "/app/logs/api.log", "READ-ONLY"):
         assert marker in with_apps, marker
     ws.close()
+
+
+def test_apps_notes_derive_from_config():
+    """The script-host sentence states what the walls actually enforce,
+    and apps_primer (embedder guidance) lands at the end — the agent is
+    never taught an allowlist the config has replaced."""
+    from nontainer.adapters.render import apps_notes
+    from nontainer.apps import AppsConfig
+
+    assert "esm.sh, unpkg.com" in apps_notes()  # defaults
+
+    cfg = AppsConfig(
+        script_hosts=("esm.corp.internal",),
+        apps_primer="Design system: import from "
+        "'https://esm.corp.internal/@acme/ds@3'",
+    )
+    notes = apps_notes(cfg)
+    assert "esm.corp.internal" in notes
+    assert "unpkg.com" not in notes
+    assert notes.rstrip().endswith("'https://esm.corp.internal/@acme/ds@3'")
+
+
+def test_terminal_description_carries_apps_config():
+    """The adapter path: an AppRuntime's config (not a bare bool) flows
+    into the terminal description."""
+    from nontainer.apps import AppsConfig
+
+    ws = make_ws()
+    cfg = AppsConfig(script_hosts=("esm.corp.internal",),
+                     apps_primer="HOUSE RULES")
+    desc = terminal_description(ws, split=True, apps=cfg)
+    assert "esm.corp.internal" in desc
+    assert "HOUSE RULES" in desc
+    ws.close()

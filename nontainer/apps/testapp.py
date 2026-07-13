@@ -4,8 +4,9 @@
 The workspace IS the origin: a fresh browser context intercepts every
 request via ``page.route`` — static paths and ``/api/*`` are answered
 by the same ``dispatch`` the curl builtin uses; external hosts are
-denied except a small CDN allowlist (esm.sh and friends, for the
-no-build frontend tiers). No port, no server.
+denied except the script-host allowlist (``AppsConfig.script_hosts``,
+default esm.sh and friends for the no-build frontend tiers — the same
+declaration the served CSP derives from). No port, no server.
 
 Relocatability is enforced here by construction (docs/apps.md): the
 app is served under a synthetic prefix (``/apps/t-test/``), so a
@@ -48,16 +49,6 @@ VIEWPORTS = {
     "tablet": {"width": 768, "height": 1024},
     "mobile": {"width": 390, "height": 844},
 }
-
-# Must stay in sync with serve._CSP (pinned by test): what test_app
-# permits headlessly must match what published serving permits live.
-_DEFAULT_CDN_ALLOWLIST = (
-    "esm.sh",
-    "unpkg.com",
-    "cdn.jsdelivr.net",
-    "cdn.plot.ly",
-    "cdn.tailwindcss.com",
-)
 
 # JSON (not plain text): the app's own res.json() error path can then
 # actually read and display it
@@ -142,7 +133,6 @@ async def _run_actions(
     actions: list[dict[str, Any]] | None,
     *,
     viewport: str | dict[str, int] = "desktop",
-    cdn_allowlist: tuple[str, ...] = _DEFAULT_CDN_ALLOWLIST,
     max_screenshots: int = 5,
     load_timeout_ms: int = 10_000,
     assert_timeout_ms: int = 2_000,
@@ -158,6 +148,10 @@ async def _run_actions(
             "height": int(viewport.get("height", 800)),
         }
     )
+
+    # One declaration (AppsConfig.script_hosts) drives interception here
+    # AND the served CSP: what verifies headlessly matches what serves.
+    script_hosts = runtime.config.script_hosts
 
     console: list[str] = []
     page_errors: list[str] = []
@@ -201,7 +195,7 @@ async def _run_actions(
             await route.fulfill(
                 status=wire.status, body=wire.content, content_type=wire.content_type
             )
-        elif parts.netloc in cdn_allowlist:
+        elif parts.netloc in script_hosts:
             await route.continue_()
         elif parts.scheme == "https" and request.resource_type in (
             "image",
@@ -218,7 +212,7 @@ async def _run_actions(
             if request.resource_type == "script":
                 _reject(
                     f"{request.url} -> blocked: scripts may only load "
-                    f"from the CDN allowlist ({', '.join(cdn_allowlist)})"
+                    f"from the CDN allowlist ({', '.join(script_hosts)})"
                 )
             else:
                 _reject(
