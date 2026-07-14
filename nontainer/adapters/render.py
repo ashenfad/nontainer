@@ -377,7 +377,9 @@ in your reply with markdown image syntax, e.g.
 ![name](/ui/name.plotly.json), using the exact path from the note.
 Unreferenced artifacts display after your reply. (A value that is the
 path of a file you already saved is honored too.)
-For KPI tiles, a list of {"label", "value", optional "delta"/"unit"} dicts renders as stat cards.
+For a dashboard, a list of dicts renders as a card row: stats as
+{"label", "value", optional "sublabel"} and callouts as {"type": "callout",
+"title", "body", optional "tone": info|success|warning}.
 Artifacts are capped at 8MB. For large scatter/map data use WebGL
 traces (scattergl, scattermapbox) and keep the spec lean: per-point
 customdata/hover text is the usual size killer — aggregate or sample
@@ -427,6 +429,49 @@ def _too_large_note(name: str, size: int, mod: str) -> str:
     return note + " Downsample or aggregate before assigning to `ui`."
 
 
+def _is_stat(i: object) -> bool:
+    """A stat tile: any dict carrying label + value. Untagged is fine —
+    it is the shape agents naturally emit — so a tagged callout that also
+    happens to hold label/value is disambiguated by ``_is_callout`` first."""
+    return isinstance(i, dict) and "label" in i and "value" in i
+
+
+def _is_callout(i: object) -> bool:
+    """A callout: a TAGGED dict (``type == "callout"``) with a title or
+    body. The tag is required — an untagged {title, body} would collide
+    with too many ordinary dicts to duck-type safely."""
+    return (
+        isinstance(i, dict)
+        and i.get("type") == "callout"
+        and ("title" in i or "body" in i)
+    )
+
+
+def _normalize_card(i: dict) -> dict:
+    """One duck-typed item -> its canonical card dict. Callouts checked
+    first so a tagged callout never masquerades as a stat. Unknown keys
+    are dropped; legacy stat shapes (delta -> sublabel, unit -> value)
+    are folded so older agent output still renders."""
+    if _is_callout(i):
+        tone = i.get("tone")
+        if tone not in ("info", "success", "warning"):
+            tone = "info"  # never infer sentiment; unknown/absent -> info
+        return {
+            "type": "callout",
+            "title": str(i["title"]) if "title" in i else "",
+            "body": str(i["body"]) if "body" in i else "",
+            "tone": tone,
+        }
+    item: dict = {"type": "stat", "label": str(i["label"]), "value": i["value"]}
+    if "unit" in i:
+        item["value"] = f"{i['value']}{i['unit']}"  # legacy: unit onto value
+    if "sublabel" in i:
+        item["sublabel"] = str(i["sublabel"])
+    elif "delta" in i:
+        item["sublabel"] = str(i["delta"])  # legacy: delta folds into sublabel
+    return item
+
+
 def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     """One value -> one workspace file. The sniff order is a THEMING
     hierarchy, most-declarative first: spec formats let the shell
@@ -458,26 +503,23 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
         payload["total"] = total  # renderers say "showing N of total"
         return _ui_write(ws, f"/ui/{name}.table.json", _json.dumps(payload).encode())
 
-    # cards tier: a list of label/value dicts is a KPI/stat row — the one
+    # cards tier: a list of stat / callout dicts is a dashboard row — a
     # declarative shape with no other plausible rendering, so duck-type it
-    # (zero sandbox imports) rather than demand a marker. Near-misses fall
-    # through to the JSON floor.
+    # (zero sandbox imports) rather than demand a marker. A stat is any dict
+    # with label+value (tagged or not — the shape agents naturally produce);
+    # a callout must be tagged (type "callout") with a title or body. If a
+    # single element is neither, the whole list falls through to the JSON
+    # floor. The renderer never infers sentiment from a value's sign —
+    # direction lives in the sublabel's words, tone only on callouts.
     if (
         isinstance(value, list)
         and value
-        and all(isinstance(i, dict) and "label" in i and "value" in i for i in value)
+        and all(_is_stat(i) or _is_callout(i) for i in value)
     ):
-        items = []
-        for i in value[:24]:  # cap the row; a KPI wall past two dozen is noise
-            item = {"label": str(i["label"]), "value": i["value"]}
-            if "delta" in i:
-                item["delta"] = i["delta"]
-            if "unit" in i:
-                item["unit"] = i["unit"]
-            items.append(item)  # unknown keys dropped
-        # default=str: KPI values are routinely numpy scalars (df.sum()),
-        # which json.dumps rejects — degrade them to strings, not to the
-        # repr fallback
+        items = [_normalize_card(i) for i in value[:24]]  # cap: a wall past
+        # two dozen is noise. default=str: stat values are routinely numpy
+        # scalars (df.sum()), which json.dumps rejects — degrade them to
+        # strings, not the repr fallback.
         return _ui_write(
             ws,
             f"/ui/{name}.cards.json",

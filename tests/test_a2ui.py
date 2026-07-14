@@ -101,8 +101,16 @@ def test_splice_artifact_listed_twice_appends_once():
 
 
 def test_component_cards():
+    # A mixed row: a stat (with sublabel) and a callout carrying a tone.
     data = json.dumps(
-        {"items": [{"label": "Revenue", "value": 42, "delta": "+3", "unit": "$"}]}
+        {
+            "items": [
+                {"type": "stat", "label": "Revenue", "value": 42,
+                 "sublabel": "up 3"},
+                {"type": "callout", "title": "Note", "body": "check it",
+                 "tone": "warning"},
+            ]
+        }
     ).encode()
     frag = component_for("kpis", "/ui/kpis.cards.json", data, url)
     assert frag == {
@@ -114,13 +122,48 @@ def test_component_cards():
                     "children": [
                         {"componentType": "Text", "text": "Revenue", "role": "label"},
                         {"componentType": "Text", "text": "42", "role": "value"},
-                        {"componentType": "Text", "text": "+3", "role": "delta"},
-                        {"componentType": "Text", "text": "$", "role": "unit"},
+                        {"componentType": "Text", "text": "up 3", "role": "sublabel"},
                     ],
-                }
+                },
+                {
+                    "componentType": "Card",
+                    "tone": "warning",
+                    "children": [
+                        {"componentType": "Text", "text": "Note", "role": "title"},
+                        {"componentType": "Text", "text": "check it", "role": "body"},
+                    ],
+                },
             ],
         },
         "data_model": {},
+    }
+
+
+def test_component_cards_stat_without_sublabel_and_empty_callout():
+    # Stat omits sublabel entirely; callout with empty body emits only title.
+    data = json.dumps(
+        {
+            "items": [
+                {"type": "stat", "label": "Users", "value": 1234},
+                {"type": "callout", "title": "Just a title", "body": "",
+                 "tone": "info"},
+                {"type": "mystery"},  # unrecognized -> skipped
+            ]
+        }
+    ).encode()
+    frag = component_for("k", "/ui/k.cards.json", data, url)
+    cards = frag["component"]["children"]
+    assert len(cards) == 2  # the mystery item is dropped
+    assert cards[0]["children"] == [
+        {"componentType": "Text", "text": "Users", "role": "label"},
+        {"componentType": "Text", "text": "1234", "role": "value"},
+    ]
+    assert cards[1] == {
+        "componentType": "Card",
+        "tone": "info",
+        "children": [
+            {"componentType": "Text", "text": "Just a title", "role": "title"},
+        ],
     }
 
 
@@ -232,7 +275,11 @@ def _reader(files: dict[str, bytes]):
 def test_turn_golden_full_reply():
     # One inline plotly ref + one unreferenced cards artifact (appended).
     spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
-    cards = {"items": [{"label": "Revenue", "value": 42, "delta": "+3", "unit": "$"}]}
+    cards = {
+        "items": [
+            {"type": "stat", "label": "Revenue", "value": 42, "sublabel": "up 3"}
+        ]
+    }
     files = {
         "/ui/fig.plotly.json": json.dumps(spec).encode(),
         "/ui/kpis.cards.json": json.dumps(cards).encode(),
@@ -285,14 +332,12 @@ def test_turn_golden_full_reply():
                         "children": [
                             "seg3-1-label-1",
                             "seg3-1-value-1",
-                            "seg3-1-delta-1",
-                            "seg3-1-unit-1",
+                            "seg3-1-sublabel-1",
                         ],
                     },
                     {"id": "seg3-1-label-1", "component": "Text", "text": "Revenue"},
                     {"id": "seg3-1-value-1", "component": "Text", "text": "42"},
-                    {"id": "seg3-1-delta-1", "component": "Text", "text": "+3"},
-                    {"id": "seg3-1-unit-1", "component": "Text", "text": "$"},
+                    {"id": "seg3-1-sublabel-1", "component": "Text", "text": "up 3"},
                 ],
             },
         },
@@ -305,6 +350,30 @@ def test_turn_golden_full_reply():
             },
         },
     ]
+
+
+def test_turn_callout_tone_survives_flattening():
+    # A mixed stat + callout row: the callout's `tone` is an unknown prop
+    # on the Card, so the flattener must pass it through onto the emitted
+    # component (folded id keeps stat and callout cards distinct).
+    cards = {
+        "items": [
+            {"type": "stat", "label": "Revenue", "value": 42},
+            {"type": "callout", "title": "Heads up", "body": "check", "tone": "warning"},
+        ]
+    }
+    files = {"/ui/dash.cards.json": json.dumps(cards).encode()}
+    msgs = turn_to_a2ui(
+        "", [("dash", "/ui/dash.cards.json")], _reader(files), url, surface_id="s1"
+    )
+    comps = msgs[1]["updateComponents"]["components"]
+    by_id = {c["id"]: c for c in comps}
+    # The row (seg0) holds two Cards; the callout Card carries tone.
+    row = by_id["seg0"]
+    stat_card, callout_card = (by_id[cid] for cid in row["children"])
+    assert stat_card["component"] == "Card" and "tone" not in stat_card
+    assert callout_card["component"] == "Card"
+    assert callout_card["tone"] == "warning"
 
 
 def test_turn_deterministic():
