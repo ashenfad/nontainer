@@ -377,6 +377,7 @@ in your reply with markdown image syntax, e.g.
 ![name](/ui/name.plotly.json), using the exact path from the note.
 Unreferenced artifacts display after your reply. (A value that is the
 path of a file you already saved is honored too.)
+For KPI tiles, a list of {"label", "value", optional "delta"/"unit"} dicts renders as stat cards.
 Artifacts are capped at 8MB. For large scatter/map data use WebGL
 traces (scattergl, scattermapbox) and keep the spec lean: per-point
 customdata/hover text is the usual size killer — aggregate or sample
@@ -456,6 +457,32 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
         )
         payload["total"] = total  # renderers say "showing N of total"
         return _ui_write(ws, f"/ui/{name}.table.json", _json.dumps(payload).encode())
+
+    # cards tier: a list of label/value dicts is a KPI/stat row — the one
+    # declarative shape with no other plausible rendering, so duck-type it
+    # (zero sandbox imports) rather than demand a marker. Near-misses fall
+    # through to the JSON floor.
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(i, dict) and "label" in i and "value" in i for i in value)
+    ):
+        items = []
+        for i in value[:24]:  # cap the row; a KPI wall past two dozen is noise
+            item = {"label": str(i["label"]), "value": i["value"]}
+            if "delta" in i:
+                item["delta"] = i["delta"]
+            if "unit" in i:
+                item["unit"] = i["unit"]
+            items.append(item)  # unknown keys dropped
+        # default=str: KPI values are routinely numpy scalars (df.sum()),
+        # which json.dumps rejects — degrade them to strings, not to the
+        # repr fallback
+        return _ui_write(
+            ws,
+            f"/ui/{name}.cards.json",
+            _json.dumps({"items": items}, default=str).encode(),
+        )
 
     # pixel tier
     if mod.startswith("matplotlib") and hasattr(value, "savefig"):
