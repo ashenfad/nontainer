@@ -6,7 +6,12 @@ fragments are fully deterministic.
 
 import json
 
-from nontainer.adapters.a2ui import component_for, splice
+from nontainer.adapters.a2ui import (
+    BASIC_CATALOG,
+    component_for,
+    splice,
+    turn_to_a2ui,
+)
 
 
 def url(path: str) -> str:
@@ -214,3 +219,173 @@ def test_component_malformed_json_degrades():
     frag = component_for("t", "/ui/t.table.json", b"{not json", url)
     assert frag["component"]["componentType"] == "Text"
     assert frag["component"]["link"] == "https://host/ui/t.table.json"
+
+
+# -- turn_to_a2ui (layer 2, the v0.9 envelope) -------------------------------
+
+
+def _reader(files: dict[str, bytes]):
+    """A read_bytes callable backed by an in-memory {path: bytes} map."""
+    return lambda path: files.get(path)
+
+
+def test_turn_golden_full_reply():
+    # One inline plotly ref + one unreferenced cards artifact (appended).
+    spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
+    cards = {"items": [{"label": "Revenue", "value": 42, "delta": "+3", "unit": "$"}]}
+    files = {
+        "/ui/fig.plotly.json": json.dumps(spec).encode(),
+        "/ui/kpis.cards.json": json.dumps(cards).encode(),
+    }
+    msgs = turn_to_a2ui(
+        "Here is the chart ![fig](/ui/fig.plotly.json) and metrics below.",
+        [("fig", "/ui/fig.plotly.json"), ("kpis", "/ui/kpis.cards.json")],
+        _reader(files),
+        url,
+        surface_id="s1",
+    )
+    assert msgs == [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s1", "catalogId": BASIC_CATALOG},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s1",
+                "components": [
+                    {
+                        "id": "root",
+                        "component": "Column",
+                        "children": ["seg0", "seg1", "seg2", "seg3"],
+                    },
+                    {
+                        "id": "seg0",
+                        "component": "Text",
+                        "text": "Here is the chart ",
+                    },
+                    {
+                        "id": "seg1",
+                        "component": "Chart",
+                        "spec": {"path": "/artifacts/fig/spec"},
+                    },
+                    {
+                        "id": "seg2",
+                        "component": "Text",
+                        "text": " and metrics below.",
+                    },
+                    {
+                        "id": "seg3",
+                        "component": "Row",
+                        "children": ["seg3-1"],
+                    },
+                    {
+                        "id": "seg3-1",
+                        "component": "Card",
+                        "children": [
+                            "seg3-1-label-1",
+                            "seg3-1-value-1",
+                            "seg3-1-delta-1",
+                            "seg3-1-unit-1",
+                        ],
+                    },
+                    {"id": "seg3-1-label-1", "component": "Text", "text": "Revenue"},
+                    {"id": "seg3-1-value-1", "component": "Text", "text": "42"},
+                    {"id": "seg3-1-delta-1", "component": "Text", "text": "+3"},
+                    {"id": "seg3-1-unit-1", "component": "Text", "text": "$"},
+                ],
+            },
+        },
+        {
+            "version": "v0.9",
+            "updateDataModel": {
+                "surfaceId": "s1",
+                "path": "/artifacts/fig/spec",
+                "value": spec,
+            },
+        },
+    ]
+
+
+def test_turn_deterministic():
+    files = {"/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
+    args = (
+        "see ![fig](/ui/fig.plotly.json)",
+        [("fig", "/ui/fig.plotly.json")],
+        _reader(files),
+        url,
+    )
+    a = turn_to_a2ui(*args, surface_id="s1")
+    b = turn_to_a2ui(*args, surface_id="s1")
+    assert a == b
+
+
+def test_turn_empty_reply_is_valid_empty_surface():
+    msgs = turn_to_a2ui("", [], lambda _p: None, url, surface_id="s1")
+    # createSurface + one updateComponents with an empty root; no data model.
+    assert msgs == [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s1", "catalogId": BASIC_CATALOG},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s1",
+                "components": [{"id": "root", "component": "Column", "children": []}],
+            },
+        },
+    ]
+
+
+def test_turn_ids_stable_and_unique():
+    # A table's header Row has several role: header cells -> per-role
+    # occurrence keeps their ids unique.
+    table = {"columns": ["a", "b", "c"], "data": [[1, 2, 3]], "total": 1}
+    files = {"/ui/t.table.json": json.dumps(table).encode()}
+    msgs = turn_to_a2ui(
+        "", [("t", "/ui/t.table.json")], _reader(files), url, surface_id="s1"
+    )
+    comps = msgs[1]["updateComponents"]["components"]
+    ids = [c["id"] for c in comps]
+    assert len(ids) == len(set(ids))  # unique
+    header = next(c for c in comps if c["id"] == "seg0-1")
+    assert header["children"] == ["seg0-1-header-1", "seg0-1-header-2", "seg0-1-header-3"]
+    # role prop is dropped from the emitted components.
+    assert all("role" not in c for c in comps)
+
+
+def test_turn_version_on_every_message():
+    files = {"/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
+    msgs = turn_to_a2ui(
+        "text ![fig](/ui/fig.plotly.json)",
+        [("fig", "/ui/fig.plotly.json")],
+        _reader(files),
+        url,
+        surface_id="s1",
+    )
+    assert all(m["version"] == "v0.9" for m in msgs)
+    # createSurface, updateComponents, updateDataModel all present.
+    assert [next(k for k in m if k != "version") for m in msgs] == [
+        "createSurface",
+        "updateComponents",
+        "updateDataModel",
+    ]
+
+
+def test_turn_never_raises_on_unreadable():
+    def boom(_path):
+        raise OSError("disk gone")
+
+    msgs = turn_to_a2ui(
+        "![fig](/ui/fig.plotly.json)",
+        [("fig", "/ui/fig.plotly.json")],
+        boom,
+        url,
+        surface_id="s1",
+    )
+    # Degrades to the Text+link fallback, no crash, no data model.
+    comp = msgs[1]["updateComponents"]["components"][1]
+    assert comp["component"] == "Text"
+    assert comp["link"] == "https://host/ui/fig.plotly.json"
+    assert len(msgs) == 2
