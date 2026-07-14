@@ -11,12 +11,25 @@ adapter is split into two layers so the volatile part stays small:
   tuples in and out, no I/O, no new dependencies (callers pass the artifact
   bytes and a ``file_url`` resolver).
 
-- Layer 2 (NOT in this file yet): the version-specific ENVELOPE
-  (``turn_to_a2ui`` — surface/begin-rendering, component tree, data model,
-  done). It lands separately once the target a2ui spec version is pinned
-  against a real consumer; keeping it out means layer 1 does not wait on
-  that decision, and every version-specific field name stays isolated in
-  the one function that churns.
+- Layer 2 (``turn_to_a2ui`` + ``BASIC_CATALOG``): the version-specific
+  ENVELOPE, now PINNED to A2UI v0.9 (the stable production family; v1.0 is
+  still a release candidate). It composes layer 1's nested fragments into
+  the v0.9 wire sequence — one ``createSurface``, one ``updateComponents``
+  carrying a FLAT adjacency list, then one ``updateDataModel`` per data-
+  model entry. Every version-specific field name stays isolated here, so
+  when the consumer moves to v1.0 only this half of the file churns.
+
+  Two v0.9 quirks the envelope absorbs so layer 1 stays neutral: (1) the
+  component list is flat — containers reference children by id, not by
+  nesting — so ``turn_to_a2ui`` flattens each fragment into deterministic
+  ids (root ``"root"``, segment roots ``"seg0"``, ``"seg1"``, ..., nested
+  children ``"seg3-1"``, ``"seg3-1-value-1"``). (2) the basic-catalog
+  ``Text`` has no ``role`` prop, so layer 1's Text ``role`` is folded into
+  the component id (``"seg3-1-value-1"``) and dropped from the emitted
+  component. Layer 1's ``{"$ref": key}`` markers become v0.9 JSON-Pointer
+  bindings ``{"path": "/artifacts/{name}/{key}"}`` during flattening, the
+  value delivered by ``updateDataModel``. Basic-catalog ``Text`` renders
+  Markdown, so ``("md", text)`` segments ship verbatim as Text components.
 
 The component vocabulary here is deliberately neutral-but-a2ui-shaped:
 catalog components (``Card``/``Row``/``Column``/``Text``/``Image``) plus a
@@ -233,3 +246,158 @@ def _looks_like_plotly(obj: object) -> bool:
         and isinstance(obj.get("data"), list)
         and isinstance(obj.get("layout"), dict)
     )
+
+
+# ---------------------------------------------------------------------------
+# Layer 2: the A2UI v0.9 envelope
+# ---------------------------------------------------------------------------
+
+# The v0.9 basic-catalog URL. createSurface must name a catalog; consumers
+# with a Chart-capable custom catalog pass their own catalog_id instead.
+BASIC_CATALOG = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"
+
+_VERSION = "v0.9"
+
+
+def turn_to_a2ui(
+    prose: str,
+    artifacts: list[tuple[str, str]],
+    read_bytes: Callable[[str], bytes | None],
+    file_url: Callable[[str], str],
+    *,
+    surface_id: str,
+    catalog_id: str = BASIC_CATALOG,
+) -> list[dict]:
+    """Compose one reply (prose + artifacts) into an A2UI v0.9 message list.
+
+    ``artifacts`` is the ``parse_artifacts_note`` output — ``(name, path)``
+    pairs. ``read_bytes(path) -> bytes | None`` fetches an artifact's payload
+    so the envelope owns no I/O policy (callers do reads and their own
+    caching; ``None`` means unreadable, which degrades inside
+    ``component_for``). ``file_url(path)`` resolves an artifact's public URL.
+
+    Pipeline: ``splice`` interleaves prose and artifacts into ordered
+    segments; each ``("artifact", ...)`` segment is projected by
+    ``component_for``; every nested fragment is FLATTENED into a v0.9
+    adjacency list with deterministic ids. ``("md", text)`` segments become
+    Markdown ``Text`` components verbatim (basic-catalog Text renders
+    Markdown, so no conversion).
+
+    Emits, in order, each carrying ``"version": "v0.9"``:
+
+    1. one ``createSurface`` (``surfaceId``, ``catalogId``);
+    2. one ``updateComponents`` with the full flat component list, root
+       ``Column`` (id ``"root"``) FIRST so a buffering consumer can start
+       rendering before the tail arrives;
+    3. one ``updateDataModel`` per data-model entry, keyed by JSON Pointer
+       ``/artifacts/{name}/{key}`` — the same path the flattened components
+       bind to (layer 1's ``{"$ref": key}`` markers are rewritten to
+       ``{"path": ...}`` bindings during flattening).
+
+    Ids are stable across identical inputs and unique: ``"root"``, segment
+    roots ``"seg{i}"`` (i = splice index), nested children ``"{parent}-{n}"``
+    or, for a Text carrying a layer-1 ``role``, ``"{parent}-{role}-{k}"``
+    (the ``role`` prop is then dropped — v0.9 basic Text has no such prop).
+
+    Empty prose with no artifacts still yields a VALID surface: a
+    ``createSurface`` plus an ``updateComponents`` whose root ``Column`` has
+    no children (no ``updateDataModel``). Never raises on any splice /
+    ``component_for`` output; a ``read_bytes`` that itself raises is treated
+    as an unreadable artifact.
+    """
+    components: list[dict] = [{"id": "root", "component": "Column", "children": []}]
+    root_children: list[str] = components[0]["children"]
+    data_entries: list[tuple[str, object]] = []
+
+    for i, seg in enumerate(splice(prose, artifacts)):
+        seg_id = f"seg{i}"
+        root_children.append(seg_id)
+        if seg[0] == "md":
+            components.append({"id": seg_id, "component": "Text", "text": seg[1]})
+            continue
+        _, name, path = seg
+        try:
+            data = read_bytes(path)
+        except Exception:
+            # read_bytes is the caller's I/O; the envelope stays total.
+            data = None
+        frag = component_for(name, path, data, file_url)
+        _flatten(frag.get("component") or {}, seg_id, name, components)
+        for key, value in (frag.get("data_model") or {}).items():
+            data_entries.append((f"/artifacts/{name}/{key}", value))
+
+    messages: list[dict] = [
+        {
+            "version": _VERSION,
+            "createSurface": {"surfaceId": surface_id, "catalogId": catalog_id},
+        },
+        {
+            "version": _VERSION,
+            "updateComponents": {"surfaceId": surface_id, "components": components},
+        },
+    ]
+    for path, value in data_entries:
+        messages.append(
+            {
+                "version": _VERSION,
+                "updateDataModel": {
+                    "surfaceId": surface_id,
+                    "path": path,
+                    "value": value,
+                },
+            }
+        )
+    return messages
+
+
+def _flatten(node: dict, node_id: str, artifact: str, out: list[dict]) -> None:
+    """Append ``node`` and its subtree to ``out`` as flat v0.9 components.
+
+    Pre-order (parent before children) so the list stays buffering-friendly.
+    ``componentType`` becomes ``component``; ``children`` become a list of
+    generated child ids; ``role`` is dropped (folded into the child id by
+    ``_child_id``); a ``{"$ref": key}`` prop value is rewritten to a
+    ``/artifacts/{artifact}/{key}`` JSON-Pointer binding.
+    """
+    flat: dict = {"id": node_id, "component": node.get("componentType")}
+    for key, val in node.items():
+        if key in ("componentType", "children", "role"):
+            continue
+        flat[key] = _bind(val, artifact)
+
+    children = node.get("children")
+    child_pairs: list[tuple[dict, str]] = []
+    if isinstance(children, list):
+        seen: dict[str, int] = {}
+        ids: list[str] = []
+        for idx, child in enumerate(children, start=1):
+            cid = _child_id(node_id, idx, child, seen)
+            ids.append(cid)
+            child_pairs.append((child, cid))
+        flat["children"] = ids
+
+    out.append(flat)
+    for child, cid in child_pairs:
+        _flatten(child, cid, artifact, out)
+
+
+def _child_id(parent_id: str, index: int, child: object, seen: dict[str, int]) -> str:
+    """A stable child id. A Text with a ``role`` folds the role in (v0.9 Text
+    drops the prop), disambiguated by per-role occurrence so a header Row's
+    several ``role: header`` cells stay unique; everything else uses its
+    1-based sibling position. Roles are words, positions are numbers, so the
+    two schemes never collide even inside a mixed container (a table Column
+    holds numbered Rows plus a ``caption`` Text)."""
+    role = child.get("role") if isinstance(child, dict) else None
+    if role:
+        seen[role] = seen.get(role, 0) + 1
+        return f"{parent_id}-{role}-{seen[role]}"
+    return f"{parent_id}-{index}"
+
+
+def _bind(val: object, artifact: str) -> object:
+    """Rewrite a layer-1 ``{"$ref": key}`` marker into a v0.9 JSON-Pointer
+    binding; pass everything else through untouched."""
+    if isinstance(val, dict) and set(val) == {"$ref"}:
+        return {"path": f"/artifacts/{artifact}/{val['$ref']}"}
+    return val
