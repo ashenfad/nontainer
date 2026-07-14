@@ -105,6 +105,72 @@ def test_name_sanitization_and_non_dict(ws):
     assert materialize_ui(ws, None) == ([], [])
 
 
+def test_cards_list_becomes_cards_spec(ws):
+    """A list of label/value dicts is the KPI convention — it materializes
+    to /ui/<name>.cards.json wrapped as {"items": [...]}."""
+    cards = [
+        {"label": "Revenue", "value": 42000, "delta": "+8%", "unit": "USD"},
+        {"label": "Users", "value": 1234},
+    ]
+    out, _ = materialize_ui(ws, {"kpis": cards})
+    assert out == [("kpis", "/ui/kpis.cards.json")]
+    payload = json.loads(ws.fs.read("/ui/kpis.cards.json"))
+    assert payload == {
+        "items": [
+            {"label": "Revenue", "value": 42000, "delta": "+8%", "unit": "USD"},
+            {"label": "Users", "value": 1234},
+        ]
+    }
+
+
+def test_cards_normalization_drops_unknown_and_coerces_label(ws):
+    """Unknown keys are dropped and the label is stringified — the shape
+    that reaches the renderer is exactly {label, value, delta?, unit?}."""
+    cards = [{"label": 2024, "value": 10, "color": "red", "footnote": "x"}]
+    out, _ = materialize_ui(ws, {"stat": cards})
+    payload = json.loads(ws.fs.read("/ui/stat.cards.json"))
+    assert payload == {"items": [{"label": "2024", "value": 10}]}
+
+
+def test_cards_survive_non_json_scalars(ws):
+    """KPI values are routinely numpy scalars (df.sum()) — anything
+    json.dumps rejects must degrade to a string tile, never bounce the
+    whole row to the repr fallback."""
+    from decimal import Decimal
+
+    cards = [{"label": "revenue", "value": Decimal("12.5"), "delta": Decimal("2")}]
+    out, _ = materialize_ui(ws, {"kpi": cards})
+    assert out == [("kpi", "/ui/kpi.cards.json")]
+    payload = json.loads(ws.fs.read("/ui/kpi.cards.json"))
+    assert payload["items"] == [{"label": "revenue", "value": "12.5", "delta": "2"}]
+
+
+def test_cards_cap_at_24(ws):
+    """The row is capped: 25 tiles in, 24 out."""
+    cards = [{"label": f"m{n}", "value": n} for n in range(25)]
+    materialize_ui(ws, {"wall": cards})
+    payload = json.loads(ws.fs.read("/ui/wall.cards.json"))
+    assert len(payload["items"]) == 24
+    assert payload["items"][-1] == {"label": "m23", "value": 23}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [],  # empty list: no cards to render
+        [{"label": "a", "value": 1}, {"not": "a card"}],  # a non-dict-shaped item
+        [{"label": "a"}],  # dict missing "value"
+        [{"label": "a", "value": 1}, "plain"],  # a non-dict element
+    ],
+)
+def test_cards_near_miss_falls_to_json_floor(ws, value):
+    """Anything that isn't a full list-of-label/value-dicts falls through
+    to the generic JSON data tier — the convention never fails."""
+    out, _ = materialize_ui(ws, {"x": value})
+    assert out == [("x", "/ui/x.json")]
+    assert json.loads(ws.fs.read("/ui/x.json")) == value
+
+
 def test_agno_run_python_notes_ui_artifacts():
     pytest.importorskip("agno")
     from nontainer.adapters.agno import WorkspaceTools
