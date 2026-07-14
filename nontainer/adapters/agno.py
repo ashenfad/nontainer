@@ -199,7 +199,7 @@ class WorkspaceTools(Toolkit):
 
             def run_python(code: str) -> str:
                 """Run Python in the sandboxed workspace environment."""
-                from .render import materialize_ui
+                from .render import artifacts_note, materialize_ui
 
                 with self._lock:
                     try:
@@ -227,9 +227,7 @@ class WorkspaceTools(Toolkit):
                         path = f"/ui/{fname}"
                         if path not in claimed and self._ws.fs.isfile(path):
                             artifacts.append((fname, path))
-                    if artifacts:
-                        listing = ", ".join(f"{n} -> {p}" for n, p in artifacts)
-                        text += f"\n[ui artifacts: {listing}]"
+                    text += artifacts_note(artifacts)
                     for problem in problems:  # e.g. the 8MB cap, with the fix
                         text += f"\n[ui note: {problem}]"
                     return text

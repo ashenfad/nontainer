@@ -328,6 +328,37 @@ place to tell the agent about conventions the core can't infer (e.g.
 tool, so a `python_primer` lands in the `terminal` tool's `python`
 section (and warns). Same params on `build_server`.
 
+**The artifacts note (`run_python`).** The `ui = {...}` convention
+materializes namespace values into `/ui/` files (spec formats > pixels >
+html > data), then appends a single model-facing line to the tool result:
+
+```
+[ui artifacts: name -> /ui/name.plotly.json, other -> /ui/other.png]
+```
+
+The agent reads it to embed `![name](/ui/...)` in its reply; unreferenced
+artifacts display after the prose. This line is a **public, round-trippable
+contract** — harnesses parse tool results with `parse_artifacts_note`, never
+a private regex:
+
+```python
+from nontainer.adapters.render import (
+    artifact_kind, artifacts_note, parse_artifacts_note,
+)
+parse_artifacts_note(tool_result)  # -> [(name, path), ...], [] if no note
+artifact_kind("/ui/x.plotly.json")  # -> "plotly"
+```
+
+Grammar: `name " -> " path`, segments joined by `", "`, wrapped in
+`[ui artifacts: ...]`. Names are **sanitized** (`[\w.-]+`, matching the
+filename rule) so `", "`/`" -> "` never occur inside a name — that keeps
+the parse unambiguous even when the note rides mid-string (it is appended
+after the render output and before any `[ui note: ...]` problem lines).
+`artifact_kind(path)` maps a suffix to its render kind
+(`plotly`/`table`/`cards`/`image`/`html`/`json`/`text`/`binary`) — the
+single source of truth mirroring studio's `Artifact.svelte` dispatch;
+compound spec suffixes win over the bare `.json` floor.
+
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
 ```python

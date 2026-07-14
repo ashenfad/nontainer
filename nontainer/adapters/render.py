@@ -550,5 +550,69 @@ def materialize_ui(
                 )
             except Exception:
                 continue
-        out.append((str(raw_name), path))
+        out.append((name, path))
     return out, problems
+
+
+# ---------------------------------------------------------------------------
+# the artifacts-note contract: a blessed, round-trippable line so harnesses
+# parse tool results with a public function, never a private regex. Builder
+# and parser live side by side so the grammar stays honest.
+# ---------------------------------------------------------------------------
+
+
+def artifact_kind(path: str) -> str:
+    """Suffix -> render kind, the single source of truth mirroring
+    studio's ``Artifact.svelte`` dispatch. The compound spec suffixes
+    (``.plotly.json`` / ``.table.json`` / ``.cards.json``) MUST be
+    tested before the bare ``.json`` floor — a plain ``.json`` still
+    means ``"json"`` here, though consumers may content-sniff it as
+    plotly, as studio does."""
+    lower = path.lower()
+    if lower.endswith(".plotly.json"):
+        return "plotly"
+    if lower.endswith(".table.json"):
+        return "table"
+    if lower.endswith(".cards.json"):
+        return "cards"
+    if lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        return "image"
+    if lower.endswith(".html"):
+        return "html"
+    if lower.endswith(".json"):
+        return "json"
+    if lower.endswith(".txt"):
+        return "text"
+    return "binary"
+
+
+def artifacts_note(artifacts: list[tuple[str, str]]) -> str:
+    """Build the model-facing ``[ui artifacts: ...]`` line — the affordance
+    the agent reads to embed ``![name](/ui/...)`` in its prose. Names must
+    arrive pre-sanitized (``materialize_ui`` guarantees this): the parser's
+    grammar hinges on ``", "`` and ``" -> "`` never occurring inside a name.
+    Returns ``""`` for no artifacts so callers append unconditionally."""
+    if not artifacts:
+        return ""
+    listing = ", ".join(f"{name} -> {path}" for name, path in artifacts)
+    return f"\n[ui artifacts: {listing}]"
+
+
+def parse_artifacts_note(text: str) -> list[tuple[str, str]]:
+    """Blessed inverse of ``artifacts_note`` — recover ``(name, path)``
+    pairs from a tool-result string. The note rides mid-string (appended
+    after ``render_python`` output, before any ``[ui note: ...]`` problem
+    lines), so the match anchors on the bracketed prefix, not the string
+    bounds. Sanitized names make the grammar unambiguous. Returns ``[]``
+    when there is no note."""
+    import re as _re
+
+    m = _re.search(r"\[ui artifacts: (.*?)\]", text)
+    if not m:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for seg in m.group(1).split(", "):
+        sm = _re.fullmatch(r"([\w.-]+) -> (/\S+)", seg)
+        if sm:
+            pairs.append((sm.group(1), sm.group(2)))
+    return pairs
