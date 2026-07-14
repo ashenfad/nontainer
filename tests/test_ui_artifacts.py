@@ -105,44 +105,90 @@ def test_name_sanitization_and_non_dict(ws):
     assert materialize_ui(ws, None) == ([], [])
 
 
-def test_cards_list_becomes_cards_spec(ws):
-    """A list of label/value dicts is the KPI convention — it materializes
-    to /ui/<name>.cards.json wrapped as {"items": [...]}."""
+def test_cards_stats_and_callouts_normalize(ws):
+    """A mixed row of stats (tagged and untagged) and a tagged callout
+    materializes to /ui/<name>.cards.json as {"items": [...]}, each item
+    normalized to its canonical shape."""
     cards = [
-        {"label": "Revenue", "value": 42000, "delta": "+8%", "unit": "USD"},
-        {"label": "Users", "value": 1234},
+        {"type": "stat", "label": "Revenue", "value": 42000, "sublabel": "up 8%"},
+        {"label": "Users", "value": 1234},  # untagged stat
+        {"type": "callout", "title": "Heads up", "body": "check inputs",
+         "tone": "warning"},
     ]
-    out, _ = materialize_ui(ws, {"kpis": cards})
-    assert out == [("kpis", "/ui/kpis.cards.json")]
-    payload = json.loads(ws.fs.read("/ui/kpis.cards.json"))
+    out, _ = materialize_ui(ws, {"dash": cards})
+    assert out == [("dash", "/ui/dash.cards.json")]
+    payload = json.loads(ws.fs.read("/ui/dash.cards.json"))
     assert payload == {
         "items": [
-            {"label": "Revenue", "value": 42000, "delta": "+8%", "unit": "USD"},
-            {"label": "Users", "value": 1234},
+            {"type": "stat", "label": "Revenue", "value": 42000, "sublabel": "up 8%"},
+            {"type": "stat", "label": "Users", "value": 1234},
+            {"type": "callout", "title": "Heads up", "body": "check inputs",
+             "tone": "warning"},
+        ]
+    }
+
+
+def test_cards_callout_tone_clamps_and_defaults(ws):
+    """Unknown/absent tones clamp to "info" — the renderer must never
+    invent sentiment. Missing title/body become empty strings."""
+    cards = [
+        {"type": "callout", "title": "A", "body": "b", "tone": "chartreuse"},
+        {"type": "callout", "body": "no title"},  # tone absent, title missing
+    ]
+    materialize_ui(ws, {"notes": cards})
+    payload = json.loads(ws.fs.read("/ui/notes.cards.json"))
+    assert payload == {
+        "items": [
+            {"type": "callout", "title": "A", "body": "b", "tone": "info"},
+            {"type": "callout", "title": "", "body": "no title", "tone": "info"},
         ]
     }
 
 
 def test_cards_normalization_drops_unknown_and_coerces_label(ws):
     """Unknown keys are dropped and the label is stringified — the shape
-    that reaches the renderer is exactly {label, value, delta?, unit?}."""
+    that reaches the renderer is exactly {type, label, value, sublabel?}."""
     cards = [{"label": 2024, "value": 10, "color": "red", "footnote": "x"}]
-    out, _ = materialize_ui(ws, {"stat": cards})
+    materialize_ui(ws, {"stat": cards})
     payload = json.loads(ws.fs.read("/ui/stat.cards.json"))
-    assert payload == {"items": [{"label": "2024", "value": 10}]}
+    assert payload == {"items": [{"type": "stat", "label": "2024", "value": 10}]}
+
+
+def test_cards_legacy_delta_and_unit_fold(ws):
+    """Legacy forgiveness: a stat with no sublabel folds `delta` into
+    sublabel, and `unit` appends onto the value."""
+    cards = [{"label": "Revenue", "value": 42000, "delta": "+8%", "unit": " USD"}]
+    materialize_ui(ws, {"kpis": cards})
+    payload = json.loads(ws.fs.read("/ui/kpis.cards.json"))
+    assert payload == {
+        "items": [
+            {"type": "stat", "label": "Revenue", "value": "42000 USD",
+             "sublabel": "+8%"},
+        ]
+    }
+
+
+def test_cards_explicit_sublabel_beats_legacy_delta(ws):
+    """When both are present, the explicit sublabel wins and delta is
+    dropped as an unknown key."""
+    cards = [{"label": "R", "value": 1, "sublabel": "real", "delta": "+9%"}]
+    materialize_ui(ws, {"k": cards})
+    payload = json.loads(ws.fs.read("/ui/k.cards.json"))
+    assert payload == {"items": [{"type": "stat", "label": "R", "value": 1,
+                                  "sublabel": "real"}]}
 
 
 def test_cards_survive_non_json_scalars(ws):
-    """KPI values are routinely numpy scalars (df.sum()) — anything
-    json.dumps rejects must degrade to a string tile, never bounce the
-    whole row to the repr fallback."""
+    """Stat values are routinely numpy scalars (df.sum()) — anything
+    json.dumps rejects must degrade to a string tile via default=str,
+    never bounce the whole row to the repr fallback."""
     from decimal import Decimal
 
-    cards = [{"label": "revenue", "value": Decimal("12.5"), "delta": Decimal("2")}]
+    cards = [{"label": "revenue", "value": Decimal("12.5")}]
     out, _ = materialize_ui(ws, {"kpi": cards})
     assert out == [("kpi", "/ui/kpi.cards.json")]
     payload = json.loads(ws.fs.read("/ui/kpi.cards.json"))
-    assert payload["items"] == [{"label": "revenue", "value": "12.5", "delta": "2"}]
+    assert payload["items"] == [{"type": "stat", "label": "revenue", "value": "12.5"}]
 
 
 def test_cards_cap_at_24(ws):
@@ -151,21 +197,23 @@ def test_cards_cap_at_24(ws):
     materialize_ui(ws, {"wall": cards})
     payload = json.loads(ws.fs.read("/ui/wall.cards.json"))
     assert len(payload["items"]) == 24
-    assert payload["items"][-1] == {"label": "m23", "value": 23}
+    assert payload["items"][-1] == {"type": "stat", "label": "m23", "value": 23}
 
 
 @pytest.mark.parametrize(
     "value",
     [
         [],  # empty list: no cards to render
-        [{"label": "a", "value": 1}, {"not": "a card"}],  # a non-dict-shaped item
-        [{"label": "a"}],  # dict missing "value"
+        [{"label": "a", "value": 1}, {"not": "a card"}],  # one bad element
+        [{"label": "a"}],  # stat missing "value"
+        [{"type": "callout"}],  # callout with neither title nor body
         [{"label": "a", "value": 1}, "plain"],  # a non-dict element
     ],
 )
 def test_cards_near_miss_falls_to_json_floor(ws, value):
-    """Anything that isn't a full list-of-label/value-dicts falls through
-    to the generic JSON data tier — the convention never fails."""
+    """A single element that is neither a stat nor a tagged callout sends
+    the WHOLE list through to the generic JSON data tier — the convention
+    never half-renders."""
     out, _ = materialize_ui(ws, {"x": value})
     assert out == [("x", "/ui/x.json")]
     assert json.loads(ws.fs.read("/ui/x.json")) == value

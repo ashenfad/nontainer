@@ -167,23 +167,45 @@ def _text(value: object, role: str) -> dict:
 
 
 def _cards(payload: dict) -> dict:
-    """The ``.cards.json`` payload ``{"items": [{label, value, delta?,
-    unit?}]}`` → a Row of Cards. Each Card carries a Text child per present
-    field; values go inline in the Text (KPI values are small, so no
-    data-model indirection needed)."""
+    """The ``.cards.json`` payload ``{"items": [...]}`` → a Row of Cards,
+    dispatched per item ``type`` (mirrors studio's CardRow):
+
+    - ``stat`` → a Card of Text children roled label / value / sublabel
+      (sublabel only when present);
+    - ``callout`` → a Card carrying a passthrough ``tone`` prop (the
+      flattener copies unknown props through), with Text children roled
+      title / body (each emitted only when non-empty).
+
+    Values go inline in the Text — card text is small, so no data-model
+    indirection needed. Items with no recognizable type render nothing."""
     items = payload.get("items")
     cards = []
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
-        children = [_text(item.get("label", ""), "label")]
-        if "value" in item:
-            children.append(_text(item["value"], "value"))
-        if "delta" in item:
-            children.append(_text(item["delta"], "delta"))
-        if "unit" in item:
-            children.append(_text(item["unit"], "unit"))
-        cards.append({"componentType": "Card", "children": children})
+        kind = item.get("type")
+        if kind == "stat":
+            children = [
+                _text(item.get("label", ""), "label"),
+                _text(item.get("value", ""), "value"),
+            ]
+            if "sublabel" in item:
+                children.append(_text(item["sublabel"], "sublabel"))
+            cards.append({"componentType": "Card", "children": children})
+        elif kind == "callout":
+            children = []
+            if item.get("title"):
+                children.append(_text(item["title"], "title"))
+            if item.get("body"):
+                children.append(_text(item["body"], "body"))
+            cards.append(
+                {
+                    "componentType": "Card",
+                    "tone": item.get("tone", "info"),
+                    "children": children,
+                }
+            )
+        # unrecognized type: skip, never raise
     return _fragment({"componentType": "Row", "children": cards})
 
 
