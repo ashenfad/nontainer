@@ -8,7 +8,12 @@ import json
 import pytest
 
 from nontainer import Workspace
-from nontainer.adapters.render import materialize_ui
+from nontainer.adapters.render import (
+    artifact_kind,
+    artifacts_note,
+    materialize_ui,
+    parse_artifacts_note,
+)
 from nontainer.providers import KvgitProvider
 
 
@@ -92,8 +97,10 @@ def test_unrenderable_lands_as_repr_not_silence(ws):
 
 
 def test_name_sanitization_and_non_dict(ws):
+    # the returned name is the SANITIZED one — it rides the artifacts
+    # note verbatim, so a raw name with ", " or " -> " must never leak
     out, _ = materialize_ui(ws, {"my plot / v2": {"a": 1}})
-    assert out == [("my plot / v2", "/ui/my-plot-v2.json")]
+    assert out == [("my-plot-v2", "/ui/my-plot-v2.json")]
     assert materialize_ui(ws, "not a dict") == ([], [])
     assert materialize_ui(ws, None) == ([], [])
 
@@ -171,6 +178,62 @@ def test_oversize_value_reports_why(ws):
     (problem,) = problems
     assert "NOT rendered: too large" in problem and "9.0MB > 8MB" in problem
     assert ws.fs.read("/ui/blob.txt").decode() == problem
+
+
+@pytest.mark.parametrize(
+    "path,kind",
+    [
+        ("/ui/x.plotly.json", "plotly"),  # compound suffix beats bare .json
+        ("/ui/x.json", "json"),
+        ("/ui/x.table.json", "table"),
+        ("/ui/x.cards.json", "cards"),  # phase 2 mapping, blessed early
+        ("/ui/x.png", "image"),
+        ("/ui/x.JPG", "image"),  # suffix match is case-insensitive
+        ("/ui/x.jpeg", "image"),
+        ("/ui/x.gif", "image"),
+        ("/ui/x.webp", "image"),
+        ("/ui/x.html", "html"),
+        ("/ui/x.txt", "text"),
+        ("/ui/x.bin", "binary"),
+        ("/ui/x", "binary"),
+    ],
+)
+def test_artifact_kind_dispatch(path, kind):
+    assert artifact_kind(path) == kind
+
+
+def test_artifacts_note_round_trip():
+    """The note is a blessed contract: builder -> parser is lossless,
+    even mid-string and even for names that needed sanitizing."""
+    pairs = [
+        ("trend", "/ui/trend.plotly.json"),
+        ("my-plot-v2", "/ui/my-plot-v2.json"),  # already sanitized upstream
+        ("shot", "/ui/shot.png"),
+    ]
+    base = "ok\nstdout: done"
+    assert parse_artifacts_note(base + artifacts_note(pairs)) == pairs
+
+    # single artifact
+    one = [("stats", "/ui/stats.json")]
+    assert parse_artifacts_note(artifacts_note(one)) == one
+
+
+def test_artifacts_note_absent_returns_empty():
+    assert artifacts_note([]) == ""
+    assert parse_artifacts_note("just some tool output, no note here") == []
+    assert parse_artifacts_note("") == []
+
+
+def test_parse_tolerates_trailing_ui_note_lines():
+    """The artifacts note is appended before the [ui note: ...] problem
+    lines — the parser must not swallow those into the last path."""
+    pairs = [("map", "/ui/map.txt")]
+    text = (
+        "render output"
+        + artifacts_note(pairs)
+        + "\n[ui note: 'map' NOT rendered: too large (9.0MB > 8MB cap).]"
+    )
+    assert parse_artifacts_note(text) == pairs
 
 
 def test_oversize_plotly_gets_the_customdata_hint(ws):
