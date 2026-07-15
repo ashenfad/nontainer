@@ -377,9 +377,10 @@ in your reply with markdown image syntax, e.g.
 ![name](/ui/name.plotly.json), using the exact path from the note.
 Unreferenced artifacts display after your reply. (A value that is the
 path of a file you already saved is honored too.)
-For a dashboard, a list of dicts renders as a card row: stats as
-{"label", "value", optional "sublabel"} and callouts as {"type": "callout",
-"title", "body", optional "tone": info|success|warning}.
+For a dashboard, e.g.
+ui = {"kpis": [{"label": "Revenue", "value": "$1.2M", "sublabel": "+8% MoM"}]}
+renders a card row; callout items are {"type": "callout", "title",
+"body", optional "tone": info|success|warning}.
 Artifacts are capped at 8MB. For large scatter/map data use WebGL
 traces (scattergl, scattermapbox) and keep the spec lean: per-point
 customdata/hover text is the usual size killer — aggregate or sample
@@ -444,6 +445,26 @@ def _is_callout(i: object) -> bool:
         isinstance(i, dict)
         and i.get("type") == "callout"
         and ("title" in i or "body" in i)
+    )
+
+
+def _card_row_near_miss(name: object, value: object) -> str | None:
+    """The dict-native version of a constructor error: a list where MOST
+    items duck-type as cards but some don't would silently miss the cards
+    tier — say which item broke the row and why, in the problems channel
+    the agent already reads (the 8MB cap's lesson: name the fix, not just
+    the failure). None when the list isn't card-shaped enough to diagnose."""
+    if not isinstance(value, list) or not value:
+        return None
+    matched = sum(1 for i in value if _is_stat(i) or _is_callout(i))
+    if matched == len(value) or matched * 2 < len(value):
+        return None  # a real card row, or not plausibly one
+    bad = next(i for i in value if not (_is_stat(i) or _is_callout(i)))
+    return (
+        f"{str(name)!r} looks like a card row, but this item is neither a "
+        f"stat (needs 'label' and 'value') nor a tagged callout (needs "
+        f"'type': 'callout' plus a 'title' or 'body'): "
+        f"{repr(bad)[:200]}. Fix that item to render cards."
     )
 
 
@@ -589,10 +610,26 @@ def materialize_ui(
     import re as _re
 
     if not isinstance(ui, dict):
-        return [], []
+        # Envelope forgiveness: agents predictably assign the card LIST
+        # straight to `ui` (observed twice, different models — the items
+        # were perfect, only the dict wrapper was missing). A bare list
+        # with exactly one plausible meaning is adopted under a default
+        # name; any other non-dict still renders nothing.
+        if (
+            isinstance(ui, list)
+            and ui
+            and all(_is_stat(i) or _is_callout(i) for i in ui)
+        ):
+            ui = {"cards": ui}
+        else:
+            near_miss = _card_row_near_miss("ui", ui)
+            return [], ([near_miss] if near_miss else [])
     out: list[tuple[str, str]] = []
     problems: list[str] = []
     for raw_name, value in list(ui.items())[:20]:
+        near_miss = _card_row_near_miss(raw_name, value)
+        if near_miss:
+            problems.append(near_miss)  # value still lands (JSON floor)
         name = _re.sub(r"[^\w.-]+", "-", str(raw_name)).strip("-.") or "artifact"
         try:
             path = _materialize_one(ws, name, value)

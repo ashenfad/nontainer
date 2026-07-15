@@ -191,6 +191,76 @@ def test_cards_survive_non_json_scalars(ws):
     assert payload["items"] == [{"type": "stat", "label": "revenue", "value": "12.5"}]
 
 
+def test_bare_card_list_adopts_default_envelope(ws):
+    """Envelope forgiveness (the newstuff lesson): `ui = [<stats>]` —
+    perfect items, missing dict wrapper — adopts as {"cards": ...}
+    instead of rendering nothing."""
+    out, problems = materialize_ui(
+        ws,
+        [
+            {"label": "Revenue", "value": "$1.2M", "sublabel": "+8% MoM"},
+            {"type": "callout", "title": "Note", "body": "n=42"},
+        ],
+    )
+    assert out == [("cards", "/ui/cards.cards.json")]
+    assert problems == []
+    payload = json.loads(ws.fs.read("/ui/cards.cards.json"))
+    assert [i["type"] for i in payload["items"]] == ["stat", "callout"]
+
+
+def test_bare_non_card_list_still_renders_nothing(ws):
+    assert materialize_ui(ws, [1, 2, 3]) == ([], [])
+    assert materialize_ui(ws, []) == ([], [])
+
+
+def test_bare_near_miss_list_gets_a_problem_note(ws):
+    """A bare list where MOST items are cards but one isn't: nothing
+    materializes (adoption stays strict), but the problems channel names
+    the offending item — the dict-native constructor error."""
+    out, problems = materialize_ui(
+        ws,
+        [
+            {"label": "A", "value": 1},
+            {"label": "B", "value": 2},
+            {"label": "C"},  # no value: breaks the row
+        ],
+    )
+    assert out == []
+    assert len(problems) == 1
+    assert "looks like a card row" in problems[0]
+    assert "'label': 'C'" in problems[0]
+
+
+def test_named_near_miss_list_notes_and_lands_on_json_floor(ws):
+    """A NAMED almost-cards value still materializes (JSON floor) so the
+    human sees something, and the note tells the agent which item to fix."""
+    out, problems = materialize_ui(
+        ws, {"kpis": [{"label": "A", "value": 1}, {"labl": "B", "value": 2}]}
+    )
+    assert out == [("kpis", "/ui/kpis.json")]
+    assert len(problems) == 1
+    assert "'kpis' looks like a card row" in problems[0]
+    assert "'labl': 'B'" in problems[0]
+
+
+def test_minority_match_list_is_not_diagnosed(ws):
+    """A list where card-shaped dicts are the MINORITY isn't plausibly a
+    card row — no note, plain JSON floor."""
+    out, problems = materialize_ui(
+        ws, {"stuff": [{"label": "A", "value": 1}, 2, 3]}
+    )
+    assert out == [("stuff", "/ui/stuff.json")]
+    assert problems == []
+
+
+def test_ui_note_shows_the_envelope():
+    """The teaching example must carry the dict wrapper — the misread
+    that caused the newstuff miss."""
+    from nontainer.adapters.render import PYTHON_UI_NOTE
+
+    assert 'ui = {"kpis": [{"label"' in PYTHON_UI_NOTE
+
+
 def test_cards_cap_at_24(ws):
     """The row is capped: 25 tiles in, 24 out."""
     cards = [{"label": f"m{n}", "value": n} for n in range(25)]
