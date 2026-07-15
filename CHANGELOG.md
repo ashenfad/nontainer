@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-07-15
+
+### Added
+- **The nontainer a2ui catalog** (`docs/a2ui/catalog.json`, exported as
+  `nontainer.adapters.a2ui.NONTAINER_CATALOG`): the idiomatic home for
+  extension semantics — re-exports the basic-catalog components the
+  egress adapter emits and declares `Stat {label, value, sublabel?}`,
+  `Callout {title?, body?, tone}`, and `Chart {spec}`. Passing it as
+  `turn_to_a2ui(catalog_id=...)` opts the surface into flat
+  one-component-per-item cards that say what they mean, instead of
+  Card/Column/Text trees with role-suffixed ids; any other catalog id
+  (including a consumer's own) keeps the basic approximation, since we
+  can't know what a foreign catalog declares. `Chart` stays
+  unconditional — a plotly figure has no basic approximation worth
+  shipping.
+
+### Fixed
+- **a2ui cards rendered as empty boxes on basic-catalog consumers**
+  (#16). The v0.9 basic-catalog `Card` takes a singular required
+  `child` id (`unevaluatedProperties: false` — a `children` array
+  isn't ignored, it's invalid), so every stat/callout Card shipped
+  content the reference renderer never saw. Card content now rides an
+  intermediate `Column` behind `child`; the callout's `tone` stays a
+  passthrough prop on the basic shape as a documented deviation
+  (strictly validating consumers should use `NONTAINER_CATALOG`, where
+  `tone` is declared).
+- **Card-builder hardening for direct `/ui` writes**, which bypass
+  `materialize_ui`'s normalization: an unknown callout `tone` clamps
+  to `info` (the catalog declares a closed enum), and explicit nulls
+  in stat items read as absent — empty label/value, omitted sublabel —
+  never as the literal text `"None"`.
+
 ## [0.1.0] - 2026-07-15
 
 ### Added
