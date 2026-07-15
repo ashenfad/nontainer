@@ -1,6 +1,6 @@
 [project]
 name = "nontainer"
-version = "0.0.1"
+version = "0.1.0"
 description = "A fake little computer for your agent: versioned filesystem, shell, and sandboxed Python."
 readme = "README.md"
 license = "MIT"
@@ -9,7 +9,7 @@ authors = [
 ]
 keywords = ["agents", "sandbox", "workspace", "terminal", "versioning"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -31,6 +31,7 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com/ashenfad/nontainer"
+"Documentation" = "https://github.com/ashenfad/nontainer#readme"
 "Bug Tracker" = "https://github.com/ashenfad/nontainer/issues"
 "Source" = "https://github.com/ashenfad/nontainer"
 
@@ -67,6 +68,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer"]
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = ["E731"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
