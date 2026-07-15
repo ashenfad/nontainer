@@ -243,6 +243,18 @@ def test_named_near_miss_list_notes_and_lands_on_json_floor(ws):
     assert "'labl': 'B'" in problems[0]
 
 
+def test_near_miss_note_is_bounded_for_huge_items(ws):
+    """The offending-item preview rides reprobate's hard budget, so a
+    pathological value (a huge string, a dict holding one) can't balloon
+    the problems note — or the memory it takes to build it."""
+    _, problems = materialize_ui(
+        ws,
+        {"kpis": [{"label": "A", "value": 1}, {"labl": "x" * 1_000_000}]},
+    )
+    assert len(problems) == 1
+    assert len(problems[0]) < 600
+
+
 def test_minority_match_list_is_not_diagnosed(ws):
     """A list where card-shaped dicts are the MINORITY isn't plausibly a
     card row — no note, plain JSON floor."""
