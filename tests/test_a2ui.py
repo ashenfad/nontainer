@@ -239,6 +239,27 @@ def test_component_cards_extension_components():
     }
 
 
+def test_component_cards_null_stat_fields_read_as_absent():
+    # Direct /ui writes can carry explicit nulls; they must never surface
+    # as the literal text "None" (label/value go empty, sublabel is
+    # omitted) — in both the basic and extension shapes.
+    data = json.dumps(
+        {"items": [{"type": "stat", "label": None, "value": None, "sublabel": None}]}
+    ).encode()
+    basic = component_for("k", "/ui/k.cards.json", data, url)
+    texts = basic["component"]["children"][0]["child"]["children"]
+    assert texts == [
+        {"componentType": "Text", "text": "", "role": "label"},
+        {"componentType": "Text", "text": "", "role": "value"},
+    ]
+    ext = component_for("k", "/ui/k.cards.json", data, url, extension_cards=True)
+    assert ext["component"]["children"][0] == {
+        "componentType": "Stat",
+        "label": "",
+        "value": "",
+    }
+
+
 def test_component_cards_clamps_unknown_tone():
     # Direct /ui writes bypass materialize's tone clamp; the catalog
     # declares tone as a closed enum, so the builder clamps too.

@@ -218,22 +218,29 @@ def _cards(payload: dict, extension: bool = False) -> dict:
             continue
         kind = item.get("type")
         if kind == "stat":
+            # an explicit null reads as "absent", never as the text "None"
+            # (direct /ui writes bypass materialize's normalization)
+            label = item.get("label")
+            label = "" if label is None else str(label)
+            value = item.get("value")
+            value = "" if value is None else str(value)
+            sublabel = item.get("sublabel")
             if extension:
                 stat = {
                     "componentType": "Stat",
-                    "label": str(item.get("label", "")),
-                    "value": str(item.get("value", "")),
+                    "label": label,
+                    "value": value,
                 }
-                if "sublabel" in item:
-                    stat["sublabel"] = str(item["sublabel"])
+                if sublabel is not None:
+                    stat["sublabel"] = str(sublabel)
                 cards.append(stat)
                 continue
             children = [
-                _text(item.get("label", ""), "label"),
-                _text(item.get("value", ""), "value"),
+                _text(label, "label"),
+                _text(value, "value"),
             ]
-            if "sublabel" in item:
-                children.append(_text(item["sublabel"], "sublabel"))
+            if sublabel is not None:
+                children.append(_text(sublabel, "sublabel"))
             cards.append(
                 {
                     "componentType": "Card",
