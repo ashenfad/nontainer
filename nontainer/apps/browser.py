@@ -78,9 +78,7 @@ class _BrowserWorker:
                 finally:
                     loop.close()  # release selector/fds; shutdown discards it
 
-            t = threading.Thread(
-                target=run, name="nontainer-browser", daemon=True
-            )
+            t = threading.Thread(target=run, name="nontainer-browser", daemon=True)
             t.start()
             ready.wait()
             self._loop = loop

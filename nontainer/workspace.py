@@ -353,9 +353,7 @@ def _flatten_grants(cfg: "PythonConfig") -> list[ModuleGrant]:
                 f"PythonConfig.modules entry {entry!r} is not a module, "
                 "ModuleGrant, or sequence of them"
             )
-    return [
-        e if isinstance(e, ModuleGrant) else ModuleGrant(e) for e in entries
-    ]
+    return [e if isinstance(e, ModuleGrant) else ModuleGrant(e) for e in entries]
 
 
 class Workspace:
@@ -872,9 +870,7 @@ class Workspace:
         duration = time.monotonic() - start
 
         error = (
-            _render_error(exec_result.error)
-            if exec_result.error is not None
-            else None
+            _render_error(exec_result.error) if exec_result.error is not None else None
         )
 
         # Filter the outgoing namespace: sandtrap already excludes
@@ -888,9 +884,8 @@ class Workspace:
         }
 
         raw_stdout = exec_result.stdout
-        if (
-            len(raw_stdout) > self._max_observation
-            and getattr(exec_result, "prints", None)
+        if len(raw_stdout) > self._max_observation and getattr(
+            exec_result, "prints", None
         ):
             # Oversized stdout + snapshotted print objects: rebuild the
             # view with reprobate's structural elision (hard budget,
@@ -1255,9 +1250,7 @@ def workspace(
         elif backend == "agentfs":
             from .providers.agentfs import AgentFSProvider
 
-            provider = AgentFSProvider(
-                base / f"{session}.db", session=session
-            )
+            provider = AgentFSProvider(base / f"{session}.db", session=session)
         else:
             raise ValueError(f"Unknown backend: {backend!r}")
 

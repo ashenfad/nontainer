@@ -328,7 +328,8 @@ def _parse_mounts(specs: list[str]) -> dict:
 def main(argv: list[str] | None = None) -> None:
     import importlib
 
-    from ..workspace import PythonConfig, workspace as make_workspace
+    from ..workspace import PythonConfig
+    from ..workspace import workspace as make_workspace
 
     args = _build_parser().parse_args(argv)
 

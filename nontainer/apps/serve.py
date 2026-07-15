@@ -43,6 +43,7 @@ from .dispatch import AppRuntime, AppsConfig
 
 _logger = logging.getLogger("nontainer.apps")
 
+
 # The CSP's job here is SCRIPT supply-chain pinning: executable code
 # only from ``AppsConfig.script_hosts`` — the same declaration
 # test_app's interception enforces, so apps can't verify green and

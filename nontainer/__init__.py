@@ -18,6 +18,7 @@ Adapters (optional extras):
 """
 
 from .cache import Cache, CacheError
+from .editing import EditOutcome
 from .errors import (
     CheckpointNotFoundError,
     NotSupportedError,
@@ -31,7 +32,6 @@ from .protocol import (
     WorkspaceProvider,
     validate_session_id,
 )
-from .editing import EditOutcome
 from .workspace import (
     ModuleGrant,
     Mount,

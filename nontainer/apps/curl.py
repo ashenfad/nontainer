@@ -26,11 +26,32 @@ if TYPE_CHECKING:
 # accepted-but-meaningless here (no network, no TLS, no redirects —
 # dispatch is a direct call); consuming them beats a cryptic rejection
 _NOOP_FLAGS = {
-    "-s", "--silent", "-f", "--fail", "-S", "--show-error",
-    "-v", "--verbose", "-L", "--location", "-k", "--insecure",
-    "-g", "--globoff", "--compressed", "-4", "-6",
+    "-s",
+    "--silent",
+    "-f",
+    "--fail",
+    "-S",
+    "--show-error",
+    "-v",
+    "--verbose",
+    "-L",
+    "--location",
+    "-k",
+    "--insecure",
+    "-g",
+    "--globoff",
+    "--compressed",
+    "-4",
+    "-6",
 }
-_NOOP_VALUED = {"--max-time", "--connect-timeout", "-m", "--retry", "-A", "--user-agent"}
+_NOOP_VALUED = {
+    "--max-time",
+    "--connect-timeout",
+    "-m",
+    "--retry",
+    "-A",
+    "--user-agent",
+}
 
 _SUPPORTED = (
     "supported: -X -d/--data --json -H -i -o -w (plus accepted no-ops: "

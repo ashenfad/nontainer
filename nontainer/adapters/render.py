@@ -397,6 +397,8 @@ class _ArtifactTooLarge(ValueError):
     def __init__(self, size: int) -> None:
         super().__init__(f"artifact too large ({size} bytes)")
         self.size = size
+
+
 _IMAGE_MAGIC = {
     b"\x89PNG\r\n\x1a\n": "png",
     b"\xff\xd8\xff": "jpg",
@@ -651,9 +653,7 @@ def materialize_ui(
                     if isinstance(value, (str, bytes, bytearray))
                     else value
                 )
-                path = _ui_write(
-                    ws, f"/ui/{name}.txt", repr(preview)[:10_000].encode()
-                )
+                path = _ui_write(ws, f"/ui/{name}.txt", repr(preview)[:10_000].encode())
             except Exception:
                 continue
         out.append((name, path))

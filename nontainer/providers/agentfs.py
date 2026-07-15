@@ -295,8 +295,7 @@ class _AgentFsFS:
             out.append(rel)
             if self.isdir(child):
                 out.extend(
-                    posixpath.join(rel, sub)
-                    for sub in self.list(child, recursive=True)
+                    posixpath.join(rel, sub) for sub in self.list(child, recursive=True)
                 )
         return sorted(out)
 

@@ -85,9 +85,7 @@ def _coerce(value: Any, typ: type) -> tuple[bool, Any]:
     return False, None
 
 
-_HEADER_ALLOW = frozenset(
-    {"content-type", "accept", "authorization", "user-agent"}
-)
+_HEADER_ALLOW = frozenset({"content-type", "accept", "authorization", "user-agent"})
 
 
 def filter_headers(raw: Any) -> dict[str, str]:
@@ -170,16 +168,16 @@ def normalize(value: Any) -> WireResponse:
     """Liberal returns: dict/list → JSON, str → text, bytes → blob,
     Response → as specified, None → 204."""
     if isinstance(value, Response):
-        inner = normalize(value.body) if value.body is not None else WireResponse(
-            204, b"", "text/plain"
+        inner = (
+            normalize(value.body)
+            if value.body is not None
+            else WireResponse(204, b"", "text/plain")
         )
         # Lowercase the agent-supplied header keys: HTTP headers are
         # case-insensitive, and agents type the idiomatic Content-Type —
         # a cased lookup would silently ignore it. Tolerate an explicit
         # headers=None (agents write it; the field default is {}).
-        headers = {
-            str(k).lower(): str(v) for k, v in (value.headers or {}).items()
-        }
+        headers = {str(k).lower(): str(v) for k, v in (value.headers or {}).items()}
         return WireResponse(
             status=value.status,
             content=inner.content,
@@ -189,9 +187,7 @@ def normalize(value: Any) -> WireResponse:
     if value is None:
         return WireResponse(204, b"", "text/plain")
     if isinstance(value, (dict, list)):
-        return WireResponse(
-            200, _json.dumps(value).encode(), "application/json"
-        )
+        return WireResponse(200, _json.dumps(value).encode(), "application/json")
     if isinstance(value, str):
         return WireResponse(200, value.encode(), "text/plain; charset=utf-8")
     if isinstance(value, bytes):

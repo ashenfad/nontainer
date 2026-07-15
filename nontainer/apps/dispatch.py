@@ -27,7 +27,14 @@ from dataclasses import dataclass
 from typing import Any, Iterator
 
 from ..workspace import Workspace
-from .contract import HttpError, Request, Response, WireResponse, make_request, normalize
+from .contract import (
+    HttpError,
+    Request,
+    Response,
+    WireResponse,
+    make_request,
+    normalize,
+)
 
 APP_ROOT = "/app"
 API_ROOT = f"{APP_ROOT}/api"
@@ -43,6 +50,7 @@ def _error_response(status: int, message: str, **extra: str) -> WireResponse:
     their catch-blocks functional ({"error": ..., ...})."""
     body = json.dumps({"error": message, **extra}).encode()
     return WireResponse(int(status), body, "application/json")
+
 
 _STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -314,9 +322,7 @@ class AppRuntime:
             hint = blocked_import_hint(result.error)
             suffix = f"\n[hint: {hint}]" if hint else ""
             self._log(f"[{name}:{verb}] ERROR:\n{result.error}{suffix}")
-            return _error_response(
-                500, "internal error", log="/app/logs/api.log"
-            )
+            return _error_response(500, "internal error", log="/app/logs/api.log")
 
         http = result.namespace.get("nt__http")
         if http is not None:
