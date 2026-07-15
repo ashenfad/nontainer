@@ -18,6 +18,7 @@ Usage::
     resp = runtime.dispatch(request("GET", "/api/scores?limit=3"))
 """
 
+from .browser import configure_browser, shutdown_browser
 from .contract import (
     HttpError,
     Request,
@@ -26,7 +27,6 @@ from .contract import (
     make_request,
     normalize,
 )
-from .browser import configure_browser, shutdown_browser
 from .dispatch import (
     DEFAULT_SCRIPT_HOSTS,
     AppRuntime,
@@ -35,6 +35,7 @@ from .dispatch import (
     request,
 )
 from .testapp import ActionResult, TestAppResult, arun_test_app, render_test_app
+
 
 def __getattr__(name):
     # Lazy: serving needs the optional starlette dependency.

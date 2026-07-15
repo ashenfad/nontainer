@@ -263,6 +263,7 @@ async def _run_actions(
     async with sema:
         context = await browser.new_context(viewport=vp)
         try:
+
             def _page_error(e: Any) -> None:
                 # Runtime errors carry "at <url>:line:col" in the stack
                 # — keep it (the agent can open that line of its own

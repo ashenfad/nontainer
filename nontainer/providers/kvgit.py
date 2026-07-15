@@ -138,9 +138,7 @@ class KvgitProvider:
 
     def restore(self, checkpoint_id: str) -> None:
         if not self._staged.reset_to(checkpoint_id):
-            raise CheckpointNotFoundError(
-                f"No such checkpoint: {checkpoint_id!r}"
-            )
+            raise CheckpointNotFoundError(f"No such checkpoint: {checkpoint_id!r}")
         self._invalidate_fs()
 
     def _invalidate_fs(self) -> None:

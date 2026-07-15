@@ -189,7 +189,9 @@ def apply_edit(
             )
         n = len(ws_matches) if replace_all else 1
         # callable replacement: never interpret backslashes/backrefs
-        new_content = pattern.sub(lambda m: new_string, content, count=0 if replace_all else 1)
+        new_content = pattern.sub(
+            lambda m: new_string, content, count=0 if replace_all else 1
+        )
         return EditOutcome(new_content, n, "trailing_ws")
 
     # 3. indent-flexible
