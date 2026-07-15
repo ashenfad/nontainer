@@ -461,12 +461,14 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
     matched = sum(1 for i in value if _is_stat(i) or _is_callout(i))
     if matched == len(value) or matched * 2 < len(value):
         return None  # a real card row, or not plausibly one
+    import reprobate
+
     bad = next(i for i in value if not (_is_stat(i) or _is_callout(i)))
     return (
         f"{str(name)!r} looks like a card row, but this item is neither a "
         f"stat (needs 'label' and 'value') nor a tagged callout (needs "
         f"'type': 'callout' plus a 'title' or 'body'): "
-        f"{repr(bad)[:200]}. Fix that item to render cards."
+        f"{reprobate.render(bad, budget=200)}. Fix that item to render cards."
     )
 
 
