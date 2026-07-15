@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/ashenfad/nontainer/main/docs/a2ui/catalog.json",
+  "title": "nontainer A2UI Catalog",
+  "description": "The A2UI v0.9 basic components nontainer's egress adapter emits, plus three extension components: Stat and Callout (the cards convention) and Chart (plotly specs). Consumers pass this catalogId to nontainer.adapters.a2ui.turn_to_a2ui to opt surfaces into the extension card components.",
+  "catalogId": "https://raw.githubusercontent.com/ashenfad/nontainer/main/docs/a2ui/catalog.json",
+  "components": {
+    "Text": {
+      "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/components/Text"
+    },
+    "Image": {
+      "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/components/Image"
+    },
+    "Row": {
+      "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/components/Row"
+    },
+    "Column": {
+      "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/components/Column"
+    },
+    "Card": {
+      "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/components/Card"
+    },
+    "Stat": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/$defs/CatalogComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "const": "Stat"
+            },
+            "label": {
+              "type": "string",
+              "description": "What the number measures, e.g. 'Revenue'."
+            },
+            "value": {
+              "type": "string",
+              "description": "The headline value, preformatted by the producer, e.g. '$1.2M'."
+            },
+            "sublabel": {
+              "type": "string",
+              "description": "Optional context under the value — a trend or comparison in words, e.g. '+8% MoM'. Any direction or sentiment lives HERE as text; Stat declares no color or sign semantics."
+            }
+          },
+          "required": [
+            "component",
+            "label",
+            "value"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Callout": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/$defs/CatalogComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "const": "Callout"
+            },
+            "title": {
+              "type": "string",
+              "description": "Optional heading."
+            },
+            "body": {
+              "type": "string",
+              "description": "Optional body text; simple Markdown."
+            },
+            "tone": {
+              "type": "string",
+              "enum": [
+                "info",
+                "success",
+                "warning"
+              ],
+              "description": "The declared sentiment, default 'info'. Renderers use it for at most an icon/tint accent — never to recolor the content."
+            }
+          },
+          "required": [
+            "component"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Chart": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/$defs/CatalogComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "const": "Chart"
+            },
+            "spec": {
+              "description": "A plotly figure spec ({data, layout}), inline or as a data-model binding. The consumer brings the plotly renderer.",
+              "anyOf": [
+                {
+                  "type": "object"
+                },
+                {
+                  "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/DataBinding"
+                }
+              ]
+            }
+          },
+          "required": [
+            "component",
+            "spec"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    }
+  },
+  "functions": {}
+}
