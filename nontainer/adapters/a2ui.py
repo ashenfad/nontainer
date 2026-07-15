@@ -130,26 +130,35 @@ def component_for(
     if kind == "image":
         return _fragment({"componentType": "Image", "url": file_url(path)})
 
+    # The builders parse agent-writable files (near-miss adoption promotes
+    # DIRECT /ui writes into the note), so a malformed payload here is a
+    # reachable input, not a programming error. The except makes the
+    # never-raises contract structurally true: any builder surprise lands
+    # in the fallback instead of breaking an egress stream mid-turn.
     if data is not None:
-        if kind == "cards":
-            payload = _try_json(data)
-            if isinstance(payload, dict):
-                return _cards(payload)
-        elif kind == "table":
-            payload = _try_json(data)
-            if isinstance(payload, dict):
-                return _table(payload)
-        elif kind == "plotly":
-            spec = _try_json(data)
-            if isinstance(spec, dict):
-                return _chart(spec)
-        elif kind == "json":
-            # .json undersells itself: agents reach for write_json('/ui/x.json').
-            # Content-sniff a plotly spec (studio's looksLikePlotly, full-parse
-            # only since we hold the whole file); otherwise fall to the link.
-            spec = _try_json(data)
-            if _looks_like_plotly(spec):
-                return _chart(spec)
+        try:
+            if kind == "cards":
+                payload = _try_json(data)
+                if isinstance(payload, dict):
+                    return _cards(payload)
+            elif kind == "table":
+                payload = _try_json(data)
+                if isinstance(payload, dict):
+                    return _table(payload)
+            elif kind == "plotly":
+                spec = _try_json(data)
+                if isinstance(spec, dict):
+                    return _chart(spec)
+            elif kind == "json":
+                # .json undersells itself: agents reach for
+                # write_json('/ui/x.json'). Content-sniff a plotly spec
+                # (studio's looksLikePlotly, full-parse only since we hold
+                # the whole file); otherwise fall to the link.
+                spec = _try_json(data)
+                if _looks_like_plotly(spec):
+                    return _chart(spec)
+        except Exception:
+            pass
 
     # html/text/json-non-plotly/binary, and every bytes-needing kind that
     # could not parse: a Text label + a link. Never ship raw HTML across a2ui.
@@ -218,8 +227,12 @@ def _table(payload: dict) -> dict:
     data Rows. When ``total`` exceeds the rendered count, a trailing Text
     notes ``showing N of M rows`` (the payload is already head-capped
     upstream, so a big table degrades gracefully)."""
-    columns = payload.get("columns") or []
-    rows = payload.get("data") or []
+    # both guarded the same way: these fields come from agent-writable
+    # files, and a truthy non-list ({"columns": 5}) must degrade, not raise
+    columns = payload.get("columns")
+    columns = columns if isinstance(columns, list) else []
+    rows = payload.get("data")
+    rows = rows if isinstance(rows, list) else []
     total = payload.get("total")
 
     children = [
@@ -228,7 +241,7 @@ def _table(payload: dict) -> dict:
             "children": [_text(c, "header") for c in columns],
         }
     ]
-    rendered = rows[:_TABLE_ROW_CAP] if isinstance(rows, list) else []
+    rendered = rows[:_TABLE_ROW_CAP]
     for row in rendered:
         cells = row if isinstance(row, list) else [row]
         children.append(

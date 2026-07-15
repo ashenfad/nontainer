@@ -264,6 +264,36 @@ def test_component_malformed_json_degrades():
     assert frag["component"]["link"] == "https://host/ui/t.table.json"
 
 
+def test_component_table_nonlist_fields_degrade_not_raise():
+    """The never-raises contract against agent-written near-misses: table
+    payloads are reachable via direct /ui writes (the adoption path), so a
+    truthy non-list columns/data must degrade — a header-less table — not
+    TypeError out of an egress stream (PR #14 review)."""
+    frag = component_for(
+        "t", "/ui/t.table.json", b'{"columns": 5, "data": [[1]]}', url
+    )
+    children = frag["component"]["children"]
+    assert children[0] == {"componentType": "Row", "children": []}  # no header
+    assert children[1]["children"][0]["text"] == "1"  # rows still render
+    # non-list data degrades the same way (empty body, headers intact)
+    frag = component_for(
+        "t", "/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url
+    )
+    assert len(frag["component"]["children"]) == 1  # header row only
+
+
+def test_component_builder_surprise_falls_back_not_raises():
+    """Belt and braces: ANY builder exception lands in the Text+link
+    fallback — the docstring's never-raises is structural, not by audit.
+    A cards payload whose items explode the builder is the probe."""
+    frag = component_for(
+        "k", "/ui/k.cards.json", b'{"items": [{"type": "stat"}]}', url
+    )
+    # missing label/value: builder renders empty-string Texts today, but
+    # whatever future shape appears, the call must return a fragment
+    assert "component" in frag and "data_model" in frag
+
+
 # -- turn_to_a2ui (layer 2, the v0.9 envelope) -------------------------------
 
 
