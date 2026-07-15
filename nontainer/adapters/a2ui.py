@@ -32,12 +32,16 @@ adapter is split into two layers so the volatile part stays small:
   Markdown, so ``("md", text)`` segments ship verbatim as Text components.
 
 The component vocabulary here is deliberately neutral-but-a2ui-shaped:
-catalog components (``Card``/``Row``/``Column``/``Text``/``Image``) plus a
-single extension type ``Chart`` for plotly specs. A fragment is
-``{"component": <tree>, "data_model": {ref_key: value}}``; components carry
-``{"$ref": key}`` where a value lives in the data model (today: only the
-plotly spec, which is bulky and de-facto-standard — the consumer brings the
-renderer).
+basic-catalog components (``Card``/``Row``/``Column``/``Text``/``Image``)
+plus the nontainer catalog's extension types (``docs/a2ui/catalog.json``,
+``NONTAINER_CATALOG``): ``Chart`` for plotly specs (always emitted — a
+figure has no basic approximation), and ``Stat``/``Callout`` for card items
+(emitted only when the surface's catalog is ``NONTAINER_CATALOG``; under
+any other catalog, cards degrade to a schema-valid Card/Column/Text
+approximation). A fragment is ``{"component": <tree>, "data_model":
+{ref_key: value}}``; components carry ``{"$ref": key}`` where a value lives
+in the data model (today: only the plotly spec, which is bulky and
+de-facto-standard — the consumer brings the renderer).
 """
 
 from __future__ import annotations
@@ -114,6 +118,8 @@ def component_for(
     path: str,
     data: bytes | None,
     file_url: Callable[[str], str],
+    *,
+    extension_cards: bool = False,
 ) -> dict:
     """Project one artifact into an a2ui fragment.
 
@@ -122,6 +128,15 @@ def component_for(
     that needs the bytes then degrades to the Text+link fallback (``image``
     still works, being URL-only). Malformed JSON where JSON is expected
     degrades the same way; this function never raises.
+
+    ``extension_cards=True`` emits card items as the nontainer catalog's
+    ``Stat``/``Callout`` extension components (one node per item, flat
+    props) instead of the basic-catalog Card/Column/Text approximation.
+    Callers set it when the surface's catalog declares those components
+    (``turn_to_a2ui`` does, for ``NONTAINER_CATALOG``). ``Chart`` has no
+    such switch: a plotly figure has no basic-catalog approximation worth
+    shipping, so it is always the extension component and lenient basic
+    consumers simply skip it.
 
     Returns ``{"component": <tree>, "data_model": {...}}``.
     """
@@ -140,7 +155,7 @@ def component_for(
             if kind == "cards":
                 payload = _try_json(data)
                 if isinstance(payload, dict):
-                    return _cards(payload)
+                    return _cards(payload, extension_cards)
             elif kind == "table":
                 payload = _try_json(data)
                 if isinstance(payload, dict):
@@ -175,18 +190,27 @@ def _text(value: object, role: str) -> dict:
     return {"componentType": "Text", "text": str(value), "role": role}
 
 
-def _cards(payload: dict) -> dict:
-    """The ``.cards.json`` payload ``{"items": [...]}`` → a Row of Cards,
-    dispatched per item ``type`` (mirrors studio's CardRow):
+def _cards(payload: dict, extension: bool = False) -> dict:
+    """The ``.cards.json`` payload ``{"items": [...]}`` → a Row of card
+    components, dispatched per item ``type`` (mirrors studio's CardRow).
 
-    - ``stat`` → a Card of Text children roled label / value / sublabel
-      (sublabel only when present);
-    - ``callout`` → a Card carrying a passthrough ``tone`` prop (the
-      flattener copies unknown props through), with Text children roled
-      title / body (each emitted only when non-empty).
+    ``extension=True`` (the nontainer catalog): one flat component per
+    item — ``Stat {label, value, sublabel?}`` / ``Callout {title?, body?,
+    tone}`` — the wire says what it means.
 
-    Values go inline in the Text — card text is small, so no data-model
-    indirection needed. Items with no recognizable type render nothing."""
+    ``extension=False`` (basic-catalog approximation): the v0.9 ``Card``
+    takes a SINGULAR required ``child`` id (issue #16), so each item is a
+    Card whose ``child`` is a Column of Texts roled label / value /
+    sublabel (stat) or title / body (callout, each only when non-empty).
+    The callout's ``tone`` rides the Card as a passthrough prop — a
+    DOCUMENTED DEVIATION: the basic Card schema is closed
+    (``unevaluatedProperties: false``), so a strictly validating consumer
+    rejects it, but lenient renderers (the reference implementation) drop
+    or forward it, and it is the only sentiment channel this shape has.
+    Consumers that validate strictly should use ``NONTAINER_CATALOG``.
+
+    Values go inline — card text is small, so no data-model indirection.
+    Items with no recognizable type render nothing."""
     items = payload.get("items")
     cards = []
     for item in items if isinstance(items, list) else []:
@@ -194,14 +218,44 @@ def _cards(payload: dict) -> dict:
             continue
         kind = item.get("type")
         if kind == "stat":
+            if extension:
+                stat = {
+                    "componentType": "Stat",
+                    "label": str(item.get("label", "")),
+                    "value": str(item.get("value", "")),
+                }
+                if "sublabel" in item:
+                    stat["sublabel"] = str(item["sublabel"])
+                cards.append(stat)
+                continue
             children = [
                 _text(item.get("label", ""), "label"),
                 _text(item.get("value", ""), "value"),
             ]
             if "sublabel" in item:
                 children.append(_text(item["sublabel"], "sublabel"))
-            cards.append({"componentType": "Card", "children": children})
+            cards.append(
+                {
+                    "componentType": "Card",
+                    "child": {"componentType": "Column", "children": children},
+                }
+            )
         elif kind == "callout":
+            # clamp: direct /ui writes bypass materialize's tone clamp,
+            # and the catalog declares tone as a closed enum
+            tone = item.get("tone")
+            tone = tone if tone in ("info", "success", "warning") else "info"
+            if extension:
+                callout = {
+                    "componentType": "Callout",
+                    "tone": tone,
+                }
+                if item.get("title"):
+                    callout["title"] = str(item["title"])
+                if item.get("body"):
+                    callout["body"] = str(item["body"])
+                cards.append(callout)
+                continue
             children = []
             if item.get("title"):
                 children.append(_text(item["title"], "title"))
@@ -210,8 +264,8 @@ def _cards(payload: dict) -> dict:
             cards.append(
                 {
                     "componentType": "Card",
-                    "tone": item.get("tone", "info"),
-                    "children": children,
+                    "tone": tone,
+                    "child": {"componentType": "Column", "children": children},
                 }
             )
         # unrecognized type: skip, never raise
@@ -291,6 +345,15 @@ def _looks_like_plotly(obj: object) -> bool:
 # with a Chart-capable custom catalog pass their own catalog_id instead.
 BASIC_CATALOG = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json"
 
+# The nontainer extension catalog (docs/a2ui/catalog.json in the repo):
+# re-exports the basic components this adapter emits and adds ``Stat``,
+# ``Callout``, and ``Chart``. Passing it as ``catalog_id`` opts the surface
+# into extension card components; any OTHER custom id keeps the basic-shaped
+# cards, since we can't know what a foreign catalog declares.
+NONTAINER_CATALOG = (
+    "https://raw.githubusercontent.com/ashenfad/nontainer/main/docs/a2ui/catalog.json"
+)
+
 _VERSION = "v0.9"
 
 
@@ -310,6 +373,12 @@ def turn_to_a2ui(
     so the envelope owns no I/O policy (callers do reads and their own
     caching; ``None`` means unreadable, which degrades inside
     ``component_for``). ``file_url(path)`` resolves an artifact's public URL.
+
+    ``catalog_id`` names the surface's catalog and doubles as the capability
+    switch: ``NONTAINER_CATALOG`` opts card items into the ``Stat``/
+    ``Callout`` extension components; any other id (including a consumer's
+    own custom catalog) keeps the basic-catalog card approximation, since we
+    can't know what a foreign catalog declares.
 
     Pipeline: ``splice`` interleaves prose and artifacts into ordered
     segments; each ``("artifact", ...)`` segment is projected by
@@ -340,6 +409,7 @@ def turn_to_a2ui(
     ``component_for`` output; a ``read_bytes`` that itself raises is treated
     as an unreadable artifact.
     """
+    extension_cards = catalog_id == NONTAINER_CATALOG
     components: list[dict] = [{"id": "root", "component": "Column", "children": []}]
     root_children: list[str] = components[0]["children"]
     data_entries: list[tuple[str, object]] = []
@@ -356,7 +426,9 @@ def turn_to_a2ui(
         except Exception:
             # read_bytes is the caller's I/O; the envelope stays total.
             data = None
-        frag = component_for(name, path, data, file_url)
+        frag = component_for(
+            name, path, data, file_url, extension_cards=extension_cards
+        )
         _flatten(frag.get("component") or {}, seg_id, name, components)
         for key, value in (frag.get("data_model") or {}).items():
             data_entries.append((f"/artifacts/{name}/{key}", value))
@@ -390,13 +462,15 @@ def _flatten(node: dict, node_id: str, artifact: str, out: list[dict]) -> None:
 
     Pre-order (parent before children) so the list stays buffering-friendly.
     ``componentType`` becomes ``component``; ``children`` become a list of
-    generated child ids; ``role`` is dropped (folded into the child id by
-    ``_child_id``); a ``{"$ref": key}`` prop value is rewritten to a
-    ``/artifacts/{artifact}/{key}`` JSON-Pointer binding.
+    generated child ids; a dict-valued ``child`` (the v0.9 Card's SINGULAR
+    slot — issue #16) becomes one generated ``"{node_id}-body"`` id; ``role``
+    is dropped (folded into the child id by ``_child_id``); a ``{"$ref":
+    key}`` prop value is rewritten to a ``/artifacts/{artifact}/{key}``
+    JSON-Pointer binding.
     """
     flat: dict = {"id": node_id, "component": node.get("componentType")}
     for key, val in node.items():
-        if key in ("componentType", "children", "role"):
+        if key in ("componentType", "children", "child", "role"):
             continue
         flat[key] = _bind(val, artifact)
 
@@ -410,6 +484,14 @@ def _flatten(node: dict, node_id: str, artifact: str, out: list[dict]) -> None:
             ids.append(cid)
             child_pairs.append((child, cid))
         flat["children"] = ids
+
+    child = node.get("child")
+    if isinstance(child, dict):
+        # "-body" is a word, sibling positions are numbers, and roled ids
+        # carry a trailing counter ("-body-1") — no collisions possible.
+        cid = f"{node_id}-body"
+        flat["child"] = cid
+        child_pairs.append((child, cid))
 
     out.append(flat)
     for child, cid in child_pairs:
