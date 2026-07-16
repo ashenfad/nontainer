@@ -56,9 +56,9 @@ def render_python(result: PythonResult) -> str:
         parts.append(result.stdout.rstrip("\n"))
     if result.error:
         parts.append(f"[error]\n{result.error.rstrip()}")
-        from ..hints import blocked_import_hint
+        from ..hints import error_hint
 
-        hint = blocked_import_hint(result.error)
+        hint = error_hint(result.error)
         if hint:
             parts.append(f"[hint: {hint}]")
     if result.stderr:

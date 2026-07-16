@@ -111,6 +111,38 @@ def test_stdlib_pathlib_is_vfs_contained():
     ws.close()
 
 
+def test_stdlib_os_path_queries_route_through_vfs():
+    """getsize/abspath are monkeyfs-patched, so granting them is safe;
+    the string-math helpers need no patching at all."""
+    ws = make_ws()
+    r = ws.run_python(
+        "import os\n"
+        "with open('f.bin', 'wb') as f:\n"
+        "    f.write(b'x' * 1234)\n"
+        "print(os.path.getsize('f.bin'))\n"
+        "print(os.path.abspath('f.bin'))\n"
+        "print(os.path.normpath('a/b/../c'))\n"
+        "print(os.path.split('/a/b/c')[0])\n"
+        "print(os.path.relpath('/a/b/c', '/a'))\n"
+    )
+    assert r, r.error
+    assert r.stdout.splitlines() == ["1234", "/f.bin", "a/c", "/a/b", "b/c"]
+    ws.close()
+
+
+def test_stdlib_os_path_timestamps_stay_blocked():
+    """getmtime isn't monkeyfs-patched — granting it would leak host-fs
+    calls. The VFS-routed door for timestamps is os.stat().st_mtime."""
+    ws = make_ws()
+    ws.terminal("echo hi > f.txt")
+    r = ws.run_python("import os; os.path.getmtime('f.txt')")
+    assert not r and "getmtime" in (r.error or "")
+    r = ws.run_python("import os; print(os.stat('f.txt').st_mtime >= 0)")
+    assert r, r.error
+    assert r.stdout.strip() == "True"
+    ws.close()
+
+
 def test_stdlib_false_gives_bare_cell():
     ws = make_ws(python=PythonConfig(stdlib=False))
     r = ws.run_python("import math")

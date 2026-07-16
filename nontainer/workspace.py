@@ -264,7 +264,12 @@ class PythonConfig:
     audit."""
 
     timeout: float = 30.0
-    tick_limit: int = 1_000_000
+    # The same sandbox checkpoint enforces timeout, cancel, and ticks,
+    # so `timeout` is the real runaway guard; the tick limit is a
+    # determinism backstop and must be sized to never fire on honest
+    # work — a legitimate cleaning loop over a few-hundred-k-row CSV
+    # is tens of millions of ticks, not a runaway.
+    tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above

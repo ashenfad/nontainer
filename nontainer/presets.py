@@ -145,6 +145,11 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(
         os.path,
         name="os.path",
+        # VFS-routed queries (monkeyfs patches exists/isfile/.../getsize/
+        # abspath) plus pure string math (join/split/normpath/relpath).
+        # getmtime/getatime/getctime stay OUT: monkeyfs doesn't patch
+        # them, so they'd hit the host fs — os.stat(p).st_mtime is the
+        # granted, VFS-routed route to timestamps.
         include=(
             "exists",
             "isfile",
@@ -153,10 +158,15 @@ STDLIB: tuple[ModuleGrant, ...] = (
             "lexists",
             "samefile",
             "realpath",
+            "abspath",
+            "getsize",
             "join",
             "basename",
             "dirname",
             "splitext",
+            "split",
+            "normpath",
+            "relpath",
         ),
     ),
     # pathlib is fully VFS-routed (monkeyfs patches it), so no method

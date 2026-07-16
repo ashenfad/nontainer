@@ -205,7 +205,7 @@ class PythonConfig:
     network: bool = False
     isolation: "none" | "process" | "kernel" = "none"
     timeout: float = 30.0
-    tick_limit: int = 1_000_000
+    tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
@@ -400,7 +400,7 @@ Design doc: [apps.md](apps.md).
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
     # builds handler sandboxes + registers the `curl` terminal builtin
 
-AppsConfig(request_timeout=5.0, request_tick_limit=200_000,
+AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            max_response_bytes=2_000_000,
            script_hosts=DEFAULT_SCRIPT_HOSTS,  # where browser scripts may
            #   load from — drives test_app interception, the served CSP,
