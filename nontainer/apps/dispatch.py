@@ -94,7 +94,10 @@ DEFAULT_SCRIPT_HOSTS = (
 @dataclass(frozen=True)
 class AppsConfig:
     request_timeout: float = 5.0
-    request_tick_limit: int = 200_000
+    # request_timeout is the real per-request guard (same sandbox
+    # checkpoint checks both); the tick limit only backstops it and
+    # must not fire on an honest handler looping over a big frame.
+    request_tick_limit: int = 10_000_000
     max_response_bytes: int = 2_000_000
     script_hosts: tuple[str, ...] = DEFAULT_SCRIPT_HOSTS
     """Hosts browser scripts may load from (test_app enforcement, served
@@ -317,9 +320,9 @@ class AppRuntime:
         if result.error is not None:
             if atomic:
                 ws.discard()
-            from ..hints import blocked_import_hint
+            from ..hints import error_hint
 
-            hint = blocked_import_hint(result.error)
+            hint = error_hint(result.error)
             suffix = f"\n[hint: {hint}]" if hint else ""
             self._log(f"[{name}:{verb}] ERROR:\n{result.error}{suffix}")
             return _error_response(500, "internal error", log="/app/logs/api.log")
