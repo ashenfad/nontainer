@@ -96,7 +96,7 @@ class RemoteCache(MutableMapping[str, Any]):
     bypasses ``__getattr__`` — so the parent ships
     ``RpcProxyMarker(wrapper="nontainer.cache:RemoteCache")`` and the
     worker wraps the proxy in this MutableMapping. Method names match
-    ``Workspace._cache_rpc_handler``'s dispatch; the real ``Cache``
+    ``LocalExecutor._cache_rpc_handler``'s dispatch; the real ``Cache``
     (and its versioned kv) stays in the parent."""
 
     def __init__(self, proxy: Any) -> None:

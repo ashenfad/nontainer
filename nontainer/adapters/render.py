@@ -326,7 +326,7 @@ def _env_notes(ws: Workspace) -> str:
             f"- injected objects available by name: {names} (live host "
             "resources; call them directly, do not try to construct them)"
         )
-    from ..workspace import _flatten_grants
+    from ..executor import _flatten_grants
 
     stdlib_names = set()
     if cfg.stdlib:
