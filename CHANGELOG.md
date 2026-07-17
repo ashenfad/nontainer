@@ -41,6 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `python` builtin keeps `python -c` semantics for pipelines, and app
   handlers never echo into api.log.
 
+### Fixed
+- **`dataframes()` pins a fork-safe arrow allocator**
+  (`ARROW_DEFAULT_MEMORY_POOL=system`, via `setdefault` before the
+  first pandas import). Arrow's default mimalloc pool keeps per-thread
+  heaps that don't survive `fork()` — a sandbox worker forked from a
+  threaded host segfaulted in `libarrow`'s `mi_thread_init` on its
+  first arrow allocation (parquet reads, pandas-3 arrow-backed
+  strings), and every respawn re-forked the same hostile parent: a
+  permanent "Worker process died during initialisation" loop.
+  Embedders that import pandas before building configs should set the
+  variable themselves, earlier.
+
 ### Changed
 - **Tick limits raised**: `PythonConfig.tick_limit` 1M → 50M,
   `AppsConfig.request_tick_limit` 200k → 10M. The same sandbox
