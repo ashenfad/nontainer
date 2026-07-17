@@ -218,6 +218,16 @@ def dataframes() -> list[ModuleGrant]:
     Raises ImportError if either library is missing — presets fail
     loudly at config time, not on the agent's first import.
     """
+    # Arrow's default mimalloc pool keeps per-thread heaps that are NOT
+    # fork-safe: a worker forked from a threaded host segfaults in
+    # mi_thread_init on its first arrow allocation (observed on macOS:
+    # SIGSEGV in libarrow, "multi-threaded process forked"). The system
+    # allocator has no such state. pyarrow reads this env var at IMPORT
+    # — and `import pandas` (3.x) imports pyarrow — so this must run
+    # before the first pandas import anywhere in the process; setdefault
+    # here is best-effort for embedders that imported pandas earlier
+    # (they should set the env themselves, before that import).
+    os.environ.setdefault("ARROW_DEFAULT_MEMORY_POOL", "system")
     import numpy
     import pandas
 

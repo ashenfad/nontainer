@@ -190,6 +190,19 @@ def test_module_grant_include_exclude():
 # -- presets -------------------------------------------------------------------
 
 
+def test_dataframes_preset_pins_a_fork_safe_arrow_allocator():
+    """Arrow's default mimalloc pool segfaults in forked workers (its
+    per-thread heaps don't survive fork); the preset pins the system
+    allocator before pandas can import pyarrow. setdefault: an embedder
+    that chose a pool explicitly keeps it."""
+    import os
+
+    from nontainer import presets
+
+    presets.dataframes()
+    assert os.environ.get("ARROW_DEFAULT_MEMORY_POOL") == "system"
+
+
 def test_dataframes_preset():
     pytest.importorskip("pandas")
     from nontainer.presets import dataframes
