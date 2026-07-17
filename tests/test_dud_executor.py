@@ -158,6 +158,36 @@ def test_fork():
         ws.close()
 
 
+def test_fork_inherits_executor_factory(tmp_path):
+    """With ``executor_factory``, ``ws.fork()`` builds the fork on the
+    SAME executor kind (a fresh dud guest), so a whole session lineage
+    runs on dud — what studio's fork-a-session needs. Contrast with
+    ``test_fork``, which wires each side by hand. ``store=tmp_path``
+    keeps this off the default on-disk store."""
+    from nontainer import workspace
+
+    ws = workspace(
+        "dud-factory-parent",
+        store=tmp_path,
+        executor_factory=lambda: DudExecutor(),
+    )
+    try:
+        ws.terminal("echo base > shared.txt")
+        # real-bash construct termish rejects — proves the fork is dud,
+        # not a silent LocalExecutor fallback
+        child = ws.fork("dud-factory-child")
+        try:
+            assert child.terminal("cat shared.txt").stdout.strip() == "base"
+            r = child.terminal("echo $(echo nested)")  # command substitution
+            assert r.stdout.strip() == "nested"
+            child.terminal("echo kid > kid.txt")
+            assert not ws.fs.exists("/kid.txt")
+        finally:
+            child.close()
+    finally:
+        ws.close()
+
+
 # -- cache: same keyspace, opaque bytes host-side ----------------------------
 
 
