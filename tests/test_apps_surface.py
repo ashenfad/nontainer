@@ -1,8 +1,8 @@
 """The apps ↔ workspace extension surface (see scratch proposal).
 
 Apps talks to `Workspace` exclusively through the documented extension
-surface — `exec_python`, `build_sandbox`, `lock` — plus the ordinary
-public API (`fs`, `caps`, `dirty`, `discard`, `cache`, ...). No private
+surface — `exec_python(view=...)`, `lock` — plus the ordinary public
+API (`fs`, `caps`, `dirty`, `discard`, `cache`, ...). No private
 attribute access, no sentinel imports: that contract is what protects
 apps from core churn and makes it portable across providers.
 """
@@ -95,35 +95,46 @@ def test_apps_runs_on_dir_provider(tmp_path):
         ws.close()
 
 
-# -- build_sandbox policy memo (finding 3a) ----------------------------------
+# -- view-sandbox policy memo (finding 3a) -----------------------------------
+# The memo moved behind the seam when build_sandbox dissolved into
+# exec_python(view=): LocalExecutor mints a fresh sandbox per view but
+# reuses one memoized Policy per (timeout, tick_limit, extra_classes).
+# These are white-box on the LocalExecutor — the perf property they pin
+# (registration is not re-run per handler call) has no public surface.
 
 
-def test_build_sandbox_memoizes_policy():
+def test_view_sandbox_memoizes_policy():
+    from nontainer.executor import ViewSpec
+
     ws = Workspace(KvgitProvider.open(None, session="memo"))
     try:
-        kwargs = dict(timeout=5.0, tick_limit=1000)
-        sb1 = ws.build_sandbox(**kwargs)
-        sb2 = ws.build_sandbox(**kwargs)
+        ex = ws._executor
+        view = ViewSpec(timeout=5.0, tick_limit=1000)
+        sb1 = ex._build_sandbox(view)
+        sb2 = ex._build_sandbox(view)
         assert sb1 is not sb2  # fresh sandbox instances...
         assert sb1.policy is sb2.policy  # ...sharing one memoized policy
-        other = ws.build_sandbox(timeout=9.0, tick_limit=1000)
+        other = ex._build_sandbox(ViewSpec(timeout=9.0, tick_limit=1000))
         assert other.policy is not sb1.policy  # distinct budgets, distinct policy
     finally:
         ws.close()
 
 
-def test_build_sandbox_accepts_list_extra_classes():
-    """Extension-surface callers may pass a list; it must not blow up
-    on the memo key, and it shares the equivalent tuple's memo entry
-    (PR #7 review)."""
+def test_view_extra_classes_list_shares_memo():
+    """``ViewSpec.extra_classes`` may arrive as a list (a frozen
+    dataclass stores what it's handed); ``_build_sandbox`` coerces to a
+    tuple for the memo key, so a list and the equivalent tuple share one
+    policy (PR #7 review)."""
+    from nontainer.executor import ViewSpec
 
     class Marker:
         pass
 
     ws = Workspace(KvgitProvider.open(None, session="memo-list"))
     try:
-        as_list = ws.build_sandbox(extra_classes=[Marker])
-        as_tuple = ws.build_sandbox(extra_classes=(Marker,))
+        ex = ws._executor
+        as_list = ex._build_sandbox(ViewSpec(extra_classes=[Marker]))
+        as_tuple = ex._build_sandbox(ViewSpec(extra_classes=(Marker,)))
         assert as_list.policy is as_tuple.policy
     finally:
         ws.close()

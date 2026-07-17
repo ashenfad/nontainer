@@ -224,11 +224,15 @@ def test_cache_survives_restore(ws):
 # -- surfaces that stay local-only --------------------------------------------
 
 
-def test_build_sandbox_raises(ws):
+def test_view_execution_not_yet_supported(ws):
+    """build_sandbox dissolved into exec_python(view=); apps handler
+    dispatch under dud (the view path) is stage 3c and fails loud until
+    then, rather than silently running a handler with read-write access."""
     from nontainer.errors import NotSupportedError
+    from nontainer.executor import ViewSpec
 
     with pytest.raises(NotSupportedError):
-        ws.build_sandbox()
+        ws.exec_python("pass", view=ViewSpec(readonly_fs=True))
 
 
 def test_exec_python_stdin_argv_fail_loud(ws):

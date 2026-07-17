@@ -48,8 +48,8 @@ from typing import Any, Literal
 
 from .cache import PREFIX
 from .errors import NotSupportedError
-from .executor import ExecutionContext, StagedDiff, _is_plain_data, _truncate
-from .workspace import Isolation, PythonResult, TerminalResult
+from .executor import ExecutionContext, StagedDiff, ViewSpec, _is_plain_data, _truncate
+from .workspace import PythonResult, TerminalResult
 
 
 class _KvBytesCache(MutableMapping[str, bytes]):
@@ -144,49 +144,40 @@ class DudExecutor:
 
     # -- python ----------------------------------------------------------
 
-    def build_sandbox(
-        self,
-        *,
-        timeout: float | None = None,
-        tick_limit: int | None = None,
-        extra_classes: tuple[type, ...] = (),
-        filesystem: Any | None = None,
-        isolation: Isolation | None = None,
-        cache_object: Any | None = None,
-    ) -> Any:
-        raise NotSupportedError(
-            "build_sandbox is a LocalExecutor surface (sandtrap sandbox "
-            "objects); apps dispatch via dud is stage 3"
-        )
-
     def exec_python(
         self,
         code: str,
         *,
         inputs: Mapping[str, Any] | None = None,
-        sandbox: Any | None = None,
-        cache: Mapping[str, Any] | None = None,
         stdin: str | None = None,
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
+        view: "ViewSpec | None" = None,
     ) -> PythonResult:
         """Run code in a fresh guest runner (script model, literally:
         one interpreter per exec).
 
-        ``sandbox``/``cache`` are LocalExecutor-flavored overrides;
-        they cannot reach here through supported paths (apps is gated
-        off by ``build_sandbox`` raising) and are ignored. ``echo`` is
-        the guest runner's concern (it does last-expression echo);
-        per-call override is not wired in v0. ``stdin``/``argv`` have
-        no dud verb yet — and the terminal ``python`` builtin that
-        used them doesn't exist here (real bash runs real python) —
-        so they fail loud rather than silently dropping data."""
+        ``echo`` is the guest runner's concern (it does last-expression
+        echo); per-call override is not wired in v0. ``stdin``/``argv``
+        have no dud verb yet — and the terminal ``python`` builtin that
+        used them doesn't exist here (real bash runs real python) — so
+        they fail loud rather than silently dropping data. ``view``
+        (apps handler dispatch) is implemented in stage 3c (read-only
+        views + contract-class injection + per-request atomicity);
+        until that lands it raises rather than silently running a
+        handler with full read-write access."""
         ctx = self._require_ctx()
         if stdin is not None or argv is not None:
             raise NotSupportedError(
                 "exec_python(stdin=/argv=) is not supported by DudExecutor "
                 "(no wire support in dud v0; use terminal() — real bash "
                 "pipes into real python)"
+            )
+        if view is not None:
+            raise NotSupportedError(
+                "exec_python(view=) — restricted app-handler execution — is "
+                "stage 3c for DudExecutor (read-only views + contract-class "
+                "injection); apps run on LocalExecutor for now"
             )
         from dud.values import NotRepresentable
 

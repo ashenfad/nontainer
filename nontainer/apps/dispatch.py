@@ -2,15 +2,16 @@
 
 One core function, three consumers (the curl builtin, test_app, and
 the live router); see docs/apps.md. Handlers execute through the
-workspace's EXTENSION SURFACE (``exec_python`` / ``build_sandbox`` /
-``lock`` — no private access) with dedicated sandboxes:
+workspace's EXTENSION SURFACE (``exec_python(view=...)`` / ``lock`` —
+no private access), the ``view`` declaring a restricted, budgeted
+execution the executor realizes its own way:
 
-- GET → a sandbox over ``ReadOnlyFS`` + a read-only cache view (a GET
-  that writes raises — structural REST);
-- mutating verbs → a normal sandbox; when the provider supports
-  staging AND had no pending changes, a handler that raises gets its
-  staged writes discarded (per-request atomicity). Requests never
-  mint commits.
+- GET → a read-only fs + read-only cache view (a GET that writes
+  raises — structural REST);
+- mutating verbs → a normal view; when the provider supports staging
+  AND had no pending changes, a handler that raises gets its staged
+  writes discarded (per-request atomicity). Requests never mint
+  commits.
 
 Tracebacks and handler stdout land in ``/app/logs/api.log`` — the
 agent's repair loop is ``tail``, edit, retry.
@@ -22,10 +23,11 @@ import json
 import posixpath
 import re
 import time
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import Any
 
+from ..executor import ViewSpec
 from ..workspace import Workspace
 from .contract import (
     HttpError,
@@ -108,38 +110,6 @@ class AppsConfig:
     block, available endpoints, house frontend conventions."""
 
 
-class _ReadOnlyCache(MutableMapping):
-    """Read-only cache view for GET handlers (structural REST).
-
-    Inherits MutableMapping so derived mutators (pop, clear, update,
-    setdefault) route through __setitem__/__delitem__ and raise
-    PermissionError instead of AttributeError (PR#1 review)."""
-
-    def __init__(self, cache: Mapping) -> None:
-        self._cache = cache
-
-    def __getitem__(self, key: str) -> Any:
-        return self._cache[key]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._cache)
-
-    def __len__(self) -> int:
-        return len(self._cache)
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._cache
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._cache.get(key, default)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        raise PermissionError("cache is read-only in GET handlers")
-
-    def __delitem__(self, key: str) -> None:
-        raise PermissionError("cache is read-only in GET handlers")
-
-
 class AppRuntime:
     """Dispatch for one workspace's ``/app``. Build once, reuse."""
 
@@ -152,10 +122,17 @@ class AppRuntime:
         log_sink: "Callable[[str], None] | None" = None,
     ) -> None:
         """``frozen=True`` (live serving of a published snapshot): every
-        verb runs against a fresh read-only sandbox — no mutation, so
-        requests are concurrent and need no lock. ``log_sink`` routes
-        handler stdout/errors off the (read-only) VFS; default is the
-        VFS log at ``/app/logs/api.log`` for the authoring loop."""
+        verb runs read-only — no mutation, so requests are concurrent
+        and need no lock. ``log_sink`` routes handler stdout/errors off
+        the (read-only) VFS; default is the VFS log at
+        ``/app/logs/api.log`` for the authoring loop.
+
+        Handler executions are ``exec_python(view=...)`` calls: the
+        executor mints a fresh, restricted sandbox per call (policy
+        memoized, so it's cheap) and realizes the read-only view /
+        budget / contract classes its own way. This runtime holds no
+        sandbox objects — nothing to build here, nothing to reap in
+        ``close``."""
         self._ws = ws
         self._config = config or AppsConfig()
         self._frozen = frozen
@@ -163,40 +140,6 @@ class AppRuntime:
         self._log_broken = False  # warn once when logging fails
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._contract = (Request, Response, HttpError)
-        self._budgets = dict(
-            timeout=self._config.request_timeout,
-            tick_limit=self._config.request_tick_limit,
-        )
-        from monkeyfs import ReadOnlyFS
-
-        self._ReadOnlyFS = ReadOnlyFS
-        self._ro_cache = _ReadOnlyCache(ws.cache) if ws.cache_enabled else None
-        if frozen:
-            # Fresh read-only sandbox built per request (in _dispatch_api).
-            self._rw_sandbox = None
-            self._ro_sandbox = None
-        else:
-            # Handler code is the same trust tier as run_python code,
-            # so it inherits the workspace's isolation. Authoring
-            # dispatch is serialized under ws.lock, so ONE long-lived
-            # worker per sandbox suffices (entered here, before server
-            # threads pile up; reaped by close()).
-            self._rw_sandbox = ws.build_sandbox(
-                extra_classes=self._contract, **self._budgets
-            )
-            self._ro_sandbox = ws.build_sandbox(
-                extra_classes=self._contract,
-                filesystem=ReadOnlyFS(ws.fs),
-                cache_object=self._ro_cache,
-                **self._budgets,
-            )
-            try:
-                for sb in (self._rw_sandbox, self._ro_sandbox):
-                    if hasattr(sb, "shutdown"):  # process/kernel worker
-                        sb.__enter__()
-            except Exception:
-                self.close()  # don't orphan an already-entered worker
-                raise
 
     @property
     def config(self) -> AppsConfig:
@@ -205,14 +148,10 @@ class AppRuntime:
         return self._config
 
     def close(self) -> None:
-        """Reap long-lived process workers (no-op in-process/frozen).
-        Idempotent; daemon workers die with the host either way."""
-        for sb in (self._rw_sandbox, self._ro_sandbox):
-            if sb is not None and hasattr(sb, "shutdown"):
-                try:
-                    sb.shutdown()
-                except Exception:
-                    pass  # the other worker still gets its turn
+        """No-op, retained for API stability (embedders call it): the
+        runtime no longer holds long-lived sandbox workers — each
+        handler call mints and reaps its own via ``exec_python(view=)``.
+        """
 
     # -- the core --------------------------------------------------------
 
@@ -285,38 +224,26 @@ class AppRuntime:
         ws = self._ws
         atomic = not readonly and ws.caps.staging and not ws.dirty
 
-        cache: Any = None  # None: the workspace's live cache
-        if readonly and ws.cache_enabled:
-            cache = self._ro_cache
-
-        if self._frozen:
-            # A fresh read-only sandbox per request — no shared instance
-            # to race, so no lock, and full request concurrency. Under
-            # process/kernel isolation that's a fork per request
-            # (~2ms: COW fork, memoized policy, everything pre-imported)
-            # — frozen state is immutable, so nothing needs sharing.
-            sandbox = ws.build_sandbox(
-                extra_classes=self._contract,
-                filesystem=self._ReadOnlyFS(ws.fs),
-                cache_object=cache,
-                **self._budgets,
-            )
-        else:
-            sandbox = self._ro_sandbox if readonly else self._rw_sandbox
-
-        from contextlib import nullcontext
-
-        per_request_worker = self._frozen and hasattr(sandbox, "shutdown")
-        with sandbox if per_request_worker else nullcontext():
-            result = ws.exec_python(
-                source + _TRAILER.format(verb=verb),
-                inputs={"nt__req": request},
-                sandbox=sandbox,
-                cache=cache,
-                # handlers are scripts: a stray module-level bare
-                # expression must not echo reprs into api.log
-                echo="none",
-            )
+        # The view declares the intent; the executor realizes it (a
+        # fresh restricted sandbox per call, policy memoized — so a
+        # read-only GET can't mutate, contract classes are in scope,
+        # and the per-request budget applies, whichever executor runs
+        # it). No sandbox object crosses back here.
+        view = ViewSpec(
+            readonly_fs=readonly,
+            readonly_cache=readonly,
+            timeout=self._config.request_timeout,
+            tick_limit=self._config.request_tick_limit,
+            extra_classes=self._contract,
+        )
+        result = ws.exec_python(
+            source + _TRAILER.format(verb=verb),
+            inputs={"nt__req": request},
+            view=view,
+            # handlers are scripts: a stray module-level bare
+            # expression must not echo reprs into api.log
+            echo="none",
+        )
 
         # The query string in the tag is what lets an agent correlate
         # log entries with requests — identical bare error lines read
