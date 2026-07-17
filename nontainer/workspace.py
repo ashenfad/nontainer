@@ -586,6 +586,7 @@ class Workspace:
             # whole execution or raises cleanly — no TOCTOU (PR #7).
             self._check_open()
             result = self._executor.exec_shell(command)
+            self._absorb_executor_diff()
             self._save_cwd()
             cp = self._maybe_checkpoint("terminal")
         return replace(result, checkpoint=cp) if cp else result
@@ -609,6 +610,7 @@ class Workspace:
         with self._lock:
             self._check_open()
             result = self.exec_python(code, inputs=inputs)
+            self._absorb_executor_diff()
             self._save_cwd()
             cp = self._maybe_checkpoint("run_python")
         return replace(result, checkpoint=cp) if cp else result
@@ -789,6 +791,9 @@ class Workspace:
             if parent not in (".", "/", ""):
                 self._fs.makedirs(parent, exist_ok=True)
             self._fs.write(path, data)
+            # host-side write behind the executor's back: refresh its
+            # view (no-op for LocalExecutor)
+            self._executor.sync()
             return WriteOutcome(
                 path=path,
                 size=len(data),
@@ -829,6 +834,7 @@ class Workspace:
                 raise WorkspaceError(str(e)) from e
             if outcome.count:
                 self._fs.write(path, outcome.content.encode())
+                self._executor.sync()  # see write_file()
                 cp = self._maybe_checkpoint("file_edit")
                 if cp:
                     outcome = replace(outcome, checkpoint=cp)
@@ -852,6 +858,7 @@ class Workspace:
             if parent not in (".", "/", ""):
                 self._fs.makedirs(parent, exist_ok=True)
             self._fs.write(ws_path, data)
+            self._executor.sync()  # see write_file()
             return WriteOutcome(
                 path=ws_path,
                 size=len(data),
@@ -896,6 +903,9 @@ class Workspace:
     def restore(self, checkpoint_id: str) -> None:
         with self._lock:
             self._provider.restore(checkpoint_id)
+            # provider state moved under the executor: refresh its view
+            # (no-op for LocalExecutor, which holds no copy)
+            self._executor.sync()
 
     def rollback(self, steps: int = 1) -> str:
         """Restore the Nth-previous checkpoint; returns its id.
@@ -911,6 +921,7 @@ class Workspace:
                 )
             target = entries[steps]
             self._provider.restore(target.id)
+            self._executor.sync()  # see restore()
             return target.id
 
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
@@ -940,6 +951,7 @@ class Workspace:
         """Drop writes since the last checkpoint (staging providers)."""
         with self._lock:
             self._provider.discard()
+            self._executor.sync()  # see restore()
 
     # ------------------------------------------------------------------
     # power modes / lifecycle
@@ -996,6 +1008,28 @@ class Workspace:
         if self._autocheckpoint and self._provider.dirty:
             return self._provider.checkpoint(info={"tool": tool})
         return None
+
+    def _absorb_executor_diff(self) -> None:
+        """Land a remote executor's staged writes in the provider,
+        BEFORE the checkpoint flow — so the normal atomic commit and
+        ``result.checkpoint`` semantics apply unchanged whichever
+        executor produced the writes. ``None`` (LocalExecutor always;
+        a remote executor after a read-only call) costs nothing and
+        dirties nothing. Callers hold the lock."""
+        d = self._executor.diff()
+        if d is None:
+            return
+        for rel, data in d.writes.items():
+            path = "/" + rel.lstrip("/")
+            parent = str(PurePosixPath(path).parent)
+            if parent not in (".", "/", ""):
+                self._fs.makedirs(parent, exist_ok=True)
+            self._fs.write(path, data)
+        for rel in d.deletes:
+            try:
+                self._fs.remove("/" + rel.lstrip("/"))
+            except Exception:
+                pass  # already gone (e.g. parent dir removed first)
 
 
 def workspace(
