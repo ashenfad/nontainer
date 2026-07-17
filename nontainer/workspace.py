@@ -370,6 +370,7 @@ class Workspace:
         autocheckpoint: bool = True,
         max_observation: int = 32_000,
         executor: "Executor | None" = None,
+        executor_factory: "Callable[[], Executor] | None" = None,
     ) -> None:
         self._provider = provider
         self._python_config = python or PythonConfig()
@@ -412,13 +413,26 @@ class Workspace:
 
         # -- execution: bound behind the Executor seam (executor.py).
         # Default is the in-process sandtrap+termish LocalExecutor.
-        # NOTE: fork() does not inherit a custom executor — each
-        # workspace owns its executor's lifecycle, and forks build the
-        # default. Injecting into a fork means constructing Workspace
-        # around provider.fork() yourself.
+        #
+        # Two injection shapes, because an executor is stateful and
+        # bound to ONE session (it may own a subprocess / guest VM), so
+        # a single instance can't be shared across forks:
+        # - ``executor`` — a ready instance for THIS workspace only;
+        #   forks fall back to the factory (or the default).
+        # - ``executor_factory`` — a zero-arg builder used for this
+        #   workspace when no instance is given, AND carried into
+        #   ``fork()`` so a whole session lineage runs on the same
+        #   executor kind (what studio's "fork = new universe" needs on
+        #   a dud backend). A fresh executor per session, no sharing.
         from .executor import ExecutionContext, LocalExecutor
 
-        self._executor = executor if executor is not None else LocalExecutor()
+        self._executor_factory = executor_factory
+        if executor is not None:
+            self._executor = executor
+        elif executor_factory is not None:
+            self._executor = executor_factory()
+        else:
+            self._executor = LocalExecutor()
 
         # -- stateful cwd: restore from framework key if present.
         # Guarded so a no-op restore doesn't dirty staging providers
@@ -945,6 +959,7 @@ class Workspace:
             cache=self._cache_enabled,
             autocheckpoint=self._autocheckpoint,
             max_observation=self._max_observation,
+            executor_factory=self._executor_factory,
         )
 
     def discard(self) -> None:
@@ -1044,6 +1059,7 @@ def workspace(
     cache: bool = True,
     autocheckpoint: bool = True,
     max_observation: int = 32_000,
+    executor_factory: "Callable[[], Executor] | None" = None,
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
 
@@ -1059,6 +1075,11 @@ def workspace(
     ``provider`` overrides ``backend``/``store`` entirely (bring your
     own substrate). ``session`` is validated against ``SESSION_ID_RE``
     in all paths.
+
+    ``executor_factory`` selects the execution backend for this session
+    and every fork of it (default: the in-process ``LocalExecutor``).
+    Pass ``lambda: DudExecutor()`` to run on a real machine — see
+    ``nontainer.executor_dud`` and its ``[dud]`` extra.
     """
     from .protocol import validate_session_id
 
@@ -1088,4 +1109,5 @@ def workspace(
         cache=cache,
         autocheckpoint=autocheckpoint,
         max_observation=max_observation,
+        executor_factory=executor_factory,
     )
