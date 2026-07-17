@@ -24,16 +24,18 @@ Design notes (see README "Design decisions"):
 - **cwd is stateful** across calls (like any other mutating terminal
   command) and persists via the ``__cwd__`` framework key in kv, so
   on versioned providers rollback also restores *where you were*.
+- **Execution is a seam.** How code runs — the python sandbox, the
+  shell, worker lifecycle — lives behind :class:`Executor` (see
+  executor.py); the default :class:`LocalExecutor` is the in-process
+  sandtrap + termish wiring. The workspace keeps what execution must
+  not own: the lock, the checkpoint flow, cwd, the cache key rules.
 """
 
 from __future__ import annotations
 
-import pickle
 import re
 import threading
-import time
 import traceback
-import warnings
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
@@ -47,6 +49,7 @@ from .protocol import Capabilities, CheckpointInfo, WorkspaceProvider
 
 if TYPE_CHECKING:
     from .editing import EditOutcome
+    from .executor import Executor
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -288,37 +291,6 @@ class PythonConfig:
     except ``host_objects``."""
 
 
-def _render_prints(prints: list[tuple[Any, ...]], budget: int) -> str:
-    """Budget-aware stdout reconstruction from snapshotted print args.
-
-    Each print gets an even share of the budget (floored so early
-    prints stay legible when there are many); every value renders via
-    reprobate with a hard per-value budget. Approximation caveat:
-    print's sep/end kwargs aren't snapshotted — args join with a
-    space, prints with newlines (the overwhelmingly common case).
-    """
-    import reprobate
-
-    per_print = max(200, budget // max(1, len(prints)))
-    lines: list[str] = []
-    used = 0
-    for i, args in enumerate(prints):
-        if used + per_print > budget:
-            lines.append(f"[...{len(prints) - i} more print(s) elided]")
-            break
-        per_arg = max(40, per_print // max(1, len(args)))
-        rendered = " ".join(reprobate.render(a, budget=per_arg) for a in args)
-        lines.append(rendered)
-        used += len(rendered) + 1
-    return "\n".join(lines)
-
-
-def _truncate(text: str, limit: int) -> tuple[str, bool]:
-    if len(text) <= limit:
-        return text, False
-    return text[:limit], True
-
-
 _HOST_PREFIX_RE = re.compile(r'(File ")/[^"]*/(?:site-packages|python\d+\.\d+)/')
 _FRAME_RE = re.compile(r'\s+File "([^"]*)"')
 
@@ -379,54 +351,6 @@ def _trim_rendered_traceback(text: str) -> str:
     return "\n".join(lines)
 
 
-def _host_object_rpc_handler(obj: Any):
-    """Parent-side dispatch for one bridged host object: the worker's
-    proxy calls methods by name; the live object never crosses. Public
-    methods only — the proxy can't reach dunders or privates."""
-
-    def handler(method: str, args: tuple, kwargs: dict) -> Any:
-        if method.startswith("_"):
-            raise AttributeError(method)
-        attr = getattr(obj, method)
-        if not callable(attr):
-            raise AttributeError(
-                f"{method!r} is not a method (attribute reads don't cross "
-                "the process-isolation bridge)"
-            )
-        return attr(*args, **kwargs)
-
-    return handler
-
-
-def _is_plain_data(obj: Any) -> bool:
-    """Builtin-typed values need no policy registration."""
-    return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
-
-
-def _flatten_grants(cfg: "PythonConfig") -> list[ModuleGrant]:
-    """Normalize ``cfg.modules`` to a flat ModuleGrant list: the stdlib
-    set first (when enabled), then user entries — nested sequences
-    (preset grant lists) flatten one level, bare modules wrap. A later
-    registration of the same module name wins in sandtrap, so explicit
-    user grants override the stdlib set's."""
-    entries: list[ModuleType | ModuleGrant] = []
-    if cfg.stdlib:
-        from .presets import STDLIB
-
-        entries.extend(STDLIB)
-    for entry in cfg.modules:
-        if isinstance(entry, (ModuleType, ModuleGrant)):
-            entries.append(entry)
-        elif isinstance(entry, Sequence) and not isinstance(entry, (str, bytes)):
-            entries.extend(entry)
-        else:
-            raise TypeError(
-                f"PythonConfig.modules entry {entry!r} is not a module, "
-                "ModuleGrant, or sequence of them"
-            )
-    return [e if isinstance(e, ModuleGrant) else ModuleGrant(e) for e in entries]
-
-
 class Workspace:
     """A fake little computer: files + shell + python + cache, versioned.
 
@@ -445,6 +369,7 @@ class Workspace:
         cache: bool = True,
         autocheckpoint: bool = True,
         max_observation: int = 32_000,
+        executor: "Executor | None" = None,
     ) -> None:
         self._provider = provider
         self._python_config = python or PythonConfig()
@@ -485,12 +410,15 @@ class Workspace:
         user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
 
-        # -- python sandbox: policy + sandbox built once (frozen) --
-        # build_sandbox memoizes built policies per parameter set (the
-        # registration loop is the expensive part); seed the memo with
-        # the default sandbox's build.
-        self._policy_memo: dict[Any, Any] = {}
-        self._sandbox = self.build_sandbox()
+        # -- execution: bound behind the Executor seam (executor.py).
+        # Default is the in-process sandtrap+termish LocalExecutor.
+        # NOTE: fork() does not inherit a custom executor — each
+        # workspace owns its executor's lifecycle, and forks build the
+        # default. Injecting into a fork means constructing Workspace
+        # around provider.fork() yourself.
+        from .executor import ExecutionContext, LocalExecutor
+
+        self._executor = executor if executor is not None else LocalExecutor()
 
         # -- stateful cwd: restore from framework key if present.
         # Guarded so a no-op restore doesn't dirty staging providers
@@ -503,14 +431,19 @@ class Workspace:
             except Exception:
                 pass  # path may no longer exist; start at root
 
-        # Process/kernel sandboxes fork a persistent worker; the
-        # Workspace owns its lifecycle (shutdown in close()). Entering
-        # at construction — typically before an embedder's server
-        # threads exist — is deliberate (forking a multithreaded
-        # process can deadlock on macOS), and entering LAST means no
-        # later __init__ failure can orphan the worker (PR #10 review).
-        if self._python_config.isolation != "none":
-            self._sandbox.__enter__()
+        # open() LAST: it may fork a persistent isolation worker (see
+        # LocalExecutor.open), and opening after everything else means
+        # no later __init__ failure can orphan it (PR #10 review).
+        self._executor.open(
+            ExecutionContext(
+                fs=self._fs,
+                kv=provider.kv,
+                commands=self._commands,
+                python_config=self._python_config,
+                cache_enabled=self._cache_enabled,
+                max_observation=self._max_observation,
+            )
+        )
 
     # ------------------------------------------------------------------
     # construction helpers
@@ -562,146 +495,20 @@ class Workspace:
         makes minting a fresh sandbox per request cheap (frozen app
         serving does), without sharing sandbox *instances* across
         concurrent executions. The memo is intentionally tolerant of
-        races: a duplicate build is wasted work, not corruption."""
-        from sandtrap import sandbox
+        races: a duplicate build is wasted work, not corruption.
 
-        cfg = self._python_config
-        # Coerce: extension-surface callers may pass a list, which
-        # would be unhashable as part of the memo key (PR #7).
-        extra_classes = tuple(extra_classes)
-        key = (timeout, tick_limit, extra_classes)
-        policy = self._policy_memo.get(key)
-        if policy is None:
-            policy = self._build_policy(
-                timeout=timeout, tick_limit=tick_limit, extra_classes=extra_classes
-            )
-            self._policy_memo[key] = policy
-
-        effective_isolation = isolation if isolation is not None else cfg.isolation
-        rpc_handlers = None
-        if effective_isolation != "none":
-            rpc_handlers = {}
-            if cache_object is not None:
-                # a caller-supplied cache view (e.g. apps' read-only
-                # wrapper) — the worker's `cache` proxy dispatches here
-                rpc_handlers["cache"] = self._cache_rpc_handler(cache_object)
-            elif self._cache_enabled:
-                rpc_handlers["cache"] = self._cache_rpc_handler()
-            for name, obj in cfg.host_objects.items():
-                if not _is_plain_data(obj):
-                    rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(obj)
-
-        return sandbox(
-            policy,
-            isolation=effective_isolation,
-            mode="raw",
-            filesystem=filesystem if filesystem is not None else self._fs,
-            rpc_handlers=rpc_handlers,
-            # Snapshot print() ARGUMENTS (objects, not text) so oversized
-            # stdout can be re-rendered budget-aware via reprobate — see
-            # _render_prints. Structural elision beats a mid-token cut.
-            snapshot_prints=True,
-            # the sandbox-level default; script surfaces (terminal
-            # python, app handlers) override per-exec with echo="none"
-            echo=cfg.echo,
+        Delegates to the executor (``LocalExecutor.build_sandbox`` —
+        where the sandtrap wiring lives); the sandbox-object shape of
+        this surface is local-flavored, see ``Executor.build_sandbox``.
+        """
+        return self._executor.build_sandbox(
+            timeout=timeout,
+            tick_limit=tick_limit,
+            extra_classes=extra_classes,
+            filesystem=filesystem,
+            isolation=isolation,
+            cache_object=cache_object,
         )
-
-    def _build_policy(
-        self,
-        *,
-        timeout: float | None,
-        tick_limit: int | None,
-        extra_classes: tuple[type, ...],
-    ) -> Any:
-        """One policy build: registration loop + extra classes + live
-        host objects + the kernel-degradation warning."""
-        from sandtrap import Policy
-
-        cfg = self._python_config
-        grants = _flatten_grants(cfg)
-        if cfg.policy is not None:
-            policy = cfg.policy
-        else:
-            policy = Policy(
-                timeout=timeout if timeout is not None else cfg.timeout,
-                tick_limit=tick_limit if tick_limit is not None else cfg.tick_limit,
-                memory_limit=cfg.memory_limit_mb,
-                allow_network=cfg.network,
-            )
-            for grant in grants:
-                policy.module(
-                    grant.module,
-                    name=grant.name,
-                    include=grant.include,
-                    exclude=grant.exclude,
-                    recursive=grant.recursive,
-                    network_access=grant.network,
-                    host_fs_access=grant.host_fs,
-                )
-
-        for klass in extra_classes:
-            policy.cls(klass)
-
-        # Live (non-plain-data) host objects need attribute-level policy.
-        for name, obj in cfg.host_objects.items():
-            if not _is_plain_data(obj):
-                policy.module(obj, name=name)
-
-        # Loud construction-time warning when a kernel sandbox's policy
-        # degrades a kernel restriction (seccomp/Landlock are monotonic).
-        if cfg.isolation == "kernel":
-            grants_network = cfg.network or any(g.network for g in grants)
-            grants_host_fs = any(g.host_fs for g in grants)
-            if grants_network or grants_host_fs:
-                degraded = [
-                    n
-                    for n, on in (
-                        ("network", grants_network),
-                        ("host-fs", grants_host_fs),
-                    )
-                    if on
-                ]
-                warnings.warn(
-                    f"isolation='kernel' with {'/'.join(degraded)} grant(s): "
-                    "the corresponding kernel restriction is disabled for the "
-                    "ENTIRE worker; only Python-level gating remains for it.",
-                    RuntimeWarning,
-                    stacklevel=4,
-                )
-
-        return policy
-
-    def _cache_rpc_handler(
-        self, cache: Any | None = None
-    ) -> Callable[[str, tuple, dict], Any]:
-        """RPC dispatch onto a parent-side live cache (the agex
-        pattern) for process/kernel isolation. Default: the
-        workspace's own cache; callers may hand in a view (apps pass
-        their read-only wrapper) — its exceptions cross to the worker
-        and re-raise at the call site."""
-        if cache is None:
-            cache = Cache(self._provider.kv)
-
-        def handler(method: str, args: tuple, kwargs: dict) -> Any:
-            match method:
-                case "getitem":
-                    return cache[args[0]]
-                case "setitem":
-                    cache[args[0]] = args[1]
-                    return None
-                case "delitem":
-                    del cache[args[0]]
-                    return None
-                case "iter":
-                    return list(cache)
-                case "len":
-                    return len(cache)
-                case "contains":
-                    return args[0] in cache
-                case _:
-                    raise AttributeError(method)
-
-        return handler
 
     # ------------------------------------------------------------------
     # identity
@@ -773,35 +580,15 @@ class Workspace:
         """Execute a shell script (pipes, redirects, ``;``) against the
         workspace filesystem. Never raises for command failure — check
         ``exit_code`` / truthiness."""
-        from termish import TerminalError, execute
-        from termish.parser import ParseError
-
         with self._lock:
             # Inside the lock: close() also holds it, so a call that
             # wins the lock either sees the workspace open for its
             # whole execution or raises cleanly — no TOCTOU (PR #7).
             self._check_open()
-            try:
-                output = execute(command, self._fs, commands=self._commands)
-                exit_code, stderr = 0, ""
-            except ParseError as e:
-                output, exit_code, stderr = "", 2, f"parse error: {e}"
-            except TerminalError as e:
-                # termish >= 0.1.7 preserves command exit codes (127 for
-                # not-found, a CommandResult's own code — curl's 22 survives)
-                output, exit_code, stderr = e.partial_output, e.exit_code, e.message
-
+            result = self._executor.exec_shell(command)
             self._save_cwd()
-            checkpoint = self._maybe_checkpoint("terminal")
-        stdout, trunc_out = _truncate(output, self._max_observation)
-        stderr, trunc_err = _truncate(stderr, self._max_observation)
-        return TerminalResult(
-            stdout=stdout,
-            exit_code=exit_code,
-            stderr=stderr,
-            truncated=trunc_out or trunc_err,
-            checkpoint=checkpoint,
-        )
+            cp = self._maybe_checkpoint("terminal")
+        return replace(result, checkpoint=cp) if cp else result
 
     def run_python(
         self, code: str, *, inputs: Mapping[str, Any] | None = None
@@ -890,99 +677,18 @@ class Workspace:
         into it). Safe to call concurrently with distinct sandboxes
         (frozen app serving does): stderr is captured per-execution by
         sandtrap, not by a process-global redirect. Callers whose work
-        mutates the workspace serialize via :attr:`lock`."""
-        namespace: dict[str, Any] = {}
+        mutates the workspace serialize via :attr:`lock`.
 
-        for name, value in (inputs or {}).items():
-            try:
-                pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
-            except Exception as exc:
-                raise TypeError(
-                    f"inputs[{name!r}] is not picklable data ({exc}). "
-                    "inputs carry per-call data; live resources belong in "
-                    "PythonConfig.host_objects."
-                ) from exc
-            namespace[name] = value
-
-        sb = sandbox if sandbox is not None else self._sandbox
-        # Process/kernel sandboxes expose an RPC-handler registry; live
-        # objects cross as proxies, never by pickle. Duck-typed off the
-        # SANDBOX (not the config): callers may pass an in-process
-        # sandbox (apps do) while the workspace default is isolated.
-        bridged = hasattr(sb, "_rpc_handlers")
-
-        for name, obj in self._python_config.host_objects.items():
-            if bridged and not _is_plain_data(obj):
-                from sandtrap import RpcProxyMarker
-
-                # methods RPC to the parent's live object (attribute
-                # READS don't cross — a documented limit of bridging)
-                namespace[name] = RpcProxyMarker(target=f"host:{name}")
-            else:
-                namespace[name] = obj
-
-        if cache is not None:
-            if bridged and not _is_plain_data(cache):
-                from sandtrap import RpcProxyMarker
-
-                # contract: the caller built this sandbox with
-                # cache_object=<this cache> so the handler is registered
-                namespace["cache"] = RpcProxyMarker(
-                    target="cache", wrapper="nontainer.cache:RemoteCache"
-                )
-            else:
-                namespace["cache"] = cache
-        elif self._cache_enabled:
-            if not bridged:
-                namespace["cache"] = Cache(self._provider.kv)
-            else:
-                from sandtrap import RpcProxyMarker
-
-                # wrapper (imported in the worker) restores mapping
-                # syntax — a bare RpcProxy can't serve cache[k]
-                namespace["cache"] = RpcProxyMarker(
-                    target="cache", wrapper="nontainer.cache:RemoteCache"
-                )
-        start = time.monotonic()
-        exec_result = sb.exec(
-            code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
-        )
-        duration = time.monotonic() - start
-
-        error = (
-            _render_error(exec_result.error) if exec_result.error is not None else None
-        )
-
-        # Filter the outgoing namespace: sandtrap already excludes
-        # injected names; defensively drop modules and _-prefixed too.
-        out_ns = {
-            k: v
-            for k, v in exec_result.namespace.items()
-            if not k.startswith("_")
-            and not isinstance(v, ModuleType)
-            and k not in namespace
-        }
-
-        raw_stdout = exec_result.stdout
-        if len(raw_stdout) > self._max_observation and getattr(
-            exec_result, "prints", None
-        ):
-            # Oversized stdout + snapshotted print objects: rebuild the
-            # view with reprobate's structural elision (hard budget,
-            # "...N more" markers) instead of a mid-token head-cut.
-            stdout = _render_prints(exec_result.prints, self._max_observation)
-            trunc_out = True
-        else:
-            stdout, trunc_out = _truncate(raw_stdout, self._max_observation)
-        stderr, trunc_err = _truncate(exec_result.stderr, self._max_observation)
-        return PythonResult(
-            stdout=stdout,
-            stderr=stderr,
-            error=error,
-            ticks=exec_result.ticks,
-            duration=duration,
-            truncated=trunc_out or trunc_err,
-            namespace=out_ns,
+        Delegates to the executor (``LocalExecutor.exec_python`` —
+        where the namespace assembly and rendering live)."""
+        return self._executor.exec_python(
+            code,
+            inputs=inputs,
+            sandbox=sandbox,
+            cache=cache,
+            stdin=stdin,
+            argv=argv,
+            echo=echo,
         )
 
     def _python_command(self, ctx: Any) -> Any:
@@ -1247,12 +953,9 @@ class Workspace:
         with self._lock:  # don't close the provider mid-call
             if not self._closed:
                 self._closed = True
-                shutdown = getattr(self._sandbox, "shutdown", None)
-                if callable(shutdown):  # process/kernel worker
-                    try:
-                        shutdown()
-                    except Exception:
-                        pass  # the provider must still close (PR #10)
+                # Executor.close is best-effort by contract — the
+                # provider must still close (PR #10).
+                self._executor.close()
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
@@ -1264,6 +967,13 @@ class Workspace:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    @property
+    def _sandbox(self) -> Any:
+        """Debug/test peephole into the LocalExecutor's default sandbox
+        (the process-isolation tests kill its worker to exercise crash
+        recovery). ``None`` for executors without one."""
+        return getattr(self._executor, "_sandbox", None)
 
     def _check_open(self) -> None:
         if self._closed:
