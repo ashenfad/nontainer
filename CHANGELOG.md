@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Tracebacks in error results and `/app/logs/api.log`.** Runtime
+  errors now render the full traceback — frames, line numbers, the
+  raise site — instead of a bare message (under process isolation the
+  traceback used to be lost crossing the worker pipe; requires
+  sandtrap >= 0.2.10). Sandbox machinery frames (sandtrap/monkeyfs
+  plumbing) are dropped, host install prefixes are stripped from
+  library frames (`pandas/core/generic.py`, not the absolute venv
+  path), and pathological depth is middle-elided.
+- **Request context in api.log tags.** Handler log entries read
+  `[dashboard:get ?source=filtered&makes=Tesla]` — the query string is
+  what lets an agent correlate errors with requests instead of reading
+  identical bare lines as a stale log.
+- **More intent hints** (`error_hint`, superseding `blocked_import_hint`
+  as the entry point, wired into both run_python observations and
+  api.log): `shutil` → terminal cp/mv or open(); `__import__` → plain
+  import statements work here; plotly's kaleido dead end → `ui = {...}`
+  or matplotlib; the tick limit → vectorize, native calls don't tick.
+- **Wider `os.path` grant**: `getsize` + `abspath` (monkeyfs-patched,
+  VFS-routed) and `split`/`normpath`/`relpath` (pure string math).
+  `getmtime`/`getatime`/`getctime` stay out — monkeyfs doesn't patch
+  them; `os.stat(p).st_mtime` is the granted route.
+
+### Changed
+- **Tick limits raised**: `PythonConfig.tick_limit` 1M → 50M,
+  `AppsConfig.request_tick_limit` 200k → 10M. The same sandbox
+  checkpoint enforces the timeout, so that's the real runaway guard;
+  the tick limit is a determinism backstop and must never fire on an
+  honest loop over a few-hundred-k-row frame.
+- sandtrap floor raised to 0.2.10 (worker-rendered tracebacks).
+
 ## [0.1.1] - 2026-07-15
 
 ### Added

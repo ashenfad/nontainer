@@ -136,6 +136,26 @@ def test_404_py_suffix_gets_did_you_mean():
     ws.close()
 
 
+def test_handler_error_logs_traceback_and_request():
+    """The two things the observed repair loops starved for: WHERE the
+    handler broke (frames + line numbers, not a bare message) and WHICH
+    request broke it (the query string in the tag — identical bare
+    error lines read as a stale log)."""
+    ws, rt = make_ws()
+    write_handler(
+        ws,
+        "boom",
+        "def get(req):\n    rows = []\n    return rows[0]\n",
+    )
+    r = rt.dispatch(request("GET", "/api/boom?source=filtered&makes=Tesla"))
+    assert r.status == 500
+    log = ws.fs.read("/app/logs/api.log").decode()
+    assert "[boom:get ?source=filtered&makes=Tesla] ERROR:" in log
+    assert "Traceback (most recent call last)" in log
+    assert "line 3" in log and "IndexError" in log
+    ws.close()
+
+
 def test_blocked_import_in_handler_logs_hint():
     """subprocess/requests inside a handler: the api.log entry (the
     documented repair loop) redirects to the terminal's curl."""

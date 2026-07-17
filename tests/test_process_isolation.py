@@ -56,6 +56,18 @@ def test_stdin_and_argv_cross_the_boundary(ws):
     assert r.namespace["line"] == "hello worker"
 
 
+def test_runtime_errors_arrive_with_frames(ws):
+    """Traceback objects don't survive the pickle home from the worker,
+    so runtime errors used to arrive as a bare message — no line
+    numbers for the repair loop to aim at. Sandtrap renders worker-side
+    now; the rendered error must carry the frames."""
+    r = ws.run_python("a = 1\nb = 2\nc = missing_name\n")
+    assert not r
+    assert "Traceback (most recent call last)" in r.error
+    assert "line 3" in r.error
+    assert "NameError" in r.error
+
+
 def test_worker_crash_is_contained(ws):
     assert ws.run_python("open('/kept.txt', 'w').write('before')").error is None
 
