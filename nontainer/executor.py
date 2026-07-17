@@ -72,18 +72,26 @@ from .workspace import (
 )
 
 
+@dataclass(frozen=True)
 class StagedDiff:
-    """Placeholder for the remote executor's write harvest.
+    """A remote executor's write harvest.
 
     A remote executor accumulates writes in its own staging area (an
     overlay upperdir, a scan-diff) rather than writing through to the
     provider; :meth:`Executor.diff` returns them as a ``StagedDiff``
-    for the workspace to stage and commit through the normal
-    checkpoint path. The real shape (changed-file payloads + delete
-    list) lands with the first remote executor. ``LocalExecutor``
-    never constructs one — its writes land in the provider as they
-    happen.
+    and the workspace stages them into the provider before its normal
+    checkpoint flow — so atomic commit + ``result.checkpoint``
+    semantics are identical across executors. ``LocalExecutor`` never
+    constructs one: its writes land in the provider as they happen.
     """
+
+    writes: Mapping[str, bytes]
+    """Workspace-relative path (no leading slash) -> full new content.
+    Whole-file payloads, not patches — the wire-format decision (dud
+    PLAN #1): one encoding both scan-diff and overlay harvest emit."""
+
+    deletes: tuple[str, ...] = ()
+    """Workspace-relative paths removed since the last harvest."""
 
 
 @dataclass(frozen=True)
@@ -127,10 +135,11 @@ class Executor(Protocol):
     """Execution contract. See module docstring for the seam's shape.
 
     ``diff``/``sync`` exist for executors whose writes don't land in
-    the provider directly; ``Workspace`` does not call them yet — they
-    join the call flow when the first remote executor does, and being
-    on the protocol now keeps the seam honest about what such an
-    implementation owes.
+    the provider directly. The workspace calls ``diff`` after every
+    mutating exec (absorbing any harvest into the provider before the
+    checkpoint flow) and ``sync`` whenever it changes provider state
+    behind the executor's back (restore/rollback/discard, host-side
+    writes). Both are free no-ops for ``LocalExecutor``.
     """
 
     # -- lifecycle -------------------------------------------------------
@@ -211,20 +220,25 @@ class Executor(Protocol):
     # -- staging (remote executors) ---------------------------------------
 
     def diff(self) -> StagedDiff | None:
-        """Harvest writes staged executor-side since the last ``sync``.
+        """Harvest writes staged executor-side since the last harvest
+        (or ``sync``). Called by the workspace after every mutating
+        exec, before its checkpoint flow.
 
         ``LocalExecutor`` returns ``None`` — its writes land in the
         provider the moment they happen (monkeyfs/termish write
-        through), so there is nothing to harvest. A remote executor
-        returns a :class:`StagedDiff` for the workspace to stage and
-        commit via the normal checkpoint path."""
+        through), so there is nothing to harvest; ``None`` also means
+        "nothing staged" from a remote executor after a read-only
+        call, so the workspace's dirty check stays accurate."""
         ...
 
     def sync(self) -> None:
         """Refresh the executor's view of workspace state from the
-        provider — needed after restore/rollback (and cheap-fork
-        seeding) when the executor holds a materialized copy. No-op
-        for ``LocalExecutor``: there is no second copy."""
+        provider. Called after restore/rollback/discard and after
+        host-side writes (``write_file``/``edit_file``/``put``) —
+        every path where provider state moves without the executor
+        seeing it. No-op for ``LocalExecutor``: there is no second
+        copy. (Direct ``ws.fs`` writes bypass this — same caveat as
+        the single-writer lock.)"""
         ...
 
 

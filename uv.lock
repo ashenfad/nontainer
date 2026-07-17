@@ -457,6 +457,15 @@ wheels = [
 ]
 
 [[package]]
+name = "dud"
+version = "0.0.1"
+source = { editable = "../../../../../../../Users/ashenfad/git/dud" }
+
+[package.metadata]
+requires-dist = [{ name = "pytest", marker = "extra == 'dev'", specifier = ">=8" }]
+provides-extras = ["dev"]
+
+[[package]]
 name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1172,6 +1181,9 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+dud = [
+    { name = "dud", marker = "python_full_version >= '3.11'" },
+]
 mcp = [
     { name = "mcp" },
 ]
@@ -1181,6 +1193,7 @@ requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=1.0" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
+    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", editable = "../../../../../../../Users/ashenfad/git/dud" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.1" },
     { name = "matplotlib", marker = "extra == 'dev'" },
@@ -1197,7 +1210,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.1.8" },
 ]
-provides-extras = ["agentfs", "apps", "agno", "mcp", "dev"]
+provides-extras = ["agentfs", "apps", "agno", "mcp", "dud", "dev"]
 
 [[package]]
 name = "numpy"
