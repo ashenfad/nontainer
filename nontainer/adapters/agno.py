@@ -63,6 +63,27 @@ is not guaranteed. The workspace persists across the whole
 session{versioned_note}."""
 
 
+def _media_note(count: int) -> str:
+    """Provenance line for tool results that carry images.
+
+    agno can't put image blocks on a tool-role message (many chat APIs
+    reject them), so it re-delivers tool media as a synthetic USER
+    message ("Take note of the following content"). Humble models read
+    that as the human sharing an image — mint-satyr thought "the user
+    is showing me the report I generated". The tool result text lands
+    immediately above that injected message, so it pre-claims
+    provenance."""
+    if count == 1:
+        return (
+            "\n[the image in the next message is this tool call's "
+            "result — the human did not send it]"
+        )
+    return (
+        f"\n[the {count} images in the next message are this tool "
+        "call's results — the human did not send them]"
+    )
+
+
 class WorkspaceTools(Toolkit):
     """agno Toolkit over a nontainer :class:`Workspace`."""
 
@@ -185,7 +206,7 @@ class WorkspaceTools(Toolkit):
             except ValueError as e:
                 return ToolResult(content=f"view_image failed: {e}")
             return ToolResult(
-                content=f"{path} ({fmt}, {len(data)} bytes)",
+                content=f"{path} ({fmt}, {len(data)} bytes){_media_note(1)}",
                 images=[Image(content=data, format=fmt, id=path)],
             )
 
@@ -264,10 +285,10 @@ class WorkspaceTools(Toolkit):
                         if vision
                         else []
                     )
-                return ToolResult(
-                    content=render_test_app(result),
-                    images=shots or None,
-                )
+                content = render_test_app(result)
+                if shots:
+                    content += _media_note(len(shots))
+                return ToolResult(content=content, images=shots or None)
 
             test_app.__doc__ = TEST_APP_DESCRIPTION
             registered.append(test_app)

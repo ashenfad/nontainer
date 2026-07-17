@@ -198,7 +198,13 @@ def test_agno_view_image():
     result = tk.functions["view_image"].entrypoint(path="/plot.png")
     assert result.images and result.images[0].format == "png"
     assert "/plot.png" in result.content
+    # agno re-delivers tool images as a synthetic USER message, which
+    # humble models read as the human sharing a picture — the result
+    # text must claim provenance before that message lands
+    assert "this tool call's result" in result.content
+    assert "the human did not send it" in result.content
 
     miss = tk.functions["view_image"].entrypoint(path="/nope.png")
     assert not miss.images and "cannot read" in miss.content
+    assert "next message" not in miss.content  # no image, no note
     ws.close()
