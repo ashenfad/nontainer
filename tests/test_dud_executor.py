@@ -224,15 +224,99 @@ def test_cache_survives_restore(ws):
 # -- surfaces that stay local-only --------------------------------------------
 
 
-def test_view_execution_not_yet_supported(ws):
-    """build_sandbox dissolved into exec_python(view=); apps handler
-    dispatch under dud (the view path) is stage 3c and fails loud until
-    then, rather than silently running a handler with read-write access."""
-    from nontainer.errors import NotSupportedError
-    from nontainer.executor import ViewSpec
+# -- apps under dud (the webapp loop): full dispatch over a real machine -----
+#
+# What crosses the executor boundary: Request rides IN as a host→guest
+# pickle (the safe direction); a Response return crosses OUT reconstructed
+# from the view's contract classes; cache read-through works; read-only
+# GET is enforced (cache write raises; a fs write is rejected via the
+# diff); a mutating handler's writes are absorbed into the provider. The
+# apps.md-recommended pattern — state in cache/an external store, not the
+# VFS — works fully. (Absolute VFS paths like ``/app/x`` in a handler's
+# own fs writes are a rung-1 limitation: no chroot, so ``/app`` hits the
+# real root; the VM rungs mount the workspace at ``/``. Relative writes
+# resolve against the guest cwd and work — see below.)
 
-    with pytest.raises(NotSupportedError):
-        ws.exec_python("pass", view=ViewSpec(readonly_fs=True))
+_APP_HANDLER = b"""
+def get(req):
+    return {"names": cache.get("names", []), "path": req.path, "q": req.params.get("q")}
+
+def post(req):
+    names = cache.get("names", [])
+    names.append(req.require("name"))
+    cache["names"] = names
+    return Response(status=201, body={"n": len(names)})
+"""
+
+
+def _seed_app(ws, name="names.py", src=_APP_HANDLER):
+    ws.fs.makedirs("/app/api", exist_ok=True)
+    ws.fs.write(f"/app/api/{name}", src)
+    ws.checkpoint()
+
+
+def test_apps_dispatch_under_dud(ws):
+    """The whole cache-based apps loop over a real machine: Request in,
+    Response out, read-only GET, mutating POST — all across the boundary."""
+    import json
+
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(ws)
+    runtime = enable_apps(ws)
+    try:
+        r = runtime.dispatch(request("POST", "/api/names", body=b'{"name": "amy"}'))
+        assert r.status == 201, r.content  # Response(status=201) crossed back
+        assert json.loads(r.content) == {"n": 1}
+
+        r = runtime.dispatch(request("GET", "/api/names?q=hi"))
+        assert r.status == 200
+        body = json.loads(r.content)
+        assert body["names"] == ["amy"]  # POST's cache write persisted
+        assert body["path"] == "/api/names" and body["q"] == "hi"  # Request fields
+    finally:
+        runtime.close()
+
+
+def test_apps_readonly_get_rejects_cache_write(ws):
+    """A GET that writes the cache hits the read-only view → 500."""
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(ws, "w.py", b"def get(req):\n    cache['x'] = 1\n    return {}\n")
+    runtime = enable_apps(ws)
+    try:
+        assert runtime.dispatch(request("GET", "/api/w")).status == 500
+        assert "x" not in ws.cache  # nothing leaked
+    finally:
+        runtime.close()
+
+
+def test_apps_readonly_get_rejects_fs_write(ws):
+    """A GET that writes the fs (relative path): the write lands in the
+    guest, dispatch rejects the non-empty diff → 500, nothing absorbed."""
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(ws, "w.py", b"def get(req):\n    open('sneak.txt','w').write('x')\n    return {}\n")
+    runtime = enable_apps(ws)
+    try:
+        assert runtime.dispatch(request("GET", "/api/w")).status == 500
+        assert not ws.fs.exists("/sneak.txt")  # discarded, not absorbed
+    finally:
+        runtime.close()
+
+
+def test_apps_mutating_handler_absorbs_fs_write(ws):
+    """A POST writing a relative path lands in the provider, like
+    LocalExecutor's write-through (visible in ws.fs afterward)."""
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(ws, "mk.py", b"def post(req):\n    open('made.txt','w').write('hi')\n    return {'ok': True}\n")
+    runtime = enable_apps(ws)
+    try:
+        assert runtime.dispatch(request("POST", "/api/mk")).status == 200
+        assert ws.fs.read("/made.txt") == b"hi"
+    finally:
+        runtime.close()
 
 
 def test_exec_python_stdin_argv_fail_loud(ws):
