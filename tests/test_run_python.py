@@ -95,6 +95,45 @@ def test_pathological_tracebacks_get_middle_elided():
     assert len(out.splitlines()) == 49
 
 
+def test_bare_final_expression_echoes_notebook_style(dir_ws):
+    """Agents carry the Jupyter prior: a trailing `df.head()` should
+    display. Silence costs a wasted retry-with-print."""
+    r = dir_ws.run_python("x = 41\nx + 1")
+    assert r.stdout.strip() == "42"
+    # print(x) is itself a None-valued expression — no double echo
+    r = dir_ws.run_python("print('once')")
+    assert r.stdout.strip() == "once"
+
+
+def test_echo_is_config_disableable(dir_ws, tmp_path):
+    ws = Workspace(
+        DirProvider(tmp_path / "quiet", session="quiet"),
+        python=PythonConfig(echo="none"),
+    )
+    r = ws.run_python("1 + 1")
+    assert r.stdout == ""
+    ws.close()
+
+
+def test_huge_echoed_value_is_bounded(dir_ws):
+    """An echoed value rides the prints stream, so a bare expression
+    over a big object gets reprobate's structural elision — not 1MB+
+    of repr in the observation."""
+    r = dir_ws.run_python("data = [list(range(50)) for _ in range(5000)]\ndata")
+    assert r.truncated
+    assert len(r.stdout) < 40_000
+
+
+def test_terminal_python_keeps_script_semantics(dir_ws):
+    """The terminal `python` builtin feeds pipelines: a bare trailing
+    expression must NOT inject repr lines (python -c semantics, not a
+    REPL) — even though it shares the interactive sandbox."""
+    r = dir_ws.terminal("python -c '41 + 1'")
+    assert r.stdout == ""
+    r = dir_ws.terminal("python -c 'print(41 + 1)'")
+    assert r.stdout.strip() == "42"
+
+
 def test_namespace_out_filters_underscore(dir_ws):
     r = dir_ws.run_python("_private = 1\npublic = 2")
     assert "public" in r.namespace

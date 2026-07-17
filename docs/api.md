@@ -207,6 +207,7 @@ class PythonConfig:
     timeout: float = 30.0
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
+    echo: "none" | "last" | "all" = "last"  # bare-final-expr display in run_python
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
 

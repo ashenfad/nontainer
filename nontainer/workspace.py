@@ -272,6 +272,17 @@ class PythonConfig:
     # is tens of millions of ticks, not a runaway.
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
+
+    echo: Literal["none", "last", "all"] = "last"
+    """Notebook-style display of bare top-level expressions in
+    ``run_python`` (sandtrap's ``sys.displayhook`` semantics: repr
+    rendering, ``None`` suppressed, ``"last"`` = Jupyter's last-expr).
+    Agents carry the notebook prior — a trailing ``df.head()`` that
+    prints nothing costs a wasted retry-with-print. Script surfaces
+    (the terminal ``python`` builtin, app handlers) always run
+    ``echo="none"`` regardless: their stdout feeds pipelines and
+    api.log, not a conversation."""
+
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above
     except ``host_objects``."""
@@ -590,6 +601,9 @@ class Workspace:
             # stdout can be re-rendered budget-aware via reprobate — see
             # _render_prints. Structural elision beats a mid-token cut.
             snapshot_prints=True,
+            # the sandbox-level default; script surfaces (terminal
+            # python, app handlers) override per-exec with echo="none"
+            echo=cfg.echo,
         )
 
     def _build_policy(
@@ -857,6 +871,7 @@ class Workspace:
         cache: Mapping[str, Any] | None = None,
         stdin: str | None = None,
         argv: list[str] | None = None,
+        echo: Literal["none", "last", "all"] | None = None,
     ) -> PythonResult:
         """EXTENSION SURFACE: the raw execution path — no checkpoint,
         no lock. For embedders composing execution features on top of
@@ -867,7 +882,10 @@ class Workspace:
 
         ``sandbox`` overrides the default sandbox; ``cache`` overrides
         the agent-visible ``cache`` mapping (``None`` = the workspace
-        default); ``stdin``/``argv`` expose sandtrap's synthetic
+        default); ``echo`` overrides the sandbox's expression-echo mode
+        for this call (``None`` = the sandbox default, i.e.
+        ``PythonConfig.echo`` — script surfaces pass ``"none"``);
+        ``stdin``/``argv`` expose sandtrap's synthetic
         ``sys`` (the terminal ``python`` builtin wires the pipeline
         into it). Safe to call concurrently with distinct sandboxes
         (frozen app serving does): stderr is captured per-execution by
@@ -926,7 +944,9 @@ class Workspace:
                     target="cache", wrapper="nontainer.cache:RemoteCache"
                 )
         start = time.monotonic()
-        exec_result = sb.exec(code, namespace=namespace, stdin=stdin, argv=argv)
+        exec_result = sb.exec(
+            code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
+        )
         duration = time.monotonic() - start
 
         error = (
@@ -1017,7 +1037,9 @@ class Workspace:
             argv = [""]
             stdin = ""
 
-        result = self.exec_python(code, stdin=stdin, argv=argv)
+        # echo="none": script semantics by contract — a bare trailing
+        # expression must not inject repr lines into pipelines
+        result = self.exec_python(code, stdin=stdin, argv=argv, echo="none")
         ctx.stdout.write(result.stdout)
         if result.error is not None:
             return CommandResult(exit_code=1, stderr=result.error)
