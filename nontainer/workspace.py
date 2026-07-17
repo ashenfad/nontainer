@@ -49,7 +49,7 @@ from .protocol import Capabilities, CheckpointInfo, WorkspaceProvider
 
 if TYPE_CHECKING:
     from .editing import EditOutcome
-    from .executor import Executor
+    from .executor import Executor, ViewSpec
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -484,46 +484,6 @@ class Workspace:
             mounted[point] = sub
         return MountFS(base, mounted)
 
-    def build_sandbox(
-        self,
-        *,
-        timeout: float | None = None,
-        tick_limit: int | None = None,
-        extra_classes: tuple[type, ...] = (),
-        filesystem: Any | None = None,
-        isolation: Isolation | None = None,
-        cache_object: Any | None = None,
-    ) -> Any:
-        """EXTENSION SURFACE: build a sandbox from the frozen
-        PythonConfig, for embedders composing execution features on top
-        of the workspace (the apps extra is the reference consumer;
-        most callers never need this — ``run_python`` uses the default
-        sandbox). The keyword overrides parameterize per-purpose
-        sandboxes that share the registration config: tighter budgets,
-        extra registered classes (e.g. a request/response contract), a
-        filesystem override (e.g. a read-only view).
-
-        The built ``Policy`` is memoized per ``(timeout, tick_limit,
-        extra_classes)`` — the registration loop is the expensive part,
-        and the config is frozen, so the build is deterministic. That
-        makes minting a fresh sandbox per request cheap (frozen app
-        serving does), without sharing sandbox *instances* across
-        concurrent executions. The memo is intentionally tolerant of
-        races: a duplicate build is wasted work, not corruption.
-
-        Delegates to the executor (``LocalExecutor.build_sandbox`` —
-        where the sandtrap wiring lives); the sandbox-object shape of
-        this surface is local-flavored, see ``Executor.build_sandbox``.
-        """
-        return self._executor.build_sandbox(
-            timeout=timeout,
-            tick_limit=tick_limit,
-            extra_classes=extra_classes,
-            filesystem=filesystem,
-            isolation=isolation,
-            cache_object=cache_object,
-        )
-
     # ------------------------------------------------------------------
     # identity
     # ------------------------------------------------------------------
@@ -670,41 +630,39 @@ class Workspace:
         code: str,
         *,
         inputs: Mapping[str, Any] | None = None,
-        sandbox: Any | None = None,
-        cache: Mapping[str, Any] | None = None,
         stdin: str | None = None,
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
+        view: "ViewSpec | None" = None,
     ) -> PythonResult:
         """EXTENSION SURFACE: the raw execution path — no checkpoint,
         no lock. For embedders composing execution features on top of
         the workspace; most callers want :meth:`run_python`. Consumers:
         ``run_python`` itself, the terminal ``python`` builtin, and the
-        apps dispatch (which passes a :meth:`build_sandbox` sandbox
-        and, for GET, a read-only cache view).
+        apps dispatch (which passes a ``view`` for restricted handler
+        execution — a read-only fs/cache view, a tighter budget,
+        contract classes).
 
-        ``sandbox`` overrides the default sandbox; ``cache`` overrides
-        the agent-visible ``cache`` mapping (``None`` = the workspace
-        default); ``echo`` overrides the sandbox's expression-echo mode
-        for this call (``None`` = the sandbox default, i.e.
-        ``PythonConfig.echo`` — script surfaces pass ``"none"``);
-        ``stdin``/``argv`` expose sandtrap's synthetic
-        ``sys`` (the terminal ``python`` builtin wires the pipeline
-        into it). Safe to call concurrently with distinct sandboxes
-        (frozen app serving does): stderr is captured per-execution by
-        sandtrap, not by a process-global redirect. Callers whose work
-        mutates the workspace serialize via :attr:`lock`.
+        ``view`` (see :class:`~nontainer.executor.ViewSpec`) requests a
+        restricted, budgeted execution; it is executor-neutral (no
+        sandbox object crosses the seam). ``echo`` overrides
+        expression-echo for this call (``None`` = ``PythonConfig.echo``;
+        script surfaces pass ``"none"``); ``stdin``/``argv`` expose the
+        synthetic ``sys`` (the terminal ``python`` builtin wires the
+        pipeline in). Safe to call concurrently — a ``view`` mints a
+        fresh sandbox per call (frozen app serving relies on this);
+        callers whose work mutates the workspace serialize via
+        :attr:`lock`.
 
         Delegates to the executor (``LocalExecutor.exec_python`` —
         where the namespace assembly and rendering live)."""
         return self._executor.exec_python(
             code,
             inputs=inputs,
-            sandbox=sandbox,
-            cache=cache,
             stdin=stdin,
             argv=argv,
             echo=echo,
+            view=view,
         )
 
     def _python_command(self, ctx: Any) -> Any:

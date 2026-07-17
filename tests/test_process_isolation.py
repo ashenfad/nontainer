@@ -140,8 +140,9 @@ def _seed_app(w):
 
 def test_authoring_dispatch_runs_in_workers(ws):
     """Preview dispatch inherits the workspace's isolation: handlers
-    execute in the runtime's long-lived workers, cache crossing the
-    bridge both read-write and read-only."""
+    execute in a worker (a per-call view sandbox forks one under
+    process isolation, like the executor's default), cache crossing the
+    bridge both read-write (POST) and read-only (GET)."""
     import json
 
     from nontainer.apps import enable_apps, request
@@ -149,7 +150,10 @@ def test_authoring_dispatch_runs_in_workers(ws):
     _seed_app(ws)
     runtime = enable_apps(ws)
     try:
-        assert hasattr(runtime._rw_sandbox, "_process")  # really a worker
+        # process isolation → the executor's sandbox is a real worker;
+        # handler view executions fork one the same way (no longer a
+        # long-lived runtime-held worker — one per call)
+        assert hasattr(ws._executor._sandbox, "_process")
 
         r = runtime.dispatch(request("POST", "/api/count"))
         assert r.status == 200 and json.loads(r.content) == {"n": 1}

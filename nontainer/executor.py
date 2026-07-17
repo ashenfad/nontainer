@@ -63,7 +63,6 @@ from .cache import Cache
 # they are the public vocabulary both sides of the seam speak. The
 # import is one-way — workspace.py only imports this module lazily.
 from .workspace import (
-    Isolation,
     ModuleGrant,
     PythonConfig,
     PythonResult,
@@ -130,6 +129,80 @@ class ExecutionContext:
     the printed objects live (see ``_render_prints``)."""
 
 
+@dataclass(frozen=True)
+class ViewSpec:
+    """A per-call restricted, budgeted execution — the apps extra's
+    handler dispatch is the only consumer.
+
+    This is the executor-neutral replacement for the old
+    ``build_sandbox`` + ``exec_python(sandbox=...)`` pair. The caller
+    declares the *intent* — a read-only filesystem/cache view, a
+    tighter timeout/tick budget, contract classes that must be in the
+    handler's scope — and each executor realizes it its own way:
+    ``LocalExecutor`` builds a sandtrap sandbox (policy memoized), a
+    remote executor sets a read-only mount / rejects the write-diff and
+    injects the contract classes by import. No sandbox object crosses
+    the seam, so nothing sandtrap-shaped rides on the ``Executor``
+    protocol.
+    """
+
+    readonly_fs: bool = False
+    """A GET-handler view: writes to the workspace fs are refused.
+    LocalExecutor wraps the fs in ``ReadOnlyFS`` (write-time
+    ``PermissionError``); a remote executor rejects a non-empty
+    write-diff after the call (rung-1 dud) or mounts read-only (VM
+    rungs)."""
+
+    readonly_cache: bool = False
+    """The cache is read-only for this call (GET structural REST)."""
+
+    timeout: float | None = None
+    """Per-call wall-clock budget (else the config's)."""
+
+    tick_limit: int | None = None
+    """Per-call tick budget (LocalExecutor only; remote executors have
+    no tick machinery and ignore it — wall-clock is the guard)."""
+
+    extra_classes: tuple[type, ...] = ()
+    """Classes the handler code must be able to name (apps' ``Request``
+    / ``Response`` / ``HttpError``). LocalExecutor registers them in the
+    sandbox policy; a remote executor imports them by qualified name."""
+
+
+class _ReadOnlyCache(MutableMapping):
+    """Read-only cache view for GET handlers (structural REST).
+
+    MutableMapping so derived mutators (pop, clear, update, setdefault)
+    route through ``__setitem__``/``__delitem__`` and raise
+    ``PermissionError`` rather than ``AttributeError``. (Moved here from
+    apps.dispatch: the executor now owns read-only-view construction.)
+    """
+
+    def __init__(self, cache: Mapping) -> None:
+        self._cache = cache
+
+    def __getitem__(self, key: str) -> Any:
+        return self._cache[key]
+
+    def __iter__(self):
+        return iter(self._cache)
+
+    def __len__(self) -> int:
+        return len(self._cache)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._cache
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._cache.get(key, default)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        raise PermissionError("cache is read-only in GET handlers")
+
+    def __delitem__(self, key: str) -> None:
+        raise PermissionError("cache is read-only in GET handlers")
+
+
 @runtime_checkable
 class Executor(Protocol):
     """Execution contract. See module docstring for the seam's shape.
@@ -162,47 +235,30 @@ class Executor(Protocol):
 
     # -- python ----------------------------------------------------------
 
-    def build_sandbox(
-        self,
-        *,
-        timeout: float | None = None,
-        tick_limit: int | None = None,
-        extra_classes: tuple[type, ...] = (),
-        filesystem: Any | None = None,
-        isolation: Isolation | None = None,
-        cache_object: Any | None = None,
-    ) -> Any:
-        """A per-purpose execution environment sharing this executor's
-        frozen ``PythonConfig`` (the apps extra is the consumer:
-        tighter budgets, a read-only fs view, contract classes).
-
-        Local-flavored slot: the return value is a sandtrap sandbox
-        that only ``exec_python(sandbox=...)`` on the same executor
-        understands. An executor without sandbox objects raises
-        ``NotSupportedError``; the remote design re-cuts this into
-        per-call budget/view overrides (dud PLAN, stage 2)."""
-        ...
-
     def exec_python(
         self,
         code: str,
         *,
         inputs: Mapping[str, Any] | None = None,
-        sandbox: Any | None = None,
-        cache: Mapping[str, Any] | None = None,
         stdin: str | None = None,
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
+        view: ViewSpec | None = None,
     ) -> PythonResult:
         """One scripted python execution against workspace state.
 
         ``inputs`` are picklable per-call data bound as top-level
-        names; ``PythonConfig.host_objects`` and ``cache`` are
-        injected per the frozen config; ``stdin``/``argv`` feed the
-        synthetic ``sys``; ``echo`` overrides expression echo for this
-        call. Agent-code failure is a result (``PythonResult.error``),
-        never an exception. ``sandbox``/``cache`` overrides are
-        products of :meth:`build_sandbox` — same local-flavored caveat.
+        names; ``PythonConfig.host_objects`` and ``cache`` are injected
+        per the frozen config; ``stdin``/``argv`` feed the synthetic
+        ``sys``; ``echo`` overrides expression echo for this call.
+        Agent-code failure is a result (``PythonResult.error``), never
+        an exception.
+
+        ``view`` (apps handler dispatch) requests a restricted,
+        budgeted execution — a read-only fs/cache view, a tighter
+        budget, contract classes in scope. It is executor-neutral: no
+        sandbox object crosses the seam (see :class:`ViewSpec`). The
+        default (``None``) is the executor's standard environment.
 
         The result's ``checkpoint`` is ``None``: executors never
         commit; the workspace stamps checkpoints."""
@@ -357,7 +413,7 @@ class LocalExecutor:
 
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
-        self._sandbox = self.build_sandbox()
+        self._sandbox = self._build_sandbox()
         # Process/kernel sandboxes fork a persistent worker. Entering
         # at workspace construction — typically before an embedder's
         # server threads exist — is deliberate (forking a multithreaded
@@ -377,33 +433,28 @@ class LocalExecutor:
 
     # -- python ----------------------------------------------------------
 
-    def build_sandbox(
-        self,
-        *,
-        timeout: float | None = None,
-        tick_limit: int | None = None,
-        extra_classes: tuple[type, ...] = (),
-        filesystem: Any | None = None,
-        isolation: Isolation | None = None,
-        cache_object: Any | None = None,
-    ) -> Any:
-        """See ``Workspace.build_sandbox`` (the documented extension
-        surface, which delegates here) for the caller-facing contract.
+    def _build_sandbox(self, view: ViewSpec | None = None) -> Any:
+        """Build a sandtrap sandbox for the executor's standard
+        environment (``view=None``, the long-lived default built at
+        :meth:`open`) or for a per-call restricted view (apps handler
+        dispatch). Handlers inherit the workspace isolation (the
+        symmetry rule) — a view never overrides it.
 
         The built ``Policy`` is memoized per ``(timeout, tick_limit,
         extra_classes)`` — the registration loop is the expensive part,
-        and the config is frozen, so the build is deterministic. That
-        makes minting a fresh sandbox per request cheap (frozen app
-        serving does), without sharing sandbox *instances* across
-        concurrent executions. The memo is intentionally tolerant of
-        races: a duplicate build is wasted work, not corruption."""
+        and the config is frozen, so a fresh sandbox per handler call is
+        cheap (a COW worker fork over a memoized policy). The memo is
+        race-tolerant: a duplicate build is wasted work, not corruption.
+        Read-only fs/cache views are realized here — ``ReadOnlyFS`` and
+        the ro cache rpc handler — so the returned sandbox refuses
+        writes on its own."""
         from sandtrap import sandbox
 
         ctx = self._require_ctx()
         cfg = ctx.python_config
-        # Coerce: extension-surface callers may pass a list, which
-        # would be unhashable as part of the memo key (PR #7).
-        extra_classes = tuple(extra_classes)
+        timeout = view.timeout if view else None
+        tick_limit = view.tick_limit if view else None
+        extra_classes = tuple(view.extra_classes) if view else ()
         key = (timeout, tick_limit, extra_classes)
         policy = self._policy_memo.get(key)
         if policy is None:
@@ -412,25 +463,31 @@ class LocalExecutor:
             )
             self._policy_memo[key] = policy
 
-        effective_isolation = isolation if isolation is not None else cfg.isolation
+        fs = ctx.fs
+        if view is not None and view.readonly_fs:
+            from monkeyfs import ReadOnlyFS
+
+            fs = ReadOnlyFS(ctx.fs)
+
+        # A read-only cache view is bridged to the worker via the rpc
+        # handler here (the in-process case injects it in exec_python) —
+        # both paths must agree on read-only-ness, keyed off the view.
+        ro_cache = bool(view and view.readonly_cache and ctx.cache_enabled)
         rpc_handlers = None
-        if effective_isolation != "none":
+        if cfg.isolation != "none":
             rpc_handlers = {}
-            if cache_object is not None:
-                # a caller-supplied cache view (e.g. apps' read-only
-                # wrapper) — the worker's `cache` proxy dispatches here
-                rpc_handlers["cache"] = self._cache_rpc_handler(cache_object)
-            elif ctx.cache_enabled:
-                rpc_handlers["cache"] = self._cache_rpc_handler()
+            if ctx.cache_enabled:
+                cache_obj = _ReadOnlyCache(Cache(ctx.kv)) if ro_cache else None
+                rpc_handlers["cache"] = self._cache_rpc_handler(cache_obj)
             for name, obj in cfg.host_objects.items():
                 if not _is_plain_data(obj):
                     rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(obj)
 
         return sandbox(
             policy,
-            isolation=effective_isolation,
+            isolation=cfg.isolation,
             mode="raw",
-            filesystem=filesystem if filesystem is not None else ctx.fs,
+            filesystem=fs,
             rpc_handlers=rpc_handlers,
             # Snapshot print() ARGUMENTS (objects, not text) so oversized
             # stdout can be re-rendered budget-aware via reprobate — see
@@ -543,14 +600,15 @@ class LocalExecutor:
         code: str,
         *,
         inputs: Mapping[str, Any] | None = None,
-        sandbox: Any | None = None,
-        cache: Mapping[str, Any] | None = None,
         stdin: str | None = None,
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
+        view: ViewSpec | None = None,
     ) -> PythonResult:
         """See ``Workspace.exec_python`` (the documented extension
         surface, which delegates here) for the caller-facing contract."""
+        from contextlib import nullcontext
+
         ctx = self._require_ctx()
         namespace: dict[str, Any] = {}
 
@@ -565,11 +623,17 @@ class LocalExecutor:
                 ) from exc
             namespace[name] = value
 
-        sb = sandbox if sandbox is not None else self._sandbox
-        # Process/kernel sandboxes expose an RPC-handler registry; live
-        # objects cross as proxies, never by pickle. Duck-typed off the
-        # SANDBOX (not the config): callers may pass an in-process
-        # sandbox (apps do) while the executor default is isolated.
+        # A view mints a fresh, restricted sandbox (policy memoized);
+        # otherwise the long-lived default built at open(). A view
+        # sandbox under process/kernel isolation is its own worker —
+        # enter/exit it per call (COW fork, ~ms); the default worker is
+        # entered once at open().
+        if view is not None:
+            sb = self._build_sandbox(view)
+            own_worker = hasattr(sb, "shutdown")
+        else:
+            sb = self._sandbox
+            own_worker = False
         bridged = hasattr(sb, "_rpc_handlers")
 
         for name, obj in ctx.python_config.host_objects.items():
@@ -582,20 +646,14 @@ class LocalExecutor:
             else:
                 namespace[name] = obj
 
-        if cache is not None:
-            if bridged and not _is_plain_data(cache):
-                from sandtrap import RpcProxyMarker
-
-                # contract: the caller built this sandbox with
-                # cache_object=<this cache> so the handler is registered
-                namespace["cache"] = RpcProxyMarker(
-                    target="cache", wrapper="nontainer.cache:RemoteCache"
-                )
-            else:
-                namespace["cache"] = cache
-        elif ctx.cache_enabled:
+        # Cache injection mirrors _build_sandbox's rpc-handler choice:
+        # a read-only view gets the read-only wrapper (in-process) or
+        # the marker onto the ro rpc handler (bridged).
+        ro_cache = bool(view and view.readonly_cache and ctx.cache_enabled)
+        if ctx.cache_enabled:
             if not bridged:
-                namespace["cache"] = Cache(ctx.kv)
+                base = Cache(ctx.kv)
+                namespace["cache"] = _ReadOnlyCache(base) if ro_cache else base
             else:
                 from sandtrap import RpcProxyMarker
 
@@ -605,9 +663,10 @@ class LocalExecutor:
                     target="cache", wrapper="nontainer.cache:RemoteCache"
                 )
         start = time.monotonic()
-        exec_result = sb.exec(
-            code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
-        )
+        with (sb if own_worker else nullcontext()):
+            exec_result = sb.exec(
+                code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
+            )
         duration = time.monotonic() - start
 
         error = (
