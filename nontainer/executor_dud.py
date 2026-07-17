@@ -51,6 +51,62 @@ from .errors import NotSupportedError
 from .executor import ExecutionContext, StagedDiff, ViewSpec, _is_plain_data, _truncate
 from .workspace import PythonResult, TerminalResult
 
+# Guest-side wrapper for app-handler (view) execution. PRELUDE
+# reconstructs the pickled inputs (Request et al.) that rode in host→
+# guest; EPILOGUE reduces any dataclass result (Response) to a tagged,
+# json-crossable dict (bytes fields base64'd) since guest→host never
+# pickles. All names are underscore-prefixed so the runner's harvest
+# (which drops ``_*``) ignores the scaffolding.
+_VIEW_PRELUDE = (
+    "import pickle as __nt_pk, base64 as __nt_b64\n"
+    "for __nt_k, __nt_v in __nt_pk.loads(__nt_b64.b64decode(__nt_blob)).items():\n"
+    "    globals()[__nt_k] = __nt_v\n"
+)
+
+_VIEW_EPILOGUE = (
+    "\n"
+    "import dataclasses as __nt_dc, base64 as __nt_b64\n"
+    "def __nt_marshal(__nt_o):\n"
+    "    if __nt_dc.is_dataclass(__nt_o) and not isinstance(__nt_o, type):\n"
+    "        __nt_f = {}\n"
+    "        for __nt_fld in __nt_dc.fields(__nt_o):\n"
+    "            __nt_val = getattr(__nt_o, __nt_fld.name)\n"
+    "            if isinstance(__nt_val, (bytes, bytearray)):\n"
+    "                __nt_val = {'__nt_b__': __nt_b64.b64encode(bytes(__nt_val)).decode()}\n"
+    "            __nt_f[__nt_fld.name] = __nt_val\n"
+    "        return {'__nt_dc__': type(__nt_o).__module__ + ':' + type(__nt_o).__qualname__,\n"
+    "                'fields': __nt_f}\n"
+    "    return __nt_o\n"
+    "for __nt_name in [__nt_g for __nt_g in list(globals()) if not __nt_g.startswith('_')]:\n"
+    "    globals()[__nt_name] = __nt_marshal(globals()[__nt_name])\n"
+)
+
+
+def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
+    """Reverse ``_VIEW_EPILOGUE``: turn a ``{'__nt_dc__': ...}`` tag back
+    into an instance of the named contract class (base64 bytes fields
+    decoded). Safe across a real boundary — a known class name from the
+    view's own ``extra_classes`` plus primitive fields, never pickle. An
+    untagged value (plain dict/list/str/bytes) passes through."""
+    import base64
+
+    if not (isinstance(value, dict) and "__nt_dc__" in value):
+        return value
+    ref = value["__nt_dc__"]
+    fields = {}
+    for k, fv in value.get("fields", {}).items():
+        if isinstance(fv, dict) and "__nt_b__" in fv:
+            fields[k] = base64.b64decode(fv["__nt_b__"])
+        else:
+            fields[k] = fv
+    for c in contract:
+        if f"{c.__module__}:{c.__qualname__}" == ref:
+            try:
+                return c(**fields)
+            except Exception:
+                return value  # can't rebuild — leave the tag for the caller
+    return value
+
 
 class _KvBytesCache(MutableMapping[str, bytes]):
     """dict[str, bytes] view over the provider kv for dud's cache plane.
@@ -174,11 +230,8 @@ class DudExecutor:
                 "pipes into real python)"
             )
         if view is not None:
-            raise NotSupportedError(
-                "exec_python(view=) — restricted app-handler execution — is "
-                "stage 3c for DudExecutor (read-only views + contract-class "
-                "injection); apps run on LocalExecutor for now"
-            )
+            return self._exec_view(ctx, code, dict(inputs or {}), view)
+
         from dud.values import NotRepresentable
 
         merged = dict(self._plain)
@@ -198,8 +251,96 @@ class DudExecutor:
                 "DudExecutor inputs must be json-representable data or "
                 "bytes; live resources belong in PythonConfig.host_objects."
             ) from exc
+        return self._map_result(result, ctx, time.monotonic() - start)
+
+    def _exec_view(
+        self,
+        ctx: ExecutionContext,
+        code: str,
+        inputs: dict[str, Any],
+        view: ViewSpec,
+    ) -> PythonResult:
+        """Restricted app-handler execution (apps dispatch).
+
+        Contract objects don't fit dud's json/bytes codec, so they
+        cross by direction: ``Request`` (and any inputs) ride IN as a
+        host→guest pickle — the safe direction, same as the cache write
+        path — reconstructed guest-side. Returns cross OUT via a small
+        marshaller (guest→host never pickles): dataclass results (e.g.
+        ``Response``) reduce to a tagged dict with base64 for bytes
+        fields, reconstructed host-side from the view's declared
+        ``extra_classes``. Read-only is enforced (cache write raises
+        guest-side; a GET that writes the fs is rejected here), and a
+        mutating handler's writes are absorbed into the provider (so
+        ``ws.fs`` reflects them, like LocalExecutor's write-through)."""
+        import base64
+        import pickle
+
+        merged = dict(self._plain)
+        merged.update(inputs)
+        blob = base64.b64encode(pickle.dumps(merged)).decode()
+        imports = "".join(
+            f"from {c.__module__} import {c.__name__}\n"
+            for c in view.extra_classes
+            if getattr(c, "__module__", None) and getattr(c, "__name__", None)
+        )
+        full = imports + _VIEW_PRELUDE + code + _VIEW_EPILOGUE
+        timeout = (
+            view.timeout if view.timeout is not None else ctx.python_config.timeout
+        )
+        start = time.monotonic()
+        result = self._session.python(
+            full,
+            inputs={"__nt_blob": blob},
+            timeout=timeout,
+            cache_readonly=view.readonly_cache,
+        )
         duration = time.monotonic() - start
 
+        if view.readonly_fs:
+            d = self._session.diff(rebase=False)
+            if not d.empty:
+                # A GET that wrote the fs (rung-1 has no read-only mount,
+                # so the write lands then is rejected here — DESIGN.md).
+                self._session.reset()
+                return PythonResult(
+                    stdout="",
+                    stderr="",
+                    error="PermissionError: filesystem is read-only in GET handlers",
+                    ticks=0,
+                    duration=duration,
+                    truncated=False,
+                    namespace={},
+                )
+        else:
+            # Mutating handler: land the writes in the provider staging,
+            # matching LocalExecutor's write-through (dispatch's atomicity
+            # then discards them via ws.discard() on error).
+            self._absorb_into_fs(ctx.fs, self._session.diff(rebase=True))
+
+        return self._map_result(result, ctx, duration, contract=view.extra_classes)
+
+    @staticmethod
+    def _absorb_into_fs(fs: Any, diff: Any) -> None:
+        for rel, data in diff.writes.items():
+            path = "/" + rel.lstrip("/")
+            parent = path.rsplit("/", 1)[0] or "/"
+            if parent not in (".", "/", ""):
+                fs.makedirs(parent, exist_ok=True)
+            fs.write(path, data)
+        for rel in diff.deletes:
+            try:
+                fs.remove("/" + rel.lstrip("/"))
+            except Exception:
+                pass
+
+    def _map_result(
+        self,
+        result: Any,
+        ctx: ExecutionContext,
+        duration: float,
+        contract: tuple[type, ...] = (),
+    ) -> PythonResult:
         error = None
         if result.error is not None:
             # The guest renders its own traceback (rendering happens
@@ -207,6 +348,12 @@ class DudExecutor:
             # RunnerCrash) read as "Type: message".
             tb = result.error.traceback.rstrip()
             error = tb or f"{result.error.etype}: {result.error.message}"
+
+        namespace = dict(result.outputs)
+        if contract:
+            namespace = {
+                k: _rebuild_dataclass(v, contract) for k, v in namespace.items()
+            }
 
         stdout, trunc = _truncate(result.transcript, ctx.max_observation)
         return PythonResult(
@@ -216,7 +363,7 @@ class DudExecutor:
             ticks=0,  # no tick machinery: wall-clock timeout is the budget
             duration=duration,
             truncated=trunc,
-            namespace=dict(result.outputs),
+            namespace=namespace,
         )
 
     # -- shell -----------------------------------------------------------
