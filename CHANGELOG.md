@@ -30,13 +30,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getmtime`/`getatime`/`getctime` stay out — monkeyfs doesn't patch
   them; `os.stat(p).st_mtime` is the granted route.
 
+### Added (notebook echo)
+- **Bare final expressions display in `run_python`** (sandtrap's
+  REPL echo, `PythonConfig.echo = "last"` by default): a trailing
+  `df.head()` shows its repr, no `print()` needed — and the tool
+  description teaches it. Echoed values ride the snapshot-prints
+  stream, so a bare expression over a huge object gets reprobate's
+  bounded structural render, not a megabyte of repr. Script surfaces
+  are exempt by per-exec override (sandtrap >= 0.2.11): the terminal
+  `python` builtin keeps `python -c` semantics for pipelines, and app
+  handlers never echo into api.log.
+
 ### Changed
 - **Tick limits raised**: `PythonConfig.tick_limit` 1M → 50M,
   `AppsConfig.request_tick_limit` 200k → 10M. The same sandbox
   checkpoint enforces the timeout, so that's the real runaway guard;
   the tick limit is a determinism backstop and must never fire on an
   honest loop over a few-hundred-k-row frame.
-- sandtrap floor raised to 0.2.10 (worker-rendered tracebacks).
+- sandtrap floor raised to 0.2.11 (worker-rendered tracebacks,
+  per-exec echo override).
 
 ## [0.1.1] - 2026-07-15
 

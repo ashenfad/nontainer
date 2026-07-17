@@ -313,6 +313,9 @@ class AppRuntime:
                 inputs={"nt__req": request},
                 sandbox=sandbox,
                 cache=cache,
+                # handlers are scripts: a stray module-level bare
+                # expression must not echo reprs into api.log
+                echo="none",
             )
 
         # The query string in the tag is what lets an agent correlate

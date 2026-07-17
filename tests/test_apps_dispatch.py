@@ -136,6 +136,23 @@ def test_404_py_suffix_gets_did_you_mean():
     ws.close()
 
 
+def test_handler_bare_expressions_do_not_echo():
+    """Handlers are scripts: run_python's notebook echo must not leak
+    module-level bare-expression reprs into api.log."""
+    ws, rt = make_ws()
+    write_handler(
+        ws,
+        "quiet",
+        "1 + 1\ndef get(req):\n    return {'ok': True}\n",
+    )
+    r = rt.dispatch(request("GET", "/api/quiet"))
+    assert r.status == 200
+    assert not ws.fs.exists("/app/logs/api.log") or (
+        "2" not in ws.fs.read("/app/logs/api.log").decode()
+    )
+    ws.close()
+
+
 def test_handler_error_logs_traceback_and_request():
     """The two things the observed repair loops starved for: WHERE the
     handler broke (frames + line numbers, not a bare message) and WHICH

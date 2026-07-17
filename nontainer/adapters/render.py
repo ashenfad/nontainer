@@ -96,7 +96,9 @@ heredoc or the file_write tool over complex `-c` quoting."""
 
 _PYTHON_TOOL_CORE = """\
 Run Python code in a sandboxed environment attached to the same workspace
-as the terminal (shared files and cwd). Script semantics per call:
+as the terminal (shared files and cwd). A bare final expression displays
+its repr, notebook-style — end with `df.head()` to see it, no print()
+needed. Script semantics per call otherwise:
 variables do NOT persist between calls. What does persist:
 - files: read/write with normal open(), visible to the terminal too
 - helpers/: put reusable code in .py files there and import it QUALIFIED
