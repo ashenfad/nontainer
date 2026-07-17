@@ -315,8 +315,15 @@ class AppRuntime:
                 cache=cache,
             )
 
+        # The query string in the tag is what lets an agent correlate
+        # log entries with requests — identical bare error lines read
+        # as "stale log" and send the repair loop chasing phantoms.
+        from urllib.parse import urlencode
+
+        qs = urlencode(request.params) if request.params else ""
+        where = f"{name}:{verb}" + (f" ?{qs}" if qs else "")
         if result.stdout:
-            self._log(f"[{name}:{verb}] stdout:\n{result.stdout}")
+            self._log(f"[{where}] stdout:\n{result.stdout}")
         if result.error is not None:
             if atomic:
                 ws.discard()
@@ -324,7 +331,7 @@ class AppRuntime:
 
             hint = error_hint(result.error)
             suffix = f"\n[hint: {hint}]" if hint else ""
-            self._log(f"[{name}:{verb}] ERROR:\n{result.error}{suffix}")
+            self._log(f"[{where}] ERROR:\n{result.error}{suffix}")
             return _error_response(500, "internal error", log="/app/logs/api.log")
 
         http = result.namespace.get("nt__http")
@@ -337,7 +344,7 @@ class AppRuntime:
         except TypeError as e:
             if atomic:
                 ws.discard()
-            self._log(f"[{name}:{verb}] BAD RETURN: {e}")
+            self._log(f"[{where}] BAD RETURN: {e}")
             return _error_response(500, str(e))
 
     def test_app(

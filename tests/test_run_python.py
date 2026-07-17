@@ -29,6 +29,72 @@ def test_error_is_result_not_exception(dir_ws):
     assert "ZeroDivisionError" in r.error
 
 
+def test_runtime_error_renders_the_full_traceback(dir_ws):
+    """Line numbers are what a repair loop aims at: 'NameError' alone
+    sends an agent bisecting; 'line 3' sends it to line 3."""
+    r = dir_ws.run_python("a = 1\nb = 2\nc = missing_name\n")
+    assert not r
+    assert "Traceback (most recent call last)" in r.error
+    assert "line 3" in r.error
+    assert "NameError" in r.error
+
+
+def test_error_frames_hide_host_install_paths(dir_ws):
+    """Frames inside granted libraries keep their module-relative path
+    (that's the signal) but lose the host install prefix (that's a
+    leak): json/decoder.py, not /…/python3.x/json/decoder.py."""
+    r = dir_ws.run_python("import json\njson.loads('{nope')")
+    assert not r
+    assert 'File "json/' in r.error
+    assert "python3." not in r.error
+
+
+def test_machinery_frames_are_dropped(dir_ws):
+    """A gate raising through __st_import__ or a monkeyfs interceptor
+    is OUR plumbing — an agent reading those frames would go debugging
+    the sandbox instead of its own line."""
+    r = dir_ws.run_python("import subprocess")
+    assert not r
+    assert "line 1" in r.error  # the agent's frame survives
+    assert "gates.py" not in r.error and "__st_import__" not in r.error
+
+    r = dir_ws.run_python("open('/no/such/file')")
+    assert not r
+    assert "FileNotFoundError" in r.error
+    assert "monkeyfs" not in r.error
+
+
+def test_render_error_prefers_the_worker_rendered_text():
+    """Under process isolation the traceback object doesn't survive
+    pickling; sandtrap ships the rendered text on the exception and
+    _render_error must use it (trimmed) rather than re-formatting the
+    frameless exception."""
+    from nontainer.workspace import _render_error
+
+    e = ValueError("boom")
+    e._st_traceback_text = (
+        "Traceback (most recent call last):\n"
+        '  File "<sandtrap:68>", line 128, in get\n'
+        '  File "/host/.venv/lib/python3.12/site-packages/pandas/core/'
+        'generic.py", line 4686, in _drop_axis\n'
+        "ValueError: boom"
+    )
+    out = _render_error(e)
+    assert '"<sandtrap:68>", line 128' in out
+    assert 'File "pandas/core/generic.py"' in out
+    assert "/host/" not in out
+
+
+def test_pathological_tracebacks_get_middle_elided():
+    from nontainer.workspace import _trim_rendered_traceback
+
+    text = "\n".join(f"line {i}" for i in range(200))
+    out = _trim_rendered_traceback(text)
+    assert "[... 152 traceback lines elided ...]" in out
+    assert "line 0" in out and "line 199" in out
+    assert len(out.splitlines()) == 49
+
+
 def test_namespace_out_filters_underscore(dir_ws):
     r = dir_ws.run_python("_private = 1\npublic = 2")
     assert "public" in r.namespace
