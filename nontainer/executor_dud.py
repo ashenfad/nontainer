@@ -217,9 +217,18 @@ class DudExecutor:
     def _make_session(self, host_objects: dict[str, Any], cache: Any) -> Any:
         """Open the dud session for the configured rung (transport only)."""
         if self._backend in ("vfkit", "vm"):
+            vm = dict(self._vm)
+            pooled = vm.pop("pooled", True)
+            if pooled:
+                # Same image spec across sessions -> the VM is fungible;
+                # reuse a warm one (guest reset + tree push) instead of
+                # booting. close() parks it back in dud's shared pool.
+                from dud.backends.pool import acquire_vfkit
+
+                return acquire_vfkit(host_objects=host_objects, cache=cache, **vm)
             from dud.backends.vfkit import VfkitSession
 
-            return VfkitSession(host_objects=host_objects, cache=cache, **self._vm)
+            return VfkitSession(host_objects=host_objects, cache=cache, **vm)
         if self._backend == "subprocess":
             from dud.backends.subprocess import Session
 
