@@ -505,7 +505,9 @@ class DudExecutor:
         guest's new baseline."""
         fs = self._require_ctx().fs
         buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        # Plain tar: gzip dominated reactivation ~4:1 at scale and buys
+        # nothing on a local socket (guest extract auto-detects either).
+        with tarfile.open(fileobj=buf, mode="w") as tf:
             for rel in fs.list("/", recursive=True):
                 if fs.isfile("/" + rel):
                     data = fs.read("/" + rel)
