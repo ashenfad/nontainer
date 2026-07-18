@@ -63,6 +63,38 @@ _VIEW_PRELUDE = (
     "    globals()[__nt_k] = __nt_v\n"
 )
 
+# Runs BEFORE the prelude's unpickle: make the contract classes'
+# modules importable in the guest. On the subprocess rung the plain
+# import succeeds (guest shares the host venv). On a VM rung the guest
+# has no nontainer install, so the module is synthesized from source
+# shipped in ``__nt_boot`` (host→guest, the trusted direction — same as
+# the pickle blob) and registered in ``sys.modules`` under its real
+# dotted name, which is exactly where the unpickle will look for it.
+_VIEW_BOOTSTRAP = (
+    "import sys as __nt_sys, types as __nt_ty\n"
+    "for __nt_mod in __nt_boot:\n"
+    "    try:\n"
+    "        __import__(__nt_mod)\n"
+    "    except ImportError:\n"
+    "        __nt_parts = __nt_mod.split('.')\n"
+    "        for __nt_i in range(1, len(__nt_parts)):\n"
+    "            __nt_pkg = '.'.join(__nt_parts[:__nt_i])\n"
+    "            if __nt_pkg not in __nt_sys.modules:\n"
+    "                __nt_pm = __nt_ty.ModuleType(__nt_pkg)\n"
+    "                __nt_pm.__path__ = []\n"
+    "                __nt_sys.modules[__nt_pkg] = __nt_pm\n"
+    "        __nt_m = __nt_ty.ModuleType(__nt_mod)\n"
+    "        __nt_sys.modules[__nt_mod] = __nt_m\n"  # register BEFORE exec
+    "        exec(compile(__nt_boot[__nt_mod]['src'],\n"
+    "                     '<contract:' + __nt_mod + '>', 'exec', 0, 1),\n"
+    "             __nt_m.__dict__)\n"
+    "        if '.' in __nt_mod:\n"
+    "            __nt_par, __nt_leaf = __nt_mod.rsplit('.', 1)\n"
+    "            setattr(__nt_sys.modules[__nt_par], __nt_leaf, __nt_m)\n"
+    "    for __nt_n in __nt_boot[__nt_mod]['names']:\n"
+    "        globals()[__nt_n] = getattr(__nt_sys.modules[__nt_mod], __nt_n)\n"
+)
+
 _VIEW_EPILOGUE = (
     "\n"
     "import dataclasses as __nt_dc, base64 as __nt_b64\n"
@@ -297,24 +329,42 @@ class DudExecutor:
         mutating handler's writes are absorbed into the provider (so
         ``ws.fs`` reflects them, like LocalExecutor's write-through)."""
         import base64
+        import inspect
         import pickle
+        import sys
 
         merged = dict(self._plain)
         merged.update(inputs)
         blob = base64.b64encode(pickle.dumps(merged)).decode()
-        imports = "".join(
-            f"from {c.__module__} import {c.__name__}\n"
-            for c in view.extra_classes
-            if getattr(c, "__module__", None) and getattr(c, "__name__", None)
-        )
-        full = imports + _VIEW_PRELUDE + code + _VIEW_EPILOGUE
+        # Contract classes cross by SOURCE, not by install: group them by
+        # defining module and ship each module's source so the guest can
+        # synthesize it when the import fails (VM rungs have no nontainer).
+        # A module whose source can't be read falls back to a plain import
+        # line — the pre-VM behavior, correct wherever the guest shares
+        # the host venv.
+        boot: dict[str, dict[str, Any]] = {}
+        for c in view.extra_classes:
+            mod, name = getattr(c, "__module__", None), getattr(c, "__name__", None)
+            if not mod or not name:
+                continue
+            entry = boot.setdefault(mod, {"src": None, "names": []})
+            if name not in entry["names"]:
+                entry["names"].append(name)
+        imports = ""
+        for mod, entry in list(boot.items()):
+            try:
+                entry["src"] = inspect.getsource(sys.modules[mod])
+            except Exception:
+                imports += f"from {mod} import {', '.join(entry['names'])}\n"
+                del boot[mod]
+        full = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + code + _VIEW_EPILOGUE
         timeout = (
             view.timeout if view.timeout is not None else ctx.python_config.timeout
         )
         start = time.monotonic()
         result = self._session.python(
             full,
-            inputs={"__nt_blob": blob},
+            inputs={"__nt_blob": blob, "__nt_boot": boot},
             timeout=timeout,
             cache_readonly=view.readonly_cache,
         )

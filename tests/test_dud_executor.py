@@ -367,3 +367,43 @@ def test_make_session_selects_subprocess(monkeypatch):
 def test_make_session_unknown_backend():
     with pytest.raises(ValueError):
         DudExecutor(backend="nope")._make_session({}, {})
+
+
+def test_view_contract_crosses_without_guest_install(ws, tmp_path):
+    """The VM-rung scenario: extra_classes whose module the GUEST cannot
+    import. The contract must cross by source (bootstrap synthesizes the
+    module before the unpickle) — instance in, methods callable, instance
+    back out. Pinned on the subprocess rung by loading the module from a
+    tmp file the guest's sys.path can't see."""
+    import importlib.util
+    import sys
+
+    from nontainer.executor import ViewSpec
+
+    src = (
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class Ping:\n"
+        "    tag: str\n"
+        "    def loud(self):\n"
+        "        return self.tag.upper()\n"
+    )
+    p = tmp_path / "ghost_contract.py"
+    p.write_text(src)
+    spec = importlib.util.spec_from_file_location("ghost_contract", p)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["ghost_contract"] = mod
+    try:
+        spec.loader.exec_module(mod)
+        Ping = mod.Ping
+        r = ws.exec_python(
+            "out = {'loud': ping.loud()}\nresp = Ping(tag='pong')",
+            inputs={"ping": Ping(tag="hi")},
+            view=ViewSpec(extra_classes=(Ping,)),
+        )
+        assert r.error is None, r.error
+        assert r.namespace["out"] == {"loud": "HI"}
+        resp = r.namespace["resp"]
+        assert isinstance(resp, Ping) and resp.tag == "pong"
+    finally:
+        del sys.modules["ghost_contract"]
