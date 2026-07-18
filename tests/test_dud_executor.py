@@ -334,9 +334,26 @@ def test_bad_inputs_raise_typeerror(ws):
 # -- backend selection (subprocess vs vfkit VM rung) -------------------------
 
 
-def test_make_session_selects_vfkit(monkeypatch):
-    """backend='vfkit' opens dud's VM rung, passing VM config + the common
-    host_objects/cache kwargs. No VM is booted (VfkitSession is faked)."""
+def test_make_session_vfkit_uses_shared_pool(monkeypatch):
+    """backend='vfkit' acquires from dud's shared pool by default (VMs are
+    fungible across same-spec sessions), passing VM config + the common
+    host_objects/cache kwargs. No VM is booted (acquire is faked)."""
+    captured = {}
+
+    def fake_acquire(**kw):
+        captured.update(kw)
+        return "pooled-session"
+
+    monkeypatch.setattr("dud.backends.pool.acquire_vfkit", fake_acquire)
+    ex = DudExecutor(backend="vfkit", vm={"image": "python:3.12-slim", "cpus": 4})
+    s = ex._make_session({"obj": object()}, {"c": b"x"})
+    assert s == "pooled-session"
+    assert captured["image"] == "python:3.12-slim" and captured["cpus"] == 4
+    assert "pooled" not in captured  # the knob is consumed, not forwarded
+    assert "host_objects" in captured and "cache" in captured
+
+
+def test_make_session_vfkit_unpooled_constructs_directly(monkeypatch):
     captured = {}
 
     class FakeVfkit:
@@ -344,11 +361,10 @@ def test_make_session_selects_vfkit(monkeypatch):
             captured.update(kw)
 
     monkeypatch.setattr("dud.backends.vfkit.VfkitSession", FakeVfkit)
-    ex = DudExecutor(backend="vfkit", vm={"image": "python:3.12-slim", "cpus": 4})
-    s = ex._make_session({"obj": object()}, {"c": b"x"})
+    ex = DudExecutor(backend="vfkit", vm={"pooled": False, "cpus": 2})
+    s = ex._make_session({}, {})
     assert isinstance(s, FakeVfkit)
-    assert captured["image"] == "python:3.12-slim" and captured["cpus"] == 4
-    assert "host_objects" in captured and "cache" in captured
+    assert captured["cpus"] == 2 and "pooled" not in captured
 
 
 def test_make_session_selects_subprocess(monkeypatch):
