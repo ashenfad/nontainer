@@ -223,9 +223,16 @@ class DudExecutor:
                 # Same image spec across sessions -> the VM is fungible;
                 # reuse a warm one (guest reset + tree push) instead of
                 # booting. close() parks it back in dud's shared pool.
+                # State affinity: a parked VM tagged with our provider
+                # head already HOLDS this workspace tree (see close());
+                # on such a match `resumed` is set and open() skips the
+                # push entirely.
                 from dud.backends.pool import acquire_vfkit
 
-                return acquire_vfkit(host_objects=host_objects, cache=cache, **vm)
+                return acquire_vfkit(
+                    state=self._head(),
+                    host_objects=host_objects, cache=cache, **vm,
+                )
             from dud.backends.vfkit import VfkitSession
 
             return VfkitSession(host_objects=host_objects, cache=cache, **vm)
@@ -251,16 +258,37 @@ class DudExecutor:
                 live[name] = obj
         self._session = self._make_session(live, _KvBytesCache(context.kv))
         self._work = self._session.ping()["workspace"]
-        self._push_tree()
+        if not getattr(self._session, "resumed", False):
+            self._push_tree()  # affinity hit: the tree is already ours
         self._assert_guest_cwd()
 
     def close(self) -> None:
         if self._session is not None and not self._closed:
             self._closed = True
+            # Tag the parked tree with its provider commit so a session
+            # resuming at this exact state skips the push (pool state
+            # affinity). Every synced mutation path keeps guest == fs
+            # view, and the head only names COMMITTED state — so a
+            # divergent/dirty close simply yields a tag no future head
+            # matches, degrading to the normal push. (The documented raw
+            # ``ws.fs`` bypass is outside this guarantee, as ever.)
+            try:
+                self._session.park_state = self._head()
+            except Exception:
+                pass
             try:
                 self._session.close()
             except Exception:
                 pass  # best-effort by contract: the provider closes next
+
+    def _head(self) -> str | None:
+        """The provider's current commit id, if it exposes one."""
+        if self._ctx is None or self._ctx.head is None:
+            return None
+        try:
+            return self._ctx.head()
+        except Exception:
+            return None
 
     # -- python ----------------------------------------------------------
 
