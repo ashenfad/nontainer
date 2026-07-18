@@ -148,15 +148,32 @@ class _KvBytesCache(MutableMapping[str, bytes]):
 
 
 class DudExecutor:
-    """Executor over dud's subprocess backend (rung 1).
+    """Executor over a dud backend — subprocess (rung 1) or vfkit (rung 2).
 
     Construct bare and pass as ``Workspace(..., executor=DudExecutor())``;
-    the workspace binds state via :meth:`open`. ``root`` optionally
-    pins the guest scratch directory (default: a temp dir the session
-    cleans up)."""
+    the workspace binds state via :meth:`open`. Everything above the
+    transport is identical across rungs (dud's ``HostSession``), so this
+    executor only chooses which one to open.
 
-    def __init__(self, *, root: str | None = None) -> None:
+    - ``backend="subprocess"`` (default): the guest runtime as a host
+      process. Real bash/python/files, ZERO isolation (own-machine
+      posture). ``root`` optionally pins the guest scratch dir.
+    - ``backend="vfkit"``: a real disposable macOS microVM (HVF). ``vm``
+      is passed through to ``VfkitSession`` (``image``, ``kernel``,
+      ``memory_mib``, ``cpus``, …); its defaults boot ``python:3.12-slim``
+      with the kernel resolved from ``$DUD_KERNEL``/``~/.dud``. Requesting
+      it off macOS or without a kernel fails closed."""
+
+    def __init__(
+        self,
+        *,
+        root: str | None = None,
+        backend: str = "subprocess",
+        vm: Mapping[str, Any] | None = None,
+    ) -> None:
         self._root = root
+        self._backend = backend
+        self._vm = dict(vm or {})
         self._ctx: ExecutionContext | None = None
         self._session: Any | None = None
         self._work: str | None = None  # guest workspace dir (root/work)
@@ -165,9 +182,19 @@ class DudExecutor:
 
     # -- lifecycle -------------------------------------------------------
 
-    def open(self, context: ExecutionContext) -> None:
-        from dud.backends.subprocess import Session
+    def _make_session(self, host_objects: dict[str, Any], cache: Any) -> Any:
+        """Open the dud session for the configured rung (transport only)."""
+        if self._backend in ("vfkit", "vm"):
+            from dud.backends.vfkit import VfkitSession
 
+            return VfkitSession(host_objects=host_objects, cache=cache, **self._vm)
+        if self._backend == "subprocess":
+            from dud.backends.subprocess import Session
+
+            return Session(root=self._root, host_objects=host_objects, cache=cache)
+        raise ValueError(f"unknown dud backend {self._backend!r}")
+
+    def open(self, context: ExecutionContext) -> None:
         self._ctx = context
         cfg = context.python_config
         # Live host objects cross as hostcall proxies (dud's own
@@ -181,11 +208,7 @@ class DudExecutor:
                 self._plain[name] = obj
             else:
                 live[name] = obj
-        self._session = Session(
-            root=self._root,
-            host_objects=live,
-            cache=_KvBytesCache(context.kv),
-        )
+        self._session = self._make_session(live, _KvBytesCache(context.kv))
         self._work = self._session.ping()["workspace"]
         self._push_tree()
         self._assert_guest_cwd()

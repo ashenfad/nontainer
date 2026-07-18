@@ -329,3 +329,41 @@ def test_exec_python_stdin_argv_fail_loud(ws):
 def test_bad_inputs_raise_typeerror(ws):
     with pytest.raises(TypeError):
         ws.run_python("pass", inputs={"obj": object()})
+
+
+# -- backend selection (subprocess vs vfkit VM rung) -------------------------
+
+
+def test_make_session_selects_vfkit(monkeypatch):
+    """backend='vfkit' opens dud's VM rung, passing VM config + the common
+    host_objects/cache kwargs. No VM is booted (VfkitSession is faked)."""
+    captured = {}
+
+    class FakeVfkit:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr("dud.backends.vfkit.VfkitSession", FakeVfkit)
+    ex = DudExecutor(backend="vfkit", vm={"image": "python:3.12-slim", "cpus": 4})
+    s = ex._make_session({"obj": object()}, {"c": b"x"})
+    assert isinstance(s, FakeVfkit)
+    assert captured["image"] == "python:3.12-slim" and captured["cpus"] == 4
+    assert "host_objects" in captured and "cache" in captured
+
+
+def test_make_session_selects_subprocess(monkeypatch):
+    captured = {}
+
+    class FakeSub:
+        def __init__(self, **kw):
+            captured.update(kw)
+
+    monkeypatch.setattr("dud.backends.subprocess.Session", FakeSub)
+    ex = DudExecutor(backend="subprocess", root="/tmp/scratch")
+    s = ex._make_session({}, {})
+    assert isinstance(s, FakeSub) and captured["root"] == "/tmp/scratch"
+
+
+def test_make_session_unknown_backend():
+    with pytest.raises(ValueError):
+        DudExecutor(backend="nope")._make_session({}, {})
