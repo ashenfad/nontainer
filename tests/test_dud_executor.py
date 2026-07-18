@@ -423,3 +423,26 @@ def test_view_contract_crosses_without_guest_install(ws, tmp_path):
         assert isinstance(resp, Ping) and resp.tag == "pong"
     finally:
         del sys.modules["ghost_contract"]
+
+
+def test_state_identity_guard():
+    """head names the commit the fs EQUALS: None while staging is dirty,
+    None without commit identity — a reusable-substrate executor must
+    never tag a tree with a state it doesn't hold."""
+    from nontainer.workspace import _state_identity
+
+    class Clean:
+        dirty = False
+
+        def head(self):
+            return "c1"
+
+    class Dirty:
+        dirty = True
+
+        def head(self):  # pragma: no cover — must not be consulted
+            return "c1"
+
+    assert _state_identity(Clean())() == "c1"
+    assert _state_identity(Dirty())() is None
+    assert _state_identity(object()) is None

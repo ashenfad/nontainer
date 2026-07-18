@@ -351,6 +351,32 @@ def _trim_rendered_traceback(text: str) -> str:
     return "\n".join(lines)
 
 
+def _state_identity(provider: Any) -> "Callable[[], str | None] | None":
+    """``ExecutionContext.head``: names the commit the fs currently
+    equals — the provider head, guarded to None while staging is dirty
+    (a dirty view names no committed state, and a reusable-substrate
+    executor must never tag a tree with a state it doesn't hold).
+
+    Fully lazy and shape-agnostic: ``head``/``dirty`` may be properties
+    that RAISE on unversioned providers (DirProvider), and ``head`` is a
+    property on KvgitProvider but may be a method elsewhere — every
+    access happens inside the closure, any failure means "no identity".
+    """
+    if not hasattr(type(provider), "head"):
+        return None
+
+    def _current() -> str | None:
+        try:
+            if provider.dirty:
+                return None
+            head = provider.head
+            return head() if callable(head) else head
+        except Exception:
+            return None
+
+    return _current
+
+
 class Workspace:
     """A fake little computer: files + shell + python + cache, versioned.
 
@@ -456,6 +482,7 @@ class Workspace:
                 python_config=self._python_config,
                 cache_enabled=self._cache_enabled,
                 max_observation=self._max_observation,
+                head=_state_identity(provider),
             )
         )
 

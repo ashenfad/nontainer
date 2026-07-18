@@ -128,6 +128,16 @@ class ExecutionContext:
     executor-side because budget-aware rendering must happen where
     the printed objects live (see ``_render_prints``)."""
 
+    head: "Callable[[], str | None] | None" = None
+    """State-identity accessor: the commit id the workspace fs
+    currently EQUALS — i.e. the provider head, but None whenever
+    staging is dirty (the fs view then names no committed state) or the
+    provider has no commit identity. Executors with reusable substrates
+    (dud's VM pool) use it as a content-addressed state tag: a parked
+    machine tagged with the same id can resume WITHOUT a tree push, so
+    a tag must never name a state the tree doesn't exactly hold.
+    Callable so it's read at tag time, not frozen at open."""
+
 
 @dataclass(frozen=True)
 class ViewSpec:
