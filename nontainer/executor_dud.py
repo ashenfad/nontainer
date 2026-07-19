@@ -73,6 +73,7 @@ def _lost_exc() -> Any:
         return ()
     return SessionLost
 
+
 # Guest-side wrapper for app-handler (view) execution. PRELUDE
 # reconstructs the pickled inputs (Request et al.) that rode in host→
 # guest; EPILOGUE reduces any dataclass result (Response) to a tagged,
@@ -274,7 +275,9 @@ class DudExecutor:
 
                 return acquire_vfkit(
                     state=self._head(),
-                    host_objects=host_objects, cache=cache, **vm,
+                    host_objects=host_objects,
+                    cache=cache,
+                    **vm,
                 )
             from dud.backends.vfkit import VfkitSession
 
@@ -429,11 +432,13 @@ class DudExecutor:
         start = time.monotonic()
         try:
             with self._lock:
-                result = self._with_recovery(lambda: self._session.python(
-                    code,
-                    inputs=merged or None,
-                    timeout=ctx.python_config.timeout,
-                ))
+                result = self._with_recovery(
+                    lambda: self._session.python(
+                        code,
+                        inputs=merged or None,
+                        timeout=ctx.python_config.timeout,
+                    )
+                )
         except NotRepresentable as exc:
             # Mirror LocalExecutor's contract for bad inputs (there:
             # unpicklable; here: outside the Value codec).
@@ -498,12 +503,14 @@ class DudExecutor:
             view.timeout if view.timeout is not None else ctx.python_config.timeout
         )
         start = time.monotonic()
-        result = self._with_recovery(lambda: self._session.python(
-            full,
-            inputs={"__nt_blob": blob, "__nt_boot": boot},
-            timeout=timeout,
-            cache_readonly=view.readonly_cache,
-        ))
+        result = self._with_recovery(
+            lambda: self._session.python(
+                full,
+                inputs={"__nt_blob": blob, "__nt_boot": boot},
+                timeout=timeout,
+                cache_readonly=view.readonly_cache,
+            )
+        )
         duration = time.monotonic() - start
 
         if view.readonly_fs:

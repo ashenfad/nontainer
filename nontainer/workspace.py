@@ -592,8 +592,7 @@ class Workspace:
             self._save_cwd()
             if torn is not None:
                 stderr = f"{result.stderr}\n{torn}" if result.stderr else torn
-                return replace(result, exit_code=result.exit_code or 1,
-                               stderr=stderr)
+                return replace(result, exit_code=result.exit_code or 1, stderr=stderr)
             cp = self._maybe_checkpoint("terminal")
         return replace(result, checkpoint=cp) if cp else result
 
