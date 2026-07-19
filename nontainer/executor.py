@@ -711,7 +711,7 @@ class LocalExecutor:
                     target="cache", wrapper="nontainer.cache:RemoteCache"
                 )
         start = time.monotonic()
-        with (sb if own_worker else nullcontext()):
+        with sb if own_worker else nullcontext():
             exec_result = sb.exec(
                 code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
             )
