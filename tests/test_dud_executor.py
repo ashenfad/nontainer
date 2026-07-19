@@ -446,3 +446,46 @@ def test_state_identity_guard():
     assert _state_identity(Clean())() == "c1"
     assert _state_identity(Dirty())() is None
     assert _state_identity(object()) is None
+
+
+# -- death recovery ----------------------------------------------------------
+
+
+def test_dead_guest_recovers_with_state_and_retries():
+    """Kill the guest under a live workspace: the next call raises
+    SessionLost inside the executor, which reopens a session, re-pushes
+    the provider tree, and retries — the caller sees a normal result
+    with committed state intact (the disposable thesis as resilience)."""
+    ex = DudExecutor()
+    ws = Workspace(
+        KvgitProvider.open(None, session="dud-recover"), executor=ex
+    )
+    try:
+        ws.terminal("echo sturdy > f.txt && mkdir -p sub && cd sub && echo x > here.txt")
+        # A writing call from within sub/: the cwd mirror lands (sub is
+        # in the provider now) and the checkpoint persists it.
+        ws.terminal("echo y > also.txt")
+        assert ws.fs.getcwd() == "/sub"
+        ex._session._proc.kill()  # VM crash / pool reclaim, guest's view
+        r = ws.terminal("cat ../f.txt")
+        assert r, r.stdout + (r.stderr or "")
+        assert r.stdout.strip() == "sturdy"
+        # recovery re-asserted the persisted cwd, not just the tree
+        assert ws.terminal("pwd").stdout.strip().endswith("/sub")
+    finally:
+        ws.close()
+
+
+def test_dead_guest_recovers_python_namespace():
+    ex = DudExecutor()
+    ws = Workspace(
+        KvgitProvider.open(None, session="dud-recover-py"), executor=ex
+    )
+    try:
+        ws.run_python("open('n.txt', 'w').write('42')")
+        ex._session._proc.kill()
+        r = ws.run_python("n = int(open('n.txt').read())")
+        assert r, r.error
+        assert r.namespace["n"] == 42
+    finally:
+        ws.close()
