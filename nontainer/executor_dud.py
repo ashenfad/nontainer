@@ -39,6 +39,7 @@ Intended deltas vs LocalExecutor (pinned by tests/test_dud_executor.py):
 from __future__ import annotations
 
 import io
+import os
 import pickle
 import shlex
 import tarfile
@@ -210,6 +211,8 @@ class DudExecutor:
         self._session: Any | None = None
         self._work: str | None = None  # guest workspace dir (root/work)
         self._plain: dict[str, Any] = {}  # plain-data host_objects
+        self._live: dict[str, Any] = {}  # live host_objects (for recovery)
+        self._cache: Any | None = None  # kv-backed cache view (for recovery)
         self._closed = False
 
     # -- lifecycle -------------------------------------------------------
@@ -256,7 +259,9 @@ class DudExecutor:
                 self._plain[name] = obj
             else:
                 live[name] = obj
-        self._session = self._make_session(live, _KvBytesCache(context.kv))
+        self._live = live
+        self._cache = _KvBytesCache(context.kv)
+        self._session = self._make_session(live, self._cache)
         self._work = self._session.ping()["workspace"]
         if not getattr(self._session, "resumed", False):
             self._push_tree()  # affinity hit: the tree is already ours
@@ -289,6 +294,42 @@ class DudExecutor:
             return self._ctx.head()
         except Exception:
             return None
+
+    # -- death recovery ----------------------------------------------------
+
+    def _with_recovery(self, fn: Any) -> Any:
+        """Run one session call; on SessionLost, rebuild and retry ONCE.
+
+        Any dud VM may vanish mid-conversation — a crash, or the pool
+        reclaiming the least-recently-used session under a capacity cap
+        (``DUD_VM_MAX_TOTAL``). The disposable thesis makes recovery
+        uniform: reopen a session (warm-pool acquire when available),
+        re-push the provider tree, retry the call. Workspace effects of
+        the dead attempt never left the VM (diffs are pulled only after
+        success) and cache writes land only on success, so the retry is
+        at-most-once-observed for state; live-object ``hostcalls`` the
+        dead attempt already made are the one thing that may repeat.
+        """
+        try:
+            from dud.backends.base import SessionLost
+        except ImportError:  # older dud: no lifecycle contract, run bare
+            return fn()
+        try:
+            return fn()
+        except SessionLost:
+            self._recover()
+            return fn()
+
+    def _recover(self) -> None:
+        try:
+            self._session.close()  # pool tears the corpse down, not parks
+        except Exception:
+            pass
+        self._session = self._make_session(self._live, self._cache)
+        self._work = self._session.ping()["workspace"]
+        if not getattr(self._session, "resumed", False):
+            self._push_tree()
+        self._assert_guest_cwd()
 
     # -- python ----------------------------------------------------------
 
@@ -330,11 +371,11 @@ class DudExecutor:
         merged.update(inputs or {})
         start = time.monotonic()
         try:
-            result = self._session.python(
+            result = self._with_recovery(lambda: self._session.python(
                 code,
                 inputs=merged or None,
                 timeout=ctx.python_config.timeout,
-            )
+            ))
         except NotRepresentable as exc:
             # Mirror LocalExecutor's contract for bad inputs (there:
             # unpicklable; here: outside the Value codec).
@@ -399,16 +440,16 @@ class DudExecutor:
             view.timeout if view.timeout is not None else ctx.python_config.timeout
         )
         start = time.monotonic()
-        result = self._session.python(
+        result = self._with_recovery(lambda: self._session.python(
             full,
             inputs={"__nt_blob": blob, "__nt_boot": boot},
             timeout=timeout,
             cache_readonly=view.readonly_cache,
-        )
+        ))
         duration = time.monotonic() - start
 
         if view.readonly_fs:
-            d = self._session.diff(rebase=False)
+            d = self._with_recovery(lambda: self._session.diff(rebase=False))
             if not d.empty:
                 # A GET that wrote the fs (rung-1 has no read-only mount,
                 # so the write lands then is rejected here — DESIGN.md).
@@ -426,7 +467,10 @@ class DudExecutor:
             # Mutating handler: land the writes in the provider staging,
             # matching LocalExecutor's write-through (dispatch's atomicity
             # then discards them via ws.discard() on error).
-            self._absorb_into_fs(ctx.fs, self._session.diff(rebase=True))
+            self._absorb_into_fs(
+                ctx.fs,
+                self._with_recovery(lambda: self._session.diff(rebase=True)),
+            )
 
         return self._map_result(result, ctx, duration, contract=view.extra_classes)
 
@@ -486,7 +530,9 @@ class DudExecutor:
         nonzero exit with everything in the merged transcript. Exit
         codes carry through untouched (127 for not-found, etc.)."""
         ctx = self._require_ctx()
-        result = self._session.shell(script, timeout=ctx.python_config.timeout)
+        result = self._with_recovery(
+            lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
+        )
         self._mirror_cwd(result.cwd)
         stderr = ""
         if result.timed_out:
@@ -506,8 +552,11 @@ class DudExecutor:
         """Harvest guest writes (rebase: the harvest becomes the new
         baseline, so each call yields only that call's changes).
         ``None`` for a clean harvest keeps read-only calls read-only
-        (no provider dirtying, no phantom checkpoints)."""
-        d = self._session.diff(rebase=True)
+        (no provider dirtying, no phantom checkpoints). A session lost
+        HERE recovers to a fresh guest whose diff is empty — the dead
+        VM's unpulled writes are gone either way; empty-and-consistent
+        beats an exception the checkpoint flow can't act on."""
+        d = self._with_recovery(lambda: self._session.diff(rebase=True))
         if d.empty:
             return None
         return StagedDiff(writes=dict(d.writes), deletes=tuple(d.deletes))
@@ -517,7 +566,7 @@ class DudExecutor:
         push_tree wipes and rebuilds — incremental shipping is a
         stage-3 economy), then re-assert the persisted cwd, which
         push_tree resets to the workspace root."""
-        self._push_tree()
+        self._with_recovery(self._push_tree)
         self._assert_guest_cwd()
 
     # -- internals ---------------------------------------------------------
@@ -563,9 +612,16 @@ class DudExecutor:
         isn't in the provider until its diff lands files there — the
         mirror catches up on the next shell call."""
         ctx = self._require_ctx()
-        if not self._work or not guest_cwd.startswith(self._work):
+        if not self._work:
             return
-        rel = guest_cwd[len(self._work) :].lstrip("/")
+        work = self._work
+        if not guest_cwd.startswith(work):
+            # A real shell reports resolved paths; the configured
+            # workspace may ride a symlink (macOS /var -> /private/var).
+            work = os.path.realpath(work)
+            if not guest_cwd.startswith(work):
+                return
+        rel = guest_cwd[len(work) :].lstrip("/")
         host = "/" + rel if rel else "/"
         try:
             if ctx.fs.getcwd() != host and ctx.fs.isdir(host):
