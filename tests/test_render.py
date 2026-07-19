@@ -86,7 +86,7 @@ def test_terminal_description_includes_apps_contract():
     with_apps = terminal_description(ws, split=True, apps=True)
     assert "def get(req)" not in plain
     for marker in ("def get(req)", "HttpError", "curl /api/scores",
-                   "RELATIVE urls", "/app/logs/api.log", "READ-ONLY"):
+                   "RELATIVE urls", "/workspace/app/logs/api.log", "READ-ONLY"):
         assert marker in with_apps, marker
     ws.close()
 

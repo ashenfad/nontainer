@@ -11,12 +11,11 @@ Deps: pip install nontainer[agno] anthropic
 
 import tempfile
 
+from _model import pick_model
 from agno.agent import Agent
 
 from nontainer import workspace
 from nontainer.adapters.agno import WorkspaceTools
-
-from _model import pick_model
 
 SALES = """region,revenue
 north,1200

@@ -29,7 +29,13 @@ from typing import TYPE_CHECKING, Any, Iterator
 if TYPE_CHECKING:
     from .workspace import Workspace
 
-SKILLS_ROOT = "/skills"
+SKILLS_DIR = "skills"
+
+
+def skills_root(ws: "Workspace") -> str:
+    """Where skills live in this workspace: ``<ws.root>/skills``."""
+    base = "" if ws.root == "/" else ws.root
+    return f"{base}/{SKILLS_DIR}"
 
 
 def frontmatter(content: bytes) -> dict[str, str]:
@@ -76,7 +82,7 @@ def _walk(source: Any) -> dict[str, bytes]:
 
 
 def install(ws: "Workspace", source: Any) -> str:
-    """Install a skill into the workspace at ``/skills/<name>/``.
+    """Install a skill into the workspace at ``<ws.root>/skills/<name>/``.
 
     ``source``: raw bytes (a SKILL.md), a ``.md`` file, or a directory
     containing ``SKILL.md`` — as a ``Path`` or an importlib
@@ -114,9 +120,10 @@ def install(ws: "Workspace", source: Any) -> str:
         )
 
     name = _slug(frontmatter(files["SKILL.md"]).get("name") or fallback)
+    root = skills_root(ws)
     with ws.lock:
         for rel, data in files.items():
-            path = f"{SKILLS_ROOT}/{name}/{rel}"
+            path = f"{root}/{name}/{rel}"
             ws.fs.makedirs(posixpath.dirname(path), exist_ok=True)
             ws.fs.write(path, data)
         if ws.caps.versioned and ws.dirty:
@@ -178,12 +185,13 @@ def catalog(ws: "Workspace") -> str:
     """The discovery primer: one line per installed skill, for the
     toolkit instructions. Empty string when there are no skills."""
     rows: list[str] = []
+    root = skills_root(ws)
     try:
         with ws.lock:
-            if not ws.fs.isdir(SKILLS_ROOT):
+            if not ws.fs.isdir(root):
                 return ""
-            for name in sorted(ws.fs.list(SKILLS_ROOT)):
-                path = f"{SKILLS_ROOT}/{name}/SKILL.md"
+            for name in sorted(ws.fs.list(root)):
+                path = f"{root}/{name}/SKILL.md"
                 if not ws.fs.exists(path):
                     continue
                 desc = frontmatter(ws.fs.read(path)).get("description", "")
@@ -193,9 +201,9 @@ def catalog(ws: "Workspace") -> str:
     if not rows:
         return ""
     return (
-        "\n\nSkills — packaged guidance under /skills; when a task "
+        f"\n\nSkills — packaged guidance under {root}; when a task "
         "matches one, read its instructions first "
-        "(cat /skills/<name>/SKILL.md):\n"
+        f"(cat {root}/<name>/SKILL.md):\n"
         + "\n".join(rows)
-        + "\nSkills may be added mid-session: `ls /skills` to re-check."
+        + f"\nSkills may be added mid-session: `ls {root}` to re-check."
     )

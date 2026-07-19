@@ -24,7 +24,9 @@ requires-python = ">=3.10"
 dependencies = [
     "termish>=0.1.8",
     "monkeyfs>=0.1.5",
-    "sandtrap>=0.2.11",
+    # 0.2.12: Policy.module_root — VFS imports resolve from the
+    # workspace root (the /workspace path contract)
+    "sandtrap>=0.2.12",
     "kvgit[disk]>=0.3.1",
     "reprobate>=0.1.1",
 ]
@@ -53,7 +55,9 @@ mcp = [
 dud = [
     # dud itself requires >=3.11; the marker keeps nontainer's 3.10
     # floor intact for everyone not opting into this executor.
-    "dud>=0.1.1; python_version >= '3.11'",
+    # 0.2.0: the guest mounts its workspace AT the configured root
+    # (/workspace), so agent absolute paths match LocalExecutor's.
+    "dud>=0.2.0; python_version >= '3.11'",
 ]
 dev = [
     "ruff",

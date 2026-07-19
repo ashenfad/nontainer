@@ -30,8 +30,8 @@ _APP = b"""<!doctype html><html><body>
 def _app_ws(session: str) -> tuple[Workspace, object]:
     ws = Workspace(KvgitProvider.open(None, session=session))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app", exist_ok=True)
-    ws.fs.write("/app/index.html", _APP)
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", _APP)
     ws.checkpoint()
     return ws, rt
 

@@ -397,12 +397,22 @@ class Workspace:
         max_observation: int = 32_000,
         executor: "Executor | None" = None,
         executor_factory: "Callable[[], Executor] | None" = None,
+        root: str = "/workspace",
     ) -> None:
         self._provider = provider
         self._python_config = python or PythonConfig()
         self._cache_enabled = cache
         self._max_observation = max_observation
         self._closed = False
+        # The workspace root: where agent-visible files live in the VFS
+        # — one absolute path contract shared by every executor (the
+        # local sandbox resolves imports from it; a VM guest mounts its
+        # workspace AT it, making agent absolute paths identical on
+        # both). "/" selects the flat pre-0.2 layout (no VM-rung path
+        # parity — a guest can't mount at the fs root).
+        if not root.startswith("/"):
+            raise ValueError(f"root must be an absolute path, got {root!r}")
+        self._root = "/" if root == "/" else root.rstrip("/")
 
         # Single-writer enforcement: mutating public methods hold this
         # lock, so concurrent calls from a threading harness serialize
@@ -460,16 +470,24 @@ class Workspace:
         else:
             self._executor = LocalExecutor()
 
-        # -- stateful cwd: restore from framework key if present.
-        # Guarded so a no-op restore doesn't dirty staging providers
-        # (which would turn read-only tool calls into commits).
-        stored_cwd = provider.kv.get(_CWD_KEY)
-        if stored_cwd:
+        # -- workspace root dir: must exist before the executor opens
+        # (a remote executor materializes its guest tree from it) and
+        # before cwd lands there. Guarded like the cwd restore so
+        # reopening an existing session stays read-only.
+        if self._root != "/" and not self._fs.isdir(self._root):
+            self._fs.makedirs(self._root, exist_ok=True)
+
+        # -- stateful cwd: restore from framework key if present, else
+        # start at the workspace root. Guarded so a no-op restore
+        # doesn't dirty staging providers (which would turn read-only
+        # tool calls into commits).
+        stored_cwd = provider.kv.get(_CWD_KEY) or self._root
+        if stored_cwd != "/":
             try:
                 if self._fs.getcwd() != stored_cwd:
                     self._fs.chdir(stored_cwd)
             except Exception:
-                pass  # path may no longer exist; start at root
+                pass  # path may no longer exist; start at the fs root
 
         # open() LAST: it may fork a persistent isolation worker (see
         # LocalExecutor.open), and opening after everything else means
@@ -483,6 +501,7 @@ class Workspace:
                 cache_enabled=self._cache_enabled,
                 max_observation=self._max_observation,
                 head=_state_identity(provider),
+                root=self._root,
             )
         )
 
@@ -518,6 +537,15 @@ class Workspace:
     @property
     def session(self) -> str:
         return self._provider.session
+
+    @property
+    def root(self) -> str:
+        """The workspace root: the absolute VFS path agent-visible
+        files live under (default ``/workspace``) — one path contract
+        across executors. Extensions derive their trees from it
+        (``<root>/app``, ``<root>/skills``); ``"/"`` is the flat
+        legacy layout."""
+        return self._root
 
     @property
     def caps(self) -> Capabilities:
@@ -953,6 +981,7 @@ class Workspace:
             autocheckpoint=self._autocheckpoint,
             max_observation=self._max_observation,
             executor_factory=self._executor_factory,
+            root=self._root,
         )
 
     def discard(self) -> None:
@@ -1093,6 +1122,7 @@ def workspace(
     autocheckpoint: bool = True,
     max_observation: int = 32_000,
     executor_factory: "Callable[[], Executor] | None" = None,
+    root: str = "/workspace",
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
 
@@ -1113,6 +1143,11 @@ def workspace(
     and every fork of it (default: the in-process ``LocalExecutor``).
     Pass ``lambda: DudExecutor()`` to run on a real machine — see
     ``nontainer.executor_dud`` and its ``[dud]`` extra.
+
+    ``root`` is the workspace root — the absolute VFS path agent code
+    sees its files under (default ``/workspace``; see
+    :attr:`Workspace.root`). One value per session, inherited by
+    forks.
     """
     from .protocol import validate_session_id
 
@@ -1143,4 +1178,5 @@ def workspace(
         autocheckpoint=autocheckpoint,
         max_observation=max_observation,
         executor_factory=executor_factory,
+        root=root,
     )

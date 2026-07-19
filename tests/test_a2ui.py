@@ -25,31 +25,31 @@ def url(path: str) -> str:
 def test_splice_inline_ref_replaced_with_note_name():
     # alt-text "chart" but the note names it "revenue" -> note wins.
     segs = splice(
-        "before ![chart](/ui/x.plotly.json) after",
-        [("revenue", "/ui/x.plotly.json")],
+        "before ![chart](/workspace/ui/x.plotly.json) after",
+        [("revenue", "/workspace/ui/x.plotly.json")],
     )
     assert segs == [
         ("md", "before "),
-        ("artifact", "revenue", "/ui/x.plotly.json"),
+        ("artifact", "revenue", "/workspace/ui/x.plotly.json"),
         ("md", " after"),
     ]
 
 
 def test_splice_unreferenced_artifact_appended():
-    segs = splice("just prose", [("k", "/ui/k.cards.json")])
-    assert segs == [("md", "just prose"), ("artifact", "k", "/ui/k.cards.json")]
+    segs = splice("just prose", [("k", "/workspace/ui/k.cards.json")])
+    assert segs == [("md", "just prose"), ("artifact", "k", "/workspace/ui/k.cards.json")]
 
 
 def test_splice_ref_order_vs_note_order():
     # prose references b then a; c is unreferenced -> trailing in NOTE order.
-    prose = "![b](/ui/b.png) mid ![a](/ui/a.png)"
-    arts = [("a", "/ui/a.png"), ("b", "/ui/b.png"), ("c", "/ui/c.png")]
+    prose = "![b](/workspace/ui/b.png) mid ![a](/workspace/ui/a.png)"
+    arts = [("a", "/workspace/ui/a.png"), ("b", "/workspace/ui/b.png"), ("c", "/workspace/ui/c.png")]
     segs = splice(prose, arts)
     assert segs == [
-        ("artifact", "b", "/ui/b.png"),
+        ("artifact", "b", "/workspace/ui/b.png"),
         ("md", " mid "),
-        ("artifact", "a", "/ui/a.png"),
-        ("artifact", "c", "/ui/c.png"),
+        ("artifact", "a", "/workspace/ui/a.png"),
+        ("artifact", "c", "/workspace/ui/c.png"),
     ]
 
 
@@ -58,10 +58,10 @@ def test_splice_prose_only_no_refs():
 
 
 def test_splice_artifacts_only_empty_prose():
-    segs = splice("", [("a", "/ui/a.png"), ("b", "/ui/b.png")])
+    segs = splice("", [("a", "/workspace/ui/a.png"), ("b", "/workspace/ui/b.png")])
     assert segs == [
-        ("artifact", "a", "/ui/a.png"),
-        ("artifact", "b", "/ui/b.png"),
+        ("artifact", "a", "/workspace/ui/a.png"),
+        ("artifact", "b", "/workspace/ui/b.png"),
     ]
 
 
@@ -75,27 +75,27 @@ def test_splice_unknown_path_ref_still_splices():
 
 
 def test_splice_same_path_twice_splices_each_not_appended():
-    prose = "![x](/ui/x.png) and again ![x](/ui/x.png)"
-    segs = splice(prose, [("x", "/ui/x.png")])
+    prose = "![x](/workspace/ui/x.png) and again ![x](/workspace/ui/x.png)"
+    segs = splice(prose, [("x", "/workspace/ui/x.png")])
     assert segs == [
-        ("artifact", "x", "/ui/x.png"),
+        ("artifact", "x", "/workspace/ui/x.png"),
         ("md", " and again "),
-        ("artifact", "x", "/ui/x.png"),
+        ("artifact", "x", "/workspace/ui/x.png"),
     ]
 
 
 def test_splice_no_empty_md_segments():
     # ref at the very start and very end -> no ("md", "") on either side.
-    segs = splice("![a](/ui/a.png)![b](/ui/b.png)", [])
+    segs = splice("![a](/workspace/ui/a.png)![b](/workspace/ui/b.png)", [])
     assert segs == [
-        ("artifact", "a", "/ui/a.png"),
-        ("artifact", "b", "/ui/b.png"),
+        ("artifact", "a", "/workspace/ui/a.png"),
+        ("artifact", "b", "/workspace/ui/b.png"),
     ]
 
 
 def test_splice_artifact_listed_twice_appends_once():
-    segs = splice("", [("a", "/ui/a.png"), ("a2", "/ui/a.png")])
-    assert segs == [("artifact", "a", "/ui/a.png")]
+    segs = splice("", [("a", "/workspace/ui/a.png"), ("a2", "/workspace/ui/a.png")])
+    assert segs == [("artifact", "a", "/workspace/ui/a.png")]
 
 
 # -- component_for -----------------------------------------------------------
@@ -116,7 +116,7 @@ def test_component_cards():
             ]
         }
     ).encode()
-    frag = component_for("kpis", "/ui/kpis.cards.json", data, url)
+    frag = component_for("kpis", "/workspace/ui/kpis.cards.json", data, url)
     # v0.9 Card takes a SINGULAR `child` (issue #16): each card's content
     # rides an intermediate Column, exactly as the catalog schema asks.
     assert frag == {
@@ -179,7 +179,7 @@ def test_component_cards_stat_without_sublabel_and_empty_callout():
             ]
         }
     ).encode()
-    frag = component_for("k", "/ui/k.cards.json", data, url)
+    frag = component_for("k", "/workspace/ui/k.cards.json", data, url)
     cards = frag["component"]["children"]
     assert len(cards) == 2  # the mystery item is dropped
     assert cards[0]["child"]["children"] == [
@@ -215,7 +215,7 @@ def test_component_cards_extension_components():
             ]
         }
     ).encode()
-    frag = component_for("kpis", "/ui/kpis.cards.json", data, url, extension_cards=True)
+    frag = component_for("kpis", "/workspace/ui/kpis.cards.json", data, url, extension_cards=True)
     assert frag == {
         "component": {
             "componentType": "Row",
@@ -246,13 +246,13 @@ def test_component_cards_null_stat_fields_read_as_absent():
     data = json.dumps(
         {"items": [{"type": "stat", "label": None, "value": None, "sublabel": None}]}
     ).encode()
-    basic = component_for("k", "/ui/k.cards.json", data, url)
+    basic = component_for("k", "/workspace/ui/k.cards.json", data, url)
     texts = basic["component"]["children"][0]["child"]["children"]
     assert texts == [
         {"componentType": "Text", "text": "", "role": "label"},
         {"componentType": "Text", "text": "", "role": "value"},
     ]
-    ext = component_for("k", "/ui/k.cards.json", data, url, extension_cards=True)
+    ext = component_for("k", "/workspace/ui/k.cards.json", data, url, extension_cards=True)
     assert ext["component"]["children"][0] == {
         "componentType": "Stat",
         "label": "",
@@ -266,16 +266,16 @@ def test_component_cards_clamps_unknown_tone():
     data = json.dumps(
         {"items": [{"type": "callout", "title": "T", "tone": "sparkly"}]}
     ).encode()
-    basic = component_for("k", "/ui/k.cards.json", data, url)
+    basic = component_for("k", "/workspace/ui/k.cards.json", data, url)
     assert basic["component"]["children"][0]["tone"] == "info"
-    ext = component_for("k", "/ui/k.cards.json", data, url, extension_cards=True)
+    ext = component_for("k", "/workspace/ui/k.cards.json", data, url, extension_cards=True)
     assert ext["component"]["children"][0]["tone"] == "info"
 
 
 def test_component_table_with_cap_and_caption():
     rows = [[i, f"r{i}"] for i in range(60)]
     data = json.dumps({"columns": ["n", "name"], "data": rows, "total": 200}).encode()
-    frag = component_for("t", "/ui/t.table.json", data, url)
+    frag = component_for("t", "/workspace/ui/t.table.json", data, url)
     children = frag["component"]["children"]
     assert frag["component"]["componentType"] == "Column"
     # header + 50 capped rows + caption
@@ -294,7 +294,7 @@ def test_component_table_with_cap_and_caption():
 
 def test_component_table_no_caption_when_all_shown():
     data = json.dumps({"columns": ["a"], "data": [[1], [2]], "total": 2}).encode()
-    frag = component_for("t", "/ui/t.table.json", data, url)
+    frag = component_for("t", "/workspace/ui/t.table.json", data, url)
     # header + 2 rows, no caption
     assert len(frag["component"]["children"]) == 3
     assert frag["component"]["children"][-1]["children"][0]["role"] == "cell"
@@ -302,7 +302,7 @@ def test_component_table_no_caption_when_all_shown():
 
 def test_component_plotly():
     spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
-    frag = component_for("fig", "/ui/fig.plotly.json", json.dumps(spec).encode(), url)
+    frag = component_for("fig", "/workspace/ui/fig.plotly.json", json.dumps(spec).encode(), url)
     assert frag == {
         "component": {"componentType": "Chart", "spec": {"$ref": "spec"}},
         "data_model": {"spec": spec},
@@ -311,39 +311,39 @@ def test_component_plotly():
 
 def test_component_json_sniffed_as_plotly():
     spec = {"data": [{"x": [1]}], "layout": {}}
-    frag = component_for("fig", "/ui/fig.json", json.dumps(spec).encode(), url)
+    frag = component_for("fig", "/workspace/ui/fig.json", json.dumps(spec).encode(), url)
     assert frag["component"]["componentType"] == "Chart"
     assert frag["data_model"] == {"spec": spec}
 
 
 def test_component_json_not_plotly_falls_back():
     data = json.dumps({"just": "data"}).encode()
-    frag = component_for("blob", "/ui/blob.json", data, url)
+    frag = component_for("blob", "/workspace/ui/blob.json", data, url)
     assert frag == {
         "component": {
             "componentType": "Text",
             "text": "artifact: blob",
-            "link": "https://host/ui/blob.json",
+            "link": "https://host/workspace/ui/blob.json",
         },
         "data_model": {},
     }
 
 
 def test_component_image():
-    frag = component_for("pic", "/ui/pic.png", b"\x89PNG", url)
+    frag = component_for("pic", "/workspace/ui/pic.png", b"\x89PNG", url)
     assert frag == {
-        "component": {"componentType": "Image", "url": "https://host/ui/pic.png"},
+        "component": {"componentType": "Image", "url": "https://host/workspace/ui/pic.png"},
         "data_model": {},
     }
 
 
 def test_component_text_fallback():
-    frag = component_for("page", "/ui/page.html", b"<h1>hi</h1>", url)
+    frag = component_for("page", "/workspace/ui/page.html", b"<h1>hi</h1>", url)
     assert frag == {
         "component": {
             "componentType": "Text",
             "text": "artifact: page",
-            "link": "https://host/ui/page.html",
+            "link": "https://host/workspace/ui/page.html",
         },
         "data_model": {},
     }
@@ -351,18 +351,18 @@ def test_component_text_fallback():
 
 def test_component_data_none_degrades_but_image_still_works():
     # bytes-needing kind with no bytes -> fallback link.
-    frag = component_for("fig", "/ui/fig.plotly.json", None, url)
+    frag = component_for("fig", "/workspace/ui/fig.plotly.json", None, url)
     assert frag["component"]["componentType"] == "Text"
-    assert frag["component"]["link"] == "https://host/ui/fig.plotly.json"
+    assert frag["component"]["link"] == "https://host/workspace/ui/fig.plotly.json"
     # image is URL-only, so it still renders.
-    img = component_for("pic", "/ui/pic.png", None, url)
+    img = component_for("pic", "/workspace/ui/pic.png", None, url)
     assert img["component"]["componentType"] == "Image"
 
 
 def test_component_malformed_json_degrades():
-    frag = component_for("t", "/ui/t.table.json", b"{not json", url)
+    frag = component_for("t", "/workspace/ui/t.table.json", b"{not json", url)
     assert frag["component"]["componentType"] == "Text"
-    assert frag["component"]["link"] == "https://host/ui/t.table.json"
+    assert frag["component"]["link"] == "https://host/workspace/ui/t.table.json"
 
 
 def test_component_table_nonlist_fields_degrade_not_raise():
@@ -370,12 +370,12 @@ def test_component_table_nonlist_fields_degrade_not_raise():
     payloads are reachable via direct /ui writes (the adoption path), so a
     truthy non-list columns/data must degrade — a header-less table — not
     TypeError out of an egress stream (PR #14 review)."""
-    frag = component_for("t", "/ui/t.table.json", b'{"columns": 5, "data": [[1]]}', url)
+    frag = component_for("t", "/workspace/ui/t.table.json", b'{"columns": 5, "data": [[1]]}', url)
     children = frag["component"]["children"]
     assert children[0] == {"componentType": "Row", "children": []}  # no header
     assert children[1]["children"][0]["text"] == "1"  # rows still render
     # non-list data degrades the same way (empty body, headers intact)
-    frag = component_for("t", "/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url)
+    frag = component_for("t", "/workspace/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url)
     assert len(frag["component"]["children"]) == 1  # header row only
 
 
@@ -383,7 +383,7 @@ def test_component_builder_surprise_falls_back_not_raises():
     """Belt and braces: ANY builder exception lands in the Text+link
     fallback — the docstring's never-raises is structural, not by audit.
     A cards payload whose items explode the builder is the probe."""
-    frag = component_for("k", "/ui/k.cards.json", b'{"items": [{"type": "stat"}]}', url)
+    frag = component_for("k", "/workspace/ui/k.cards.json", b'{"items": [{"type": "stat"}]}', url)
     # missing label/value: builder renders empty-string Texts today, but
     # whatever future shape appears, the call must return a fragment
     assert "component" in frag and "data_model" in frag
@@ -404,12 +404,12 @@ def test_turn_golden_full_reply():
         "items": [{"type": "stat", "label": "Revenue", "value": 42, "sublabel": "up 3"}]
     }
     files = {
-        "/ui/fig.plotly.json": json.dumps(spec).encode(),
-        "/ui/kpis.cards.json": json.dumps(cards).encode(),
+        "/workspace/ui/fig.plotly.json": json.dumps(spec).encode(),
+        "/workspace/ui/kpis.cards.json": json.dumps(cards).encode(),
     }
     msgs = turn_to_a2ui(
-        "Here is the chart ![fig](/ui/fig.plotly.json) and metrics below.",
-        [("fig", "/ui/fig.plotly.json"), ("kpis", "/ui/kpis.cards.json")],
+        "Here is the chart ![fig](/workspace/ui/fig.plotly.json) and metrics below.",
+        [("fig", "/workspace/ui/fig.plotly.json"), ("kpis", "/workspace/ui/kpis.cards.json")],
         _reader(files),
         url,
         surface_id="s1",
@@ -503,9 +503,9 @@ def test_turn_callout_tone_survives_flattening():
             },
         ]
     }
-    files = {"/ui/dash.cards.json": json.dumps(cards).encode()}
+    files = {"/workspace/ui/dash.cards.json": json.dumps(cards).encode()}
     msgs = turn_to_a2ui(
-        "", [("dash", "/ui/dash.cards.json")], _reader(files), url, surface_id="s1"
+        "", [("dash", "/workspace/ui/dash.cards.json")], _reader(files), url, surface_id="s1"
     )
     comps = msgs[1]["updateComponents"]["components"]
     by_id = {c["id"]: c for c in comps}
@@ -526,10 +526,10 @@ def test_turn_nontainer_catalog_emits_extension_cards():
             {"type": "callout", "title": "Heads up", "tone": "success"},
         ]
     }
-    files = {"/ui/dash.cards.json": json.dumps(cards).encode()}
+    files = {"/workspace/ui/dash.cards.json": json.dumps(cards).encode()}
     msgs = turn_to_a2ui(
         "",
-        [("dash", "/ui/dash.cards.json")],
+        [("dash", "/workspace/ui/dash.cards.json")],
         _reader(files),
         url,
         surface_id="s1",
@@ -556,10 +556,10 @@ def test_turn_foreign_catalog_keeps_basic_cards():
     # A consumer's own custom catalog id is NOT the opt-in — we can't know
     # what it declares, so cards stay in the basic-catalog approximation.
     cards = {"items": [{"type": "stat", "label": "A", "value": 1}]}
-    files = {"/ui/k.cards.json": json.dumps(cards).encode()}
+    files = {"/workspace/ui/k.cards.json": json.dumps(cards).encode()}
     msgs = turn_to_a2ui(
         "",
-        [("k", "/ui/k.cards.json")],
+        [("k", "/workspace/ui/k.cards.json")],
         _reader(files),
         url,
         surface_id="s1",
@@ -573,9 +573,9 @@ def test_turn_basic_card_uses_singular_child():
     # Issue #16: the flat v0.9 Card must carry `child` (one id), never
     # `children` — content rides an intermediate Column.
     cards = {"items": [{"type": "stat", "label": "A", "value": 1}]}
-    files = {"/ui/k.cards.json": json.dumps(cards).encode()}
+    files = {"/workspace/ui/k.cards.json": json.dumps(cards).encode()}
     msgs = turn_to_a2ui(
-        "", [("k", "/ui/k.cards.json")], _reader(files), url, surface_id="s1"
+        "", [("k", "/workspace/ui/k.cards.json")], _reader(files), url, surface_id="s1"
     )
     by_id = {c["id"]: c for c in msgs[1]["updateComponents"]["components"]}
     card = by_id["seg0-1"]
@@ -605,10 +605,10 @@ def test_catalog_file_matches_the_constant_and_declares_the_components():
 
 
 def test_turn_deterministic():
-    files = {"/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
+    files = {"/workspace/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
     args = (
-        "see ![fig](/ui/fig.plotly.json)",
-        [("fig", "/ui/fig.plotly.json")],
+        "see ![fig](/workspace/ui/fig.plotly.json)",
+        [("fig", "/workspace/ui/fig.plotly.json")],
         _reader(files),
         url,
     )
@@ -639,9 +639,9 @@ def test_turn_ids_stable_and_unique():
     # A table's header Row has several role: header cells -> per-role
     # occurrence keeps their ids unique.
     table = {"columns": ["a", "b", "c"], "data": [[1, 2, 3]], "total": 1}
-    files = {"/ui/t.table.json": json.dumps(table).encode()}
+    files = {"/workspace/ui/t.table.json": json.dumps(table).encode()}
     msgs = turn_to_a2ui(
-        "", [("t", "/ui/t.table.json")], _reader(files), url, surface_id="s1"
+        "", [("t", "/workspace/ui/t.table.json")], _reader(files), url, surface_id="s1"
     )
     comps = msgs[1]["updateComponents"]["components"]
     ids = [c["id"] for c in comps]
@@ -657,10 +657,10 @@ def test_turn_ids_stable_and_unique():
 
 
 def test_turn_version_on_every_message():
-    files = {"/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
+    files = {"/workspace/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
     msgs = turn_to_a2ui(
-        "text ![fig](/ui/fig.plotly.json)",
-        [("fig", "/ui/fig.plotly.json")],
+        "text ![fig](/workspace/ui/fig.plotly.json)",
+        [("fig", "/workspace/ui/fig.plotly.json")],
         _reader(files),
         url,
         surface_id="s1",
@@ -679,8 +679,8 @@ def test_turn_never_raises_on_unreadable():
         raise OSError("disk gone")
 
     msgs = turn_to_a2ui(
-        "![fig](/ui/fig.plotly.json)",
-        [("fig", "/ui/fig.plotly.json")],
+        "![fig](/workspace/ui/fig.plotly.json)",
+        [("fig", "/workspace/ui/fig.plotly.json")],
         boom,
         url,
         surface_id="s1",
@@ -688,5 +688,5 @@ def test_turn_never_raises_on_unreadable():
     # Degrades to the Text+link fallback, no crash, no data model.
     comp = msgs[1]["updateComponents"]["components"][1]
     assert comp["component"] == "Text"
-    assert comp["link"] == "https://host/ui/fig.plotly.json"
+    assert comp["link"] == "https://host/workspace/ui/fig.plotly.json"
     assert len(msgs) == 2

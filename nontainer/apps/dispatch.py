@@ -13,7 +13,7 @@ execution the executor realizes its own way:
   writes discarded (per-request atomicity). Requests never mint
   commits.
 
-Tracebacks and handler stdout land in ``/app/logs/api.log`` — the
+Tracebacks and handler stdout land in ``<root>/app/logs/api.log`` — the
 agent's repair loop is ``tail``, edit, retry.
 """
 
@@ -38,9 +38,17 @@ from .contract import (
     normalize,
 )
 
-APP_ROOT = "/app"
-API_ROOT = f"{APP_ROOT}/api"
-LOG_PATH = f"{APP_ROOT}/logs/api.log"
+# Fixed names under the workspace root (ws.root, default /workspace):
+# the app tree is <root>/app, handlers <root>/app/api, the handler log
+# <root>/app/logs/api.log. AppRuntime derives the absolute paths.
+APP_DIR = "app"
+
+
+def app_root(ws: Workspace) -> str:
+    """The app tree's absolute path in this workspace."""
+    base = "" if ws.root == "/" else ws.root
+    return f"{base}/{APP_DIR}"
+
 
 _VERBS = frozenset({"get", "post", "put", "delete", "patch"})
 
@@ -111,7 +119,7 @@ class AppsConfig:
 
 
 class AppRuntime:
-    """Dispatch for one workspace's ``/app``. Build once, reuse."""
+    """Dispatch for one workspace's ``<root>/app``. Build once, reuse."""
 
     def __init__(
         self,
@@ -125,7 +133,7 @@ class AppRuntime:
         verb runs read-only — no mutation, so requests are concurrent
         and need no lock. ``log_sink`` routes handler stdout/errors off
         the (read-only) VFS; default is the VFS log at
-        ``/app/logs/api.log`` for the authoring loop.
+        ``<root>/app/logs/api.log`` for the authoring loop.
 
         Handler executions are ``exec_python(view=...)`` calls: the
         executor mints a fresh, restricted sandbox per call (policy
@@ -140,6 +148,10 @@ class AppRuntime:
         self._log_broken = False  # warn once when logging fails
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._contract = (Request, Response, HttpError)
+        # Path layout, derived once from the workspace root.
+        self._app_root = app_root(ws)
+        self._api_root = f"{self._app_root}/api"
+        self._log_path = f"{self._app_root}/logs/api.log"
 
     @property
     def config(self) -> AppsConfig:
@@ -189,7 +201,7 @@ class AppRuntime:
         name = request.path[len("/api/") :].strip("/")
         if not name or "/" in name or name.startswith("_"):
             raise HttpError(404, f"no such endpoint: {request.path}")
-        handler_path = f"{API_ROOT}/{name}.py"
+        handler_path = f"{self._api_root}/{name}.py"
         fs = self._ws.fs
         if not fs.exists(handler_path):
             # agents mirror the FILENAME into the url
@@ -197,7 +209,7 @@ class AppRuntime:
             # an hour — label the door
             if name.endswith(".py"):
                 bare = name[:-3]
-                if bare and fs.exists(f"{API_ROOT}/{bare}.py"):
+                if bare and fs.exists(f"{self._api_root}/{bare}.py"):
                     raise HttpError(
                         404,
                         f"no such endpoint: {request.path} — endpoints are"
@@ -264,7 +276,7 @@ class AppRuntime:
             hint = error_hint(result.error)
             suffix = f"\n[hint: {hint}]" if hint else ""
             self._log(f"[{where}] ERROR:\n{result.error}{suffix}")
-            return _error_response(500, "internal error", log="/app/logs/api.log")
+            return _error_response(500, "internal error", log=self._log_path)
 
         http = result.namespace.get("nt__http")
         if http is not None:
@@ -298,21 +310,21 @@ class AppRuntime:
         if request.method.upper() != "GET":
             raise HttpError(405, "static paths are GET-only")
         rel = request.path.strip("/") or "index.html"
-        # Normalize `.`/`..` and confine to APP_ROOT. Without this,
+        # Normalize `.`/`..` and confine to the app root. Without this,
         # traversal segments escape: `/../secret.md` reads any workspace
         # file and `/./api/h.py` serves backend source (defeating the
         # /api/ split and the _-prefix non-routable rule). normpath
         # collapses the segments; the path must then sit strictly under
         # /app/ (so `/app` itself and a sibling like `/apple` are both
         # rejected).
-        path = posixpath.normpath(f"{APP_ROOT}/{rel}")
-        if not path.startswith(APP_ROOT + "/"):
+        path = posixpath.normpath(f"{self._app_root}/{rel}")
+        if not path.startswith(self._app_root + "/"):
             raise HttpError(404, f"not found: {request.path}")
         # Backend is never served as static. The /api/ URL prefix routes
         # to handlers, but a static request that normalizes INTO api/
         # (e.g. `/./api/h.py`, `/x/../api/_shared.py`) would otherwise
         # serve raw handler source — the frontend/backend boundary.
-        if path == API_ROOT or path.startswith(API_ROOT + "/"):
+        if path == self._api_root or path.startswith(self._api_root + "/"):
             raise HttpError(404, f"not found: {request.path}")
         fs = self._ws.fs
         if not fs.exists(path) or not fs.isfile(path):
@@ -356,9 +368,11 @@ class AppRuntime:
                 self._log_sink(message.rstrip())
                 return
             fs = self._ws.fs
-            fs.makedirs(f"{APP_ROOT}/logs", exist_ok=True)
+            fs.makedirs(f"{self._app_root}/logs", exist_ok=True)
             stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-            fs.write(LOG_PATH, f"[{stamp}] {message.rstrip()}\n".encode(), mode="a")
+            fs.write(
+                self._log_path, f"[{stamp}] {message.rstrip()}\n".encode(), mode="a"
+            )
         except Exception as e:
             # Logging must never break dispatch — but going silently
             # blind is worse: the agent's documented repair loop is

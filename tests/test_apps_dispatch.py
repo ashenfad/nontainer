@@ -21,8 +21,8 @@ def make_ws(**kwargs):
 
 
 def write_handler(ws, name: str, source: str) -> None:
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write(f"/app/api/{name}.py", source.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write(f"/workspace/app/api/{name}.py", source.encode())
 
 
 # -- contract ------------------------------------------------------------
@@ -147,8 +147,8 @@ def test_handler_bare_expressions_do_not_echo():
     )
     r = rt.dispatch(request("GET", "/api/quiet"))
     assert r.status == 200
-    assert not ws.fs.exists("/app/logs/api.log") or (
-        "2" not in ws.fs.read("/app/logs/api.log").decode()
+    assert not ws.fs.exists("/workspace/app/logs/api.log") or (
+        "2" not in ws.fs.read("/workspace/app/logs/api.log").decode()
     )
     ws.close()
 
@@ -166,7 +166,7 @@ def test_handler_error_logs_traceback_and_request():
     )
     r = rt.dispatch(request("GET", "/api/boom?source=filtered&makes=Tesla"))
     assert r.status == 500
-    log = ws.fs.read("/app/logs/api.log").decode()
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "[boom:get ?source=filtered&makes=Tesla] ERROR:" in log
     assert "Traceback (most recent call last)" in log
     assert "line 3" in log and "IndexError" in log
@@ -180,7 +180,7 @@ def test_blocked_import_in_handler_logs_hint():
     write_handler(ws, "probe", "import requests\ndef get(req): return {}")
     r = rt.dispatch(request("GET", "/api/probe"))
     assert r.status == 500
-    log = ws.fs.read("/app/logs/api.log").decode()
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "[hint: " in log and "curl" in log
     ws.close()
 
@@ -235,7 +235,7 @@ def test_crash_is_500_and_logged():
     write_handler(ws, "boom", "def get(req):\n    return 1 / 0\n")
     resp = rt.dispatch(request("GET", "/api/boom"))
     assert resp.status == 500
-    log = ws.fs.read("/app/logs/api.log").decode()
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "ZeroDivisionError" in log
     ws.close()
 
@@ -246,7 +246,7 @@ def test_handler_print_lands_in_log():
         ws, "chatty", "def get(req):\n    print('debugging')\n    return {}\n"
     )
     rt.dispatch(request("GET", "/api/chatty"))
-    assert "debugging" in ws.fs.read("/app/logs/api.log").decode()
+    assert "debugging" in ws.fs.read("/workspace/app/logs/api.log").decode()
     ws.close()
 
 
@@ -330,7 +330,7 @@ def test_failed_post_discards_staged_writes():
     resp = rt.dispatch(request("POST", "/api/partial", body=b"{}"))
     assert resp.status == 500
     assert not ws.fs.exists("/half.txt")  # atomic: nothing left behind
-    assert ws.fs.exists("/app/api/partial.py")  # committed work untouched
+    assert ws.fs.exists("/workspace/app/api/partial.py")  # committed work untouched
     assert ws.terminal("cat keep.txt").stdout.strip() == "keep"
     ws.close()
 
@@ -340,10 +340,10 @@ def test_failed_post_discards_staged_writes():
 
 def test_static_serving():
     ws, rt = make_ws()
-    ws.fs.makedirs("/app", exist_ok=True)
-    ws.fs.write("/app/index.html", b"<h1>app</h1>")
-    ws.fs.write("/app/app.js", b"export const x = 1")
-    ws.fs.write("/app/sub/page.html", b"<p>sub</p>")
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", b"<h1>app</h1>")
+    ws.fs.write("/workspace/app/app.js", b"export const x = 1")
+    ws.fs.write("/workspace/app/sub/page.html", b"<p>sub</p>")
     assert rt.dispatch(request("GET", "/")).content_type.startswith("text/html")
     assert rt.dispatch(request("GET", "/app.js")).ok
     # `.` segments and redundant slashes normalize, stay inside /app
@@ -360,10 +360,10 @@ def test_static_path_traversal_is_contained():
     """The static server must not escape /app/ nor serve backend source
     — normalized `.`/`..` segments were the hole."""
     ws, rt = make_ws()
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/index.html", b"<h1>app</h1>")
-    ws.fs.write("/app/api/scores.py", b"API_KEY = 'sk-secret'")
-    ws.fs.write("/app/api/_shared.py", b"DB_PASSWORD = 'hunter2'")
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", b"<h1>app</h1>")
+    ws.fs.write("/workspace/app/api/scores.py", b"API_KEY = 'sk-secret'")
+    ws.fs.write("/workspace/app/api/_shared.py", b"DB_PASSWORD = 'hunter2'")
     ws.fs.write("/private.md", b"workspace-root file")
     ws.fs.write("/apple", b"sibling-prefix file")  # must not slip a prefix check
 
@@ -374,7 +374,7 @@ def test_static_path_traversal_is_contained():
         "/./api/scores.py",  # backend source via `.`
         "/x/../api/_shared.py",  # non-routable shared code via `..`
         "/api/scores.py",  # backend source as a literal static path
-        "/app/index.html",  # the /app prefix is not part of the URL space
+        "/workspace/app/index.html",  # the /app prefix is not part of the URL space
     ]
     for path in escapes:
         resp = rt.dispatch(request("GET", path))
@@ -397,7 +397,7 @@ def test_error_responses_are_json():
     r = rt.dispatch(request("GET", "/api/boom"))  # handler crash
     assert r.status == 500 and r.content_type == "application/json"
     body = json.loads(r.content)
-    assert body["error"] == "internal error" and body["log"] == "/app/logs/api.log"
+    assert body["error"] == "internal error" and body["log"] == "/workspace/app/logs/api.log"
 
     r = rt.dispatch(request("GET", "/api/teapot"))  # intentional HttpError
     assert r.status == 418
@@ -423,7 +423,7 @@ def test_nonverb_functions_noted_in_log_once():
     )
     rt.dispatch(request("GET", "/api/stats"))
     rt.dispatch(request("GET", "/api/stats"))  # same version: no repeat
-    log = ws.fs.read("/app/logs/api.log").decode()
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert log.count("query() defined but not an HTTP verb") == 1
     assert "_helper" not in log  # underscore-private: fine, unnoted
 
@@ -434,7 +434,7 @@ def test_nonverb_functions_noted_in_log_once():
         "def get(req):\n    return {'n': 1}\n\ndef search(req):\n    pass\n",
     )
     rt.dispatch(request("GET", "/api/stats"))
-    log = ws.fs.read("/app/logs/api.log").decode()
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "search() defined but not an HTTP verb" in log
     ws.close()
 
@@ -487,9 +487,9 @@ def test_curl_absorbs_real_curl_reflexes():
     assert "content-type:" in r.stdout.lower()
 
     # -o writes the body to the workspace fs (cwd-relative)
-    r = ws.terminal("cd /app && curl -o out.json /api/nums && cat out.json")
+    r = ws.terminal("cd /workspace/app && curl -o out.json /api/nums && cat out.json")
     assert r, r.stderr
-    assert json.loads(ws.fs.read("/app/out.json")) == {"nums": [1]}
+    assert json.loads(ws.fs.read("/workspace/app/out.json")) == {"nums": [1]}
 
     # repeated -d concatenates with '&', like real curl
     write_handler(
@@ -555,7 +555,7 @@ def test_get_cache_pop_is_permission_error_not_attribute_error():
     write_handler(ws, "popper", "def get(req):\n    cache.pop('k')\n    return {}\n")
     resp = rt.dispatch(request("GET", "/api/popper"))
     assert resp.status == 500
-    log = ws.fs.read("/app/logs/api.log").decode()
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "PermissionError" in log and "AttributeError" not in log
     assert ws.cache["k"] == 1
     ws.close()

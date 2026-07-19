@@ -132,9 +132,9 @@ def post(req):
 
 
 def _seed_app(w):
-    w.fs.makedirs("/app/api", exist_ok=True)
-    w.fs.write("/app/index.html", b"<html><body>hi</body></html>")
-    w.fs.write("/app/api/count.py", _COUNTER)
+    w.fs.makedirs("/workspace/app/api", exist_ok=True)
+    w.fs.write("/workspace/app/index.html", b"<html><body>hi</body></html>")
+    w.fs.write("/workspace/app/api/count.py", _COUNTER)
     w.checkpoint()
 
 

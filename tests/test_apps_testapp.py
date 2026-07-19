@@ -63,9 +63,9 @@ def post(req):
 def app_ws(chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s1"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/index.html", APP_HTML.encode())
-    ws.fs.write("/app/api/scores.py", HANDLER.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", APP_HTML.encode())
+    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
     ws.cache["scores"] = ["alice", "bob"]
     ws.checkpoint()
     yield ws, rt
@@ -153,9 +153,9 @@ def test_read_settles_past_delayed_fetch(chromium_available):
     DOM (the false-green an agent can't catch)."""
     ws = Workspace(KvgitProvider.open(None, session="s-debounce"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/index.html", DEBOUNCED_HTML.encode())
-    ws.fs.write("/app/api/scores.py", HANDLER.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", DEBOUNCED_HTML.encode())
+    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
     ws.cache["scores"] = ["alice", "bob"]
     ws.checkpoint()
     try:
@@ -179,9 +179,9 @@ def test_unsettled_cap_attaches_stale_note(chromium_available):
     passing (the run itself still passes — it's a note, not a verdict)."""
     ws = Workspace(KvgitProvider.open(None, session="s-churn"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/index.html", CHURN_HTML.encode())
-    ws.fs.write("/app/api/scores.py", HANDLER.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", CHURN_HTML.encode())
+    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
     ws.checkpoint()
     try:
         result = rt.test_app([{"read": "#x"}], settle_cap=1.0)
@@ -198,9 +198,9 @@ def test_unsettled_cap_attaches_stale_note(chromium_available):
 def test_page_error_captured(app_ws, chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s2"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app", exist_ok=True)
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
     ws.fs.write(
-        "/app/index.html",
+        "/workspace/app/index.html",
         b"<html><body><script>throw new Error('kaboom')</script></body></html>",
     )
     result = rt.test_app([])
@@ -214,10 +214,10 @@ def test_absolute_urls_fail_verification(chromium_available):
     breaks under the synthetic prefix and the agent sees it here."""
     ws = Workspace(KvgitProvider.open(None, session="s3"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/api/data.py", b"def get(req):\n    return {'n': 1}\n")
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/api/data.py", b"def get(req):\n    return {'n': 1}\n")
     ws.fs.write(
-        "/app/index.html",
+        "/workspace/app/index.html",
         b"""<html><body><div id="out">pending</div><script>
         fetch('/api/data')
           .then(r => r.ok ? r.json().then(d => out.textContent = 'ok')
@@ -244,9 +244,9 @@ def test_page_errors_carry_locations(chromium_available):
     had no location."""
     ws = Workspace(KvgitProvider.open(None, session="s3c"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app", exist_ok=True)
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
     ws.fs.write(
-        "/app/index.html",
+        "/workspace/app/index.html",
         b"<html><body><div id='x'>hi</div>\n"
         b"<script>\nusePreactHooks();\n</script>\n"
         b"<script>\nlet a = );\n</script>\n"
@@ -265,9 +265,9 @@ def test_blocked_script_named_in_rejections(chromium_available):
     the console — the rejection report names the URL and the allowlist."""
     ws = Workspace(KvgitProvider.open(None, session="s3b"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app", exist_ok=True)
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
     ws.fs.write(
-        "/app/index.html",
+        "/workspace/app/index.html",
         b"""<html><body><div id="out">ok</div>
         <script src="https://evil.example.com/lib.js"></script>
         </body></html>""",
@@ -282,9 +282,9 @@ def test_blocked_script_named_in_rejections(chromium_available):
 def test_external_hosts_denied(chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s4"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/app", exist_ok=True)
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
     ws.fs.write(
-        "/app/index.html",
+        "/workspace/app/index.html",
         b"""<html><body><div id="out">pending</div><script>
         fetch('https://example.com/x')
           .then(() => out.textContent = 'reached')
@@ -337,7 +337,7 @@ def test_agno_test_app_tool_returns_images(app_ws):
     assert "PASS" in out.content
     assert out.images and out.images[0].content[:8] == b"\x89PNG\r\n\x1a\n"
     # and the file artifact persists in the workspace too
-    assert ws.fs.exists("/app/screenshots/shot-1.png")
+    assert ws.fs.exists("/workspace/app/screenshots/shot-1.png")
 
 
 def test_agno_vision_false_keeps_screenshots_path_only(app_ws):
@@ -355,8 +355,8 @@ def test_agno_vision_false_keeps_screenshots_path_only(app_ws):
     out = tk.functions["test_app"].entrypoint(actions=[{"screenshot": True}])
     assert "PASS" in out.content
     assert not out.images
-    assert "/app/screenshots/" in out.content  # the path still rides the text
-    assert ws.fs.exists("/app/screenshots/shot-1.png")
+    assert "/workspace/app/screenshots/" in out.content  # the path still rides the text
+    assert ws.fs.exists("/workspace/app/screenshots/shot-1.png")
 
 
 @pytest.mark.asyncio

@@ -103,7 +103,8 @@ variables do NOT persist between calls. What does persist:
 - files: read/write with normal open(), visible to the terminal too
 - helpers/: put reusable code in .py files there and import it QUALIFIED
   from the workspace root — `from helpers import mymod`, never a bare
-  `import mymod` (imports resolve from '/'; works in app handlers too)"""
+  `import mymod` (imports resolve from '__WS_ROOT__'; works in app
+  handlers too)"""
 
 _CACHE_NOTE = """\
 - cache: a persistent dict for DATA (picklable values), e.g.
@@ -136,14 +137,14 @@ def terminal_description(
         if python_primer:
             desc += "\n\n" + python_primer
     if apps:
-        desc += apps_notes(None if isinstance(apps, bool) else apps)
+        desc += apps_notes(None if isinstance(apps, bool) else apps, root=ws.root)
     if primer:
         desc += "\n\n" + primer
     return desc
 
 
 def python_description(ws: Workspace, *, primer: str | None = None) -> str:
-    desc = _PYTHON_TOOL_CORE
+    desc = _PYTHON_TOOL_CORE.replace("__WS_ROOT__", ws.root)
     extras = _env_notes(ws)
     if extras:
         desc += "\n" + extras
@@ -176,13 +177,13 @@ _APPS_NOTES_TEMPLATE = """\
 
 You can build a web app in this workspace (frontend + backend):
 
-/app/index.html          <- entry page (served at the app root)
-/app/api/<name>.py       <- backend endpoint at api/<name> (the URL has
-                            NO .py: /app/api/scores.py serves api/scores)
-/app/api/_helpers.py     <- _-prefixed files: importable, not routable
-/app/logs/api.log        <- handler errors + prints (tail it to debug)
+__WS__/app/index.html          <- entry page (served at the app root)
+__WS__/app/api/<name>.py       <- backend endpoint at api/<name> (the URL has
+                            NO .py: __WS__/app/api/scores.py serves api/scores)
+__WS__/app/api/_helpers.py     <- _-prefixed files: importable, not routable
+__WS__/app/logs/api.log        <- handler errors + prints (tail it to debug)
 
-Handlers export verb functions; example /app/api/scores.py:
+Handlers export verb functions; example __WS__/app/api/scores.py:
 
     def get(req):
         limit = int(req.params.get("limit", 10))
@@ -223,10 +224,11 @@ pattern exactly (no UMD <script src> builds, no guessing globals like
       render(h(App), document.getElementById('app'));
     </script>
 
-Shared backend code: put modules in /helpers (e.g. /helpers/data.py,
-then `from helpers import data` in any handler — imports resolve from
-the workspace root, so a bare `import data` will NOT find it) —
-imports between /app/api files do NOT work. Browser SCRIPTS may only
+Shared backend code: put modules in __WS__/helpers (e.g.
+__WS__/helpers/data.py, then `from helpers import data` in any handler
+— imports resolve from the workspace root, so a bare `import data`
+will NOT find it) —
+imports between __WS__/app/api files do NOT work. Browser SCRIPTS may only
 load from these hosts (enforced by test_app AND published serving):
 __SCRIPT_HOSTS__
 — plotly.js lives at
@@ -240,18 +242,20 @@ wiring, absolute-URL mistakes, blocked scripts) and reports exactly
 what it rejected and why."""
 
 
-def apps_notes(config: Any = None) -> str:
+def apps_notes(config: Any = None, *, root: str = "/workspace") -> str:
     """The apps section of the terminal tool description, derived from
     an ``AppsConfig``: the script-host sentence states what the walls
     actually enforce, and ``apps_primer`` (embedder guidance — private
-    component libs, house conventions) lands at the end."""
+    component libs, house conventions) lands at the end. ``root`` is
+    the workspace root the path examples are written against
+    (``ws.root`` — pass it whenever you have the workspace)."""
     if config is None:
         from ..apps import AppsConfig
 
         config = AppsConfig()
     notes = _APPS_NOTES_TEMPLATE.replace(
         "__SCRIPT_HOSTS__", ", ".join(config.script_hosts)
-    )
+    ).replace("__WS__", "" if root == "/" else root.rstrip("/"))
     if config.apps_primer:
         notes += "\n\n" + config.apps_primer
     return notes
@@ -373,10 +377,11 @@ PYTHON_UI_NOTE = """
 
 Rich reply artifacts: assign `ui = {"name": value}` at top level, with
 the OBJECT as the value — a plotly figure, pandas DataFrame, matplotlib
-figure, image, or dict. The harness saves each under /ui/ (no savefig,
-no writing into /ui/ yourself) and the result notes its path; embed one
-in your reply with markdown image syntax, e.g.
-![name](/ui/name.plotly.json), using the exact path from the note.
+figure, image, or dict. The harness saves each under __WS__/ui/ (no savefig,
+no writing into __WS__/ui/ yourself) and the result notes its path;
+embed one in your reply with markdown image syntax, e.g.
+![name](__WS__/ui/name.plotly.json), using the exact path from the
+note.
 Unreferenced artifacts display after your reply. (A value that is the
 path of a file you already saved is honored too.)
 For a dashboard, e.g.
@@ -389,6 +394,12 @@ customdata/hover text is the usual size killer — aggregate or sample
 it rather than shipping every row."""
 
 _MAX_ARTIFACT_BYTES = 8_000_000
+
+
+def ui_root(ws: Workspace) -> str:
+    """Where `ui = {...}` artifacts land: ``<ws.root>/ui``."""
+    base = "" if ws.root == "/" else ws.root
+    return f"{base}/ui"
 
 
 class _ArtifactTooLarge(ValueError):
@@ -521,14 +532,18 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
 
     # spec tier: shell-rendered, shell-themed
     if mod.startswith("plotly") and hasattr(value, "to_json"):
-        return _ui_write(ws, f"/ui/{name}.plotly.json", value.to_json().encode())
+        return _ui_write(
+            ws, f"{ui_root(ws)}/{name}.plotly.json", value.to_json().encode()
+        )
     if mod.startswith("pandas") and hasattr(value, "columns"):
         total = len(value)
         payload = _json.loads(
             value.head(200).to_json(orient="split", date_format="iso")
         )
         payload["total"] = total  # renderers say "showing N of total"
-        return _ui_write(ws, f"/ui/{name}.table.json", _json.dumps(payload).encode())
+        return _ui_write(
+            ws, f"{ui_root(ws)}/{name}.table.json", _json.dumps(payload).encode()
+        )
 
     # cards tier: a list of stat / callout dicts is a dashboard row — a
     # declarative shape with no other plausible rendering, so duck-type it
@@ -549,7 +564,7 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
         # strings, not the repr fallback.
         return _ui_write(
             ws,
-            f"/ui/{name}.cards.json",
+            f"{ui_root(ws)}/{name}.cards.json",
             _json.dumps({"items": items}, default=str).encode(),
         )
 
@@ -559,19 +574,19 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
 
         buf = _io.BytesIO()
         value.savefig(buf, format="png", bbox_inches="tight")
-        return _ui_write(ws, f"/ui/{name}.png", buf.getvalue())
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.png", buf.getvalue())
     if mod.startswith("PIL") and hasattr(value, "save"):
         import io as _io
 
         buf = _io.BytesIO()
         value.save(buf, format="PNG")
-        return _ui_write(ws, f"/ui/{name}.png", buf.getvalue())
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.png", buf.getvalue())
     if isinstance(value, (bytes, bytearray)):
         data = bytes(value)
         for magic, ext in _IMAGE_MAGIC.items():
             if data.startswith(magic):
-                return _ui_write(ws, f"/ui/{name}.{ext}", data)
-        return _ui_write(ws, f"/ui/{name}.bin", data)
+                return _ui_write(ws, f"{ui_root(ws)}/{name}.{ext}", data)
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.bin", data)
 
     # html tier: the scientific-python display ecosystem for free
     bundle_fn = getattr(value, "_repr_mimebundle_", None)
@@ -585,21 +600,21 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
         if isinstance(bundle, dict):
             if "text/html" in bundle:
                 return _ui_write(
-                    ws, f"/ui/{name}.html", str(bundle["text/html"]).encode()
+                    ws, f"{ui_root(ws)}/{name}.html", str(bundle["text/html"]).encode()
                 )
             if "image/png" in bundle:
                 import base64 as _b64
 
                 raw = bundle["image/png"]
                 data = _b64.b64decode(raw) if isinstance(raw, str) else raw
-                return _ui_write(ws, f"/ui/{name}.png", data)
+                return _ui_write(ws, f"{ui_root(ws)}/{name}.png", data)
     html_fn = getattr(value, "_repr_html_", None)
     if callable(html_fn):
-        return _ui_write(ws, f"/ui/{name}.html", str(html_fn()).encode())
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.html", str(html_fn()).encode())
 
     # data tier: never fail — always render SOMETHING
     text = _json.dumps(value, indent=2, default=str)
-    return _ui_write(ws, f"/ui/{name}.json", text.encode())
+    return _ui_write(ws, f"{ui_root(ws)}/{name}.json", text.encode())
 
 
 def materialize_ui(
@@ -645,7 +660,7 @@ def materialize_ui(
             msg = _too_large_note(str(raw_name), e.size, type(value).__module__ or "")
             problems.append(msg)
             try:
-                path = _ui_write(ws, f"/ui/{name}.txt", msg.encode())
+                path = _ui_write(ws, f"{ui_root(ws)}/{name}.txt", msg.encode())
             except Exception:
                 continue
         except Exception:
@@ -657,7 +672,9 @@ def materialize_ui(
                     if isinstance(value, (str, bytes, bytearray))
                     else value
                 )
-                path = _ui_write(ws, f"/ui/{name}.txt", repr(preview)[:10_000].encode())
+                path = _ui_write(
+                    ws, f"{ui_root(ws)}/{name}.txt", repr(preview)[:10_000].encode()
+                )
             except Exception:
                 continue
         out.append((name, path))

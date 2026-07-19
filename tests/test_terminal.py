@@ -18,7 +18,9 @@ def test_write_then_read_real_files(dir_ws, tmp_path):
     assert r
     assert "x,y" in r.stdout
     # The files are real on disk (DirProvider)
-    assert (tmp_path / "ws" / "data" / "in.csv").read_text().strip() == "x,y"
+    assert (
+        tmp_path / "ws" / "workspace" / "data" / "in.csv"
+    ).read_text().strip() == "x,y"
 
 
 def test_failure_is_result_not_exception(dir_ws):
