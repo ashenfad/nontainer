@@ -973,9 +973,24 @@ class Workspace:
         with self._lock:  # don't close the provider mid-call
             if not self._closed:
                 self._closed = True
-                # Executor.close is best-effort by contract — the
-                # provider must still close (PR #10).
-                self._executor.close()
+                # Executor.close is best-effort-must-not-raise by
+                # contract, but executors are an extension surface —
+                # a third-party one that breaks the contract must not
+                # get to skip the provider close (a held kvgit store).
+                # Warn rather than swallow: the violation is theirs to
+                # fix (PR #19 review).
+                try:
+                    self._executor.close()
+                except Exception:
+                    import warnings
+
+                    warnings.warn(
+                        f"{type(self._executor).__name__}.close() raised — "
+                        "Executor.close must not (best-effort by contract); "
+                        "closing the provider anyway",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
