@@ -30,3 +30,32 @@ def test_provider_override(tmp_path):
     with workspace("s1", provider=p) as ws:
         assert ws.session == "s1"
         assert ws.terminal("pwd")
+
+
+def test_contract_breaking_executor_close_still_closes_provider(tmp_path):
+    """Executor.close is best-effort-must-not-raise by contract, but
+    executors are an extension surface: a third-party one that raises
+    anyway must not skip the provider close (a held kvgit store). The
+    violation surfaces as a RuntimeWarning, not silence."""
+    from nontainer import Workspace
+    from nontainer.executor import LocalExecutor
+    from nontainer.providers import DirProvider
+
+    closed = []
+
+    class RudeExecutor(LocalExecutor):
+        def close(self):
+            raise OSError("contract? what contract")
+
+    class WitnessProvider(DirProvider):
+        def close(self):
+            closed.append(True)
+            super().close()
+
+    ws = Workspace(
+        WitnessProvider(tmp_path / "rude", session="s1"),
+        executor=RudeExecutor(),
+    )
+    with pytest.warns(RuntimeWarning, match="close\\(\\) raised"):
+        ws.close()
+    assert closed == [True]
