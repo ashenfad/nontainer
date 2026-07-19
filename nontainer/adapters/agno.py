@@ -220,11 +220,12 @@ class WorkspaceTools(Toolkit):
 
             def run_python(code: str) -> str:
                 """Run Python in the sandboxed workspace environment."""
-                from .render import artifacts_note, materialize_ui
+                from .render import artifacts_note, materialize_ui, ui_root
 
                 with self._lock:
+                    ui_dir = ui_root(self._ws)
                     try:
-                        ui_before = set(self._ws.fs.list("/ui"))
+                        ui_before = set(self._ws.fs.list(ui_dir))
                     except Exception:
                         ui_before = set()
                     result = self._ws.run_python(code)
@@ -235,17 +236,17 @@ class WorkspaceTools(Toolkit):
                         self._ws, result.namespace.get("ui")
                     )
                     # near-miss adoption: agents predictably write INTO
-                    # /ui themselves (fig.write_json('/ui/x.json'),
+                    # the ui dir themselves (fig.write_json(...),
                     # savefig) instead of assigning objects to `ui` —
                     # without a note those files display nowhere. New
                     # files the call created join the artifacts note.
                     try:
-                        ui_after = set(self._ws.fs.list("/ui"))
+                        ui_after = set(self._ws.fs.list(ui_dir))
                     except Exception:
                         ui_after = set()
                     claimed = {p for _, p in artifacts}
                     for fname in sorted(ui_after - ui_before):
-                        path = f"/ui/{fname}"
+                        path = f"{ui_dir}/{fname}"
                         if path not in claimed and self._ws.fs.isfile(path):
                             artifacts.append((fname, path))
                     text += artifacts_note(artifacts)
@@ -253,8 +254,10 @@ class WorkspaceTools(Toolkit):
                         text += f"\n[ui note: {problem}]"
                     return text
 
-            run_python.__doc__ = (
-                python_description(workspace, primer=python_primer) + PYTHON_UI_NOTE
+            run_python.__doc__ = python_description(
+                workspace, primer=python_primer
+            ) + PYTHON_UI_NOTE.replace(
+                "__WS__", "" if workspace.root == "/" else workspace.root
             )
             registered.append(run_python)
 

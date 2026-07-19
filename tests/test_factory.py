@@ -10,7 +10,7 @@ def test_dir_backend(tmp_path):
         assert ws.session == "user-42"
         r = ws.terminal("echo hi > f.txt; cat f.txt")
         assert r.stdout.strip() == "hi"
-    assert (tmp_path / "user-42" / "f.txt").exists()
+    assert (tmp_path / "user-42" / "workspace" / "f.txt").exists()
 
 
 def test_session_validated(tmp_path):

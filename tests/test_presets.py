@@ -126,7 +126,13 @@ def test_stdlib_os_path_queries_route_through_vfs():
         "print(os.path.relpath('/a/b/c', '/a'))\n"
     )
     assert r, r.error
-    assert r.stdout.splitlines() == ["1234", "/f.bin", "a/c", "/a/b", "b/c"]
+    assert r.stdout.splitlines() == [
+        "1234",
+        "/workspace/f.bin",
+        "a/c",
+        "/a/b",
+        "b/c",
+    ]
     ws.close()
 
 

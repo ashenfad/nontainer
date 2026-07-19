@@ -18,6 +18,8 @@ workspace(
     cache: bool = True,
     autocheckpoint: bool = True,
     max_observation: int = 32_000,
+    executor_factory: Callable[[], Executor] | None = None,
+    root: str = "/workspace",
 ) -> Workspace
 ```
 
@@ -25,6 +27,15 @@ Session resolution: `kvgit` → branch per session in one shared store;
 `dir` → `store/<session>/`; `agentfs` → `store/<session>.db`. Session
 ids are validated (`SESSION_ID_RE`) on every path — they often flow
 from untrusted input.
+
+`root` is the **workspace root**: the absolute path agent-visible
+files live under, and the one path contract shared across executors.
+cwd starts there, VFS module imports resolve from it, skills install
+to `<root>/skills`, the app tree is `<root>/app` — and a VM executor
+(dud) mounts its guest workspace at this exact path, so an absolute
+path in agent code names the same file on every executor. Forks
+inherit it. `root="/"` selects the flat pre-0.2 layout (no VM path
+parity — a guest can't mount at the fs root).
 
 ## `Workspace`
 
@@ -422,7 +433,7 @@ await arun_test_app(runtime, actions, ...)   # async entry (no waiting thread)
 shutdown_browser()                           # close browser + loop (also atexit)
 ```
 
-Handler contract (agent-authored files under `/app/api/`):
+Handler contract (agent-authored files under `/workspace/app/api/`):
 
 ```python
 Request(method, path, params, headers, body, json)
@@ -443,11 +454,11 @@ Liberal returns: dict/list → JSON · str → text · bytes → blob ·
 `Response` → as specified · None → 204. GET handlers run against a
 read-only filesystem AND a read-only cache view. Failed mutating
 handlers discard their staged writes when the provider was clean at
-dispatch. Logs: `/app/logs/api.log`.
+dispatch. Logs: `/workspace/app/logs/api.log`.
 
 `test_app` actions: `{"click": sel}` · `{"type": [sel, text]}` ·
 `{"read": sel}` · `{"eval": js}` · `{"assert": js}` (retries ~2s) ·
-`{"screenshot": true}` (→ `/app/screenshots/`) · `{"wait": ms}`.
+`{"screenshot": true}` (→ `/workspace/app/screenshots/`) · `{"wait": ms}`.
 Viewports: `"desktop"`/`"tablet"`/`"mobile"` or `{width, height}`.
 
 Serving (frozen snapshots — read-only, concurrent):

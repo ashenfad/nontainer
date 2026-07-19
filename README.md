@@ -59,6 +59,13 @@ fork = ws.fork("what-if")    # O(1) branch; the original is untouched
 ws.rollback(steps=1)         # or time-travel by steps
 ```
 
+Files live under the **workspace root** — `/workspace` by default
+(`workspace(..., root=)`) — and cwd starts there, so relative paths
+just work. The root is the one absolute-path contract shared across
+executors: a dud VM mounts its guest workspace at the same path, so
+`/workspace/data/in.csv` names the same file whether agent code runs
+in the local sandbox or a real machine.
+
 Adapters are one import away:
 
 ```python
@@ -85,7 +92,7 @@ or bring your own provider. Full guidance in the [API reference](docs/api.md).
 
 Agents author full-stack apps: a Preact/HTM frontend plus **request
 handlers** -- serverless semantics, not resident servers. A file's path is
-its route (`/app/api/scores.py` → `/api/scores`), its exported `get`/`post`
+its route (`/workspace/app/api/scores.py` → `/api/scores`), its exported `get`/`post`
 are the verbs. The agent builds and verifies entirely in-loop: a `curl`
 builtin hits the dispatcher from the terminal, and `test_app` runs the app
 headlessly through Playwright with the workspace as the origin -- no server,

@@ -25,11 +25,11 @@ HTM+Preact path only).
 ## App anatomy (convention over registration)
 
 ```
-/app/index.html          ← entry; served at /
-/app/*.js, *.css, ...    ← static assets, served as-is
-/app/api/scores.py       ← handlers: routes /api/scores
-/app/api/_lib.py         ← _-prefixed: importable, never routable
-/app/logs/api.log        ← tracebacks + handler print() output
+/workspace/app/index.html          ← entry; served at /
+/workspace/app/*.js, *.css, ...    ← static assets, served as-is
+/workspace/app/api/scores.py       ← handlers: routes /api/scores
+/workspace/app/api/_lib.py         ← _-prefixed: importable, never routable
+/workspace/app/logs/api.log        ← tracebacks + handler print() output
 ```
 
 ## Handler contract
@@ -37,7 +37,7 @@ HTM+Preact path only).
 File-based routing + verb exports (the Next.js/SvelteKit idiom):
 
 ```python
-# /app/api/scores.py
+# /workspace/app/api/scores.py
 def get(req):
     rows = json.loads(open('/data/scores.json').read())
     return {"scores": rows[: int(req.params.get("limit", 10))]}
@@ -82,7 +82,7 @@ One core function, three consumers:
 dispatch(ws, Request) -> Response
 ```
 
-Dispatch resolves `/api/<name>` → `/app/api/<name>.py`, loads the file
+Dispatch resolves `/api/<name>` → `/workspace/app/api/<name>.py`, loads the file
 source from the workspace fs, and executes it via the workspace's
 extension surface (`Workspace.exec_python`, no checkpoint) with:
 
@@ -94,7 +94,7 @@ extension surface (`Workspace.exec_python`, no checkpoint) with:
   what interactive agent code can do, nothing more (the symmetry rule);
 - a per-request tick/timeout budget tighter than the interactive one
   (config: `AppsConfig.request_timeout`, `request_tick_limit`);
-- stdout + tracebacks appended to `/app/logs/api.log` (the agent's
+- stdout + tracebacks appended to `/workspace/app/logs/api.log` (the agent's
   repair loop is `tail`, edit, retry).
 
 Handler executions hold the same per-workspace lock as tool calls —
@@ -103,7 +103,7 @@ serialized per session, by design (handlers are ms-scale).
 Consumers:
 
 1. **`curl` terminal builtin** (ships with `[apps]`, injected when the
-   workspace has an `/app` dir or via config): `curl [-X POST] [-d body]
+   workspace has an `/workspace/app` dir or via config): `curl [-X POST] [-d body]
    /api/scores?limit=3` → dispatch → response rendered to the pipeline.
    The agent's fast inner loop; no browser, no server.
 2. **`test_app`** (headless verify): Playwright intercepts ALL requests
@@ -142,7 +142,7 @@ Deliberately out of scope:
   as an opt-in injected command restricted to the `dir` backend or a
   writable `Mount` ("external binaries need real files" — the same
   rule as sqlite app state). The materialize-shuttle variant (export
-  /app to a temp dir, build, re-import dist/) is explicitly rejected:
+  /workspace/app to a temp dir, build, re-import dist/) is explicitly rejected:
   mostly-works complexity of exactly the kind this design keeps
   killing.
 - **Node toolchains** (vite/npm) — same verdict as run-ts; deferred.
@@ -252,7 +252,7 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   semantics can).
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
-  `/app/screenshots/` and return workspace paths in the observation —
+  `/workspace/app/screenshots/` and return workspace paths in the observation —
   bytes never inline in model text; vision-capable harnesses can load
   the file).
 - Result caps mirror `max_observation`; screenshot count capped per
@@ -272,7 +272,7 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 
 ## Delivery (where nontainer's concern ends)
 
-nontainer's delivery surface is exactly: the `/app` convention, the
+nontainer's delivery surface is exactly: the `/workspace/app` convention, the
 dispatch function, the mountable `APIRouter`, and the token shape.
 Hosting, TLS, domains, user auth, deploy targets — the harness's.
 Composable paths that already exist with no new API:
@@ -330,7 +330,7 @@ app.mount("/apps", router)      # serves /apps/{token}/...
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler
   stdout/errors, defaulting to the `nontainer.apps` logger.
 - **Static requests are confined**: `.`/`..` collapse, the path must
-  stay under `/app/`, and `/app/api/` is never served as a file — so
+  stay under `/workspace/app/`, and `/workspace/app/api/` is never served as a file — so
   backend source and workspace internals can't leak.
 - **Rate limiting / quotas are edge concerns** — put them at your
   gateway; the router doesn't presume to.

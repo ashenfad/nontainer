@@ -55,15 +55,15 @@ def post(req):
     names = cache.get("names", [])
     names.append(req.require("name"))
     cache["names"] = names
-    open("/app/last.txt", "w").write(names[-1])
+    open("/workspace/app/last.txt", "w").write(names[-1])
     return {"n": len(names)}
 """
 
 
 def _exercise(ws: Workspace) -> None:
     runtime = enable_apps(ws)
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/api/names.py", HANDLER.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/api/names.py", HANDLER.encode())
 
     # mutating verb via direct dispatch
     r = runtime.dispatch(request("POST", "/api/names", body=b'{"name": "amy"}'))
@@ -74,7 +74,7 @@ def _exercise(ws: Workspace) -> None:
     # the curl builtin drives the same dispatch from inside terminal()
     t = ws.terminal('curl -X POST -d \'{"name": "bo"}\' /api/names')
     assert t, t.stderr
-    assert ws.fs.read("/app/last.txt") == b"bo"
+    assert ws.fs.read("/workspace/app/last.txt") == b"bo"
 
 
 def test_apps_runs_on_kvgit_provider():

@@ -50,11 +50,11 @@ def get(req):
 def make_served(*, python=None, on_log=None, **router_kwargs):
     ws = Workspace(KvgitProvider.open(None, session="s1"), python=python)
     enable_apps(ws)
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write("/app/index.html", b"<html><body><h1>hi</h1></body></html>")
-    ws.fs.write("/app/api/scores.py", HANDLER.encode())
-    ws.fs.write("/app/api/writer.py", WRITER.encode())
-    ws.fs.write("/app/api/page.py", HTMLER.encode())
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", b"<html><body><h1>hi</h1></body></html>")
+    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+    ws.fs.write("/workspace/app/api/writer.py", WRITER.encode())
+    ws.fs.write("/workspace/app/api/page.py", HTMLER.encode())
     ws.cache["scores"] = ["alice", "amy", "bob"]
     ws.checkpoint()
 
@@ -127,7 +127,7 @@ def test_mutation_is_rejected():
 def test_handler_error_is_500_and_logged_to_sink():
     logs: list[str] = []
     ws, token, client = make_served(on_log=logs.append)
-    ws.fs.write("/app/api/boom.py", b"def get(req):\n    return 1/0\n")
+    ws.fs.write("/workspace/app/api/boom.py", b"def get(req):\n    return 1/0\n")
     ws.checkpoint()
     r = client.get(f"/apps/{token}/api/boom")
     assert r.status_code == 500
@@ -163,7 +163,7 @@ def test_served_handler_can_call_host_objects():
         python=PythonConfig(host_objects={"db": Telemetry()})
     )
     ws.fs.write(
-        "/app/api/metric.py",
+        "/workspace/app/api/metric.py",
         b"def get(req):\n    return {'points': db.series(req.params['m'])}\n",
     )
     ws.checkpoint()

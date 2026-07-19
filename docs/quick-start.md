@@ -184,7 +184,7 @@ test_app([{"click": "#add"}, {"assert": "..."}, {"screenshot": true}])
 
 `test_app` needs `pip install nontainer[apps]` and
 `playwright install chromium`. Screenshots come back as real images
-to vision models AND persist at `/app/screenshots/`.
+to vision models AND persist at `/workspace/app/screenshots/`.
 
 To share an app, publish a **frozen snapshot** and mount the router:
 

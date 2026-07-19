@@ -242,12 +242,19 @@ class DudExecutor:
         backend: str = "subprocess",
         vm: Mapping[str, Any] | None = None,
     ) -> None:
-        self._root = root
+        self._host_root = root  # rung-1 host dir for dud's Session(root=)
         self._backend = backend
         self._vm = dict(vm or {})
         self._ctx: ExecutionContext | None = None
         self._session: Any | None = None
-        self._work: str | None = None  # guest workspace dir (root/work)
+        self._work: str | None = None  # guest workspace dir (from ping)
+        # The workspace root inside the provider fs (ExecutionContext
+        # .root), normalized to "" for "/" so f"{root}/{rel}" composes.
+        # Host <root>/x <-> guest <work>/x is THE path mapping; on VM
+        # rungs both sides read /workspace/x (dud mounts its workspace
+        # at the same absolute path), so agent code and prompts see one
+        # path contract across executors.
+        self._ws_root = ""
         self._plain: dict[str, Any] = {}  # plain-data host_objects
         self._live: dict[str, Any] = {}  # live host_objects (for recovery)
         self._cache: Any | None = None  # kv-backed cache view (for recovery)
@@ -262,6 +269,12 @@ class DudExecutor:
         """Open the dud session for the configured rung (transport only)."""
         if self._backend in ("vfkit", "vm"):
             vm = dict(self._vm)
+            # The guest mounts its workspace AT the host-side root, so
+            # absolute paths agree across the boundary. root="/" can't
+            # be mounted in a guest — dud's default (/workspace) stays
+            # and the generic prefix mapping covers the difference.
+            if self._ws_root:
+                vm.setdefault("workspace", self._ws_root)
             pooled = vm.pop("pooled", True)
             if pooled:
                 # Same image spec across sessions -> the VM is fungible;
@@ -285,11 +298,12 @@ class DudExecutor:
         if self._backend == "subprocess":
             from dud.backends.subprocess import Session
 
-            return Session(root=self._root, host_objects=host_objects, cache=cache)
+            return Session(root=self._host_root, host_objects=host_objects, cache=cache)
         raise ValueError(f"unknown dud backend {self._backend!r}")
 
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
+        self._ws_root = "" if context.root == "/" else context.root.rstrip("/")
         cfg = context.python_config
         # Live host objects cross as hostcall proxies (dud's own
         # method allowlist boundary; default = all public callables,
@@ -553,7 +567,11 @@ class DudExecutor:
                     "filesystem changes were harvested; its writes are gone "
                     "(a fresh guest was recovered)",
                 )
-            _apply_diff(ctx.fs, d.writes, tuple(d.deletes))
+            _apply_diff(
+                ctx.fs,
+                {self._fs_rel(k): v for k, v in d.writes.items()},
+                tuple(self._fs_rel(k) for k in d.deletes),
+            )
 
         return self._map_result(result, ctx, duration, contract=view.extra_classes)
 
@@ -642,7 +660,17 @@ class DudExecutor:
                 ) from exc
         if d.empty:
             return None
-        return StagedDiff(writes=dict(d.writes), deletes=tuple(d.deletes))
+        return StagedDiff(
+            writes={self._fs_rel(k): v for k, v in d.writes.items()},
+            deletes=tuple(self._fs_rel(k) for k in d.deletes),
+        )
+
+    def _fs_rel(self, rel: str) -> str:
+        """Guest-workspace-relative -> fs-root-relative (the StagedDiff
+        contract): the guest harvests paths relative to its mount; the
+        workspace stages them relative to the provider fs root."""
+        base = self._ws_root.lstrip("/")
+        return f"{base}/{rel}" if base else rel
 
     def sync(self) -> None:
         """Re-materialize the guest tree from the provider (wholesale:
@@ -668,30 +696,44 @@ class DudExecutor:
         return self._ctx
 
     def _push_tree(self) -> None:
-        """Tar the provider tree (via the termish-protocol fs, so
-        staged-but-uncommitted state is included) and push it as the
-        guest's new baseline."""
+        """Tar the workspace-root subtree of the provider (via the
+        termish-protocol fs, so staged-but-uncommitted state is
+        included) and push it as the guest's new baseline. Files the
+        embedder parks OUTSIDE the root are host-only state by the
+        contract — they never reach the guest."""
         fs = self._require_ctx().fs
+        base = self._ws_root  # "" when the root is the fs root
         buf = io.BytesIO()
         # Plain tar: gzip dominated reactivation ~4:1 at scale and buys
         # nothing on a local socket (guest extract auto-detects either).
         with tarfile.open(fileobj=buf, mode="w") as tf:
-            for rel in fs.list("/", recursive=True):
-                if fs.isfile("/" + rel):
-                    data = fs.read("/" + rel)
+            for rel in fs.list(base or "/", recursive=True):
+                full = f"{base}/{rel}"
+                if fs.isfile(full):
+                    data = fs.read(full)
                     info = tarfile.TarInfo(name=rel)
                     info.size = len(data)
                     tf.addfile(info, io.BytesIO(data))
         self._session.push_tree(buf.getvalue())
 
     def _assert_guest_cwd(self) -> None:
-        """Point the guest shell at the host fs's cwd (best-effort:
-        a cwd that doesn't exist guest-side stays at the root)."""
+        """Point the guest shell at the host fs's cwd (best-effort: a
+        cwd that doesn't exist guest-side, or lives outside the
+        workspace root, stays at the guest workspace root)."""
         try:
             cwd = self._require_ctx().fs.getcwd()
         except Exception:
             return
-        rel = cwd.lstrip("/")
+        base = self._ws_root
+        if base:
+            if cwd == base:
+                rel = ""
+            elif cwd.startswith(base + "/"):
+                rel = cwd[len(base) + 1 :]
+            else:
+                return  # host cwd outside the root: no guest analog
+        else:
+            rel = cwd.lstrip("/")
         if rel:
             self._session.shell(f"cd {shlex.quote(rel)}", timeout=10.0)
 
@@ -713,7 +755,8 @@ class DudExecutor:
             if not guest_cwd.startswith(work):
                 return
         rel = guest_cwd[len(work) :].lstrip("/")
-        host = "/" + rel if rel else "/"
+        base = self._ws_root
+        host = f"{base}/{rel}" if rel else (base or "/")
         try:
             if ctx.fs.getcwd() != host and ctx.fs.isdir(host):
                 ctx.fs.chdir(host)

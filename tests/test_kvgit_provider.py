@@ -183,7 +183,7 @@ def test_disk_store_persists_across_instances(tmp_path):
         ws.run_python("cache['n'] = 7")
 
     with workspace("user-1", store=tmp_path, backend="kvgit") as ws2:
-        assert ws2.terminal("pwd").stdout.strip() == "/proj"
+        assert ws2.terminal("pwd").stdout.strip() == "/workspace/proj"
         assert ws2.terminal("cat d.txt").stdout.strip() == "data"
         assert ws2.cache["n"] == 7
         assert len(list(ws2.history())) >= 2

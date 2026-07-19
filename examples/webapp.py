@@ -126,9 +126,9 @@ def main() -> None:
     runtime = enable_apps(ws)
 
     if _has_key():
+        from _model import pick_model  # noqa: I001
         from agno.agent import Agent
 
-        from _model import pick_model  # noqa: I001
         from nontainer.adapters.agno import WorkspaceTools
 
         agent = Agent(

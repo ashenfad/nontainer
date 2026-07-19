@@ -123,12 +123,15 @@ class StagedDiff:
     """
 
     writes: Mapping[str, bytes]
-    """Workspace-relative path (no leading slash) -> full new content.
+    """Fs-root-relative path (no leading slash) -> full new content.
+    Executors whose substrate roots the workspace elsewhere (dud's
+    guest mount) translate to fs-root-relative before returning, so
+    the workspace can stage without knowing the substrate layout.
     Whole-file payloads, not patches — the wire-format decision (dud
     PLAN #1): one encoding both scan-diff and overlay harvest emit."""
 
     deletes: tuple[str, ...] = ()
-    """Workspace-relative paths removed since the last harvest."""
+    """Fs-root-relative paths removed since the last harvest."""
 
 
 @dataclass(frozen=True)
@@ -175,6 +178,15 @@ class ExecutionContext:
     machine tagged with the same id can resume WITHOUT a tree push, so
     a tag must never name a state the tree doesn't exactly hold.
     Callable so it's read at tag time, not frozen at open."""
+
+    root: str = "/workspace"
+    """The workspace root: the absolute VFS path agent-visible files
+    live under — the ONE path contract shared across executors.
+    ``LocalExecutor`` points sandtrap's module imports here; a VM
+    executor mounts its guest workspace at this exact path, so an
+    absolute path in agent code means the same file everywhere.
+    ``"/"`` selects the pre-0.2 layout (files at the fs root — a VM
+    guest can't mount there, so absolute paths diverge on VM rungs)."""
 
 
 @dataclass(frozen=True)
@@ -557,9 +569,13 @@ class LocalExecutor:
         host objects + the kernel-degradation warning."""
         from sandtrap import Policy
 
-        cfg = self._require_ctx().python_config
+        ctx = self._require_ctx()
+        cfg = ctx.python_config
         grants = _flatten_grants(cfg)
         if cfg.policy is not None:
+            # An embedder-supplied policy is theirs wholesale — including
+            # module_root, which they must align with the workspace root
+            # if they move it.
             policy = cfg.policy
         else:
             policy = Policy(
@@ -567,6 +583,11 @@ class LocalExecutor:
                 tick_limit=tick_limit if tick_limit is not None else cfg.tick_limit,
                 memory_limit=cfg.memory_limit_mb,
                 allow_network=cfg.network,
+                # VFS imports resolve from the workspace root, so
+                # `from helpers import x` finds <root>/helpers.py — the
+                # same place agent open() sees it, and the same place a
+                # VM guest resolves it from (parity across executors).
+                module_root=ctx.root,
             )
             for grant in grants:
                 policy.module(

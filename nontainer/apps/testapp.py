@@ -13,7 +13,7 @@ app is served under a synthetic prefix (``/apps/t-test/``), so a
 frontend that hardcodes absolute URLs (``fetch('/api/x')``) gets an
 instructive 404 during verification instead of breaking at delivery.
 
-Screenshots are written to ``/app/screenshots/`` in the workspace and
+Screenshots are written to ``<root>/app/screenshots/`` in the workspace and
 returned as paths — bytes never ride in model-facing observations,
 and the screenshots version/fork/roll back with the session.
 
@@ -122,7 +122,7 @@ def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
     same lock inside ``AppRuntime.dispatch``)."""
     ws = runtime._ws
     with ws.lock:
-        ws.fs.makedirs("/app/screenshots", exist_ok=True)
+        ws.fs.makedirs(f"{runtime._app_root}/screenshots", exist_ok=True)
         ws.fs.write(path, png)
 
 
@@ -372,7 +372,9 @@ async def _run_actions(
                             continue
                         shot_counter += 1
                         png = await page.screenshot()
-                        path = f"/app/screenshots/shot-{shot_counter}.png"
+                        path = (
+                            f"{runtime._app_root}/screenshots/shot-{shot_counter}.png"
+                        )
                         # off the loop AND under the dispatch lock (ws.fs
                         # is shared with executor-hopped dispatch)
                         await loop.run_in_executor(

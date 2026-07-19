@@ -41,7 +41,7 @@ def test_terminal_basics(ws):
     assert r.exit_code == 0
     # the guest write landed in the PROVIDER (diff absorbed), not just
     # in the guest scratch dir
-    assert ws.fs.read("/greet.txt").strip() == b"hello"
+    assert ws.fs.read("/workspace/greet.txt").strip() == b"hello"
     # ...and was committed by the normal autocheckpoint flow
     assert r.checkpoint is not None
 
@@ -70,7 +70,7 @@ def test_cwd_persists_across_calls(ws):
     r = ws.terminal("pwd")
     assert r.stdout.strip().endswith("/sub")
     # host-side mirror caught up once the diff landed files under sub/
-    assert ws.fs.read("/sub/here.txt").strip() == b"x"
+    assert ws.fs.read("/workspace/sub/here.txt").strip() == b"x"
 
 
 # -- python ------------------------------------------------------------------
@@ -100,7 +100,7 @@ def test_files_shared_between_shell_and_python(ws):
     assert r2, r2.error
     assert r2.checkpoint is not None  # the write dirtied the provider
     assert ws.terminal("cat out.txt").stdout.strip() == "py"
-    assert ws.fs.read("/out.txt") == b"py"
+    assert ws.fs.read("/workspace/out.txt") == b"py"
 
 
 def test_host_write_visible_in_guest(ws):
@@ -125,7 +125,7 @@ def test_checkpoint_restore_history(ws):
 
     ws.restore(cp1)
     # provider is back...
-    assert ws.fs.read("/f.txt").strip() == b"one"
+    assert ws.fs.read("/workspace/f.txt").strip() == b"one"
     # ...and so is the GUEST's view (sync re-materialized it)
     assert ws.terminal("cat f.txt").stdout.strip() == "one"
 
@@ -150,8 +150,8 @@ def test_fork():
         try:
             assert child.terminal("cat shared.txt").stdout.strip() == "base"
             child.terminal("echo kid > kid.txt")
-            assert child.fs.exists("/kid.txt")
-            assert not ws.fs.exists("/kid.txt")  # branches independent
+            assert child.fs.exists("/workspace/kid.txt")
+            assert not ws.fs.exists("/workspace/kid.txt")  # branches independent
         finally:
             child.close()
     finally:
@@ -181,7 +181,7 @@ def test_fork_inherits_executor_factory(tmp_path):
             r = child.terminal("echo $(echo nested)")  # command substitution
             assert r.stdout.strip() == "nested"
             child.terminal("echo kid > kid.txt")
-            assert not ws.fs.exists("/kid.txt")
+            assert not ws.fs.exists("/workspace/kid.txt")
         finally:
             child.close()
     finally:
@@ -250,8 +250,8 @@ def post(req):
 
 
 def _seed_app(ws, name="names.py", src=_APP_HANDLER):
-    ws.fs.makedirs("/app/api", exist_ok=True)
-    ws.fs.write(f"/app/api/{name}", src)
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write(f"/workspace/app/api/{name}", src)
     ws.checkpoint()
 
 
@@ -314,7 +314,7 @@ def test_apps_mutating_handler_absorbs_fs_write(ws):
     runtime = enable_apps(ws)
     try:
         assert runtime.dispatch(request("POST", "/api/mk")).status == 200
-        assert ws.fs.read("/made.txt") == b"hi"
+        assert ws.fs.read("/workspace/made.txt") == b"hi"
     finally:
         runtime.close()
 
@@ -465,7 +465,7 @@ def test_dead_guest_recovers_with_state_and_retries():
         # A writing call from within sub/: the cwd mirror lands (sub is
         # in the provider now) and the checkpoint persists it.
         ws.terminal("echo y > also.txt")
-        assert ws.fs.getcwd() == "/sub"
+        assert ws.fs.getcwd() == "/workspace/sub"
         ex._session._proc.kill()  # VM crash / pool reclaim, guest's view
         r = ws.terminal("cat ../f.txt")
         assert r, r.stdout + (r.stderr or "")
@@ -519,7 +519,7 @@ def test_harvest_loss_is_an_error_not_a_silent_success():
         assert "rolled back" in r.error  # entry-clean staging unwound
         assert r.checkpoint is None
         # zero-times semantics: neither plane of the torn call survives
-        assert not ws.fs.exists("/lost.txt")
+        assert not ws.fs.exists("/workspace/lost.txt")
         assert "torn" not in ws.cache
         assert ws.head == head
         # and the recovered guest carries on normally
@@ -627,3 +627,15 @@ def test_view_inputs_do_not_ride_back(ws):
     assert r.error is None, r.error
     assert r.namespace["out"] == 42
     assert "ping" not in r.namespace
+
+
+def test_host_files_outside_the_root_never_reach_the_guest(ws):
+    """The push covers the <root> subtree only: state an embedder parks
+    beside the root (manifests, secrets) is host-only by contract."""
+    with ws.lock:
+        ws.fs.write("/host-only.txt", b"secret")
+        ws.fs.write("/workspace/inside.txt", b"visible")
+    ws._executor.sync()  # raw fs writes bypass the tool-call sync
+    r = ws.terminal("ls")
+    assert "inside.txt" in r.stdout
+    assert "host-only.txt" not in r.stdout
