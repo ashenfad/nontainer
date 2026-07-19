@@ -43,14 +43,35 @@ import os
 import pickle
 import shlex
 import tarfile
+import threading
 import time
 from collections.abc import Iterator, Mapping, MutableMapping
+from dataclasses import replace
 from typing import Any, Literal
 
 from .cache import PREFIX
 from .errors import NotSupportedError
-from .executor import ExecutionContext, StagedDiff, ViewSpec, _is_plain_data, _truncate
+from .executor import (
+    ExecutionContext,
+    HarvestLost,
+    StagedDiff,
+    ViewSpec,
+    _apply_diff,
+    _is_plain_data,
+    _truncate,
+)
 from .workspace import PythonResult, TerminalResult
+
+
+def _lost_exc() -> Any:
+    """dud's ``SessionLost``, or a never-matching sentinel (the empty
+    tuple) when the installed dud predates the lifecycle contract —
+    ``except _lost_exc():`` then catches nothing and calls run bare."""
+    try:
+        from dud.backends.base import SessionLost
+    except ImportError:
+        return ()
+    return SessionLost
 
 # Guest-side wrapper for app-handler (view) execution. PRELUDE
 # reconstructs the pickled inputs (Request et al.) that rode in host→
@@ -60,8 +81,10 @@ from .workspace import PythonResult, TerminalResult
 # (which drops ``_*``) ignores the scaffolding.
 _VIEW_PRELUDE = (
     "import pickle as __nt_pk, base64 as __nt_b64\n"
+    "__nt_in = set()\n"
     "for __nt_k, __nt_v in __nt_pk.loads(__nt_b64.b64decode(__nt_blob)).items():\n"
     "    globals()[__nt_k] = __nt_v\n"
+    "    __nt_in.add(__nt_k)\n"
 )
 
 # Runs BEFORE the prelude's unpickle: make the contract classes'
@@ -98,6 +121,12 @@ _VIEW_BOOTSTRAP = (
 
 _VIEW_EPILOGUE = (
     "\n"
+    # Input names never ride back: LocalExecutor drops injected names
+    # from the outgoing namespace, so parity says the unpickled inputs
+    # (nt__req et al.) vanish here too — before the harvest, so the
+    # non-codec Request object never even reaches dud's Value encoder.
+    "for __nt_k in list(__nt_in):\n"
+    "    globals().pop(__nt_k, None)\n"
     "import dataclasses as __nt_dc, base64 as __nt_b64\n"
     "def __nt_marshal(__nt_o):\n"
     "    if __nt_dc.is_dataclass(__nt_o) and not isinstance(__nt_o, type):\n"
@@ -195,7 +224,15 @@ class DudExecutor:
       is passed through to ``VfkitSession`` (``image``, ``kernel``,
       ``memory_mib``, ``cpus``, …); its defaults boot ``python:3.12-slim``
       with the kernel resolved from ``$DUD_KERNEL``/``~/.dud``. Requesting
-      it off macOS or without a kernel fails closed."""
+      it off macOS or without a kernel fails closed.
+
+    Concurrency: all wire-touching methods serialize on an internal
+    lock. One session = one channel, and dud's request/response framing
+    is not concurrency-safe — while the seam's sanctioned lock-free
+    path (frozen app serving's ``exec_python(view=)``) stays *correct*
+    here, it is serialized, not parallel. Parallel frozen serving needs
+    per-request sessions (a dud golden-snapshot economy, not a v0
+    concern)."""
 
     def __init__(
         self,
@@ -214,6 +251,9 @@ class DudExecutor:
         self._live: dict[str, Any] = {}  # live host_objects (for recovery)
         self._cache: Any | None = None  # kv-backed cache view (for recovery)
         self._closed = False
+        # One session = one channel; dud's framing can't interleave
+        # requests. RLock: recovery paths make wire calls while held.
+        self._lock = threading.RLock()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -262,12 +302,33 @@ class DudExecutor:
         self._live = live
         self._cache = _KvBytesCache(context.kv)
         self._session = self._make_session(live, self._cache)
-        self._work = self._session.ping()["workspace"]
-        if not getattr(self._session, "resumed", False):
-            self._push_tree()  # affinity hit: the tree is already ours
-        self._assert_guest_cwd()
+        self._bind_session()
+
+    def _bind_session(self) -> None:
+        """Ping + materialize the tree + re-assert cwd on a freshly made
+        session — closing it on ANY failure. Without this, a boot race
+        or a bad tree raising out of ``open()`` (the last step of
+        ``Workspace.__init__``) orphans a live guest: nobody holds a
+        workspace to close, and a leaked pooled session sits in the
+        pool's bound set, which pool teardown doesn't reap."""
+        try:
+            self._work = self._session.ping()["workspace"]
+            if not getattr(self._session, "resumed", False):
+                self._push_tree()  # affinity hit: the tree is already ours
+            self._assert_guest_cwd()
+        except BaseException:
+            try:
+                self._session.close()
+            except Exception:
+                pass
+            self._session = None
+            raise
 
     def close(self) -> None:
+        with self._lock:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
         if self._session is not None and not self._closed:
             self._closed = True
             # Tag the parked tree with its provider commit so a session
@@ -311,12 +372,8 @@ class DudExecutor:
         dead attempt already made are the one thing that may repeat.
         """
         try:
-            from dud.backends.base import SessionLost
-        except ImportError:  # older dud: no lifecycle contract, run bare
             return fn()
-        try:
-            return fn()
-        except SessionLost:
+        except _lost_exc():
             self._recover()
             return fn()
 
@@ -326,10 +383,7 @@ class DudExecutor:
         except Exception:
             pass
         self._session = self._make_session(self._live, self._cache)
-        self._work = self._session.ping()["workspace"]
-        if not getattr(self._session, "resumed", False):
-            self._push_tree()
-        self._assert_guest_cwd()
+        self._bind_session()
 
     # -- python ----------------------------------------------------------
 
@@ -363,7 +417,10 @@ class DudExecutor:
                 "pipes into real python)"
             )
         if view is not None:
-            return self._exec_view(ctx, code, dict(inputs or {}), view)
+            # The lock spans exec + harvest so a read-only view's diff
+            # check can't see a concurrent call's writes.
+            with self._lock:
+                return self._exec_view(ctx, code, dict(inputs or {}), view)
 
         from dud.values import NotRepresentable
 
@@ -371,11 +428,12 @@ class DudExecutor:
         merged.update(inputs or {})
         start = time.monotonic()
         try:
-            result = self._with_recovery(lambda: self._session.python(
-                code,
-                inputs=merged or None,
-                timeout=ctx.python_config.timeout,
-            ))
+            with self._lock:
+                result = self._with_recovery(lambda: self._session.python(
+                    code,
+                    inputs=merged or None,
+                    timeout=ctx.python_config.timeout,
+                ))
         except NotRepresentable as exc:
             # Mirror LocalExecutor's contract for bad inputs (there:
             # unpicklable; here: outside the Value codec).
@@ -449,11 +507,14 @@ class DudExecutor:
         duration = time.monotonic() - start
 
         if view.readonly_fs:
+            # A session lost during this check recovers to a fresh guest
+            # whose diff is empty — correct for a GET: nothing was
+            # supposed to be written, nothing gets absorbed either way.
             d = self._with_recovery(lambda: self._session.diff(rebase=False))
             if not d.empty:
                 # A GET that wrote the fs (rung-1 has no read-only mount,
                 # so the write lands then is rejected here — DESIGN.md).
-                self._session.reset()
+                self._with_recovery(lambda: self._session.reset())
                 return PythonResult(
                     stdout="",
                     stderr="",
@@ -466,27 +527,28 @@ class DudExecutor:
         else:
             # Mutating handler: land the writes in the provider staging,
             # matching LocalExecutor's write-through (dispatch's atomicity
-            # then discards them via ws.discard() on error).
-            self._absorb_into_fs(
-                ctx.fs,
-                self._with_recovery(lambda: self._session.diff(rebase=True)),
-            )
+            # then discards them via ws.discard() on error). A session
+            # lost HERE is a torn call — the handler's cache write-backs
+            # already landed but its fs writes died unharvested — so it
+            # surfaces as an errored result, which routes dispatch into
+            # its ws.discard() atomicity path; retrying the diff on the
+            # recovered guest would instead report success minus writes.
+            try:
+                d = self._session.diff(rebase=True)
+            except _lost_exc():
+                self._recover()
+                out = self._map_result(
+                    result, ctx, duration, contract=view.extra_classes
+                )
+                return replace(
+                    out,
+                    error="HarvestLost: guest lost before the handler's "
+                    "filesystem changes were harvested; its writes are gone "
+                    "(a fresh guest was recovered)",
+                )
+            _apply_diff(ctx.fs, d.writes, tuple(d.deletes))
 
         return self._map_result(result, ctx, duration, contract=view.extra_classes)
-
-    @staticmethod
-    def _absorb_into_fs(fs: Any, diff: Any) -> None:
-        for rel, data in diff.writes.items():
-            path = "/" + rel.lstrip("/")
-            parent = path.rsplit("/", 1)[0] or "/"
-            if parent not in (".", "/", ""):
-                fs.makedirs(parent, exist_ok=True)
-            fs.write(path, data)
-        for rel in diff.deletes:
-            try:
-                fs.remove("/" + rel.lstrip("/"))
-            except Exception:
-                pass
 
     def _map_result(
         self,
@@ -530,9 +592,10 @@ class DudExecutor:
         nonzero exit with everything in the merged transcript. Exit
         codes carry through untouched (127 for not-found, etc.)."""
         ctx = self._require_ctx()
-        result = self._with_recovery(
-            lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
-        )
+        with self._lock:
+            result = self._with_recovery(
+                lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
+            )
         self._mirror_cwd(result.cwd)
         stderr = ""
         if result.timed_out:
@@ -553,10 +616,23 @@ class DudExecutor:
         baseline, so each call yields only that call's changes).
         ``None`` for a clean harvest keeps read-only calls read-only
         (no provider dirtying, no phantom checkpoints). A session lost
-        HERE recovers to a fresh guest whose diff is empty — the dead
-        VM's unpulled writes are gone either way; empty-and-consistent
-        beats an exception the checkpoint flow can't act on."""
-        d = self._with_recovery(lambda: self._session.diff(rebase=True))
+        HERE is a torn call, not a clean miss: the exec already
+        committed its cache write-backs (they land inside a successful
+        ``session.python``) while the fs writes died unharvested in the
+        guest. Recover a fresh session, then raise ``HarvestLost`` so
+        the workspace surfaces an errored result and unwinds the staged
+        half — retrying the diff on the recovered guest would report
+        success for a call whose fs effects silently vanished."""
+        with self._lock:
+            try:
+                d = self._session.diff(rebase=True)
+            except _lost_exc() as exc:
+                self._recover()
+                raise HarvestLost(
+                    "guest lost between execution and harvest: this call's "
+                    "file writes died with it (a fresh guest was recovered "
+                    "at the last synced state)"
+                ) from exc
         if d.empty:
             return None
         return StagedDiff(writes=dict(d.writes), deletes=tuple(d.deletes))
@@ -565,9 +641,17 @@ class DudExecutor:
         """Re-materialize the guest tree from the provider (wholesale:
         push_tree wipes and rebuilds — incremental shipping is a
         stage-3 economy), then re-assert the persisted cwd, which
-        push_tree resets to the workspace root."""
-        self._with_recovery(self._push_tree)
-        self._assert_guest_cwd()
+        push_tree resets to the workspace root. A push that dies
+        mid-flight routes through ``_recover()``, whose rebuild pushes
+        (or affinity-resumes) the same tree itself — no retry on top,
+        or the wholesale push would run twice."""
+        with self._lock:
+            try:
+                self._push_tree()
+            except _lost_exc():
+                self._recover()  # rebuild pushes + re-asserts cwd itself
+                return
+            self._assert_guest_cwd()
 
     # -- internals ---------------------------------------------------------
 

@@ -42,9 +42,11 @@ Error taxonomy (stage-1 shape):
 
 Concurrency: executors inherit the workspace's single-writer model —
 mutating calls arrive serialized under ``Workspace.lock``. The one
-sanctioned concurrent path is ``exec_python`` with caller-supplied
-sandboxes (frozen app serving), where every call brings its own
-sandbox instance.
+sanctioned concurrent path is ``exec_python(view=...)`` under frozen
+app serving, which dispatches WITHOUT the workspace lock — an
+executor must make that safe its own way: ``LocalExecutor`` mints a
+fresh sandbox per view call; an executor multiplexing one transport
+(``DudExecutor``'s single session channel) must serialize internally.
 """
 
 from __future__ import annotations
@@ -69,6 +71,42 @@ from .workspace import (
     TerminalResult,
     _render_error,
 )
+
+
+class HarvestLost(RuntimeError):
+    """A remote executor lost its guest between a successful exec and
+    the write harvest. The call is TORN, not cleanly absent: dud
+    applies cache write-backs inside the successful exec, but fs
+    writes cross only via the follow-up ``diff()`` — so the cache half
+    may already be staged provider-side while the fs half died,
+    unrecoverable, with the guest. Raised by :meth:`Executor.diff`
+    (after recovering a fresh session) so the workspace can surface an
+    errored result and unwind the staged half — an empty diff here
+    would report success for a call whose fs effects silently
+    vanished."""
+
+
+def _apply_diff(
+    fs: Any, writes: Mapping[str, bytes], deletes: tuple[str, ...] | list[str]
+) -> None:
+    """Land a write/delete harvest on a workspace fs (parents created,
+    missing deletes tolerated) — the single absorption loop shared by
+    the workspace (``StagedDiff`` staging) and remote executors
+    (mutating-view write-through), so the two paths can't drift."""
+    from pathlib import PurePosixPath
+
+    for rel, data in writes.items():
+        path = "/" + rel.lstrip("/")
+        # PurePosixPath: workspace paths are POSIX regardless of host OS
+        parent = str(PurePosixPath(path).parent)
+        if parent not in (".", "/", ""):
+            fs.makedirs(parent, exist_ok=True)
+        fs.write(path, data)
+    for rel in deletes:
+        try:
+            fs.remove("/" + rel.lstrip("/"))
+        except Exception:
+            pass  # already gone (e.g. parent dir removed first)
 
 
 @dataclass(frozen=True)

@@ -586,9 +586,14 @@ class Workspace:
             # wins the lock either sees the workspace open for its
             # whole execution or raises cleanly — no TOCTOU (PR #7).
             self._check_open()
+            was_dirty = self._provider.dirty
             result = self._executor.exec_shell(command)
-            self._absorb_executor_diff()
+            torn = self._absorb_or_unwind(was_dirty)
             self._save_cwd()
+            if torn is not None:
+                stderr = f"{result.stderr}\n{torn}" if result.stderr else torn
+                return replace(result, exit_code=result.exit_code or 1,
+                               stderr=stderr)
             cp = self._maybe_checkpoint("terminal")
         return replace(result, checkpoint=cp) if cp else result
 
@@ -610,9 +615,13 @@ class Workspace:
         """
         with self._lock:
             self._check_open()
+            was_dirty = self._provider.dirty
             result = self.exec_python(code, inputs=inputs)
-            self._absorb_executor_diff()
+            torn = self._absorb_or_unwind(was_dirty)
             self._save_cwd()
+            if torn is not None:
+                error = f"{result.error}\n\n{torn}" if result.error else torn
+                return replace(result, error=error)
             cp = self._maybe_checkpoint("run_python")
         return replace(result, checkpoint=cp) if cp else result
 
@@ -1019,17 +1028,42 @@ class Workspace:
         d = self._executor.diff()
         if d is None:
             return
-        for rel, data in d.writes.items():
-            path = "/" + rel.lstrip("/")
-            parent = str(PurePosixPath(path).parent)
-            if parent not in (".", "/", ""):
-                self._fs.makedirs(parent, exist_ok=True)
-            self._fs.write(path, data)
-        for rel in d.deletes:
-            try:
-                self._fs.remove("/" + rel.lstrip("/"))
-            except Exception:
-                pass  # already gone (e.g. parent dir removed first)
+        from .executor import _apply_diff
+
+        _apply_diff(self._fs, d.writes, d.deletes)
+
+    def _absorb_or_unwind(self, was_dirty: bool) -> str | None:
+        """:meth:`_absorb_executor_diff`, honoring the torn-call
+        contract: ``HarvestLost`` means the guest died between a
+        successful exec and its write harvest — the call's fs writes
+        are unrecoverable while its cache write-backs may already sit
+        in provider staging. Returns an error message for the result
+        (the call must not read as a success), after unwinding what can
+        be unwound: staging that was clean at call entry holds only
+        this call's effects, so ``discard`` restores exact pre-call
+        state (the call observably happened zero times). Dirty-at-entry
+        staging (autocheckpoint off, prior host writes) holds earlier
+        work that is not ours to drop — leave it, and say so."""
+        from .executor import HarvestLost
+
+        try:
+            self._absorb_executor_diff()
+            return None
+        except HarvestLost as e:
+            if not was_dirty:
+                try:
+                    self._provider.discard()
+                    # No executor.sync(): entry-clean staging held only
+                    # cache write-backs (fs writes never arrived), and
+                    # cache rides the live kv plane, not the pushed
+                    # tree — the recovered guest is already consistent.
+                    return f"{e}; this call's staged changes were rolled back"
+                except Exception:
+                    pass
+            return (
+                f"{e}; WARNING: this call's cache write-backs may remain "
+                "staged and would ride the next checkpoint"
+            )
 
 
 def workspace(
