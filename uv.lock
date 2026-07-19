@@ -458,12 +458,12 @@ wheels = [
 
 [[package]]
 name = "dud"
-version = "0.0.1"
-source = { editable = "../../../../../../../Users/ashenfad/git/dud" }
-
-[package.metadata]
-requires-dist = [{ name = "pytest", marker = "extra == 'dev'", specifier = ">=8" }]
-provides-extras = ["dev"]
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/dc/1b8fe3e9f51f375f57b0c150b00e4e301779c06b40c999f9a7f897866cdd/dud-0.1.1.tar.gz", hash = "sha256:cb6bd2e6b3c2fcf4b35c448fa1fd705ff99d9ca446339c26664fd0fad4194dc6", size = 144064, upload-time = "2026-07-19T19:18:31.133Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/6e/d7ee01e716e2509f430b7d0f21af92a0c00f7774a14e06dc5b4df0730e23/dud-0.1.1-py3-none-any.whl", hash = "sha256:e1f98df2d387b2cd77dd07dc51b2ca723584127db72dd583f3361e0852ae6582", size = 92532, upload-time = "2026-07-19T19:18:29.583Z" },
+]
 
 [[package]]
 name = "exceptiongroup"
@@ -1193,7 +1193,7 @@ requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=1.0" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
-    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", editable = "../../../../../../../Users/ashenfad/git/dud" },
+    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.1.1" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.1" },
     { name = "matplotlib", marker = "extra == 'dev'" },

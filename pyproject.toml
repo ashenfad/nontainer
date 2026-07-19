@@ -53,7 +53,7 @@ mcp = [
 dud = [
     # dud itself requires >=3.11; the marker keeps nontainer's 3.10
     # floor intact for everyone not opting into this executor.
-    "dud; python_version >= '3.11'",
+    "dud>=0.1.1; python_version >= '3.11'",
 ]
 dev = [
     "ruff",
@@ -66,11 +66,6 @@ dev = [
     "pandas",
     "matplotlib",
 ]
-
-[tool.uv.sources]
-# Sibling-path dev source (the nontainer-studio precedent): the dud
-# extra resolves against the local checkout until dud ships to PyPI.
-dud = { path = "/Users/ashenfad/git/dud", editable = true }
 
 [build-system]
 requires = ["hatchling"]
