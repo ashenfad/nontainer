@@ -157,8 +157,10 @@ class AppRuntime:
 
     def dispatch(self, request: Request) -> WireResponse:
         if self._frozen:
-            # Frozen serving: read-only VFS, fresh per-request sandbox —
-            # concurrent by design, no lock.
+            # Frozen serving: read-only VFS, no workspace lock — the
+            # executor makes concurrency safe its own way (LocalExecutor:
+            # a fresh per-request sandbox, genuinely parallel;
+            # DudExecutor: one guest channel, internally serialized).
             return self._dispatch(request)
         # Mutable (authoring) dispatch is a mutating workspace call and
         # serializes like one, under the workspace's own single-writer

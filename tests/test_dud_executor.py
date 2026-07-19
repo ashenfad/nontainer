@@ -489,3 +489,141 @@ def test_dead_guest_recovers_python_namespace():
         assert r.namespace["n"] == 42
     finally:
         ws.close()
+
+
+def test_harvest_loss_is_an_error_not_a_silent_success():
+    """The torn-call window: dud applies cache write-backs inside a
+    successful exec, fs writes cross only via the follow-up diff(). A
+    guest lost in between (pool reclaim of a quiet VM) must surface as
+    an errored call with pre-call state restored — NOT as an empty
+    diff committed alongside the cache half."""
+    from dud.backends.base import SessionLost
+
+    ex = DudExecutor()
+    ws = Workspace(
+        KvgitProvider.open(None, session="dud-harvest-loss"), executor=ex
+    )
+    try:
+        ws.run_python("cache['pre'] = 'committed'")  # clean baseline
+        head = ws.head
+        sess = ex._session
+
+        def dying_diff(**kw):
+            sess._proc.kill()  # the realism
+            raise SessionLost("reclaimed mid-harvest")  # the determinism
+
+        sess.diff = dying_diff
+        r = ws.run_python("cache['torn'] = 1\nopen('lost.txt', 'w').write('x')")
+        assert not r  # errored result, never silent success
+        assert r.error is not None and "harvest" in r.error
+        assert "rolled back" in r.error  # entry-clean staging unwound
+        assert r.checkpoint is None
+        # zero-times semantics: neither plane of the torn call survives
+        assert not ws.fs.exists("/lost.txt")
+        assert "torn" not in ws.cache
+        assert ws.head == head
+        # and the recovered guest carries on normally
+        r2 = ws.run_python("ok = 1")
+        assert r2, r2.error
+        assert r2.namespace["ok"] == 1
+    finally:
+        ws.close()
+
+
+def test_open_failure_closes_the_session(monkeypatch):
+    """A failure after session construction but inside open() (boot
+    race, bad tree) must close the session it just made — otherwise the
+    guest is orphaned with no workspace to close it (and a pooled one
+    would linger in the pool's bound set past teardown)."""
+    closed = []
+
+    class DoomedSession:
+        def ping(self):
+            raise RuntimeError("boot race")
+
+        def close(self):
+            closed.append(True)
+
+    ex = DudExecutor()
+    monkeypatch.setattr(ex, "_make_session", lambda live, cache: DoomedSession())
+    provider = KvgitProvider.open(None, session="dud-open-fail")
+    try:
+        with pytest.raises(RuntimeError, match="boot race"):
+            Workspace(provider, executor=ex)
+        assert closed == [True]
+        assert ex._session is None
+    finally:
+        provider.close()
+
+
+def test_sync_recovery_pushes_the_tree_once():
+    """sync() on a dead guest: the failed push routes into _recover(),
+    whose rebuild pushes the tree itself — no retry on top (the
+    wholesale push is the expensive path; it must not run twice)."""
+    ex = DudExecutor()
+    ws = Workspace(
+        KvgitProvider.open(None, session="dud-sync-once"), executor=ex
+    )
+    try:
+        ws.terminal("echo x > f.txt")
+        ex._session._proc.kill()
+        calls = []
+        orig = ex._push_tree
+
+        def counting():
+            calls.append(1)
+            return orig()
+
+        ex._push_tree = counting
+        ws.write_file("g.txt", "host")  # host write -> executor.sync()
+        # 1: sync's own push (dies on the dead guest); 2: recovery's.
+        # The old shape retried on top for a third, double-pushing.
+        assert len(calls) == 2
+        assert ws.terminal("cat g.txt").stdout.strip() == "host"
+    finally:
+        ws.close()
+
+
+# -- concurrency: the frozen-serving path --------------------------------------
+
+
+def test_concurrent_view_calls_are_safe(ws):
+    """Frozen app serving dispatches exec_python(view=) WITHOUT the
+    workspace lock (the seam's one sanctioned concurrent path). dud
+    multiplexes one session channel, so the executor must serialize
+    internally — without its lock, concurrent calls interleave frames
+    on the socket and corrupt the protocol."""
+    import threading
+
+    from nontainer.executor import ViewSpec
+
+    view = ViewSpec(readonly_fs=True, readonly_cache=True)
+    errs: list[BaseException] = []
+
+    def worker(i: int) -> None:
+        try:
+            for j in range(4):
+                r = ws.exec_python(f"v = {i} * 100 + {j}", view=view)
+                assert r.error is None, r.error
+                assert r.namespace["v"] == i * 100 + j
+        except BaseException as e:  # noqa: BLE001 — collected for the assert
+            errs.append(e)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errs, errs
+
+
+def test_view_inputs_do_not_ride_back(ws):
+    """Parity with LocalExecutor, which drops injected names from the
+    outgoing namespace: a view call's inputs (the pickled-in Request in
+    apps dispatch) must not be marshaled back across the wire."""
+    from nontainer.executor import ViewSpec
+
+    r = ws.exec_python("out = ping * 2", inputs={"ping": 21}, view=ViewSpec())
+    assert r.error is None, r.error
+    assert r.namespace["out"] == 42
+    assert "ping" not in r.namespace
