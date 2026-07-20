@@ -405,6 +405,30 @@ class _AgentFsKV(MutableMapping[str, Any]):
 class AgentFSProvider:
     """``WorkspaceProvider`` over a Turso AgentFS SQLite file."""
 
+    @classmethod
+    def delete(cls, path: str | Path, sessions: Iterable[str]) -> None:
+        """Delete the named sessions' SQLite files under the store root.
+
+        ``path`` is the store base — the directory that holds one
+        ``<session>.db`` per session (mirrors ``workspace()``'s layout,
+        where the factory hands the provider ``base / f"{session}.db"``).
+        Plural, like the other providers' ``delete``. A missing db is a
+        no-op; so is a store dir that was never created. SQLite may
+        leave ``-wal`` / ``-shm`` / ``-journal`` sidecars next to the
+        db, so those go too. Ids are validated first — a db filename is
+        a session id, and the same no-separators rule keeps the unlink
+        inside the store root.
+        """
+        names = [validate_session_id(s) for s in sessions]
+        base = Path(path).expanduser()
+        if not base.is_dir():
+            return  # never-materialized store: nothing to delete
+        for session in names:
+            db = base / f"{session}.db"
+            db.unlink(missing_ok=True)
+            for suffix in ("-wal", "-shm", "-journal"):
+                db.with_name(db.name + suffix).unlink(missing_ok=True)
+
     def __init__(self, db_path: str | Path, *, session: str) -> None:
         try:
             from agentfs_sdk import AgentFS, AgentFSOptions

@@ -25,6 +25,7 @@ its own workspace to break.
 from __future__ import annotations
 
 import pickle
+import shutil
 from collections.abc import Iterable, Iterator, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -92,6 +93,31 @@ class _FileKV(MutableMapping[str, Any]):
 
 class DirProvider:
     """``WorkspaceProvider`` over a plain directory. See module docstring."""
+
+    @classmethod
+    def delete(cls, path: str | Path, sessions: Iterable[str]) -> None:
+        """Delete the named sessions' directories under the store root.
+
+        ``path`` is the store base (the parent that holds one
+        ``<session>/`` tree per session), NOT a single session's root —
+        this is plural, like the other providers' ``delete``. Deleting
+        a session that doesn't exist is a no-op; so is deleting from a
+        store dir that was never created.
+
+        Ids are validated FIRST, all of them, before anything is
+        removed: ``validate_session_id`` forbids path separators and
+        leading dots, so ``base / session`` can't climb out of the
+        store root — a hostile name raises ``SessionIdError`` instead
+        of ``rmtree``-ing something outside the store.
+        """
+        names = [validate_session_id(s) for s in sessions]
+        base = Path(path).expanduser().resolve()
+        if not base.is_dir():
+            return  # never-materialized store: nothing to delete
+        for session in names:
+            target = base / session
+            if target.is_dir():
+                shutil.rmtree(target)
 
     def __init__(self, root: str | Path, *, session: str) -> None:
         validate_session_id(session)

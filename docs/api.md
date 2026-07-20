@@ -37,6 +37,29 @@ path in agent code names the same file on every executor. Forks
 inherit it. `root="/"` selects the flat pre-0.2 layout (no VM path
 parity — a guest can't mount at the fs root).
 
+## `nontainer.delete_workspace(...)` — teardown
+
+```python
+delete_workspace(
+    sessions: str | Iterable[str],
+    *,
+    store: str | Path | None = None,      # default ~/.nontainer
+    backend: "kvgit" | "dir" | "agentfs" = "kvgit",
+) -> None
+```
+
+The counterpart to `workspace(...)`: drops a session's entire stored
+state, dispatching by `backend` to the same layout the factory built —
+`kvgit` deletes the named branches from `store/kvgit`, `dir` removes
+the `store/<session>/` trees, `agentfs` unlinks the `store/<session>.db`
+files. Plural because a caller often owns more than one branch/dir/db
+per logical session (an app publishing snapshot branches, a batch
+cleanup); `sessions` may be a single id or any iterable. Idempotent —
+a name that doesn't exist and a store that was never created are both
+no-ops. Store-level, not live-session: close any open `Workspace` on
+these sessions first (a kvgit store handle pins its branch). It cleans
+only the workspace store, never bookkeeping a caller keeps *beside* it.
+
 ## `Workspace`
 
 One instance == one session's world. Not thread-safe: one workspace,
@@ -301,13 +324,26 @@ fork/discard`, `mount`, `close`.
 KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store
 KvgitProvider(staged, *, session)                        # bring your own Staged
     .staged            # the kvgit Staged (host-side power tool)
+KvgitProvider.delete(path, sessions)   # drop branches (path = the store dir)
 
 DirProvider(root, *, session)
     .root              # the real directory
+DirProvider.delete(path, sessions)     # rmtree dirs (path = the store base)
 
 AgentFSProvider(db_path, *, session)                     # [agentfs] extra
     .db_path           # the SQLite artifact
+AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
 ```
+
+Each `delete(path, sessions)` is the store-level teardown primitive
+`delete_workspace` dispatches to — plural, idempotent, and validating
+session ids first where a bad name could escape the store root (dir,
+agentfs). Kvgit's runs deletions from a hidden `__void__` anchor branch
+(created on first delete, never listed): kvgit can't delete the branch
+a store handle is anchored on, so the sole-branch case has nothing else
+to sit on. `path` is the store directory — the same `store/kvgit` that
+`open` takes for kvgit; the parent store base for dir/agentfs (they
+resolve `<session>/` and `<session>.db` under it).
 
 Capabilities at a glance:
 
