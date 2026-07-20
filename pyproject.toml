@@ -1,6 +1,6 @@
 [project]
 name = "nontainer"
-version = "0.1.2"
+version = "0.2.0"
 description = "A fake little computer for your agent: versioned filesystem, shell, and sandboxed Python."
 readme = "README.md"
 license = "MIT"
