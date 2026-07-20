@@ -173,7 +173,30 @@ ws.session: str
 ws.caps: Capabilities
 ws.cache_enabled: bool
 ws.python_config: PythonConfig
+ws.root: str                  # the workspace root (see the factory)
+ws.supports_commands: bool    # executor capability, below
 ```
+
+**`ws.supports_commands`** — whether injected terminal commands
+(`commands=`, `ws.register_command`) actually reach the shell. It's an
+`Executor` capability, in the same declare-the-difference spirit as
+`ws.caps` for providers:
+
+| Executor | `supports_commands` | why |
+|---|---|---|
+| `LocalExecutor` | `True` | termish receives the mapping, so an injected command is a real command |
+| `DudExecutor` | `False` | a guest runs actual bash; there's no hook to inject into |
+
+Tool descriptions gate on it — the apps primer teaches `curl` only
+where it exists, since promising an agent a command that answers
+`command not found` costs it turns. An executor that predates the flag
+reads as `True`, keeping its historical behavior.
+
+On an executor without it, `test_app` is the verification path. Note
+that importing a handler module and calling its verb by hand is *not*
+an equivalent substitute: it skips routing and runs GET without its
+read-only filesystem, so it can pass on code the real request path
+rejects.
 
 ### Extension surface
 
@@ -381,10 +404,11 @@ build_server(workspace, *, tools="auto", apps=None, name="nontainer",
 CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]
 [--backend kvgit|dir] [--tools auto|terminal|split] [--no-cache]
 [--module NAME ...] [--apps] [--mount POINT=DIR[:rw] ...]` (stdio
-transport). `--apps` enables the apps loop — the `curl` terminal
-builtin plus a `test_app` tool (screenshots return as MCP image
-content; needs the `[apps]` extra + `playwright install chromium`,
-checked lazily at first `test_app`). `--mount /data=~/datasets`
+transport). `--apps` enables the apps loop — a `test_app` tool
+(screenshots return as MCP image content; needs the `[apps]` extra +
+`playwright install chromium`, checked lazily at first `test_app`),
+plus the `curl` terminal builtin on executors that support injected
+commands (see `ws.supports_commands` under Introspection). `--mount /data=~/datasets`
 exposes a host directory inside the workspace (read-only unless
 `:rw`) — the inbound channel for real files, no base64 games.
 `build_server` for anything the flags don't cover (module grants with
@@ -411,6 +435,7 @@ Design doc: [apps.md](apps.md).
 ```python
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
     # builds handler sandboxes + registers the `curl` terminal builtin
+    # (which only reaches the shell where ws.supports_commands)
 
 AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            max_response_bytes=2_000_000,
