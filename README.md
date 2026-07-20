@@ -26,6 +26,7 @@ session in O(1), roll back to any commit, audit the history. All in-process,
 | **Python tool** | Policy-gated sandboxed execution via [sandtrap](https://github.com/ashenfad/sandtrap); safe stdlib on by default, `open()`/`os`/`pathlib` routed to the workspace via [monkeyfs](https://github.com/ashenfad/monkeyfs). |
 | **In-process** | Agent code can call *your* whitelisted host objects -- the live model, the db pool -- under policy. No cloud sandbox can. |
 | **Pluggable substrate** | [kvgit](https://github.com/ashenfad/kvgit) (versioned), [AgentFS](https://github.com/tursodatabase/agentfs), or a plain directory -- same tools. |
+| **Pluggable execution** | the same tools run in-process *or* on a real machine via [dud](https://github.com/ashenfad/dud) -- the versioning is unchanged either way. |
 | **Thin adapters** | [agno](https://github.com/agno-agi/agno) toolkit and an MCP server over one core. |
 
 > **What the sandbox is (and isn't).** In-process, the Python sandbox
@@ -36,8 +37,9 @@ session in O(1), roll back to any commit, audit the history. All in-process,
 > hardened boundary against code *trying* to escape. That's the right
 > posture for your own agent's code. When you need a real boundary
 > (untrusted code, or serving to anonymous clients), escalate with
-> `isolation="process"` / `"kernel"`. Full framing in the
-> [design notes](docs/design.md).
+> `isolation="process"` / `"kernel"`, or step off the in-process model
+> entirely and run the session in a microVM (see Executors). Full
+> framing in the [design notes](docs/design.md).
 
 ## The API in one glance
 
@@ -88,6 +90,39 @@ kvgit for fork/undo/audit, `dir` when agent code needs real files (C
 extensions, subprocesses), AgentFS for the one-file-artifact + SQL story --
 or bring your own provider. Full guidance in the [API reference](docs/api.md).
 
+## Executors (the `[dud]` extra)
+
+The second seam. `WorkspaceProvider` decides where state *lives*;
+`Executor` decides where code *runs* -- and the two are independent,
+because the versioning semantics were always properties of the state
+layer, not the machine.
+
+| Executor | isolation | fidelity |
+|---|---|---|
+| `LocalExecutor` (default) | sandtrap's walled garden, in-process | emulated shell + filesystem |
+| `DudExecutor(backend="subprocess")` | **none** -- host process | real bash, real files |
+| `DudExecutor(backend="vfkit")` | a disposable Linux microVM (macOS/HVF) | real machine |
+
+```python
+from nontainer.executor_dud import DudExecutor
+
+ws = workspace("user-42", executor_factory=lambda: DudExecutor(backend="vfkit"))
+```
+
+Same `terminal` / `run_python` tools, same checkpoints, same O(1)
+forks -- [dud](https://github.com/ashenfad/dud) receives a tree,
+executes against a real filesystem, and returns a diff, which the
+provider commits exactly as it commits a local one. What you buy is
+fidelity: C extensions, real subprocesses, sqlite on real files,
+memory-mapped parquet -- the workloads the in-process emulation serves
+worst.
+
+Note the middle row: `backend="subprocess"` is real bash and real
+Python with **no containment at all** -- agent code runs as you, with
+your network and your files. It's for fidelity during development, not
+for isolation. The microVM backend is the one that gives you a
+boundary.
+
 ## App handlers (the `[apps]` extra)
 
 Agents author full-stack apps: a Preact/HTM frontend plus **request
@@ -126,7 +161,9 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit),
 [monkeyfs](https://github.com/ashenfad/monkeyfs),
 [termish](https://github.com/ashenfad/termish), and
 [sandtrap](https://github.com/ashenfad/sandtrap) -- each independently
-useful, each zero/minimal-dep. [agex](https://github.com/ashenfad/agex) is
+useful, each zero/minimal-dep -- and optionally
+[dud](https://github.com/ashenfad/dud) when the little computer should
+be a real one. [agex](https://github.com/ashenfad/agex) is
 the full agent framework over the same substrate; nontainer is the
 environment layer alone, offered to someone else's loop.
 
@@ -150,6 +187,7 @@ pip install nontainer[agno]     # + agno Toolkit adapter
 pip install nontainer[mcp]      # + MCP server (python -m nontainer.adapters.mcp)
 pip install nontainer[apps]     # + handlers/curl, Playwright test_app, serving router
 pip install nontainer[agentfs]  # + AgentFS substrate (agentfs-sdk)
+pip install nontainer[dud]      # + real-machine / microVM execution (needs 3.11+)
 ```
 
 ## License
