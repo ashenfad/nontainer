@@ -101,13 +101,18 @@ layer, not the machine.
 |---|---|---|
 | `LocalExecutor` (default) | sandtrap's walled garden, in-process | emulated shell + filesystem |
 | `DudExecutor(backend="subprocess")` | **none** -- host process | real bash, real files |
-| `DudExecutor(backend="vfkit")` | a disposable Linux microVM (macOS/HVF) | real machine |
+| `DudExecutor(backend="vm")` | a disposable microVM -- vfkit on macOS, firecracker on Linux/KVM | real machine |
 
 ```python
 from nontainer.executor_dud import DudExecutor
 
-ws = workspace("user-42", executor_factory=lambda: DudExecutor(backend="vfkit"))
+ws = workspace("user-42", executor_factory=lambda: DudExecutor(backend="vm"))
 ```
+
+`"vm"` picks the right hypervisor for the host; name `"vfkit"` or
+`"firecracker"` directly if you need to pin one. Asking for one the
+host can't provide fails closed (`IsolationUnavailable`) rather than
+quietly degrading.
 
 Same `terminal` / `run_python` tools, same checkpoints, same O(1)
 forks -- [dud](https://github.com/ashenfad/dud) receives a tree,
