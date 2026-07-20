@@ -412,7 +412,19 @@ class Workspace:
         # parity — a guest can't mount at the fs root).
         if not root.startswith("/"):
             raise ValueError(f"root must be an absolute path, got {root!r}")
-        self._root = "/" if root == "/" else root.rstrip("/")
+        # Normalize by segment. Anything a guest kernel would collapse
+        # (trailing, doubled, or leading-only slashes) has to collapse
+        # here too, or the executors silently disagree about the root:
+        # "//" left as-is rstrips to "", which reads falsy downstream —
+        # the local side then composes "/skills" (flat layout) while a
+        # guest falls back to dud's own /workspace default. That split
+        # is the exact bug this root exists to prevent.
+        parts = [p for p in root.split("/") if p]
+        if any(p in (".", "..") for p in parts):
+            # Rejected rather than resolved: a guest would normalize
+            # these and the VFS wouldn't, reopening the same split.
+            raise ValueError(f"root must not contain . or .. segments, got {root!r}")
+        self._root = "/" + "/".join(parts) if parts else "/"
 
         # Single-writer enforcement: mutating public methods hold this
         # lock, so concurrent calls from a threading harness serialize
