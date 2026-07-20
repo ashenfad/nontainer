@@ -77,14 +77,6 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# TEMPORARY co-development pin: kvgit 0.3.2 (the delete_branches admin
-# API this branch depends on) is unreleased. Point the resolver at the
-# local checkout so this branch builds against it before publish. pip
-# ignores this table — it resolves the >=0.3.2 floor from PyPI. RETIRE
-# this entry once kvgit 0.3.2 ships to PyPI.
-[tool.uv.sources]
-kvgit = { path = "../kvgit", editable = true }
-
 [tool.hatch.build.targets.wheel]
 packages = ["nontainer"]
 
