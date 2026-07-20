@@ -47,7 +47,11 @@ def test_terminal_pipeline(afs_ws):
 def test_cwd_stateful(afs_ws):
     afs_ws.terminal("mkdir -p deep/nest")
     afs_ws.terminal("cd deep/nest")
-    assert afs_ws.terminal("pwd").stdout.strip() == "/deep/nest"
+    # cwd starts at the workspace root (/workspace by default), so the
+    # relative cd lands under it. This assertion went stale when the
+    # root contract landed (0.2.0) — masked because neither local dev
+    # nor CI installs the [agentfs] extra.
+    assert afs_ws.terminal("pwd").stdout.strip() == "/workspace/deep/nest"
 
 
 def test_terminal_failure(afs_ws):
