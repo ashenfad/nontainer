@@ -8,6 +8,12 @@ stderr, codec-narrowed namespace, opaque-bytes cache host-side,
 real-bash constructs termish rejects).
 
 Requires the ``dud`` extra; skipped when it isn't installed.
+
+These pin ``backend="subprocess"`` explicitly. It is NOT the default
+(that's ``"vm"``, a real boundary) — it's the only rung that runs
+without a hypervisor, which is what makes the seam testable in CI. The
+choice is spelled out at every site so no test quietly depends on a
+zero-isolation default.
 """
 
 import pytest
@@ -23,7 +29,8 @@ from nontainer.executor_dud import DudExecutor  # noqa: E402
 @pytest.fixture
 def ws():
     w = Workspace(
-        KvgitProvider.open(None, session="dud-test"), executor=DudExecutor()
+        KvgitProvider.open(None, session="dud-test"),
+        executor=DudExecutor(backend="subprocess"),
     )
     try:
         yield w
@@ -142,11 +149,11 @@ def test_fork():
     """Fork = provider branch + a fresh dud session pointed at it
     (workspaces own their executor, so the fork gets its own guest)."""
     provider = KvgitProvider.open(None, session="dud-fork")
-    ws = Workspace(provider, executor=DudExecutor())
+    ws = Workspace(provider, executor=DudExecutor(backend="subprocess"))
     try:
         ws.terminal("echo base > shared.txt")
         child_provider = provider.fork("dud-fork-child")
-        child = Workspace(child_provider, executor=DudExecutor())
+        child = Workspace(child_provider, executor=DudExecutor(backend="subprocess"))
         try:
             assert child.terminal("cat shared.txt").stdout.strip() == "base"
             child.terminal("echo kid > kid.txt")
@@ -169,7 +176,7 @@ def test_fork_inherits_executor_factory(tmp_path):
     ws = workspace(
         "dud-factory-parent",
         store=tmp_path,
-        executor_factory=lambda: DudExecutor(),
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
     )
     try:
         ws.terminal("echo base > shared.txt")
@@ -461,7 +468,7 @@ def test_dead_guest_recovers_with_state_and_retries():
     SessionLost inside the executor, which reopens a session, re-pushes
     the provider tree, and retries — the caller sees a normal result
     with committed state intact (the disposable thesis as resilience)."""
-    ex = DudExecutor()
+    ex = DudExecutor(backend="subprocess")
     ws = Workspace(
         KvgitProvider.open(None, session="dud-recover"), executor=ex
     )
@@ -482,7 +489,7 @@ def test_dead_guest_recovers_with_state_and_retries():
 
 
 def test_dead_guest_recovers_python_namespace():
-    ex = DudExecutor()
+    ex = DudExecutor(backend="subprocess")
     ws = Workspace(
         KvgitProvider.open(None, session="dud-recover-py"), executor=ex
     )
@@ -504,7 +511,7 @@ def test_harvest_loss_is_an_error_not_a_silent_success():
     diff committed alongside the cache half."""
     from dud.backends.base import SessionLost
 
-    ex = DudExecutor()
+    ex = DudExecutor(backend="subprocess")
     ws = Workspace(
         KvgitProvider.open(None, session="dud-harvest-loss"), executor=ex
     )
@@ -549,7 +556,7 @@ def test_open_failure_closes_the_session(monkeypatch):
         def close(self):
             closed.append(True)
 
-    ex = DudExecutor()
+    ex = DudExecutor(backend="subprocess")
     monkeypatch.setattr(ex, "_make_session", lambda live, cache: DoomedSession())
     provider = KvgitProvider.open(None, session="dud-open-fail")
     try:
@@ -565,7 +572,7 @@ def test_sync_recovery_pushes_the_tree_once():
     """sync() on a dead guest: the failed push routes into _recover(),
     whose rebuild pushes the tree itself — no retry on top (the
     wholesale push is the expensive path; it must not run twice)."""
-    ex = DudExecutor()
+    ex = DudExecutor(backend="subprocess")
     ws = Workspace(
         KvgitProvider.open(None, session="dud-sync-once"), executor=ex
     )
@@ -739,3 +746,24 @@ def test_unknown_backend_names_the_valid_set():
     rungs land, rather than drifting in a copy here."""
     with pytest.raises(ValueError, match="firecracker"):
         DudExecutor(backend="nope")._make_session({}, {})
+
+
+def test_default_backend_is_a_real_boundary(spy):
+    """The default must never be the zero-isolation rung.
+
+    Someone reaching for DudExecutor is reaching for a real machine and
+    reasonably assumes a real boundary. 'subprocess' gives real bash and
+    real files with NO containment — weaker than the LocalExecutor they
+    left — so it has to be an explicit, informed choice."""
+    DudExecutor()._make_session({}, {})
+    assert spy[0][0] == "vm"
+
+
+def test_zero_isolation_rung_is_opt_in_only():
+    """Belt and braces on the above: assert the signature default
+    directly, so this can't regress via a refactor of _make_session."""
+    import inspect
+
+    default = inspect.signature(DudExecutor.__init__).parameters["backend"].default
+    assert default == "vm"
+    assert default != "subprocess"

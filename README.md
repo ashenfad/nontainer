@@ -100,19 +100,19 @@ layer, not the machine.
 | Executor | isolation | fidelity |
 |---|---|---|
 | `LocalExecutor` (default) | sandtrap's walled garden, in-process | emulated shell + filesystem |
+| `DudExecutor()` -- i.e. `backend="vm"` | a disposable microVM -- vfkit on macOS, firecracker on Linux/KVM | real machine |
 | `DudExecutor(backend="subprocess")` | **none** -- host process | real bash, real files |
-| `DudExecutor(backend="vm")` | a disposable microVM -- vfkit on macOS, firecracker on Linux/KVM | real machine |
 
 ```python
 from nontainer.executor_dud import DudExecutor
 
-ws = workspace("user-42", executor_factory=lambda: DudExecutor(backend="vm"))
+ws = workspace("user-42", executor_factory=lambda: DudExecutor())
 ```
 
-`"vm"` picks the right hypervisor for the host; name `"vfkit"` or
-`"firecracker"` directly if you need to pin one. Asking for one the
-host can't provide fails closed (`IsolationUnavailable`) rather than
-quietly degrading.
+The default `"vm"` picks the right hypervisor for the host; name
+`"vfkit"` or `"firecracker"` directly if you need to pin one. Asking
+for one the host can't provide fails closed (`IsolationUnavailable`)
+rather than quietly degrading.
 
 Same `terminal` / `run_python` tools, same checkpoints, same O(1)
 forks -- [dud](https://github.com/ashenfad/dud) receives a tree,
@@ -122,11 +122,12 @@ fidelity: C extensions, real subprocesses, sqlite on real files,
 memory-mapped parquet -- the workloads the in-process emulation serves
 worst.
 
-Note the middle row: `backend="subprocess"` is real bash and real
-Python with **no containment at all** -- agent code runs as you, with
-your network and your files. It's for fidelity during development, not
-for isolation. The microVM backend is the one that gives you a
-boundary.
+Note the last row: `backend="subprocess"` is real bash and real Python
+with **no containment at all** -- agent code runs as you, with your
+network and your files. It buys fidelity, not a boundary, so it's
+opt-in rather than the default: it's the only backend that needs no
+hypervisor, which makes it the dev/CI floor. If you want containment
+without a VM, you want `LocalExecutor`, not this.
 
 ## App handlers (the `[apps]` extra)
 

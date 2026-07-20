@@ -9,10 +9,13 @@ provider's tree, harvested back as a diff. The versioning semantics
 the provider's, and the workspace stages the harvest through its
 normal checkpoint flow.
 
-Requires the ``dud`` extra (``pip install nontainer[dud]``); dud's
-rung-1 subprocess backend has ZERO containment — agent code runs as
-the host user with open egress (own-agent-own-laptop posture only;
-see dud's DESIGN.md "Backend ladder").
+Requires the ``dud`` extra (``pip install nontainer[dud]``). The
+default backend is ``"vm"`` — a real microVM boundary, resolved per
+platform. The opt-in ``"subprocess"`` backend has ZERO containment:
+agent code runs as the host user with open egress (own-agent-own-laptop
+posture only; see dud's DESIGN.md "Backend ladder"). It is the dev/CI
+floor, not a step on the isolation ladder — ``LocalExecutor`` is the
+gated in-process option.
 
 Intended deltas vs LocalExecutor (pinned by tests/test_dud_executor.py):
 
@@ -219,14 +222,19 @@ class DudExecutor:
     executor only chooses which one to open — via ``dud.session()``, so
     a new dud rung needs no edit here.
 
-    - ``backend="subprocess"`` (default): the guest runtime as a host
-      process. Real bash/python/files, ZERO isolation (own-machine
-      posture). ``root`` optionally pins the guest scratch dir.
-    - ``backend="vfkit"``: a real disposable macOS microVM (HVF).
-    - ``backend="firecracker"``: the same, on Linux/KVM.
-    - ``backend="vm"``: whichever VM rung fits this host (vfkit on
-      macOS, firecracker on Linux). Prefer it over naming one — config
-      written against ``"vm"`` survives new rungs landing.
+    - ``backend="vm"`` (default): whichever VM rung fits this host —
+      vfkit on macOS, firecracker on Linux/KVM. Prefer it over naming
+      one: config written against ``"vm"`` survives new rungs landing,
+      and a host that can't provide one fails closed
+      (``IsolationUnavailable``) rather than degrading silently.
+    - ``backend="vfkit"`` / ``"firecracker"``: pin a specific rung.
+    - ``backend="subprocess"``: the guest runtime as a host process.
+      Real bash/python/files and **ZERO isolation** — agent code runs
+      as you, with your network and your files. It buys fidelity, not
+      a boundary, so it is opt-in: it's dud's dev/CI floor and the only
+      rung that works with no hypervisor at all. ``root`` optionally
+      pins the guest scratch dir. If you want containment without a VM,
+      you want ``LocalExecutor``, not this.
 
     On the VM rungs ``vm`` is passed through to the dud session
     (``image``, ``kernel``, ``memory_mib``, ``cpus``, …); its defaults
@@ -247,7 +255,7 @@ class DudExecutor:
         self,
         *,
         root: str | None = None,
-        backend: str = "subprocess",
+        backend: str = "vm",
         vm: Mapping[str, Any] | None = None,
     ) -> None:
         self._host_root = root  # rung-1 host dir for dud's Session(root=)
