@@ -55,9 +55,9 @@ mcp = [
 dud = [
     # dud itself requires >=3.11; the marker keeps nontainer's 3.10
     # floor intact for everyone not opting into this executor.
-    # 0.2.0: the guest mounts its workspace AT the configured root
+    # 0.2.1: the guest mounts its workspace AT the configured root
     # (/workspace), so agent absolute paths match LocalExecutor's.
-    "dud>=0.2.0; python_version >= '3.11'",
+    "dud>=0.2.1; python_version >= '3.11'",
 ]
 dev = [
     "ruff",
@@ -70,17 +70,6 @@ dev = [
     "pandas",
     "matplotlib",
 ]
-
-# TEMPORARY co-development pins (uv only; pip and CI ignore this table,
-# so the PyPI floors above are what real installs resolve). The
-# /workspace root contract spans three repos: nontainer needs
-# sandtrap's Policy(module_root=) and dud's workspace-at-root guest
-# mount, and neither is released yet. RETIRE both lines once
-# sandtrap 0.2.12 and dud 0.2.0 are on PyPI — a stale sibling pin
-# silently tests something nobody can install.
-[tool.uv.sources]
-sandtrap = { path = "../sandtrap", editable = true }
-dud = { path = "../dud", editable = true }
 
 [build-system]
 requires = ["hatchling"]
