@@ -275,6 +275,22 @@ class Executor(Protocol):
     writes). Both are free no-ops for ``LocalExecutor``.
     """
 
+    # -- capabilities ----------------------------------------------------
+
+    supports_commands: bool
+    """Whether ``ExecutionContext.commands`` reach the shell.
+
+    A capability flag in the ``WorkspaceProvider`` spirit: declare the
+    difference instead of pretending equivalence. ``LocalExecutor``
+    runs termish and hands it the mapping, so injected builtins (apps'
+    ``curl``) are real commands. An executor running actual bash in a
+    guest has no such hook — the mapping isn't reachable from there.
+
+    Tool descriptions are built against this. Teaching an agent a
+    command that answers ``command not found`` costs it turns, so the
+    apps primer advertises ``curl`` only where it exists.
+    """
+
     # -- lifecycle -------------------------------------------------------
 
     def open(self, context: ExecutionContext) -> None:
@@ -460,6 +476,10 @@ class LocalExecutor:
     sandbox forks a persistent worker at :meth:`open` and reaps it at
     :meth:`close`.
     """
+
+    # termish takes the injected mapping directly (see exec_shell), so
+    # apps' curl is a real command here.
+    supports_commands = True
 
     def __init__(self) -> None:
         self._ctx: ExecutionContext | None = None

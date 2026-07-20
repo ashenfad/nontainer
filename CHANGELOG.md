@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covering the second seam — `WorkspaceProvider` decides where state
   lives, `Executor` decides where code runs, and the two are
   independent.
+- **`Executor.supports_commands`** — a capability flag for whether
+  injected terminal commands reach the shell, readable as
+  `ws.supports_commands`. True for `LocalExecutor` (termish takes the
+  mapping), false for `DudExecutor` (real bash has no such hook).
+  Executors predating the flag default to true, keeping their
+  historical behavior.
 
 ### Changed
 - **BREAKING — agent-visible paths moved under the root.** Skills are
@@ -46,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configured root).
 
 ### Fixed
+- **The apps primer no longer teaches `curl` where it doesn't exist.**
+  `curl` is an injected terminal builtin, so under `DudExecutor` the
+  tool description promised a command that answered `command not
+  found` — and the agent then debugged its app instead of its
+  environment. The primer gates on `supports_commands`; where `curl`
+  is absent it points at `test_app` and explicitly warns against
+  importing a handler to call its verb by hand, since that skips
+  routing and runs GET without its read-only filesystem, so it can
+  pass on code the real request path rejects.
 - **`DudExecutor` reaches dud's backends through `dud.session()`**
   instead of importing `dud.backends.*` directly. It had drifted a
   release behind: `backend="firecracker"` raised

@@ -1,5 +1,7 @@
 """Result rendering, tool-exposure heuristic, and tool descriptions."""
 
+import pytest
+
 from nontainer import PythonConfig, Workspace
 from nontainer.adapters.render import (
     render_python,
@@ -123,3 +125,65 @@ def test_terminal_description_carries_apps_config():
     assert "esm.corp.internal" in desc
     assert "HOUSE RULES" in desc
     ws.close()
+
+def test_apps_notes_teach_curl_only_where_it_exists():
+    """curl is an injected terminal command, so it exists only where
+    the executor honors those. Teaching it to an agent running real
+    bash costs turns: the primer promises a tool, the shell answers
+    'command not found', and the agent debugs the app instead."""
+    from nontainer.adapters.render import apps_notes
+
+    with_curl = apps_notes(commands=True)
+    assert "curl /api/scores?limit=3" in with_curl
+    assert "no curl here" not in with_curl
+
+    without = apps_notes(commands=False)
+    assert "curl /api/scores" not in without
+    assert "There is no curl here" in without
+    # steered to the path that exists, and warned off the one that
+    # looks equivalent but isn't (direct calls skip the read-only GET)
+    assert "test_app" in without
+    assert "read-only filesystem" in without
+
+    for notes in (with_curl, without):
+        assert "__CURL_NOTE__" not in notes
+
+
+def test_terminal_description_gates_curl_on_the_executor():
+    """End to end: the capability rides from the executor through the
+    workspace into the tool description the agent actually reads."""
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+
+    local = Workspace(KvgitProvider.open(None, session="primer-local"))
+    try:
+        assert local.supports_commands is True
+        assert "curl /api/scores?limit=3" in terminal_description(
+            local, apps=True, split=False
+        )
+    finally:
+        local.close()
+
+    guest = Workspace(
+        KvgitProvider.open(None, session="primer-guest"),
+        executor=DudExecutor(backend="subprocess"),
+    )
+    try:
+        assert guest.supports_commands is False
+        assert "There is no curl here" in terminal_description(
+            guest, apps=True, split=False
+        )
+    finally:
+        guest.close()
+
+
+def test_unknown_executors_keep_the_historical_default():
+    """A third-party executor predating the flag keeps curl in its
+    primer — losing it silently would be the worse failure."""
+
+    class OldExecutor:
+        pass
+
+    ws = Workspace.__new__(Workspace)
+    ws._executor = OldExecutor()
+    assert ws.supports_commands is True
