@@ -186,6 +186,16 @@ test_app([{"click": "#add"}, {"assert": "..."}, {"screenshot": true}])
 `playwright install chromium`. Screenshots come back as real images
 to vision models AND persist at `/workspace/app/screenshots/`.
 
+> **`curl` is a `LocalExecutor` affordance.** It's a terminal builtin
+> injected into termish, not a binary — so it exists in the in-process
+> shell and not in a `DudExecutor` guest running real bash. The tool
+> description gates on `Executor.supports_commands` and simply won't
+> teach it where it's absent; there, `test_app` is the verification
+> path. Don't reach for importing a handler and calling its verb
+> directly as a substitute: that skips routing and runs GET without
+> its read-only filesystem, so it can pass on code the real request
+> path rejects.
+
 To share an app, publish a **frozen snapshot** and mount the router:
 
 ```python
