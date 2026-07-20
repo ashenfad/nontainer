@@ -54,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to vfkit, so on Linux it would try to boot a macOS hypervisor rather
   than resolving to firecracker. Routing through the façade fixes both
   and means a new dud rung needs no change here.
+- **The workspace root normalizes by segment.** `root="//"` used to
+  `rstrip` to `""`, which reads falsy downstream — the local executor
+  then composed `/skills` (the flat layout) while a VM guest fell back
+  to dud's own `/workspace` default, silently splitting the namespace
+  the root exists to unify. Trailing, doubled, and leading-only
+  slashes now all collapse the way a guest kernel would collapse them;
+  `.`/`..` segments are rejected rather than resolved, since a guest
+  would normalize those and the VFS wouldn't.
 - **Absolute writes inside the guest land in the diff.** With the
   workspace mounted at the root, a write to `/workspace/x` from VM
   guest code is harvested like any other workspace write; it used to

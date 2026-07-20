@@ -46,6 +46,40 @@ def test_root_slash_is_the_legacy_layout():
 def test_root_must_be_absolute():
     with pytest.raises(ValueError, match="absolute"):
         _kv_ws(root="workspace")
+    with pytest.raises(ValueError, match="absolute"):
+        _kv_ws(root="")
+
+
+@pytest.mark.parametrize(
+    "given,want",
+    [
+        ("/workspace/", "/workspace"),  # trailing
+        ("//", "/"),  # would rstrip to "" — the bug
+        ("///", "/"),
+        ("//deep//nest//", "/deep/nest"),  # interior doubles
+    ],
+)
+def test_root_normalizes_by_segment(given, want):
+    """Anything a guest kernel would collapse must collapse here too.
+
+    "//" is the one that bites: rstrip("/") leaves "", which reads
+    falsy downstream, and the executors then disagree — the local side
+    composes "/skills" (flat layout) while the guest falls back to
+    dud's own /workspace default. Silent divergence, which is the exact
+    failure the root contract exists to prevent."""
+    ws = _kv_ws(root=given)
+    try:
+        assert ws.root == want
+    finally:
+        ws.close()
+
+
+@pytest.mark.parametrize("bad", ["/a/../b", "/./a", "/.."])
+def test_root_rejects_dot_segments(bad):
+    """Rejected, not resolved: a guest normalizes these and the VFS
+    doesn't, which reopens the same split."""
+    with pytest.raises(ValueError, match=r"\.\."):
+        _kv_ws(root=bad)
 
 
 def test_custom_root_and_fork_inherits_it():
