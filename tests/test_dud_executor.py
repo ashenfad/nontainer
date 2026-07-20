@@ -337,19 +337,21 @@ def test_bad_inputs_raise_typeerror(ws):
 def test_make_session_vfkit_uses_shared_pool(monkeypatch):
     """backend='vfkit' acquires from dud's shared pool by default (VMs are
     fungible across same-spec sessions), passing VM config + the common
-    host_objects/cache kwargs. No VM is booted (acquire is faked)."""
+    host_objects/cache kwargs. No VM is booted (dud.session is faked)."""
+    import dud
+
     captured = {}
 
-    def fake_acquire(**kw):
-        captured.update(kw)
+    def fake_session(backend, **kw):
+        captured.update(kw, backend=backend)
         return "pooled-session"
 
-    monkeypatch.setattr("dud.backends.pool.acquire_vfkit", fake_acquire)
+    monkeypatch.setattr(dud, "session", fake_session)
     ex = DudExecutor(backend="vfkit", vm={"image": "python:3.12-slim", "cpus": 4})
     s = ex._make_session({"obj": object()}, {"c": b"x"})
     assert s == "pooled-session"
+    assert captured["backend"] == "vfkit" and captured["pooled"] is True
     assert captured["image"] == "python:3.12-slim" and captured["cpus"] == 4
-    assert "pooled" not in captured  # the knob is consumed, not forwarded
     assert "host_objects" in captured and "cache" in captured
 
 
@@ -368,16 +370,19 @@ def test_make_session_vfkit_unpooled_constructs_directly(monkeypatch):
 
 
 def test_make_session_selects_subprocess(monkeypatch):
+    import dud
+
     captured = {}
 
-    class FakeSub:
-        def __init__(self, **kw):
-            captured.update(kw)
+    def fake_session(backend, **kw):
+        captured.update(kw, backend=backend)
+        return "sub-session"
 
-    monkeypatch.setattr("dud.backends.subprocess.Session", FakeSub)
+    monkeypatch.setattr(dud, "session", fake_session)
     ex = DudExecutor(backend="subprocess", root="/tmp/scratch")
     s = ex._make_session({}, {})
-    assert isinstance(s, FakeSub) and captured["root"] == "/tmp/scratch"
+    assert s == "sub-session"
+    assert captured["backend"] == "subprocess" and captured["root"] == "/tmp/scratch"
 
 
 def test_make_session_unknown_backend():
@@ -639,3 +644,98 @@ def test_host_files_outside_the_root_never_reach_the_guest(ws):
     r = ws.terminal("ls")
     assert "inside.txt" in r.stdout
     assert "host-only.txt" not in r.stdout
+
+
+# -- backend selection -------------------------------------------------------
+#
+# Which rung to open is dud's decision, not ours: DudExecutor routes
+# every backend through ``dud.session()``, so a rung landing in dud
+# needs no edit here. These pin the routing without booting anything —
+# a VM rung wants a VMM, a kernel, and ~1s, none of which belongs in a
+# unit suite.
+
+
+@pytest.fixture
+def spy(monkeypatch):
+    """Capture the (backend, kwargs) DudExecutor hands to dud.session."""
+    import dud
+
+    calls = []
+    monkeypatch.setattr(
+        dud, "session", lambda backend, **kw: calls.append((backend, kw)) or "session"
+    )
+    return calls
+
+
+def test_vm_alias_is_duds_to_resolve(spy):
+    """backend="vm" reaches dud verbatim. Resolving it here (to vfkit,
+    say) would bake macOS into the one config whose whole purpose is
+    surviving a platform change."""
+    DudExecutor(backend="vm")._make_session({}, {})
+    assert spy[0][0] == "vm"
+
+
+def test_firecracker_is_reachable(spy):
+    """It shipped in dud 0.2; nontainer used to reject it outright with
+    'unknown dud backend'."""
+    DudExecutor(backend="firecracker")._make_session({}, {})
+    backend, kw = spy[0]
+    assert backend == "firecracker"
+    assert kw["pooled"] is True
+
+
+def test_vm_rungs_pool_with_state_affinity(spy):
+    """Pooled by default and tagged with the provider head, so a parked
+    VM already holding this tree can skip the push."""
+    ex = DudExecutor(backend="vfkit", vm={"cpus": 4})
+    ex._head = lambda: "commit-abc"
+    ex._make_session({}, {})
+    _, kw = spy[0]
+    assert kw["pooled"] is True
+    assert kw["state"] == "commit-abc"
+    assert kw["cpus"] == 4  # vm config still rides through
+
+
+def test_pooling_can_be_declined(spy):
+    """vm={"pooled": False} opts out — and state must go with it, since
+    dud rejects park affinity on an unpooled session."""
+    ex = DudExecutor(backend="vfkit", vm={"pooled": False})
+    ex._head = lambda: "commit-abc"
+    ex._make_session({}, {})
+    _, kw = spy[0]
+    assert kw["pooled"] is False
+    assert kw["state"] is None
+
+
+def test_subprocess_never_asks_for_pooling(spy):
+    """There's no boot to skip on rung 1, and dud raises if asked."""
+    DudExecutor(backend="subprocess", root="/tmp/scratch")._make_session({}, {})
+    backend, kw = spy[0]
+    assert backend == "subprocess"
+    assert kw["root"] == "/tmp/scratch"
+    assert "pooled" not in kw and "state" not in kw
+
+
+def test_workspace_root_rides_to_the_guest(spy):
+    """The guest mounts its workspace AT the host-side root — that's the
+    one-absolute-path contract, and it has to survive a custom root."""
+    ex = DudExecutor(backend="vfkit")
+    ex._ws_root = "/wörk"
+    ex._make_session({}, {})
+    assert spy[0][1]["workspace"] == "/wörk"
+
+
+def test_explicit_workspace_wins_over_the_root(spy):
+    """setdefault, not assignment: an embedder pinning the guest mount
+    point keeps it."""
+    ex = DudExecutor(backend="vfkit", vm={"workspace": "/mine"})
+    ex._ws_root = "/wörk"
+    ex._make_session({}, {})
+    assert spy[0][1]["workspace"] == "/mine"
+
+
+def test_unknown_backend_names_the_valid_set():
+    """Fail closed — and let dud own the message so it stays accurate as
+    rungs land, rather than drifting in a copy here."""
+    with pytest.raises(ValueError, match="firecracker"):
+        DudExecutor(backend="nope")._make_session({}, {})

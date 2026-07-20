@@ -211,21 +211,29 @@ class _KvBytesCache(MutableMapping[str, bytes]):
 
 
 class DudExecutor:
-    """Executor over a dud backend — subprocess (rung 1) or vfkit (rung 2).
+    """Executor over a dud backend — a host process or a real microVM.
 
     Construct bare and pass as ``Workspace(..., executor=DudExecutor())``;
     the workspace binds state via :meth:`open`. Everything above the
     transport is identical across rungs (dud's ``HostSession``), so this
-    executor only chooses which one to open.
+    executor only chooses which one to open — via ``dud.session()``, so
+    a new dud rung needs no edit here.
 
     - ``backend="subprocess"`` (default): the guest runtime as a host
       process. Real bash/python/files, ZERO isolation (own-machine
       posture). ``root`` optionally pins the guest scratch dir.
-    - ``backend="vfkit"``: a real disposable macOS microVM (HVF). ``vm``
-      is passed through to ``VfkitSession`` (``image``, ``kernel``,
-      ``memory_mib``, ``cpus``, …); its defaults boot ``python:3.12-slim``
-      with the kernel resolved from ``$DUD_KERNEL``/``~/.dud``. Requesting
-      it off macOS or without a kernel fails closed.
+    - ``backend="vfkit"``: a real disposable macOS microVM (HVF).
+    - ``backend="firecracker"``: the same, on Linux/KVM.
+    - ``backend="vm"``: whichever VM rung fits this host (vfkit on
+      macOS, firecracker on Linux). Prefer it over naming one — config
+      written against ``"vm"`` survives new rungs landing.
+
+    On the VM rungs ``vm`` is passed through to the dud session
+    (``image``, ``kernel``, ``memory_mib``, ``cpus``, …); its defaults
+    boot ``python:3.12-slim`` with the kernel resolved from
+    ``$DUD_KERNEL``/``~/.dud``. ``vm={"pooled": False}`` opts out of
+    warm-pool reuse. Requesting a rung the host can't provide fails
+    closed (``IsolationUnavailable``).
 
     Concurrency: all wire-touching methods serialize on an internal
     lock. One session = one channel, and dud's request/response framing
@@ -266,40 +274,47 @@ class DudExecutor:
     # -- lifecycle -------------------------------------------------------
 
     def _make_session(self, host_objects: dict[str, Any], cache: Any) -> Any:
-        """Open the dud session for the configured rung (transport only)."""
-        if self._backend in ("vfkit", "vm"):
-            vm = dict(self._vm)
-            # The guest mounts its workspace AT the host-side root, so
-            # absolute paths agree across the boundary. root="/" can't
-            # be mounted in a guest — dud's default (/workspace) stays
-            # and the generic prefix mapping covers the difference.
-            if self._ws_root:
-                vm.setdefault("workspace", self._ws_root)
-            pooled = vm.pop("pooled", True)
-            if pooled:
-                # Same image spec across sessions -> the VM is fungible;
-                # reuse a warm one (guest reset + tree push) instead of
-                # booting. close() parks it back in dud's shared pool.
-                # State affinity: a parked VM tagged with our provider
-                # head already HOLDS this workspace tree (see close());
-                # on such a match `resumed` is set and open() skips the
-                # push entirely.
-                from dud.backends.pool import acquire_vfkit
+        """Open the dud session for the configured rung (transport only).
 
-                return acquire_vfkit(
-                    state=self._head(),
-                    host_objects=host_objects,
-                    cache=cache,
-                    **vm,
-                )
-            from dud.backends.vfkit import VfkitSession
+        Everything goes through ``dud.session()`` — the façade exists so
+        consumers don't hardcode the backend switch. That's what makes
+        ``backend="vm"`` resolve per platform (vfkit on macOS,
+        firecracker on Linux) and what lets a new dud rung land without
+        an edit here.
+        """
+        import dud
 
-            return VfkitSession(host_objects=host_objects, cache=cache, **vm)
         if self._backend == "subprocess":
-            from dud.backends.subprocess import Session
+            # No boot to skip, so no pooling; root pins the guest scratch dir.
+            return dud.session(
+                "subprocess",
+                root=self._host_root,
+                host_objects=host_objects,
+                cache=cache,
+            )
 
-            return Session(root=self._host_root, host_objects=host_objects, cache=cache)
-        raise ValueError(f"unknown dud backend {self._backend!r}")
+        vm = dict(self._vm)
+        # The guest mounts its workspace AT the host-side root, so
+        # absolute paths agree across the boundary. root="/" can't
+        # be mounted in a guest — dud's default (/workspace) stays
+        # and the generic prefix mapping covers the difference.
+        if self._ws_root:
+            vm.setdefault("workspace", self._ws_root)
+        # Same image spec across sessions -> the VM is fungible; reuse a
+        # warm one (guest reset + tree push) instead of booting. close()
+        # parks it back in dud's shared pool. State affinity: a parked VM
+        # tagged with our provider head already HOLDS this workspace tree
+        # (see close()); on such a match `resumed` is set and open()
+        # skips the push entirely.
+        pooled = vm.pop("pooled", True)
+        return dud.session(
+            self._backend,
+            pooled=pooled,
+            state=self._head() if pooled else None,
+            host_objects=host_objects,
+            cache=cache,
+            **vm,
+        )
 
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
