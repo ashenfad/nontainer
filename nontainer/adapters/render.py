@@ -137,7 +137,11 @@ def terminal_description(
         if python_primer:
             desc += "\n\n" + python_primer
     if apps:
-        desc += apps_notes(None if isinstance(apps, bool) else apps, root=ws.root)
+        desc += apps_notes(
+            None if isinstance(apps, bool) else apps,
+            root=ws.root,
+            commands=ws.supports_commands,
+        )
     if primer:
         desc += "\n\n" + primer
     return desc
@@ -204,9 +208,7 @@ have a READ-ONLY filesystem and cache. Handlers see the same
 environment as your python code (cache, files via open(), injected
 objects). Use `with open(...)` for writes.
 
-Test endpoints instantly with curl (no server): curl /api/scores?limit=3,
-curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
-curl /api/scores | jq .
+__CURL_NOTE__
 
 Frontend: for most apps, plain HTML + DOM + fetch is the MOST RELIABLE
 choice. Use RELATIVE urls and module names: fetch('api/scores') — never
@@ -237,25 +239,47 @@ styles, and fonts may use any https host (map tiles work); for maps,
 plotly's tile-free scattergeo/choropleth need no tiles at all.
 
 After changing the app, ALWAYS verify with the test_app tool before
-telling the user it works — it catches what curl can't (frontend
-wiring, absolute-URL mistakes, blocked scripts) and reports exactly
-what it rejected and why."""
+telling the user it works — it catches what endpoint-level checks
+can't (frontend wiring, absolute-URL mistakes, blocked scripts) and
+reports exactly what it rejected and why."""
+
+_CURL_NOTE = """Test endpoints instantly with curl (no server): curl /api/scores?limit=3,
+curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
+curl /api/scores | jq ."""
+
+_NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and the app
+answers requests only through test_app. Verify endpoints by driving
+the page that calls them (test_app runs the frontend's fetches against
+your handlers) rather than probing routes directly. Don't import a
+handler module to call its verb by hand: that skips routing and runs
+GET without its read-only filesystem, so it can pass on code the real
+request path rejects."""
 
 
-def apps_notes(config: Any = None, *, root: str = "/workspace") -> str:
+def apps_notes(
+    config: Any = None, *, root: str = "/workspace", commands: bool = True
+) -> str:
     """The apps section of the terminal tool description, derived from
     an ``AppsConfig``: the script-host sentence states what the walls
     actually enforce, and ``apps_primer`` (embedder guidance — private
     component libs, house conventions) lands at the end. ``root`` is
     the workspace root the path examples are written against
-    (``ws.root`` — pass it whenever you have the workspace)."""
+    (``ws.root`` — pass it whenever you have the workspace).
+
+    ``curl`` is an injected terminal command, so it exists only where
+    the executor honors those (``Executor.supports_commands``). Pass
+    ``commands=False`` for an executor running a real shell — a primer
+    that teaches a command answering ``command not found`` costs the
+    agent turns."""
     if config is None:
         from ..apps import AppsConfig
 
         config = AppsConfig()
-    notes = _APPS_NOTES_TEMPLATE.replace(
-        "__SCRIPT_HOSTS__", ", ".join(config.script_hosts)
-    ).replace("__WS__", "" if root == "/" else root.rstrip("/"))
+    notes = (
+        _APPS_NOTES_TEMPLATE.replace("__SCRIPT_HOSTS__", ", ".join(config.script_hosts))
+        .replace("__WS__", "" if root == "/" else root.rstrip("/"))
+        .replace("__CURL_NOTE__", _CURL_NOTE if commands else _NO_CURL_NOTE)
+    )
     if config.apps_primer:
         notes += "\n\n" + config.apps_primer
     return notes

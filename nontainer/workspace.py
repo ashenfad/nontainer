@@ -560,6 +560,21 @@ class Workspace:
         return self._root
 
     @property
+    def supports_commands(self) -> bool:
+        """Whether injected terminal commands reach the shell.
+
+        An executor capability (``Executor.supports_commands``): true
+        for the in-process termish shell, false for one running real
+        bash in a guest. Tool descriptions gate on it — apps' ``curl``
+        is only worth teaching where it exists.
+
+        Defaults to true for executors predating the flag: that's the
+        historical behavior, so a third-party executor keeps whatever
+        it had rather than silently losing the primer's curl section.
+        """
+        return getattr(self._executor, "supports_commands", True)
+
+    @property
     def caps(self) -> Capabilities:
         return self._provider.caps
 

@@ -251,6 +251,12 @@ class DudExecutor:
     per-request sessions (a dud golden-snapshot economy, not a v0
     concern)."""
 
+    # Real bash in a guest: there is no hook for injected commands, so
+    # apps' curl doesn't exist here and the primer must not teach it.
+    # Closing this needs a guest->host channel reachable from the shell
+    # (dud DESIGN.md, "The apps loop"); agents use test_app meanwhile.
+    supports_commands = False
+
     def __init__(
         self,
         *,
