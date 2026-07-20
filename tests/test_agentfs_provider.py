@@ -163,3 +163,41 @@ def test_open_plus_modes_round_trip(tmp_path):
     except FileNotFoundError:
         pass
     p.close()
+
+
+# -- delete -------------------------------------------------------------------------
+
+
+def test_delete_unlinks_db_files(tmp_path):
+    a = AgentFSProvider(tmp_path / "a.db", session="a")
+    a.close()
+    b = AgentFSProvider(tmp_path / "b.db", session="b")
+    b.close()
+    AgentFSProvider.delete(tmp_path, {"a"})
+    assert not (tmp_path / "a.db").exists()
+    assert (tmp_path / "b.db").exists()  # sibling untouched
+
+
+def test_delete_nonexistent_and_empty_store_are_noops(tmp_path):
+    a = AgentFSProvider(tmp_path / "a.db", session="a")
+    a.close()
+    AgentFSProvider.delete(tmp_path, {"a", "never"})  # missing name: no raise
+    assert not (tmp_path / "a.db").exists()
+    AgentFSProvider.delete(tmp_path / "no-store", {"whatever"})  # no store: no raise
+
+
+def test_delete_rejects_bad_session_id(tmp_path):
+    from nontainer import SessionIdError
+
+    with pytest.raises(SessionIdError):
+        AgentFSProvider.delete(tmp_path, {"../escape"})
+
+
+def test_delete_workspace_convenience(tmp_path):
+    from nontainer import delete_workspace
+
+    with workspace("s", store=tmp_path, backend="agentfs"):
+        pass
+    assert (tmp_path / "s.db").exists()
+    delete_workspace("s", store=tmp_path, backend="agentfs")
+    assert not (tmp_path / "s.db").exists()

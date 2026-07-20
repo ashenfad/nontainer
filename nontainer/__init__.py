@@ -3,6 +3,7 @@
 Public surface:
 
     workspace(...)      -- factory; the one-liner entry point
+    delete_workspace(...) -- teardown counterpart; drops a session's state
     Workspace           -- files + shell + python + cache, versioned
     PythonConfig        -- what sandboxed code may touch
     TerminalResult, PythonResult, WriteOutcome, EditOutcome
@@ -40,11 +41,13 @@ from .workspace import (
     TerminalResult,
     Workspace,
     WriteOutcome,
+    delete_workspace,
     workspace,
 )
 
 __all__ = [
     "workspace",
+    "delete_workspace",
     "Workspace",
     "PythonConfig",
     "Mount",

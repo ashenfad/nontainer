@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Session deletion is a first-class API.** `delete_workspace(sessions,
+  *, store=, backend=)` is the teardown counterpart to `workspace(...)`
+  — it dispatches by backend to the same layout the factory built
+  (kvgit branches under `store/kvgit`, `dir` session trees, agentfs
+  `.db` files) and is plural + idempotent (a name that doesn't exist,
+  or a store never created, is a no-op). Each provider gains a matching
+  `delete(path, sessions)` classmethod. Kvgit's carries the wrinkle
+  that motivated promoting this out of downstream apps: kvgit can't
+  delete the branch a store handle is anchored on, so deletions run
+  from a hidden `__void__` anchor branch (minted on first delete, never
+  listed) — the sole-branch case has nothing else to sit on. Dir and
+  agentfs validate session ids before touching disk so a hostile name
+  can't escape the store root.
+
 ## [0.2.0] - 2026-07-20
 
 ### Added

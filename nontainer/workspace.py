@@ -1207,3 +1207,53 @@ def workspace(
         executor_factory=executor_factory,
         root=root,
     )
+
+
+def delete_workspace(
+    sessions: str | Iterable[str],
+    *,
+    store: str | Path | None = None,
+    backend: Literal["kvgit", "dir", "agentfs"] = "kvgit",
+) -> None:
+    """Delete one or more sessions' entire stored state.
+
+    The teardown counterpart to :func:`workspace`, and it dispatches by
+    ``backend`` the same way — resolving the same ``store`` (default
+    ``~/.nontainer``) to the same per-backend layout the factory built:
+
+    - ``"kvgit"``: deletes the named branches from the shared store at
+      ``store/kvgit``.
+    - ``"dir"``: removes the ``store/<session>/`` directory trees.
+    - ``"agentfs"``: unlinks the ``store/<session>.db`` files.
+
+    Plural because a caller often owns more than one branch/dir/db per
+    logical session (an app that publishes snapshot branches, a batch
+    cleanup). ``sessions`` may be a single id or any iterable of ids.
+    Deleting a name that doesn't exist is a no-op; so is deleting from
+    a store that was never created — teardown is idempotent.
+
+    This is a store-level operation, not a live-session one: close any
+    open :class:`Workspace` on these sessions first (a kvgit store
+    handle pins its branch). It does not touch anything a caller keeps
+    *beside* the workspace store (an app's own db files, transcripts) —
+    that bookkeeping is the caller's to clean up.
+    """
+    if isinstance(sessions, str):
+        names: set[str] = {sessions}
+    else:
+        names = set(sessions)
+    base = Path(store).expanduser() if store else Path.home() / ".nontainer"
+    if backend == "dir":
+        from .providers.dir import DirProvider
+
+        DirProvider.delete(base, names)
+    elif backend == "kvgit":
+        from .providers.kvgit import KvgitProvider
+
+        KvgitProvider.delete(base / "kvgit", names)
+    elif backend == "agentfs":
+        from .providers.agentfs import AgentFSProvider
+
+        AgentFSProvider.delete(base, names)
+    else:
+        raise ValueError(f"Unknown backend: {backend!r}")

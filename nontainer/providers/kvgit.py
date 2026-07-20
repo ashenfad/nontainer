@@ -84,6 +84,72 @@ class KvgitProvider:
             )
         return cls(staged, session=session)
 
+    @classmethod
+    def delete(cls, path: str | Path, sessions: Iterable[str]) -> None:
+        """Delete the named session branches from the shared store.
+
+        Symmetric with :meth:`open`, and plural on purpose: a caller
+        typically owns more branches than the one session id (studio
+        also holds published-snapshot branches its own bookkeeping
+        knows about), and deleting them is one store's worth of work.
+
+        Deleting a name that doesn't exist is a no-op; so is deleting
+        from a store dir that was never materialized. Names are treated
+        as branch names, not validated as session ids — snapshot
+        branches (``<slug>-pub-<hex>``) are legitimate targets a caller
+        passes through.
+
+        The kvgit wrinkle: it can't delete the branch a store handle is
+        anchored on, and there is no way to open a handle *without* a
+        branch — so when the doomed branch is the only branch there is
+        nothing safe to anchor on. We mint a hidden ``__void__`` anchor
+        branch on first delete and run every deletion from there. It is
+        never listed anywhere (the caller's session rail is its own
+        manifest, not kvgit's branch list). Orphaning instead would be
+        worse: recreating a deleted name would resume the old branch,
+        resurrecting 'deleted' files. This is a kvgit limitation, not
+        ours to fix here.
+        """
+        import kvgit
+
+        # Never delete (or anchor on) the void branch itself: it is the
+        # rail deletions run from, and a caller that accidentally routes
+        # it into the doomed set must not saw off the branch it's sitting
+        # on. It carries no session state anyway.
+        names = {s for s in sessions if s != "__void__"}
+        if not names:
+            return
+        p = Path(path).expanduser()
+        if not p.is_dir():
+            return  # never-materialized (or non-kvgit) store: nothing here
+
+        def _close(staged: Any) -> None:
+            # kvgit disk stores hold an open handle; a leaked one keeps
+            # the store locked for the next opener. Mirror the provider's
+            # own close() reach into versioned.store.
+            store = getattr(staged.versioned, "store", None)
+            if callable(getattr(store, "close", None)):
+                store.close()
+
+        # Open on any doomed name just to guarantee the void anchor
+        # exists (opening a fresh name starts an empty branch — cheap),
+        # then do the actual deletes anchored on the void branch, where
+        # nothing in `names` is the current branch.
+        anchor = next(iter(names))
+        probe = kvgit.store(kind="disk", path=str(p), branch=anchor)
+        try:
+            if "__void__" not in probe.list_branches():
+                probe.create_branch("__void__")
+        finally:
+            _close(probe)
+        admin = kvgit.store(kind="disk", path=str(p), branch="__void__")
+        try:
+            branches = set(admin.list_branches())
+            for branch in names & branches:
+                admin.delete_branch(branch)
+        finally:
+            _close(admin)
+
     # -- identity ------------------------------------------------------
 
     @property

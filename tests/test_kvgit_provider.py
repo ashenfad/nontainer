@@ -197,3 +197,87 @@ def test_sessions_are_independent_branches(tmp_path):
         wb.terminal("echo bob > who.txt")
     with workspace("alice", store=tmp_path, backend="kvgit") as wa2:
         assert wa2.terminal("cat who.txt").stdout.strip() == "alice"
+
+
+# -- delete ------------------------------------------------------------------
+
+
+def _kvgit_dir(tmp_path):
+    return tmp_path / "kvgit"
+
+
+def test_delete_removes_branch_and_frees_the_name(tmp_path):
+    with workspace("gone", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo secret > s.txt")
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"gone"})
+    # the name is free again: reopening starts an EMPTY branch, not a
+    # resume of the deleted one (files stay deleted)
+    with workspace("gone", store=tmp_path, backend="kvgit") as ws2:
+        assert not ws2.terminal("cat s.txt")
+
+
+def test_delete_the_only_branch(tmp_path):
+    # the wrinkle this API exists for: deleting the sole branch, with
+    # nothing else to anchor a store handle on
+    with workspace("solo", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo x > x.txt")
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"solo"})
+    with workspace("solo", store=tmp_path, backend="kvgit") as ws2:
+        assert not ws2.terminal("cat x.txt")
+
+
+def test_delete_leaves_siblings_untouched(tmp_path):
+    with workspace("keep", store=tmp_path, backend="kvgit") as wk:
+        wk.terminal("echo alive > k.txt")
+    with workspace("drop", store=tmp_path, backend="kvgit") as wd:
+        wd.terminal("echo doomed > d.txt")
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"drop"})
+    with workspace("keep", store=tmp_path, backend="kvgit") as wk2:
+        assert wk2.terminal("cat k.txt").stdout.strip() == "alive"
+
+
+def test_delete_nonexistent_name_is_noop(tmp_path):
+    with workspace("real", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo hi > h.txt")
+    # mix a live name with a never-existed one: no raise, real one gone
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"real", "never-was"})
+    with workspace("real", store=tmp_path, backend="kvgit") as ws2:
+        assert not ws2.terminal("cat h.txt")
+
+
+def test_delete_from_nonexistent_store_is_noop(tmp_path):
+    KvgitProvider.delete(tmp_path / "no-such-store", {"whatever"})  # no raise
+
+
+def test_delete_void_anchor_is_guarded(tmp_path):
+    # __void__ is the rail deletions run from; passing it in the doomed
+    # set must not saw off the branch we anchor on
+    with workspace("s", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo x > x.txt")
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"s"})  # mints __void__
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"__void__"})  # no-op, no raise
+    import kvgit
+
+    store = kvgit.store(kind="disk", path=str(_kvgit_dir(tmp_path)), branch="__void__")
+    assert "__void__" in store.list_branches()
+    closer = getattr(store.versioned.store, "close", None)
+    if callable(closer):
+        closer()
+
+
+def test_delete_empty_set_is_noop(tmp_path):
+    with workspace("s", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo x > x.txt")
+    KvgitProvider.delete(_kvgit_dir(tmp_path), set())  # no store touched
+    with workspace("s", store=tmp_path, backend="kvgit") as ws2:
+        assert ws2.terminal("cat x.txt").stdout.strip() == "x"
+
+
+def test_delete_workspace_convenience(tmp_path):
+    from nontainer import delete_workspace
+
+    with workspace("via-helper", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo bye > b.txt")
+    delete_workspace("via-helper", store=tmp_path, backend="kvgit")
+    with workspace("via-helper", store=tmp_path, backend="kvgit") as ws2:
+        assert not ws2.terminal("cat b.txt")
