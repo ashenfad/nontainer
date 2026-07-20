@@ -1,5 +1,5 @@
 """The `ui = {...}` rich-reply convention: namespace values become
-workspace artifacts under /ui/, sniffed down a theming hierarchy
+workspace artifacts under <root>/ui/, sniffed down a theming hierarchy
 (spec formats > pixels > html > data), never silently dropped.
 """
 
@@ -107,7 +107,7 @@ def test_name_sanitization_and_non_dict(ws):
 
 def test_cards_stats_and_callouts_normalize(ws):
     """A mixed row of stats (tagged and untagged) and a tagged callout
-    materializes to /ui/<name>.cards.json as {"items": [...]}, each item
+    materializes to <root>/ui/<name>.cards.json as {"items": [...]}, each item
     normalized to its canonical shape."""
     cards = [
         {"type": "stat", "label": "Revenue", "value": 42000, "sublabel": "up 8%"},
@@ -308,7 +308,7 @@ def test_agno_run_python_notes_ui_artifacts():
     ws = Workspace(KvgitProvider.open(None, session="ui-agno"))
     tk = WorkspaceTools(ws)
     out = tk.functions["run_python"].entrypoint(code="ui = {'stats': {'n': 3}}")
-    assert "[ui artifacts: stats -> /ui/stats.json]" in out
+    assert "[ui artifacts: stats -> /workspace/ui/stats.json]" in out
     assert json.loads(ws.fs.read("/workspace/ui/stats.json")) == {"n": 3}
     # and the tool description teaches the convention
     assert "ui = " in (tk.functions["run_python"].entrypoint.__doc__ or "")
@@ -325,7 +325,7 @@ def test_agno_run_python_adopts_direct_ui_writes():
     from nontainer.adapters.agno import WorkspaceTools
 
     ws = Workspace(KvgitProvider.open(None, session="ui-adopt"))
-    ws.fs.makedirs("/ui", exist_ok=True)
+    ws.fs.makedirs("/workspace/ui", exist_ok=True)
     tk = WorkspaceTools(ws)
     out = tk.functions["run_python"].entrypoint(
         code=(
@@ -335,7 +335,7 @@ def test_agno_run_python_adopts_direct_ui_writes():
         )
     )
     assert "[ui artifacts:" in out
-    assert "chart.json -> /ui/chart.json" in out
+    assert "chart.json -> /workspace/ui/chart.json" in out
     assert out.count("/workspace/ui/stats.json") == 1  # materialized, not re-adopted
     ws.close()
 
@@ -343,7 +343,7 @@ def test_agno_run_python_adopts_direct_ui_writes():
 def test_string_path_to_existing_file_passes_through(ws):
     """The near-miss: the agent saved the file itself (savefig) and put
     its PATH in `ui`. A pointer, not content — honor it as-is."""
-    ws.fs.makedirs("/ui", exist_ok=True)
+    ws.fs.makedirs("/workspace/ui", exist_ok=True)
     ws.fs.write("/workspace/ui/plot.png", b"\x89PNG\r\n\x1a\nfake")
     out, _ = materialize_ui(ws, {"plot": "/workspace/ui/plot.png"})
     assert out == [("plot", "/workspace/ui/plot.png")]
