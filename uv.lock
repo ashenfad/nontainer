@@ -927,17 +927,32 @@ wheels = [
 
 [[package]]
 name = "kvgit"
-version = "0.3.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7e/0f/f127476da97a452beaace9a8bacadf2ffb481b907e2f2a771f9b03ea4220/kvgit-0.3.1.tar.gz", hash = "sha256:261032fe262bb2f4009c55b91e7b5de13367377364a78a7ad9da8677266d7496", size = 62087, upload-time = "2026-07-11T07:06:43.821Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/fa/3b948ad3539a13aee2bf4b15f04ba9478098265b636c3bed226162924446/kvgit-0.3.1-py3-none-any.whl", hash = "sha256:1bfa1a8b70e75a41d41c44f86881cafff15c7595e3f44b91d91f758b2b687100", size = 59361, upload-time = "2026-07-11T07:06:42.648Z" },
-]
+version = "0.3.2"
+source = { editable = "../kvgit" }
 
 [package.optional-dependencies]
 disk = [
     { name = "diskcache" },
 ]
+
+[package.metadata]
+requires-dist = [
+    { name = "diskcache", marker = "extra == 'all'" },
+    { name = "diskcache", marker = "extra == 'dev'" },
+    { name = "diskcache", marker = "extra == 'disk'" },
+    { name = "numpy", marker = "extra == 'all'", specifier = ">=1.24" },
+    { name = "numpy", marker = "extra == 'dev'", specifier = ">=1.24" },
+    { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.24" },
+    { name = "numpy", marker = "extra == 'pandas'", specifier = ">=1.24" },
+    { name = "numpy", marker = "extra == 'scientific'", specifier = ">=1.24" },
+    { name = "pandas", marker = "extra == 'all'", specifier = ">=2.0" },
+    { name = "pandas", marker = "extra == 'dev'", specifier = ">=2.0" },
+    { name = "pandas", marker = "extra == 'pandas'", specifier = ">=2.0" },
+    { name = "pandas", marker = "extra == 'scientific'", specifier = ">=2.0" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+]
+provides-extras = ["disk", "numpy", "pandas", "scientific", "all", "dev"]
 
 [[package]]
 name = "markdown-it-py"
@@ -1146,7 +1161,7 @@ wheels = [
 
 [[package]]
 name = "nontainer"
-version = "0.1.2"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "kvgit", extra = ["disk"] },
@@ -1195,7 +1210,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
     { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.2.1" },
     { name = "httpx2", marker = "extra == 'dev'" },
-    { name = "kvgit", extras = ["disk"], specifier = ">=0.3.1" },
+    { name = "kvgit", extras = ["disk"], editable = "../kvgit" },
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
     { name = "monkeyfs", specifier = ">=0.1.5" },

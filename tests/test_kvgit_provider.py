@@ -249,20 +249,38 @@ def test_delete_from_nonexistent_store_is_noop(tmp_path):
     KvgitProvider.delete(tmp_path / "no-such-store", {"whatever"})  # no raise
 
 
-def test_delete_void_anchor_is_guarded(tmp_path):
-    # __void__ is the rail deletions run from; passing it in the doomed
-    # set must not saw off the branch we anchor on
-    with workspace("s", store=tmp_path, backend="kvgit") as ws:
-        ws.terminal("echo x > x.txt")
-    KvgitProvider.delete(_kvgit_dir(tmp_path), {"s"})  # mints __void__
-    KvgitProvider.delete(_kvgit_dir(tmp_path), {"__void__"})  # no-op, no raise
+def test_delete_purges_legacy_void_anchor(tmp_path):
+    # Stores written by the OLD code carry a hidden __void__ branch that
+    # pins a dead session's whole history (the retention bug). delete now
+    # always folds __void__ into the doomed set, so a normal session
+    # delete purges the stale anchor from such stores. Forge one the old
+    # way (fork __void__ off a session branch), then delete.
     import kvgit
 
-    store = kvgit.store(kind="disk", path=str(_kvgit_dir(tmp_path)), branch="__void__")
-    assert "__void__" in store.list_branches()
-    closer = getattr(store.versioned.store, "close", None)
-    if callable(closer):
-        closer()
+    with workspace("s", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo x > x.txt")
+
+    forge = kvgit.store(kind="disk", path=str(_kvgit_dir(tmp_path)), branch="s")
+    forge.create_branch("__void__")  # legacy anchor, forks s's commit
+    assert "__void__" in forge.list_branches()
+    _closer = getattr(forge.versioned.store, "close", None)
+    if callable(_closer):
+        _closer()
+
+    KvgitProvider.delete(_kvgit_dir(tmp_path), {"s"})
+
+    # Both the session AND the legacy anchor are gone (orphans swept).
+    probe = kvgit.store(kind="disk", path=str(_kvgit_dir(tmp_path)), branch="probe")
+    branches = set(probe.list_branches())
+    assert "__void__" not in branches
+    assert "s" not in branches
+    _closer2 = getattr(probe.versioned.store, "close", None)
+    if callable(_closer2):
+        _closer2()
+
+    # And the deleted name stays deleted (no resurrection).
+    with workspace("s", store=tmp_path, backend="kvgit") as ws2:
+        assert not ws2.terminal("cat x.txt")
 
 
 def test_delete_empty_set_is_noop(tmp_path):

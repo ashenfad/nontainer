@@ -14,13 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (kvgit branches under `store/kvgit`, `dir` session trees, agentfs
   `.db` files) and is plural + idempotent (a name that doesn't exist,
   or a store never created, is a no-op). Each provider gains a matching
-  `delete(path, sessions)` classmethod. Kvgit's carries the wrinkle
-  that motivated promoting this out of downstream apps: kvgit can't
-  delete the branch a store handle is anchored on, so deletions run
-  from a hidden `__void__` anchor branch (minted on first delete, never
-  listed) — the sole-branch case has nothing else to sit on. Dir and
-  agentfs validate session ids before touching disk so a hostile name
-  can't escape the store root.
+  `delete(path, sessions)` classmethod. Kvgit's routes through
+  `kvgit.delete_branches` (new in kvgit 0.3.2): an anchor-free admin
+  call that opens the raw backend with no current branch, so it can
+  drop any branch — including a store's only one, the sole-branch case
+  a branch-anchored handle can't reach. This replaces the earlier
+  hidden `__void__` anchor branch, which pinned a dead session's entire
+  history and silently defeated orphan GC (a data-retention bug); the
+  delete path now always folds `__void__` into the doomed set, so that
+  stale anchor is purged from legacy stores on their next delete. Dir
+  and agentfs validate session ids before touching disk so a hostile
+  name can't escape the store root.
 
 ## [0.2.0] - 2026-07-20
 
