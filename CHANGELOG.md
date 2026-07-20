@@ -5,6 +5,61 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **The workspace root contract.** Agent-visible files now live under
+  one configurable absolute path — `/workspace` by default, set with
+  `workspace(..., root=)` and readable as `ws.root`. One value per
+  session, inherited by forks. The point is cross-executor agreement:
+  a dud VM mounts its guest workspace at the same path, so
+  `/workspace/data/in.csv` names the same file whether agent code runs
+  in the local sandbox or on a real machine. Previously the VM rooted
+  the workspace somewhere else entirely, and agents burned turns
+  discovering the split.
+- **`[dud]` extra documented**, with an Executors section in the README
+  covering the second seam — `WorkspaceProvider` decides where state
+  lives, `Executor` decides where code runs, and the two are
+  independent.
+
+### Changed
+- **BREAKING — agent-visible paths moved under the root.** Skills are
+  at `<root>/skills` (was `/skills`), app handlers at `<root>/app`
+  (was `/app`), UI artifacts at `<root>/ui` (was `/ui`), and the
+  handler log at `<root>/app/logs/api.log`. Sandbox module imports
+  resolve from the root too (`Policy.module_root`, requires
+  sandtrap >= 0.2.12). Anything holding those paths literally —
+  prompts, seeded files, stored sessions — needs repathing.
+- **BREAKING — `DudExecutor()` now defaults to a real VM**
+  (`backend="vm"`, resolved per platform) instead of the unsandboxed
+  `"subprocess"` rung. The old default gave real bash and real files
+  with *zero* containment, running as the host user with open egress —
+  strictly weaker than the `LocalExecutor` a caller had just left, and
+  it was what you got by reaching for a real machine and passing
+  nothing. A host without a hypervisor now fails closed
+  (`IsolationUnavailable`, missing piece named) rather than silently
+  running unsandboxed. `backend="subprocess"` remains available as an
+  explicit opt-in: it buys fidelity, not isolation, and is the only
+  backend needing no hypervisor.
+- **Dependency floors**: `sandtrap >= 0.2.12` (for `Policy.module_root`)
+  and `dud >= 0.2.1` (for the guest workspace mounting at the
+  configured root).
+
+### Fixed
+- **`DudExecutor` reaches dud's backends through `dud.session()`**
+  instead of importing `dud.backends.*` directly. It had drifted a
+  release behind: `backend="firecracker"` raised
+  `ValueError("unknown dud backend")`, making dud's Linux/KVM rung
+  unreachable from nontainer at all, and `backend="vm"` was hardcoded
+  to vfkit, so on Linux it would try to boot a macOS hypervisor rather
+  than resolving to firecracker. Routing through the façade fixes both
+  and means a new dud rung needs no change here.
+- **Absolute writes inside the guest land in the diff.** With the
+  workspace mounted at the root, a write to `/workspace/x` from VM
+  guest code is harvested like any other workspace write; it used to
+  land beside the staging internals, invisible to diffs and lost on
+  reset.
+
 ## [0.1.2] - 2026-07-19
 
 ### Added
