@@ -458,15 +458,12 @@ wheels = [
 
 [[package]]
 name = "dud"
-version = "0.1.1"
-source = { editable = "../dud" }
-
-[package.metadata]
-requires-dist = [
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "ruff", marker = "extra == 'dev'" },
+version = "0.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/15/a5/d0e21ee8a4214707bded7ba928d43b95a4fc868ad78d5d24b88cf5c98ca9/dud-0.2.1.tar.gz", hash = "sha256:aeca84172cbf0b2ffca2bc4ef76cf627702cfb1e0183c4c5e430aea1dd7ce84c", size = 136333, upload-time = "2026-07-20T13:56:05.026Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/45/c8/3fc5b8fa91212ed2041f42a6aa97f28e90a92021ee30656686ca8752108c/dud-0.2.1-py3-none-any.whl", hash = "sha256:a91be0edea7a484b3361b25f70c988449b4a33b3a0af51896467169081f67a16", size = 94746, upload-time = "2026-07-20T13:56:03.826Z" },
 ]
-provides-extras = ["dev"]
 
 [[package]]
 name = "exceptiongroup"
@@ -1196,7 +1193,7 @@ requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=1.0" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
-    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", editable = "../dud" },
+    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.2.1" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.1" },
     { name = "matplotlib", marker = "extra == 'dev'" },
@@ -1209,7 +1206,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.1" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", editable = "../sandtrap" },
+    { name = "sandtrap", specifier = ">=0.2.12" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.1.8" },
 ]
@@ -2390,25 +2387,15 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.2.11"
-source = { editable = "../sandtrap" }
+version = "0.2.12"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "landlock", marker = "sys_platform == 'linux' and extra == 'process'" },
-    { name = "monkeyfs", specifier = "<0.2.0" },
-    { name = "pandas", marker = "extra == 'test'" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pyseccomp", marker = "sys_platform == 'linux' and extra == 'process'" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest", marker = "extra == 'test'" },
-    { name = "pytest-asyncio", marker = "extra == 'test'" },
-    { name = "ruff", marker = "extra == 'dev'" },
+sdist = { url = "https://files.pythonhosted.org/packages/ac/c5/ef8321ea52f2efb14dc7de22c0707698e3c74462bf390ced06f1e454d8a1/sandtrap-0.2.12.tar.gz", hash = "sha256:4810db13b66d0c8208dc01936f41ffa4645c6962a51a2ca145aee46d4a44a626", size = 122352, upload-time = "2026-07-20T13:23:30.156Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d7/c9/873e87daa639fde64518c9b1fabfb15186f618ab2b0b6262f3fffa288edf/sandtrap-0.2.12-py3-none-any.whl", hash = "sha256:e77335d9b0750bd907ca748325d5e347c15e679dce4adfb2990c22cafc1f123a", size = 74901, upload-time = "2026-07-20T13:23:29.094Z" },
 ]
-provides-extras = ["dev", "test", "process"]
 
 [[package]]
 name = "shellingham"
