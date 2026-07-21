@@ -1146,7 +1146,7 @@ wheels = [
 
 [[package]]
 name = "nontainer"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "kvgit", extra = ["disk"] },
@@ -1208,7 +1208,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sandtrap", specifier = ">=0.2.12" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
-    { name = "termish", specifier = ">=0.1.8" },
+    { name = "termish", specifier = ">=0.1.9" },
 ]
 provides-extras = ["agentfs", "apps", "agno", "mcp", "dud", "dev"]
 
@@ -2452,11 +2452,11 @@ wheels = [
 
 [[package]]
 name = "termish"
-version = "0.1.8"
+version = "0.1.9"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8a/71/1eba74d75a910382c57975239ebeb5fff49c3698aca7456408dfeca7e8b6/termish-0.1.8.tar.gz", hash = "sha256:0233fe9986ddc6c03d929812a1747b5a1c2ac85405b72a50b84821fade8756ee", size = 97772, upload-time = "2026-07-11T17:03:01.559Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/22/9b7a1febc998ce502dd1e7013fd5c769e9386d50a85091982316702522f5/termish-0.1.9.tar.gz", hash = "sha256:5c65d1137ec6e021ff20be6d2b04ec35ae7d4e210ccc68f6627d2f9cbc70449c", size = 98437, upload-time = "2026-07-21T22:17:42.297Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/3d/f1ea5731880a44b65ac1c53ec0c980476419ec3b53ea0579604ef81e0c98/termish-0.1.8-py3-none-any.whl", hash = "sha256:23b6f325681b644690cf033d286f8d33da9b927721d6cb95696e638a5bc901d1", size = 71445, upload-time = "2026-07-11T17:03:00.478Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/0d/c3563ad240aa46746545e853096a77a3fe6b6538e18e4809d55fbd50e5e1/termish-0.1.9-py3-none-any.whl", hash = "sha256:b71922c3c649339c920c4c9b61d0219d2c01cf55641cb4d08bbf42609502dce7", size = 71719, upload-time = "2026-07-21T22:17:41.023Z" },
 ]
 
 [[package]]

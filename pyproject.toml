@@ -22,7 +22,10 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "termish>=0.1.8",
+    # 0.1.9: a failing command's stdout survives the raise — curl's
+    # error BODY reaches the agent, not just "HTTP 404" (every hint
+    # dispatch writes rides in that body)
+    "termish>=0.1.9",
     "monkeyfs>=0.1.5",
     # 0.2.12: Policy.module_root — VFS imports resolve from the
     # workspace root (the /workspace path contract)
