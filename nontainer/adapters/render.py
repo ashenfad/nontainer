@@ -82,6 +82,14 @@ its own filesystem). Supports pipes, redirects (> >> <), heredocs
 sort, uniq, cut, wc, diff, jq, xargs, tar, gzip, zip, mkdir, cp, mv, rm,
 touch, pwd, cd, basename, dirname. cwd persists between calls.
 
+READING AND SEARCHING FILES IS THIS TOOL'S JOB. To find something:
+`grep -n 'name' file` (add -A/-B for context, -r to search a tree). To
+see a region: `sed -n '120,160p' file`, or `cat -n file` for the whole
+thing with line numbers. One call each — do NOT read a file into
+run_python and loop over readlines() to search it, which costs several
+calls and a lot of context to answer what grep answers in one. Line
+numbers make the next file_edit far likelier to land.
+
 Make ONE terminal call per turn: batch related commands into a single
 multiline script with ; or && — mutations are then safely sequential."""
 
@@ -101,6 +109,9 @@ its repr, notebook-style — end with `df.head()` to see it, no print()
 needed. Script semantics per call otherwise:
 variables do NOT persist between calls. What does persist:
 - files: read/write with normal open(), visible to the terminal too
+  (but to READ or SEARCH a file, use the terminal's grep/sed — not an
+  open().readlines() loop here; and to CHANGE one, use file_edit, not
+  string surgery, which will silently hit the wrong occurrence)
 - helpers/: put reusable code in .py files there and import it QUALIFIED
   from the workspace root — `from helpers import mymod`, never a bare
   `import mymod` (imports resolve from '__WS_ROOT__'; works in app
