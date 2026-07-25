@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Direct `ws.fs` writes now reach a remote executor.** `ws.fs` writes
+  straight into the provider, so behind a remote executor (dud) the
+  guest kept serving its stale baseline — a host-written file simply
+  was not there. The apps runtime hit this hardest: `AppRuntime._log`
+  writes handler tracebacks through `ws.fs`, so `cat
+  app/logs/api.log` from the terminal reported "No such file or
+  directory" while the traceback sat in the host VFS. It surfaced only
+  when some *other* path happened to sync first, which made it
+  nondeterministic — and it blinded the documented repair loop exactly
+  when an agent was debugging a 500. `ws.fs` now hands back a wrapper
+  that marks the executor stale on the mutating protocol methods; the
+  workspace syncs before the next execution. `skills.install` wrote
+  through the same escape hatch and had the same latent bug.
+
+### Changed
+- **Executor syncs are lazy, not eager.** `write_file` / `edit_file` /
+  `put` / `restore` / `rollback` / `discard` previously called
+  `executor.sync()` inline. A remote sync re-pushes the whole tree, so
+  seeding N files cost N wholesale pushes; the workspace now marks the
+  view stale and syncs ONCE, before the next execution needs the guest
+  current. `Workspace.close()` settles a pending sync first, so a
+  parked tree is never tagged with a provider head it doesn't hold.
+  No API change — the sync points moved, the guarantees didn't.
+
 ## [0.2.1] - 2026-07-20
 
 ### Added
