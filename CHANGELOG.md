@@ -30,7 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   view stale and syncs ONCE, before the next execution needs the guest
   current. `Workspace.close()` settles a pending sync first, so a
   parked tree is never tagged with a provider head it doesn't hold.
-  No API change — the sync points moved, the guarantees didn't.
+  No API change — the sync points moved, the guarantees didn't. A sync
+  that raises restores the stale mark (so the caller's retry actually
+  re-syncs rather than running on the old tree), and a dud guest whose
+  push failed parks WITHOUT its affinity tag — an untagged park costs
+  one push on the next resume, where a tagged stale tree would have
+  been trusted and served.
 
 ## [0.2.1] - 2026-07-20
 
