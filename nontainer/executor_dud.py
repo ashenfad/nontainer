@@ -281,6 +281,10 @@ class DudExecutor:
         self._live: dict[str, Any] = {}  # live host_objects (for recovery)
         self._cache: Any | None = None  # kv-backed cache view (for recovery)
         self._closed = False
+        # Guest tree diverged from the provider: set while a push is in
+        # flight, cleared only when one lands. A parked tree in this
+        # state must NOT carry an affinity tag (see _close_locked).
+        self._tree_stale = False
         # One session = one channel; dud's framing can't interleave
         # requests. RLock: recovery paths make wire calls while held.
         self._lock = threading.RLock()
@@ -362,6 +366,9 @@ class DudExecutor:
             if not getattr(self._session, "resumed", False):
                 self._push_tree()  # affinity hit: the tree is already ours
             self._assert_guest_cwd()
+            # Bound and current — either freshly pushed, or resumed on
+            # an affinity match, which means the tree already IS ours.
+            self._tree_stale = False
         except BaseException:
             try:
                 self._session.close()
@@ -385,8 +392,19 @@ class DudExecutor:
             # matches, degrading to the normal push. Raw ``ws.fs``
             # writes are inside the guarantee too: they mark the
             # workspace stale, and close() settles that before us.
+            #
+            # ``_tree_stale`` is the failure half of that settlement. A
+            # close-time sync that RAISES is swallowed by the workspace
+            # (close must not raise), which would otherwise leave a
+            # diverged tree parked under a perfectly valid head tag —
+            # the provider is clean, so _head() names a real commit —
+            # and a later affinity resume would trust it, skip the
+            # push, and serve stale files with no error anywhere. Park
+            # untagged instead: costs one push on the next resume,
+            # which is exactly the degradation the tag is an
+            # optimization over (PR #23 review).
             try:
-                self._session.park_state = self._head()
+                self._session.park_state = None if self._tree_stale else self._head()
             except Exception:
                 pass
             try:
@@ -733,6 +751,11 @@ class DudExecutor:
         contract — they never reach the guest."""
         fs = self._require_ctx().fs
         base = self._ws_root  # "" when the root is the fs root
+        # From here until the push lands, the guest tree is NOT the
+        # provider's: the caller reached us because they diverged. A
+        # failure anywhere below (fs read, archive, wire) leaves this
+        # set, which is what stops close() parking it under a tag.
+        self._tree_stale = True
         buf = io.BytesIO()
         # Plain tar: gzip dominated reactivation ~4:1 at scale and buys
         # nothing on a local socket (guest extract auto-detects either).
@@ -745,6 +768,7 @@ class DudExecutor:
                     info.size = len(data)
                     tf.addfile(info, io.BytesIO(data))
         self._session.push_tree(buf.getvalue())
+        self._tree_stale = False
 
     def _assert_guest_cwd(self) -> None:
         """Point the guest shell at the host fs's cwd (best-effort: a

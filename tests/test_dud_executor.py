@@ -160,6 +160,64 @@ def test_host_writes_sync_once_not_per_write(ws):
         ws._executor.sync = real_sync
 
 
+def test_failed_sync_stays_stale_and_retries(ws):
+    """A sync that raises must not consume the stale mark.
+
+    The flag clears BEFORE the push (so a write landing mid-sync
+    re-flags and earns its own). If the push then fails, the guest is
+    exactly as stale as it was — leaving the flag clear would make the
+    caller's retry skip the sync and run against the old tree,
+    believing itself current. DudExecutor.sync recovers a LOST session
+    itself; what reaches here is the harder class (tree read, archive,
+    wire), where retrying is the whole point (PR #23 review)."""
+    ws.fs.write("/workspace/late.txt", b"arrived")
+    assert ws._executor_stale
+
+    boom = RuntimeError("push failed")
+    real_sync = ws._executor.sync
+    ws._executor.sync = lambda: (_ for _ in ()).throw(boom)
+    try:
+        with pytest.raises(RuntimeError, match="push failed"):
+            ws.terminal("cat late.txt")
+        assert ws._executor_stale, "a failed sync consumed the mark"
+    finally:
+        ws._executor.sync = real_sync
+
+    # the retry syncs for real and sees the write
+    assert ws.terminal("cat late.txt").stdout.strip() == "arrived"
+
+
+def test_failed_close_sync_parks_without_an_affinity_tag():
+    """A diverged tree must never park under a valid head tag.
+
+    close() swallows a failing sync by contract (close must not
+    raise), so without this guard the guest would park diverged while
+    _head() named a real commit — the provider is clean after
+    write_file's autocheckpoint. A later affinity resume would trust
+    that tag, skip the push, and serve stale files with no error
+    anywhere. Untagged costs one push instead (PR #23 review)."""
+    ex = DudExecutor(backend="subprocess")
+    ws = Workspace(KvgitProvider.open(None, session="dud-park-guard"), executor=ex)
+    ws.terminal("echo base > f.txt")  # clean, committed, tree in sync
+
+    ws.write_file("host.txt", "never pushed")  # marks stale
+    assert ws.head is not None  # committed: _head() would yield a real tag
+    # Fail at the WIRE, inside the real _push_tree — patching the whole
+    # method out would skip the very marking under test.
+    session = ex._session
+    session.push_tree = lambda _payload: (_ for _ in ()).throw(
+        RuntimeError("wire down")
+    )
+
+    ws.close()  # must not raise, despite the failing sync
+
+    assert ex._tree_stale, "a failed push must leave the tree marked"
+    assert getattr(session, "park_state", "unset") is None, (
+        f"diverged tree parked under tag {session.park_state!r} — a future "
+        "affinity resume would skip the push and serve stale files"
+    )
+
+
 # -- versioning over dud diffs (the point of the whole design) ---------------
 
 

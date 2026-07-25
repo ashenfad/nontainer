@@ -913,16 +913,27 @@ class Workspace:
 
     def _sync_executor_if_stale(self) -> None:
         """Bring a remote executor's view current, once, right before
-        it is used. Cleared BEFORE the push, matching the pre-existing
-        ``ws.fs`` contract: writes racing an in-flight execution are
-        the caller's to serialize (that's what :attr:`lock` is for),
-        and the alternative — clearing after — would swallow the mark
-        of a write that landed mid-sync. No-op for ``LocalExecutor``,
-        whose writes are already write-through."""
+        it is used. No-op for ``LocalExecutor``, whose writes are
+        already write-through.
+
+        Cleared BEFORE the push, then RESTORED if the push raises.
+        Clearing first is what keeps a write that lands mid-sync
+        marked — it re-flags and earns its own sync — but a sync that
+        fails leaves the guest exactly as stale as it was, so the flag
+        has to come back or the retry would run against the old tree
+        believing itself current (PR #23 review). The executor may
+        still be recoverable: ``DudExecutor.sync`` handles a lost
+        session itself, and what propagates here is the harder class
+        (tree read, archive, push) where a caller retry is the point.
+        """
         if not self._executor_stale:
             return
         self._executor_stale = False
-        self._executor.sync()
+        try:
+            self._executor.sync()
+        except BaseException:
+            self._executor_stale = True
+            raise
 
     def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
         """Write a file (parents created, overwrites). The quoting-free
