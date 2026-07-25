@@ -117,6 +117,49 @@ def test_host_write_visible_in_guest(ws):
     assert r.stdout.strip() == "from host"
 
 
+def test_raw_fs_write_visible_in_guest(ws):
+    """The ``ws.fs`` escape hatch syncs too — no intervening write.
+
+    ``ws.fs`` writes straight into the provider, so before the syncing
+    wrapper the guest kept serving its stale baseline and this ``cat``
+    reported "No such file or directory". It surfaced only if some
+    OTHER path happened to sync first, which made it nondeterministic
+    (see ``_SyncingFS``). LocalExecutor cannot catch this — it holds no
+    second copy — so the test has to live on a dud rung."""
+    ws.fs.write("/workspace/raw.txt", b"straight to the provider")
+    r = ws.terminal("cat raw.txt")
+    assert r.stdout.strip() == "straight to the provider"
+
+
+def test_raw_fs_write_visible_to_python_too(ws):
+    """Same guarantee on the python chokepoint, not just the shell."""
+    ws.fs.write("/workspace/raw2.txt", b"seen by python")
+    r = ws.run_python("print(open('raw2.txt').read())")
+    assert r, r.error
+    assert "seen by python" in r.stdout
+
+
+def test_host_writes_sync_once_not_per_write(ws):
+    """Laziness is the point: sync() re-pushes the WHOLE tree, so an
+    N-file seeding loop must cost one push, not N. Guards against a
+    well-meaning revert to eager syncing on every write."""
+    calls = []
+    real_sync = ws._executor.sync
+    ws._executor.sync = lambda: (calls.append(1), real_sync())[1]
+    try:
+        for i in range(5):
+            ws.fs.write(f"/workspace/seed{i}.txt", b"x")
+        ws.write_file("seed5.txt", "x")
+        assert calls == []  # nothing pushed yet
+        r = ws.terminal("ls seed*.txt | wc -l")
+        assert len(calls) == 1  # exactly one, at first use
+        assert r.stdout.strip() == "6"
+        ws.terminal("true")
+        assert len(calls) == 1  # and not again while clean
+    finally:
+        ws._executor.sync = real_sync
+
+
 # -- versioning over dud diffs (the point of the whole design) ---------------
 
 
@@ -303,7 +346,11 @@ def test_apps_readonly_get_rejects_fs_write(ws):
     guest, dispatch rejects the non-empty diff → 500, nothing absorbed."""
     from nontainer.apps import enable_apps, request
 
-    _seed_app(ws, "w.py", b"def get(req):\n    open('sneak.txt','w').write('x')\n    return {}\n")
+    _seed_app(
+        ws,
+        "w.py",
+        b"def get(req):\n    open('sneak.txt','w').write('x')\n    return {}\n",
+    )
     runtime = enable_apps(ws)
     try:
         assert runtime.dispatch(request("GET", "/api/w")).status == 500
@@ -317,11 +364,48 @@ def test_apps_mutating_handler_absorbs_fs_write(ws):
     LocalExecutor's write-through (visible in ws.fs afterward)."""
     from nontainer.apps import enable_apps, request
 
-    _seed_app(ws, "mk.py", b"def post(req):\n    open('made.txt','w').write('hi')\n    return {'ok': True}\n")
+    _seed_app(
+        ws,
+        "mk.py",
+        b"def post(req):\n    open('made.txt','w').write('hi')\n    return {'ok': True}\n",
+    )
     runtime = enable_apps(ws)
     try:
         assert runtime.dispatch(request("POST", "/api/mk")).status == 200
         assert ws.fs.read("/workspace/made.txt") == b"hi"
+    finally:
+        runtime.close()
+
+
+def test_handler_traceback_is_readable_from_the_terminal(ws):
+    """The audited regression, end to end.
+
+    ``AppRuntime._log`` writes through ``ws.fs``, so under a remote
+    executor the traceback landed in the host VFS while ``cat
+    app/logs/api.log`` from the guest reported "No such file or
+    directory" — the agent's documented repair loop, blind, and
+    nondeterministically so (any unrelated write in between made it
+    work). In the session that surfaced this, the log held a one-line
+    IndexError fix; the agent asked for it five times, never saw it,
+    and rewrote the whole app instead.
+
+    The assertion that matters is the NO INTERVENING WRITE part: the
+    only thing between the failing request and the read is the read.
+    """
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(
+        ws,
+        "boom.py",
+        b"def get(req):\n    raise IndexError('list index out of range')\n",
+    )
+    runtime = enable_apps(ws)
+    try:
+        assert runtime.dispatch(request("GET", "/api/boom")).status == 500
+        r = ws.terminal("cat app/logs/api.log")
+        assert r, r.stderr
+        assert "IndexError" in r.stdout
+        assert "list index out of range" in r.stdout
     finally:
         runtime.close()
 
@@ -469,11 +553,11 @@ def test_dead_guest_recovers_with_state_and_retries():
     the provider tree, and retries — the caller sees a normal result
     with committed state intact (the disposable thesis as resilience)."""
     ex = DudExecutor(backend="subprocess")
-    ws = Workspace(
-        KvgitProvider.open(None, session="dud-recover"), executor=ex
-    )
+    ws = Workspace(KvgitProvider.open(None, session="dud-recover"), executor=ex)
     try:
-        ws.terminal("echo sturdy > f.txt && mkdir -p sub && cd sub && echo x > here.txt")
+        ws.terminal(
+            "echo sturdy > f.txt && mkdir -p sub && cd sub && echo x > here.txt"
+        )
         # A writing call from within sub/: the cwd mirror lands (sub is
         # in the provider now) and the checkpoint persists it.
         ws.terminal("echo y > also.txt")
@@ -490,9 +574,7 @@ def test_dead_guest_recovers_with_state_and_retries():
 
 def test_dead_guest_recovers_python_namespace():
     ex = DudExecutor(backend="subprocess")
-    ws = Workspace(
-        KvgitProvider.open(None, session="dud-recover-py"), executor=ex
-    )
+    ws = Workspace(KvgitProvider.open(None, session="dud-recover-py"), executor=ex)
     try:
         ws.run_python("open('n.txt', 'w').write('42')")
         ex._session._proc.kill()
@@ -512,9 +594,7 @@ def test_harvest_loss_is_an_error_not_a_silent_success():
     from dud.backends.base import SessionLost
 
     ex = DudExecutor(backend="subprocess")
-    ws = Workspace(
-        KvgitProvider.open(None, session="dud-harvest-loss"), executor=ex
-    )
+    ws = Workspace(KvgitProvider.open(None, session="dud-harvest-loss"), executor=ex)
     try:
         ws.run_python("cache['pre'] = 'committed'")  # clean baseline
         head = ws.head
@@ -573,9 +653,7 @@ def test_sync_recovery_pushes_the_tree_once():
     whose rebuild pushes the tree itself — no retry on top (the
     wholesale push is the expensive path; it must not run twice)."""
     ex = DudExecutor(backend="subprocess")
-    ws = Workspace(
-        KvgitProvider.open(None, session="dud-sync-once"), executor=ex
-    )
+    ws = Workspace(KvgitProvider.open(None, session="dud-sync-once"), executor=ex)
     try:
         ws.terminal("echo x > f.txt")
         ex._session._proc.kill()
@@ -587,7 +665,9 @@ def test_sync_recovery_pushes_the_tree_once():
             return orig()
 
         ex._push_tree = counting
-        ws.write_file("g.txt", "host")  # host write -> executor.sync()
+        ws.write_file("g.txt", "host")  # marks stale; the sync is lazy
+        assert calls == []
+        ex.sync()  # drive it directly: this test is about sync's retry shape
         # 1: sync's own push (dies on the dead guest); 2: recovery's.
         # The old shape retried on top for a third, double-pushing.
         assert len(calls) == 2

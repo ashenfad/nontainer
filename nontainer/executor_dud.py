@@ -382,8 +382,9 @@ class DudExecutor:
             # affinity). Every synced mutation path keeps guest == fs
             # view, and the head only names COMMITTED state — so a
             # divergent/dirty close simply yields a tag no future head
-            # matches, degrading to the normal push. (The documented raw
-            # ``ws.fs`` bypass is outside this guarantee, as ever.)
+            # matches, degrading to the normal push. Raw ``ws.fs``
+            # writes are inside the guarantee too: they mark the
+            # workspace stale, and close() settles that before us.
             try:
                 self._session.park_state = self._head()
             except Exception:

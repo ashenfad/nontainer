@@ -377,6 +377,57 @@ def _state_identity(provider: Any) -> "Callable[[], str | None] | None":
     return _current
 
 
+_MUTATING_FS_METHODS = frozenset(
+    {"write", "mkdir", "makedirs", "remove", "rmdir", "rename", "chdir"}
+)
+
+
+class _SyncingFS:
+    """``ws.fs`` wrapper: host-side writes mark the executor stale.
+
+    ``ws.fs`` is the documented host-side escape hatch (seeding inputs,
+    harvesting artifacts) and it writes straight into the provider —
+    behind a remote executor's back. Without this, the guest tree never
+    learned: a host write landed in the provider and the guest kept
+    serving its stale baseline until some *other* path happened to call
+    ``sync()``. That made the failure nondeterministic, which is the
+    worst way for it to present — the apps runtime's ``api.log`` was
+    invisible to ``cat`` from the terminal unless an unrelated write
+    intervened, so the agent's documented repair loop read as broken.
+
+    Marking is LAZY on purpose. ``DudExecutor.sync()`` re-pushes the
+    whole tree (tar + ``push_tree``), so syncing per write would turn
+    an N-file seeding loop into N wholesale pushes; the workspace
+    instead syncs once, before the next execution needs the guest to be
+    current. The executor itself gets the RAW fs via
+    ``ExecutionContext`` — its own writes are already guest-side and
+    must not mark anything.
+
+    Reads delegate untouched, so this stays a pure write-side concern.
+    """
+
+    __slots__ = ("_fs", "_mark")
+
+    def __init__(self, fs: Any, mark: Callable[[], None]) -> None:
+        self._fs = fs
+        self._mark = mark
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._fs, name)
+        if name not in _MUTATING_FS_METHODS or not callable(attr):
+            return attr
+
+        def _marking(*args: Any, **kwargs: Any) -> Any:
+            result = attr(*args, **kwargs)
+            self._mark()
+            return result
+
+        return _marking
+
+    def __repr__(self) -> str:
+        return f"<syncing {self._fs!r}>"
+
+
 class Workspace:
     """A fake little computer: files + shell + python + cache, versioned.
 
@@ -446,6 +497,11 @@ class Workspace:
 
         # -- filesystem: provider fs, optionally wrapped with mounts --
         self._fs = self._build_fs(provider.fs, mounts or {})
+        # Host-side writes move provider state behind a remote
+        # executor's back; the public ``fs`` hands out a wrapper that
+        # flags it, and the next execution syncs (see _SyncingFS).
+        self._executor_stale = False
+        self._public_fs = _SyncingFS(self._fs, self._mark_executor_stale)
 
         # -- terminal commands: user injections + the python bridge --
         user_commands = dict(commands or {})
@@ -641,6 +697,7 @@ class Workspace:
             # wins the lock either sees the workspace open for its
             # whole execution or raises cleanly — no TOCTOU (PR #7).
             self._check_open()
+            self._sync_executor_if_stale()
             was_dirty = self._provider.dirty
             result = self._executor.exec_shell(command)
             torn = self._absorb_or_unwind(was_dirty)
@@ -746,6 +803,10 @@ class Workspace:
 
         Delegates to the executor (``LocalExecutor.exec_python`` —
         where the namespace assembly and rendering live)."""
+        # The chokepoint for python execution — run_python, the
+        # terminal ``python`` builtin, and apps dispatch all land here,
+        # so a host-side write is visible to every one of them.
+        self._sync_executor_if_stale()
         return self._executor.exec_python(
             code,
             inputs=inputs,
@@ -837,8 +898,31 @@ class Workspace:
         """The termish-protocol filesystem, for host-side reads/writes
         (seeding inputs, harvesting artifacts) without the sandbox.
         Bypasses the workspace's single-writer lock — a host thread
-        writing here while agent calls run holds :attr:`lock`."""
-        return self._fs
+        writing here while agent calls run holds :attr:`lock`.
+
+        Writes through this handle mark a remote executor's view stale;
+        the next execution re-syncs it, so a host-written file is
+        visible to the guest's very next ``cat`` (see
+        :class:`_SyncingFS`). Reads pass through untouched."""
+        return self._public_fs
+
+    def _mark_executor_stale(self) -> None:
+        """Provider state moved without the executor seeing it; the
+        next execution must refresh the guest first."""
+        self._executor_stale = True
+
+    def _sync_executor_if_stale(self) -> None:
+        """Bring a remote executor's view current, once, right before
+        it is used. Cleared BEFORE the push, matching the pre-existing
+        ``ws.fs`` contract: writes racing an in-flight execution are
+        the caller's to serialize (that's what :attr:`lock` is for),
+        and the alternative — clearing after — would swallow the mark
+        of a write that landed mid-sync. No-op for ``LocalExecutor``,
+        whose writes are already write-through."""
+        if not self._executor_stale:
+            return
+        self._executor_stale = False
+        self._executor.sync()
 
     def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
         """Write a file (parents created, overwrites). The quoting-free
@@ -853,9 +937,9 @@ class Workspace:
             if parent not in (".", "/", ""):
                 self._fs.makedirs(parent, exist_ok=True)
             self._fs.write(path, data)
-            # host-side write behind the executor's back: refresh its
-            # view (no-op for LocalExecutor)
-            self._executor.sync()
+            # host-side write behind the executor's back: flag it, and
+            # the next execution syncs (no-op for LocalExecutor)
+            self._mark_executor_stale()
             return WriteOutcome(
                 path=path,
                 size=len(data),
@@ -896,7 +980,7 @@ class Workspace:
                 raise WorkspaceError(str(e)) from e
             if outcome.count:
                 self._fs.write(path, outcome.content.encode())
-                self._executor.sync()  # see write_file()
+                self._mark_executor_stale()  # see write_file()
                 cp = self._maybe_checkpoint("file_edit")
                 if cp:
                     outcome = replace(outcome, checkpoint=cp)
@@ -920,7 +1004,7 @@ class Workspace:
             if parent not in (".", "/", ""):
                 self._fs.makedirs(parent, exist_ok=True)
             self._fs.write(ws_path, data)
-            self._executor.sync()  # see write_file()
+            self._mark_executor_stale()  # see write_file()
             return WriteOutcome(
                 path=ws_path,
                 size=len(data),
@@ -965,9 +1049,10 @@ class Workspace:
     def restore(self, checkpoint_id: str) -> None:
         with self._lock:
             self._provider.restore(checkpoint_id)
-            # provider state moved under the executor: refresh its view
-            # (no-op for LocalExecutor, which holds no copy)
-            self._executor.sync()
+            # provider state moved under the executor: flag its view,
+            # and the next execution refreshes it (no-op for
+            # LocalExecutor, which holds no copy)
+            self._mark_executor_stale()
 
     def rollback(self, steps: int = 1) -> str:
         """Restore the Nth-previous checkpoint; returns its id.
@@ -983,7 +1068,7 @@ class Workspace:
                 )
             target = entries[steps]
             self._provider.restore(target.id)
-            self._executor.sync()  # see restore()
+            self._mark_executor_stale()  # see restore()
             return target.id
 
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
@@ -1015,7 +1100,7 @@ class Workspace:
         """Drop writes since the last checkpoint (staging providers)."""
         with self._lock:
             self._provider.discard()
-            self._executor.sync()  # see restore()
+            self._mark_executor_stale()  # see restore()
 
     # ------------------------------------------------------------------
     # power modes / lifecycle
@@ -1029,6 +1114,17 @@ class Workspace:
         with self._lock:  # don't close the provider mid-call
             if not self._closed:
                 self._closed = True
+                # Settle a pending sync BEFORE close. A closing
+                # executor may park its tree tagged with the provider
+                # head for later affinity (DudExecutor.close); parking
+                # a stale tree under a matching tag would let a future
+                # session resume it and skip the push, silently losing
+                # host-side writes. Best-effort: a failure here must
+                # not block the provider close.
+                try:
+                    self._sync_executor_if_stale()
+                except Exception:
+                    pass
                 # Executor.close is best-effort-must-not-raise by
                 # contract, but executors are an extension surface —
                 # a third-party one that breaks the contract must not

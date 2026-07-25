@@ -365,12 +365,15 @@ class Executor(Protocol):
 
     def sync(self) -> None:
         """Refresh the executor's view of workspace state from the
-        provider. Called after restore/rollback/discard and after
-        host-side writes (``write_file``/``edit_file``/``put``) —
-        every path where provider state moves without the executor
-        seeing it. No-op for ``LocalExecutor``: there is no second
-        copy. (Direct ``ws.fs`` writes bypass this — same caveat as
-        the single-writer lock.)"""
+        provider. Every path where provider state moves without the
+        executor seeing it marks the workspace stale — restore /
+        rollback / discard, the host-side write helpers
+        (``write_file`` / ``edit_file`` / ``put``), and direct
+        ``ws.fs`` writes — and the workspace calls this once, lazily,
+        before the next execution. Lazy because a remote
+        implementation may re-push the whole tree: N host writes cost
+        one sync, not N. No-op for ``LocalExecutor``: there is no
+        second copy."""
         ...
 
 
