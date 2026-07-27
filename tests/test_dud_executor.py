@@ -477,6 +477,10 @@ def test_successful_requests_are_readable_from_the_terminal(ws):
     and the first reading is the one that costs turns. A success now
     leaves a request line, and it has to survive the host→guest sync
     like any other VFS write.
+
+    Read-only lines buffer while the workspace is clean, so this flushes
+    the way ``test_app`` does when a run ends — the agent-facing path on
+    a dud rung, where the ``curl`` builtin does not exist.
     """
     from nontainer.apps import enable_apps, request
 
@@ -484,6 +488,7 @@ def test_successful_requests_are_readable_from_the_terminal(ws):
     runtime = enable_apps(ws)
     try:
         assert runtime.dispatch(request("GET", "/api/ok?limit=5")).status == 200
+        runtime.flush_log()
         r = ws.terminal("cat app/logs/api.log")  # no intervening write
         assert r, r.stderr
         assert "GET /api/ok?limit=5 -> 200" in r.stdout

@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `isdir(<root>/app)` (studio's preview probe does). Static assets are
   deliberately not logged — high-volume, low-signal, and they would
   bury the tracebacks the log exists for.
+
+  Request lines from read-only requests buffer until writing them is
+  free, because per-request atomicity is gated on `not ws.dirty`: a
+  line written during a GET would silently disable handler rollback
+  for the next mutating request, and page-GET-then-POST is the common
+  order, not a corner case. The runtime cannot claim that dirt as its
+  own and roll back regardless — `discard()` is all-or-nothing at the
+  provider level and the protocol exposes only a boolean, so its own
+  log line is indistinguishable from a screenshot written mid-run,
+  which rollback would then destroy. `curl` and `test_app` flush when
+  they finish, and `AppRuntime.flush_log()` is public for embedders
+  driving dispatch themselves (a live preview route).
 - **Repeated `test_app` console lines collapse** to a single entry with
   an `(xN)` count, and the 100-line cap now counts DISTINCT lines. One
   audited session spent 39% of all `test_app` result bytes (7,922 of

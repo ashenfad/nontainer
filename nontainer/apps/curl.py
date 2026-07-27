@@ -136,6 +136,10 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             method = "POST" if body else "GET"
 
         resp = runtime.dispatch(make_request(method, url, body=body, headers=headers))
+        # The agent's next move after curl is `tail api.log`, and this
+        # call is already inside a tool call that will checkpoint — so
+        # buffered request lines can go out now (see _flush_if_free).
+        runtime.flush_log()
 
         if include_headers:
             ctx.stdout.write(f"HTTP/1.1 {resp.status}\n")
