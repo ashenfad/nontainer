@@ -304,7 +304,13 @@ def _table(payload: dict, extension: bool = False) -> dict:
     rows = rows if isinstance(rows, list) else []
     total = payload.get("total")
 
-    if extension:
+    # A headerless payload (an agent's direct /ui write with a non-list
+    # or empty `columns`) has no width to normalize rows against, and
+    # emptying them to satisfy the contract would silently drop the
+    # agent's data. Fall through to the approximation, which renders
+    # cells without a header — the nontainer catalog re-exports the
+    # basic components, so the fragment stays schema-valid either way.
+    if extension and columns:
         return _table_extension(columns, rows, total, payload.get("columnTypes"))
 
     children = [
@@ -351,13 +357,18 @@ def _table_extension(
     """
     data: dict = {"columns": [str(c) for c in columns]}
     width = len(data["columns"])
-    # Ragged rows would misalign a grid silently. Pad and trim to the
-    # header instead: a visibly short row is a data bug the agent can
-    # see, a shifted column is one they'd chase for an hour.
-    data["rows"] = [
-        (list(r) + [None] * width)[:width] if isinstance(r, list) else [r][:width]
-        for r in rows
-    ]
+
+    def _row(row: object) -> list:
+        # Ragged rows would misalign a grid silently, so every row is
+        # padded and trimmed to the header — including a scalar, which
+        # is just a one-cell row. A visibly short row is a data bug the
+        # agent can see; a shifted column is one they'd chase for an
+        # hour. The catalog promises this, so it cannot hold only for
+        # the shapes that happen to arrive as lists.
+        cells = list(row) if isinstance(row, list) else [row]
+        return (cells + [None] * width)[:width]
+
+    data["rows"] = [_row(r) for r in rows]
     if isinstance(total, int):
         data["total"] = total
     if isinstance(column_types, list) and len(column_types) == width:
