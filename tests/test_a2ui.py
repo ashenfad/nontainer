@@ -340,16 +340,38 @@ def test_component_table_stays_basic_without_the_catalog():
 
 def test_component_table_extension_squares_ragged_rows():
     """A short row would shift a grid's columns silently; pad and trim to
-    the header so a data bug stays visible as a gap."""
+    the header so a data bug stays visible as a gap. Every row shape gets
+    the same treatment — a scalar is a one-cell row, not an exemption,
+    or a consumer indexing by column hits a missing cell (PR #25 review).
+    """
     data = json.dumps(
-        {"columns": ["a", "b", "c"], "data": [[1], [1, 2, 3, 4], 7]}
+        {"columns": ["a", "b", "c"], "data": [[1], [1, 2, 3, 4], 7, []]}
     ).encode()
     frag = component_for("t", "/workspace/ui/t.table.json", data, url, extensions=True)
-    assert frag["data_model"]["table"]["rows"] == [
+    rows = frag["data_model"]["table"]["rows"]
+    assert rows == [
         [1, None, None],
         [1, 2, 3],
-        [7],
+        [7, None, None],
+        [None, None, None],
     ]
+    assert all(len(r) == 3 for r in rows)  # the catalog's guarantee
+
+
+def test_component_table_headerless_falls_back_to_the_approximation():
+    """No columns means no width to normalize against, and emptying the
+    rows to satisfy the contract would silently drop the agent's data.
+    The flattened form renders cells without a header, and the nontainer
+    catalog re-exports the basic components, so this stays valid."""
+    for columns in (5, [], None):
+        data = json.dumps({"columns": columns, "data": [[1, 2]]}).encode()
+        frag = component_for(
+            "t", "/workspace/ui/t.table.json", data, url, extensions=True
+        )
+        assert frag["component"]["componentType"] == "Column", columns
+        assert frag["data_model"] == {}, columns
+        cells = frag["component"]["children"][1]["children"]
+        assert [c["text"] for c in cells] == ["1", "2"], columns  # data kept
 
 
 def test_component_table_extension_drops_untrustworthy_column_types():
@@ -367,12 +389,19 @@ def test_component_table_extension_drops_untrustworthy_column_types():
 
 
 def test_component_table_extension_degrades_on_nonlist_fields():
-    """The never-raises contract, on the extension path too."""
+    """The never-raises contract, on the extension path too: a truthy
+    non-list in either field degrades rather than raising out of an
+    egress stream."""
     frag = component_for(
         "t", "/workspace/ui/t.table.json", b'{"columns": 5, "data": 7}', url,
         extensions=True,
     )
-    assert frag["data_model"]["table"] == {"columns": [], "rows": []}
+    assert frag["component"]["componentType"] == "Column"  # headerless: basic form
+    frag = component_for(
+        "t", "/workspace/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url,
+        extensions=True,
+    )
+    assert frag["data_model"]["table"] == {"columns": ["a"], "rows": []}
 
 
 def test_component_plotly():
