@@ -6,6 +6,7 @@ import pytest
 
 from nontainer import Workspace
 from nontainer.apps import (
+    AppRuntime,
     HttpError,
     Response,
     enable_apps,
@@ -147,9 +148,10 @@ def test_handler_bare_expressions_do_not_echo():
     )
     r = rt.dispatch(request("GET", "/api/quiet"))
     assert r.status == 200
-    assert not ws.fs.exists("/workspace/app/logs/api.log") or (
-        "2" not in ws.fs.read("/workspace/app/logs/api.log").decode()
-    )
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    # The request line is expected; an echoed `2` from `1 + 1` is not.
+    assert "] stdout:" not in log
+    assert log.endswith("GET /api/quiet -> 200\n")
     ws.close()
 
 
@@ -436,6 +438,97 @@ def test_nonverb_functions_noted_in_log_once():
     rt.dispatch(request("GET", "/api/stats"))
     log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "search() defined but not an HTTP verb" in log
+    ws.close()
+
+
+# -- the log as evidence -----------------------------------------------------------
+
+
+def test_log_opens_with_a_header():
+    """An empty log and a broken one read identically to an agent
+    tailing the file — both say "logging is broken" rather than
+    "nothing has errored yet". The header is the file's own evidence
+    that the mechanism works."""
+    ws, rt = make_ws()
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    rt.dispatch(request("GET", "/api/ok"))
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert log.startswith("# api.log")
+    assert "NOT that logging is broken" in log
+    ws.close()
+
+
+def test_enable_apps_does_not_materialize_the_app_dir():
+    """Embedders answer "has the agent built an app yet?" with
+    isdir(<root>/app) — studio's preview probe does. Wiring the runtime
+    up must not answer yes on the agent's behalf, which is why the
+    header waits for the first log write instead of being pre-created.
+    """
+    ws, _ = make_ws()
+    assert not ws.fs.exists("/workspace/app")
+    ws.close()
+
+
+def test_header_written_once_across_many_requests():
+    """Reopened and forked sessions keep their log history."""
+    ws, rt = make_ws()
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    rt.dispatch(request("GET", "/api/ok"))
+    rt.dispatch(request("GET", "/api/ok"))
+    # a second runtime over the same workspace: appends, never truncates
+    rt2 = AppRuntime(ws)
+    rt2.dispatch(request("GET", "/api/ok"))
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert log.count("# api.log") == 1
+    assert log.count("GET /api/ok -> 200") == 3
+    ws.close()
+
+
+def test_successful_requests_are_logged():
+    """The ambiguity this closes: a handler that never errors logged
+    NOTHING, so an empty log sent the repair loop hunting a phantom
+    logging bug instead of reading the (working) app."""
+    ws, rt = make_ws()
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    rt.dispatch(request("GET", "/api/ok?limit=5"))
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert "GET /api/ok?limit=5 -> 200" in log
+    ws.close()
+
+
+def test_missing_endpoint_is_logged_with_its_status():
+    """The frontend-typo case: the agent sees the request ARRIVED and
+    404'd, rather than an empty log that implicates the backend."""
+    ws, rt = make_ws()
+    rt.dispatch(request("GET", "/api/ghost"))
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert "GET /api/ghost -> 404" in log
+    ws.close()
+
+
+def test_error_traceback_precedes_its_request_line():
+    """Both records for one request, in order — the tagged traceback
+    then the summary, so a 500 in the log is never orphaned."""
+    ws, rt = make_ws()
+    write_handler(ws, "boom", "def get(req):\n    return [][0]\n")
+    rt.dispatch(request("GET", "/api/boom"))
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert log.index("[boom:get] ERROR:") < log.index("GET /api/boom -> 500")
+    ws.close()
+
+
+def test_static_requests_are_not_logged():
+    """Static assets are high-volume and low-signal; logging them
+    would bury the tracebacks the file exists for."""
+    ws, rt = make_ws()
+    ws.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    assert rt.dispatch(request("GET", "/index.html")).status == 200
+    assert not ws.fs.exists("/workspace/app/logs/api.log")  # nothing to say
+    rt.dispatch(request("GET", "/api/ok"))  # now the log exists
+    assert rt.dispatch(request("GET", "/index.html")).status == 200
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert "index.html" not in log
     ws.close()
 
 

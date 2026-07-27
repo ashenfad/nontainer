@@ -153,7 +153,13 @@ async def _run_actions(
     # AND the served CSP: what verifies headlessly matches what serves.
     script_hosts = runtime.config.script_hosts
 
-    console: list[str] = []
+    # Repeated console lines are near-pure context tax: one audited
+    # session spent 39% of all test_app result bytes (7,922 of 20,279)
+    # on 32 copies of the same Tailwind CDN warning, against a model
+    # working in ~30k of context. Collapse by text, keep first-seen
+    # order, and carry the count — a genuinely repeating log (a retry
+    # storm, a render loop) still reads as repeating.
+    console: dict[str, int] = {}
     page_errors: list[str] = []
     results: list[ActionResult] = []
     screenshots: list[str] = []
@@ -164,6 +170,18 @@ async def _run_actions(
     def _reject(note: str) -> None:
         if len(rejected) < 20:
             rejected.setdefault(note)
+
+    def _console(message: Any) -> None:
+        line = f"[{message.type}] {message.text}"
+        if line in console:
+            console[line] += 1
+        elif len(console) < 100:  # cap DISTINCT lines; repeats stay free
+            console[line] = 1
+
+    def _console_lines() -> tuple[str, ...]:
+        return tuple(
+            line if n == 1 else f"{line} (x{n})" for line, n in console.items()
+        )
 
     async def route_handler(route: Any, request: Any) -> None:
         parts = urlsplit(request.url)
@@ -291,7 +309,7 @@ async def _run_actions(
                 page_errors.append(text)
 
             page = await context.new_page()
-            page.on("console", lambda m: console.append(f"[{m.type}] {m.text}"))
+            page.on("console", _console)
             page.on("pageerror", _page_error)
             page.on("request", _track_start)
             page.on("requestfinished", _track_end)
@@ -304,7 +322,7 @@ async def _run_actions(
             except Exception as e:
                 return TestAppResult(
                     ok=False,
-                    console=tuple(console[:100]),
+                    console=_console_lines(),
                     page_errors=tuple(page_errors[:20]),
                     rejected=tuple(rejected),
                     load_error=str(e),
@@ -320,7 +338,37 @@ async def _run_actions(
                         note = await settle(page)
                     elif "type" in action:
                         sel, text = action["type"]
-                        await page.fill(sel, text, timeout=5_000)
+                        try:
+                            await page.fill(sel, text, timeout=5_000)
+                        except Exception as e:
+                            # Playwright's own message ("Element is not
+                            # an <input>...") names the problem but not
+                            # the fix, and agents rediscover the
+                            # dispatchEvent('change') workaround instead
+                            # of reaching for the action below.
+                            if "not an <input>" in str(e) or "<select>" in str(e):
+                                raise ValueError(
+                                    f"{sel} is a <select> — use "
+                                    f'{{"select": [{sel!r}, value]}}, not "type"'
+                                ) from e
+                            raise
+                        note = await settle(page)
+                    elif "select" in action:
+                        sel, val = action["select"]
+                        try:
+                            await page.select_option(sel, val, timeout=5_000)
+                        except Exception:
+                            # Agents pass whichever of value/label the
+                            # DOM showed them; falling back to the
+                            # visible label keeps that from becoming
+                            # another guess-and-retry cycle.
+                            try:
+                                await page.select_option(sel, label=val, timeout=5_000)
+                            except Exception as e:
+                                raise ValueError(
+                                    f"{sel}: no option matching {val!r} by "
+                                    f"value or by visible label ({e})"
+                                ) from e
                         note = await settle(page)
                     elif "read" in action:
                         # Settle first: a fetch that STARTED after the
@@ -397,7 +445,7 @@ async def _run_actions(
             return TestAppResult(
                 ok=ok and not page_errors,
                 results=tuple(results),
-                console=tuple(console[:100]),
+                console=_console_lines(),
                 page_errors=tuple(page_errors[:20]),
                 screenshots=tuple(screenshots),
                 rejected=tuple(rejected),

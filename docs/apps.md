@@ -29,7 +29,8 @@ HTM+Preact path only).
 /workspace/app/*.js, *.css, ...    ← static assets, served as-is
 /workspace/app/api/scores.py       ← handlers: routes /api/scores
 /workspace/app/api/_lib.py         ← _-prefixed: importable, never routable
-/workspace/app/logs/api.log        ← tracebacks + handler print() output
+/workspace/app/logs/api.log        ← one line per request, + tracebacks
+                                     and handler print() output
 ```
 
 ## Handler contract
@@ -95,7 +96,16 @@ extension surface (`Workspace.exec_python`, no checkpoint) with:
 - a per-request tick/timeout budget tighter than the interactive one
   (config: `AppsConfig.request_timeout`, `request_tick_limit`);
 - stdout + tracebacks appended to `/workspace/app/logs/api.log` (the agent's
-  repair loop is `tail`, edit, retry).
+  repair loop is `tail`, edit, retry). Every `/api` request also logs a
+  `METHOD path -> status` line, and the file opens with a header
+  explaining the format. An empty log reads the same as a broken one to
+  an agent tailing it — *logging is broken* rather than *nothing has
+  errored* — so both records exist to make silence informative. The
+  header is written when the log is first created rather than at
+  `enable_apps`, because pre-creating it would materialize
+  `<root>/app` before the agent has built anything, and embedders
+  answer "is there an app yet?" with `isdir(<root>/app)`. Static
+  assets are not logged; they would bury the tracebacks.
 
 Handler executions hold the same per-workspace lock as tool calls —
 serialized per session, by design (handlers are ms-scale).
@@ -233,8 +243,8 @@ test_app(actions: list[Action], viewport: str|dict = "desktop") -> TestAppResult
 ```
 
 Actions: `{"click": selector}`, `{"type": [selector, text]}`,
-`{"read": selector}`, `{"eval": js}`, `{"assert": js}`,
-`{"screenshot": true}`, `{"wait": ms}`.
+`{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,
+`{"assert": js}`, `{"screenshot": true}`, `{"wait": ms}`.
 
 - Waiting is two-tier. Playwright's idiom is OUTCOME-based — web-first
   assertions that retry — and the `assert` action follows it
@@ -250,6 +260,15 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   `read`-and-check when a condition is known — it's the robust form
   (no heuristic can wait for a fetch that hasn't *started* yet; retry
   semantics can).
+- `select` is separate from `type` because they are separate
+  Playwright calls: `fill()` raises on a `<select>`. It matches the
+  option by value, then by visible label — agents pass whichever the
+  DOM showed them — and `type` aimed at a `<select>` names `select` in
+  its error rather than leaving the agent to rediscover
+  `dispatchEvent(new Event('change'))`.
+- Repeated console lines collapse to one entry with an `(xN)` count.
+  A chatty CDN warning otherwise crowds out the console tail, which is
+  what an agent actually reads.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/workspace/app/screenshots/` and return workspace paths in the observation —

@@ -131,6 +131,100 @@ def test_screenshot_cap_soft_skips(app_ws):
     assert "skipped" in render_test_app(result)
 
 
+WIDGET_HTML = """<!doctype html>
+<html><body>
+<select id="make">
+  <option value="t">Tesla</option>
+  <option value="f">Ford</option>
+</select>
+<input id="name" />
+<div id="picked">none</div>
+<script>
+document.querySelector('#make').addEventListener('change', (e) => {
+  document.querySelector('#picked').textContent = e.target.value;
+});
+for (let i = 0; i < 5; i++) {
+  console.warn('cdn.tailwindcss.com should not be used in production');
+}
+console.log('widget booted');
+</script>
+</body></html>
+"""
+
+
+@pytest.fixture
+def widget_ws(chromium_available):
+    ws = Workspace(KvgitProvider.open(None, session="s2"))
+    rt = enable_apps(ws)
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", WIDGET_HTML.encode())
+    ws.checkpoint()
+    yield ws, rt
+    ws.close()
+
+
+def test_select_by_value(widget_ws):
+    """`type` maps to page.fill(), which errors on <select> — 4 of one
+    audited session's 11 test_app failures were exactly this."""
+    ws, rt = widget_ws
+    result = rt.test_app([
+        {"select": ["#make", "f"]},
+        {"read": "#picked"},
+    ])
+    assert result.ok, render_test_app(result)
+    assert result.results[1].value == "f"
+
+
+def test_select_falls_back_to_visible_label(widget_ws):
+    """Agents pass whichever of value/label the DOM showed them;
+    matching either keeps that from being another guess-and-retry."""
+    ws, rt = widget_ws
+    result = rt.test_app([
+        {"select": ["#make", "Tesla"]},
+        {"read": "#picked"},
+    ])
+    assert result.ok, render_test_app(result)
+    assert result.results[1].value == "t"  # matched by label, set by value
+
+
+def test_select_reports_an_unmatched_option(widget_ws):
+    ws, rt = widget_ws
+    result = rt.test_app([{"select": ["#make", "Rivian"]}])
+    assert not result.ok
+    assert "no option matching 'Rivian'" in result.results[0].error
+
+
+def test_type_on_a_select_names_the_right_action(widget_ws):
+    """Playwright's own message names the problem but not the fix."""
+    ws, rt = widget_ws
+    result = rt.test_app([{"type": ["#make", "Ford"]}])
+    assert not result.ok
+    assert '{"select": [\'#make\', value]}' in result.results[0].error
+
+
+def test_type_still_works_on_a_real_input(widget_ws):
+    ws, rt = widget_ws
+    result = rt.test_app([
+        {"type": ["#name", "carol"]},
+        {"eval": "document.querySelector('#name').value"},
+    ])
+    assert result.ok, render_test_app(result)
+    assert "carol" in result.results[1].value
+
+
+def test_repeated_console_lines_collapse_with_a_count(widget_ws):
+    """39% of one session's test_app result bytes were 32 copies of the
+    same CDN warning, against a model working in ~30k of context."""
+    ws, rt = widget_ws
+    result = rt.test_app([])
+    assert result.ok, render_test_app(result)
+    warnings = [ln for ln in result.console if "cdn.tailwindcss.com" in ln]
+    assert len(warnings) == 1
+    assert warnings[0].endswith("(x5)")
+    # distinct lines are untouched, and still carry no count
+    assert any(ln.endswith("widget booted") for ln in result.console)
+
+
 DEBOUNCED_HTML = """<!doctype html>
 <html><body>
 <div id="out">stale</div>
