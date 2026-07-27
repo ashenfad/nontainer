@@ -491,8 +491,79 @@ def test_successful_requests_are_logged():
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     rt.dispatch(request("GET", "/api/ok?limit=5"))
+    rt.flush_log()
     log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ok?limit=5 -> 200" in log
+    ws.close()
+
+
+def test_read_only_requests_leave_a_clean_workspace_clean():
+    """Per-request atomicity is gated on `not ws.dirty`, so a request
+    line written during a GET would silently disable handler rollback
+    for the next mutating request. Read-only lines buffer instead."""
+    ws, rt = make_ws()
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    ws.checkpoint()
+    assert not ws.dirty
+    assert rt.dispatch(request("GET", "/api/ok")).status == 200
+    assert not ws.dirty
+    ws.close()
+
+
+def test_a_prior_get_does_not_cost_the_next_post_its_rollback():
+    """The page-GET-then-POST flow — the common one, not a corner case.
+    A handler that writes and then raises must have those writes
+    discarded whether or not the page fetched something first."""
+    partial = (
+        "def post(req):\n"
+        "    cache['written'] = True\n"
+        "    with open('/workspace/side_effect.txt', 'w') as f:\n"
+        "        f.write('partial')\n"
+        "    raise ValueError('boom')\n"
+    )
+    for prior_get in (False, True):
+        ws, rt = make_ws()
+        write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+        write_handler(ws, "half", partial)
+        ws.checkpoint()
+        if prior_get:
+            assert rt.dispatch(request("GET", "/api/ok")).status == 200
+        assert rt.dispatch(request("POST", "/api/half")).status == 500
+        assert not ws.fs.exists("/workspace/side_effect.txt"), f"{prior_get=}"
+        assert "written" not in ws.cache, f"{prior_get=}"
+        ws.close()
+
+
+def test_buffered_lines_flush_in_order_when_a_handler_errors():
+    """A traceback must sit beneath the requests that preceded it —
+    an out-of-order log reads as a stale one."""
+    ws, rt = make_ws()
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    write_handler(ws, "boom", "def get(req):\n    return [][0]\n")
+    ws.checkpoint()
+    rt.dispatch(request("GET", "/api/ok?a=1"))
+    rt.dispatch(request("GET", "/api/ok?a=2"))
+    rt.dispatch(request("GET", "/api/boom"))  # the error flushes the buffer
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    order = [
+        log.index("GET /api/ok?a=1 -> 200"),
+        log.index("GET /api/ok?a=2 -> 200"),
+        log.index("[boom:get] ERROR:"),
+        log.index("GET /api/boom -> 500"),
+    ]
+    assert order == sorted(order), log
+    ws.close()
+
+
+def test_curl_flushes_the_log_it_tells_the_agent_to_read():
+    """curl runs inside a tool call that checkpoints anyway, and the
+    agent's next move is to tail the log."""
+    ws, rt = make_ws()
+    write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
+    ws.checkpoint()
+    assert ws.terminal("curl /api/ok").exit_code == 0
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert "GET /api/ok -> 200" in log
     ws.close()
 
 

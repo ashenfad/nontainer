@@ -472,6 +472,17 @@ def _submit(runtime: "AppRuntime", actions, kwargs):
     )
 
 
+def _flush_log(runtime: "AppRuntime") -> None:
+    """A run's request lines buffer while the workspace is clean, so a
+    read-only GET can't cost the next mutating request its rollback
+    (see ``AppRuntime._flush_if_free``). The end of a run is the safe
+    moment to write them: the agent's next move is to read the log."""
+    try:
+        runtime.flush_log()
+    except Exception:  # diagnostics must never fail a verification run
+        pass
+
+
 def run_test_app(
     runtime: "AppRuntime",
     actions: list[dict[str, Any]] | None = None,
@@ -487,6 +498,8 @@ def run_test_app(
         return TestAppResult(
             ok=False, load_error=f"Playwright/Chromium unavailable: {e}"
         )
+    finally:
+        _flush_log(runtime)
 
 
 async def arun_test_app(
@@ -503,6 +516,8 @@ async def arun_test_app(
         return TestAppResult(
             ok=False, load_error=f"Playwright/Chromium unavailable: {e}"
         )
+    finally:
+        _flush_log(runtime)
 
 
 def render_test_app(result: TestAppResult) -> str:

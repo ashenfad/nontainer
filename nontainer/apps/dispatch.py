@@ -166,6 +166,7 @@ class AppRuntime:
         self._log_sink = log_sink
         self._log_broken = False  # warn once when logging fails
         self._log_started = False  # header written on first log write
+        self._pending: list[str] = []  # request lines awaiting a free flush
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._contract = (Request, Response, HttpError)
         # Path layout, derived once from the workspace root.
@@ -217,7 +218,8 @@ class AppRuntime:
         # Only /api requests: static assets are high-volume and
         # low-signal, and would bury the tracebacks the log exists for.
         if api:
-            self._log_request(request, resp.status)
+            self._pending.append(self._request_line(request, resp.status))
+            self._flush_if_free()
         return resp
 
     # -- api -------------------------------------------------------------
@@ -384,16 +386,56 @@ class AppRuntime:
 
     # -- logging -------------------------------------------------------------
 
-    def _log_request(self, request: Request, status: int) -> None:
+    def _request_line(self, request: Request, status: int) -> str:
         """One line per /api request, whatever happened. Errors already
-        write a tagged traceback just above this line; logging the
+        write a tagged traceback just above this line; recording the
         SUCCESSES is what makes an empty log mean "no request arrived"
         instead of "logging is broken"."""
         qs = _query_string(request)
         path = request.path + (f"?{qs}" if qs else "")
-        self._log(f"{request.method.upper()} {path} -> {status}")
+        return f"{request.method.upper()} {path} -> {status}"
+
+    def flush_log(self) -> None:
+        """Write any buffered request lines to the log. Callers flush at
+        a point where dirtying the workspace is harmless — ``test_app``
+        does so when a run ends, which is where an agent looks next."""
+        with self._ws.lock:
+            self._flush()
+
+    def _flush_if_free(self) -> None:
+        """Flush only when writing costs nothing that matters.
+
+        A read-only request that found a clean workspace must LEAVE it
+        clean. ``_dispatch_api`` gates per-request atomicity on
+        ``not ws.dirty``, so a diagnostic write here would silently
+        disable handler rollback for the next mutating request — and
+        the page-GET-then-POST order makes that the common flow, not a
+        corner case. The runtime cannot simply claim the dirt as its
+        own and discard anyway: ``discard()`` is all-or-nothing at the
+        provider level and the protocol exposes only a boolean, so
+        "my log line" is indistinguishable from a screenshot written
+        mid-run — which rollback would then destroy. So we buffer
+        instead, and flush when the workspace is dirty regardless (the
+        line is free), when there is no staging to protect, or when a
+        sink routes the log off the VFS entirely.
+        """
+        ws = self._ws
+        if self._log_sink is not None or not ws.caps.staging or ws.dirty:
+            self._flush()
+
+    def _flush(self) -> None:
+        pending, self._pending = self._pending, []
+        for line in pending:
+            self._write_log(line)
 
     def _log(self, message: str) -> None:
+        """Write a diagnostic. Buffered request lines go out first, so
+        the log stays in request order and a traceback always sits
+        beneath the request that produced it."""
+        self._flush()
+        self._write_log(message)
+
+    def _write_log(self, message: str) -> None:
         try:
             if self._log_sink is not None:
                 # frozen serving: VFS is read-only, so route off it

@@ -97,6 +97,17 @@ def test_click_flow_mutates_backend(app_ws):
     assert ws.cache["scores"] == ["alice", "bob", "carol"]  # real backend mutation
 
 
+def test_run_flushes_the_request_log(app_ws):
+    """Read-only request lines buffer so a page's GET can't cost the
+    next POST its rollback; the end of a run is where they go out,
+    because reading the log is the agent's next move."""
+    ws, rt = app_ws
+    result = rt.test_app([{"read": "#status"}])
+    assert result.ok, render_test_app(result)
+    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert "GET /api/scores -> 200" in log
+
+
 def test_assert_failure_fails_run(app_ws):
     ws, rt = app_ws
     result = rt.test_app([{"assert": "1 === 2"}])

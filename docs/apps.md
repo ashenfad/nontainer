@@ -106,6 +106,19 @@ extension surface (`Workspace.exec_python`, no checkpoint) with:
   `<root>/app` before the agent has built anything, and embedders
   answer "is there an app yet?" with `isdir(<root>/app)`. Static
   assets are not logged; they would bury the tracebacks.
+- request lines from READ-ONLY requests buffer in memory while the
+  workspace is clean, and flush when writing is free (the workspace is
+  dirty anyway), when a diagnostic is written, or on an explicit
+  `AppRuntime.flush_log()`. This is not an optimization: per-request
+  atomicity below is gated on `not ws.dirty`, so a log line written
+  during a GET would silently disable handler rollback for the next
+  mutating request — and page-GET-then-POST is the common order. The
+  runtime cannot claim the dirt as its own and roll back anyway,
+  because `discard()` is all-or-nothing at the provider level and the
+  protocol exposes only a boolean: "my log line" is indistinguishable
+  from a screenshot written mid-run. `curl` and `test_app` flush when
+  they finish — both run inside a tool call that checkpoints anyway,
+  and both are followed by the agent reading the log.
 
 Handler executions hold the same per-workspace lock as tool calls —
 serialized per session, by design (handlers are ms-scale).
