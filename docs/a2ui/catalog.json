@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/ashenfad/nontainer/main/docs/a2ui/catalog.json",
   "title": "nontainer A2UI Catalog",
-  "description": "The A2UI v0.9 basic components nontainer's egress adapter emits, plus three extension components: Stat and Callout (the cards convention) and Chart (plotly specs). Consumers pass this catalogId to nontainer.adapters.a2ui.turn_to_a2ui to opt surfaces into the extension card components.",
+  "description": "The A2UI v0.9 basic components nontainer's egress adapter emits, plus four extension components: Stat and Callout (the cards convention), Chart (plotly specs) and Table (dataframes). Consumers pass this catalogId to nontainer.adapters.a2ui.turn_to_a2ui to opt surfaces into them; under any other catalog, cards and tables degrade to schema-valid basic-component approximations.",
   "catalogId": "https://raw.githubusercontent.com/ashenfad/nontainer/main/docs/a2ui/catalog.json",
   "components": {
     "Text": {
@@ -92,6 +92,78 @@
           },
           "required": [
             "component"
+          ]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "Table": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/ComponentCommon"
+        },
+        {
+          "$ref": "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json#/$defs/CatalogComponentCommon"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "const": "Table"
+            },
+            "data": {
+              "description": "Tabular data, inline or as a data-model binding. Producer-neutral by design: a pandas split orient, a polars frame and a SQL result all normalize to this shape. The consumer brings the grid.",
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "columns": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Column headers, in order."
+                    },
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "array"
+                      },
+                      "description": "Row-major cells as JSON scalars, each row the same length as columns. May be a page of a larger table — see total."
+                    },
+                    "total": {
+                      "type": "integer",
+                      "description": "Height of the full table. Greater than the number of rows shipped means this is a head; renderers say 'showing N of total'."
+                    },
+                    "columnTypes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "number",
+                          "string",
+                          "datetime",
+                          "boolean"
+                        ]
+                      },
+                      "description": "Optional per-column kind, parallel to columns. Cells cross as JSON scalars, so an ISO timestamp is indistinguishable from a string that looks like one; this is what lets a grid align, format and sort a column correctly instead of guessing."
+                    }
+                  },
+                  "required": [
+                    "columns",
+                    "rows"
+                  ]
+                },
+                {
+                  "$ref": "https://a2ui.org/specification/v0_9/common_types.json#/$defs/DataBinding"
+                }
+              ]
+            }
+          },
+          "required": [
+            "component",
+            "data"
           ]
         }
       ],

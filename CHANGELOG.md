@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **A `Table` a2ui extension component for dataframes** (issue #18).
+  A `.table.json` artifact was flattened into nested `Column`/`Row`/
+  `Text` before it reached the wire, so nothing marked it as tabular
+  and a consumer had no way to bind a real grid — sorting, alignment,
+  virtualized scroll. Under `NONTAINER_CATALOG` a dataframe is now one
+  `Table` node whose data rides in the data model, exactly as `Chart`
+  does with its plotly spec.
+
+  Gated like `Stat`/`Callout`, NOT unconditional like `Chart`. A plotly
+  figure has no basic-catalog approximation worth shipping; a table
+  does, and it is what basic consumers already render — making `Table`
+  unconditional would turn a readable table into a component they must
+  skip.
+
+  The wire shape is normalized to `{columns, rows, total, columnTypes}`
+  rather than passing pandas' split orient through. The artifact keeps
+  that orient, but a catalog is a public contract: publishing `data`
+  next to a row `index` no renderer here uses would freeze a pandas
+  implementation detail and force a polars or SQL producer to imitate
+  it. Ragged rows are padded and trimmed to the header, since a short
+  row shifts a grid's columns silently. No row cap on this path — 50
+  was a budget for `Text` nodes an agent would read, and the artifact
+  is already head-capped at 200 upstream; `total` still reports the
+  true height.
+- **`.table.json` artifacts carry `columnTypes`.** Cells cross as JSON
+  scalars, so an ISO timestamp is indistinguishable from a string that
+  looks like one and a numeric column sorts lexically unless someone
+  says otherwise. pandas knows the dtypes, so the artifact now carries
+  a coarse kind per column (`number`/`string`/`datetime`/`boolean`),
+  read from the dtype `kind` so extension dtypes (`Int64`, tz-aware
+  datetimes) classify like their numpy counterparts. Purely additive —
+  the existing `{columns, data, total}` keys are untouched, so
+  consumers reading the artifact today are unaffected — and omitted
+  rather than raised if a frame's dtypes can't be read.
+
 - **`test_app` gained a `select` action.** `{"select": [selector,
   value]}` drives a `<select>`; the option matches by value, then by
   visible label, since agents pass whichever the DOM showed them.
@@ -20,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Element is not an `<input>`" through unhelped.
 
 ### Changed
+- **`a2ui.component_for(extension_cards=)` is now `extensions=`.**
+  Breaking, on a public keyword. The flag was named for cards but now
+  gates tables too, and both follow the same rule: emit the nontainer
+  catalog's component where a basic-catalog approximation also exists.
+  `turn_to_a2ui` sets it from `catalog_id` as before, so callers that
+  do not use `component_for` directly are unaffected.
 - **`api.log` now records every `/api` request** (`METHOD path ->
   status`), and opens with a header explaining the format. Successful
   requests used to log nothing, so an empty log was ambiguous: it read

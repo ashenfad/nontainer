@@ -199,7 +199,7 @@ def test_component_cards_stat_without_sublabel_and_empty_callout():
 
 
 def test_component_cards_extension_components():
-    # extension_cards=True: one flat Stat/Callout per item — no Card
+    # extensions=True: one flat Stat/Callout per item — no Card
     # wrapper, no roled Texts, tone declared where the catalog says.
     data = json.dumps(
         {
@@ -215,7 +215,7 @@ def test_component_cards_extension_components():
             ]
         }
     ).encode()
-    frag = component_for("kpis", "/workspace/ui/kpis.cards.json", data, url, extension_cards=True)
+    frag = component_for("kpis", "/workspace/ui/kpis.cards.json", data, url, extensions=True)
     assert frag == {
         "component": {
             "componentType": "Row",
@@ -252,7 +252,7 @@ def test_component_cards_null_stat_fields_read_as_absent():
         {"componentType": "Text", "text": "", "role": "label"},
         {"componentType": "Text", "text": "", "role": "value"},
     ]
-    ext = component_for("k", "/workspace/ui/k.cards.json", data, url, extension_cards=True)
+    ext = component_for("k", "/workspace/ui/k.cards.json", data, url, extensions=True)
     assert ext["component"]["children"][0] == {
         "componentType": "Stat",
         "label": "",
@@ -268,7 +268,7 @@ def test_component_cards_clamps_unknown_tone():
     ).encode()
     basic = component_for("k", "/workspace/ui/k.cards.json", data, url)
     assert basic["component"]["children"][0]["tone"] == "info"
-    ext = component_for("k", "/workspace/ui/k.cards.json", data, url, extension_cards=True)
+    ext = component_for("k", "/workspace/ui/k.cards.json", data, url, extensions=True)
     assert ext["component"]["children"][0]["tone"] == "info"
 
 
@@ -298,6 +298,81 @@ def test_component_table_no_caption_when_all_shown():
     # header + 2 rows, no caption
     assert len(frag["component"]["children"]) == 3
     assert frag["component"]["children"][-1]["children"][0]["role"] == "cell"
+
+
+def test_component_table_extension_ships_structure():
+    """Under the nontainer catalog a dataframe becomes ONE Table node
+    carrying columns/rows, so a consumer can bind a real grid instead of
+    reconstructing one from Text. No 50-row cap: that was a budget for
+    Text nodes, and the artifact is already head-capped upstream."""
+    rows = [[i, f"r{i}"] for i in range(60)]
+    data = json.dumps(
+        {
+            "columns": ["n", "name"],
+            "index": [0, 1],  # pandas' orient carries it; the wire drops it
+            "data": rows,
+            "total": 200,
+            "columnTypes": ["number", "string"],
+        }
+    ).encode()
+    frag = component_for("t", "/workspace/ui/t.table.json", data, url, extensions=True)
+    assert frag["component"] == {
+        "componentType": "Table",
+        "data": {"$ref": "table"},
+    }
+    table = frag["data_model"]["table"]
+    assert table["columns"] == ["n", "name"]
+    assert table["rows"] == rows  # all 60, not 50
+    assert table["total"] == 200
+    assert table["columnTypes"] == ["number", "string"]
+    assert "index" not in table  # pandas detail, not a public contract
+
+
+def test_component_table_stays_basic_without_the_catalog():
+    """A table, unlike a plotly figure, HAS a legible basic-catalog
+    form — so Table must stay behind the gate or every basic consumer
+    would go from a readable table to a component it must skip."""
+    data = json.dumps({"columns": ["a"], "data": [[1]], "total": 1}).encode()
+    frag = component_for("t", "/workspace/ui/t.table.json", data, url)
+    assert frag["component"]["componentType"] == "Column"
+    assert frag["data_model"] == {}
+
+
+def test_component_table_extension_squares_ragged_rows():
+    """A short row would shift a grid's columns silently; pad and trim to
+    the header so a data bug stays visible as a gap."""
+    data = json.dumps(
+        {"columns": ["a", "b", "c"], "data": [[1], [1, 2, 3, 4], 7]}
+    ).encode()
+    frag = component_for("t", "/workspace/ui/t.table.json", data, url, extensions=True)
+    assert frag["data_model"]["table"]["rows"] == [
+        [1, None, None],
+        [1, 2, 3],
+        [7],
+    ]
+
+
+def test_component_table_extension_drops_untrustworthy_column_types():
+    """columnTypes comes from an agent-writable file: a wrong-length or
+    unknown-kind list is dropped whole rather than mislabeling a column
+    (a grid would sort the wrong way and the agent would never see why)."""
+    for bad in (["number"], ["number", "sparkly"], "number", None):
+        data = json.dumps(
+            {"columns": ["a", "b"], "data": [[1, "x"]], "columnTypes": bad}
+        ).encode()
+        frag = component_for(
+            "t", "/workspace/ui/t.table.json", data, url, extensions=True
+        )
+        assert "columnTypes" not in frag["data_model"]["table"], bad
+
+
+def test_component_table_extension_degrades_on_nonlist_fields():
+    """The never-raises contract, on the extension path too."""
+    frag = component_for(
+        "t", "/workspace/ui/t.table.json", b'{"columns": 5, "data": 7}', url,
+        extensions=True,
+    )
+    assert frag["data_model"]["table"] == {"columns": [], "rows": []}
 
 
 def test_component_plotly():
@@ -515,6 +590,59 @@ def test_turn_callout_tone_survives_flattening():
     assert stat_card["component"] == "Card" and "tone" not in stat_card
     assert callout_card["component"] == "Card"
     assert callout_card["tone"] == "warning"
+
+
+def test_turn_nontainer_catalog_emits_a_bound_table():
+    """The wire form: one Table component whose data is a JSON-Pointer
+    binding, and one updateDataModel entry carrying the payload — the
+    same shape Chart uses for its spec."""
+    payload = {
+        "columns": ["make", "n"],
+        "index": [0, 1],
+        "data": [["Tesla", 5], ["Ford", 3]],
+        "total": 2,
+        "columnTypes": ["string", "number"],
+    }
+    files = {"/workspace/ui/ev.table.json": json.dumps(payload).encode()}
+    msgs = turn_to_a2ui(
+        "",
+        [("ev", "/workspace/ui/ev.table.json")],
+        _reader(files),
+        url,
+        surface_id="s1",
+        catalog_id=NONTAINER_CATALOG,
+    )
+    by_id = {c["id"]: c for c in msgs[1]["updateComponents"]["components"]}
+    assert by_id["seg0"] == {
+        "id": "seg0",
+        "component": "Table",
+        "data": {"path": "/artifacts/ev/table"},
+    }
+    entry = msgs[2]["updateDataModel"]
+    assert entry["path"] == "/artifacts/ev/table"
+    assert entry["value"] == {
+        "columns": ["make", "n"],
+        "rows": [["Tesla", 5], ["Ford", 3]],
+        "total": 2,
+        "columnTypes": ["string", "number"],
+    }
+
+
+def test_turn_basic_catalog_keeps_the_flattened_table():
+    """Default catalog: no Table component reaches the wire, and the
+    reader still gets a legible table."""
+    payload = {"columns": ["a"], "data": [[1]], "total": 1}
+    files = {"/workspace/ui/t.table.json": json.dumps(payload).encode()}
+    msgs = turn_to_a2ui(
+        "",
+        [("t", "/workspace/ui/t.table.json")],
+        _reader(files),
+        url,
+        surface_id="s1",
+    )
+    kinds = {c["component"] for c in msgs[1]["updateComponents"]["components"]}
+    assert "Table" not in kinds and {"Column", "Row", "Text"} <= kinds
+    assert len(msgs) == 2  # no updateDataModel: nothing was bound
 
 
 def test_turn_nontainer_catalog_emits_extension_cards():
