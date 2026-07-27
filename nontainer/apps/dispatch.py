@@ -52,6 +52,25 @@ def app_root(ws: Workspace) -> str:
 
 _VERBS = frozenset({"get", "post", "put", "delete", "patch"})
 
+# Written when the log is first created. An EMPTY log is
+# indistinguishable from a broken one to an agent tailing it — it reads
+# as "logging is broken" rather than "nothing has errored yet", which
+# sends the repair loop chasing phantoms instead of the bug. The header
+# plus a line per request make the file evidence that logging works, so
+# silence below it is a fact about the app.
+_LOG_HEADER = (
+    "# api.log — one line per /api request (METHOD path -> status), plus\n"
+    "# handler stdout and tracebacks. Nothing below this header means no\n"
+    "# request has reached the app yet, NOT that logging is broken.\n"
+)
+
+
+def _query_string(request: Request) -> str:
+    """The request's params re-encoded, for log correlation."""
+    from urllib.parse import urlencode
+
+    return urlencode(request.params) if request.params else ""
+
 
 def _error_response(status: int, message: str, **extra: str) -> WireResponse:
     """Error bodies ride as JSON: model-written frontends call
@@ -146,6 +165,7 @@ class AppRuntime:
         self._frozen = frozen
         self._log_sink = log_sink
         self._log_broken = False  # warn once when logging fails
+        self._log_started = False  # header written on first log write
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._contract = (Request, Response, HttpError)
         # Path layout, derived once from the workspace root.
@@ -183,8 +203,9 @@ class AppRuntime:
             return self._dispatch(request)
 
     def _dispatch(self, request: Request) -> WireResponse:
+        api = request.path.startswith("/api/")
         try:
-            if request.path.startswith("/api/"):
+            if api:
                 resp = self._dispatch_api(request)
             else:
                 resp = self._dispatch_static(request)
@@ -192,7 +213,11 @@ class AppRuntime:
             resp = _error_response(e.status, e.message)
         cap = self._config.max_response_bytes
         if len(resp.content) > cap:
-            return _error_response(500, "response too large")
+            resp = _error_response(500, "response too large")
+        # Only /api requests: static assets are high-volume and
+        # low-signal, and would bury the tracebacks the log exists for.
+        if api:
+            self._log_request(request, resp.status)
         return resp
 
     # -- api -------------------------------------------------------------
@@ -262,9 +287,7 @@ class AppRuntime:
         # The query string in the tag is what lets an agent correlate
         # log entries with requests — identical bare error lines read
         # as "stale log" and send the repair loop chasing phantoms.
-        from urllib.parse import urlencode
-
-        qs = urlencode(request.params) if request.params else ""
+        qs = _query_string(request)
         where = f"{name}:{verb}" + (f" ?{qs}" if qs else "")
         if result.stdout:
             self._log(f"[{where}] stdout:\n{result.stdout}")
@@ -361,6 +384,15 @@ class AppRuntime:
 
     # -- logging -------------------------------------------------------------
 
+    def _log_request(self, request: Request, status: int) -> None:
+        """One line per /api request, whatever happened. Errors already
+        write a tagged traceback just above this line; logging the
+        SUCCESSES is what makes an empty log mean "no request arrived"
+        instead of "logging is broken"."""
+        qs = _query_string(request)
+        path = request.path + (f"?{qs}" if qs else "")
+        self._log(f"{request.method.upper()} {path} -> {status}")
+
     def _log(self, message: str) -> None:
         try:
             if self._log_sink is not None:
@@ -369,6 +401,14 @@ class AppRuntime:
                 return
             fs = self._ws.fs
             fs.makedirs(f"{self._app_root}/logs", exist_ok=True)
+            if not self._log_started:
+                # Header on creation, not at enable_apps: pre-creating
+                # would materialize <root>/app before the agent has
+                # built anything, and "does an app exist yet?" is a
+                # question embedders answer with isdir(<root>/app).
+                self._log_started = True
+                if not fs.exists(self._log_path):
+                    fs.write(self._log_path, _LOG_HEADER.encode())
             stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
             fs.write(
                 self._log_path, f"[{stamp}] {message.rstrip()}\n".encode(), mode="a"

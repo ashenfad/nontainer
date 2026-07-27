@@ -468,6 +468,30 @@ def test_handler_traceback_is_readable_from_the_terminal(ws):
         runtime.close()
 
 
+def test_successful_requests_are_readable_from_the_terminal(ws):
+    """The other half of the same repair loop, on a remote executor.
+
+    A handler that never errors used to write NOTHING, so `cat
+    app/logs/api.log` failed with "No such file or directory" whether
+    logging was broken or the app was simply fine — indistinguishable,
+    and the first reading is the one that costs turns. A success now
+    leaves a request line, and it has to survive the host→guest sync
+    like any other VFS write.
+    """
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(ws, "ok.py", b"def get(req):\n    return {'ok': True}\n")
+    runtime = enable_apps(ws)
+    try:
+        assert runtime.dispatch(request("GET", "/api/ok?limit=5")).status == 200
+        r = ws.terminal("cat app/logs/api.log")  # no intervening write
+        assert r, r.stderr
+        assert "GET /api/ok?limit=5 -> 200" in r.stdout
+        assert "NOT that logging is broken" in r.stdout
+    finally:
+        runtime.close()
+
+
 def test_exec_python_stdin_argv_fail_loud(ws):
     from nontainer.errors import NotSupportedError
 

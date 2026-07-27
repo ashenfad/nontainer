@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`test_app` gained a `select` action.** `{"select": [selector,
+  value]}` drives a `<select>`; the option matches by value, then by
+  visible label, since agents pass whichever the DOM showed them.
+  Previously the only option was `{"type": ...}`, which maps to
+  Playwright's `fill()` and raises on a `<select>` — 4 of 11 `test_app`
+  failures in an audited session were this one gap, and the agent
+  rediscovered the same `dispatchEvent(new Event('change'))` workaround
+  three separate times. A `type` aimed at a `<select>` now names the
+  `select` action in its error instead of passing Playwright's
+  "Element is not an `<input>`" through unhelped.
+
+### Changed
+- **`api.log` now records every `/api` request** (`METHOD path ->
+  status`), and opens with a header explaining the format. Successful
+  requests used to log nothing, so an empty log was ambiguous: it read
+  as *logging is broken* rather than *no handler errored*, and sent the
+  repair loop chasing a phantom instead of the bug. The header proves
+  the mechanism works and the lines prove requests are arriving, so
+  silence below the header is now a fact about the app. The header is
+  written when the log is first created, NOT at `enable_apps` —
+  pre-creating it would materialize `<root>/app` before the agent has
+  built anything, and embedders answer "is there an app yet?" with
+  `isdir(<root>/app)` (studio's preview probe does). Static assets are
+  deliberately not logged — high-volume, low-signal, and they would
+  bury the tracebacks the log exists for.
+- **Repeated `test_app` console lines collapse** to a single entry with
+  an `(xN)` count, and the 100-line cap now counts DISTINCT lines. One
+  audited session spent 39% of all `test_app` result bytes (7,922 of
+  20,279) on 32 copies of the same Tailwind CDN warning, against a
+  model working in ~30k of context — repeats crowded the console tail
+  the agent actually reads. A genuinely repeating log still reads as
+  repeating, via the count.
+
 ### Fixed
 - **Direct `ws.fs` writes now reach a remote executor.** `ws.fs` writes
   straight into the provider, so behind a remote executor (dud) the

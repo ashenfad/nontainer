@@ -196,7 +196,8 @@ __WS__/app/index.html          <- entry page (served at the app root)
 __WS__/app/api/<name>.py       <- backend endpoint at api/<name> (the URL has
                             NO .py: __WS__/app/api/scores.py serves api/scores)
 __WS__/app/api/_helpers.py     <- _-prefixed files: importable, not routable
-__WS__/app/logs/api.log        <- handler errors + prints (tail it to debug)
+__WS__/app/logs/api.log        <- one line per request + handler errors and
+                            prints (tail it to debug)
 
 Handlers export verb functions; example __WS__/app/api/scores.py:
 
@@ -340,6 +341,7 @@ TEST_APP_DESCRIPTION = """\
 Verify the app under /app in a headless browser — no server needed.
 Pass a list of actions, executed in order:
   {"click": "#selector"}          {"type": ["#selector", "text"]}
+  {"select": ["#selector", val]}  (for <select>; "type" does not work)
   {"read": "#selector"}           {"eval": "js expression"}
   {"assert": "js expression"}     (retries until truthy, ~2s)
   {"screenshot": true}            {"wait": ms}
@@ -351,7 +353,9 @@ over read-and-check when you know the expected condition. When an
 assert fails, fix the APP, not the assert — weakening an assertion
 until it cannot fail (e.g. `x !== '0' || x === '0'`) verifies nothing.
 Screenshots are returned as images AND saved to /app/screenshots/.
-Backend errors land in /app/logs/api.log (tail it to debug)."""
+Backend errors land in /app/logs/api.log, which also records one line
+per request (METHOD path -> status) — so that file tells you whether
+your fetch even reached the backend. Tail it to debug."""
 
 
 def _env_notes(ws: Workspace) -> str:
