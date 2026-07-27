@@ -466,6 +466,36 @@ def _ui_write(ws: Workspace, path: str, data: bytes) -> str:
     return path
 
 
+# Coarse column kinds for a `.table.json` artifact, keyed by numpy /
+# pandas dtype ``kind`` (extension dtypes implement it too, so Int64 and
+# a tz-aware datetime classify like their numpy counterparts). Anything
+# unlisted — object, category, string, timedelta — is "string".
+#
+# A consumer rendering a real grid has to pick alignment and sort order
+# per column, and every cell crosses as a JSON scalar: an ISO timestamp
+# is indistinguishable from a string that happens to look like one, and
+# a numeric column sorts lexically unless someone says otherwise.
+# pandas knows; carrying it beats making each renderer guess.
+_COLUMN_KINDS = {
+    "i": "number",
+    "u": "number",
+    "f": "number",
+    "b": "boolean",
+    "M": "datetime",
+}
+
+
+def _column_types(frame: Any) -> list[str] | None:
+    """Per-column kinds for ``frame``, or None if they can't be read —
+    metadata must never be the reason an artifact fails to render."""
+    try:
+        return [
+            _COLUMN_KINDS.get(getattr(dt, "kind", ""), "string") for dt in frame.dtypes
+        ]
+    except Exception:
+        return None
+
+
 def _too_large_note(name: str, size: int, mod: str) -> str:
     """Actionable diagnosis for the cap: the agent reads this in the
     tool result and self-corrects; the human sees it where the figure
@@ -580,6 +610,9 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
             value.head(200).to_json(orient="split", date_format="iso")
         )
         payload["total"] = total  # renderers say "showing N of total"
+        kinds = _column_types(value)
+        if kinds is not None:
+            payload["columnTypes"] = kinds
         return _ui_write(
             ws, f"{ui_root(ws)}/{name}.table.json", _json.dumps(payload).encode()
         )

@@ -36,12 +36,12 @@ basic-catalog components (``Card``/``Row``/``Column``/``Text``/``Image``)
 plus the nontainer catalog's extension types (``docs/a2ui/catalog.json``,
 ``NONTAINER_CATALOG``): ``Chart`` for plotly specs (always emitted — a
 figure has no basic approximation), and ``Stat``/``Callout`` for card items
-(emitted only when the surface's catalog is ``NONTAINER_CATALOG``; under
-any other catalog, cards degrade to a schema-valid Card/Column/Text
-approximation). A fragment is ``{"component": <tree>, "data_model":
-{ref_key: value}}``; components carry ``{"$ref": key}`` where a value lives
-in the data model (today: only the plotly spec, which is bulky and
-de-facto-standard — the consumer brings the renderer).
+plus ``Table`` for dataframes (emitted only when the surface's catalog is
+``NONTAINER_CATALOG``; under any other catalog they degrade to schema-valid
+Card/Column/Text approximations). A fragment is ``{"component": <tree>,
+"data_model": {ref_key: value}}``; components carry ``{"$ref": key}`` where
+a value lives in the data model — the bulky payloads, which the consumer
+brings a renderer for: a plotly spec, and a table's columns and rows.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ def component_for(
     data: bytes | None,
     file_url: Callable[[str], str],
     *,
-    extension_cards: bool = False,
+    extensions: bool = False,
 ) -> dict:
     """Project one artifact into an a2ui fragment.
 
@@ -129,14 +129,19 @@ def component_for(
     still works, being URL-only). Malformed JSON where JSON is expected
     degrades the same way; this function never raises.
 
-    ``extension_cards=True`` emits card items as the nontainer catalog's
-    ``Stat``/``Callout`` extension components (one node per item, flat
-    props) instead of the basic-catalog Card/Column/Text approximation.
-    Callers set it when the surface's catalog declares those components
-    (``turn_to_a2ui`` does, for ``NONTAINER_CATALOG``). ``Chart`` has no
-    such switch: a plotly figure has no basic-catalog approximation worth
-    shipping, so it is always the extension component and lenient basic
-    consumers simply skip it.
+    ``extensions=True`` emits the nontainer catalog's extension
+    components where a basic-catalog approximation also exists: card
+    items as ``Stat``/``Callout`` (one node per item, flat props) rather
+    than Card/Column/Text, and a dataframe as ``Table`` (structured
+    columns/rows in the data model) rather than a Column of Rows of
+    Text. Callers set it when the surface's catalog declares those
+    components (``turn_to_a2ui`` does, for ``NONTAINER_CATALOG``).
+
+    ``Chart`` has no such switch: a plotly figure has no basic-catalog
+    approximation worth shipping, so it is always the extension
+    component and lenient basic consumers simply skip it. A table is
+    the opposite case — the flattened form is legible and is what a
+    basic consumer gets, so ``Table`` must stay behind the gate.
 
     Returns ``{"component": <tree>, "data_model": {...}}``.
     """
@@ -155,11 +160,11 @@ def component_for(
             if kind == "cards":
                 payload = _try_json(data)
                 if isinstance(payload, dict):
-                    return _cards(payload, extension_cards)
+                    return _cards(payload, extensions)
             elif kind == "table":
                 payload = _try_json(data)
                 if isinstance(payload, dict):
-                    return _table(payload)
+                    return _table(payload, extensions)
             elif kind == "plotly":
                 spec = _try_json(data)
                 if isinstance(spec, dict):
@@ -282,19 +287,25 @@ def _cards(payload: dict, extension: bool = False) -> dict:
 _TABLE_ROW_CAP = 50
 
 
-def _table(payload: dict) -> dict:
-    """The ``.table.json`` split-orient payload ``{"columns": [...], "data":
-    [[...]], "total": N}`` → a Column: a header Row of Text, then up to 50
-    data Rows. When ``total`` exceeds the rendered count, a trailing Text
-    notes ``showing N of M rows`` (the payload is already head-capped
-    upstream, so a big table degrades gracefully)."""
-    # both guarded the same way: these fields come from agent-writable
+def _table(payload: dict, extension: bool = False) -> dict:
+    """The ``.table.json`` payload → a table.
+
+    ``extension=True`` (the nontainer catalog): one ``Table`` component
+    carrying the data structurally, so a consumer can bind a real grid —
+    sorting, alignment, virtualized scroll — instead of reconstructing
+    one from Text nodes. ``extension=False``: the basic-catalog
+    approximation, a Column of Rows of Text capped at 50 rows.
+    """
+    # all guarded the same way: these fields come from agent-writable
     # files, and a truthy non-list ({"columns": 5}) must degrade, not raise
     columns = payload.get("columns")
     columns = columns if isinstance(columns, list) else []
     rows = payload.get("data")
     rows = rows if isinstance(rows, list) else []
     total = payload.get("total")
+
+    if extension:
+        return _table_extension(columns, rows, total, payload.get("columnTypes"))
 
     children = [
         {
@@ -314,6 +325,48 @@ def _table(payload: dict) -> dict:
     if isinstance(total, int) and total > len(rendered):
         children.append(_text(f"showing {len(rendered)} of {total} rows", "caption"))
     return _fragment({"componentType": "Column", "children": children})
+
+
+_COLUMN_TYPES = frozenset({"number", "string", "datetime", "boolean"})
+
+
+def _table_extension(
+    columns: list, rows: list, total: object, column_types: object
+) -> dict:
+    """The ``Table`` extension component: bulky, so the data rides in the
+    data model and the component references it, exactly as ``Chart``
+    does with its spec.
+
+    The wire shape is deliberately NOT pandas' split orient. That is what
+    the artifact happens to hold, but the catalog is a public contract:
+    publishing ``data`` alongside a row ``index`` most consumers discard
+    would freeze a pandas implementation detail and force a polars or
+    SQL producer to imitate it. So the boundary normalizes to
+    ``{columns, rows, total, columnTypes}`` — the ``index`` key, unused
+    by any renderer here, is dropped.
+
+    No row cap: 50 was a budget for Text nodes an agent would read, and
+    the artifact is already head-capped at 200 rows upstream. ``total``
+    still reports the true height so a grid can say what it is showing.
+    """
+    data: dict = {"columns": [str(c) for c in columns]}
+    width = len(data["columns"])
+    # Ragged rows would misalign a grid silently. Pad and trim to the
+    # header instead: a visibly short row is a data bug the agent can
+    # see, a shifted column is one they'd chase for an hour.
+    data["rows"] = [
+        (list(r) + [None] * width)[:width] if isinstance(r, list) else [r][:width]
+        for r in rows
+    ]
+    if isinstance(total, int):
+        data["total"] = total
+    if isinstance(column_types, list) and len(column_types) == width:
+        if all(t in _COLUMN_TYPES for t in column_types):
+            data["columnTypes"] = list(column_types)
+    return _fragment(
+        {"componentType": "Table", "data": {"$ref": "table"}},
+        {"table": data},
+    )
 
 
 def _chart(spec: dict) -> dict:
@@ -354,9 +407,10 @@ BASIC_CATALOG = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json
 
 # The nontainer extension catalog (docs/a2ui/catalog.json in the repo):
 # re-exports the basic components this adapter emits and adds ``Stat``,
-# ``Callout``, and ``Chart``. Passing it as ``catalog_id`` opts the surface
-# into extension card components; any OTHER custom id keeps the basic-shaped
-# cards, since we can't know what a foreign catalog declares.
+# ``Callout``, ``Chart``, and ``Table``. Passing it as ``catalog_id`` opts
+# the surface into the extension components; any OTHER custom id keeps the
+# basic-shaped cards and table, since we can't know what a foreign catalog
+# declares.
 NONTAINER_CATALOG = (
     "https://raw.githubusercontent.com/ashenfad/nontainer/main/docs/a2ui/catalog.json"
 )
@@ -383,9 +437,10 @@ def turn_to_a2ui(
 
     ``catalog_id`` names the surface's catalog and doubles as the capability
     switch: ``NONTAINER_CATALOG`` opts card items into the ``Stat``/
-    ``Callout`` extension components; any other id (including a consumer's
-    own custom catalog) keeps the basic-catalog card approximation, since we
-    can't know what a foreign catalog declares.
+    ``Callout`` extension components and dataframes into ``Table``; any
+    other id (including a consumer's own custom catalog) keeps the
+    basic-catalog approximations, since we can't know what a foreign
+    catalog declares.
 
     Pipeline: ``splice`` interleaves prose and artifacts into ordered
     segments; each ``("artifact", ...)`` segment is projected by
@@ -416,7 +471,7 @@ def turn_to_a2ui(
     ``component_for`` output; a ``read_bytes`` that itself raises is treated
     as an unreadable artifact.
     """
-    extension_cards = catalog_id == NONTAINER_CATALOG
+    extensions = catalog_id == NONTAINER_CATALOG
     components: list[dict] = [{"id": "root", "component": "Column", "children": []}]
     root_children: list[str] = components[0]["children"]
     data_entries: list[tuple[str, object]] = []
@@ -433,9 +488,7 @@ def turn_to_a2ui(
         except Exception:
             # read_bytes is the caller's I/O; the envelope stays total.
             data = None
-        frag = component_for(
-            name, path, data, file_url, extension_cards=extension_cards
-        )
+        frag = component_for(name, path, data, file_url, extensions=extensions)
         _flatten(frag.get("component") or {}, seg_id, name, components)
         for key, value in (frag.get("data_model") or {}).items():
             data_entries.append((f"/artifacts/{name}/{key}", value))

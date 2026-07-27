@@ -44,6 +44,53 @@ def test_dataframe_becomes_capped_table(ws):
     assert table["total"] == 500  # ...and the cap announces itself
 
 
+def test_table_carries_column_types(ws):
+    """Cells cross as JSON scalars, so an ISO timestamp is
+    indistinguishable from a string that looks like one and a numeric
+    column sorts lexically. pandas knows the dtypes; carry them rather
+    than make every renderer guess. Additive: the existing
+    {columns, data, total} keys are untouched."""
+    pd = pytest.importorskip("pandas")
+    df = pd.DataFrame(
+        {
+            "n": [1, 2],
+            "f": [1.5, 2.5],
+            "flag": [True, False],
+            "name": ["a", "b"],
+            "when": pd.to_datetime(["2024-01-01", "2024-02-01"]),
+            "nullable": pd.array([1, None], dtype="Int64"),
+            "cat": pd.Categorical(["x", "y"]),
+        }
+    )
+    materialize_ui(ws, {"rows": df})
+    table = json.loads(ws.fs.read("/workspace/ui/rows.table.json"))
+    assert table["columnTypes"] == [
+        "number",
+        "number",
+        "boolean",
+        "string",
+        "datetime",
+        "number",  # extension dtypes classify like their numpy kin
+        "string",  # category has no grid meaning beyond text
+    ]
+    assert len(table["columnTypes"]) == len(table["columns"])
+
+
+def test_column_types_are_omitted_rather_than_raised():
+    """Metadata is a nicety: a frame whose dtypes can't be read still
+    renders, just without the hint. The a2ui boundary treats a missing
+    columnTypes as unknown, so omission is always safe."""
+    from nontainer.adapters.render import _column_types
+
+    class NoDtypes:
+        @property
+        def dtypes(self):
+            raise RuntimeError("no dtypes for you")
+
+    assert _column_types(NoDtypes()) is None
+    assert _column_types(object()) is None
+
+
 def test_matplotlib_figure_becomes_png(ws):
     plt = pytest.importorskip("matplotlib.pyplot")
     fig, ax = plt.subplots()
