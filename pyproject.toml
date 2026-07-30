@@ -55,7 +55,9 @@ agno = [
     "agno>=1.0",
 ]
 mcp = [
-    "mcp>=1.0",
+    # The adapter targets mcp.server.fastmcp, removed in MCP 2.0.
+    # Lift this cap when the MCP 2 adapter migration lands.
+    "mcp>=1.0,<2",
 ]
 dud = [
     # dud itself requires >=3.11; the marker keeps nontainer's 3.10
