@@ -60,10 +60,10 @@ def test_stdlib_warnings_can_quiet_library_noise():
     ws.close()
 
 
-def test_stdlib_data_and_type_helpers():
+def test_stdlib_data_helpers():
     ws = make_ws()
     r = ws.run_python(
-        "import binascii, bisect, collections.abc, difflib, heapq, numbers, struct\n"
+        "import binascii, bisect, difflib, heapq, struct\n"
         "heap = [3, 1, 2]\n"
         "heapq.heapify(heap)\n"
         "result = (\n"
@@ -72,8 +72,6 @@ def test_stdlib_data_and_type_helpers():
         "    list(difflib.unified_diff(['a'], ['b'])),\n"
         "    struct.unpack('>H', struct.pack('>H', 513))[0],\n"
         "    binascii.hexlify(b'ok'),\n"
-        "    isinstance(1, numbers.Integral),\n"
-        "    isinstance([], collections.abc.Sequence),\n"
         ")"
     )
     assert r, r.error
@@ -83,9 +81,18 @@ def test_stdlib_data_and_type_helpers():
         ["--- \n", "+++ \n", "@@ -1 +1 @@\n", "-a", "+b"],
         513,
         b"6f6b",
-        True,
-        True,
     )
+    ws.close()
+
+
+@pytest.mark.parametrize("module", ["numbers", "collections.abc"])
+def test_stdlib_excludes_process_global_abc_registration(module):
+    """ABCMeta.register mutates a process-global registry. ModuleGrant
+    filters do not follow a class object returned from a module, so
+    neither ABC module is safe to grant until class-level filters exist."""
+    ws = make_ws()
+    r = ws.run_python(f"import {module}")
+    assert not r and module in (r.error or "")
     ws.close()
 
 
