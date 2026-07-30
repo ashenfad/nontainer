@@ -1085,7 +1085,13 @@ class Workspace:
 
     def rollback(self, steps: int = 1) -> str:
         """Restore the Nth-previous checkpoint; returns its id.
-        Sugar over ``history()`` + ``restore()``."""
+
+        Sugar over ``history()`` + ``restore()``. The explicit
+        ``{"tool": "init"}`` lifecycle checkpoint is the floor:
+        rollback may target it, but never cross it into a provider's
+        pre-workspace seed. Legacy histories without that exact marker
+        retain their existing provider-history behavior.
+        """
         if steps < 1:
             raise ValueError("steps must be >= 1")
         with self._lock:
@@ -1094,6 +1100,25 @@ class Workspace:
                 raise CheckpointNotFoundError(
                     f"Cannot roll back {steps} step(s): only "
                     f"{len(entries)} checkpoint(s) in history"
+                )
+            # Exact metadata equality is deliberate: an unrelated
+            # checkpoint that merely includes tool="init" plus other
+            # caller metadata must not become a workspace lifecycle
+            # boundary. Newest-first history means targets beyond the
+            # marker have a larger index; targeting the marker itself
+            # remains valid.
+            init_index = next(
+                (
+                    i
+                    for i, entry in enumerate(entries)
+                    if entry.info == {"tool": "init"}
+                ),
+                None,
+            )
+            if init_index is not None and steps > init_index:
+                raise CheckpointNotFoundError(
+                    f"Cannot roll back {steps} step(s): the workspace "
+                    "initialization checkpoint is the rollback floor"
                 )
             target = entries[steps]
             self._provider.restore(target.id)
