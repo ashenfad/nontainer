@@ -26,7 +26,6 @@ import binascii
 import bisect
 import calendar
 import collections
-import collections.abc
 import csv
 import datetime
 import decimal
@@ -42,7 +41,6 @@ import io
 import itertools
 import json
 import math
-import numbers
 import os
 import pathlib
 import pprint
@@ -94,11 +92,9 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(statistics),
     ModuleGrant(decimal),
     ModuleGrant(fractions),
-    ModuleGrant(numbers),
     ModuleGrant(random, exclude=_RANDOM_EXCLUDE),
     # containers & iteration
     ModuleGrant(collections),
-    ModuleGrant(collections.abc, name="collections.abc"),
     ModuleGrant(itertools),
     ModuleGrant(heapq),
     ModuleGrant(bisect),

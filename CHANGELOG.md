@@ -9,12 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **The default safe stdlib now includes common data/type helpers:**
-  `heapq`, `bisect`, `difflib`, `struct`, `binascii`, `numbers`, and
-  `collections.abc`. Narrow grants add the capability-neutral core of
-  `functools` (`partial`, `reduce`, `lru_cache`, `cache`), string-only
-  `shlex` rendering (`quote`, `join`), and pprint representation
-  helpers that return strings or booleans. Broader surfaces remain
-  denied and pinned by tests.
+  `heapq`, `bisect`, `difflib`, `struct`, and `binascii`. Narrow grants
+  add the capability-neutral core of `functools` (`partial`, `reduce`,
+  `lru_cache`, `cache`), string-only `shlex` rendering (`quote`,
+  `join`), and pprint representation helpers that return strings or
+  booleans. Broader surfaces remain denied and pinned by tests.
 
 ### Fixed
 - **The MCP extra is capped below 2.0 until the adapter is migrated.**
@@ -29,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   builtins such as `eval` under both in-process and process isolation.
   Trusted embedders may still opt in explicitly with
   `PythonConfig(modules=[ModuleGrant(pickle)])`.
+- **Process-global ABC registration remains unavailable by default.**
+  `numbers` and `collections.abc` expose `ABCMeta.register`, which
+  agent code could use to alter `isinstance` results throughout the
+  host interpreter. They remain excluded until grants can constrain
+  attributes reached through returned class objects.
 
 ## [0.2.2] - 2026-07-27
 

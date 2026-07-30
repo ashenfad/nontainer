@@ -269,8 +269,8 @@ class PythonConfig:
 ```
 
 - `stdlib=True` (default) grants the curated safe-stdlib set
-  (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions/numbers,
-  random (minus global seed/state), collections/collections.abc/itertools,
+  (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions,
+  random (minus global seed/state), collections/itertools,
   heapq/bisect, narrow functools (`partial`, `reduce`, `lru_cache`,
   `cache`),
   datetime/time/calendar/zoneinfo, re/string/textwrap,
@@ -285,6 +285,10 @@ class PythonConfig:
   embedders can still opt in explicitly with
   `modules=[ModuleGrant(pickle)]`; do not do so for agent-controlled
   data.
+- `numbers` and `collections.abc` are intentionally excluded:
+  `ABCMeta.register` mutates process-global type registries, and module
+  member filters do not currently constrain attributes reached through
+  an ABC class returned by the module.
 - `modules` extends the stdlib set and flattens one level of nesting,
   so preset grant lists splice in directly:
   `modules=[dataframes(), plotting(), my_module]`. Explicit grants
