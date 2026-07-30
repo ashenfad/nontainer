@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **The default safe stdlib now includes common data/type helpers:**
+  `heapq`, `bisect`, `difflib`, `struct`, `binascii`, `numbers`, and
+  `collections.abc`. Narrow grants add the capability-neutral core of
+  `functools` (`partial`, `reduce`, `lru_cache`, `cache`), string-only
+  `shlex` rendering (`quote`, `join`), and pprint representation
+  helpers that return strings or booleans. Broader surfaces remain
+  denied and pinned by tests.
+
 ### Security
 - **`pickle` is no longer part of the default safe-stdlib grant.**
   `pickle.loads`/`load`/`Unpickler` execute reducer callables outside

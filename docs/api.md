@@ -269,10 +269,14 @@ class PythonConfig:
 ```
 
 - `stdlib=True` (default) grants the curated safe-stdlib set
-  (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions,
-  random (minus global seed/state), collections/itertools,
+  (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions/numbers,
+  random (minus global seed/state), collections/collections.abc/itertools,
+  heapq/bisect, narrow functools (`partial`, `reduce`, `lru_cache`,
+  `cache`),
   datetime/time/calendar/zoneinfo, re/string/textwrap,
-  json/csv/base64/uuid/hashlib, traceback formatters, typing,
+  difflib, narrow shlex (`quote`, `join`),
+  json/csv/struct/base64/binascii/uuid/hashlib, pprint/traceback
+  formatters, typing,
   io, VFS-routed os/os.path/pathlib/glob/fnmatch, and
   gzip/zipfile/tarfile. `stdlib=False` for a truly bare cell.
 - `pickle` is intentionally excluded: deserialization executes
