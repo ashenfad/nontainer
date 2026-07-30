@@ -103,8 +103,6 @@ def test_worker_does_not_keep_unrelated_host_socket_alive():
             python=PythonConfig(isolation="process"),
         )
         try:
-            if not hasattr(w._sandbox, "_close_fds"):
-                pytest.skip("installed sandtrap predates close_fds")
             assert w._sandbox._close_fds is True
             writer.close()
             assert reader.recv(1) == b""

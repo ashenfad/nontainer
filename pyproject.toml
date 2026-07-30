@@ -29,7 +29,9 @@ dependencies = [
     "monkeyfs>=0.1.5",
     # 0.2.12: Policy.module_root — VFS imports resolve from the
     # workspace root (the /workspace path contract)
-    "sandtrap>=0.2.12",
+    # 0.2.13: close_fds and worker lifecycle fixes — process workers
+    # release unrelated host descriptors and inherited control endpoints
+    "sandtrap>=0.2.13",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
     "kvgit[disk]>=0.3.2",

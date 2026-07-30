@@ -1206,7 +1206,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.1" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", specifier = ">=0.2.12" },
+    { name = "sandtrap", specifier = ">=0.2.13" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.1.9" },
 ]
@@ -2387,14 +2387,14 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.2.12"
+version = "0.2.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ac/c5/ef8321ea52f2efb14dc7de22c0707698e3c74462bf390ced06f1e454d8a1/sandtrap-0.2.12.tar.gz", hash = "sha256:4810db13b66d0c8208dc01936f41ffa4645c6962a51a2ca145aee46d4a44a626", size = 122352, upload-time = "2026-07-20T13:23:30.156Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1d/8d/534a9d4eab27cb8030182865f7d217acdfaa4ba80654a294b19aef3944c8/sandtrap-0.2.13.tar.gz", hash = "sha256:58634d8528cbe13ebb96d8664c101b284cff40bebb4184d0b2b77d84a50a0f64", size = 125730, upload-time = "2026-07-30T17:44:10.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/c9/873e87daa639fde64518c9b1fabfb15186f618ab2b0b6262f3fffa288edf/sandtrap-0.2.12-py3-none-any.whl", hash = "sha256:e77335d9b0750bd907ca748325d5e347c15e679dce4adfb2990c22cafc1f123a", size = 74901, upload-time = "2026-07-20T13:23:29.094Z" },
+    { url = "https://files.pythonhosted.org/packages/da/05/8e7bfe50ed1f2b4bd436e1a88a14bb737c1b5c7bfe954705550af7a0d09e/sandtrap-0.2.13-py3-none-any.whl", hash = "sha256:a56e39a9702ac719b993b9265b6f9532dba2b48a2b73345f10027da49c44c7d2", size = 76584, upload-time = "2026-07-30T17:44:09.267Z" },
 ]
 
 [[package]]
