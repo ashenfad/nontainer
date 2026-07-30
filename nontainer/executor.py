@@ -51,6 +51,7 @@ fresh sandbox per view call; an executor multiplexing one transport
 
 from __future__ import annotations
 
+import inspect
 import pickle
 import time
 import warnings
@@ -566,20 +567,30 @@ class LocalExecutor:
                 if not _is_plain_data(obj):
                     rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(obj)
 
-        return sandbox(
-            policy,
-            isolation=cfg.isolation,
-            mode="raw",
-            filesystem=fs,
-            rpc_handlers=rpc_handlers,
+        sandbox_kwargs: dict[str, Any] = {
+            "isolation": cfg.isolation,
+            "mode": "raw",
+            "filesystem": fs,
+            "rpc_handlers": rpc_handlers,
             # Snapshot print() ARGUMENTS (objects, not text) so oversized
             # stdout can be re-rendered budget-aware via reprobate — see
             # _render_prints. Structural elision beats a mid-token cut.
-            snapshot_prints=True,
+            "snapshot_prints": True,
             # the sandbox-level default; script surfaces (terminal
             # python, app handlers) override per-exec with echo="none"
-            echo=cfg.echo,
-        )
+            "echo": cfg.echo,
+        }
+        if (
+            cfg.isolation != "none"
+            and "close_fds" in inspect.signature(sandbox).parameters
+        ):
+            # Live host objects already stay parent-side behind RPC markers,
+            # so process/kernel workers need no ambient host descriptors.
+            # Capability detection keeps nontainer importable with the current
+            # minimum sandtrap until the close_fds release is available.
+            sandbox_kwargs["close_fds"] = True
+
+        return sandbox(policy, **sandbox_kwargs)
 
     def _build_policy(
         self,
