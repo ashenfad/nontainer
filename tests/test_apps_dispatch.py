@@ -572,6 +572,10 @@ def test_missing_endpoint_is_logged_with_its_status():
     404'd, rather than an empty log that implicates the backend."""
     ws, rt = make_ws()
     rt.dispatch(request("GET", "/api/ghost"))
+    # Direct dispatch buffers request lines while the workspace is clean;
+    # test_app normally flushes at the end of its run, the observation
+    # boundary this unit test invokes explicitly.
+    rt.flush_log()
     log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ghost -> 404" in log
     ws.close()
