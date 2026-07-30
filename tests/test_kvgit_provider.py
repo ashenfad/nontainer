@@ -42,6 +42,98 @@ def test_no_changes_no_commit():
     assert first == again  # empty checkpoint returns current commit
 
 
+# -- workspace initialization ------------------------------------------------
+
+
+def test_fresh_workspace_commits_clean_init_baseline():
+    p = KvgitProvider.open(None, session="fresh-init")
+    empty_head = p.head
+
+    ws = Workspace(p)
+    try:
+        entries = list(ws.history())
+        assert entries[0].info == {"tool": "init"}
+        assert entries[0].id == ws.head
+        assert ws.head != empty_head
+        assert not ws.dirty
+        assert ws.fs.isdir("/workspace")
+        assert ws.fs.getcwd() == "/workspace"
+    finally:
+        ws.close()
+
+
+@pytest.mark.parametrize("autocheckpoint", [True, False])
+def test_first_readonly_calls_do_not_inherit_initialization(autocheckpoint):
+    p = KvgitProvider.open(None, session="readonly-init")
+    ws = Workspace(p, autocheckpoint=autocheckpoint)
+    try:
+        init_head = ws.head
+        before = list(ws.history())
+
+        shell = ws.terminal("ls")
+        python = ws.run_python("value = 1 + 1")
+
+        assert shell.checkpoint is None
+        assert python.checkpoint is None
+        assert ws.head == init_head
+        assert list(ws.history()) == before
+        assert not ws.dirty
+    finally:
+        ws.close()
+
+
+def test_reopen_does_not_create_another_init_checkpoint(tmp_path):
+    path = tmp_path / "kvgit"
+    with Workspace(KvgitProvider.open(path, session="reopen")) as ws:
+        init_head = ws.head
+        init_history = list(ws.history())
+
+    with Workspace(KvgitProvider.open(path, session="reopen")) as reopened:
+        assert reopened.head == init_head
+        assert list(reopened.history()) == init_history
+        assert list(reopened.history())[0].info == {"tool": "init"}
+        assert not reopened.dirty
+
+
+def test_predirty_provider_preserves_staging_without_init_commit():
+    p = KvgitProvider.open(None, session="predirty")
+    p.kv["caller-pending"] = {"keep": True}
+    head = p.head
+    history = list(p.history())
+
+    ws = Workspace(p)
+    try:
+        assert ws.head == head
+        assert list(ws.history()) == history
+        assert ws.dirty
+        assert p.kv["caller-pending"] == {"keep": True}
+        assert ws.fs.isdir("/workspace")
+        assert ws.fs.getcwd() == "/workspace"
+        assert p.kv["__cwd__"] == "/workspace"
+    finally:
+        ws.close()
+
+
+def test_executor_open_failure_leaves_clean_init_baseline():
+    class FailingExecutor:
+        supports_commands = True
+
+        def open(self, context):
+            assert context.head is not None
+            assert context.head() == p.head
+            raise RuntimeError("executor unavailable")
+
+    p = KvgitProvider.open(None, session="failed-open")
+    with pytest.raises(RuntimeError, match="executor unavailable"):
+        Workspace(p, executor=FailingExecutor())
+
+    assert not p.dirty
+    assert list(p.history())[0].info == {"tool": "init"}
+    assert p.fs.isdir("/workspace")
+    assert p.fs.getcwd() == "/workspace"
+    p.close()
+
+
 # -- atomic checkpoint: files + cache together ------------------------------
 
 
@@ -111,7 +203,7 @@ def test_rollback_restores_cwd(kv_ws):
     kv_ws.terminal("mkdir -p deep/nest; cd deep/nest")
     assert kv_ws.terminal("pwd").stdout.strip().endswith("deep/nest")
     kv_ws.rollback(1)  # back before the cd (mkdir+cd was one call/commit)
-    assert kv_ws.terminal("pwd").stdout.strip() == "/"
+    assert kv_ws.terminal("pwd").stdout.strip() == "/workspace"
 
 
 def test_rollback_past_history_raises(kv_ws):

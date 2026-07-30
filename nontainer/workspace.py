@@ -494,6 +494,13 @@ class Workspace:
         # autocheckpoint is meaningless (and forced off) when the
         # provider can't checkpoint.
         self._autocheckpoint = autocheckpoint and provider.caps.versioned
+        # Construction owns the workspace root + initial cwd, but it
+        # must never absorb caller-owned staged work into an automatic
+        # init baseline. Embedders may deliberately seed provider.fs /
+        # provider.kv before wrapping it, so remember rather than reject
+        # that state: initialization joins their staged view and remains
+        # explicitly theirs to checkpoint or discard.
+        was_dirty = provider.caps.staging and provider.dirty
 
         # -- filesystem: provider fs, optionally wrapped with mounts --
         self._fs = self._build_fs(provider.fs, mounts or {})
@@ -538,12 +545,17 @@ class Workspace:
         else:
             self._executor = LocalExecutor()
 
-        # -- workspace root dir: must exist before the executor opens
-        # (a remote executor materializes its guest tree from it) and
-        # before cwd lands there. Guarded like the cwd restore so
-        # reopening an existing session stays read-only.
+        # -- versioned initialization baseline: root + cwd belong to
+        # workspace state, not to the first tool call. They must exist
+        # before the executor opens (a remote executor materializes its
+        # guest tree from them), and a fresh versioned workspace commits
+        # them under {"tool": "init"} regardless of autocheckpoint mode.
+        # Reopening is read-only: the guards leave the provider clean,
+        # so no second init commit is made.
+        initialized = False
         if self._root != "/" and not self._fs.isdir(self._root):
             self._fs.makedirs(self._root, exist_ok=True)
+            initialized = True
 
         # -- stateful cwd: restore from framework key if present, else
         # start at the workspace root. Guarded so a no-op restore
@@ -554,12 +566,18 @@ class Workspace:
             try:
                 if self._fs.getcwd() != stored_cwd:
                     self._fs.chdir(stored_cwd)
+                    initialized = True
             except Exception:
                 pass  # path may no longer exist; start at the fs root
+        initialized = self._save_cwd() or initialized
+        if provider.caps.versioned and initialized and not was_dirty:
+            provider.checkpoint(info={"tool": "init"})
 
         # open() LAST: it may fork a persistent isolation worker (see
         # LocalExecutor.open), and opening after everything else means
         # no later __init__ failure can orphan it (PR #10 review).
+        # If open itself fails, the valid init baseline stays committed:
+        # root/cwd are provider state, independent of executor health.
         self._executor.open(
             ExecutionContext(
                 fs=self._fs,
@@ -1177,15 +1195,17 @@ class Workspace:
         if self._closed:
             raise WorkspaceError("Workspace is closed")
 
-    def _save_cwd(self) -> None:
+    def _save_cwd(self) -> bool:
         # Guarded: an unconditional write would dirty staging providers
         # on every call, turning read-only `ls` into a commit.
         try:
             cwd = self._fs.getcwd()
             if self._provider.kv.get(_CWD_KEY) != cwd:
                 self._provider.kv[_CWD_KEY] = cwd
+                return True
         except Exception:
             pass
+        return False
 
     def _maybe_checkpoint(self, tool: str) -> str | None:
         """Commit this call's staged changes. Returns the created

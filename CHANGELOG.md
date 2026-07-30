@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   booleans. Broader surfaces remain denied and pinned by tests.
 
 ### Fixed
+- **Fresh versioned workspaces now commit an explicit initialization
+  baseline.** Creating the workspace root and setting its initial cwd
+  previously left kvgit staging dirty, so the first read-only tool call
+  committed those framework writes under the wrong tool label. Root and
+  cwd now land in a one-time `{"tool": "init"}` checkpoint before the
+  executor opens, including when tool autocheckpointing is disabled.
+  Reopening is idempotent. A provider deliberately pre-seeded by an
+  embedder remains staged—initialization joins that pending view without
+  silently committing caller-owned work.
 - **The MCP extra is capped below 2.0 until the adapter is migrated.**
   MCP 2 removed `mcp.server.fastmcp`, which made fresh
   `pip install -e ".[mcp]"` environments fail while importing the

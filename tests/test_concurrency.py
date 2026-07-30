@@ -52,9 +52,10 @@ def test_parallel_terminal_calls_no_lost_writes(kv_ws):
     for tid in range(n_threads):
         for i in range(per_thread):
             assert kv_ws.fs.exists(f"/t{tid}-{i}.txt")
-    # ...and each call minted exactly one commit (plus the seed commit):
+    # ...and each call minted exactly one commit (plus kvgit's empty
+    # seed and the workspace init baseline):
     # interleaved staged writes would have merged calls into one.
-    assert len(list(kv_ws.history())) == n_threads * per_thread + 1
+    assert len(list(kv_ws.history())) == n_threads * per_thread + 2
 
 
 def test_parallel_mixed_mutators(kv_ws):
@@ -85,7 +86,7 @@ def test_parallel_mixed_mutators(kv_ws):
     assert all(bool(r) for r in results.values())
     for name in ("from-terminal", "from-python", "from-write"):
         assert kv_ws.fs.exists(f"/{name}.txt")
-    assert len(list(kv_ws.history())) == 4  # seed + one per call
+    assert len(list(kv_ws.history())) == 5  # seed + init + one per call
 
 
 def test_fork_races_writer_without_corruption(kv_ws):
