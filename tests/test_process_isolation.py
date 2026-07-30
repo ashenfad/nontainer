@@ -5,6 +5,7 @@ crashing call, never the host or the workspace."""
 
 import os
 import signal
+import socket
 
 import pytest
 
@@ -90,6 +91,28 @@ def test_close_shuts_down_the_worker():
     w.close()
     proc.join(timeout=5.0)
     assert not proc.is_alive()
+
+
+def test_worker_does_not_keep_unrelated_host_socket_alive():
+    """LocalExecutor opts into sandtrap's ambient descriptor cleanup."""
+    reader, writer = socket.socketpair()
+    try:
+        reader.settimeout(1.0)
+        w = Workspace(
+            KvgitProvider.open(None, session="iso-fds"),
+            python=PythonConfig(isolation="process"),
+        )
+        try:
+            if not hasattr(w._sandbox, "_close_fds"):
+                pytest.skip("installed sandtrap predates close_fds")
+            assert w._sandbox._close_fds is True
+            writer.close()
+            assert reader.recv(1) == b""
+        finally:
+            w.close()
+    finally:
+        reader.close()
+        writer.close()
 
 
 def test_live_host_objects_bridge_as_proxies():

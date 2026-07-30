@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   booleans. Broader surfaces remain denied and pinned by tests.
 
 ### Fixed
+- **Process workers no longer retain unrelated host descriptors when
+  supported by Sandtrap.** `LocalExecutor` opts process and kernel sandboxes
+  into ambient descriptor cleanup. Listening sockets, accepted connections,
+  and other host resources therefore stay parent-owned; live
+  `PythonConfig.host_objects` continue to cross as RPC proxies rather than
+  fork-inherited handles.
 - **Fresh versioned workspaces now commit an explicit initialization
   baseline.** Creating the workspace root and setting its initial cwd
   previously left kvgit staging dirty, so the first read-only tool call
