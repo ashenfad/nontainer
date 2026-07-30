@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   executor opens, including when tool autocheckpointing is disabled.
   Reopening is idempotent. A provider deliberately pre-seeded by an
   embedder remains staged—initialization joins that pending view without
-  silently committing caller-owned work.
+  silently committing caller-owned work. The init checkpoint is also the
+  floor for `Workspace.rollback()`, preventing rollback into a provider's
+  pre-workspace seed while leaving explicit `restore()` and legacy
+  histories unchanged.
 - **The MCP extra is capped below 2.0 until the adapter is migrated.**
   MCP 2 removed `mcp.server.fastmcp`, which made fresh
   `pip install -e ".[mcp]"` environments fail while importing the

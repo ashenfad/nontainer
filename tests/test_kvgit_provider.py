@@ -134,6 +134,100 @@ def test_executor_open_failure_leaves_clean_init_baseline():
     p.close()
 
 
+def test_fresh_workspace_cannot_rollback_below_init():
+    ws = Workspace(KvgitProvider.open(None, session="init-floor"))
+    try:
+        init_head = ws.head
+
+        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+            ws.rollback(1)
+
+        assert ws.head == init_head
+        assert not ws.dirty
+        assert ws.fs.isdir("/workspace")
+        assert ws.fs.getcwd() == "/workspace"
+    finally:
+        ws.close()
+
+
+def test_rollback_can_target_init_but_not_cross_it():
+    ws = Workspace(KvgitProvider.open(None, session="rollback-to-init"))
+    try:
+        init_head = ws.head
+        ws.terminal("mkdir -p deep; cd deep; echo changed > state.txt")
+
+        assert ws.rollback(1) == init_head
+        assert ws.head == init_head
+        assert not ws.fs.exists("/workspace/deep")
+        assert ws.fs.isdir("/workspace")
+        assert ws.fs.getcwd() == "/workspace"
+
+        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+            ws.rollback(1)
+
+        assert ws.head == init_head
+        assert not ws.dirty
+        assert ws.fs.isdir("/workspace")
+        assert ws.fs.getcwd() == "/workspace"
+    finally:
+        ws.close()
+
+
+def test_rollback_floor_survives_reopen(tmp_path):
+    path = tmp_path / "kvgit"
+    with Workspace(KvgitProvider.open(path, session="floor-reopen")) as ws:
+        init_head = ws.head
+        ws.terminal("echo changed > state.txt")
+
+    with Workspace(KvgitProvider.open(path, session="floor-reopen")) as reopened:
+        assert reopened.rollback(1) == init_head
+        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+            reopened.rollback(1)
+        assert reopened.head == init_head
+        assert reopened.fs.isdir("/workspace")
+        assert reopened.fs.getcwd() == "/workspace"
+
+
+def test_fork_inherits_rollback_floor():
+    parent = Workspace(KvgitProvider.open(None, session="floor-parent"))
+    child = None
+    try:
+        init_head = parent.head
+        parent.terminal("echo parent > state.txt")
+        child = parent.fork("floor-child")
+
+        assert child.rollback(1) == init_head
+        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+            child.rollback(1)
+        assert child.head == init_head
+        assert child.fs.isdir("/workspace")
+        assert child.fs.getcwd() == "/workspace"
+    finally:
+        if child is not None:
+            child.close()
+        parent.close()
+
+
+def test_legacy_history_without_init_keeps_provider_rollback_behavior():
+    p = KvgitProvider.open(None, session="legacy-rollback")
+    p.fs.makedirs("/workspace", exist_ok=True)
+    p.fs.chdir("/workspace")
+    p.kv["__cwd__"] = "/workspace"
+    # Similar-looking caller metadata is not nontainer's exact marker.
+    p.checkpoint(info={"tool": "init", "source": "legacy"})
+    p.fs.write("/workspace/state.txt", b"legacy")
+    p.checkpoint(info={"tool": "legacy-write"})
+
+    ws = Workspace(p)
+    try:
+        seed = list(ws.history())[2]
+        assert ws.rollback(2) == seed.id
+        assert ws.head == seed.id
+        assert not ws.fs.exists("/workspace")
+    finally:
+        ws.close()
+
+
 # -- atomic checkpoint: files + cache together ------------------------------
 
 
