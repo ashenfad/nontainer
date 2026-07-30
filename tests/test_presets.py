@@ -1,5 +1,7 @@
 """Stdlib-by-default, module flattening, and the preset grant lists."""
 
+import base64
+import pickle
 import statistics
 
 import pytest
@@ -154,6 +156,40 @@ def test_stdlib_false_gives_bare_cell():
     r = ws.run_python("import math")
     assert not r and "not allowed" in (r.error or "")
     ws.close()
+
+
+class _EvalPayload:
+    """Reducer payload proving why pickle is not a policy-safe data codec."""
+
+    def __reduce__(self):
+        return eval, ("40 + 2",)
+
+
+@pytest.mark.parametrize("isolation", ["none", "process"])
+def test_default_stdlib_blocks_pickle_reducer_eval(isolation):
+    payload = base64.b64encode(pickle.dumps(_EvalPayload())).decode("ascii")
+    ws = make_ws(python=PythonConfig(isolation=isolation))
+    try:
+        r = ws.run_python(
+            "import base64, pickle\n"
+            f"escaped = pickle.loads(base64.b64decode({payload!r}))"
+        )
+        assert not r
+        assert "pickle" in (r.error or "") and "not" in (r.error or "").lower()
+    finally:
+        ws.close()
+
+
+def test_pickle_remains_available_as_an_explicit_unsafe_grant():
+    ws = make_ws(python=PythonConfig(modules=[ModuleGrant(pickle)]))
+    try:
+        r = ws.run_python(
+            "import pickle\nroundtrip = pickle.loads(pickle.dumps({'answer': 42}))"
+        )
+        assert r, r.error
+        assert r.namespace["roundtrip"] == {"answer": 42}
+    finally:
+        ws.close()
 
 
 # -- modules flattening --------------------------------------------------------

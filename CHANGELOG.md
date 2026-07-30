@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- **`pickle` is no longer part of the default safe-stdlib grant.**
+  `pickle.loads`/`load`/`Unpickler` execute reducer callables outside
+  sandtrap's normal call gating, allowing a payload to invoke blocked
+  builtins such as `eval` under both in-process and process isolation.
+  Trusted embedders may still opt in explicitly with
+  `PythonConfig(modules=[ModuleGrant(pickle)])`.
+
 ## [0.2.2] - 2026-07-27
 
 ### Added

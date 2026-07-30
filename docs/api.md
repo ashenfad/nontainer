@@ -272,9 +272,15 @@ class PythonConfig:
   (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions,
   random (minus global seed/state), collections/itertools,
   datetime/time/calendar/zoneinfo, re/string/textwrap,
-  json/csv/pickle/base64/uuid/hashlib, traceback formatters, typing,
+  json/csv/base64/uuid/hashlib, traceback formatters, typing,
   io, VFS-routed os/os.path/pathlib/glob/fnmatch, and
   gzip/zipfile/tarfile. `stdlib=False` for a truly bare cell.
+- `pickle` is intentionally excluded: deserialization executes
+  attacker-selected reducers outside the sandbox's normal call gating,
+  and serialization can invoke object reduction hooks. Trusted
+  embedders can still opt in explicitly with
+  `modules=[ModuleGrant(pickle)]`; do not do so for agent-controlled
+  data.
 - `modules` extends the stdlib set and flattens one level of nesting,
   so preset grant lists splice in directly:
   `modules=[dataframes(), plotting(), my_module]`. Explicit grants
