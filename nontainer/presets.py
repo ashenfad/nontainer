@@ -38,7 +38,6 @@ import json
 import math
 import os
 import pathlib
-import pickle
 import random
 import re
 import statistics
@@ -111,7 +110,6 @@ STDLIB: tuple[ModuleGrant, ...] = (
             "urljoin",
         ),
     ),
-    ModuleGrant(pickle),
     ModuleGrant(base64),
     ModuleGrant(uuid),
     ModuleGrant(hashlib),
