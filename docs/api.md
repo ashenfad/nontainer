@@ -171,6 +171,10 @@ reusable code belongs in `helpers/` files.
 
 ### Versioning (gated by `ws.caps`)
 
+Checkpoints cover workspace-owned files and cache. Host-object calls
+and mounts are external effects and are not checkpointed, restored, or
+forked.
+
 ```python
 ws.head: str | None      # current checkpoint id; None if unversioned.
                          # Pins read-only observations (reads don't move

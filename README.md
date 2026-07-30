@@ -62,6 +62,10 @@ fork = ws.fork("what-if")    # O(1) branch; the original is untouched
 ws.rollback(steps=1)         # or time-travel by steps
 ```
 
+Checkpoints cover workspace-owned files and cache. Host-object calls
+and mounts are external effects and are not checkpointed, restored, or
+forked.
+
 Files live under the **workspace root** — `/workspace` by default
 (`workspace(..., root=)`) — and cwd starts there, so relative paths
 just work. The root is the one absolute-path contract shared across
