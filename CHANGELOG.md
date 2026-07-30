@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   helpers that return strings or booleans. Broader surfaces remain
   denied and pinned by tests.
 
+### Fixed
+- **The MCP extra is capped below 2.0 until the adapter is migrated.**
+  MCP 2 removed `mcp.server.fastmcp`, which made fresh
+  `pip install -e ".[mcp]"` environments fail while importing the
+  adapter. The declared range now matches the API nontainer supports.
+
 ### Security
 - **`pickle` is no longer part of the default safe-stdlib grant.**
   `pickle.loads`/`load`/`Unpickler` execute reducer callables outside

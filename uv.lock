@@ -1197,7 +1197,7 @@ requires-dist = [
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.2" },
     { name = "matplotlib", marker = "extra == 'dev'" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
     { name = "monkeyfs", specifier = ">=0.1.5" },
     { name = "numpy", marker = "extra == 'dev'" },
     { name = "pandas", marker = "extra == 'dev'" },
