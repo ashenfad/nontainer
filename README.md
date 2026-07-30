@@ -35,11 +35,12 @@ session in O(1), roll back to any commit, audit the history. All in-process,
 > reach (modules, host objects, the filesystem) to an allowlist you
 > control (safe stdlib on by default, everything else opt-in), not a
 > hardened boundary against code *trying* to escape. That's the right
-> posture for your own agent's code. When you need a real boundary
-> (untrusted code, or serving to anonymous clients), escalate with
-> `isolation="process"` / `"kernel"`, or step off the in-process model
-> entirely and run the session in a microVM (see Executors). Full
-> framing in the [design notes](docs/design.md).
+> posture for your own agent's code. For crash containment and
+> kernel-enforced defense-in-depth around cooperative code, use
+> `isolation="process"` / `"kernel"`. For actively untrusted code, or
+> execution exposed to anonymous clients, step off the local model and
+> use `DudExecutor()`'s microVM backend (see Executors). Full framing in
+> the [design notes](docs/design.md).
 
 ## The API in one glance
 
@@ -99,7 +100,7 @@ layer, not the machine.
 
 | Executor | isolation | fidelity |
 |---|---|---|
-| `LocalExecutor` (default) | sandtrap's walled garden, in-process | emulated shell + filesystem |
+| `LocalExecutor` (default) | sandtrap's walled garden; optional process/kernel defense-in-depth | emulated shell + filesystem |
 | `DudExecutor()` -- i.e. `backend="vm"` | a disposable microVM -- vfkit on macOS, firecracker on Linux/KVM | real machine |
 | `DudExecutor(backend="subprocess")` | **none** -- host process | real bash, real files |
 
@@ -126,8 +127,9 @@ Note the last row: `backend="subprocess"` is real bash and real Python
 with **no containment at all** -- agent code runs as you, with your
 network and your files. It buys fidelity, not a boundary, so it's
 opt-in rather than the default: it's the only backend that needs no
-hypervisor, which makes it the dev/CI floor. If you want containment
-without a VM, you want `LocalExecutor`, not this.
+hypervisor, which makes it the dev/CI floor. If you want policy gating,
+crash containment, or kernel defense-in-depth without a VM, use
+`LocalExecutor`, not this.
 
 ## App handlers (the `[apps]` extra)
 
