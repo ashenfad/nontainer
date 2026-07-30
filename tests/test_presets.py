@@ -60,6 +60,88 @@ def test_stdlib_warnings_can_quiet_library_noise():
     ws.close()
 
 
+def test_stdlib_data_and_type_helpers():
+    ws = make_ws()
+    r = ws.run_python(
+        "import binascii, bisect, collections.abc, difflib, heapq, numbers, struct\n"
+        "heap = [3, 1, 2]\n"
+        "heapq.heapify(heap)\n"
+        "result = (\n"
+        "    heapq.heappop(heap),\n"
+        "    bisect.bisect([1, 3], 2),\n"
+        "    list(difflib.unified_diff(['a'], ['b'])),\n"
+        "    struct.unpack('>H', struct.pack('>H', 513))[0],\n"
+        "    binascii.hexlify(b'ok'),\n"
+        "    isinstance(1, numbers.Integral),\n"
+        "    isinstance([], collections.abc.Sequence),\n"
+        ")"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == (
+        1,
+        1,
+        ["--- \n", "+++ \n", "@@ -1 +1 @@\n", "-a", "+b"],
+        513,
+        b"6f6b",
+        True,
+        True,
+    )
+    ws.close()
+
+
+def test_stdlib_functools_is_useful_but_narrow():
+    ws = make_ws()
+    r = ws.run_python(
+        "import functools\n"
+        "add_two = functools.partial(lambda a, b: a + b, 2)\n"
+        "total = functools.reduce(lambda a, b: a + b, [1, 2, 3])\n"
+        "@functools.lru_cache(maxsize=4)\n"
+        "def fib(n):\n"
+        "    return n if n < 2 else fib(n - 1) + fib(n - 2)\n"
+        "@functools.cache\n"
+        "def square(n):\n"
+        "    return n * n\n"
+        "result = (add_two(3), total, fib(8), square(6))"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == (5, 6, 21, 36)
+    denied = ws.run_python("import functools; functools.singledispatch")
+    assert not denied and "singledispatch" in (denied.error or "")
+    ws.close()
+
+
+def test_stdlib_shlex_and_pprint_are_string_only():
+    ws = make_ws()
+    r = ws.run_python(
+        "import pprint, shlex\n"
+        "result = (\n"
+        "    shlex.quote('a b'),\n"
+        "    shlex.join(['echo', 'a b']),\n"
+        "    pprint.pformat({'b': 2, 'a': 1}),\n"
+        "    pprint.saferepr({'a': 1}),\n"
+        "    pprint.isrecursive([]),\n"
+        "    pprint.isreadable({'a': 1}),\n"
+        ")"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == (
+        "'a b'",
+        "echo 'a b'",
+        "{'a': 1, 'b': 2}",
+        "{'a': 1}",
+        False,
+        True,
+    )
+    for expression, member in (
+        ("shlex.split('a b')", "split"),
+        ("pprint.pprint({'a': 1})", "pprint"),
+        ("pprint.PrettyPrinter()", "PrettyPrinter"),
+    ):
+        denied = ws.run_python(f"import pprint, shlex; {expression}")
+        assert not denied and member in (denied.error or "")
+    ws.close()
+
+
 def test_stdlib_urllib_parse_is_granted():
     """Handlers/data code reach for query-string helpers reflexively.
     The pure string side is granted; the network side (urllib.request)

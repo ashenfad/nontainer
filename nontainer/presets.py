@@ -22,26 +22,36 @@ effects (matplotlib's Agg backend, font-cache warm-up) must happen.
 from __future__ import annotations
 
 import base64
+import binascii
+import bisect
 import calendar
 import collections
+import collections.abc
 import csv
 import datetime
 import decimal
+import difflib
 import fnmatch
 import fractions
+import functools
 import glob
 import gzip
 import hashlib
+import heapq
 import io
 import itertools
 import json
 import math
+import numbers
 import os
 import pathlib
+import pprint
 import random
 import re
+import shlex
 import statistics
 import string
+import struct
 import tarfile
 import textwrap
 import time
@@ -65,16 +75,34 @@ __all__ = ["STDLIB", "dataframes", "plotting"]
 # must not reseed or capture the host's RNG.
 _RANDOM_EXCLUDE = ("_*", "*._*", "seed", "getstate", "setstate", "SystemRandom")
 
+# Callback combinators that don't introduce a new capability: their
+# callables and arguments must already be reachable by agent code.
+_FUNCTOOLS_INCLUDE = ("partial", "reduce", "lru_cache", "cache")
+
+# String-only shell rendering. `split` stays out: on Python 3.10/3.11,
+# split(None) reads sys.stdin, which is too surprising for a default
+# grant (and the project still supports those versions).
+_SHLEX_INCLUDE = ("quote", "join")
+
+# Representation-to-string helpers only. Agents can print the result;
+# no need to grant the stream-writing classes/functions by default.
+_PPRINT_INCLUDE = ("pformat", "saferepr", "isrecursive", "isreadable")
+
 STDLIB: tuple[ModuleGrant, ...] = (
     # math & numbers
     ModuleGrant(math),
     ModuleGrant(statistics),
     ModuleGrant(decimal),
     ModuleGrant(fractions),
+    ModuleGrant(numbers),
     ModuleGrant(random, exclude=_RANDOM_EXCLUDE),
     # containers & iteration
     ModuleGrant(collections),
+    ModuleGrant(collections.abc, name="collections.abc"),
     ModuleGrant(itertools),
+    ModuleGrant(heapq),
+    ModuleGrant(bisect),
+    ModuleGrant(functools, include=_FUNCTOOLS_INCLUDE),
     # dates & time
     ModuleGrant(time),
     ModuleGrant(calendar),
@@ -84,9 +112,12 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(re),
     ModuleGrant(string),
     ModuleGrant(textwrap),
+    ModuleGrant(difflib),
+    ModuleGrant(shlex, include=_SHLEX_INCLUDE),
     # data formats
     ModuleGrant(json),
     ModuleGrant(csv),
+    ModuleGrant(struct),
     # url/query-string wrangling: pure string functions only — the
     # network-touching side of urllib (request/error) stays out. The
     # bare package rides along so `import urllib.parse` resolves, but
@@ -111,9 +142,11 @@ STDLIB: tuple[ModuleGrant, ...] = (
         ),
     ),
     ModuleGrant(base64),
+    ModuleGrant(binascii),
     ModuleGrant(uuid),
     ModuleGrant(hashlib),
     # debugging: safe formatters only
+    ModuleGrant(pprint, include=_PPRINT_INCLUDE),
     ModuleGrant(traceback, include=("format_exc", "format_exception", "print_exc")),
     # warnings: libraries emit them constantly and agents reach for
     # filterwarnings to quiet pandas/sklearn deprecation noise
