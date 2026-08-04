@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Requires monkeyfs >= 0.1.6 and sandtrap >= 0.2.14.** The monkeyfs floor
+  matters most: 0.1.5 let sandboxed code bypass filesystem interception
+  entirely through `bytes` or `os.PathLike` paths — `open(b"/etc/passwd").read()`
+  reached the real filesystem — and separately honored `dir_fd` arguments
+  against the host and handed out real host directory descriptors. nontainer
+  depends on monkeyfs directly for its VFS and `IsolatedFS` providers, so the
+  direct pin now states the floor rather than relying on sandtrap to carry it.
+  sandtrap 0.2.14 adds `StForkUnsafe`, which names a fork-hostile host instead
+  of looping on an unexplained respawn failure — relevant to long-lived
+  workspace hosts — and makes worker setup failures report their own traceback.
+
 ## [0.2.3] - 2026-07-30
 
 ### Added
