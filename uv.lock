@@ -1137,16 +1137,16 @@ wheels = [
 
 [[package]]
 name = "monkeyfs"
-version = "0.1.5"
+version = "0.1.6"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9e/e0/86af3cc41fec6fad27243eaa213a19583e67ef4e37845b0190975bd994d6/monkeyfs-0.1.5.tar.gz", hash = "sha256:ba2dbf7b2f3f8ce61b5078aef467891215f0e570579888d543414541be867c0e", size = 60138, upload-time = "2026-07-06T13:09:37.141Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/53/4c44dec0bbbb91127f5f3d7ecb63787c0be22141449d66520675b435005b/monkeyfs-0.1.6.tar.gz", hash = "sha256:98a5cc5a531cae0ccf41f4681c30cade8d19626944bc70b2643e691a3ef81901", size = 66278, upload-time = "2026-08-04T14:47:43.188Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/1b/9f913f8de66e43c92fe10bb3fd06ead70d7fe40ab00a4b0b7cf5e3d05a3b/monkeyfs-0.1.5-py3-none-any.whl", hash = "sha256:abbf4a05253b721d9f959ad6c1c878af094af0285622b67bc7fbfdc0ecbde7c6", size = 37996, upload-time = "2026-07-06T13:09:36.036Z" },
+    { url = "https://files.pythonhosted.org/packages/df/c6/b528788b2b0ad20bb077fb87186211b228c73e217ab16b00fe4ea80ae54f/monkeyfs-0.1.6-py3-none-any.whl", hash = "sha256:f2e7a259b3e78a43208c116094d572c57dd65ecccf60712fc44dbde0bb423dad", size = 40289, upload-time = "2026-08-04T14:47:42.119Z" },
 ]
 
 [[package]]
 name = "nontainer"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "kvgit", extra = ["disk"] },
@@ -1198,7 +1198,7 @@ requires-dist = [
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.2" },
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
-    { name = "monkeyfs", specifier = ">=0.1.5" },
+    { name = "monkeyfs", specifier = ">=0.1.6" },
     { name = "numpy", marker = "extra == 'dev'" },
     { name = "pandas", marker = "extra == 'dev'" },
     { name = "playwright", marker = "extra == 'apps'", specifier = ">=1.40" },
@@ -1206,7 +1206,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.1" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", specifier = ">=0.2.13" },
+    { name = "sandtrap", specifier = ">=0.2.14" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.1.9" },
 ]
@@ -2387,14 +2387,14 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.2.13"
+version = "0.2.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/8d/534a9d4eab27cb8030182865f7d217acdfaa4ba80654a294b19aef3944c8/sandtrap-0.2.13.tar.gz", hash = "sha256:58634d8528cbe13ebb96d8664c101b284cff40bebb4184d0b2b77d84a50a0f64", size = 125730, upload-time = "2026-07-30T17:44:10.329Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/e8/bb3d9d6796c1320195434f899bf08690966ae9159673513c16675356df17/sandtrap-0.2.14.tar.gz", hash = "sha256:5bff08965daea7fc6191acd1ab03ac6082cfbb5455248ea73ea4d00cbfdf153f", size = 129504, upload-time = "2026-08-04T18:43:12.853Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/da/05/8e7bfe50ed1f2b4bd436e1a88a14bb737c1b5c7bfe954705550af7a0d09e/sandtrap-0.2.13-py3-none-any.whl", hash = "sha256:a56e39a9702ac719b993b9265b6f9532dba2b48a2b73345f10027da49c44c7d2", size = 76584, upload-time = "2026-07-30T17:44:09.267Z" },
+    { url = "https://files.pythonhosted.org/packages/a5/a6/7685a688796cfd7cd21b3552eae239d75b5016ac3a4e8d59822a79c44bc2/sandtrap-0.2.14-py3-none-any.whl", hash = "sha256:50a9d1e2de012afee2b260cfee1306d44d121fcba97532e173219dfd1b9bc207", size = 78720, upload-time = "2026-08-04T18:43:11.48Z" },
 ]
 
 [[package]]
