@@ -1,33 +1,45 @@
 # nontainer 📦
 
-A fake little computer for your agent: versioned filesystem, shell, and
-sandboxed Python -- as tools for any Python-based agent harness. No Docker,
-no cloud sandbox, no infra. `pip install nontainer`.
+**Versioned, forkable workspaces for code-using agents.**
+
+Give any Python agent loop a stateful terminal and Python tool over a
+workspace that checkpoints files and cache together, forks in O(1), and
+rolls back as a unit. Run locally — where agent code can work through
+whitelisted live host objects — or on a microVM while the workspace history
+stays in the state layer.
+
+Think of it as a fake little computer with branchable history, packaged as a
+library. No Docker, cloud sandbox, or service required for the local default:
+`pip install nontainer`.
 
 > **Status: pre-alpha.** Usable and tested end to end; the API will still
 > move before 1.0.
 
-## The pitch
+## The core
 
-You hand your agent a `terminal` and a `run_python` tool. Unlike a
-stateless sandbox call, these are **stateful and bound to a session**: the
-shell's `cd` sticks, files one call writes the next call reads, and a
-`cache` dict persists for the whole conversation. It's a little computer the
-agent keeps *using* -- not a fresh box each call.
+Nontainer keeps three concerns separate:
 
-And because that computer is a **versioned workspace**, you get the
-operations durable state makes possible: checkpoint every call, fork a
-session in O(1), roll back to any commit, audit the history. All in-process,
-`pip`-installable, running wherever Python runs.
+| | Responsibility |
+|---|---|
+| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap checkpoints, forks, rollback, and audit; other providers declare narrower capabilities rather than pretending equivalence. |
+| **`Executor`** | Where terminal and Python code run and how they reach workspace state: locally through [sandtrap](https://github.com/ashenfad/sandtrap) and [monkeyfs](https://github.com/ashenfad/monkeyfs), or on a real machine through [dud](https://github.com/ashenfad/dud). |
+| **Adapters** | How the two tools enter an existing agent loop: the core Python API, an [agno](https://github.com/agno-agi/agno) toolkit, or an MCP server. |
+
+The model-facing surface stays small: a `terminal` and a `run_python` tool.
+Unlike stateless sandbox calls, both are **stateful and bound to a session**:
+the shell's `cd` sticks, files one call writes the next call reads, and a
+`cache` dict persists for the whole conversation.
+
+Because that state is a **versioned workspace**, each state-changing call can
+be checkpointed as one unit. The host can fork a session in O(1), roll back
+to any commit, or audit its history without teaching the agent a version
+control protocol.
 
 | | |
 |---|---|
 | **Terminal tool** | ~33 shell builtins (grep, sed, jq, tar, ...) over the virtual filesystem via [termish](https://github.com/ashenfad/termish). |
 | **Python tool** | Policy-gated sandboxed execution via [sandtrap](https://github.com/ashenfad/sandtrap); safe stdlib on by default, `open()`/`os`/`pathlib` routed to the workspace via [monkeyfs](https://github.com/ashenfad/monkeyfs). |
 | **In-process** | Agent code can call *your* whitelisted host objects -- the live model, the db pool -- under policy. No cloud sandbox can. |
-| **Pluggable substrate** | [kvgit](https://github.com/ashenfad/kvgit) (versioned), [AgentFS](https://github.com/tursodatabase/agentfs), or a plain directory -- same tools. |
-| **Pluggable execution** | the same tools run in-process *or* on a real machine via [dud](https://github.com/ashenfad/dud) -- the versioning is unchanged either way. |
-| **Thin adapters** | [agno](https://github.com/agno-agi/agno) toolkit and an MCP server over one core. |
 
 > **What the sandbox is (and isn't).** In-process, the Python sandbox
 > ([sandtrap](https://github.com/ashenfad/sandtrap)) is a **walled garden
