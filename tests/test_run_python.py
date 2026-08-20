@@ -277,7 +277,7 @@ def test_oversized_print_gets_structural_elision(tmp_path):
     assert r, r.error
     assert r.truncated
     assert len(r.stdout) <= 500
-    assert "more" in r.stdout           # reprobate's elision marker
+    assert "more" in r.stdout  # reprobate's elision marker
     assert r.stdout.startswith("[0, 1")  # structure preserved, not a raw cut
     ws.close()
 
@@ -294,9 +294,7 @@ def test_small_stdout_stays_verbatim(tmp_path):
 def test_many_prints_share_budget(tmp_path):
     p = DirProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, max_observation=600)
-    r = ws.run_python(
-        "for i in range(50):\n    print(f'row {i}', list(range(1000)))"
-    )
+    r = ws.run_python("for i in range(50):\n    print(f'row {i}', list(range(1000)))")
     assert r.truncated
     assert len(r.stdout) <= 700  # budget + elision note headroom
     assert "elided" in r.stdout or "more" in r.stdout

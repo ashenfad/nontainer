@@ -117,7 +117,7 @@ def test_python_stdin_pipe(dir_ws):
 
 
 def test_python_in_pipeline(dir_ws):
-    r = dir_ws.terminal("python -c 'print(\"b\"); print(\"a\")' | sort")
+    r = dir_ws.terminal('python -c \'print("b"); print("a")\' | sort')
     assert r
     assert r.stdout.splitlines() == ["a", "b"]
 

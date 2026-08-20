@@ -209,12 +209,8 @@ def test_csp_derives_from_script_hosts():
         script_src = re.search(r"script-src ([^;]+);", csp).group(1)
         return set(re.findall(r"https://([\w.-]+)", script_src))
 
-    assert script_hosts_of(build_csp(DEFAULT_SCRIPT_HOSTS)) == set(
-        DEFAULT_SCRIPT_HOSTS
-    )
-    assert script_hosts_of(build_csp(("esm.corp.internal",))) == {
-        "esm.corp.internal"
-    }
+    assert script_hosts_of(build_csp(DEFAULT_SCRIPT_HOSTS)) == set(DEFAULT_SCRIPT_HOSTS)
+    assert script_hosts_of(build_csp(("esm.corp.internal",))) == {"esm.corp.internal"}
 
 
 def test_served_csp_reflects_config_hosts():

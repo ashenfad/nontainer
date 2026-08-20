@@ -37,13 +37,20 @@ def test_splice_inline_ref_replaced_with_note_name():
 
 def test_splice_unreferenced_artifact_appended():
     segs = splice("just prose", [("k", "/workspace/ui/k.cards.json")])
-    assert segs == [("md", "just prose"), ("artifact", "k", "/workspace/ui/k.cards.json")]
+    assert segs == [
+        ("md", "just prose"),
+        ("artifact", "k", "/workspace/ui/k.cards.json"),
+    ]
 
 
 def test_splice_ref_order_vs_note_order():
     # prose references b then a; c is unreferenced -> trailing in NOTE order.
     prose = "![b](/workspace/ui/b.png) mid ![a](/workspace/ui/a.png)"
-    arts = [("a", "/workspace/ui/a.png"), ("b", "/workspace/ui/b.png"), ("c", "/workspace/ui/c.png")]
+    arts = [
+        ("a", "/workspace/ui/a.png"),
+        ("b", "/workspace/ui/b.png"),
+        ("c", "/workspace/ui/c.png"),
+    ]
     segs = splice(prose, arts)
     assert segs == [
         ("artifact", "b", "/workspace/ui/b.png"),
@@ -215,7 +222,9 @@ def test_component_cards_extension_components():
             ]
         }
     ).encode()
-    frag = component_for("kpis", "/workspace/ui/kpis.cards.json", data, url, extensions=True)
+    frag = component_for(
+        "kpis", "/workspace/ui/kpis.cards.json", data, url, extensions=True
+    )
     assert frag == {
         "component": {
             "componentType": "Row",
@@ -393,12 +402,18 @@ def test_component_table_extension_degrades_on_nonlist_fields():
     non-list in either field degrades rather than raising out of an
     egress stream."""
     frag = component_for(
-        "t", "/workspace/ui/t.table.json", b'{"columns": 5, "data": 7}', url,
+        "t",
+        "/workspace/ui/t.table.json",
+        b'{"columns": 5, "data": 7}',
+        url,
         extensions=True,
     )
     assert frag["component"]["componentType"] == "Column"  # headerless: basic form
     frag = component_for(
-        "t", "/workspace/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url,
+        "t",
+        "/workspace/ui/t.table.json",
+        b'{"columns": ["a"], "data": 7}',
+        url,
         extensions=True,
     )
     assert frag["data_model"]["table"] == {"columns": ["a"], "rows": []}
@@ -406,7 +421,9 @@ def test_component_table_extension_degrades_on_nonlist_fields():
 
 def test_component_plotly():
     spec = {"data": [{"x": [1], "y": [2]}], "layout": {"title": "hi"}}
-    frag = component_for("fig", "/workspace/ui/fig.plotly.json", json.dumps(spec).encode(), url)
+    frag = component_for(
+        "fig", "/workspace/ui/fig.plotly.json", json.dumps(spec).encode(), url
+    )
     assert frag == {
         "component": {"componentType": "Chart", "spec": {"$ref": "spec"}},
         "data_model": {"spec": spec},
@@ -415,7 +432,9 @@ def test_component_plotly():
 
 def test_component_json_sniffed_as_plotly():
     spec = {"data": [{"x": [1]}], "layout": {}}
-    frag = component_for("fig", "/workspace/ui/fig.json", json.dumps(spec).encode(), url)
+    frag = component_for(
+        "fig", "/workspace/ui/fig.json", json.dumps(spec).encode(), url
+    )
     assert frag["component"]["componentType"] == "Chart"
     assert frag["data_model"] == {"spec": spec}
 
@@ -436,7 +455,10 @@ def test_component_json_not_plotly_falls_back():
 def test_component_image():
     frag = component_for("pic", "/workspace/ui/pic.png", b"\x89PNG", url)
     assert frag == {
-        "component": {"componentType": "Image", "url": "https://host/workspace/ui/pic.png"},
+        "component": {
+            "componentType": "Image",
+            "url": "https://host/workspace/ui/pic.png",
+        },
         "data_model": {},
     }
 
@@ -474,12 +496,16 @@ def test_component_table_nonlist_fields_degrade_not_raise():
     payloads are reachable via direct /ui writes (the adoption path), so a
     truthy non-list columns/data must degrade — a header-less table — not
     TypeError out of an egress stream (PR #14 review)."""
-    frag = component_for("t", "/workspace/ui/t.table.json", b'{"columns": 5, "data": [[1]]}', url)
+    frag = component_for(
+        "t", "/workspace/ui/t.table.json", b'{"columns": 5, "data": [[1]]}', url
+    )
     children = frag["component"]["children"]
     assert children[0] == {"componentType": "Row", "children": []}  # no header
     assert children[1]["children"][0]["text"] == "1"  # rows still render
     # non-list data degrades the same way (empty body, headers intact)
-    frag = component_for("t", "/workspace/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url)
+    frag = component_for(
+        "t", "/workspace/ui/t.table.json", b'{"columns": ["a"], "data": 7}', url
+    )
     assert len(frag["component"]["children"]) == 1  # header row only
 
 
@@ -487,7 +513,9 @@ def test_component_builder_surprise_falls_back_not_raises():
     """Belt and braces: ANY builder exception lands in the Text+link
     fallback — the docstring's never-raises is structural, not by audit.
     A cards payload whose items explode the builder is the probe."""
-    frag = component_for("k", "/workspace/ui/k.cards.json", b'{"items": [{"type": "stat"}]}', url)
+    frag = component_for(
+        "k", "/workspace/ui/k.cards.json", b'{"items": [{"type": "stat"}]}', url
+    )
     # missing label/value: builder renders empty-string Texts today, but
     # whatever future shape appears, the call must return a fragment
     assert "component" in frag and "data_model" in frag
@@ -513,7 +541,10 @@ def test_turn_golden_full_reply():
     }
     msgs = turn_to_a2ui(
         "Here is the chart ![fig](/workspace/ui/fig.plotly.json) and metrics below.",
-        [("fig", "/workspace/ui/fig.plotly.json"), ("kpis", "/workspace/ui/kpis.cards.json")],
+        [
+            ("fig", "/workspace/ui/fig.plotly.json"),
+            ("kpis", "/workspace/ui/kpis.cards.json"),
+        ],
         _reader(files),
         url,
         surface_id="s1",
@@ -609,7 +640,11 @@ def test_turn_callout_tone_survives_flattening():
     }
     files = {"/workspace/ui/dash.cards.json": json.dumps(cards).encode()}
     msgs = turn_to_a2ui(
-        "", [("dash", "/workspace/ui/dash.cards.json")], _reader(files), url, surface_id="s1"
+        "",
+        [("dash", "/workspace/ui/dash.cards.json")],
+        _reader(files),
+        url,
+        surface_id="s1",
     )
     comps = msgs[1]["updateComponents"]["components"]
     by_id = {c["id"]: c for c in comps}
@@ -762,7 +797,9 @@ def test_catalog_file_matches_the_constant_and_declares_the_components():
 
 
 def test_turn_deterministic():
-    files = {"/workspace/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
+    files = {
+        "/workspace/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()
+    }
     args = (
         "see ![fig](/workspace/ui/fig.plotly.json)",
         [("fig", "/workspace/ui/fig.plotly.json")],
@@ -814,7 +851,9 @@ def test_turn_ids_stable_and_unique():
 
 
 def test_turn_version_on_every_message():
-    files = {"/workspace/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()}
+    files = {
+        "/workspace/ui/fig.plotly.json": json.dumps({"data": [], "layout": {}}).encode()
+    }
     msgs = turn_to_a2ui(
         "text ![fig](/workspace/ui/fig.plotly.json)",
         [("fig", "/workspace/ui/fig.plotly.json")],

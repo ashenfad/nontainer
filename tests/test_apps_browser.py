@@ -61,7 +61,10 @@ async def test_concurrent_sessions_share_one_browser(chromium_available):
     before = _launches()
 
     results = await asyncio.gather(
-        *(arun_test_app(rt, [{"read": "#t"}, {"assert": "true"}]) for _, rt in workspaces)
+        *(
+            arun_test_app(rt, [{"read": "#t"}, {"assert": "true"}])
+            for _, rt in workspaces
+        )
     )
     assert all(r.ok for r in results), [r.load_error for r in results]
     assert _launches() == before  # all six ran on the one warm browser

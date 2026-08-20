@@ -399,7 +399,10 @@ def test_error_responses_are_json():
     r = rt.dispatch(request("GET", "/api/boom"))  # handler crash
     assert r.status == 500 and r.content_type == "application/json"
     body = json.loads(r.content)
-    assert body["error"] == "internal error" and body["log"] == "/workspace/app/logs/api.log"
+    assert (
+        body["error"] == "internal error"
+        and body["log"] == "/workspace/app/logs/api.log"
+    )
 
     r = rt.dispatch(request("GET", "/api/teapot"))  # intentional HttpError
     assert r.status == 418
@@ -669,7 +672,9 @@ def test_curl_absorbs_real_curl_reflexes():
 
     # --json sets the content type
     write_handler(
-        ws, "echo3", "def post(req):\n    return {'ct': req.headers.get('content-type')}\n"
+        ws,
+        "echo3",
+        "def post(req):\n    return {'ct': req.headers.get('content-type')}\n",
     )
     r = ws.terminal("curl --json '{\"a\": 1}' /api/echo3")
     assert r, r.stderr

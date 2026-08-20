@@ -87,8 +87,14 @@ def test_terminal_description_includes_apps_contract():
     plain = terminal_description(ws, split=True, apps=False)
     with_apps = terminal_description(ws, split=True, apps=True)
     assert "def get(req)" not in plain
-    for marker in ("def get(req)", "HttpError", "curl /api/scores",
-                   "RELATIVE urls", "/workspace/app/logs/api.log", "READ-ONLY"):
+    for marker in (
+        "def get(req)",
+        "HttpError",
+        "curl /api/scores",
+        "RELATIVE urls",
+        "/workspace/app/logs/api.log",
+        "READ-ONLY",
+    ):
         assert marker in with_apps, marker
     ws.close()
 
@@ -104,8 +110,7 @@ def test_apps_notes_derive_from_config():
 
     cfg = AppsConfig(
         script_hosts=("esm.corp.internal",),
-        apps_primer="Design system: import from "
-        "'https://esm.corp.internal/@acme/ds@3'",
+        apps_primer="Design system: import from 'https://esm.corp.internal/@acme/ds@3'",
     )
     notes = apps_notes(cfg)
     assert "esm.corp.internal" in notes
@@ -119,12 +124,12 @@ def test_terminal_description_carries_apps_config():
     from nontainer.apps import AppsConfig
 
     ws = make_ws()
-    cfg = AppsConfig(script_hosts=("esm.corp.internal",),
-                     apps_primer="HOUSE RULES")
+    cfg = AppsConfig(script_hosts=("esm.corp.internal",), apps_primer="HOUSE RULES")
     desc = terminal_description(ws, split=True, apps=cfg)
     assert "esm.corp.internal" in desc
     assert "HOUSE RULES" in desc
     ws.close()
+
 
 def test_apps_notes_teach_curl_only_where_it_exists():
     """curl is an injected terminal command, so it exists only where

@@ -74,11 +74,13 @@ def app_ws(chromium_available):
 
 def test_load_read_and_api_roundtrip(app_ws):
     ws, rt = app_ws
-    result = rt.test_app([
-        {"read": "#title"},
-        {"read": "#status"},
-        {"assert": "document.querySelectorAll('#list li').length === 2"},
-    ])
+    result = rt.test_app(
+        [
+            {"read": "#title"},
+            {"read": "#status"},
+            {"assert": "document.querySelectorAll('#list li').length === 2"},
+        ]
+    )
     assert result.ok, render_test_app(result)
     assert result.results[0].value == "Scores"
     assert result.results[1].value == "loaded:2"
@@ -87,11 +89,13 @@ def test_load_read_and_api_roundtrip(app_ws):
 
 def test_click_flow_mutates_backend(app_ws):
     ws, rt = app_ws
-    result = rt.test_app([
-        {"type": ["#name", "carol"]},
-        {"click": "#add"},
-        {"read": "#status"},
-    ])
+    result = rt.test_app(
+        [
+            {"type": ["#name", "carol"]},
+            {"click": "#add"},
+            {"read": "#status"},
+        ]
+    )
     assert result.ok, render_test_app(result)
     assert result.results[2].value == "loaded:3"
     assert ws.cache["scores"] == ["alice", "bob", "carol"]  # real backend mutation
@@ -178,10 +182,12 @@ def test_select_by_value(widget_ws):
     """`type` maps to page.fill(), which errors on <select> — 4 of one
     audited session's 11 test_app failures were exactly this."""
     ws, rt = widget_ws
-    result = rt.test_app([
-        {"select": ["#make", "f"]},
-        {"read": "#picked"},
-    ])
+    result = rt.test_app(
+        [
+            {"select": ["#make", "f"]},
+            {"read": "#picked"},
+        ]
+    )
     assert result.ok, render_test_app(result)
     assert result.results[1].value == "f"
 
@@ -190,10 +196,12 @@ def test_select_falls_back_to_visible_label(widget_ws):
     """Agents pass whichever of value/label the DOM showed them;
     matching either keeps that from being another guess-and-retry."""
     ws, rt = widget_ws
-    result = rt.test_app([
-        {"select": ["#make", "Tesla"]},
-        {"read": "#picked"},
-    ])
+    result = rt.test_app(
+        [
+            {"select": ["#make", "Tesla"]},
+            {"read": "#picked"},
+        ]
+    )
     assert result.ok, render_test_app(result)
     assert result.results[1].value == "t"  # matched by label, set by value
 
@@ -210,15 +218,17 @@ def test_type_on_a_select_names_the_right_action(widget_ws):
     ws, rt = widget_ws
     result = rt.test_app([{"type": ["#make", "Ford"]}])
     assert not result.ok
-    assert '{"select": [\'#make\', value]}' in result.results[0].error
+    assert "{\"select\": ['#make', value]}" in result.results[0].error
 
 
 def test_type_still_works_on_a_real_input(widget_ws):
     ws, rt = widget_ws
-    result = rt.test_app([
-        {"type": ["#name", "carol"]},
-        {"eval": "document.querySelector('#name').value"},
-    ])
+    result = rt.test_app(
+        [
+            {"type": ["#name", "carol"]},
+            {"eval": "document.querySelector('#name').value"},
+        ]
+    )
     assert result.ok, render_test_app(result)
     assert "carol" in result.results[1].value
 
@@ -334,9 +344,7 @@ def test_absolute_urls_fail_verification(chromium_available):
     # the harness names the rejection + fix (the console-side hint
     # arrives truncated inside a JSON parse error — see the glm-5.2
     # session post-mortem)
-    assert any(
-        "/api/data" in r and "relative URLs" in r for r in result.rejected
-    )
+    assert any("/api/data" in r and "relative URLs" in r for r in result.rejected)
     assert "[rejected requests]" in render_test_app(result)
     ws.close()
 
@@ -403,9 +411,7 @@ def test_external_hosts_denied(chromium_available):
 
 def test_viewport_preset(app_ws):
     ws, rt = app_ws
-    result = rt.test_app(
-        [{"eval": "window.innerWidth"}], viewport="mobile"
-    )
+    result = rt.test_app([{"eval": "window.innerWidth"}], viewport="mobile")
     assert result.ok
     assert result.results[0].value == "390"
 
@@ -474,9 +480,7 @@ async def test_mcp_test_app_tool_returns_image_content(app_ws):
     tools = {t.name for t in await server.list_tools()}
     assert "test_app" in tools
 
-    result = await server.call_tool(
-        "test_app", {"actions": [{"screenshot": True}]}
-    )
+    result = await server.call_tool("test_app", {"actions": [{"screenshot": True}]})
     contents = result[0] if isinstance(result, tuple) else result
     types = {type(c).__name__ for c in contents}
     assert "ImageContent" in types

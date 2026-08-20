@@ -168,7 +168,9 @@ def main() -> None:
     print("served index.html ok:", client.get("/apps/demo/").status_code == 200)
 
     # the VFS never mutated — the app is still a clean, frozen artifact
-    print("workspace dirty after serving:", ws.dirty, "(state is in SQLite, not the VFS)")
+    print(
+        "workspace dirty after serving:", ws.dirty, "(state is in SQLite, not the VFS)"
+    )
     ws.close()
 
 
