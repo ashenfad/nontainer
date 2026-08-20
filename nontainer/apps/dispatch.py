@@ -155,11 +155,11 @@ class AppRuntime:
         ``<root>/app/logs/api.log`` for the authoring loop.
 
         Handler executions are ``exec_python(view=...)`` calls: the
-        executor mints a fresh, restricted sandbox per call (policy
-        memoized, so it's cheap) and realizes the read-only view /
-        budget / contract classes its own way. This runtime holds no
-        sandbox objects — nothing to build here, nothing to reap in
-        ``close``."""
+        executor gives each call a restricted sandbox of its own (policy
+        memoized, worker pooled under process/kernel isolation, so it's
+        cheap) and realizes the read-only view / budget / contract
+        classes its own way. This runtime holds no sandbox objects —
+        nothing to build here, nothing to reap in ``close``."""
         self._ws = ws
         self._config = config or AppsConfig()
         self._frozen = frozen
@@ -266,7 +266,7 @@ class AppRuntime:
         atomic = not readonly and ws.caps.staging and not ws.dirty
 
         # The view declares the intent; the executor realizes it (a
-        # fresh restricted sandbox per call, policy memoized — so a
+        # restricted sandbox held exclusively for this call — so a
         # read-only GET can't mutate, contract classes are in scope,
         # and the per-request budget applies, whichever executor runs
         # it). No sandbox object crosses back here.

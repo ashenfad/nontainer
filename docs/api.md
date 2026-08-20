@@ -269,6 +269,7 @@ class PythonConfig:
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
     echo: "none" | "last" | "all" = "last"  # bare-final-expr display in run_python
+    view_workers: int = 8                   # resident app-handler workers
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
 
@@ -311,6 +312,21 @@ class PythonConfig:
   disables that kernel restriction for the whole worker (seccomp/
   Landlock are monotonic). nontainer emits a `RuntimeWarning` at
   construction when this happens.
+- `view_workers` (process/kernel only) caps the resident workers kept
+  for `exec_python(view=...)` calls — in practice, apps' handler
+  dispatch. `run_python` and plain `exec_python` are unaffected: they
+  run in the session sandbox, whose worker is forked once at workspace
+  construction and held for its life. Handler dispatch instead ran
+  every request in a restricted view sandbox, which without a pool is
+  one `fork()` per request, taken from a live ASGI server — a
+  multi-threaded process, where a fork can inherit a lock held by a
+  thread the child doesn't get and hang outright. Resident workers make
+  that a handful of forks for the server's lifetime. Size it to the concurrency you serve (Starlette's
+  default thread limiter is 40); requests past the cap fall back to a
+  per-call sandbox rather than queueing. `0` restores per-call
+  sandboxes — the tradeoff is that a resident worker's process state
+  (`sys.modules`, module globals) outlives the request that created
+  it, shared between handlers of one app.
 - `Mount(path, readonly=True)` — a real directory in the workspace
   tree, visible to both tools, NOT versioned/forked.
 

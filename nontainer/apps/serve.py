@@ -16,9 +16,12 @@ belongs in an external store reached through ``host_objects`` (a
 sqlite/postgres client), not the served VFS.
 
 Because a frozen snapshot is immutable, serving is **stateless**: each
-request calls ``resolve`` and dispatches on a fresh read-only sandbox —
-concurrent, no per-session lock, no session cache, no lifecycle to
-manage. ``resolve`` is called per request and its result is NOT closed
+request calls ``resolve`` and dispatches on a read-only sandbox of its
+own — concurrent, no per-session lock, no session cache, no lifecycle to
+manage. Under process/kernel isolation that sandbox is checked out of
+the executor's worker pool rather than forked per request (a fork from a
+live, multi-threaded server is its own hazard); the exclusivity that
+makes concurrent dispatch safe is the checkout, not the fork. ``resolve`` is called per request and its result is NOT closed
 by the router; if it is expensive, cache the read-only Workspace inside
 ``resolve`` (safe — it's immutable). Rate limiting and quotas are edge
 concerns; put them at your gateway.
@@ -112,11 +115,12 @@ def build_router(
     def _handle_sync(
         ws: Workspace, method: str, url: str, body: bytes, headers: dict
     ) -> Any:
-        # Frozen dispatch builds a fresh read-only sandbox per request, so
-        # concurrent requests (even to one snapshot) are safe with no lock.
-        # Cheap when `resolve` caches its Workspace: build_sandbox memoizes
-        # the built policy per workspace, so per-request cost is sandbox
-        # construction, not policy registration.
+        # Frozen dispatch gives each request a read-only sandbox of its
+        # own, so concurrent requests (even to one snapshot) are safe with
+        # no lock. Cheap when `resolve` caches its Workspace: the policy is
+        # memoized per workspace and, under process/kernel isolation, the
+        # worker is resident — so a request costs neither registration nor
+        # a fork.
         runtime = AppRuntime(ws, cfg, frozen=True, log_sink=log_sink)
         return runtime.dispatch(make_request(method, url, body=body, headers=headers))
 
