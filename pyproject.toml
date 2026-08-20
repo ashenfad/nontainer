@@ -71,7 +71,7 @@ dud = [
     # floor intact for everyone not opting into this executor.
     # 0.2.1: the guest mounts its workspace AT the configured root
     # (/workspace), so agent absolute paths match LocalExecutor's.
-    "dud>=0.2.1; python_version >= '3.11'",
+    "dud>=0.3.0; python_version >= '3.11'",
 ]
 dev = [
     "ruff",

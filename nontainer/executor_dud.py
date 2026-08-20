@@ -23,8 +23,10 @@ Intended deltas vs LocalExecutor (pinned by tests/test_dud_executor.py):
   ``stdlib``/``network``/``isolation`` knobs are meaningless here —
   what's importable is what's installed in the guest environment, and
   the rung-1 guest IS the host env. ``host_objects`` survive: live
-  objects become hostcall proxies (dud's allowlist boundary), plain
-  data is injected per call as inputs.
+  objects become hostcall proxies behind dud's allowlist, granted
+  their public methods so the reachable surface matches what
+  ``LocalExecutor`` bridges over RPC; plain data is injected per call
+  as inputs.
 - **stderr merges into stdout.** A real terminal produces one
   transcript; ``TerminalResult.stderr``/``PythonResult.stderr`` stay
   empty (timeout notices excepted).
@@ -302,12 +304,22 @@ class DudExecutor:
         """
         import dud
 
+        # dud requires an explicit allowlist per host object -- registering one
+        # without a grant is a PolicyError, not an implicit "everything
+        # public". Public methods is the grant that matches what the local
+        # executor exposes: its rpc handler rejects underscored names and
+        # non-callables, so both rungs reach the same surface. public_methods
+        # resolves to a concrete frozenset rather than a wildcard, so the grant
+        # snapshots what exists now instead of whatever gets added later.
+        allow = {name: dud.public_methods(obj) for name, obj in host_objects.items()}
+
         if self._backend == "subprocess":
             # No boot to skip, so no pooling; root pins the guest scratch dir.
             return dud.session(
                 "subprocess",
                 root=self._host_root,
                 host_objects=host_objects,
+                allow=allow,
                 cache=cache,
             )
 
@@ -330,6 +342,7 @@ class DudExecutor:
             pooled=pooled,
             state=self._head() if pooled else None,
             host_objects=host_objects,
+            allow=allow,
             cache=cache,
             **vm,
         )
@@ -338,9 +351,9 @@ class DudExecutor:
         self._ctx = context
         self._ws_root = "" if context.root == "/" else context.root.rstrip("/")
         cfg = context.python_config
-        # Live host objects cross as hostcall proxies (dud's own
-        # method allowlist boundary; default = all public callables,
-        # rung-1 cooperative posture). Plain data can't be proxied —
+        # Live host objects cross as hostcall proxies behind dud's method
+        # allowlist, granted their public methods in _make_session (dud 0.3
+        # requires the grant explicitly). Plain data can't be proxied —
         # it rides into each exec as inputs instead (mirrors
         # LocalExecutor's direct namespace injection).
         live: dict[str, Any] = {}

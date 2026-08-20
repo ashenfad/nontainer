@@ -934,3 +934,68 @@ def test_zero_isolation_rung_is_opt_in_only():
     default = inspect.signature(DudExecutor.__init__).parameters["backend"].default
     assert default == "vm"
     assert default != "subprocess"
+
+
+# -- dud's host-object allowlist ---------------------------------------------
+
+
+class _AllowProbe:
+    """A host object with a public method and a private one."""
+
+    def query(self, sql):
+        return [{"n": 1}]
+
+    def _secret(self):
+        return "leaked"
+
+
+def test_session_grants_host_objects_their_public_methods(monkeypatch):
+    """dud 0.3 requires an explicit allowlist per host object — registering one
+    without a grant is a PolicyError, not an implicit "everything public".
+
+    Public methods is the grant that matches what LocalExecutor exposes: its
+    rpc handler rejects underscored names and non-callables, so both rungs
+    reach the same surface.
+    """
+    import dud
+
+    captured = {}
+
+    def fake_session(backend, **kw):
+        captured.update(kw, backend=backend)
+        return "session"
+
+    monkeypatch.setattr(dud, "session", fake_session)
+    ex = DudExecutor(backend="subprocess")
+    ex._make_session({"db": _AllowProbe()}, {})
+
+    assert captured["allow"] == {"db": frozenset({"query"})}
+    assert "_secret" not in captured["allow"]["db"]
+
+
+def test_vm_rung_grants_the_allowlist_too(monkeypatch):
+    """Both branches of _make_session build the session, so both must pass it."""
+    import dud
+
+    captured = {}
+
+    def fake_session(backend, **kw):
+        captured.update(kw, backend=backend)
+        return "session"
+
+    monkeypatch.setattr(dud, "session", fake_session)
+    ex = DudExecutor(backend="vfkit", vm={"image": "python:3.12-slim"})
+    ex._make_session({"db": _AllowProbe()}, {})
+
+    assert captured["allow"] == {"db": frozenset({"query"})}
+
+
+def test_no_host_objects_means_an_empty_allowlist(monkeypatch):
+    import dud
+
+    captured = {}
+    monkeypatch.setattr(
+        dud, "session", lambda backend, **kw: captured.update(kw) or "s"
+    )
+    DudExecutor(backend="subprocess")._make_session({}, {})
+    assert captured["allow"] == {}
