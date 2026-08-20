@@ -445,8 +445,7 @@ def test_component_json_not_plotly_falls_back():
     assert frag == {
         "component": {
             "componentType": "Text",
-            "text": "artifact: blob",
-            "link": "https://host/workspace/ui/blob.json",
+            "text": "[artifact: blob](https://host/workspace/ui/blob.json)",
         },
         "data_model": {},
     }
@@ -468,18 +467,36 @@ def test_component_text_fallback():
     assert frag == {
         "component": {
             "componentType": "Text",
-            "text": "artifact: page",
-            "link": "https://host/workspace/ui/page.html",
+            "text": "[artifact: page](https://host/workspace/ui/page.html)",
         },
         "data_model": {},
     }
+
+
+def test_fallback_carries_no_key_outside_the_text_schema():
+    """The basic catalog's Text takes component/text/variant and is declared
+    ``unevaluatedProperties: false``, so a sibling ``link`` prop made a strict
+    consumer reject the whole fragment (issue #31). Asserted by key set rather
+    than by absence of ``link``, so any future stray prop fails too."""
+    for name, path, data in [
+        ("blob", "/workspace/ui/blob.json", b"{}"),
+        ("page", "/workspace/ui/page.html", b"<h1>hi</h1>"),
+        ("notes", "/workspace/ui/notes.txt", b"hello"),
+        ("fig", "/workspace/ui/fig.plotly.json", None),
+    ]:
+        component = component_for(name, path, data, url)["component"]
+        assert component["componentType"] == "Text"
+        assert set(component) == {"componentType", "text"}, (path, component)
 
 
 def test_component_data_none_degrades_but_image_still_works():
     # bytes-needing kind with no bytes -> fallback link.
     frag = component_for("fig", "/workspace/ui/fig.plotly.json", None, url)
     assert frag["component"]["componentType"] == "Text"
-    assert frag["component"]["link"] == "https://host/workspace/ui/fig.plotly.json"
+    assert (
+        frag["component"]["text"]
+        == "[artifact: fig](https://host/workspace/ui/fig.plotly.json)"
+    )
     # image is URL-only, so it still renders.
     img = component_for("pic", "/workspace/ui/pic.png", None, url)
     assert img["component"]["componentType"] == "Image"
@@ -488,7 +505,10 @@ def test_component_data_none_degrades_but_image_still_works():
 def test_component_malformed_json_degrades():
     frag = component_for("t", "/workspace/ui/t.table.json", b"{not json", url)
     assert frag["component"]["componentType"] == "Text"
-    assert frag["component"]["link"] == "https://host/workspace/ui/t.table.json"
+    assert (
+        frag["component"]["text"]
+        == "[artifact: t](https://host/workspace/ui/t.table.json)"
+    )
 
 
 def test_component_table_nonlist_fields_degrade_not_raise():
@@ -510,8 +530,8 @@ def test_component_table_nonlist_fields_degrade_not_raise():
 
 
 def test_component_builder_surprise_falls_back_not_raises():
-    """Belt and braces: ANY builder exception lands in the Text+link
-    fallback — the docstring's never-raises is structural, not by audit.
+    """Belt and braces: ANY builder exception lands in the Text fallback
+    — the docstring's never-raises is structural, not by audit.
     A cards payload whose items explode the builder is the probe."""
     frag = component_for(
         "k", "/workspace/ui/k.cards.json", b'{"items": [{"type": "stat"}]}', url
@@ -881,8 +901,8 @@ def test_turn_never_raises_on_unreadable():
         url,
         surface_id="s1",
     )
-    # Degrades to the Text+link fallback, no crash, no data model.
+    # Degrades to the Text fallback, no crash, no data model.
     comp = msgs[1]["updateComponents"]["components"][1]
     assert comp["component"] == "Text"
-    assert comp["link"] == "https://host/workspace/ui/fig.plotly.json"
+    assert comp["text"] == "[artifact: fig](https://host/workspace/ui/fig.plotly.json)"
     assert len(msgs) == 2

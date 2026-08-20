@@ -125,8 +125,8 @@ def component_for(
 
     Dispatches on ``artifact_kind(path)``. ``data`` is the artifact's raw
     bytes, or ``None`` when the caller could not read the file — every kind
-    that needs the bytes then degrades to the Text+link fallback (``image``
-    still works, being URL-only). Malformed JSON where JSON is expected
+    that needs the bytes then degrades to a Text fallback carrying a markdown
+    link (``image`` still works, being URL-only). Malformed JSON where JSON is expected
     degrades the same way; this function never raises.
 
     ``extensions=True`` emits the nontainer catalog's extension
@@ -181,9 +181,17 @@ def component_for(
             pass
 
     # html/text/json-non-plotly/binary, and every bytes-needing kind that
-    # could not parse: a Text label + a link. Never ship raw HTML across a2ui.
+    # could not parse: a labelled link. Never ship raw HTML across a2ui.
+    #
+    # The link is markdown INSIDE text, not a sibling prop: the basic
+    # catalog's Text takes component/text/variant and is declared
+    # `unevaluatedProperties: false`, so a `link` key made a strict consumer
+    # reject the whole fragment (issue #31) -- every artifact reaching this
+    # branch produced a broken segment. Text already carries markdown by
+    # contract (`("md", text)` segments ship verbatim), so the link needs no
+    # prop of its own.
     return _fragment(
-        {"componentType": "Text", "text": f"artifact: {name}", "link": file_url(path)}
+        {"componentType": "Text", "text": f"[artifact: {name}]({file_url(path)})"}
     )
 
 
