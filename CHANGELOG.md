@@ -100,6 +100,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to distinct executors, so this is state shared between handlers of a
   single app.
 
+### Fixed
+
+- **The A2UI artifact fallback no longer emits an invalid `link` key**
+  ([#31](https://github.com/ashenfad/nontainer/issues/31)). Any artifact that
+  couldn't be mapped to a richer component shipped
+  `Text {text, link}` — but the basic catalog's `Text` takes
+  `component`/`text`/`variant` and is declared `unevaluatedProperties: false`,
+  so a strict consumer rejected the whole fragment:
+
+  ```
+  Validation failed for component 'Text' (segN):
+    root: Unrecognized key(s) in object: 'link'
+  ```
+
+  The link is now markdown inside the text — `[artifact: name](url)` — which
+  needs no prop of its own, since `Text` already carries markdown by contract
+  (`("md", text)` segments ship verbatim). Affected every fallback artifact:
+  html, plain text, non-plotly json, binary, and any bytes-needing kind whose
+  payload failed to parse.
+
 ### Added
 
 - **Bridged host objects declare their surface to the worker.** sandtrap's
