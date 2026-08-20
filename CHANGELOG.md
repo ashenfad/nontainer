@@ -5,6 +5,96 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Requires sandtrap >= 0.3.0, where process workers no longer fork the
+  embedding process.** Workers are created by a `forkserver` broker instead, so
+  a multi-threaded host — which any uvicorn/FastAPI server is — can no longer
+  hand a worker a lock held by a thread that doesn't exist in it. That failure
+  hung the worker rather than crashing it, and surfaced only as
+  `"Worker process became unresponsive"`.
+
+  Three consequences for embedders:
+
+  - **A `PythonConfig.policy` you supply must now be serializable.** Module
+    grants, module-level functions and classes are fine; lambdas, closures,
+    bound methods, and classes defined inside a function are not.
+    `Workspace(...)` raises `StPolicyNotPortable` at construction, listing
+    every problem at once.
+  - **Granted modules are imported once per worker** rather than inherited, so
+    a heavyweight grant costs real time at worker start (~126ms for `pandas`,
+    against ~18ms for the stdlib preset). Workers are long-lived — one per
+    workspace, plus the app-handler pool — so this is paid at construction, not
+    per call.
+  - **Your program's entry point must be importable.** A worker that doesn't
+    inherit memory re-imports `__main__`, so module-level work in your entry
+    point belongs behind `if __name__ == "__main__":`. Servers are unaffected
+    (an ASGI app is imported, not run as `__main__`) and so is a normal
+    `python myserver.py`; what breaks is constructing a `Workspace` from
+    `python -c`, from `python -` with a heredoc, or from a bare REPL.
+
+    This is about **your** process, not the agent's code. The terminal's
+    `python` builtin runs inside the existing worker rather than starting a
+    process, so `python <<'EOF'`, `python -c`, `python file.py`, and
+    `cat x.py | python` all keep working from agent code exactly as before.
+
+- **Host objects are registered by class, and only in-process.** Under
+  process/kernel isolation the agent holds an `RpcProxy`, whose type is not the
+  object's, so a registration keyed on that type never matched it and gated
+  nothing. It was doing no work while making the policy unserializable — which
+  meant a host object whose class is defined inside a function (common in
+  tests, and in code that builds adapters in factories) broke the whole policy.
+  In-process execution is unchanged: there the real object is what lands in the
+  namespace, and the registration carries its member filters.
+
+- **App handler dispatch reuses resident sandbox workers instead of forking
+  one per request.** Under `isolation="process"`/`"kernel"`, every handler
+  call minted and reaped its own worker, so serving an app meant one
+  `fork()` per HTTP request — taken from a live ASGI host, which is
+  multi-threaded (the router dispatches through `anyio.to_thread`). Forking
+  a multi-threaded process can leave the child holding a lock no surviving
+  thread will release, and such a child *hangs* rather than crashing: the
+  request stalls until a timeout fires, with nothing in the error naming
+  the cause (sandtrap#38). Workers are now kept resident per distinct
+  handler view and checked out per call, which turns N forks per N requests
+  into at most `PythonConfig.view_workers` forks for the executor's whole
+  life, and drops per-request worker start from the latency.
+
+  Only view calls change. `run_python` and plain `exec_python` already ran
+  in the session sandbox, forked once at workspace construction and held
+  for its life — they never forked per call and are untouched here.
+
+  Requests beyond the cap fall back to a per-call sandbox rather than
+  queueing. `PythonConfig.view_workers=0` restores the old per-call
+  behavior; the default is 8, and a busy server should raise it toward its
+  own concurrency limit (Starlette's default thread limiter is 40).
+
+  The tradeoff a resident worker makes: process state — `sys.modules`,
+  module globals, anything a handler mutated through a granted module —
+  now outlives the request that created it, where a per-call fork gave
+  every request a pristine copy-on-write view. The blast radius is one
+  workspace: a pool belongs to one executor, and distinct sessions resolve
+  to distinct executors, so this is state shared between handlers of a
+  single app.
+
+### Added
+
+- **Bridged host objects declare their surface to the worker.** sandtrap's
+  proxy could not tell a method from a data attribute, so it returned a caller
+  for every name: `db.dsn` read as `None`, `db.dsn = x` was silently lost, and
+  a typo'd method failed at call time saying nothing about what existed.
+  Now:
+
+  ```
+  v = db.dsn      -> AttributeError: 'dsn' is a data attribute of the host
+                     object, and the bridge carries method calls only
+  db.dsn = 'evil' -> AttributeError: cannot set 'dsn' ... would be lost
+  v = db.nope()   -> AttributeError: 'nope' is not part of the host object's
+                     exposed surface (available: query)
+  ```
+
 ## [0.2.4] - 2026-08-04
 
 ### Changed

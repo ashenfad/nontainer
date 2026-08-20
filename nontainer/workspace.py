@@ -286,6 +286,32 @@ class PythonConfig:
     ``echo="none"`` regardless: their stdout feeds pipelines and
     api.log, not a conversation."""
 
+    view_workers: int = 8
+    """Resident sandbox workers per distinct ``exec_python(view=...)``
+    view, under ``isolation="process"``/``"kernel"`` only.
+
+    Only view calls are pooled, because only view calls used to fork:
+    ``run_python`` and a plain ``exec_python`` run in the session
+    sandbox, whose worker is forked once at construction and held for
+    the workspace's life. Apps' handler dispatch is the view surface
+    that matters — it runs every request in a restricted view sandbox,
+    which meant one ``fork()`` per request from a live ASGI server. A
+    fork from a multi-threaded process can inherit a lock held by a
+    thread the child doesn't have and hang outright. Keeping workers
+    resident makes that a handful of forks for the server's lifetime
+    instead of one per request, and drops the per-request worker start.
+
+    The cap bounds resident worker processes per view; concurrency
+    beyond it falls back to a per-call sandbox rather than queueing.
+    Size it to the concurrency you actually serve — Starlette's default
+    thread limiter is 40, so a busy app wants more than the default 8.
+
+    ``0`` restores per-call sandboxes. The tradeoff a pooled worker
+    makes: process state (``sys.modules``, module globals, anything a
+    handler mutated through a granted module) now outlives the request
+    that created it, shared between handlers of one app — where a
+    per-call fork gave every request a pristine copy."""
+
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above
     except ``host_objects``."""

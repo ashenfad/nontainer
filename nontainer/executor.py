@@ -44,14 +44,17 @@ Concurrency: executors inherit the workspace's single-writer model —
 mutating calls arrive serialized under ``Workspace.lock``. The one
 sanctioned concurrent path is ``exec_python(view=...)`` under frozen
 app serving, which dispatches WITHOUT the workspace lock — an
-executor must make that safe its own way: ``LocalExecutor`` mints a
-fresh sandbox per view call; an executor multiplexing one transport
+executor must make that safe its own way: ``LocalExecutor`` gives each
+concurrent view call a sandbox of its own, checked out from
+:class:`_ViewWorkerPool` under process/kernel isolation and minted
+per-call in-process; an executor multiplexing one transport
 (``DudExecutor``'s single session channel) must serialize internally.
 """
 
 from __future__ import annotations
 
 import pickle
+import threading
 import time
 import warnings
 from collections.abc import Callable, Mapping, MutableMapping
@@ -432,6 +435,19 @@ def _host_object_rpc_handler(obj: Any):
     return handler
 
 
+def _surface_kwargs(obj: Any) -> dict[str, Any]:
+    """``methods``/``attributes`` for an ``RpcProxyMarker``.
+
+    Declaring the surface is what lets the worker's proxy tell a method from a
+    data attribute. Undeclared, it hands back a caller for every name, so
+    ``obj.attr`` reads as None and ``obj.attr = x`` is silently lost.
+    """
+    from sandtrap import rpc_surface
+
+    methods, attributes = rpc_surface(obj)
+    return {"methods": methods, "attributes": attributes}
+
+
 def _is_plain_data(obj: Any) -> bool:
     """Builtin-typed values need no policy registration."""
     return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
@@ -463,6 +479,180 @@ def _flatten_grants(cfg: PythonConfig) -> list[ModuleGrant]:
     return [e if isinstance(e, ModuleGrant) else ModuleGrant(e) for e in entries]
 
 
+def _view_key(view: ViewSpec) -> tuple:
+    """A hashable identity for a view.
+
+    ``ViewSpec`` is frozen but not reliably hashable: a caller may hand
+    ``extra_classes`` a list (a frozen dataclass stores what it is
+    given), which is why ``_build_sandbox``'s policy memo already
+    coerces to a tuple. Same coercion, same reason — and the two keys
+    differ on purpose: the policy memo keys only what the *policy*
+    depends on, while a worker also embodies the fs/cache views.
+    """
+    return (
+        bool(view.readonly_fs),
+        bool(view.readonly_cache),
+        view.timeout,
+        view.tick_limit,
+        tuple(view.extra_classes),
+    )
+
+
+def _worker_alive(sandbox: Any) -> bool:
+    """Whether a process/kernel sandbox still has a live worker.
+
+    White-box on sandtrap by necessity: ``ProcessSandbox`` exposes no
+    liveness predicate, and the alternative — letting the next
+    ``exec()`` respawn lazily — re-forks from the CURRENT host, which
+    is the thing the pool exists to avoid. An unrecognized shape reads
+    as dead: recycling a sandbox we can't vouch for is the worse error.
+    """
+    process = getattr(sandbox, "_process", None)
+    if process is None:
+        return False
+    try:
+        return bool(process.is_alive())
+    except Exception:
+        return False
+
+
+def _shutdown_quietly(sandbox: Any) -> None:
+    """Reap a worker, best-effort — teardown must never raise into a
+    request path or into ``close()``."""
+    shutdown = getattr(sandbox, "shutdown", None)
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            pass
+
+
+class _NotPoolable(Exception):
+    """Internal signal: ``build()`` produced a sandbox with no worker
+    (``isolation="none"``), so there is nothing to keep resident."""
+
+    def __init__(self, sandbox: Any) -> None:
+        super().__init__("sandbox has no worker to pool")
+        self.sandbox = sandbox
+
+
+class _ViewWorkerPool:
+    """Resident workers for ``exec_python(view=...)`` under
+    process/kernel isolation.
+
+    A view sandbox used to be minted and reaped per call, so every app
+    handler dispatch cost one ``fork()`` — from whatever the host
+    looked like at that moment. Under live app serving that host is an
+    ASGI server dispatching handlers through ``anyio.to_thread``, i.e.
+    a multi-threaded process, and forking one can inherit a lock held
+    by a thread that doesn't exist in the child: the child then *hangs*
+    rather than crashing, and the request stalls until a timeout fires
+    (sandtrap#38). Pooling collapses N forks-per-N-requests to at most
+    ``size`` forks per distinct view for the executor's whole life.
+
+    Checkout is exclusive. One exec at a time per sandbox is sandtrap's
+    contract (undocumented, but structural: ``exec`` writes and reads
+    one pipe, with no lock of its own), so two threads sharing a worker
+    would interleave messages on it.
+
+    Saturation mints a transient sandbox — precisely the old behavior.
+    Blocking instead would trade a fork-cost problem for a
+    request-latency one, and a caller who is already inside a request
+    has no deadline to give us.
+
+    **Reuse is visible to handler code.** A pooled worker keeps its
+    process state between calls: ``sys.modules``, module globals, and
+    anything a handler mutated through a granted module outlive the
+    request that did it, where a per-call fork gave each request a
+    pristine copy-on-write view. The blast radius is one workspace —
+    a pool belongs to one ``LocalExecutor``, and distinct sessions
+    resolve to distinct executors — so this is state shared between
+    handlers of a single app, all authored together. Set
+    ``PythonConfig.view_workers=0`` for the old per-call semantics.
+    """
+
+    def __init__(self, size: int, *, enabled: bool) -> None:
+        self._size = size if enabled else 0
+        self._lock = threading.Lock()
+        self._idle: dict[tuple, list[Any]] = {}
+        # Live count includes checked-out workers, so the cap bounds
+        # RESIDENT processes rather than idle ones.
+        self._live: dict[tuple, int] = {}
+        self._closed = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._size > 0
+
+    def acquire(self, view: ViewSpec, build: Callable[[], Any]) -> tuple[Any, bool]:
+        """Check out a worker for ``view``, or build a transient sandbox.
+
+        Returns ``(sandbox, pooled)``. A pooled sandbox is already
+        entered and must be handed back to :meth:`release`; a transient
+        one is the caller's to enter and reap as before.
+        """
+        if self._size <= 0 or self._closed:
+            return build(), False
+
+        key = _view_key(view)
+        with self._lock:
+            idle = self._idle.get(key)
+            while idle:
+                sandbox = idle.pop()
+                if _worker_alive(sandbox):
+                    return sandbox, True
+                # A worker that died between calls (crash, OOM, seccomp
+                # kill, or the unresponsive-worker kill) frees its slot.
+                self._live[key] -= 1
+                _shutdown_quietly(sandbox)
+            if self._live.get(key, 0) >= self._size:
+                return build(), False
+            self._live[key] = self._live.get(key, 0) + 1
+
+        # Fork outside the lock: a concurrent checkout of an idle worker
+        # must not queue behind someone else's worker start.
+        try:
+            sandbox = build()
+            enter = getattr(sandbox, "__enter__", None)
+            if not callable(getattr(sandbox, "shutdown", None)) or enter is None:
+                # No worker to pool (in-process sandbox): hand it back as
+                # transient and release the reservation.
+                raise _NotPoolable(sandbox)
+            enter()
+        except _NotPoolable as unpoolable:
+            with self._lock:
+                self._live[key] -= 1
+            return unpoolable.sandbox, False
+        except BaseException:
+            with self._lock:
+                self._live[key] -= 1
+            raise
+        return sandbox, True
+
+    def release(self, view: ViewSpec, sandbox: Any) -> None:
+        """Return a checked-out worker. Dead or post-close workers are
+        reaped instead of recycled."""
+        key = _view_key(view)
+        alive = _worker_alive(sandbox)
+        with self._lock:
+            if alive and not self._closed:
+                self._idle.setdefault(key, []).append(sandbox)
+                return
+            self._live[key] = self._live.get(key, 1) - 1
+        _shutdown_quietly(sandbox)
+
+    def close(self) -> None:
+        """Reap every idle worker. Workers still checked out are reaped
+        by their own :meth:`release` — the flag makes that terminal."""
+        with self._lock:
+            self._closed = True
+            idle = [sb for group in self._idle.values() for sb in group]
+            self._idle.clear()
+            self._live.clear()
+        for sandbox in idle:
+            _shutdown_quietly(sandbox)
+
+
 # ----------------------------------------------------------------------
 # the default implementation
 # ----------------------------------------------------------------------
@@ -477,7 +667,9 @@ class LocalExecutor:
     versioning are entirely the provider's staging + the workspace's
     checkpoint flow. Lifecycle: under process/kernel isolation the
     sandbox forks a persistent worker at :meth:`open` and reaps it at
-    :meth:`close`.
+    :meth:`close`; view calls (apps' handler dispatch) draw resident
+    workers from a :class:`_ViewWorkerPool` reaped at the same time,
+    rather than forking one per call.
     """
 
     # termish takes the injected mapping directly (see exec_shell), so
@@ -491,22 +683,32 @@ class LocalExecutor:
         # memo with the default sandbox's build.
         self._policy_memo: dict[Any, Any] = {}
         self._sandbox: Any | None = None
+        # Sized at open(), where the config is known. A pool that is
+        # never opened is a pool that is never used, so an inert one is
+        # the right default — close() must work regardless.
+        self._pool = _ViewWorkerPool(0, enabled=False)
 
     # -- lifecycle -------------------------------------------------------
 
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
+        cfg = context.python_config
         self._sandbox = self._build_sandbox()
-        # Process/kernel sandboxes fork a persistent worker. Entering
-        # at workspace construction — typically before an embedder's
-        # server threads exist — is deliberate (forking a multithreaded
-        # process can deadlock on macOS); the workspace calls open()
-        # LAST so no later construction failure can orphan the worker
-        # (PR #10 review).
-        if context.python_config.isolation != "none":
+        # View calls keep resident workers instead of forking per call.
+        # Pooling only means anything where a call would otherwise fork:
+        # an in-process view sandbox costs no worker at all.
+        self._pool = _ViewWorkerPool(cfg.view_workers, enabled=cfg.isolation != "none")
+        # Process/kernel sandboxes start a persistent worker here. Entering
+        # eagerly is still deliberate, though the reason narrowed: sandtrap
+        # 0.3 no longer forks the embedding process, so a multi-threaded host
+        # is no longer the hazard it was. What remains is ordering — the
+        # workspace calls open() LAST, so no later construction failure can
+        # orphan a worker (PR #10 review).
+        if cfg.isolation != "none":
             self._sandbox.__enter__()
 
     def close(self) -> None:
+        self._pool.close()  # best-effort internally
         shutdown = getattr(self._sandbox, "shutdown", None)
         if callable(shutdown):  # process/kernel worker
             try:
@@ -629,10 +831,19 @@ class LocalExecutor:
         for klass in extra_classes:
             policy.cls(klass)
 
-        # Live (non-plain-data) host objects need attribute-level policy.
-        for name, obj in cfg.host_objects.items():
-            if not _is_plain_data(obj):
-                policy.module(obj, name=name)
+        # Live (non-plain-data) host objects need attribute-level policy —
+        # but only in-process, where the real object is what lands in the
+        # namespace. Under process/kernel isolation the agent holds an
+        # RpcProxy instead, whose type is not the object's, so this
+        # registration never matches it and gates nothing; the proxy's own
+        # declared surface (RpcProxyMarker methods/attributes) is what applies
+        # there. Registering anyway would only impose the policy's portability
+        # requirements — a host object whose class is defined inside a
+        # function could not be serialized — for no gating in return.
+        if cfg.isolation == "none":
+            for name, obj in cfg.host_objects.items():
+                if not _is_plain_data(obj):
+                    policy.cls(type(obj), name=name)
 
         # Loud construction-time warning when a kernel sandbox's policy
         # degrades a kernel restriction (seccomp/Landlock are monotonic).
@@ -718,14 +929,17 @@ class LocalExecutor:
                 ) from exc
             namespace[name] = value
 
-        # A view mints a fresh, restricted sandbox (policy memoized);
-        # otherwise the long-lived default built at open(). A view
-        # sandbox under process/kernel isolation is its own worker —
-        # enter/exit it per call (COW fork, ~ms); the default worker is
-        # entered once at open().
+        # A view runs in a restricted sandbox (policy memoized);
+        # otherwise the long-lived default built at open(). Under
+        # process/kernel isolation a view sandbox is its own worker,
+        # checked out from the pool and returned below — a resident
+        # worker, not a fork per call (see _ViewWorkerPool). In-process
+        # views need no worker, and a saturated pool hands back a
+        # transient sandbox this call enters and reaps itself.
+        pooled = False
         if view is not None:
-            sb = self._build_sandbox(view)
-            own_worker = hasattr(sb, "shutdown")
+            sb, pooled = self._pool.acquire(view, lambda: self._build_sandbox(view))
+            own_worker = not pooled and hasattr(sb, "shutdown")
         else:
             sb = self._sandbox
             own_worker = False
@@ -735,9 +949,15 @@ class LocalExecutor:
             if bridged and not _is_plain_data(obj):
                 from sandtrap import RpcProxyMarker
 
-                # methods RPC to the parent's live object (attribute
-                # READS don't cross — a documented limit of bridging)
-                namespace[name] = RpcProxyMarker(target=f"host:{name}")
+                # Methods RPC to the parent's live object; attribute READS
+                # don't cross. Declare the object's surface so the worker's
+                # proxy can SAY that — undeclared, it hands back a callable
+                # for every name, so `obj.attr` reads as None and `obj.attr =
+                # x` is silently lost. Older sandtrap ignores the extra
+                # fields, so this degrades to the previous behaviour.
+                namespace[name] = RpcProxyMarker(
+                    target=f"host:{name}", **_surface_kwargs(obj)
+                )
             else:
                 namespace[name] = obj
 
@@ -758,10 +978,19 @@ class LocalExecutor:
                     target="cache", wrapper="nontainer.cache:RemoteCache"
                 )
         start = time.monotonic()
-        with sb if own_worker else nullcontext():
-            exec_result = sb.exec(
-                code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
-            )
+        try:
+            with sb if own_worker else nullcontext():
+                exec_result = sb.exec(
+                    code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
+                )
+        finally:
+            # Return the worker even when exec raised: an executor-level
+            # failure (crashed worker, lost connection) must free the
+            # slot, and release() reaps rather than recycles a worker
+            # that didn't survive.
+            if pooled:
+                assert view is not None  # pooled implies a view checkout
+                self._pool.release(view, sb)
         duration = time.monotonic() - start
 
         error = (

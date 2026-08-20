@@ -348,15 +348,20 @@ app.mount("/apps", router)      # serves /apps/{token}/...
 ```
 
 - **Stateless: `resolve → dispatch`.** Each request calls `resolve` and
-  dispatches on a fresh read-only sandbox — no session cache, no
+  dispatches on a read-only sandbox of its own — no session cache, no
   residency, no lifecycle. `resolve` is called per request and its
   result is NOT closed by the router; if resolving is expensive, cache
   the read-only Workspace *inside* `resolve` (safe — it's immutable).
-- **Concurrent, no per-session lock.** Fresh sandbox per request → no
-  staged buffer, no shared instance to race, no durability surface.
+- **Concurrent, no per-session lock.** A sandbox per in-flight request →
+  no staged buffer, no shared instance to race, no durability surface.
   This is what the frozen guarantee buys. Cheap when `resolve` caches
-  its Workspace: `build_sandbox` memoizes the built policy, so the
-  per-request cost is sandbox construction, not policy registration.
+  its Workspace: the built policy is memoized, and under
+  `isolation="process"`/`"kernel"` the worker is resident (see
+  `PythonConfig.view_workers`) rather than forked per request — so a
+  request costs neither policy registration nor a fork. Requests beyond
+  `view_workers` fall back to a per-call sandbox rather than queueing,
+  so raise it toward your server's concurrency limit if you serve under
+  load.
 - **`{token}` is a capability** — long, unguessable, minted with
   `mint_token()`, mapped to snapshots in the embedder's storage.
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler

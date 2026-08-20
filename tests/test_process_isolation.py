@@ -210,3 +210,32 @@ def test_frozen_serving_forks_per_request(ws):
         assert snapshot.cache["n"] == 41
     finally:
         snapshot.close()
+
+
+def test_agent_python_forms_work_under_a_non_forked_worker(ws):
+    """The terminal's ``python`` builtin runs inside the existing worker, so
+    none of these start a process — which is why they are unaffected by
+    sandtrap's requirement that a worker-creating process have an importable
+    ``__main__``.
+
+    That requirement is real, but it applies to the EMBEDDER's entry point:
+    constructing a ``Workspace`` from ``python -c`` or a heredoc is what
+    breaks, not an agent writing one. Pinned because the two are easy to
+    conflate, and conflating them reads as a regression that isn't there.
+    """
+    heredoc = ws.terminal("python <<'PY'\nprint('heredoc says hi')\nPY")
+    assert heredoc.exit_code == 0
+    assert heredoc.stdout.strip() == "heredoc says hi"
+
+    dash_c = ws.terminal("python -c 'print(6*7)'")
+    assert dash_c.exit_code == 0
+    assert dash_c.stdout.strip() == "42"
+
+    ws.write_file("/s.py", 'print("from a file")')
+    from_file = ws.terminal("python /s.py")
+    assert from_file.exit_code == 0
+    assert from_file.stdout.strip() == "from a file"
+
+    piped = ws.terminal("echo 'print(\"piped\")' | python")
+    assert piped.exit_code == 0
+    assert piped.stdout.strip() == "piped"
