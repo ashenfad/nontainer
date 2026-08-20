@@ -108,10 +108,12 @@ def test_parallel_file_writes_are_safe():
     fw = tk.functions["file_write"].entrypoint
 
     with ThreadPoolExecutor(max_workers=6) as pool:
-        list(pool.map(
-            lambda i: fw(path=f"src/mod_{i}.py", content=f"X = {i}\n"),
-            range(6),
-        ))
+        list(
+            pool.map(
+                lambda i: fw(path=f"src/mod_{i}.py", content=f"X = {i}\n"),
+                range(6),
+            )
+        )
 
     for i in range(6):
         assert ws.fs.read(f"src/mod_{i}.py").decode() == f"X = {i}\n"
@@ -134,12 +136,12 @@ def test_turn_checkpoint_mode():
     tk.functions["terminal"].entrypoint("echo hi > c.txt")
     assert len(list(ws.history())) == before
 
-    tk.end_turn()   # the post_hooks boundary
+    tk.end_turn()  # the post_hooks boundary
     entries = list(ws.history())
     assert len(entries) == before + 1
     assert entries[0].info == {"tool": "turn"}
 
-    tk.end_turn()   # idle turn → no empty commit
+    tk.end_turn()  # idle turn → no empty commit
     assert len(list(ws.history())) == before + 1
 
     # rollback rewinds the WHOLE turn

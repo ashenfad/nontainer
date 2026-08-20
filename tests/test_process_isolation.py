@@ -41,9 +41,7 @@ def test_reads_see_parent_state(ws):
 
 def test_cache_round_trips_via_rpc(ws):
     assert ws.run_python("cache['n'] = 41").error is None
-    r = ws.run_python(
-        "m = cache['n'] + 1\nhas = 'n' in cache\nkeys = list(cache)"
-    )
+    r = ws.run_python("m = cache['n'] + 1\nhas = 'n' in cache\nkeys = list(cache)")
     assert r.error is None
     assert r.namespace["m"] == 42
     assert r.namespace["has"] is True

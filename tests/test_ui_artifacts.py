@@ -159,8 +159,12 @@ def test_cards_stats_and_callouts_normalize(ws):
     cards = [
         {"type": "stat", "label": "Revenue", "value": 42000, "sublabel": "up 8%"},
         {"label": "Users", "value": 1234},  # untagged stat
-        {"type": "callout", "title": "Heads up", "body": "check inputs",
-         "tone": "warning"},
+        {
+            "type": "callout",
+            "title": "Heads up",
+            "body": "check inputs",
+            "tone": "warning",
+        },
     ]
     out, _ = materialize_ui(ws, {"dash": cards})
     assert out == [("dash", "/workspace/ui/dash.cards.json")]
@@ -169,8 +173,12 @@ def test_cards_stats_and_callouts_normalize(ws):
         "items": [
             {"type": "stat", "label": "Revenue", "value": 42000, "sublabel": "up 8%"},
             {"type": "stat", "label": "Users", "value": 1234},
-            {"type": "callout", "title": "Heads up", "body": "check inputs",
-             "tone": "warning"},
+            {
+                "type": "callout",
+                "title": "Heads up",
+                "body": "check inputs",
+                "tone": "warning",
+            },
         ]
     }
 
@@ -209,8 +217,12 @@ def test_cards_legacy_delta_and_unit_fold(ws):
     payload = json.loads(ws.fs.read("/workspace/ui/kpis.cards.json"))
     assert payload == {
         "items": [
-            {"type": "stat", "label": "Revenue", "value": "42000 USD",
-             "sublabel": "+8%"},
+            {
+                "type": "stat",
+                "label": "Revenue",
+                "value": "42000 USD",
+                "sublabel": "+8%",
+            },
         ]
     }
 
@@ -221,8 +233,9 @@ def test_cards_explicit_sublabel_beats_legacy_delta(ws):
     cards = [{"label": "R", "value": 1, "sublabel": "real", "delta": "+9%"}]
     materialize_ui(ws, {"k": cards})
     payload = json.loads(ws.fs.read("/workspace/ui/k.cards.json"))
-    assert payload == {"items": [{"type": "stat", "label": "R", "value": 1,
-                                  "sublabel": "real"}]}
+    assert payload == {
+        "items": [{"type": "stat", "label": "R", "value": 1, "sublabel": "real"}]
+    }
 
 
 def test_cards_survive_non_json_scalars(ws):
@@ -305,9 +318,7 @@ def test_near_miss_note_is_bounded_for_huge_items(ws):
 def test_minority_match_list_is_not_diagnosed(ws):
     """A list where card-shaped dicts are the MINORITY isn't plausibly a
     card row — no note, plain JSON floor."""
-    out, problems = materialize_ui(
-        ws, {"stuff": [{"label": "A", "value": 1}, 2, 3]}
-    )
+    out, problems = materialize_ui(ws, {"stuff": [{"label": "A", "value": 1}, 2, 3]})
     assert out == [("stuff", "/workspace/ui/stuff.json")]
     assert problems == []
 
@@ -377,7 +388,7 @@ def test_agno_run_python_adopts_direct_ui_writes():
     out = tk.functions["run_python"].entrypoint(
         code=(
             "with open('/workspace/ui/chart.json', 'w') as f:\n"
-            "    f.write('{\"data\": [], \"layout\": {}}')\n"
+            '    f.write(\'{"data": [], "layout": {}}\')\n'
             "ui = {'stats': {'n': 3}}"
         )
     )

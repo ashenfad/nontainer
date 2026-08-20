@@ -128,7 +128,9 @@ def test_workspace_is_one_inspectable_sqlite_file(tmp_path):
 
     # the workspace is a plain sqlite file, openable by standard tooling
     con = sqlite3.connect(tmp_path / "s1.db")
-    tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = {
+        r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
     con.close()
     assert tables  # schema is visible to any sqlite client
 
