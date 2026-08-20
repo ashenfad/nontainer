@@ -40,6 +40,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     process, so `python <<'EOF'`, `python -c`, `python file.py`, and
     `cat x.py | python` all keep working from agent code exactly as before.
 
+- **Requires dud >= 0.3.0 for the `[dud]` extra, which now demands an explicit
+  allowlist per host object.** Registering one without a grant raises
+  `PolicyError` rather than quietly exposing every public method — dud's one
+  fail-open path, now closed.
+
+  nontainer grants each host object its **public methods**, which is the same
+  surface `LocalExecutor` bridges over RPC (its handler rejects underscored
+  names and non-callables). Both rungs therefore reach the same members, and
+  `PythonConfig` needs no new knob. `dud.public_methods()` resolves to a
+  concrete frozenset rather than a wildcard, so a grant snapshots what exists
+  at construction instead of whatever gets added to the object later.
+
+  Two dud 0.3.0 changes land in nontainer's favour without work here. Guest
+  processes now boot with their image's environment, so a populated `PATH`
+  means agent code can `subprocess` python and anything `packages=[...]`
+  installed. And dud's print guards were loosened from an observation budget
+  (20 KB transcript / 2 KB entry) to resource guards (1 MiB / 16 KiB) — output
+  used to be truncated by dud *before* nontainer could apply its own
+  budget-aware rendering, so `max_observation` was competing with a smaller
+  cap it couldn't see.
+
 - **Host objects are registered by class, and only in-process.** Under
   process/kernel isolation the agent holds an `RpcProxy`, whose type is not the
   object's, so a registration keyed on that type never matched it and gated
