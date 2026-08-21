@@ -346,8 +346,20 @@ class PythonConfig:
     import leaves the broker multi-threaded, and a worker forked from
     it can inherit a lock held by that thread — the exact hang the
     forkserver default exists to prevent. Your grants are yours: turn
-    this on when you know they start no threads on import. (The stdlib
-    and data-stack presets are fine.)
+    this on when you know they start no threads on import.
+
+    **pyarrow, specifically.** ``dataframes()`` grants pyarrow, and
+    pandas 3 imports it regardless — so preloading puts arrow's
+    allocator in the broker. Arrow's default mimalloc pool keeps
+    per-thread heaps that historically don't survive fork. The preset
+    already pins ``ARROW_DEFAULT_MEMORY_POOL=system`` before pandas
+    can import pyarrow, and the broker inherits that environment, so
+    the preset path is covered — see
+    ``test_dataframes_preset_pins_a_fork_safe_arrow_allocator``, which
+    exists to stop that pin being deleted as obsolete. If you grant
+    pandas or pyarrow **without** the preset and enable this, set that
+    variable yourself, before the first pandas import anywhere in your
+    process.
 
     **It is process-wide, not per-workspace.** multiprocessing reads
     the preload list once, when the broker starts, so only the first
