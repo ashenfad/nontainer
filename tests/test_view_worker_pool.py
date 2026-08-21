@@ -116,6 +116,38 @@ def test_saturation_falls_back_to_a_transient_sandbox():
     assert pooled and back is held  # the slot is free again
 
 
+def test_residency_after_a_burst_is_the_cap_not_the_concurrency():
+    """The two numbers a reader conflates, pinned apart.
+
+    PEAK is set by concurrency: six simultaneous calls means six workers
+    alive at once whatever the cap is — so the cap does not bound what a
+    burst can reach. RESIDENT afterwards is min(concurrency, cap), because
+    the calls past the cap get transient sandboxes the caller reaps, while
+    pooled ones are kept and nothing expires an idle one.
+
+    Written because the docs claimed a burst of N leaves N resident, which
+    is only true while N <= cap.
+    """
+    made: list = []
+    pool = _pool(size=2)
+
+    held = [pool.acquire(VIEW, _builder(made)) for _ in range(6)]
+    assert len(made) == 6  # peak: concurrency decides, not the cap
+    assert sum(1 for _, pooled in held if pooled) == 2
+
+    # Only pooled sandboxes come back — a transient is the caller's to
+    # enter and reap, which is what `exec_python` does with its `pooled`
+    # flag. Handing one to release() would be a different bug.
+    for sandbox, pooled in held:
+        if pooled:
+            pool.release(VIEW, sandbox)
+
+    assert len(pool._idle[_view_key(VIEW)]) == 2  # residency: the cap
+    assert pool._live[_view_key(VIEW)] == 2
+    # the four over the cap were never entered by the pool
+    assert sum(1 for sb in made if sb.entered) == 2
+
+
 def test_checked_out_workers_are_never_handed_out_twice():
     """The property the whole pool rests on: one exec at a time per
     sandbox. ``ProcessSandbox.exec`` writes and reads one pipe with no

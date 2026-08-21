@@ -59,13 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   forkserver worker re-imports the granted modules (~18ms stdlib, ~235ms and
   ~113MB with a heavyweight stack).
 
-  The default moved because **residency never decays**. Concurrency — not the
-  cap — decides how many workers exist during a burst; the cap decides how many
-  stay resident afterwards. At 8, six concurrent view calls left six workers
-  holding ~673MB for the executor's life, turning peak concurrency into a
-  permanent memory floor. At 1, the same burst leaves one, and the
-  app-iteration loop (edit → `test_app` → preview) is sequential enough to stay
-  warm on it.
+  The default moved because **residency only rises**. Concurrency — not the
+  cap — decides how many workers exist *during* a burst; what stays resident
+  afterwards is `min(concurrency, view_workers)`, since calls past the cap run
+  in transient sandboxes that are reaped when they finish while pooled workers
+  are kept, and nothing expires an idle one. So the cap behaves as a floor that
+  fills and stays filled rather than a ceiling you retreat from. At 8, six
+  concurrent view calls left six workers holding ~673MB for the executor's
+  life. At 1, the same burst leaves one — and the app-iteration loop
+  (edit → `test_app` → preview) is sequential enough to stay warm on it.
 
   **Raise it if you serve concurrent app traffic.** The new default is sized
   for the build-and-preview loop, not for load, and the trade is not free in

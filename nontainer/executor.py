@@ -569,15 +569,24 @@ class _ViewWorkerPool:
 
     Saturation mints a transient sandbox rather than queueing. A caller
     already inside a request has no deadline to give us, so blocking
-    would trade a latency problem for an availability one. The cost is
-    that **concurrency, not this cap, decides how many workers exist**:
-    N concurrent view calls means N workers either way. What the cap
-    bounds is how many stay *resident* afterwards — and residency does
-    not decay, so a burst leaves its high-water mark held for the
-    executor's life. Bound concurrent view traffic at your own edge if
-    that matters; nontainer deliberately doesn't, because deciding what
-    to do instead of running (503, queue, shed) needs to know what kind
-    of request it is, and only the embedder does.
+    would trade a latency problem for an availability one.
+
+    Two distinct numbers follow, and they are easy to conflate:
+
+    - **Peak** workers is set by concurrency, not by ``size``. N
+      concurrent view calls means N workers alive at once either way —
+      ``size`` pooled, the rest transient. So this cap does not bound
+      the memory a burst can reach.
+    - **Resident** workers is ``min(N, size)``, and only ever rises
+      toward ``size``: transients are reaped when their call ends,
+      pooled ones are kept. Nothing expires an idle worker, so the cap
+      behaves as a floor that fills and stays filled rather than a
+      ceiling that drains.
+
+    Bound concurrent view traffic at your own edge if the peak matters;
+    nontainer deliberately doesn't, because deciding what to do instead
+    of running (503, queue, shed) needs to know what kind of request it
+    is, and only the embedder does.
 
     **Reuse is visible to handler code.** A pooled worker keeps its
     process state between calls: ``sys.modules``, module globals, and
