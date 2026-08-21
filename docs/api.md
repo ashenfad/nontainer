@@ -269,7 +269,7 @@ class PythonConfig:
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
     echo: "none" | "last" | "all" = "last"  # bare-final-expr display in run_python
-    view_workers: int = 1                   # resident app-handler workers
+    warm_view_workers: int = 1                   # resident app-handler workers
     preload_grants: bool = False            # share granted modules via the broker
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
@@ -313,7 +313,7 @@ class PythonConfig:
   disables that kernel restriction for the whole worker (seccomp/
   Landlock are monotonic). nontainer emits a `RuntimeWarning` at
   construction when this happens.
-- `view_workers` (process/kernel only) caps the resident workers kept
+- `warm_view_workers` (process/kernel only) caps the resident workers kept
   for `exec_python(view=...)` calls — in practice, apps' handler
   dispatch (the live preview, `test_app`, published-app requests).
   `run_python` and plain `exec_python` are unaffected: they run in the
@@ -337,7 +337,7 @@ class PythonConfig:
   Two numbers, worth not conflating: **peak** workers during a burst is
   set by concurrency, not by this cap — N concurrent calls means N
   workers alive at once either way. **Resident** workers afterwards is
-  `min(N, view_workers)`, and only ever rises toward the cap, because
+  `min(N, warm_view_workers)`, and only ever rises toward the cap, because
   transients are reaped when their call ends while pooled ones are kept
   and nothing expires an idle one. So the cap is a floor you fill and
   keep paying for (per distinct view, per workspace), not a ceiling you
@@ -354,7 +354,7 @@ class PythonConfig:
   a worker goes from ~176ms and ~77MB to ~14ms and ~33MB here. It applies to
   **every** worker including the session worker each workspace holds for its
   life, so across many open workspaces it moves more memory than
-  `view_workers` does.
+  `warm_view_workers` does.
 
   Off by default because preloading runs your grants' *import-time code in
   the broker*: a module that starts a background thread on import leaves the

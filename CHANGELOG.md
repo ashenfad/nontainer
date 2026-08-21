@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The memory difference is copy-on-write sharing: the stack is paid for once
   in the broker rather than per worker. It applies to **every** worker,
   including the session worker each workspace holds for its life — so in a
-  host with many open workspaces it moves more memory than `view_workers`
+  host with many open workspaces it moves more memory than `warm_view_workers`
   does.
 
   Off by default because preloading runs your grants' *import-time code in the
@@ -42,10 +42,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`PythonConfig.view_workers` defaults to 1, down from 8.** Not an API break
-  — nothing raises, nothing changes shape, and a saturated pool falls back to
-  per-call sandboxes exactly as before. But it is a tuning change with teeth
-  for one workload, so read the last paragraph if you serve app traffic.
+- **`PythonConfig.view_workers` is renamed `warm_view_workers`**, and defaults
+  to 1 rather than 8.
+
+  The old name read as a *limit on workers*. It never was one: it sizes a
+  **warm cache**, and nothing in nontainer bounds how many workers a burst can
+  create (see below). That misreading is not hypothetical — it produced four
+  wrong statements in this project's own docs, written by the author of the
+  pool. Renamed while 0.3.0 is a day old and the field has no known users;
+  a rename after adoption would not be worth it.
+
+  The default drop is not an API break either — nothing raises, nothing
+  changes shape, and a saturated cache falls back to per-call sandboxes
+  exactly as before. But it is a tuning change with teeth for one workload,
+  so read the last paragraph if you serve app traffic.
 
   The view-worker pool was introduced as a fork-hazard mitigation: a view
   sandbox was minted per call, so serving an app meant one `fork()` per request
@@ -61,13 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The default moved because **residency only rises**. Concurrency — not the
   cap — decides how many workers exist *during* a burst; what stays resident
-  afterwards is `min(concurrency, view_workers)`, since calls past the cap run
+  afterwards is `min(concurrency, warm_view_workers)`, since calls past the cap run
   in transient sandboxes that are reaped when they finish while pooled workers
   are kept, and nothing expires an idle one. So the cap behaves as a floor that
   fills and stays filled rather than a ceiling you retreat from. At 8, six
   concurrent view calls left six workers holding ~673MB for the executor's
   life. At 1, the same burst leaves one — and the app-iteration loop
   (edit → `test_app` → preview) is sequential enough to stay warm on it.
+
+  **Prefer `preload_grants=True` with `warm_view_workers=0` where your grants
+  allow it.** At ~14ms a worker start is cheap enough to give every request a
+  pristine one, which removes the warm set entirely: nothing to size, no
+  memory floor, and no process state carried between handler calls. The cache
+  exists for when preloading isn't safe (a grant that starts threads on
+  import) or isn't enabled, where a per-call worker costs ~235ms instead.
 
   **Raise it if you serve concurrent app traffic.** The new default is sized
   for the build-and-preview loop, not for load, and the trade is not free in

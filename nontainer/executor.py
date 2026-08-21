@@ -58,6 +58,7 @@ import threading
 import time
 import warnings
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from types import ModuleType
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -596,7 +597,7 @@ class _ViewWorkerPool:
     a pool belongs to one ``LocalExecutor``, and distinct sessions
     resolve to distinct executors — so this is state shared between
     handlers of a single app, all authored together. Set
-    ``PythonConfig.view_workers=0`` for the old per-call semantics.
+    ``PythonConfig.warm_view_workers=0`` for the old per-call semantics.
     """
 
     def __init__(self, size: int, *, enabled: bool) -> None:
@@ -612,12 +613,49 @@ class _ViewWorkerPool:
     def enabled(self) -> bool:
         return self._size > 0
 
+    @contextmanager
+    def checkout(self, view: ViewSpec, build: Callable[[], Any]):
+        """Yield a sandbox ready to ``exec``, whatever its provenance.
+
+        **The way to use this pool.** :meth:`acquire` and :meth:`release`
+        are the bookkeeping primitives underneath; they hand back a
+        ``pooled`` flag that decides whether the CALLER must enter the
+        sandbox, reap it, and hand it back — three obligations that
+        differ per branch and are silently wrong if mixed up. Handing a
+        transient to ``release`` puts it in the idle set, pushing
+        residency past the cap.
+
+        Here that is unrepresentable: pooled workers are released, own
+        workers are entered and reaped, and in-process sandboxes (which
+        have no worker at all) are simply yielded.
+        """
+        sandbox, pooled = self.acquire(view, build)
+        if pooled:
+            try:
+                yield sandbox
+            finally:
+                # Even when exec raised: an executor-level failure (crashed
+                # worker, lost connection) must free the slot, and release()
+                # reaps rather than recycles a worker that didn't survive.
+                self.release(view, sandbox)
+            return
+        own_worker = callable(getattr(sandbox, "shutdown", None)) and hasattr(
+            sandbox, "__enter__"
+        )
+        if own_worker:
+            with sandbox:
+                yield sandbox
+        else:
+            yield sandbox
+
     def acquire(self, view: ViewSpec, build: Callable[[], Any]) -> tuple[Any, bool]:
         """Check out a worker for ``view``, or build a transient sandbox.
 
-        Returns ``(sandbox, pooled)``. A pooled sandbox is already
-        entered and must be handed back to :meth:`release`; a transient
-        one is the caller's to enter and reap as before.
+        Prefer :meth:`checkout`, which owns the lifecycle for both cases.
+        This is the primitive: it returns ``(sandbox, pooled)``, where a
+        pooled sandbox is already entered and must be handed back to
+        :meth:`release`, and a transient one is the caller's to enter and
+        reap. Only a POOLED sandbox may be released.
         """
         if self._size <= 0 or self._closed:
             return build(), False
@@ -725,7 +763,9 @@ class LocalExecutor:
         # View calls keep resident workers instead of forking per call.
         # Pooling only means anything where a call would otherwise fork:
         # an in-process view sandbox costs no worker at all.
-        self._pool = _ViewWorkerPool(cfg.view_workers, enabled=cfg.isolation != "none")
+        self._pool = _ViewWorkerPool(
+            cfg.warm_view_workers, enabled=cfg.isolation != "none"
+        )
         # Process/kernel sandboxes start a persistent worker here. Entering
         # eagerly is still deliberate, though the reason narrowed: sandtrap
         # 0.3 no longer forks the embedding process, so a multi-threaded host
@@ -946,7 +986,7 @@ class LocalExecutor:
     ) -> PythonResult:
         """See ``Workspace.exec_python`` (the documented extension
         surface, which delegates here) for the caller-facing contract."""
-        from contextlib import nullcontext
+        from contextlib import ExitStack
 
         ctx = self._require_ctx()
         namespace: dict[str, Any] = {}
@@ -962,69 +1002,56 @@ class LocalExecutor:
                 ) from exc
             namespace[name] = value
 
-        # A view runs in a restricted sandbox (policy memoized);
-        # otherwise the long-lived default built at open(). Under
-        # process/kernel isolation a view sandbox is its own worker,
-        # checked out from the pool and returned below — a resident
-        # worker, not a fork per call (see _ViewWorkerPool). In-process
-        # views need no worker, and a saturated pool hands back a
-        # transient sandbox this call enters and reaps itself.
-        pooled = False
-        if view is not None:
-            sb, pooled = self._pool.acquire(view, lambda: self._build_sandbox(view))
-            own_worker = not pooled and hasattr(sb, "shutdown")
-        else:
-            sb = self._sandbox
-            own_worker = False
-        bridged = hasattr(sb, "_rpc_handlers")
-
-        for name, obj in ctx.python_config.host_objects.items():
-            if bridged and not _is_plain_data(obj):
-                from sandtrap import RpcProxyMarker
-
-                # Methods RPC to the parent's live object; attribute READS
-                # don't cross. Declare the object's surface so the worker's
-                # proxy can SAY that — undeclared, it hands back a callable
-                # for every name, so `obj.attr` reads as None and `obj.attr =
-                # x` is silently lost. Older sandtrap ignores the extra
-                # fields, so this degrades to the previous behaviour.
-                namespace[name] = RpcProxyMarker(
-                    target=f"host:{name}", **_surface_kwargs(obj)
+        # A view runs in a restricted sandbox (policy memoized); otherwise
+        # the long-lived default built at open(). checkout() owns the
+        # worker's whole lifecycle — warm, transient, or in-process — so
+        # nothing here branches on where the sandbox came from.
+        with ExitStack() as stack:
+            if view is not None:
+                sb = stack.enter_context(
+                    self._pool.checkout(view, lambda: self._build_sandbox(view))
                 )
             else:
-                namespace[name] = obj
+                sb = self._sandbox
+            bridged = hasattr(sb, "_rpc_handlers")
 
-        # Cache injection mirrors _build_sandbox's rpc-handler choice:
-        # a read-only view gets the read-only wrapper (in-process) or
-        # the marker onto the ro rpc handler (bridged).
-        ro_cache = bool(view and view.readonly_cache and ctx.cache_enabled)
-        if ctx.cache_enabled:
-            if not bridged:
-                base = Cache(ctx.kv)
-                namespace["cache"] = _ReadOnlyCache(base) if ro_cache else base
-            else:
-                from sandtrap import RpcProxyMarker
+            for name, obj in ctx.python_config.host_objects.items():
+                if bridged and not _is_plain_data(obj):
+                    from sandtrap import RpcProxyMarker
 
-                # wrapper (imported in the worker) restores mapping
-                # syntax — a bare RpcProxy can't serve cache[k]
-                namespace["cache"] = RpcProxyMarker(
-                    target="cache", wrapper="nontainer.cache:RemoteCache"
-                )
-        start = time.monotonic()
-        try:
-            with sb if own_worker else nullcontext():
-                exec_result = sb.exec(
-                    code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
-                )
-        finally:
-            # Return the worker even when exec raised: an executor-level
-            # failure (crashed worker, lost connection) must free the
-            # slot, and release() reaps rather than recycles a worker
-            # that didn't survive.
-            if pooled:
-                assert view is not None  # pooled implies a view checkout
-                self._pool.release(view, sb)
-        duration = time.monotonic() - start
+                    # Methods RPC to the parent's live object; attribute READS
+                    # don't cross. Declare the object's surface so the worker's
+                    # proxy can SAY that — undeclared, it hands back a callable
+                    # for every name, so `obj.attr` reads as None and `obj.attr =
+                    # x` is silently lost. Older sandtrap ignores the extra
+                    # fields, so this degrades to the previous behaviour.
+                    namespace[name] = RpcProxyMarker(
+                        target=f"host:{name}", **_surface_kwargs(obj)
+                    )
+                else:
+                    namespace[name] = obj
+
+            # Cache injection mirrors _build_sandbox's rpc-handler choice:
+            # a read-only view gets the read-only wrapper (in-process) or
+            # the marker onto the ro rpc handler (bridged).
+            ro_cache = bool(view and view.readonly_cache and ctx.cache_enabled)
+            if ctx.cache_enabled:
+                if not bridged:
+                    base = Cache(ctx.kv)
+                    namespace["cache"] = _ReadOnlyCache(base) if ro_cache else base
+                else:
+                    from sandtrap import RpcProxyMarker
+
+                    # wrapper (imported in the worker) restores mapping
+                    # syntax — a bare RpcProxy can't serve cache[k]
+                    namespace["cache"] = RpcProxyMarker(
+                        target="cache", wrapper="nontainer.cache:RemoteCache"
+                    )
+            start = time.monotonic()
+            exec_result = sb.exec(
+                code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
+            )
+            duration = time.monotonic() - start
 
         error = (
             _render_error(exec_result.error) if exec_result.error is not None else None
