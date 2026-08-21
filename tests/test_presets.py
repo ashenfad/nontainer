@@ -325,7 +325,18 @@ def test_dataframes_preset_pins_a_fork_safe_arrow_allocator():
     """Arrow's default mimalloc pool segfaults in forked workers (its
     per-thread heaps don't survive fork); the preset pins the system
     allocator before pandas can import pyarrow. setdefault: an embedder
-    that chose a pool explicitly keeps it."""
+    that chose a pool explicitly keeps it.
+
+    Do not drop this as obsolete under the forkserver default. The
+    tempting argument — "the broker never imports your grants, so no
+    arrow state exists to inherit" — is exactly what
+    ``PythonConfig.preload_grants=True`` invalidates: it imports the
+    granted stack, pyarrow included, into the broker that every worker
+    is forked from. The pin works there because the ordering holds
+    (this runs while the config is built, which is before any worker
+    and therefore before the broker starts, and the broker inherits the
+    environment).
+    """
     import os
 
     from nontainer import presets
