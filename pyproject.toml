@@ -36,7 +36,7 @@ dependencies = [
     # release unrelated host descriptors and inherited control endpoints
     # 0.2.14: StForkUnsafe names a fork-hostile host instead of looping,
     # and worker setup failures report their own traceback
-    "sandtrap>=0.3.0",
+    "sandtrap>=0.3.2",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
     "kvgit[disk]>=0.3.2",

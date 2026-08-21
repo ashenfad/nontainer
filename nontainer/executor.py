@@ -803,6 +803,11 @@ class LocalExecutor:
             # Live host objects already stay parent-side behind RPC markers,
             # so process/kernel workers need no ambient host descriptors.
             close_fds=cfg.isolation != "none",
+            # Ignored in-process. Process-wide and first-use-wins in
+            # sandtrap, so the first workspace to start a worker decides
+            # for the process — sandtrap warns when a later one asks for
+            # a preload the running broker doesn't have.
+            preload_grants=cfg.preload_grants,
         )
 
     def _build_policy(
