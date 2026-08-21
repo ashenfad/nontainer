@@ -328,6 +328,35 @@ class PythonConfig:
     module outlive the request that did it, shared between handlers of
     one app. The blast radius is one workspace."""
 
+    preload_grants: bool = False
+    """Import granted modules once into sandtrap's forkserver broker, so
+    every worker inherits them copy-on-write instead of importing its
+    own copy. ``isolation="process"``/``"kernel"`` only.
+
+    This is the big lever on worker cost, and it moves both numbers at
+    once. With ``modules=[dataframes(), plotting()]`` a worker costs
+    ~235ms and ~113MB by default; preloaded, ~14ms and ~29MB — the
+    stack is paid for once in the broker rather than per worker. It
+    applies to **every** worker, including the session worker each
+    workspace holds for its life, so in a host with many open
+    workspaces it moves more memory than ``view_workers`` does.
+
+    Off by default because preloading runs your grants' **import-time
+    code in the broker**. A module that starts a background thread on
+    import leaves the broker multi-threaded, and a worker forked from
+    it can inherit a lock held by that thread — the exact hang the
+    forkserver default exists to prevent. Your grants are yours: turn
+    this on when you know they start no threads on import. (The stdlib
+    and data-stack presets are fine.)
+
+    **It is process-wide, not per-workspace.** multiprocessing reads
+    the preload list once, when the broker starts, so only the first
+    workspace to start a worker in your process decides. Later
+    workspaces asking for a preload the running broker lacks still
+    work — their modules are imported per worker — and sandtrap emits
+    a ``RuntimeWarning`` saying so. Set it uniformly across the
+    workspaces you build, or accept that the first one wins."""
+
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above
     except ``host_objects``."""

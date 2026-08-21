@@ -237,3 +237,76 @@ def test_agent_python_forms_work_under_a_non_forked_worker(ws):
     piped = ws.terminal("echo 'print(\"piped\")' | python")
     assert piped.exit_code == 0
     assert piped.stdout.strip() == "piped"
+
+
+# -- preload_grants ----------------------------------------------------------
+#
+# The lever on worker cost. A forkserver worker re-imports every granted
+# module; preloading puts them in the broker once and lets workers inherit
+# them copy-on-write. nontainer's job is only to carry the flag down to
+# sandtrap — the behaviour itself, including the process-global first-use-wins
+# rule, is sandtrap's and tested there.
+
+
+def test_preload_grants_is_off_by_default():
+    """Off because preloading runs a grant's import-time code in the BROKER,
+    and a grant that starts a thread on import puts every worker forked from
+    it back on the deadlock path. Only the embedder can vouch for their
+    grants, so nontainer must not decide this for them."""
+    assert PythonConfig().preload_grants is False
+
+
+@pytest.mark.filterwarnings("ignore:the forkserver broker is already running")
+def test_preload_grants_reaches_the_sandbox():
+    # Expect that warning here: earlier tests in this module already started
+    # the broker without a preload, and sandtrap reads the preload list once,
+    # at broker start. This suite is therefore a live demonstration of the
+    # caveat on PythonConfig.preload_grants — in a host that builds many
+    # workspaces, the first one to start a worker decides for the process.
+    # What nontainer owns is carrying the flag down, which is what's asserted.
+    ws = Workspace(
+        KvgitProvider.open(None, session="preload-on"),
+        python=PythonConfig(isolation="process", preload_grants=True),
+    )
+    try:
+        assert ws._executor._sandbox._preload_grants is True
+    finally:
+        ws.close()
+
+
+def test_preload_grants_is_harmless_in_process():
+    """``isolation="none"`` has no worker to preload for. sandtrap ignores the
+    flag rather than raising, so one PythonConfig can drive every rung."""
+    ws = Workspace(
+        KvgitProvider.open(None, session="preload-none"),
+        python=PythonConfig(isolation="none", preload_grants=True),
+    )
+    try:
+        assert ws.run_python("x = 1 + 1").namespace["x"] == 2
+    finally:
+        ws.close()
+
+
+@pytest.mark.filterwarnings("ignore:the forkserver broker is already running")
+def test_a_preloaded_worker_still_runs_granted_code():
+    """The point of the flag is speed, not semantics: a worker that inherited
+    its grants from the broker must behave exactly like one that imported
+    them itself."""
+    import math
+
+    from nontainer import ModuleGrant
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="preload-works"),
+        python=PythonConfig(
+            isolation="process",
+            modules=[ModuleGrant(math)],
+            preload_grants=True,
+        ),
+    )
+    try:
+        r = ws.run_python("import math\nv = math.sqrt(81)")
+        assert r.error is None, r.error
+        assert r.namespace["v"] == 9.0
+    finally:
+        ws.close()

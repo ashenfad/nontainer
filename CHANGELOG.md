@@ -5,6 +5,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.1 - 2026-08-21
+
+### Added
+
+- **`PythonConfig.preload_grants`** — import granted modules once into
+  sandtrap's forkserver broker so every worker inherits them copy-on-write
+  instead of importing its own copy. Process/kernel isolation only; requires
+  sandtrap >= 0.3.2, where the flag first became reachable through the public
+  factory.
+
+  It is the large lever on worker cost, and moves time and memory together.
+  With the `dataframes()` preset granted, measured here:
+
+  | | worker start | worker RSS |
+  |---|---|---|
+  | default | ~176 ms | ~77 MB |
+  | `preload_grants=True` | ~14 ms | ~33 MB |
+
+  The memory difference is copy-on-write sharing: the stack is paid for once
+  in the broker rather than per worker. It applies to **every** worker,
+  including the session worker each workspace holds for its life — so in a
+  host with many open workspaces it moves more memory than `view_workers`
+  does.
+
+  Off by default because preloading runs your grants' *import-time code in the
+  broker*, and a grant that starts a thread on import leaves the broker
+  multi-threaded — putting every worker forked from it back on the deadlock
+  path the forkserver default exists to avoid. Only you can vouch for your
+  grants. The stdlib and data-stack presets are fine.
+
+  Note it is **process-wide, not per-workspace**: the preload list is read once
+  when the broker starts, so the first workspace to start a worker decides for
+  the process. Later ones still work (their modules import per worker) and
+  sandtrap warns. Set it uniformly.
+
+### Changed
+
+- **`PythonConfig.view_workers` defaults to 1, down from 8.** Not an API break
+  — nothing raises, nothing changes shape, and a saturated pool falls back to
+  per-call sandboxes exactly as before. But it is a tuning change with teeth
+  for one workload, so read the last paragraph if you serve app traffic.
+
+  The view-worker pool was introduced as a fork-hazard mitigation: a view
+  sandbox was minted per call, so serving an app meant one `fork()` per request
+  from a live ASGI server. sandtrap 0.3 creates workers from a forkserver
+  broker, so **that hazard is gone at its source** — the pool is now purely a
+  cost amortizer, and its documentation said otherwise.
+
+  It still earns its place, because the same change made worker creation *more*
+  expensive: a per-call worker used to be a copy-on-write fork of a host that
+  already had the stack imported (~5ms, near-zero private memory), where a
+  forkserver worker re-imports the granted modules (~18ms stdlib, ~235ms and
+  ~113MB with a heavyweight stack).
+
+  The default moved because **residency never decays**. Concurrency — not the
+  cap — decides how many workers exist during a burst; the cap decides how many
+  stay resident afterwards. At 8, six concurrent view calls left six workers
+  holding ~673MB for the executor's life, turning peak concurrency into a
+  permanent memory floor. At 1, the same burst leaves one, and the
+  app-iteration loop (edit → `test_app` → preview) is sequential enough to stay
+  warm on it.
+
+  **Raise it if you serve concurrent app traffic.** The new default is sized
+  for the build-and-preview loop, not for load, and the trade is not free in
+  that direction: under *sustained* concurrency the peak worker count is
+  unchanged (concurrency sets it either way), while more of those workers are
+  built per call — so a busy app server pays steady-state latency to get the
+  retained memory back. Requests past the cap fall back to a per-call sandbox
+  rather than queueing, so too-low costs latency (visible, recoverable) while
+  too-high costs memory. `0` still gives every call a pristine worker.
+
+- Requires **sandtrap >= 0.3.2**.
+
 ## 0.3.0 - 2026-08-20
 
 ### Changed

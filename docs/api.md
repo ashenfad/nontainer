@@ -270,6 +270,7 @@ class PythonConfig:
     memory_limit_mb: int | None = None
     echo: "none" | "last" | "all" = "last"  # bare-final-expr display in run_python
     view_workers: int = 1                   # resident app-handler workers
+    preload_grants: bool = False            # share granted modules via the broker
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
 
@@ -339,6 +340,26 @@ class PythonConfig:
   clean process-state semantics: any pool >0 means `sys.modules` and
   module globals outlive the request that touched them, shared between
   handlers of one app.
+- `preload_grants` (process/kernel only) imports your granted modules once
+  into sandtrap's forkserver broker, so every worker inherits them
+  copy-on-write instead of importing its own copy. It is the big lever on
+  worker cost and moves both numbers at once — with `dataframes()` granted,
+  a worker goes from ~176ms and ~77MB to ~14ms and ~33MB here. It applies to
+  **every** worker including the session worker each workspace holds for its
+  life, so across many open workspaces it moves more memory than
+  `view_workers` does.
+
+  Off by default because preloading runs your grants' *import-time code in
+  the broker*: a module that starts a background thread on import leaves the
+  broker multi-threaded, and a worker forked from it can inherit a lock held
+  by that thread — the exact hang the forkserver default prevents. Your
+  grants are yours to vouch for; the stdlib and data-stack presets are fine.
+
+  **It is process-wide, not per-workspace.** The preload list is read once,
+  when the broker starts, so the first workspace to start a worker decides
+  for the process. Later workspaces still work — their modules are imported
+  per worker — and sandtrap emits a `RuntimeWarning` naming what won't be
+  inherited. Set it uniformly across the workspaces you build.
 - `Mount(path, readonly=True)` — a real directory in the workspace
   tree, visible to both tools, NOT versioned/forked.
 
