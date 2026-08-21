@@ -540,25 +540,44 @@ class _ViewWorkerPool:
     """Resident workers for ``exec_python(view=...)`` under
     process/kernel isolation.
 
-    A view sandbox used to be minted and reaped per call, so every app
-    handler dispatch cost one ``fork()`` — from whatever the host
-    looked like at that moment. Under live app serving that host is an
-    ASGI server dispatching handlers through ``anyio.to_thread``, i.e.
-    a multi-threaded process, and forking one can inherit a lock held
-    by a thread that doesn't exist in the child: the child then *hangs*
-    rather than crashing, and the request stalls until a timeout fires
-    (sandtrap#38). Pooling collapses N forks-per-N-requests to at most
-    ``size`` forks per distinct view for the executor's whole life.
+    **This is a cost amortizer. It is no longer a safety mechanism** —
+    read that before concluding it can be deleted.
+
+    It began as one. A view sandbox was minted and reaped per call, so
+    every app handler dispatch cost one ``fork()`` from whatever the
+    host looked like at that moment; under live serving that host is an
+    ASGI server dispatching through ``anyio.to_thread``, and forking a
+    multi-threaded process can hand the child a lock held by a thread
+    that doesn't exist in it — the child then *hangs* rather than
+    crashing (sandtrap#38). sandtrap >= 0.3 forks workers from a
+    forkserver broker instead, so that hazard is gone at its source and
+    this pool no longer stands between anyone and a deadlock.
+
+    What kept it worth having is the other half, which got *worse* in
+    the same change. A per-call worker used to be a copy-on-write fork
+    of a host that already had the stack imported: ~5ms, near-zero
+    private memory. A forkserver worker re-imports the granted modules
+    instead — ~18ms for a stdlib policy, but ~235ms and ~113MB resident
+    once pandas/numpy/plotly are granted. Forkserver made worker
+    creation safe and roughly 45x more expensive, and the pool was
+    already here when the bill arrived.
 
     Checkout is exclusive. One exec at a time per sandbox is sandtrap's
     contract (undocumented, but structural: ``exec`` writes and reads
     one pipe, with no lock of its own), so two threads sharing a worker
     would interleave messages on it.
 
-    Saturation mints a transient sandbox — precisely the old behavior.
-    Blocking instead would trade a fork-cost problem for a
-    request-latency one, and a caller who is already inside a request
-    has no deadline to give us.
+    Saturation mints a transient sandbox rather than queueing. A caller
+    already inside a request has no deadline to give us, so blocking
+    would trade a latency problem for an availability one. The cost is
+    that **concurrency, not this cap, decides how many workers exist**:
+    N concurrent view calls means N workers either way. What the cap
+    bounds is how many stay *resident* afterwards — and residency does
+    not decay, so a burst leaves its high-water mark held for the
+    executor's life. Bound concurrent view traffic at your own edge if
+    that matters; nontainer deliberately doesn't, because deciding what
+    to do instead of running (503, queue, shed) needs to know what kind
+    of request it is, and only the embedder does.
 
     **Reuse is visible to handler code.** A pooled worker keeps its
     process state between calls: ``sys.modules``, module globals, and

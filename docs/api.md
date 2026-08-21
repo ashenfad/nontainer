@@ -269,7 +269,7 @@ class PythonConfig:
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
     echo: "none" | "last" | "all" = "last"  # bare-final-expr display in run_python
-    view_workers: int = 8                   # resident app-handler workers
+    view_workers: int = 1                   # resident app-handler workers
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
 ```
 
@@ -314,19 +314,31 @@ class PythonConfig:
   construction when this happens.
 - `view_workers` (process/kernel only) caps the resident workers kept
   for `exec_python(view=...)` calls — in practice, apps' handler
-  dispatch. `run_python` and plain `exec_python` are unaffected: they
-  run in the session sandbox, whose worker is forked once at workspace
-  construction and held for its life. Handler dispatch instead ran
-  every request in a restricted view sandbox, which without a pool is
-  one `fork()` per request, taken from a live ASGI server — a
-  multi-threaded process, where a fork can inherit a lock held by a
-  thread the child doesn't get and hang outright. Resident workers make
-  that a handful of forks for the server's lifetime. Size it to the concurrency you serve (Starlette's
-  default thread limiter is 40); requests past the cap fall back to a
-  per-call sandbox rather than queueing. `0` restores per-call
-  sandboxes — the tradeoff is that a resident worker's process state
-  (`sys.modules`, module globals) outlives the request that created
-  it, shared between handlers of one app.
+  dispatch (the live preview, `test_app`, published-app requests).
+  `run_python` and plain `exec_python` are unaffected: they run in the
+  session sandbox, whose worker is created once at workspace
+  construction and held for its life — already warm.
+
+  It is a **latency optimization, not a safety mechanism**. It used to
+  be both, when a view sandbox was forked per request from a live ASGI
+  server; sandtrap >= 0.3 creates workers from a forkserver broker, so
+  that hazard is gone at its source. What remains is worker start —
+  which forkserver made *more* expensive, since a worker re-imports the
+  granted stack rather than inheriting it: ~18ms and ~23MB on a stdlib
+  policy, ~235ms and ~113MB with pandas/numpy/plotly granted.
+
+  The default of `1` keeps the app-iteration loop warm (edit,
+  `test_app`, preview — essentially sequential) while holding one
+  worker. Raise it for genuinely concurrent serving. Past the cap,
+  requests fall back to a per-call sandbox rather than queueing, so
+  too-low costs latency while too-high costs memory — and **residency
+  does not decay**, so a burst of N concurrent requests leaves N
+  workers held for the executor's life.
+
+  `0` gives every call a pristine worker, and is the only setting with
+  clean process-state semantics: any pool >0 means `sys.modules` and
+  module globals outlive the request that touched them, shared between
+  handlers of one app.
 - `Mount(path, readonly=True)` — a real directory in the workspace
   tree, visible to both tools, NOT versioned/forked.
 

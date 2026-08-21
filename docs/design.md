@@ -103,5 +103,28 @@ pitch; the pitch is the *workspace*.
 - **Merge-fn presets** for concurrent sessions over one branch. kvgit
   has the CAS + three-way-merge machinery; shipping opinionated
   defaults doesn't yet.
+- **Idle TTL for view workers.** `PythonConfig.view_workers` bounds how
+  many resident workers a view may have, but residency never *decays*:
+  a burst of N concurrent app requests leaves N workers held for the
+  executor's life. Measured, that is ~113MB apiece on a
+  pandas/plotly policy — so peak concurrency becomes a permanent memory
+  floor, which bites hardest in a multi-user host with many open
+  workspaces.
+
+  Reaping an idle worker is semantically free, which is what makes this
+  attractive: `run_python` is a fresh execution per call (see "Script
+  model" above), so a rebuilt worker loses nothing the contract offers
+  — only warm imports, which cost time on the next call, not
+  correctness.
+
+  The design constraint worth recording, because it is not obvious:
+  **lazy expiry on checkout does not work.** It fires only when there is
+  traffic, and the case that matters is memory held while nothing is
+  happening. So it needs either a background timer thread — nontainer
+  has none today, and adding one to a library is a real cost — or an
+  embedder-driven `reap_idle(max_age)` called from a periodic task the
+  host already owns. The latter fits how the rest of this splits:
+  mechanism here, policy and scheduling with the embedder.
+
 - **Distribution** — upstreaming a thin `WorkspaceTools` to agno's
   toolkit registry, and an MCP Skill document. Channels, not code.

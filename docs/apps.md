@@ -356,12 +356,16 @@ app.mount("/apps", router)      # serves /apps/{token}/...
   no staged buffer, no shared instance to race, no durability surface.
   This is what the frozen guarantee buys. Cheap when `resolve` caches
   its Workspace: the built policy is memoized, and under
-  `isolation="process"`/`"kernel"` the worker is resident (see
-  `PythonConfig.view_workers`) rather than forked per request — so a
-  request costs neither policy registration nor a fork. Requests beyond
-  `view_workers` fall back to a per-call sandbox rather than queueing,
-  so raise it toward your server's concurrency limit if you serve under
-  load.
+  `isolation="process"`/`"kernel"` a worker is kept resident (see
+  `PythonConfig.view_workers`) rather than started per request — so a
+  request costs neither policy registration nor a worker start.
+  Requests beyond `view_workers` fall back to a per-call sandbox rather
+  than queueing, so **raise it toward your concurrency if you serve
+  under load** — the default of `1` is sized for the build-and-preview
+  loop, not for traffic. Note the corollary: concurrency, not the cap,
+  decides how many workers exist at once, and what stays resident
+  afterwards never decays. Bound concurrent traffic at your edge if
+  worker memory matters.
 - **`{token}` is a capability** — long, unguessable, minted with
   `mint_token()`, mapped to snapshots in the embedder's storage.
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler
