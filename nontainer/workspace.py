@@ -286,31 +286,47 @@ class PythonConfig:
     ``echo="none"`` regardless: their stdout feeds pipelines and
     api.log, not a conversation."""
 
-    view_workers: int = 8
+    view_workers: int = 1
     """Resident sandbox workers per distinct ``exec_python(view=...)``
     view, under ``isolation="process"``/``"kernel"`` only.
 
-    Only view calls are pooled, because only view calls used to fork:
-    ``run_python`` and a plain ``exec_python`` run in the session
-    sandbox, whose worker is forked once at construction and held for
-    the workspace's life. Apps' handler dispatch is the view surface
-    that matters — it runs every request in a restricted view sandbox,
-    which meant one ``fork()`` per request from a live ASGI server. A
-    fork from a multi-threaded process can inherit a lock held by a
-    thread the child doesn't have and hang outright. Keeping workers
-    resident makes that a handful of forks for the server's lifetime
-    instead of one per request, and drops the per-request worker start.
+    Only view calls are pooled. ``run_python`` and a plain
+    ``exec_python`` run in the session sandbox, whose worker is created
+    once at construction and held for the workspace's life — already
+    warm, and untouched by this setting. The view surface is apps'
+    handler dispatch: the live preview, ``test_app``, and published-app
+    requests.
 
-    The cap bounds resident worker processes per view; concurrency
-    beyond it falls back to a per-call sandbox rather than queueing.
-    Size it to the concurrency you actually serve — Starlette's default
-    thread limiter is 40, so a busy app wants more than the default 8.
+    **This is a latency optimization, not a safety mechanism.** It was
+    once both: a view sandbox was minted per call, so serving an app
+    meant one ``fork()`` per request from a live ASGI server, and a fork
+    from a multi-threaded process can inherit a lock held by a thread
+    the child doesn't have and hang. sandtrap >= 0.3 creates workers
+    from a forkserver broker instead, which removes that hazard at its
+    source. What pooling buys now is the worker start — and forkserver
+    made that *more* expensive, not less, because a worker re-imports
+    the granted stack rather than inheriting it copy-on-write.
 
-    ``0`` restores per-call sandboxes. The tradeoff a pooled worker
-    makes: process state (``sys.modules``, module globals, anything a
-    handler mutated through a granted module) now outlives the request
-    that created it, shared between handlers of one app — where a
-    per-call fork gave every request a pristine copy."""
+    So size it against latency, and know what a resident worker holds.
+    With a heavyweight policy (pandas, numpy, plotly) a worker is
+    ~235ms to start and ~113MB resident; with a stdlib policy, ~18ms
+    and ~23MB. The default of **1** keeps the app-iteration loop warm —
+    edit, ``test_app``, preview, repeat is essentially sequential —
+    while holding one worker rather than a high-water mark.
+
+    Raise it for **concurrent** serving: a preview page issuing parallel
+    API calls, or a published app with real traffic. Past the cap,
+    concurrency falls back to a per-call sandbox rather than queueing,
+    so the failure mode of too-low is latency, not errors — while too-
+    high is memory, since **residency does not decay**. A burst of N
+    concurrent requests leaves N workers resident for the executor's
+    life (see the roadmap's idle-TTL item).
+
+    ``0`` gives every call a pristine worker. That is the only setting
+    with clean process-state semantics: any pool >0 means ``sys.modules``,
+    module globals, and anything a handler mutated through a granted
+    module outlive the request that did it, shared between handlers of
+    one app. The blast radius is one workspace."""
 
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above

@@ -260,6 +260,43 @@ def test_view_calls_reuse_one_worker():
         ws.close()
 
 
+def test_a_burst_leaves_only_the_default_resident():
+    """The default is 1, and residency never decays — so what a burst of
+    concurrent requests leaves behind is the whole memory story.
+
+    Concurrency, not the cap, decides how many workers exist *during* the
+    burst (past the cap they're transient sandboxes). The cap decides how
+    many are still held afterwards. At the old default of 8 a six-request
+    burst left six workers resident for the executor's life; at 1 it leaves
+    one, and the transients are reaped as their calls finish.
+    """
+    import threading
+
+    ws = _ws("pool-burst")
+    assert PythonConfig().view_workers == 1  # the default this pins
+    try:
+        errors: list = []
+
+        def hit() -> None:
+            r = ws.exec_python("import time\ntime.sleep(0.3)\nk = 1", view=VIEW)
+            if r.error:
+                errors.append(r.error)
+
+        threads = [threading.Thread(target=hit) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert not errors, errors
+
+        pool = ws._executor._pool
+        resident = [sb for group in pool._idle.values() for sb in group]
+        assert len(resident) == 1
+        assert sum(pool._live.values()) == 1  # transients freed their slots too
+    finally:
+        ws.close()
+
+
 def test_view_workers_zero_restores_per_call_workers():
     ws = _ws("pool-off", view_workers=0)
     try:
