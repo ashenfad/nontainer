@@ -104,12 +104,19 @@ pitch; the pitch is the *workspace*.
   has the CAS + three-way-merge machinery; shipping opinionated
   defaults doesn't yet.
 - **Idle TTL for view workers.** `PythonConfig.view_workers` bounds how
-  many resident workers a view may have, but residency never *decays*:
-  a burst of N concurrent app requests leaves N workers held for the
-  executor's life. Measured, that is ~113MB apiece on a
-  pandas/plotly policy — so peak concurrency becomes a permanent memory
-  floor, which bites hardest in a multi-user host with many open
-  workspaces.
+  many resident workers a view may have, but residency only ever
+  *rises* toward that bound — it never decays. A burst of N concurrent
+  app requests leaves `min(N, view_workers)` workers held for the
+  executor's life; the calls past the cap run in transient sandboxes
+  that are reaped when they finish. Measured, a resident worker is
+  ~113MB on a pandas/plotly policy.
+
+  So the cap is not a ceiling you approach and retreat from — it is a
+  floor you fill and then keep paying for, per distinct view, per
+  workspace. At the default of 1 that is a small bill. It matters for
+  exactly the embedders we tell to raise it (see `docs/apps.md`:
+  anyone serving concurrent app traffic), and in a multi-user host
+  with many open workspaces it multiplies.
 
   Reaping an idle worker is semantically free, which is what makes this
   attractive: `run_python` is a fresh execution per call (see "Script

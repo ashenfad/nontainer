@@ -312,15 +312,21 @@ class PythonConfig:
     ~235ms to start and ~113MB resident; with a stdlib policy, ~18ms
     and ~23MB. The default of **1** keeps the app-iteration loop warm —
     edit, ``test_app``, preview, repeat is essentially sequential —
-    while holding one worker rather than a high-water mark.
+    while holding a single worker.
 
     Raise it for **concurrent** serving: a preview page issuing parallel
     API calls, or a published app with real traffic. Past the cap,
     concurrency falls back to a per-call sandbox rather than queueing,
-    so the failure mode of too-low is latency, not errors — while too-
-    high is memory, since **residency does not decay**. A burst of N
-    concurrent requests leaves N workers resident for the executor's
-    life (see the roadmap's idle-TTL item).
+    so the failure mode of too-low is latency, not errors.
+
+    Too-high is memory, because **residency only rises**. A burst of N
+    concurrent calls leaves ``min(N, view_workers)`` workers resident
+    for the executor's life — the ones past the cap are transient and
+    reaped when their call ends, but those within it are kept. The cap
+    is therefore a floor you fill and keep paying for, per distinct
+    view, per workspace; it is not a ceiling you retreat from. Nothing
+    reaps an idle worker today (see the idle-TTL item in
+    ``docs/design.md``).
 
     ``0`` gives every call a pristine worker. That is the only setting
     with clean process-state semantics: any pool >0 means ``sys.modules``,

@@ -332,9 +332,16 @@ class PythonConfig:
   `test_app`, preview — essentially sequential) while holding one
   worker. Raise it for genuinely concurrent serving. Past the cap,
   requests fall back to a per-call sandbox rather than queueing, so
-  too-low costs latency while too-high costs memory — and **residency
-  does not decay**, so a burst of N concurrent requests leaves N
-  workers held for the executor's life.
+  too-low costs latency while too-high costs memory.
+
+  Two numbers, worth not conflating: **peak** workers during a burst is
+  set by concurrency, not by this cap — N concurrent calls means N
+  workers alive at once either way. **Resident** workers afterwards is
+  `min(N, view_workers)`, and only ever rises toward the cap, because
+  transients are reaped when their call ends while pooled ones are kept
+  and nothing expires an idle one. So the cap is a floor you fill and
+  keep paying for (per distinct view, per workspace), not a ceiling you
+  retreat from.
 
   `0` gives every call a pristine worker, and is the only setting with
   clean process-state semantics: any pool >0 means `sys.modules` and
