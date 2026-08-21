@@ -103,10 +103,10 @@ pitch; the pitch is the *workspace*.
 - **Merge-fn presets** for concurrent sessions over one branch. kvgit
   has the CAS + three-way-merge machinery; shipping opinionated
   defaults doesn't yet.
-- **Idle TTL for view workers.** `PythonConfig.view_workers` bounds how
+- **Idle TTL for view workers.** `PythonConfig.warm_view_workers` bounds how
   many resident workers a view may have, but residency only ever
   *rises* toward that bound — it never decays. A burst of N concurrent
-  app requests leaves `min(N, view_workers)` workers held for the
+  app requests leaves `min(N, warm_view_workers)` workers held for the
   executor's life; the calls past the cap run in transient sandboxes
   that are reaped when they finish. Measured, a resident worker is
   ~113MB on a pandas/plotly policy.

@@ -286,11 +286,16 @@ class PythonConfig:
     ``echo="none"`` regardless: their stdout feeds pipelines and
     api.log, not a conversation."""
 
-    view_workers: int = 1
-    """Resident sandbox workers per distinct ``exec_python(view=...)``
-    view, under ``isolation="process"``/``"kernel"`` only.
+    warm_view_workers: int = 1
+    """How many ``exec_python(view=...)`` workers to keep **warm**, per
+    distinct view, under ``isolation="process"``/``"kernel"`` only.
 
-    Only view calls are pooled. ``run_python`` and a plain
+    A cache size, not a limit. It does **not** cap how many workers can
+    exist at once — nothing here does; see the peak/resident note
+    below. It was called ``view_workers`` in 0.3.0, which read as a
+    bound and misled accordingly.
+
+    Only view calls are cached. ``run_python`` and a plain
     ``exec_python`` run in the session sandbox, whose worker is created
     once at construction and held for the workspace's life — already
     warm, and untouched by this setting. The view surface is apps'
@@ -320,7 +325,7 @@ class PythonConfig:
     so the failure mode of too-low is latency, not errors.
 
     Too-high is memory, because **residency only rises**. A burst of N
-    concurrent calls leaves ``min(N, view_workers)`` workers resident
+    concurrent calls leaves ``min(N, warm_view_workers)`` workers resident
     for the executor's life — the ones past the cap are transient and
     reaped when their call ends, but those within it are kept. The cap
     is therefore a floor you fill and keep paying for, per distinct
@@ -345,7 +350,7 @@ class PythonConfig:
     stack is paid for once in the broker rather than per worker. It
     applies to **every** worker, including the session worker each
     workspace holds for its life, so in a host with many open
-    workspaces it moves more memory than ``view_workers`` does.
+    workspaces it moves more memory than ``warm_view_workers`` does.
 
     Off by default because preloading runs your grants' **import-time
     code in the broker**. A module that starts a background thread on

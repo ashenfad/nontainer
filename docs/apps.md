@@ -357,15 +357,31 @@ app.mount("/apps", router)      # serves /apps/{token}/...
   This is what the frozen guarantee buys. Cheap when `resolve` caches
   its Workspace: the built policy is memoized, and under
   `isolation="process"`/`"kernel"` a worker is kept resident (see
-  `PythonConfig.view_workers`) rather than started per request — so a
+  `PythonConfig.warm_view_workers`) rather than started per request — so a
   request costs neither policy registration nor a worker start.
-  Requests beyond `view_workers` fall back to a per-call sandbox rather
+  Requests beyond `warm_view_workers` fall back to a per-call sandbox rather
   than queueing, so **raise it toward your concurrency if you serve
   under load** — the default of `1` is sized for the build-and-preview
-  loop, not for traffic. Note the corollary: concurrency, not the cap,
-  decides how many workers exist at once, and what stays resident
-  afterwards never decays. Bound concurrent traffic at your edge if
-  worker memory matters.
+  loop, not for traffic. Two corollaries: concurrency, not the cache
+  size, decides how many workers exist at once (so bound concurrent
+  traffic at your edge if worker memory matters), and what stays warm
+  afterwards is never reaped.
+
+  **Prefer `preload_grants=True` with `warm_view_workers=0` where your
+  grants allow it.** Preloading puts the granted stack in the forkserver
+  broker, which drops a worker start to ~14ms — cheap enough to give
+  *every* request a pristine worker. That is the simpler system and the
+  better-behaved one: nothing stays resident, so there is no warm set to
+  size and no memory floor to reason about, and each handler call gets a
+  clean process rather than inheriting `sys.modules` and module globals
+  from whatever ran before it (see the reuse caveat under
+  `PythonConfig.warm_view_workers`).
+
+  The cache exists for when that isn't available: `preload_grants` runs
+  your grants' import-time code in the broker, so it is unsafe for a
+  grant that starts threads on import, and without it a per-call worker
+  costs ~235ms with a heavyweight stack. In that case keep a warm set
+  and size it to your concurrency.
 - **`{token}` is a capability** — long, unguessable, minted with
   `mint_token()`, mapped to snapshots in the embedder's storage.
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler

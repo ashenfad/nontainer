@@ -45,6 +45,12 @@ class FakeSandbox:
         self.entered += 1
         return self
 
+    def __exit__(self, *exc) -> None:
+        # ProcessSandbox reaps its worker on exit, and the pool has always
+        # relied on that for transients — the double just didn't say so
+        # until checkout() started doing the `with` itself.
+        self.shutdown()
+
     def shutdown(self) -> None:
         self.shutdowns += 1
         self.alive = False
@@ -146,6 +152,75 @@ def test_residency_after_a_burst_is_the_cap_not_the_concurrency():
     assert pool._live[_view_key(VIEW)] == 2
     # the four over the cap were never entered by the pool
     assert sum(1 for sb in made if sb.entered) == 2
+
+
+# -- checkout(): the lifecycle, owned by the pool ------------------------------
+#
+# acquire()/release() hand back a `pooled` flag that decides whether the CALLER
+# enters the sandbox, reaps it, and gives it back — obligations that differ per
+# branch and are silently wrong if mixed up (releasing a transient puts it in
+# the idle set, pushing residency past the cap). checkout() makes that
+# unrepresentable, and is what exec_python uses.
+
+
+def test_checkout_releases_a_warm_worker_without_reaping_it():
+    made: list = []
+    pool = _pool(size=1)
+
+    with pool.checkout(VIEW, _builder(made)) as sb:
+        assert sb.entered == 1  # the pool entered it
+    assert sb.shutdowns == 0  # ...and kept it
+    assert pool._idle[_view_key(VIEW)] == [sb]
+
+    with pool.checkout(VIEW, _builder(made)) as again:
+        assert again is sb  # handed straight back
+    assert len(made) == 1
+
+
+def test_checkout_reaps_a_transient_instead_of_pooling_it():
+    """The branch that used to be the caller's to get right."""
+    made: list = []
+    pool = _pool(size=1)
+
+    with pool.checkout(VIEW, _builder(made)):  # fills the cap
+        with pool.checkout(VIEW, _builder(made)) as extra:  # over it
+            assert extra.entered == 1  # checkout entered it...
+        assert extra.shutdowns == 1  # ...and reaped it on the way out
+
+    key = _view_key(VIEW)
+    assert len(pool._idle[key]) == 1  # only the pooled one is resident
+    assert pool._live[key] == 1  # and the transient took no slot
+
+
+def test_checkout_reaps_a_transient_even_when_the_body_raises():
+    made: list = []
+    pool = _pool(size=1)
+
+    with pool.checkout(VIEW, _builder(made)):
+        with pytest.raises(RuntimeError, match="boom"):
+            with pool.checkout(VIEW, _builder(made)) as extra:
+                raise RuntimeError("boom")
+        assert extra.shutdowns == 1
+
+
+def test_checkout_returns_a_warm_worker_even_when_the_body_raises():
+    """An executor-level failure — crashed worker, lost connection — must
+    still free the slot, or the cap leaks one worker per failure."""
+    made: list = []
+    pool = _pool(size=1)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with pool.checkout(VIEW, _builder(made)):
+            raise RuntimeError("boom")
+    assert len(pool._idle[_view_key(VIEW)]) == 1
+
+
+def test_checkout_yields_a_workerless_sandbox_untouched():
+    """``isolation="none"`` has nothing to enter or reap."""
+    pool = _pool(size=1)
+    with pool.checkout(VIEW, InProcessSandbox) as sb:
+        assert isinstance(sb, InProcessSandbox)
+    assert pool._live.get(_view_key(VIEW), 0) == 0
 
 
 def test_checked_out_workers_are_never_handed_out_twice():
@@ -305,7 +380,7 @@ def test_a_burst_leaves_only_the_default_resident():
     import threading
 
     ws = _ws("pool-burst")
-    assert PythonConfig().view_workers == 1  # the default this pins
+    assert PythonConfig().warm_view_workers == 1  # the default this pins
     try:
         errors: list = []
 
@@ -330,7 +405,7 @@ def test_a_burst_leaves_only_the_default_resident():
 
 
 def test_view_workers_zero_restores_per_call_workers():
-    ws = _ws("pool-off", view_workers=0)
+    ws = _ws("pool-off", warm_view_workers=0)
     try:
         pids = [
             ws.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"] for _ in range(3)
