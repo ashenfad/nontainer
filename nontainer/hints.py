@@ -34,10 +34,6 @@ _BLOCKED_IMPORT_HINTS = {
 
 _IMPORT_ERROR_RE = re.compile(r"Import of '([\w.]+)' is not allowed")
 
-_DUNDER_IMPORT = (
-    "dynamic __import__ is blocked, but ordinary import statements work "
-    "here — an `import numpy` at the top of the file does the job"
-)
 _KALEIDO = (
     "plotly's write_image needs kaleido, which can't run here — assign "
     "figures to `ui = {...}` to render them inline, or use matplotlib "
@@ -67,15 +63,20 @@ def error_hint(error_text: str) -> str | None:
     """The intent hint for a sandbox error's rendered text, or None.
 
     One entry point for every collision we can label: blocked imports,
-    the __import__ workaround, plotly's kaleido dead end (its own
-    message says ``pip install``, which can't happen here), and the
-    tick limit (where "stop looping" is the actual fix)."""
+    plotly's kaleido dead end (its own message says ``pip install``,
+    which can't happen here), and the tick limit (where "stop looping"
+    is the actual fix).
+
+    There used to be a redirect for ``Cannot access '__import__'``,
+    pointing agents at a plain ``import`` statement. sandtrap 0.3.3
+    gates ``__import__`` against the policy instead of refusing it, so
+    that error no longer exists — and a dynamic import of a blocked
+    module now raises the same "Import of 'x' is not allowed" as the
+    statement form, which ``blocked_import_hint`` already labels."""
     text = error_text or ""
     hint = blocked_import_hint(text)
     if hint:
         return hint
-    if "Cannot access '__import__'" in text:
-        return _DUNDER_IMPORT
     if "Kaleido" in text and "pip install" in text:
         return _KALEIDO
     if "Execution exceeded" in text and "tick limit" in text:
