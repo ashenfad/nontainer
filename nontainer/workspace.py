@@ -171,8 +171,10 @@ class PythonResult:
     — for the HOST, not the model. Modules and ``_``-prefixed names
     are excluded; under process/kernel isolation, unpicklable values
     are dropped in transit (sandtrap ``filter_namespace``). Adapters
-    must NOT inline this into the text observation (at most a
-    ``[namespace: ui, df, n=3]`` note). Structured payloads reach the
+    must NOT render this into the text observation — not the values,
+    and not a list of the names either: the agent wrote those bindings,
+    so naming them back is inventory rather than information.
+    Structured payloads reach the
     embedder as plain variables by convention — e.g. an A2UI adapter
     reads ``result.namespace.get("ui")`` — no bespoke emission channel,
     no schema imposed by core."""

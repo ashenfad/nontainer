@@ -14,6 +14,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `__import__("numpy")` — a predictable habit — now get the module if it is
   granted, rather than a validation error and a wasted turn.
 
+- **`run_python` no longer reports the namespace.** Every call that bound a
+  variable used to end with `[namespace kept for host: cols, df, n, total]`.
+  It was the most frequent line in the python observation stream and the least
+  useful one: it named bindings the agent had just written, claimed "kept for
+  host" for names no host reads (in practice only `ui`, plus the apps loop's
+  internal `nt__*`), and described a closed file handle as state the host
+  holds. It also went quiet in the one case worth reporting — values dropped
+  in transit under process isolation, where it listed what survived and said
+  nothing about what vanished.
+
+  Silent calls now render `(no output; success)`, which the note had been
+  masking: because parts are appended, a namespace line meant the success
+  signal never showed. Consequences are still reported where they exist —
+  `[ui artifacts: ...]` for `ui = {...}` bindings, unchanged.
+
 ### Removed
 
 - **The `__import__` intent hint.** It told agents "dynamic `__import__` is
