@@ -28,9 +28,12 @@ def test_shutil_gets_a_file_ops_redirect():
     assert hint and "cp" in hint and "open()" in hint
 
 
-def test_dunder_import_redirects_to_plain_import():
-    hint = error_hint("sandtrap.errors.StValidationError: Cannot access '__import__'")
-    assert hint and "import statements work" in hint
+def test_dynamic_import_of_a_blocked_module_gets_the_same_hint():
+    """sandtrap >= 0.3.3 gates __import__ against the policy rather than
+    refusing it, so the dynamic form raises the ordinary blocked-import
+    error -- and inherits the intent hint the statement form already had."""
+    hint = error_hint("ImportError: Import of 'subprocess' is not allowed (line 1)")
+    assert hint and "terminal tool" in hint
 
 
 def test_kaleido_matches_the_plotly5_message():
@@ -77,10 +80,20 @@ def test_shutil_import_renders_the_hint():
     ws.close()
 
 
-def test_dunder_import_renders_the_hint():
+def test_dynamic_import_of_a_blocked_module_renders_the_hint():
     ws = make_ws()
-    text = render_python(ws.run_python("np = __import__('numpy')"))
-    assert "[hint: " in text and "import statements work" in text
+    text = render_python(ws.run_python("s = __import__('subprocess')"))
+    assert "[hint: " in text and "terminal tool" in text
+    ws.close()
+
+
+def test_dynamic_import_of_a_granted_module_just_works():
+    """The hint this replaced told agents to rewrite __import__ as a
+    statement. Under sandtrap >= 0.3.3 there is nothing to rewrite."""
+    ws = make_ws()
+    result = ws.run_python("m = __import__('math')\nprint(m.sqrt(16))")
+    assert result.error is None, f"unexpected error: {result.error}"
+    assert "4.0" in result.stdout
     ws.close()
 
 

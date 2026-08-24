@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **Requires sandtrap >= 0.3.3**, which gates `__import__` against the policy
+  instead of refusing it outright. Agents that reach for
+  `__import__("numpy")` — a predictable habit — now get the module if it is
+  granted, rather than a validation error and a wasted turn.
+
+### Removed
+
+- **The `__import__` intent hint.** It told agents "dynamic `__import__` is
+  blocked, but ordinary import statements work here". Under sandtrap 0.3.3
+  there is nothing to redirect: a *granted* module imports dynamically without
+  complaint, and a *blocked* one raises the same `Import of 'x' is not allowed`
+  the statement form raises — so `blocked_import_hint` labels it already, and
+  `__import__("subprocess")` now inherits the "use the terminal tool" redirect
+  for free. The door the hint pointed at is now the door the agent was already
+  standing in.
+
 ## 0.3.1 - 2026-08-21
 
 ### Added
