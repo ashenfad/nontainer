@@ -33,11 +33,25 @@ def test_render_terminal_failure_and_truncation():
     assert "[output truncated]" in out
 
 
-def test_render_python_never_inlines_namespace():
+def test_render_python_never_renders_namespace():
+    """Not the values, and not the names either — the agent wrote them."""
     r = PythonResult(stdout="", namespace={"ui": {"secret": list(range(1000))}})
     out = render_python(r)
     assert "secret" not in out
-    assert "[namespace kept for host: ui]" in out
+    assert "ui" not in out
+    assert "namespace" not in out
+
+
+def test_render_python_confirms_a_silent_run():
+    """Bindings alone are not output, so the success signal must show —
+    it used to be masked by the namespace note."""
+    r = PythonResult(stdout="", namespace={"df": [1, 2], "n": 2})
+    assert render_python(r) == "(no output; success)"
+
+
+def test_render_python_namespace_does_not_mask_real_output():
+    r = PythonResult(stdout="42\n", namespace={"n": 42})
+    assert render_python(r) == "42"
 
 
 def test_render_python_error():

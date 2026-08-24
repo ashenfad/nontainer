@@ -3,8 +3,11 @@ and the exposure-mode heuristic.
 
 Rendering rules (design decisions, README):
 
-- ``PythonResult.namespace`` is for the HOST — never inlined into the
-  model's observation; at most a one-line note naming the bindings.
+- ``PythonResult.namespace`` is for the HOST — never rendered into the
+  model's observation, not even as a list of names. The agent wrote
+  those bindings; echoing them back is inventory, not information.
+  Notes here report CONSEQUENCES (see ``artifacts_note``), and a
+  binding only has one when an embedder reads that name.
 - Truncation is surfaced explicitly; agents handle "output was cut"
   far better than silent loss.
 - stderr chatter does not imply failure and is labeled, not dropped.
@@ -63,11 +66,15 @@ def render_python(result: PythonResult) -> str:
             parts.append(f"[hint: {hint}]")
     if result.stderr:
         parts.append(f"[stderr]\n{result.stderr.rstrip()}")
-    if result.namespace:
-        names = ", ".join(sorted(result.namespace))
-        parts.append(f"[namespace kept for host: {names}]")
     if result.truncated:
         parts.append("[output truncated]")
+    # No namespace note. It used to list every top-level binding, which
+    # (a) told the agent what it had just written, (b) claimed "kept for
+    # host" for names no host reads, (c) said things like "f" for a
+    # closed file handle, and (d) went quiet in the one case worth
+    # reporting — values dropped in transit under process isolation.
+    # It also masked the line below, since a namespace note meant the
+    # success signal never rendered.
     return "\n".join(parts) if parts else "(no output; success)"
 
 
