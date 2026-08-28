@@ -25,8 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The fields a fork replays now come from one record rather than a list at
   the call site, and a test asserts every pass-through parameter of
   `Workspace.__init__` is in it — so the next argument cannot fall out the
-  same way. `provider`, `executor`, and `commands` are excluded for stated
-  reasons.
+  same way. `provider`, `executor`, `commands`, and `autocheckpoint` are
+  excluded for stated reasons.
+
+- **Mount sources resolve once, at construction.** A relative `Mount.path`
+  (or a symlink retargeted afterwards) used to re-resolve when a fork was
+  built, so parent and fork could end up on different directories — which
+  the live-view contract says cannot happen. The resolved mapping is what a
+  fork replays.
 
 ### Changed
 

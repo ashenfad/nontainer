@@ -532,7 +532,8 @@ class _SyncingFS:
 
 @dataclass(frozen=True)
 class _Settings:
-    """The construction arguments a fork replays onto its own provider.
+    """The construction arguments a fork replays onto its own provider —
+    the ones that cannot change after ``__init__``.
 
     ``fork()`` used to re-list these by hand, which is how ``mounts``
     came to be silently dropped: it was added after the list was
@@ -548,17 +549,32 @@ class _Settings:
       cannot be shared (see the executor block in ``__init__``); forks
       fall back to ``executor_factory``.
 
-    ``commands`` is absent for a different reason and is handled
-    separately in ``fork()``: it is not the constructor argument any
-    more by then. ``register_command`` mutates the built set after
-    construction (``enable_apps`` injects ``curl`` that way), so a fork
-    replays the live set, not the original mapping.
+    Two more are absent because they are MUTABLE after construction, so
+    a value captured here would go stale. ``fork()`` replays both from
+    the live attribute instead:
+
+    - ``commands`` — ``register_command`` mutates the built set
+      (``enable_apps`` injects ``curl`` that way).
+    - ``autocheckpoint`` — has a public setter, and the documented
+      turn-granularity path uses it (``WorkspaceTools(ws,
+      checkpoint="turn")`` sets ``ws.autocheckpoint = False``). Replaying
+      the construction-time value would silently put a forked session
+      back on per-call commits.
+
+    That distinction is load-bearing, so a test asserts no field here
+    has a setter on ``Workspace``.
+
+    ``mounts`` is stored NORMALIZED (points validated, sources resolved
+    to absolute paths), not as the caller passed it. Re-resolving at
+    fork time would let a relative source or a retargeted symlink give
+    the fork a different directory than the parent — breaking the
+    live-view contract in :class:`Mount`, which promises both observe
+    the same one.
     """
 
     python: "PythonConfig"
-    mounts: Mapping[str, Mount] | None
+    mounts: Mapping[str, Mount]
     cache: bool
-    autocheckpoint: bool
     max_observation: int
     executor_factory: "Callable[[], Executor] | None"
     root: str
@@ -644,8 +660,12 @@ class Workspace:
         # explicitly theirs to checkpoint or discard.
         was_dirty = provider.caps.staging and provider.dirty
 
-        # -- filesystem: provider fs, optionally wrapped with mounts --
-        self._fs = self._build_fs(provider.fs, mounts or {})
+        # -- filesystem: provider fs, optionally wrapped with mounts.
+        # Normalized once, here: the resolved mapping is what a fork
+        # replays, so parent and fork can't resolve to different
+        # directories (see _Settings).
+        normalized_mounts = self._normalize_mounts(mounts)
+        self._fs = self._build_fs(provider.fs, normalized_mounts)
         # Host-side writes move provider state behind a remote
         # executor's back; the public ``fs`` hands out a wrapper that
         # flags it, and the next execution syncs (see _SyncingFS).
@@ -688,18 +708,15 @@ class Workspace:
             self._executor = LocalExecutor()
 
         # -- what a fork replays. Captured from the NORMALIZED values,
-        # not the raw arguments, so a fork starts from the same state
-        # this workspace resolved to (``root`` collapsed by segment,
-        # ``autocheckpoint`` already ANDed with the provider's
-        # versioning capability). ``mounts`` is the argument itself:
-        # mount points are inherited, while the data behind them stays
-        # a live view of the host directory, never snapshotted (see
-        # :class:`Mount`).
+        # not the raw arguments, so a fork starts from the state this
+        # workspace resolved to: ``root`` collapsed by segment, mount
+        # points validated and their sources resolved. Mutable-after-
+        # construction settings are deliberately NOT here (see
+        # :class:`_Settings`); fork() reads those live.
         self._settings = _Settings(
             python=self._python_config,
-            mounts=mounts,
+            mounts=normalized_mounts,
             cache=self._cache_enabled,
-            autocheckpoint=self._autocheckpoint,
             max_observation=self._max_observation,
             executor_factory=self._executor_factory,
             root=self._root,
@@ -756,13 +773,15 @@ class Workspace:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _build_fs(base: Any, mounts: Mapping[str, Mount]) -> Any:
-        if not mounts:
-            return base
-        from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS
-
-        mounted: dict[str, Any] = {}
-        for point, mount in mounts.items():
+    def _normalize_mounts(mounts: Mapping[str, Mount] | None) -> dict[str, Mount]:
+        """Validate the mount points and resolve each source to an
+        absolute path, ONCE. The resolved mapping is what ``fork()``
+        replays: re-resolving there would let a relative source (or a
+        symlink retargeted in between) hand the fork a different
+        directory than the parent holds, which is exactly what the
+        live-view contract in :class:`Mount` promises cannot happen."""
+        out: dict[str, Mount] = {}
+        for point, mount in (mounts or {}).items():
             if point == "/" or not point.startswith("/"):
                 raise ValueError(
                     f"Mount points must be absolute and not '/': {point!r}"
@@ -770,7 +789,21 @@ class Workspace:
             real = Path(mount.path).expanduser().resolve()
             if not real.is_dir():
                 raise ValueError(f"Mount source is not a directory: {real}")
-            sub: Any = IsolatedFS(str(real))
+            out[point] = Mount(real, readonly=mount.readonly)
+        return out
+
+    @staticmethod
+    def _build_fs(base: Any, mounts: Mapping[str, Mount]) -> Any:
+        """Compose the mounted views over ``base``. Takes mounts already
+        through :meth:`_normalize_mounts` — paths here are absolute and
+        checked."""
+        if not mounts:
+            return base
+        from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS
+
+        mounted: dict[str, Any] = {}
+        for point, mount in mounts.items():
+            sub: Any = IsolatedFS(str(mount.path))
             if mount.readonly:
                 sub = ReadOnlyFS(sub)
             mounted[point] = sub
@@ -1298,10 +1331,13 @@ class Workspace:
         # staged changes so the fork sees current state (kvgit does).
         with self._lock:
             forked = self._provider.fork(name)
-        # Commands are replayed from the LIVE set rather than from
-        # _settings: register_command mutates it after construction, so
-        # the original argument is no longer the truth. The reserved
-        # bridge names are stripped because __init__ re-adds them.
+        # Commands and autocheckpoint are replayed from the LIVE
+        # attributes rather than from _settings, because both can change
+        # after construction (see _Settings). register_command mutates
+        # the command set; the reserved bridge names are stripped here
+        # because __init__ re-adds them. autocheckpoint has a public
+        # setter, and a fork of a turn-granularity session must stay in
+        # turn granularity.
         # (A command closed over THIS workspace still points at it from
         # the fork — the fork-bleed tracked in
         # scratch/plan-http-unification.md, whose Phase 0 removes the
@@ -1312,6 +1348,7 @@ class Workspace:
         return Workspace(
             forked,
             commands=user_commands,
+            autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
 

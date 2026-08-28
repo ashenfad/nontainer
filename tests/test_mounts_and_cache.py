@@ -170,12 +170,13 @@ def test_fork_replays_every_pass_through_setting():
 
     from nontainer.workspace import _Settings
 
-    # provider: the fork gets its own -- that IS the fork.
+    # provider:  the fork gets its own -- that IS the fork.
     # executor:  a ready instance is bound to one session; forks fall
     #            back to executor_factory.
-    # commands:  register_command mutates the built set after
-    #            construction, so fork() replays the live set instead.
-    excluded = {"self", "provider", "executor", "commands"}
+    # commands / autocheckpoint: mutable after construction, so fork()
+    #            replays the live attribute (see the setter guard and
+    #            the turn-granularity test below).
+    excluded = {"self", "provider", "executor", "commands", "autocheckpoint"}
     params = {
         name
         for name, p in inspect.signature(Workspace.__init__).parameters.items()
@@ -187,3 +188,70 @@ def test_fork_replays_every_pass_through_setting():
         f"{sorted(params - replayed)}; stale _Settings fields: "
         f"{sorted(replayed - params)}"
     )
+
+
+def test_settings_captures_nothing_that_can_change_after_construction():
+    """Guard for the OTHER half of the replay contract: _Settings is a
+    construction-time snapshot, so a field that can be mutated later
+    would be replayed stale. Anything with a setter must be read live in
+    fork() instead — as `autocheckpoint` is."""
+    from nontainer.workspace import _Settings
+
+    for name in _Settings.__dataclass_fields__:
+        attr = getattr(Workspace, name, None)
+        assert not (isinstance(attr, property) and attr.fset is not None), (
+            f"_Settings captures {name!r} at construction, but Workspace "
+            f"exposes a setter for it — a fork would replay a stale value. "
+            f"Drop it from _Settings and pass self._{name} live in fork()."
+        )
+
+
+def test_fork_inherits_a_changed_autocheckpoint():
+    """`WorkspaceTools(ws, checkpoint="turn")` sets ws.autocheckpoint =
+    False after construction. A fork of a turn-granularity session must
+    stay in turn granularity, not silently return to per-call commits."""
+    from nontainer.providers import KvgitProvider
+
+    ws = Workspace(KvgitProvider.open(None, session="parent"))
+    assert ws.autocheckpoint
+    ws.autocheckpoint = False
+
+    fork = ws.fork("child")
+    try:
+        assert not fork.autocheckpoint
+        r = fork.terminal("echo hi > /workspace/a.txt")
+        assert r, r.stderr
+        assert r.checkpoint is None  # turn granularity: no per-call commit
+    finally:
+        fork.close()
+        ws.close()
+
+
+def test_fork_keeps_the_parents_resolved_mount_source(tmp_path, monkeypatch):
+    """Mount sources resolve once, at construction. A relative source
+    plus a cwd change between construction and fork would otherwise give
+    the fork a different directory than the parent — the live-view
+    contract says both observe the same one."""
+    from nontainer.providers import KvgitProvider
+
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.csv").write_text("parent\n")
+    decoy = tmp_path / "decoy"
+    (decoy / "datasets").mkdir(parents=True)
+    (decoy / "datasets" / "a.csv").write_text("decoy\n")
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "datasets").symlink_to(real)
+    ws = Workspace(
+        KvgitProvider.open(None, session="parent"),
+        mounts={"/data": Mount("datasets")},  # relative on purpose
+    )
+    monkeypatch.chdir(decoy)  # same relative path, different directory
+
+    fork = ws.fork("child")
+    try:
+        assert fork.fs.read("/data/a.csv").decode() == "parent\n"
+    finally:
+        fork.close()
+        ws.close()
