@@ -310,19 +310,53 @@ async def _poll_assert(page: Any, expression: str, timeout_ms: int) -> tuple[boo
     shape of asserting against an app that fetches. Only the last error
     is reported, so the message describes the state the run ended in
     rather than the state it started in.
+
+    The deadline bounds each EVALUATION, not just the gaps between them:
+    ``page.evaluate`` awaits a promise the expression returns, so one
+    that never settles would block before the loop could look at the
+    clock again — a hang with no output, where the old
+    ``wait_for_function(timeout=…)`` had bounded the whole thing.
     """
-    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_ms / 1000
     why: Any = "assertion is falsy"
+    # Whether ANY evaluation ever came back. It separates "this
+    # expression never settles" from "the deadline simply expired":
+    # the last poll before the deadline gets a sliver of budget and
+    # times out even on an instant expression, which would otherwise
+    # report a plainly falsy assert as a hung promise.
+    settled = False
+
+    def expired() -> tuple[bool, Any]:
+        if settled:
+            return False, why
+        # Distinct from falsy, and worth saying: an assert that awaits
+        # something that never arrives is a broken assertion, not a
+        # broken app.
+        return False, (
+            f"assertion did not settle within {timeout_ms}ms — it returned a "
+            "promise that never resolved (await the value in the app and "
+            "assert on the DOM instead)"
+        )
+
     while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            return expired()
         try:
-            if await page.evaluate(expression):
+            value = await asyncio.wait_for(page.evaluate(expression), remaining)
+            settled = True
+            if value:
                 return True, None
             why = "assertion is falsy"
+        except (TimeoutError, asyncio.TimeoutError):
+            return expired()
         except Exception as e:
+            settled = True
             why = f"assertion errored: {e}"
-        if asyncio.get_running_loop().time() >= deadline:
-            return False, why
-        await asyncio.sleep(_ASSERT_POLL_MS / 1000)
+        await asyncio.sleep(
+            min(_ASSERT_POLL_MS / 1000, max(0.0, deadline - loop.time()))
+        )
 
 
 def blocked_script_note(url: str, script_hosts: tuple[str, ...]) -> str:
