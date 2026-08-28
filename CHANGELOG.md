@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **The default frontend CHOICE moved into `frontend_notes`**, alongside
+  the library supply it was already carrying. The template no longer
+  opens with *"for most apps, plain HTML + DOM + fetch is the MOST
+  RELIABLE choice"* — that sentence is now the first line of
+  `DEFAULT_FRONTEND_NOTES`.
+
+  0.3.4 moved *supply* to the embedder on the grounds that only they know
+  whether esm.sh resolves. The default choice is the same kind of claim
+  and was left behind: it was written when the alternative was Preact
+  over a CDN, and it is exactly wrong for an embedder that vendors a
+  component library and wants every app to look like it came from the
+  same place. Such an embedder was being contradicted by the library it
+  embeds — and the built-in sentence was the more emphatic one, so it
+  won.
+
+  **A plain install renders the same guidance**, in the same block as the
+  Preact pattern it belongs with. An embedder that already replaces
+  `frontend_notes` now also replaces the plain-DOM recommendation, which
+  is the point but is a behaviour change for anyone relying on it
+  surviving.
+
+  Unchanged in the template, because they are about the SHAPE of the code
+  rather than which approach to take: relative URLs, and the rule against
+  swapping a named import for a `<script src>` build or a guessed global.
+
 ## 0.3.6 - 2026-08-28
 
 ### Fixed

@@ -229,9 +229,8 @@ objects). Use `with open(...)` for writes.
 
 __CURL_NOTE__
 
-Frontend: for most apps, plain HTML + DOM + fetch is the MOST RELIABLE
-choice. Use RELATIVE urls and module names: fetch('api/scores') — never
-fetch('/api/x') (absolute) and never fetch('api/scores.py') (404).
+Frontend: use RELATIVE urls and module names: fetch('api/scores') —
+never fetch('/api/x') (absolute) and never fetch('api/scores.py') (404).
 When a library is named for you below, import it EXACTLY as written:
 don't substitute a <script src> build for an ES module, and
 never guess a global (`preactHooks`, `window.MUI`) that a bundle might
@@ -254,6 +253,7 @@ reports exactly what it rejected and why."""
 
 
 DEFAULT_FRONTEND_NOTES = """
+For most apps, plain HTML + DOM + fetch is the MOST RELIABLE choice.
 If you want components, use Preact — copy this known-good pattern
 exactly:
 
@@ -269,22 +269,29 @@ exactly:
 plotly.js lives at https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2;
 for maps, its tile-free scattergeo/choropleth need no tiles at all.
 """
-"""What libraries the app can use, and where they come from.
+"""Which frontend approach to reach for, and where its libraries come
+from.
 
-Everything here is a statement about SUPPLY, which only the embedder
-really knows — so it is one replaceable block
-(``AppsConfig.frontend_notes``) rather than prose baked into the
-template. The default assumes the default environment: no
-``static_assets``, the public CDN allowlist reachable. An embedder who
+Both halves are the embedder's, for the same reason: only they know
+what is actually available. SUPPLY is obvious — whether esm.sh
+resolves. The DEFAULT CHOICE is less obvious but no different: "plain
+DOM is the most reliable" was written when the alternative was Preact
+over a CDN, and it is exactly wrong for an embedder that vendors a
+component library and wants every app to look like it came from the
+same place. A prompt cannot both recommend plain DOM and steer at MUI;
+the emphatic sentence wins, and it should be the embedder's.
+
+The default assumes the default environment: no ``static_assets``, the
+public CDN allowlist reachable, nothing house-supplied. An embedder who
 vendors its own stack replaces this; one that vendors nothing keeps it
 and sees no change.
 
-What is NOT here, deliberately: "plain DOM is most reliable", relative
-URLs, and the rule against swapping a named import for a guessed
-global. Those are about the SHAPE of the code, they are true wherever
-the bytes come from, and agents get them wrong often enough that
-dropping them would cost every embedder — including the ones with
-nothing to say about libraries.
+What is NOT here, deliberately: relative URLs, and the rule against
+swapping a named import for a guessed global. Those are about the SHAPE
+of the code rather than which approach to take — true wherever the
+bytes come from, and got wrong often enough that dropping them would
+cost every embedder, including the ones with nothing to say about
+libraries.
 
 The anti-guessing rule earns its place in the template rather than
 here, and a vendored stack is exactly why: with no CDN URL to anchor
