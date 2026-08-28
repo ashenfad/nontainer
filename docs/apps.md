@@ -235,6 +235,54 @@ both `enable_apps` and `build_router`. Assets present while authoring
 and missing while serving are an app that verifies green and 404s
 published — see the delivery note below.
 
+**And tell the agent where the libraries are** — `static_assets` puts
+the bytes in place, `frontend_notes` says they exist. See below; a
+vendored stack the prompt still describes as living on a CDN is only
+half a deployment.
+
+### Frontend libraries: `frontend_notes` (the embedder's, not ours)
+
+Once an embedder can supply the libraries, the prompt can no longer
+hardcode where they come from. `AppsConfig.frontend_notes` is the one
+block that states **supply** — which libraries exist, and how to import
+them — and it **replaces** rather than appends:
+
+```python
+AppsConfig(
+    static_assets={"vendor": "/srv/appassets"},
+    frontend_notes=(
+        "Charts: <script src='vendor/plotly.min.js'></script> (window.Plotly).\n"
+        "Components: import { h, render } from 'vendor/preact.mjs'."
+    ),
+)
+```
+
+- `None` (default) keeps the built-in block — Preact/htm from esm.sh,
+  plotly from jsdelivr. That is the right answer when nothing is
+  vendored and the allowlist is reachable, so a plain install sees no
+  change.
+- `""` omits it, for an embedder that would rather say nothing.
+- A string replaces it. Import
+  `nontainer.adapters.render.DEFAULT_FRONTEND_NOTES` to extend the
+  default instead of discarding it.
+
+**Why replace, not append.** `apps_primer` appends, which is right for
+additive guidance and wrong here: the built-in block says *copy this
+known-good pattern exactly* and names a CDN. An embedder correcting it
+from below would leave the wrong instruction both first and more
+emphatic. For an air-gapped deployment the agent would follow it, and
+the block that fails is precisely the one it was told to trust.
+
+**What is NOT supply, and stays regardless:** relative URLs, "plain DOM
+is the most reliable choice", "ES modules, not UMD, don't guess
+globals". Those describe the shape of the code rather than its origin,
+they are true wherever the bytes come from, and agents get them wrong
+often enough that no embedder should be able to drop them by accident.
+
+Air-gapped deployments will usually also set `script_hosts=()`, which
+states the rule positively — *scripts may load only from this app
+itself* — rather than printing an empty allowlist.
+
 ### Script hosts: one declaration, four surfaces
 
 `AppsConfig.script_hosts` is the single statement of where browser

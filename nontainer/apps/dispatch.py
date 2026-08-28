@@ -177,9 +177,38 @@ class AppsConfig:
     """Hosts browser scripts may load from (test_app enforcement, served
     CSP, and the agent guidance all derive from this one tuple)."""
     apps_primer: str | None = None
-    """Embedder guidance appended to the apps notes in the tool
-    description — e.g. a private component lib's known-good import
-    block, available endpoints, house frontend conventions."""
+    """Embedder guidance APPENDED to the apps notes in the tool
+    description — available endpoints, house conventions, anything
+    additive. To change what the agent is told about frontend
+    libraries, use ``frontend_notes``: that replaces, and appending a
+    correction underneath the built-in block leaves the wrong
+    instruction both first and more emphatic."""
+    frontend_notes: str | None = None
+    """What libraries the app can use and where they come from —
+    the one part of the apps notes that is a statement about SUPPLY,
+    which only the embedder knows.
+
+    ``None`` keeps the default block (Preact/htm from esm.sh, plotly
+    from jsdelivr — the right answer when nothing is vendored and the
+    CDN allowlist is reachable). ``""`` omits it. A string REPLACES it:
+
+        AppsConfig(
+            static_assets={"vendor": assets},
+            frontend_notes=(
+                "Charts: <script src='vendor/plotly.min.js'></script>.\\n"
+                "Components: import from 'vendor/preact.mjs'."
+            ),
+        )
+
+    Replacing matters most for an air-gapped deployment, where the
+    default block would tell the agent — emphatically, and by example —
+    to fetch from hosts that do not resolve. Import
+    ``nontainer.adapters.render.DEFAULT_FRONTEND_NOTES`` to extend the
+    default rather than discard it.
+
+    What stays regardless: relative URLs, "plain DOM is most reliable",
+    "ES modules, not UMD, don't guess globals". Those describe the shape
+    of the code, not where it comes from."""
     static_assets: Mapping[str, str | Path] = field(default_factory=dict)
     """URL prefix -> host directory of fixed files served WITH the app
     but absent from the workspace: a vendored component library, fonts,

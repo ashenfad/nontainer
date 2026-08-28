@@ -232,6 +232,23 @@ __CURL_NOTE__
 Frontend: for most apps, plain HTML + DOM + fetch is the MOST RELIABLE
 choice. Use RELATIVE urls and module names: fetch('api/scores') — never
 fetch('/api/x') (absolute) and never fetch('api/scores.py') (404).
+__FRONTEND_NOTES__
+Shared backend code: put modules in __WS__/helpers (e.g.
+__WS__/helpers/data.py, then `from helpers import data` in any handler
+— imports resolve from the workspace root, so a bare `import data`
+will NOT find it) —
+imports between __WS__/app/api files do NOT work.
+__SCRIPT_HOSTS__
+Images, fetches, styles, and fonts may use any https host (map tiles
+work).
+__STATIC_ASSETS__
+After changing the app, ALWAYS verify with the test_app tool before
+telling the user it works — it catches what endpoint-level checks
+can't (frontend wiring, absolute-URL mistakes, blocked scripts) and
+reports exactly what it rejected and why."""
+
+
+DEFAULT_FRONTEND_NOTES = """
 If you want components, use Preact as ES MODULES — copy this known-good
 pattern exactly (no UMD <script src> builds, no guessing globals like
 `preactHooks`):
@@ -245,22 +262,62 @@ pattern exactly (no UMD <script src> builds, no guessing globals like
       render(h(App), document.getElementById('app'));
     </script>
 
-Shared backend code: put modules in __WS__/helpers (e.g.
-__WS__/helpers/data.py, then `from helpers import data` in any handler
-— imports resolve from the workspace root, so a bare `import data`
-will NOT find it) —
-imports between __WS__/app/api files do NOT work. Browser SCRIPTS may only
-load from these hosts (enforced by test_app AND published serving):
-__SCRIPT_HOSTS__
-— plotly.js lives at
-https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2. Images, fetches,
-styles, and fonts may use any https host (map tiles work); for maps,
-plotly's tile-free scattergeo/choropleth need no tiles at all.
-__STATIC_ASSETS__
-After changing the app, ALWAYS verify with the test_app tool before
-telling the user it works — it catches what endpoint-level checks
-can't (frontend wiring, absolute-URL mistakes, blocked scripts) and
-reports exactly what it rejected and why."""
+plotly.js lives at https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2;
+for maps, its tile-free scattergeo/choropleth need no tiles at all.
+"""
+"""What libraries the app can use, and where they come from.
+
+Everything here is a statement about SUPPLY, which only the embedder
+really knows — so it is one replaceable block
+(``AppsConfig.frontend_notes``) rather than prose baked into the
+template. The default assumes the default environment: no
+``static_assets``, the public CDN allowlist reachable. An embedder who
+vendors its own stack replaces this; one that vendors nothing keeps it
+and sees no change.
+
+What is NOT here, deliberately: "plain DOM is most reliable", relative
+URLs, "ES modules, not UMD, don't guess globals". Those are about the
+SHAPE of the code, they are true wherever the bytes come from, and
+agents get them wrong often enough that dropping them would cost every
+embedder — including the ones with nothing to say about libraries.
+"""
+
+
+def _script_hosts_note(config: Any) -> str:
+    """The script-supply-chain sentence, derived from
+    ``AppsConfig.script_hosts``.
+
+    An EMPTY allowlist is the air-gapped shape, and it needs its own
+    sentence: listing nothing after "may only load from these hosts:"
+    leaves the agent a dangling colon, which reads as a prompt bug
+    rather than as a rule. Said positively, it is also the more useful
+    statement — everything the app can load, it already has."""
+    hosts = ", ".join(getattr(config, "script_hosts", ()) or ())
+    enforced = "(enforced by test_app AND published serving)"
+    if not hosts:
+        return (
+            "Browser SCRIPTS may load ONLY from this app itself — no "
+            f"external host is reachable {enforced}."
+        )
+    return f"Browser SCRIPTS may only\nload from these hosts {enforced}:\n{hosts}"
+
+
+def _frontend_notes(config: Any) -> str:
+    """``AppsConfig.frontend_notes``: ``None`` → the default block,
+    ``""`` → omit it entirely, a string → use it verbatim. Mirrors how
+    ``build_router(csp=...)`` treats its three states.
+
+    This must REPLACE rather than append. ``apps_primer`` appends, which
+    is right for extra guidance but wrong here: an embedder serving a
+    vendored stack would be adding a correction underneath a block that
+    says "copy this known-good pattern exactly" and names a CDN. The
+    emphatic instruction would be the wrong one, and it would be first.
+    """
+    notes = getattr(config, "frontend_notes", None)
+    if notes is None:
+        notes = DEFAULT_FRONTEND_NOTES
+    notes = notes.strip("\n")
+    return f"{notes}\n" if notes else ""
 
 
 def _static_assets_note(config: Any) -> str:
@@ -322,7 +379,8 @@ def apps_notes(
 
         config = AppsConfig()
     notes = (
-        _APPS_NOTES_TEMPLATE.replace("__SCRIPT_HOSTS__", ", ".join(config.script_hosts))
+        _APPS_NOTES_TEMPLATE.replace("__SCRIPT_HOSTS__", _script_hosts_note(config))
+        .replace("__FRONTEND_NOTES__", _frontend_notes(config))
         .replace("__STATIC_ASSETS__", _static_assets_note(config))
         .replace("__WS__", "" if root == "/" else root.rstrip("/"))
         .replace("__CURL_NOTE__", _CURL_NOTE if commands else _NO_CURL_NOTE)

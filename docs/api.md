@@ -553,8 +553,18 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            script_hosts=DEFAULT_SCRIPT_HOSTS,  # where browser scripts may
            #   load from — drives test_app interception, the served CSP,
            #   and the agent-facing allowlist sentence (one declaration)
-           apps_primer=None,  # embedder guidance appended to the apps
-           #   notes (private component libs, house conventions)
+           apps_primer=None,  # embedder guidance APPENDED to the apps
+           #   notes (available endpoints, house conventions)
+           frontend_notes=None,  # what libraries exist and where they
+           #   come from — the one part of the notes that is about
+           #   SUPPLY, which only the embedder knows. None = the
+           #   built-in block (Preact/htm from esm.sh, plotly from
+           #   jsdelivr); "" omits it; a string REPLACES it. Import
+           #   render.DEFAULT_FRONTEND_NOTES to extend rather than
+           #   discard. Replaces (not appends) because the built-in
+           #   block says "copy this exactly" and names a CDN — a
+           #   correction underneath it would lose. Air-gapped
+           #   deployments set this alongside static_assets.
            static_assets={})  # {url_prefix: host_dir} — fixed files
            #   served WITH the app but absent from the workspace: a
            #   vendored component library, fonts, a charting bundle.

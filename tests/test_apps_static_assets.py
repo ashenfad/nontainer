@@ -310,3 +310,83 @@ def test_served_csp_allows_wasm_compilation():
     csp = build_csp(("esm.sh",))
     assert "'wasm-unsafe-eval'" in csp
     assert "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", "")
+
+
+# -- who owns the frontend-library guidance --------------------------------
+#
+# Once an embedder can supply the libraries (static_assets), the prompt
+# can no longer hardcode where they come from: the default block names
+# esm.sh and jsdelivr, emphatically ("copy this known-good pattern
+# exactly"), which is wrong the moment those hosts don't resolve.
+
+
+def test_default_notes_are_unchanged_when_nothing_is_declared():
+    """The common case is a plain install with CDNs reachable. It must
+    see exactly what it saw before this seam existed."""
+    from nontainer.adapters.render import DEFAULT_FRONTEND_NOTES, apps_notes
+
+    notes = apps_notes(AppsConfig())
+    for line in DEFAULT_FRONTEND_NOTES.strip().splitlines():
+        assert line in notes
+    assert "https://esm.sh/preact@10" in notes
+    assert "plotly.js-dist-min@2" in notes
+
+
+def test_frontend_notes_replace_rather_than_append():
+    """apps_primer appends, which is right for extra guidance and wrong
+    here: a vendoring embedder would be correcting a block that says
+    'copy this exactly' and names a CDN — leaving the wrong instruction
+    first AND more emphatic."""
+    from nontainer.adapters.render import apps_notes
+
+    notes = apps_notes(
+        AppsConfig(frontend_notes="Charts: <script src='vendor/plotly.min.js'>")
+    )
+    assert "vendor/plotly.min.js" in notes
+    assert "esm.sh" not in notes.split("Browser SCRIPTS")[0]
+    assert "plotly.js-dist-min@2" not in notes
+
+
+def test_frontend_notes_can_be_omitted_entirely():
+    from nontainer.adapters.render import apps_notes
+
+    notes = apps_notes(AppsConfig(frontend_notes=""))
+    assert "preact" not in notes.lower()
+    assert "plotly" not in notes.lower()
+    # the SHAPE guidance is not supply guidance, and stays
+    assert "MOST RELIABLE" in notes and "RELATIVE urls" in notes
+
+
+def test_shape_guidance_survives_every_frontend_notes_setting():
+    """Relative URLs and 'plain DOM is most reliable' are true wherever
+    the bytes come from; agents get them wrong often enough that no
+    embedder should be able to lose them by accident."""
+    from nontainer.adapters.render import apps_notes
+
+    for fn in (None, "", "Use vendor/mui.js."):
+        notes = apps_notes(AppsConfig(frontend_notes=fn))
+        assert "fetch('api/scores')" in notes
+        assert "never" in notes and "fetch('/api/x')" in notes
+
+
+def test_an_empty_script_allowlist_reads_as_a_rule_not_a_bug():
+    """The air-gapped shape. Listing nothing after 'may only load from
+    these hosts:' leaves a dangling colon, which reads as a broken
+    prompt rather than a policy."""
+    from nontainer.adapters.render import apps_notes
+
+    notes = apps_notes(AppsConfig(script_hosts=()))
+    assert "ONLY from this app itself" in notes
+    assert "these hosts (enforced by test_app AND published serving):\n\n" not in notes
+
+
+def test_the_default_block_is_importable_for_extending():
+    """An embedder adding a house library shouldn't have to retype the
+    Preact block to keep it."""
+    from nontainer.adapters.render import DEFAULT_FRONTEND_NOTES, apps_notes
+
+    notes = apps_notes(
+        AppsConfig(frontend_notes=DEFAULT_FRONTEND_NOTES + "\nAlso: vendor/house.mjs.")
+    )
+    assert "https://esm.sh/preact@10" in notes
+    assert "vendor/house.mjs" in notes
