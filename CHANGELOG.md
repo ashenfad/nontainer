@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **`test_app` page errors name the agent's own code, and quote the line.**
+  A stack is mostly somebody else's: with a component library in play the
+  top frame is deep inside a bundle and the one line the agent can act on
+  is below it — so reporting the *first* frame reported the least useful
+  one, and a bare line number still cost a call to go look it up. Errors
+  now read:
+
+  ```
+  TypeError: svae is not a function (at Dashboard (app.js:42:13), +4 frames above it in library code)
+       42 | <Button onClick={svae}>Save</Button>
+  ```
+
+  Frames are classified against what is being served: the test_app origin
+  and bare `//# sourceURL=` names resolve to workspace files; a declared
+  `static_assets` prefix or a third-party host is library code;
+  `blob:`/`data:`/eval is generated code with no file to open. An inline
+  `<script>` reports the document URL, which now resolves to `index.html`
+  rather than going unattributed — the common case in a first app.
+
+  When nothing in the stack is the agent's, it says so (`no frame in your
+  own files — all 6 frames are in library code`) instead of printing a
+  location from inside a bundle. Same rule as the existing parse-error
+  branch: a misleading diagnostic is worse than an absent one.
+
+  Frame selection and rendering are pure functions (`parse_frames`,
+  `classify_frame`, `describe_page_error`), so the source read is injected
+  and the behavior is testable without a browser.
+
 ### Added
 
 - **`AppsConfig.static_assets`** — a URL prefix → host directory mapping of

@@ -30,6 +30,8 @@ ordinary tool calls on the same workspace.
 from __future__ import annotations
 
 import asyncio
+import posixpath
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
@@ -82,6 +84,230 @@ def coerce_actions(actions: Any) -> list[dict[str, Any]]:
             f"got {type(actions).__name__}"
         )
     return actions
+
+
+# ---------------------------------------------------------------------------
+# page errors: which frame is the agent's, and what is on that line
+# ---------------------------------------------------------------------------
+#
+# A stack is mostly other people's code. With a component library in
+# play the top frame is thirty deep in a vendored bundle, and the one
+# line the agent can act on is below it — so reporting the FIRST frame
+# reports the least useful one. And a line number alone still costs a
+# call to go look, on the file the agent just wrote.
+#
+# These are pure functions over the stack text (the fs read is injected)
+# so they can be tested without a browser.
+
+_FRAME_RE = re.compile(
+    r"^\s*at\s+(?:(?P<fn>.*?)\s+\()?(?P<url>.+?):(?P<line>\d+):(?P<col>\d+)\)?\s*$"
+)
+
+_MAX_ANNOTATED_BYTES = 512_000
+"""Don't slurp a bundle to quote one line; agent-authored files are small
+and anything this size is not what the agent is debugging."""
+
+
+@dataclass(frozen=True)
+class Frame:
+    """One parsed stack frame. ``rel`` is the app-relative path when the
+    frame names a file this workspace serves, else ``None``."""
+
+    raw: str
+    fn: str | None
+    url: str
+    line: int
+    col: int
+    rel: str | None
+    kind: str
+    """``"agent"`` (a file the agent authored), ``"vendor"`` (a declared
+    static asset or a third-party host), or ``"opaque"`` (blob:/data:,
+    eval'd code — nothing the agent can open)."""
+
+
+def parse_frames(stack: str) -> list[Frame]:
+    """Parse a V8 stack into frames, unclassified (``kind="opaque"``,
+    ``rel=None``). Lines that are not frames are skipped."""
+    out: list[Frame] = []
+    for raw in (stack or "").splitlines():
+        m = _FRAME_RE.match(raw)
+        if not m:
+            continue
+        out.append(
+            Frame(
+                raw=raw.strip(),
+                fn=m.group("fn"),
+                url=m.group("url"),
+                line=int(m.group("line")),
+                col=int(m.group("col")),
+                rel=None,
+                kind="opaque",
+            )
+        )
+    return out
+
+
+def classify_frame(frame: Frame, asset_prefixes: tuple[str, ...] = ()) -> Frame:
+    """Locate a frame against the app being served.
+
+    Two URL shapes name a served file: the synthetic test_app origin
+    (``https://nontainer.test/apps/t-test/app.js``), and a bare name with
+    no scheme — which is how a ``//# sourceURL=app.jsx`` comment surfaces,
+    the convention a browser-side transpiler uses to keep its output
+    attributable. Everything else is somebody else's code.
+    """
+    url = frame.url
+    rel: str | None = None
+    if url.startswith(_BASE_URL):
+        rel = url[len(_BASE_URL) :]
+    elif url.rstrip("/") == _BASE_URL.rstrip("/"):
+        rel = ""
+    elif "://" not in url and not url.startswith(("blob:", "data:")):
+        rel = url.lstrip("/")
+    if rel is not None:
+        rel = rel.split("?", 1)[0].split("#", 1)[0]
+        # An error thrown from an inline <script> reports the DOCUMENT
+        # url, which is the app root — and its line numbers are
+        # index.html's. Resolving it the same way _dispatch_static does
+        # is what keeps the most common case (a script in the page the
+        # agent just wrote) attributable at all.
+        rel = posixpath.normpath(rel or "index.html")
+        if rel in (".", "") or rel.startswith(".."):
+            rel = None
+    if rel is None:
+        # A third-party host is vendor code; blob:/data:/eval is opaque
+        # (there is no file to open, so naming a line would mislead).
+        kind = "opaque" if url.startswith(("blob:", "data:")) else "vendor"
+        if "://" not in url:
+            kind = "opaque"
+        return Frame(**{**vars(frame), "rel": None, "kind": kind})
+    if any(rel == p or rel.startswith(p + "/") for p in asset_prefixes):
+        return Frame(**{**vars(frame), "rel": rel, "kind": "vendor"})
+    return Frame(**{**vars(frame), "rel": rel, "kind": "agent"})
+
+
+def describe_page_error(
+    name: str,
+    message: str,
+    stack: str,
+    *,
+    asset_prefixes: tuple[str, ...] = (),
+    read_line: Any = None,
+) -> str:
+    """Render one page error the way an agent can act on it.
+
+    Picks the first frame in the agent's OWN files, says how many frames
+    were skipped to reach it, and quotes the offending source line
+    (``read_line(rel, lineno) -> str | None``). When no frame names a
+    file the agent wrote, it says so rather than printing a location
+    from a bundle — the same rule as the parse-error branch below: a
+    misleading diagnostic is worse than an absent one.
+    """
+    text = f"{name or 'Error'}: {message}"
+    frames = [classify_frame(f, asset_prefixes) for f in parse_frames(stack)]
+    if not frames:
+        if name == "SyntaxError":
+            # Parse errors carry NOTHING through pageerror.
+            return text + (
+                " (parse error: the browser reports no line — bisect the "
+                "<script> blocks to find it)"
+            )
+        return text
+
+    agent = next((f for f in frames if f.kind == "agent"), None)
+    if agent is None:
+        elsewhere = _describe_elsewhere(frames)
+        return f"{text} (no frame in your own files — {elsewhere})"
+
+    skipped = frames.index(agent)
+    where = (
+        f"at {agent.fn} ({agent.rel}:{agent.line}:{agent.col})"
+        if agent.fn
+        else (f"at {agent.rel}:{agent.line}:{agent.col}")
+    )
+    if skipped:
+        where += f", +{_frames(skipped)} above it in library code"
+    out = f"{text} ({where})"
+    try:
+        source = read_line(agent.rel, agent.line) if read_line else None
+    except Exception:
+        source = None  # a diagnostic must never break the run
+    if source:
+        out += f"\n     {agent.line} | {source}"
+    return out
+
+
+def _frames(n: int) -> str:
+    return f"{n} frame" + ("" if n == 1 else "s")
+
+
+def _describe_elsewhere(frames: list[Frame]) -> str:
+    """Where the error DID come from, when none of it is the agent's."""
+    vendor = sum(1 for f in frames if f.kind == "vendor")
+    opaque = len(frames) - vendor
+    generated = "generated code (blob:/eval), which has no file to open"
+    if vendor and not opaque:
+        return (
+            "its only frame is in library code"
+            if vendor == 1
+            else f"all {vendor} frames are in library code"
+        )
+    if opaque and not vendor:
+        return (
+            f"its only frame is in {generated}"
+            if opaque == 1
+            else f"all {opaque} frames are in {generated}"
+        )
+    return f"{_frames(vendor)} in library code, {opaque} in {generated}"
+
+
+def _line_reader(runtime: "AppRuntime") -> Any:
+    """``(rel, lineno) -> source line | None``, read from the workspace.
+
+    Called off the browser loop-thread (see the call site): it takes the
+    workspace lock, which the route dispatch also holds."""
+
+    def read_line(rel: str, lineno: int) -> str | None:
+        ws = runtime._ws
+        path = f"{runtime._app_root}/{rel}"
+        try:
+            with ws.lock:
+                if not ws.fs.exists(path) or not ws.fs.isfile(path):
+                    return None
+                data = ws.fs.read(path)
+            if len(data) > _MAX_ANNOTATED_BYTES:
+                return None
+            lines = data.decode("utf-8", errors="replace").splitlines()
+            if not 1 <= lineno <= len(lines):
+                return None
+            return lines[lineno - 1].strip() or None
+        except Exception:
+            return None  # a diagnostic must never break the run
+
+    return read_line
+
+
+def _asset_prefixes(runtime: "AppRuntime") -> tuple[str, ...]:
+    return tuple(
+        str(p).strip("/") for p in getattr(runtime.config, "static_assets", {})
+    )
+
+
+def _annotate_page_errors(
+    runtime: "AppRuntime", records: list[tuple[str, str, str]]
+) -> tuple[str, ...]:
+    """Render collected (name, message, stack) records. Runs off the
+    browser loop-thread — it reads the workspace fs under ``ws.lock``,
+    which route dispatch holds too, and blocking the loop would stall
+    every other test_app sharing it."""
+    prefixes = _asset_prefixes(runtime)
+    read_line = _line_reader(runtime)
+    return tuple(
+        describe_page_error(
+            name, message, stack, asset_prefixes=prefixes, read_line=read_line
+        )
+        for name, message, stack in records[:20]
+    )
 
 
 @dataclass(frozen=True)
@@ -160,7 +386,7 @@ async def _run_actions(
     # order, and carry the count — a genuinely repeating log (a retry
     # storm, a render loop) still reads as repeating.
     console: dict[str, int] = {}
-    page_errors: list[str] = []
+    page_error_records: list[tuple[str, str, str]] = []
     results: list[ActionResult] = []
     screenshots: list[str] = []
     rejected: dict[str, None] = {}  # ordered de-dupe
@@ -181,6 +407,17 @@ async def _run_actions(
     def _console_lines() -> tuple[str, ...]:
         return tuple(
             line if n == 1 else f"{line} (x{n})" for line, n in console.items()
+        )
+
+    async def _rendered_errors() -> tuple[str, ...]:
+        """Render collected page errors, reading the agent's source for
+        the offending line. Hopped off the browser loop for the same
+        reason route dispatch is: it takes ``ws.lock``, and this loop is
+        shared by every concurrent test_app."""
+        if not page_error_records:
+            return ()
+        return await loop.run_in_executor(
+            None, _annotate_page_errors, runtime, page_error_records
         )
 
     async def route_handler(route: Any, request: Any) -> None:
@@ -283,30 +520,17 @@ async def _run_actions(
         try:
 
             def _page_error(e: Any) -> None:
-                # Runtime errors carry "at <url>:line:col" in the stack
-                # — keep it (the agent can open that line of its own
-                # file). Parse errors carry NOTHING through pageerror;
-                # say so instead of leaving a bare token message.
-                text = f"{getattr(e, 'name', '') or 'Error'}: " + (
-                    getattr(e, "message", None) or str(e)
-                )
-                stack = getattr(e, "stack", "") or ""
-                at = next(
+                # Collect raw here and render later: describing an error
+                # well means reading the agent's source file, and this
+                # callback runs ON the browser loop-thread, where taking
+                # ws.lock would stall every other test_app sharing it.
+                page_error_records.append(
                     (
-                        ln.strip()
-                        for ln in stack.splitlines()
-                        if ln.strip().startswith("at ")
-                    ),
-                    None,
-                )
-                if at:
-                    text += f" ({at})"
-                elif getattr(e, "name", "") == "SyntaxError":
-                    text += (
-                        " (parse error: the browser reports no line — "
-                        "bisect the <script> blocks to find it)"
+                        getattr(e, "name", "") or "Error",
+                        getattr(e, "message", None) or str(e),
+                        getattr(e, "stack", "") or "",
                     )
-                page_errors.append(text)
+                )
 
             page = await context.new_page()
             page.on("console", _console)
@@ -323,7 +547,7 @@ async def _run_actions(
                 return TestAppResult(
                     ok=False,
                     console=_console_lines(),
-                    page_errors=tuple(page_errors[:20]),
+                    page_errors=await _rendered_errors(),
                     rejected=tuple(rejected),
                     load_error=str(e),
                 )
@@ -443,10 +667,10 @@ async def _run_actions(
                     break  # later actions depend on earlier ones
 
             return TestAppResult(
-                ok=ok and not page_errors,
+                ok=ok and not page_error_records,
                 results=tuple(results),
                 console=_console_lines(),
-                page_errors=tuple(page_errors[:20]),
+                page_errors=await _rendered_errors(),
                 screenshots=tuple(screenshots),
                 rejected=tuple(rejected),
             )

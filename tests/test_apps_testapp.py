@@ -6,20 +6,6 @@ from nontainer import Workspace
 from nontainer.apps import enable_apps, render_test_app
 from nontainer.providers import KvgitProvider
 
-
-@pytest.fixture(scope="module")
-def chromium_available():
-    pytest.importorskip("playwright")
-    from playwright.sync_api import sync_playwright
-
-    try:
-        with sync_playwright() as p:
-            b = p.chromium.launch()
-            b.close()
-    except Exception as e:  # pragma: no cover
-        pytest.skip(f"chromium unavailable: {e}")
-
-
 APP_HTML = """<!doctype html>
 <html><body>
 <h1 id="title">Scores</h1>
@@ -367,7 +353,11 @@ def test_page_errors_carry_locations(chromium_available):
     )
     result = rt.test_app([{"read": "#x"}])
     runtime_err = next(e for e in result.page_errors if "usePreactHooks" in e)
-    assert "at https://" in runtime_err and ":3:" in runtime_err
+    # The location names the agent's own FILE (an inline script reports
+    # the document url, whose lines are index.html's) and quotes the
+    # line, so the repair does not cost a call to go look it up.
+    assert "index.html:3:" in runtime_err
+    assert "3 | usePreactHooks();" in runtime_err
     parse_err = next(e for e in result.page_errors if "SyntaxError" in e)
     assert "bisect" in parse_err
     ws.close()
