@@ -166,10 +166,11 @@ explains the magic. Override with `tools="terminal"` / `"split"`.
 ```python
 from nontainer import workspace
 from nontainer.adapters.agno import WorkspaceTools
-from nontainer.apps import enable_apps
+from nontainer.apps import AppsConfig, enable_apps
 
+APPS = AppsConfig()                       # build ONE; see serving below
 ws = workspace(session_id)
-runtime = enable_apps(ws)                 # registers the `curl` builtin
+runtime = enable_apps(ws, APPS)           # registers the `curl` builtin
 agent = Agent(model=..., tools=[WorkspaceTools(ws, apps=runtime)])
 ```
 
@@ -202,10 +203,24 @@ To share an app, publish a **frozen snapshot** and mount the router:
 from nontainer.apps import build_router, mint_token
 
 # resolve returns a read-only Workspace pinned to the published commit
-router = build_router(lambda token: my_snapshots.get(token))
+router = build_router(lambda token: my_snapshots.get(token), config=APPS)
 app.mount("/apps", router)     # FastAPI or Starlette
 # hand out: https://your.host/apps/{token}/
 ```
+
+**Pass the SAME `AppsConfig` to `enable_apps` and `build_router`.** It is
+one declaration governing two lifecycles: authoring drives `test_app`'s
+interception and the agent's tool description, serving drives the CSP and
+which static assets exist. Two configs that disagree are an app that
+verifies green and breaks published — the one failure `test_app` cannot
+catch. Both default when omitted, so a mismatch stays invisible until you
+customize one.
+
+Fixed files the app needs but the agent shouldn't author — a vendored
+component library, fonts, a charting bundle — go on that config as
+`static_assets={"vendor": "/srv/assets"}` and serve at `vendor/…`. They
+never enter the workspace, which is what makes an air-gapped deployment
+work without a CDN. See [apps.md](apps.md).
 
 Serving is read-only and concurrent. Mutable app state does **not** go
 in the workspace — it goes to an external store (a sqlite/postgres

@@ -15,7 +15,9 @@ forks/rolls back with the session.
 
 Supported: the dispatch core, the handler contract, a `curl` terminal
 builtin, `test_app` via Playwright, a Starlette `APIRouter` for live
-serving.
+serving, and embedder-supplied static assets served alongside the app
+(`AppsConfig.static_assets` — vendored libraries, fonts; the air-gap
+path).
 
 Deliberately out of scope: websockets/SSE/streaming, background tasks,
 middleware/auth hooks, `llm()` inside handlers, dynamic route segments

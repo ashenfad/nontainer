@@ -161,6 +161,12 @@ the app read-only and concurrently at `/apps/{token}/...`; mutable app state
 lives in an external store injected via `host_objects`, not the (frozen)
 workspace.
 
+Fixed browser files the agent shouldn't author -- a vendored component
+library, fonts, a charting bundle -- are declared once as
+`AppsConfig.static_assets` and served alongside the app without entering
+the workspace. That's what a house design system rides on, and what makes
+an **air-gapped** deployment work with no CDN in reach.
+
 Full design -- handler contract, execution model, test_app DSL,
 serving/threat model: [docs/apps.md](docs/apps.md).
 

@@ -553,8 +553,21 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            script_hosts=DEFAULT_SCRIPT_HOSTS,  # where browser scripts may
            #   load from — drives test_app interception, the served CSP,
            #   and the agent-facing allowlist sentence (one declaration)
-           apps_primer=None)  # embedder guidance appended to the apps
+           apps_primer=None,  # embedder guidance appended to the apps
            #   notes (private component libs, house conventions)
+           static_assets={})  # {url_prefix: host_dir} — fixed files
+           #   served WITH the app but absent from the workspace: a
+           #   vendored component library, fonts, a charting bundle.
+           #   {"vendor": "/srv/assets"} serves /srv/assets/mui.js at
+           #   vendor/mui.js. To the browser what host_objects are to
+           #   handlers: embedder-supplied, reached at request time,
+           #   outside the versioning plane — so the agent cannot ls,
+           #   read, or edit them (it is told so, in a sentence derived
+           #   from this mapping; `curl vendor/mui.js` still works), and
+           #   they add nothing to commits, forks, or a guest tree.
+           #   Same-origin, so script_hosts needs no entry. Assets skip
+           #   max_response_bytes and win over a workspace file at the
+           #   same path (noted in api.log). See apps.md.
 
 AppRuntime.dispatch(request: Request) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", ...) -> TestAppResult
@@ -605,7 +618,11 @@ build_router(
     *,
     config: AppsConfig | None = None,
     csp: str | None = None,  # None → derived from config.script_hosts
-    #   (build_csp); a string overrides wholesale; "" disables
+    #   (build_csp); a string overrides wholesale; "" disables.
+    #   Carries 'wasm-unsafe-eval': browsers gate WebAssembly on
+    #   script-src, and test_app enforces the allowlist by intercepting
+    #   requests rather than sending this header — so without it a
+    #   wasm-backed bundle verifies green and dies published.
     on_log: Callable[[str], None] | None = None,  # default: nontainer.apps logger
 ) -> Router                            # ASGI; app.mount("/apps", router)
 
