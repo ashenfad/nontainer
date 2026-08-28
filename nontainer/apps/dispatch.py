@@ -413,20 +413,28 @@ class AppRuntime:
         ``max_response_bytes`` (see :meth:`_dispatch`)."""
         if request.method.upper() != "GET":
             raise HttpError(405, "static paths are GET-only")
-        rel = request.path.strip("/") or "index.html"
+        # Normalize `.`/`..` and confine to the app root FIRST, before
+        # anything reads the path. Without this, traversal segments
+        # escape: `/../secret.md` reads any workspace file and
+        # `/./api/h.py` serves backend source (defeating the /api/ split
+        # and the _-prefix non-routable rule). normpath collapses the
+        # segments; the path must then sit strictly under /app/ (so
+        # `/app` itself and a sibling like `/apple` are both rejected).
+        #
+        # Asset matching happens on the CANONICAL path for the same
+        # reason it happens at all: `/x/../vendor/lib.js` must not miss
+        # the prefix and fall through to a workspace file, which would
+        # quietly break the asset-over-workspace precedence for any
+        # caller that preserves dot segments.
+        path = posixpath.normpath(
+            f"{self._app_root}/{request.path.strip('/') or 'index.html'}"
+        )
+        if not path.startswith(self._app_root + "/"):
+            raise HttpError(404, f"not found: {request.path}")
+        rel = path[len(self._app_root) + 1 :]
         asset = self._asset_response(rel, request)
         if asset is not None:
             return asset, True
-        # Normalize `.`/`..` and confine to the app root. Without this,
-        # traversal segments escape: `/../secret.md` reads any workspace
-        # file and `/./api/h.py` serves backend source (defeating the
-        # /api/ split and the _-prefix non-routable rule). normpath
-        # collapses the segments; the path must then sit strictly under
-        # /app/ (so `/app` itself and a sibling like `/apple` are both
-        # rejected).
-        path = posixpath.normpath(f"{self._app_root}/{rel}")
-        if not path.startswith(self._app_root + "/"):
-            raise HttpError(404, f"not found: {request.path}")
         # Backend is never served as static. The /api/ URL prefix routes
         # to handlers, but a static request that normalizes INTO api/
         # (e.g. `/./api/h.py`, `/x/../api/_shared.py`) would otherwise
@@ -447,9 +455,9 @@ class AppRuntime:
         for prefix, fs in self._assets.items():
             if rel != prefix and not rel.startswith(prefix + "/"):
                 continue
-            # normpath first: IsolatedFS confines, but a `..` that
-            # escapes the PREFIX would otherwise be handed to it as a
-            # path it has no reason to refuse.
+            # `rel` is already canonical (see _dispatch_static), so this
+            # cannot contain dot segments — but the guard is cheap and
+            # this method must not depend on its caller for confinement.
             inner = posixpath.normpath(rel[len(prefix) :].lstrip("/") or ".")
             if inner in (".", "") or inner.startswith(".."):
                 raise HttpError(404, f"not found: {request.path}")
@@ -462,18 +470,26 @@ class AppRuntime:
     def _note_shadowed_asset(self, rel: str) -> None:
         """An agent that writes app/vendor/x.js and then cannot see its
         change would debug the app; say what happened instead. Once per
-        path — a page reloads its scripts on every run."""
+        path — a page reloads its scripts on every run.
+
+        BUFFERED, not written: this fires on a static GET, and serving a
+        page is the read-only request that most often precedes a POST.
+        Writing here would dirty a clean workspace, and ``_dispatch_api``
+        gates per-request atomicity on ``not ws.dirty`` — so the note
+        would silently cost the next mutating handler its rollback. Same
+        reasoning as the request-line buffer; see ``_flush_if_free``."""
         if rel in self._shadow_notes:
             return
         path = posixpath.normpath(f"{self._app_root}/{rel}")
         if not self._ws.fs.exists(path):
             return
         self._shadow_notes.add(rel)
-        self._log(
+        self._pending.append(
             f"[assets] note: {path} is shadowed — {rel!r} is served from a "
             "read-only asset directory supplied by the host, so your file is "
             "NOT being served. Use a different path."
         )
+        self._flush_if_free()
 
     _TOP_DEF_RE = re.compile(r"^def[ \t]+([A-Za-z]\w*)[ \t]*\(", re.M)
 

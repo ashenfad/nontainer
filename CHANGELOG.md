@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses anything but `application/wasm` — and it would have failed with
   nothing in the log to explain it.
 
+### Changed
+
+- **The served CSP allows WebAssembly compilation** (`'wasm-unsafe-eval'`
+  in `script-src`). Browsers gate wasm on `script-src`, and `test_app`
+  enforces the script allowlist by intercepting requests rather than by
+  sending the header — so a vendored library with a wasm core
+  (duckdb-wasm, sql.js, pyodide) would verify green and then die only once
+  published. It permits wasm compilation only; it does not enable `eval`,
+  and it is far narrower than the `'unsafe-inline'` already on that line.
+
 ### Fixed
 
 - **`fork()` no longer drops the workspace's mounts.** A fork rebuilt its
