@@ -774,14 +774,14 @@ async def _run_actions(
         return " — selectors on the page: " + ", ".join(found)
 
     async def _capture(page: Any, label: str) -> str | None:
-        """Screenshot into the workspace; None when capped or impossible."""
+        """Screenshot into the workspace. ``None`` means the CAP was
+        reached -- a benign skip. A genuine failure RAISES, because
+        collapsing the two let an explicitly requested screenshot fail
+        and be reported as "cap reached", ok=True."""
         nonlocal shot_counter
         if shot_counter >= max_screenshots:
             return None
-        try:
-            png = await page.screenshot()
-        except Exception:
-            return None
+        png = await page.screenshot()
         shot_counter += 1
         path = f"{runtime._app_root}/screenshots/{label}-{shot_counter}.png"
         await loop.run_in_executor(None, _save_screenshot, runtime, path, png)
@@ -940,7 +940,21 @@ async def _run_actions(
                         # them before the navigation discards the page.
                         await _collect_csp(page)
                         target = str(action["goto"]).lstrip("/")
-                        await page.goto(_BASE_URL + target, timeout=load_timeout_ms)
+                        response = await page.goto(
+                            _BASE_URL + target, timeout=load_timeout_ms
+                        )
+                        # goto RESOLVES on 4xx/5xx -- it only raises for
+                        # transport failures -- so without this a
+                        # navigation to a missing page is a passing
+                        # action on a 404 document. `response` is None
+                        # for a same-document navigation, which did not
+                        # fetch anything to be wrong about.
+                        if response is not None and not response.ok:
+                            raise ValueError(
+                                f"goto {target!r} -> HTTP {response.status} "
+                                "(the page was not served; check the filename "
+                                "and that it is under the app root)"
+                            )
                         note = await settle(page)
                         value = target
                     elif "wait" in action:
@@ -963,7 +977,10 @@ async def _run_actions(
                     # one), so this is the last look at the page there
                     # will be. Without it the agent re-runs the whole
                     # test just to add a screenshot and see the state.
-                    shot = await _capture(page, "failure")
+                    try:
+                        shot = await _capture(page, "failure")
+                    except Exception:
+                        shot = None  # a diagnostic must never replace the error
                     if shot:
                         detail += f"\n  page at failure: {shot}"
                     results.append(ActionResult(i, action, ok=False, error=detail))
@@ -1067,7 +1084,13 @@ def _console_excerpt(console: tuple[str, ...], tail: int = 10) -> list[str]:
     ]
     if not earlier:
         return kept
-    return [*earlier[-5:], f"… {len(console) - len(kept) - 1} more lines …", *kept]
+    promoted = earlier[-5:]
+    # Count what is actually missing from the output, not what fell out
+    # of the tail: the promoted lines are on screen. A diagnostic that
+    # overstates its own elision is one an agent cannot reason from.
+    omitted = len(console) - len(kept) - len(promoted)
+    middle = [f"… {omitted} more lines …"] if omitted > 0 else []
+    return [*promoted, *middle, *kept]
 
 
 def render_test_app(result: TestAppResult) -> str:

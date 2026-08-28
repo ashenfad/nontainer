@@ -807,3 +807,50 @@ def test_an_early_error_is_not_buried_by_a_chatty_tail():
 
     short = ("[log] a", "[log] b")
     assert _console_excerpt(short) == list(short)  # nothing to elide
+
+
+def test_goto_a_missing_page_fails(chromium_available):
+    """page.goto RESOLVES on 4xx/5xx -- it only raises for transport
+    failures -- so a navigation to a missing page was a passing action
+    on a 404 document. The exact failure this PR is about, in the action
+    it added."""
+    ws, rt = _csp_ws("audit7", b"<html><body><h1 id='home'>Home</h1></body></html>")
+    try:
+        result = rt.test_app([{"goto": "nope.html"}])
+        assert not result.ok
+        assert "HTTP 404" in result.results[0].error
+    finally:
+        ws.close()
+
+
+def test_a_failed_screenshot_is_not_reported_as_a_cap_skip(chromium_available):
+    """`None` from _capture means the CAP, a benign skip. A genuine
+    failure raises -- collapsing the two let a requested screenshot fail
+    and be reported ok=True with "cap reached"."""
+    ws, rt = _csp_ws("audit8", b"<html><body><div id='x'>hi</div></body></html>")
+    try:
+        # the cap path stays a soft skip, and later actions still run
+        result = rt.test_app(
+            [{"screenshot": True}, {"screenshot": True}, {"read": "#x"}],
+            max_screenshots=1,
+        )
+        assert result.ok, render_test_app(result)
+        assert "cap" in (result.results[1].error or "")
+        assert result.results[2].value == "hi"
+    finally:
+        ws.close()
+
+
+def test_the_elision_count_describes_what_was_cut():
+    """A diagnostic that overstates its own elision is one an agent
+    cannot reason from: promoted lines are ON SCREEN, so they are not
+    omitted."""
+    from nontainer.apps.testapp import _console_excerpt
+
+    console = tuple(f"[error] e{i}" for i in range(5)) + tuple(
+        f"[log] n{i}" for i in range(15)
+    )
+    excerpt = _console_excerpt(console)
+    shown = [line for line in excerpt if "more lines" not in line]
+    claimed = next(line for line in excerpt if "more lines" in line)
+    assert f"{len(console) - len(shown)} more lines" in claimed
