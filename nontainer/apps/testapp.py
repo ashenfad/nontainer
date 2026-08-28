@@ -99,9 +99,13 @@ def coerce_actions(actions: Any) -> list[dict[str, Any]]:
 # These are pure functions over the stack text (the fs read is injected)
 # so they can be tested without a browser.
 
-_FRAME_RE = re.compile(
-    r"^\s*at\s+(?:(?P<fn>.*?)\s+\()?(?P<url>.+?):(?P<line>\d+):(?P<col>\d+)\)?\s*$"
-)
+_LOCATION_RE = re.compile(r"^(?P<url>.+):(?P<line>\d+):(?P<col>\d+)$")
+
+_MAX_QUOTED_LINE = 200
+"""Cap on the quoted source line. The file-size guard is not enough on
+its own: one minified or generated line can be most of a file, and
+page errors are not truncated downstream — so a single error could eat
+the whole observation budget and push out the diagnostics around it."""
 
 _MAX_ANNOTATED_BYTES = 512_000
 """Don't slurp a bundle to quote one line; agent-authored files are small
@@ -127,16 +131,30 @@ class Frame:
 
 def parse_frames(stack: str) -> list[Frame]:
     """Parse a V8 stack into frames, unclassified (``kind="opaque"``,
-    ``rel=None``). Lines that are not frames are skipped."""
+    ``rel=None``). Lines that are not frames are skipped.
+
+    The location is taken from the LAST parenthesised group, not the
+    first: a function name can itself contain parentheses (``at weird
+    (name) (app.js:1:2)``, and V8's nested-eval frames), and splitting
+    on the first one puts half the name into the url — which then reads
+    as third-party code and loses the agent its own frame."""
     out: list[Frame] = []
     for raw in (stack or "").splitlines():
-        m = _FRAME_RE.match(raw)
+        line = raw.strip()
+        if not line.startswith("at "):
+            continue
+        body, fn = line[3:].strip(), None
+        if body.endswith(")") and "(" in body:
+            cut = body.rfind("(")
+            fn = body[:cut].strip() or None
+            body = body[cut + 1 : -1]
+        m = _LOCATION_RE.match(body)
         if not m:
             continue
         out.append(
             Frame(
-                raw=raw.strip(),
-                fn=m.group("fn"),
+                raw=line,
+                fn=fn,
                 url=m.group("url"),
                 line=int(m.group("line")),
                 col=int(m.group("col")),
@@ -158,6 +176,12 @@ def classify_frame(frame: Frame, asset_prefixes: tuple[str, ...] = ()) -> Frame:
     """
     url = frame.url
     rel: str | None = None
+    if any(c in url for c in " \t()"):
+        # Not a URL we can attribute — V8's nested-eval frames
+        # ("eval at fn (app.js:1:2), <anonymous>:1:1") survive the
+        # parse but name no single file. Better opaque than pointed at
+        # a path that doesn't exist.
+        return Frame(**{**vars(frame), "rel": None, "kind": "opaque"})
     if url.startswith(_BASE_URL):
         rel = url[len(_BASE_URL) :]
     elif url.rstrip("/") == _BASE_URL.rstrip("/"):
@@ -233,8 +257,21 @@ def describe_page_error(
     except Exception:
         source = None  # a diagnostic must never break the run
     if source:
-        out += f"\n     {agent.line} | {source}"
+        out += f"\n     {agent.line} | {_clip(source, agent.col)}"
     return out
+
+
+def _clip(source: str, col: int, limit: int = _MAX_QUOTED_LINE) -> str:
+    """Keep the quoted line to a glanceable size, windowed on the error
+    column. A generated or minified line can be most of a file, and the
+    first ``limit`` characters of one say nothing about a fault 200k
+    columns in — so slide the window to where the error actually is."""
+    if len(source) <= limit:
+        return source
+    if col <= limit:
+        return source[:limit] + " …"
+    start = max(0, col - limit // 2)
+    return "… " + source[start : start + limit] + " …"
 
 
 def _frames(n: int) -> str:

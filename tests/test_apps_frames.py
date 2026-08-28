@@ -185,3 +185,68 @@ def test_vendor_frames_are_skipped_end_to_end(chromium_available, tmp_path):
         assert "above it in library code" in err
     finally:
         ws.close()
+
+
+# -- review regressions ----------------------------------------------------
+
+
+def test_a_function_name_containing_parens_keeps_its_location():
+    """The location is the LAST parenthesised group. Splitting on the
+    first one puts half the function name into the url, which then
+    reads as third-party code — losing the agent the one frame it can
+    act on."""
+    (frame,) = parse_frames(f"    at weird (name) ({BASE}app.js:1:2)")
+    assert frame.url == f"{BASE}app.js"
+    assert frame.fn == "weird (name)"
+    assert classify_frame(frame).kind == "agent"
+
+
+def test_a_frame_with_no_parens_still_parses():
+    (frame,) = parse_frames(f"    at {BASE}app.js:7:1")
+    assert frame.fn is None and frame.url == f"{BASE}app.js" and frame.line == 7
+
+
+def test_nested_eval_frames_are_opaque_not_misattributed():
+    """V8's nested-eval shape survives the parse but names no single
+    file; pointing at a path that doesn't exist is worse than saying
+    the code was generated."""
+    stack = f"    at eval (eval at run ({BASE}app.js:1:2), <anonymous>:1:1)"
+    assert kinds(stack) == ["opaque"]
+
+
+def test_a_long_source_line_is_clipped():
+    """A minified or generated line can be most of a file, and page
+    errors are not truncated downstream — one error must not eat the
+    whole observation budget."""
+    out = describe_page_error(
+        "TypeError",
+        "x",
+        f"    at App ({BASE}app.js:1:2)",
+        read_line=lambda r, n: "x" * 400_000,
+    )
+    assert len(out) < 500
+    assert "…" in out
+
+
+def test_a_clip_windows_on_the_error_column():
+    """The first 200 characters of a minified line say nothing about a
+    fault 200k columns in."""
+    source = "a" * 100_000 + "BOOM" + "b" * 100_000
+    out = describe_page_error(
+        "TypeError",
+        "x",
+        f"    at App ({BASE}app.js:1:100002)",
+        read_line=lambda r, n: source,
+    )
+    assert "BOOM" in out
+    assert len(out) < 500
+
+
+def test_a_short_line_is_quoted_whole():
+    out = describe_page_error(
+        "TypeError",
+        "x",
+        f"    at App ({BASE}app.js:42:13)",
+        read_line=lambda r, n: "onClick={svae}",
+    )
+    assert out.endswith("42 | onClick={svae}")
