@@ -555,11 +555,14 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   and the agent-facing allowlist sentence (one declaration)
            apps_primer=None,  # embedder guidance APPENDED to the apps
            #   notes (available endpoints, house conventions)
-           frontend_notes=None,  # what libraries exist and where they
-           #   come from — the one part of the notes that is about
-           #   SUPPLY, which only the embedder knows. None = the
-           #   built-in block (Preact/htm from esm.sh, plotly from
-           #   jsdelivr); "" omits it; a string REPLACES it. Import
+           frontend_notes=None,  # which frontend approach to reach for,
+           #   which libraries exist, and where they come from — the
+           #   part of the notes only the embedder can know. None = the
+           #   built-in block ("plain DOM is the most reliable choice",
+           #   Preact/htm from esm.sh, plotly from jsdelivr); "" omits
+           #   it; a string REPLACES it — including the plain-DOM
+           #   recommendation, which is the point for an embedder
+           #   vendoring a design system. Import
            #   render.DEFAULT_FRONTEND_NOTES to extend rather than
            #   discard. Replaces (not appends) because the built-in
            #   block says "copy this exactly" and names a CDN — a

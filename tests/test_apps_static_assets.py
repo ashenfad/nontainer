@@ -445,3 +445,46 @@ def test_the_default_frontend_choice_is_the_embedders():
     for notes in (default, house):
         assert "fetch('api/scores')" in notes
         assert "never guess a global" in notes
+
+
+REPLACEABLE_CONTENT = (
+    "MOST RELIABLE",  # the default CHOICE of approach
+    "esm.sh/preact",  # ... and the libraries that choice implies
+    "plotly.js-dist-min",
+    "scattergeo",
+)
+"""The mirror of SHAPE_GUIDANCE: everything an override REPLACES.
+
+Together the two tuples are this module's statement of the split, in one
+place instead of scattered across a docstring, two docs and a changelog
+— which is how "plain DOM is most reliable" came to be documented as
+surviving an override while the code had already moved it."""
+
+
+def test_the_split_is_exactly_these_two_lists():
+    """Whatever is replaceable must vanish on override, and whatever is
+    shape must not. A claim that drifts between the two shows up here
+    before it reaches a docstring."""
+    from nontainer.adapters.render import apps_notes
+
+    default = apps_notes(AppsConfig())
+    overridden = apps_notes(AppsConfig(frontend_notes="HOUSE: use our kit."))
+
+    for item in REPLACEABLE_CONTENT:
+        assert item in default, f"{item!r} missing from the default block"
+        assert item not in overridden, f"{item!r} survived an override"
+    for item in SHAPE_GUIDANCE:
+        assert item in default and item in overridden, f"{item!r} is not universal"
+
+
+def test_the_template_does_not_carry_the_default_choice():
+    """Structural: the sentence lives in DEFAULT_FRONTEND_NOTES, not in
+    the always-on template. Asserted against the source so a future edit
+    cannot quietly move it back and re-contradict an embedder."""
+    from nontainer.adapters.render import (
+        _APPS_NOTES_TEMPLATE,
+        DEFAULT_FRONTEND_NOTES,
+    )
+
+    assert "MOST RELIABLE" in DEFAULT_FRONTEND_NOTES
+    assert "MOST RELIABLE" not in _APPS_NOTES_TEMPLATE
