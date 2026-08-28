@@ -175,6 +175,64 @@ The insight: agents don't need build *tooling*, they need build
 itself. test_app is indifferent to all of this; it serves whatever is
 under /app.
 
+### Vendored assets: files served with the app, absent from the workspace
+
+`AppsConfig.static_assets` maps a URL prefix to a host directory:
+
+```python
+config = AppsConfig(static_assets={"vendor": "/srv/appassets"})
+runtime = enable_apps(ws, config)
+app.mount("/apps", build_router(resolve, config=config))   # the SAME config
+```
+
+`/srv/appassets/mui.js` then serves at `vendor/mui.js`, for the agent's
+`curl`, for test_app, for the live preview, and for a published
+snapshot — all four go through `dispatch`, so one declaration covers
+them. This is the air-gap answer, and the way to put a house component
+library in front of an agent.
+
+**It is deliberately not a `Mount`.** A mount puts files in the
+workspace, where the agent can read them and a remote executor ships
+them to its guest. These bytes are not workspace state: they are fixed,
+identical across every session, authored by nobody in the loop, and
+consumed by the browser at request time. The right analogy is the
+backend one — **static assets are to the browser what `host_objects`
+are to handlers**: an embedder-supplied capability reached at request
+time, outside the versioning plane. So they cost nothing in commits or
+forks, never enter a guest tree, and a published snapshot needs no copy.
+
+What follows from that:
+
+- **The agent cannot `ls`, read, or edit them**, and is told so in the
+  apps notes — a sentence derived from `static_assets` itself, not
+  hand-written into `apps_primer`, so the two cannot drift. It *can*
+  request one (`curl vendor/lib.js | head -c 300`), which is enough to
+  confirm a bundle is really there.
+- **No `script_hosts` entry is needed.** Vendored assets are
+  same-origin, and `'self'` is always allowed by the served CSP. Adding
+  a host for them would loosen the supply-chain pin for nothing.
+- **Assets win over a workspace file at the same path**, and the
+  collision is noted in `api.log` rather than shadowed silently — an
+  agent that writes `app/vendor/lib.js` and sees no change would
+  otherwise debug the app.
+- **They are exempt from `max_response_bytes`.** That cap catches a
+  handler returning something runaway; an asset's size is a decision the
+  embedder already made, and a charting bundle clears the 2MB default on
+  its own.
+- **Readable ≠ servable.** A minified bundle teaches an agent nothing,
+  so if it needs to *understand* a private library, ship a curated API
+  surface — a components manifest, a props cheatsheet, a working example
+  page — as a seeded skill, where reference files are working files to
+  copy. A few KB that helps, instead of a few MB that doesn't.
+- The two mechanisms compose: an embedder wanting the real source
+  readable can declare `static_assets` *and* mount the unminified
+  source.
+
+The one obligation: declare it on the **one** `AppsConfig` passed to
+both `enable_apps` and `build_router`. Assets present while authoring
+and missing while serving are an app that verifies green and 404s
+published — see the delivery note below.
+
 ### Script hosts: one declaration, four surfaces
 
 `AppsConfig.script_hosts` is the single statement of where browser
@@ -314,6 +372,13 @@ Composable paths that already exist with no new API:
   (No "freeze the API into static JSON" export: a degraded copy of
   an app masquerading as the app — rejected for the usual reason.)
 - **Share-by-URL**: mount the router, hand out the capability URL.
+
+`static_assets` adds one obligation to both paths, the same class as
+`host_objects` and CSP rather than a new one: the assets live on the
+host, not in the snapshot, so a `tar -czf app.tgz app` export does not
+contain them and a served snapshot needs the router configured with the
+same `AppsConfig`. An app that verifies green against assets the serving
+side never declared is the one failure `test_app` cannot catch.
 
 The ONE delivery opinion nontainer owns, because it must be baked
 into authoring: **apps are relocatable**. They are served under an

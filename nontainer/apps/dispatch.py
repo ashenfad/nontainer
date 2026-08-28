@@ -23,8 +23,9 @@ import json
 import posixpath
 import re
 import time
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from ..executor import ViewSpec
@@ -91,7 +92,51 @@ _STATIC_TYPES = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".txt": "text/plain; charset=utf-8",
+    # Vendored bundles bring these. A font survives the octet-stream
+    # fallback; wasm does NOT — WebAssembly.instantiateStreaming refuses
+    # anything but application/wasm, so a library with a wasm core would
+    # fail with nothing in the log to explain it.
+    ".wasm": "application/wasm",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".ttf": "font/ttf",
+    ".map": "application/json",
 }
+
+
+def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
+    """URL prefix -> read-only, confined filesystem over a host
+    directory. Reuses the composition a read-only ``Mount`` gets
+    (``ReadOnlyFS(IsolatedFS(dir))``) — same confinement primitive, a
+    different plane: this one never touches the workspace."""
+    if not static_assets:
+        return {}
+    from monkeyfs import IsolatedFS, ReadOnlyFS
+
+    out: dict[str, Any] = {}
+    for raw, source in static_assets.items():
+        prefix = str(raw).strip("/")
+        if not prefix or any(p in (".", "..", "") for p in prefix.split("/")):
+            raise ValueError(f"static_assets prefix must be a relative path: {raw!r}")
+        if prefix == "api" or prefix.startswith("api/"):
+            # /api/ routes to handlers before static ever runs, so an
+            # asset there would be silently unreachable.
+            raise ValueError(
+                f"static_assets prefix {raw!r} is unreachable: /api/ routes to handlers"
+            )
+        real = Path(source).expanduser().resolve()
+        if not real.is_dir():
+            raise ValueError(f"static_assets source is not a directory: {real}")
+        out[prefix] = ReadOnlyFS(IsolatedFS(str(real)))
+    return out
+
+
+def _content_type(path: str) -> str:
+    """Content type by extension, octet-stream when unknown."""
+    name = path.rsplit("/", 1)[-1]
+    ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+    return _STATIC_TYPES.get(ext, "application/octet-stream")
+
 
 # Trailer appended to handler source. Catches HttpError in-sandbox so
 # intentional errors come back structured, not as tracebacks.
@@ -135,6 +180,30 @@ class AppsConfig:
     """Embedder guidance appended to the apps notes in the tool
     description — e.g. a private component lib's known-good import
     block, available endpoints, house frontend conventions."""
+    static_assets: Mapping[str, str | Path] = field(default_factory=dict)
+    """URL prefix -> host directory of fixed files served WITH the app
+    but absent from the workspace: a vendored component library, fonts,
+    a charting bundle. ``{"vendor": "/srv/appassets"}`` serves
+    ``/srv/appassets/mui.js`` at ``vendor/mui.js``.
+
+    This is to the browser what ``host_objects`` is to handlers — an
+    embedder-supplied capability reached at request time, not workspace
+    state. So it is deliberately NOT a :class:`~nontainer.Mount`: the
+    agent cannot read, edit, or list these files (it is told as much,
+    and ``curl vendor/x.js`` still works for a peek), they never enter
+    the versioning plane or a remote executor's guest tree, and a
+    published snapshot needs no copy of them.
+
+    They are same-origin, so ``script_hosts`` needs no entry — ``'self'``
+    is always allowed by the served CSP. The two exemptions assets get
+    from handler rules are deliberate: no ``max_response_bytes`` cap
+    (the embedder chose these bytes; the cap exists to catch runaway
+    handler output), and precedence over a workspace file at the same
+    path, which is noted in ``api.log`` rather than shadowed silently.
+
+    Declare it on the ONE config an embedder passes to both
+    ``enable_apps`` and ``build_router``: assets missing from the
+    serving side are an app that verifies green and 404s published."""
 
 
 class AppRuntime:
@@ -168,6 +237,8 @@ class AppRuntime:
         self._log_started = False  # header written on first log write
         self._pending: list[str] = []  # request lines awaiting a free flush
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
+        self._shadow_notes: set[str] = set()  # asset collisions noted
+        self._assets = _build_assets(self._config.static_assets)
         self._contract = (Request, Response, HttpError)
         # Path layout, derived once from the workspace root.
         self._app_root = app_root(ws)
@@ -205,15 +276,20 @@ class AppRuntime:
 
     def _dispatch(self, request: Request) -> WireResponse:
         api = request.path.startswith("/api/")
+        asset = False
         try:
             if api:
                 resp = self._dispatch_api(request)
             else:
-                resp = self._dispatch_static(request)
+                resp, asset = self._dispatch_static(request)
         except HttpError as e:
             resp = _error_response(e.status, e.message)
+        # Declared assets skip the cap. It exists to catch a handler
+        # returning something runaway; an asset's size is a decision the
+        # embedder already made, and a vendored charting bundle clears
+        # the 2MB default on its own.
         cap = self._config.max_response_bytes
-        if len(resp.content) > cap:
+        if not asset and len(resp.content) > cap:
             resp = _error_response(500, "response too large")
         # Only /api requests: static assets are high-volume and
         # low-signal, and would bury the tracebacks the log exists for.
@@ -331,10 +407,16 @@ class AppRuntime:
 
     # -- static ------------------------------------------------------------
 
-    def _dispatch_static(self, request: Request) -> WireResponse:
+    def _dispatch_static(self, request: Request) -> tuple[WireResponse, bool]:
+        """Serve a static path. The flag says the bytes came from a
+        declared ``static_assets`` directory, which exempts them from
+        ``max_response_bytes`` (see :meth:`_dispatch`)."""
         if request.method.upper() != "GET":
             raise HttpError(405, "static paths are GET-only")
         rel = request.path.strip("/") or "index.html"
+        asset = self._asset_response(rel, request)
+        if asset is not None:
+            return asset, True
         # Normalize `.`/`..` and confine to the app root. Without this,
         # traversal segments escape: `/../secret.md` reads any workspace
         # file and `/./api/h.py` serves backend source (defeating the
@@ -354,10 +436,44 @@ class AppRuntime:
         fs = self._ws.fs
         if not fs.exists(path) or not fs.isfile(path):
             raise HttpError(404, f"not found: {request.path}")
-        name = path.rsplit("/", 1)[-1]
-        ext = "." + name.rsplit(".", 1)[-1] if "." in name else ""
-        ctype = _STATIC_TYPES.get(ext, "application/octet-stream")
-        return WireResponse(200, fs.read(path), ctype)
+        return WireResponse(200, fs.read(path), _content_type(path)), False
+
+    def _asset_response(self, rel: str, request: Request) -> WireResponse | None:
+        """Serve ``rel`` from a declared asset directory, or ``None`` if
+        no prefix claims it. Assets take precedence over a workspace file
+        at the same path — predictable, and it stops an agent shadowing
+        the design system by accident — but silent shadowing is its own
+        failure mode, so the collision is noted in api.log."""
+        for prefix, fs in self._assets.items():
+            if rel != prefix and not rel.startswith(prefix + "/"):
+                continue
+            # normpath first: IsolatedFS confines, but a `..` that
+            # escapes the PREFIX would otherwise be handed to it as a
+            # path it has no reason to refuse.
+            inner = posixpath.normpath(rel[len(prefix) :].lstrip("/") or ".")
+            if inner in (".", "") or inner.startswith(".."):
+                raise HttpError(404, f"not found: {request.path}")
+            if not fs.exists(inner) or not fs.isfile(inner):
+                raise HttpError(404, f"not found: {request.path}")
+            self._note_shadowed_asset(rel)
+            return WireResponse(200, fs.read(inner), _content_type(inner))
+        return None
+
+    def _note_shadowed_asset(self, rel: str) -> None:
+        """An agent that writes app/vendor/x.js and then cannot see its
+        change would debug the app; say what happened instead. Once per
+        path — a page reloads its scripts on every run."""
+        if rel in self._shadow_notes:
+            return
+        path = posixpath.normpath(f"{self._app_root}/{rel}")
+        if not self._ws.fs.exists(path):
+            return
+        self._shadow_notes.add(rel)
+        self._log(
+            f"[assets] note: {path} is shadowed — {rel!r} is served from a "
+            "read-only asset directory supplied by the host, so your file is "
+            "NOT being served. Use a different path."
+        )
 
     _TOP_DEF_RE = re.compile(r"^def[ \t]+([A-Za-z]\w*)[ \t]*\(", re.M)
 

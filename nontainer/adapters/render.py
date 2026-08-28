@@ -256,11 +256,38 @@ __SCRIPT_HOSTS__
 https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2. Images, fetches,
 styles, and fonts may use any https host (map tiles work); for maps,
 plotly's tile-free scattergeo/choropleth need no tiles at all.
-
+__STATIC_ASSETS__
 After changing the app, ALWAYS verify with the test_app tool before
 telling the user it works — it catches what endpoint-level checks
 can't (frontend wiring, absolute-URL mistakes, blocked scripts) and
 reports exactly what it rejected and why."""
+
+
+def _static_assets_note(config: Any) -> str:
+    """The sentence for AppsConfig.static_assets, or nothing when none
+    are declared. Derived rather than left to ``apps_primer``: an
+    embedder who had to declare the assets AND hand-write their
+    existence would be back to keeping two statements in sync, which is
+    what folding the script-host sentence into this template removed.
+
+    The negative half is the load-bearing half. These files are not in
+    the workspace, so an agent that looks for them with `ls` finds
+    nothing and concludes they are missing — then writes its own copy
+    at a path that is shadowed, and debugs an app that ignores it."""
+    prefixes = sorted(str(p).strip("/") for p in getattr(config, "static_assets", {}))
+    if not prefixes:
+        return ""
+    listed = ", ".join(f"{p}/" for p in prefixes)
+    one = prefixes[0]
+    return (
+        f"\nFiles under {listed} are served WITH your app — reference them\n"
+        f'relatively (<script src="{one}/lib.js">, no host needed; they are\n'
+        "same-origin, so the host list above does not apply). They are NOT in\n"
+        "your filesystem: you cannot ls, read, or edit them, and a file you\n"
+        "write at one of those paths is NOT served (the host's copy wins). To\n"
+        f"see what one holds, request it: curl {one}/lib.js | head -c 300.\n"
+    )
+
 
 _CURL_NOTE = """Test endpoints instantly with curl (no server): curl /api/scores?limit=3,
 curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
@@ -296,6 +323,7 @@ def apps_notes(
         config = AppsConfig()
     notes = (
         _APPS_NOTES_TEMPLATE.replace("__SCRIPT_HOSTS__", ", ".join(config.script_hosts))
+        .replace("__STATIC_ASSETS__", _static_assets_note(config))
         .replace("__WS__", "" if root == "/" else root.rstrip("/"))
         .replace("__CURL_NOTE__", _CURL_NOTE if commands else _NO_CURL_NOTE)
     )

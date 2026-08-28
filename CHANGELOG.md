@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **`AppsConfig.static_assets`** — a URL prefix → host directory mapping of
+  fixed files served *with* an app but absent from the workspace: a vendored
+  component library, fonts, a charting bundle. `{"vendor": "/srv/assets"}`
+  serves `/srv/assets/mui.js` at `vendor/mui.js`, for `curl`, `test_app`,
+  the live preview, and a published snapshot alike — all four go through
+  `dispatch`, so one declaration covers them.
+
+  This is what makes an air-gapped app possible (nothing to fetch from a
+  CDN) and what a house component library rides on. It is deliberately
+  **not** a `Mount`: these bytes are not workspace state but a property of
+  the serving environment, so they are to the browser what `host_objects`
+  are to handlers. The agent's filesystem never sees them — no commit
+  weight, no fork weight, nothing shipped to a remote executor's guest —
+  and the apps notes say so in a sentence derived from the config itself,
+  because an agent that looks with `ls`, finds nothing, and writes its own
+  copy has burned a turn on a file that will not be served. `curl
+  vendor/lib.js` still works for a peek.
+
+  Two deliberate exemptions from handler rules: assets skip
+  `max_response_bytes` (that cap catches runaway handler output; a charting
+  bundle clears the 2MB default on its own), and they take precedence over
+  a workspace file at the same path — noted in `api.log` rather than
+  shadowed silently.
+
+  Assets are same-origin, so `script_hosts` needs no entry. Declare them on
+  the one `AppsConfig` passed to both `enable_apps` and `build_router`:
+  present while authoring and missing while serving is the one failure
+  `test_app` cannot catch.
+
+- **Static serving knows the types a vendored bundle brings** — `.wasm`,
+  `.woff2`, `.woff`, `.ttf`, `.map`. A font survives the octet-stream
+  fallback; `.wasm` does not, since `WebAssembly.instantiateStreaming`
+  refuses anything but `application/wasm` — and it would have failed with
+  nothing in the log to explain it.
+
 ### Fixed
 
 - **`fork()` no longer drops the workspace's mounts.** A fork rebuilt its
