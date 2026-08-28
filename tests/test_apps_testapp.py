@@ -700,3 +700,110 @@ def test_a_slow_promise_that_resolves_in_time_still_passes(chromium_available):
         assert result.ok, result
     finally:
         ws.close()
+
+
+# -- reliability + ergonomics audit -------------------------------------------
+
+
+def test_an_absolute_url_fails_the_run(chromium_available):
+    """apps.md promises relocatability violations "fail during
+    verification, not at delivery". They warned. And the 404 carries a
+    JSON body, so an app calling .json() without checking .ok renders as
+    if fine -- PASS on an app that 404s in production."""
+    body = b"""<html><body><div id="s">idle</div>
+<script>fetch('/api/data').then(r => r.json())
+  .then(() => document.getElementById('s').textContent = 'got');</script>
+</body></html>"""
+    ws, rt = _csp_ws("audit1", body)
+    try:
+        result = rt.test_app([{"read": "#s"}])
+        assert result.results[0].value == "got"  # the app looked fine ...
+        assert not result.ok  # ... and the run does not
+        assert any("absolute path" in r for r in result.rejected)
+    finally:
+        ws.close()
+
+
+DELAYED = b"""<html><body><div id="n">0</div>
+<script>setTimeout(() => { document.getElementById('n').textContent = '42'; }, 350);</script>
+</body></html>"""
+
+
+def test_eval_settles_like_read(chromium_available):
+    """`eval` is where agents ask what `read` cannot express, so stale
+    answers there are worse, not better. It used to return '0' on this
+    page while `read` returned 42."""
+    ws, rt = _csp_ws("audit2", DELAYED)
+    try:
+        result = rt.test_app([{"eval": "document.getElementById('n').textContent"}])
+        assert result.results[0].value == "'42'"
+    finally:
+        ws.close()
+
+
+def test_a_failed_action_captures_the_page(chromium_available):
+    """The run stops at a failure, so a trailing screenshot action never
+    happens -- the agent re-runs the whole test just to look."""
+    ws, rt = _csp_ws("audit3", b"<html><body><div id='x'>hi</div></body></html>")
+    try:
+        result = rt.test_app([{"click": "#nope"}, {"screenshot": True}])
+        assert not result.ok
+        assert result.screenshots, "no screenshot at the moment of failure"
+        assert "page at failure:" in result.results[0].error
+    finally:
+        ws.close()
+
+
+def test_a_selector_miss_names_what_is_present(chromium_available):
+    """Playwright says only what it waited for, so an agent re-guesses
+    blind. Everywhere else this module names the door."""
+    body = b"""<html><body><div id="title">Runs</div>
+<button id="refresh">go</button>
+<table><tr data-key="42"><td>x</td></tr></table></body></html>"""
+    ws, rt = _csp_ws("audit4", body)
+    try:
+        result = rt.test_app([{"click": "#reefresh"}])
+        error = result.results[0].error
+        assert "#refresh" in error and "#title" in error
+        assert '[data-key="42"]' in error
+    finally:
+        ws.close()
+
+
+def test_goto_navigates_within_the_app(chromium_available):
+    """A multi-page app could only ever be verified at its entry."""
+    ws, rt = _csp_ws("audit5", b"<html><body><h1 id='home'>Home</h1></body></html>")
+    try:
+        ws.fs.write(
+            "/workspace/app/about.html",
+            b"<html><body><h1 id='ab'>About</h1></body></html>",
+        )
+        ws.checkpoint()
+        result = rt.test_app(
+            [
+                {"goto": "about.html"},
+                {"read": "#ab"},
+                {"goto": "index.html"},
+                {"read": "#home"},
+            ]
+        )
+        assert result.ok, render_test_app(result)
+        assert result.results[1].value == "About"
+        assert result.results[3].value == "Home"
+    finally:
+        ws.close()
+
+
+def test_an_early_error_is_not_buried_by_a_chatty_tail():
+    """Pure function: console noise is exactly what a page with a
+    problem produces, so a plain tail drops the line that explains it."""
+    from nontainer.apps.testapp import _console_excerpt
+
+    console = ("[error] boom", *(f"[log] noise {i}" for i in range(14)))
+    excerpt = _console_excerpt(console)
+    assert "[error] boom" in excerpt
+    assert excerpt[-1] == "[log] noise 13"  # the tail is still the tail
+    assert any("more lines" in line for line in excerpt)  # and says what it cut
+
+    short = ("[log] a", "[log] b")
+    assert _console_excerpt(short) == list(short)  # nothing to elide

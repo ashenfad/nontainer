@@ -426,7 +426,8 @@ test_app(actions: list[Action], viewport: str|dict = "desktop") -> TestAppResult
 
 Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,
-`{"assert": js}`, `{"screenshot": true}`, `{"wait": ms}`.
+`{"assert": js}`, `{"goto": "about.html"}`, `{"screenshot": true}`,
+`{"wait": ms}`.
 
 - Waiting is two-tier. The idiom is OUTCOME-based — assertions that
   retry — and the `assert` action follows it, polled from the harness
@@ -480,9 +481,20 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   from a bundle. Same rule as the parse-error branch: a misleading
   diagnostic is worse than an absent one, because it sends the repair
   loop somewhere the agent cannot fix.
-- `TestAppResult.ok` is: loaded, no action errored, no assert falsy,
-  and no CSP violation stopped code running. A refused image or font
-  is a warning; refused *code* is a failure.
+- `TestAppResult.ok` is: loaded, no action errored, no assert falsy, no
+  CSP violation stopped code running, and no request used an **absolute
+  url**. A refused image or font is a warning; refused *code* is a
+  failure, and so is a relocatability bug — the harness 404s an absolute
+  path with a JSON body, so an app that calls `.json()` without checking
+  `.ok` renders as if fine while being broken in production.
+- **`read` and `eval` both settle before observing.** They are the two
+  expectation-free observations, and a stale answer from either is a
+  false green the agent cannot catch.
+- **A failed action captures the page.** The run stops there, so it is
+  the last look available; without it the agent re-runs the whole test
+  to add a screenshot. A selector that missed also gets the ids and
+  `data-key`s actually present — Playwright says only what it waited
+  for, which leaves an agent re-guessing blind.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/workspace/app/screenshots/` and return workspace paths in the observation —
