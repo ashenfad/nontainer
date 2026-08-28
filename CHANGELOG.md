@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **`assert` retries again under the CSP 0.3.5 started sending.** A
+  regression in that release, and a bad one: `page.wait_for_function`
+  installs its polling helper *into the page*, which needs
+  `'unsafe-eval'` — precisely what the enforced policy withholds. Every
+  retry died, so the assertion only ever saw the page's first frame.
+
+  An app that settles asynchronously — anything that fetches, which is
+  most of them — therefore **failed verification while being correct**,
+  and the failing assert also emitted a CSP rejection blaming the app for
+  the harness's own instrumentation. A false red on top of a misleading
+  diagnostic.
+
+  Asserts are now polled from the harness with `page.evaluate`, which
+  goes over CDP and is not subject to page policy. Retry semantics are
+  unchanged and slightly better: an expression that *raises* is retried
+  too, since a predicate reaching for a node the app hasn't rendered yet
+  throws on the first pass and succeeds on the third.
+
 ## 0.3.5 - 2026-08-28
 
 ### Changed

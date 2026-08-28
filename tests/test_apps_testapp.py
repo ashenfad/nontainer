@@ -617,3 +617,53 @@ def test_a_custom_policy_extends_the_intercepted_origins(chromium_available):
     from nontainer.apps.serve import build_csp
 
     assert _csp_script_origins(build_csp(DEFAULT_SCRIPT_HOSTS)) == DEFAULT_SCRIPT_HOSTS
+
+
+def test_an_assert_still_retries_under_the_enforced_csp(chromium_available):
+    """The regression 0.3.5 shipped. page.wait_for_function installs its
+    poller INTO the page, which needs 'unsafe-eval' -- blocked by the
+    policy this harness now sends. Every retry died, so an app that
+    merely settles asynchronously (i.e. anything that fetches) failed
+    verification, and the failing assert also emitted a CSP rejection
+    blaming the app for the harness's own instrumentation."""
+    body = b"""<html><body><div id="x">no</div>
+<script>setTimeout(() => { document.getElementById('x').textContent = 'yes'; }, 400);</script>
+</body></html>"""
+    ws, rt = _csp_ws("csp7", body)
+    try:
+        result = rt.test_app(
+            [{"assert": "document.getElementById('x').textContent === 'yes'"}]
+        )
+        assert result.ok, result  # the app is correct
+        assert not result.rejected  # and was not blamed for the harness
+    finally:
+        ws.close()
+
+
+def test_a_failing_assert_does_not_blame_the_app_for_csp(chromium_available):
+    ws, rt = _csp_ws("csp8", b"<html><body><div id='x'>hi</div></body></html>")
+    try:
+        result = rt.test_app([{"assert": "1 === 2"}])
+        assert not result.ok
+        assert result.results[0].error == "assertion is falsy"
+        assert not result.rejected
+    finally:
+        ws.close()
+
+
+def test_an_assert_retries_an_expression_that_throws(chromium_available):
+    """A predicate reaching into a node the app has not rendered yet
+    throws on the first pass and succeeds on the third -- the ordinary
+    shape of asserting against an app that fetches."""
+    body = b"""<html><body><div id="host"></div>
+<script>setTimeout(() => {
+  document.getElementById('host').innerHTML = '<span id="late">ready</span>';
+}, 300);</script></body></html>"""
+    ws, rt = _csp_ws("csp9", body)
+    try:
+        result = rt.test_app(
+            [{"assert": "document.querySelector('#late').textContent === 'ready'"}]
+        )
+        assert result.ok, result
+    finally:
+        ws.close()

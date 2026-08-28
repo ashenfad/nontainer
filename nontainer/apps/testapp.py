@@ -298,6 +298,33 @@ def _describe_elsewhere(frames: list[Frame]) -> str:
     return f"{_frames(vendor)} in library code, {opaque} in {generated}"
 
 
+_ASSERT_POLL_MS = 50
+
+
+async def _poll_assert(page: Any, expression: str, timeout_ms: int) -> tuple[bool, Any]:
+    """Retry ``expression`` until truthy or the budget runs out.
+
+    Returns ``(passed, why)``. An expression that RAISES is retried too:
+    a predicate reaching into a node the app has not rendered yet throws
+    on the first pass and succeeds on the third, which is the ordinary
+    shape of asserting against an app that fetches. Only the last error
+    is reported, so the message describes the state the run ended in
+    rather than the state it started in.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+    why: Any = "assertion is falsy"
+    while True:
+        try:
+            if await page.evaluate(expression):
+                return True, None
+            why = "assertion is falsy"
+        except Exception as e:
+            why = f"assertion errored: {e}"
+        if asyncio.get_running_loop().time() >= deadline:
+            return False, why
+        await asyncio.sleep(_ASSERT_POLL_MS / 1000)
+
+
 def blocked_script_note(url: str, script_hosts: tuple[str, ...]) -> str:
     """The harness's message for a script from a host that isn't allowed.
     Shared, because the block can now come from either side: request
@@ -777,20 +804,17 @@ async def _run_actions(
                     elif "eval" in action:
                         value = repr(await page.evaluate(action["eval"]))
                     elif "assert" in action:
-                        # Web-first assertion (THE Playwright idiom):
-                        # retry the predicate until truthy or timeout.
-                        try:
-                            await page.wait_for_function(
-                                action["assert"], timeout=assert_timeout_ms
-                            )
-                            passed, why = True, None
-                        except Exception:
-                            passed = False
-                            try:
-                                await page.evaluate(action["assert"])
-                                why = "assertion is falsy"
-                            except Exception as inner:
-                                why = f"assertion errored: {inner}"
+                        # Web-first assertion: retry the predicate until
+                        # truthy or timeout. Polled from HERE rather than
+                        # with page.wait_for_function, which installs its
+                        # poller into the page and needs `unsafe-eval` —
+                        # blocked by the CSP this harness now sends, so
+                        # every retry died and an app that merely settles
+                        # asynchronously failed. page.evaluate goes over
+                        # CDP instead and is not subject to page policy.
+                        passed, why = await _poll_assert(
+                            page, action["assert"], assert_timeout_ms
+                        )
                         results.append(
                             ActionResult(
                                 i, action, ok=passed, value=str(passed), error=why
