@@ -232,6 +232,11 @@ __CURL_NOTE__
 Frontend: for most apps, plain HTML + DOM + fetch is the MOST RELIABLE
 choice. Use RELATIVE urls and module names: fetch('api/scores') — never
 fetch('/api/x') (absolute) and never fetch('api/scores.py') (404).
+When a library is named for you below, import it EXACTLY as written:
+don't substitute a <script src> build for an ES module, and
+never guess a global (`preactHooks`, `window.MUI`) that a bundle might
+expose — a guessed name fails at runtime with nothing in the console
+naming the cause.
 __FRONTEND_NOTES__
 Shared backend code: put modules in __WS__/helpers (e.g.
 __WS__/helpers/data.py, then `from helpers import data` in any handler
@@ -249,9 +254,8 @@ reports exactly what it rejected and why."""
 
 
 DEFAULT_FRONTEND_NOTES = """
-If you want components, use Preact as ES MODULES — copy this known-good
-pattern exactly (no UMD <script src> builds, no guessing globals like
-`preactHooks`):
+If you want components, use Preact — copy this known-good pattern
+exactly:
 
     <script type="module">
       import { h, render } from 'https://esm.sh/preact@10';
@@ -276,10 +280,17 @@ vendors its own stack replaces this; one that vendors nothing keeps it
 and sees no change.
 
 What is NOT here, deliberately: "plain DOM is most reliable", relative
-URLs, "ES modules, not UMD, don't guess globals". Those are about the
-SHAPE of the code, they are true wherever the bytes come from, and
-agents get them wrong often enough that dropping them would cost every
-embedder — including the ones with nothing to say about libraries.
+URLs, and the rule against swapping a named import for a guessed
+global. Those are about the SHAPE of the code, they are true wherever
+the bytes come from, and agents get them wrong often enough that
+dropping them would cost every embedder — including the ones with
+nothing to say about libraries.
+
+The anti-guessing rule earns its place in the template rather than
+here, and a vendored stack is exactly why: with no CDN URL to anchor
+on, `vendor/mui.js` invites an agent to reach for `window.MUI` from
+memory. The risk goes UP on the path this seam exists to serve, so the
+guidance must not travel with the block an embedder replaces.
 """
 
 

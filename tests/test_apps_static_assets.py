@@ -348,25 +348,44 @@ def test_frontend_notes_replace_rather_than_append():
 
 
 def test_frontend_notes_can_be_omitted_entirely():
+    """What goes is SUPPLY: the hosts, the versions, the import block.
+    `preactHooks` stays — it is the evidenced example in the
+    anti-guessing rule, which lives in the template."""
     from nontainer.adapters.render import apps_notes
 
     notes = apps_notes(AppsConfig(frontend_notes=""))
-    assert "preact" not in notes.lower()
-    assert "plotly" not in notes.lower()
-    # the SHAPE guidance is not supply guidance, and stays
+    assert "esm.sh/preact" not in notes
+    assert "plotly.js-dist-min" not in notes
+    assert "scattergeo" not in notes
     assert "MOST RELIABLE" in notes and "RELATIVE urls" in notes
 
 
-def test_shape_guidance_survives_every_frontend_notes_setting():
-    """Relative URLs and 'plain DOM is most reliable' are true wherever
-    the bytes come from; agents get them wrong often enough that no
-    embedder should be able to lose them by accident."""
+SHAPE_GUIDANCE = (
+    "MOST RELIABLE",  # plain DOM first
+    "fetch('api/scores')",  # relative urls
+    "fetch('/api/x')",  # ... and the absolute form to avoid
+    "<script src>",  # don't swap a named import for a script tag
+    "never guess a global",  # ... or for an invented global
+    "preactHooks",  # the evidenced example
+)
+"""Every claim the docs make about what survives a frontend_notes
+override. Listed once, so the assertion cannot quietly drift to a
+convenient subset — which is how the guessed-global rule shipped inside
+the REPLACEABLE block while three docs said it was in the template."""
+
+
+@pytest.mark.parametrize("fn", [None, "", "Use vendor/mui.js.", "x"])
+def test_shape_guidance_survives_every_frontend_notes_setting(fn):
+    """Shape guidance is true wherever the bytes come from, and agents
+    get it wrong often enough that no embedder should be able to lose it
+    by accident. The anti-guessing rule matters MOST on the replaced
+    path: `vendor/mui.js` gives an agent no URL to anchor on, so
+    `window.MUI` from memory is the likely next move."""
     from nontainer.adapters.render import apps_notes
 
-    for fn in (None, "", "Use vendor/mui.js."):
-        notes = apps_notes(AppsConfig(frontend_notes=fn))
-        assert "fetch('api/scores')" in notes
-        assert "never" in notes and "fetch('/api/x')" in notes
+    notes = apps_notes(AppsConfig(frontend_notes=fn))
+    missing = [g for g in SHAPE_GUIDANCE if g not in notes]
+    assert not missing, f"lost with frontend_notes={fn!r}: {missing}"
 
 
 def test_an_empty_script_allowlist_reads_as_a_rule_not_a_bug():
@@ -390,3 +409,13 @@ def test_the_default_block_is_importable_for_extending():
     )
     assert "https://esm.sh/preact@10" in notes
     assert "vendor/house.mjs" in notes
+
+
+def test_positional_construction_matches_0_3_3():
+    """frontend_notes is declared LAST. Inserting it mid-dataclass would
+    silently rebind the sixth positional: static_assets would land in
+    frontend_notes, the assets would stop serving, and rendering the
+    notes would then AttributeError on a mapping."""
+    cfg = AppsConfig(5.0, 10_000_000, 2_000_000, ("esm.sh",), "primer", {"vendor": "."})
+    assert cfg.static_assets == {"vendor": "."}
+    assert cfg.frontend_notes is None

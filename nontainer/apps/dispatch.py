@@ -183,32 +183,6 @@ class AppsConfig:
     libraries, use ``frontend_notes``: that replaces, and appending a
     correction underneath the built-in block leaves the wrong
     instruction both first and more emphatic."""
-    frontend_notes: str | None = None
-    """What libraries the app can use and where they come from —
-    the one part of the apps notes that is a statement about SUPPLY,
-    which only the embedder knows.
-
-    ``None`` keeps the default block (Preact/htm from esm.sh, plotly
-    from jsdelivr — the right answer when nothing is vendored and the
-    CDN allowlist is reachable). ``""`` omits it. A string REPLACES it:
-
-        AppsConfig(
-            static_assets={"vendor": assets},
-            frontend_notes=(
-                "Charts: <script src='vendor/plotly.min.js'></script>.\\n"
-                "Components: import from 'vendor/preact.mjs'."
-            ),
-        )
-
-    Replacing matters most for an air-gapped deployment, where the
-    default block would tell the agent — emphatically, and by example —
-    to fetch from hosts that do not resolve. Import
-    ``nontainer.adapters.render.DEFAULT_FRONTEND_NOTES`` to extend the
-    default rather than discard it.
-
-    What stays regardless: relative URLs, "plain DOM is most reliable",
-    "ES modules, not UMD, don't guess globals". Those describe the shape
-    of the code, not where it comes from."""
     static_assets: Mapping[str, str | Path] = field(default_factory=dict)
     """URL prefix -> host directory of fixed files served WITH the app
     but absent from the workspace: a vendored component library, fonts,
@@ -233,6 +207,34 @@ class AppsConfig:
     Declare it on the ONE config an embedder passes to both
     ``enable_apps`` and ``build_router``: assets missing from the
     serving side are an app that verifies green and 404s published."""
+    frontend_notes: str | None = None
+    """What libraries the app can use and where they come from —
+    the one part of the apps notes that is a statement about SUPPLY,
+    which only the embedder knows.
+
+    ``None`` keeps the default block (Preact/htm from esm.sh, plotly
+    from jsdelivr — the right answer when nothing is vendored and the
+    CDN allowlist is reachable). ``""`` omits it. A string REPLACES it:
+
+        AppsConfig(
+            static_assets={"vendor": assets},
+            frontend_notes=(
+                "Charts: <script src='vendor/plotly.min.js'></script>.\\n"
+                "Components: import from 'vendor/preact.mjs'."
+            ),
+        )
+
+    Replacing matters most for an air-gapped deployment, where the
+    default block would tell the agent — emphatically, and by example —
+    to fetch from hosts that do not resolve. Import
+    ``nontainer.adapters.render.DEFAULT_FRONTEND_NOTES`` to extend the
+    default rather than discard it.
+
+    What stays regardless, because it is about the SHAPE of the code
+    rather than its origin: relative URLs, "plain DOM is the most
+    reliable choice", and the rule against swapping a named import for
+    a guessed global. Declared LAST so the 0.3.3 positional signature
+    still binds ``static_assets`` sixth."""
 
 
 class AppRuntime:

@@ -29,10 +29,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The split is supply vs. shape: *where the bytes come from* is the
   embedder's, while relative URLs, "plain DOM is the most reliable
-  choice", and "ES modules, not UMD, don't guess globals" stay in the
-  template — they are true wherever the bytes come from, and agents get
-  them wrong often enough that no embedder should be able to drop them by
-  accident.
+  choice", and the rule against swapping a named import for a
+  `<script src>` build or a guessed global stay in the template — they
+  are true wherever the bytes come from, and agents get them wrong often
+  enough that no embedder should be able to drop them by accident. The
+  anti-guessing rule matters *more* on the replaced path: a vendored
+  `vendor/mui.js` gives an agent no URL to anchor on, so `window.MUI`
+  from memory gets likelier.
+
+  `frontend_notes` is declared last on `AppsConfig`, so 0.3.3's
+  positional signature still binds `static_assets` sixth.
 
 ### Changed
 
