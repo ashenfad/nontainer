@@ -667,3 +667,36 @@ def test_an_assert_retries_an_expression_that_throws(chromium_available):
         assert result.ok, result
     finally:
         ws.close()
+
+
+def test_an_assert_returning_a_dead_promise_times_out(chromium_available):
+    """page.evaluate AWAITS a promise the expression returns, so a poll
+    loop that only checks the clock between evaluations would hang here
+    with no output. The deadline has to bound each evaluation."""
+    import time
+
+    ws, rt = _csp_ws("csp10", b"<html><body><div id='x'>hi</div></body></html>")
+    try:
+        started = time.monotonic()
+        result = rt.test_app(
+            [{"assert": "new Promise(() => {})"}], assert_timeout_ms=600
+        )
+        elapsed = time.monotonic() - started
+        assert not result.ok
+        assert elapsed < 20, f"took {elapsed:.1f}s -- did it hang?"
+        assert "never resolved" in result.results[0].error
+    finally:
+        ws.close()
+
+
+def test_a_slow_promise_that_resolves_in_time_still_passes(chromium_available):
+    """The bound must not turn every promise-returning assert red."""
+    ws, rt = _csp_ws("csp11", b"<html><body><div id='x'>hi</div></body></html>")
+    try:
+        result = rt.test_app(
+            [{"assert": "new Promise(r => setTimeout(() => r(true), 200))"}],
+            assert_timeout_ms=3_000,
+        )
+        assert result.ok, result
+    finally:
+        ws.close()
