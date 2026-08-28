@@ -79,7 +79,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`{"goto": "about.html"}`** — a multi-page app could previously only
   be verified at its entry point. CSP violations are harvested before the
-  navigation discards them.
+  navigation discards them, and an HTTP error fails the action: `goto`
+  *resolves* on 4xx/5xx (it only raises for transport failures), so
+  navigating to a missing page would otherwise be a passing action on a
+  404 document.
 
 ## 0.3.6 - 2026-08-28
 
