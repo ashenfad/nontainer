@@ -342,6 +342,30 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 - Repeated console lines collapse to one entry with an `(xN)` count.
   A chatty CDN warning otherwise crowds out the console tail, which is
   what an agent actually reads.
+- **A page error is attributed to the agent's own code, and quotes it.**
+  A stack is mostly somebody else's: with a component library in play
+  the top frame is deep inside a bundle and the actionable line is
+  below it, so reporting the *first* frame reports the least useful
+  one. test_app picks the first frame in a file the agent authored,
+  says how many it skipped, and prints that source line:
+
+  ```
+  TypeError: svae is not a function (at Dashboard (app.js:42:13), +4 frames above it in library code)
+       42 | <Button onClick={svae}>Save</Button>
+  ```
+
+  Frames are classified against what is actually being served: the
+  synthetic test_app origin and bare `//# sourceURL=` names resolve to
+  workspace files; a declared `static_assets` prefix or a third-party
+  host is *library* code; `blob:`/`data:`/eval is *generated* code with
+  no file to open. An inline `<script>` reports the document URL, which
+  resolves to `index.html` — the common case in a first app.
+
+  When no frame is the agent's, it says so (`no frame in your own files
+  — all 6 frames are in library code`) instead of printing a location
+  from a bundle. Same rule as the parse-error branch: a misleading
+  diagnostic is worse than an absent one, because it sends the repair
+  loop somewhere the agent cannot fix.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/workspace/app/screenshots/` and return workspace paths in the observation —
