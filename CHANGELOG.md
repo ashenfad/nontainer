@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page-level `try`/`catch` sees nothing and `page_errors` stays empty. The
   app verified green and was quietly broken in production.
 
+  **A violation that stopped code running fails the run**, not just the
+  diagnostics: `TestAppResult.ok` is false and `render_test_app` prints
+  FAIL. Reporting the block while still printing PASS would have made the
+  failure visible and left the false green in place one layer up. A
+  refused *image*, font or stylesheet stays a warning — that is a blemish
+  on a page that otherwise works, and failing for it would train agents to
+  ignore red.
+
   **This is a behaviour change.** An app that relies on `eval`,
   `new Function`, or a blob-loaded script will now FAIL verification
   rather than passing and breaking later — which is the point, but it can
@@ -53,6 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prevent. `build_router(csp=…)` still wins where an embedder passes it,
   for compatibility — but a policy passed only there is one verification
   never sees.
+
+  A custom policy's `script-src` origins also join test_app's
+  interception allowlist, so a host the *served* policy permits is not
+  aborted during verification — the same divergence pointed the other
+  way. Quoted keywords, scheme-only sources and wildcards can't be
+  honored by a hostname check and are skipped; list those in
+  `script_hosts`.
 
 ## 0.3.4 - 2026-08-28
 

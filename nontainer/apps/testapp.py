@@ -308,6 +308,43 @@ def blocked_script_note(url: str, script_hosts: tuple[str, ...]) -> str:
     )
 
 
+def blocks_code(directive: str) -> bool:
+    """Does this violated directive mean CODE DID NOT RUN?
+
+    Those are failures, not warnings: the app is not doing what the agent
+    thinks it is. A refused image or font is a blemish on a page that
+    otherwise works, and shouldn't turn a run red on its own."""
+    return directive.startswith("script") or directive in ("worker-src", "child-src")
+
+
+def _csp_script_origins(csp: str) -> tuple[str, ...]:
+    """Host origins a policy permits scripts from.
+
+    Interception has to agree with the policy actually being enforced: a
+    custom ``AppsConfig.csp`` that allows a host ``script_hosts`` doesn't
+    list would be served happily and aborted here, which is a false RED
+    and a divergence in the other direction.
+
+    Conservative by design — quoted keywords (``'self'``), scheme-only
+    sources (``https:``) and wildcards are skipped. Those cannot be
+    honored by a hostname check, so list them in ``script_hosts``
+    explicitly rather than having this guess."""
+    directives: dict[str, list[str]] = {}
+    for part in (csp or "").split(";"):
+        tokens = part.split()
+        if tokens:
+            directives[tokens[0].lower()] = tokens[1:]
+    sources = directives.get("script-src") or directives.get("default-src") or []
+    out: list[str] = []
+    for src in sources:
+        if src.startswith("'") or "*" in src:
+            continue
+        host = src.split("://", 1)[-1].split("/", 1)[0]
+        if host and ":" not in host:  # drops `https:` / `data:` scheme sources
+            out.append(host)
+    return tuple(out)
+
+
 def _csp_note(directive: str, blocked: str, script_hosts: tuple[str, ...]) -> str:
     """Phrase one CSP violation as the fix.
 
@@ -317,18 +354,28 @@ def _csp_note(directive: str, blocked: str, script_hosts: tuple[str, ...]) -> st
     policy text there would be a worse diagnostic than before the CSP
     was enforced, which is the trap this whole change is meant to avoid.
     """
-    is_script = directive.startswith("script")
-    if is_script and blocked.startswith(("http://", "https://")):
-        host = urlsplit(blocked).netloc
-        if host not in script_hosts:
+    if directive.startswith("script") and blocked.startswith(("http://", "https://")):
+        if urlsplit(blocked).netloc not in script_hosts:
             return blocked_script_note(blocked, script_hosts)
+    served = (
+        f"blocked by the app's Content-Security-Policy ({directive}). This is "
+        "the policy a PUBLISHED app is served under, so it would otherwise "
+        "have failed only after publishing"
+    )
+    if blocks_code(directive):
+        # Code that never ran, and never announced it: a refused script
+        # does not throw, so without this nothing would name it at all.
+        return (
+            f"{blocked} -> {served} — and a refused script does not throw, so "
+            "nothing else would name it. blob:/data: urls, eval, and new "
+            "Function are not permitted; load code from the app's own files "
+            "instead."
+        )
+    # An image, font, stylesheet or fetch. Telling THIS one to stop using
+    # eval would send the repair somewhere there is nothing to repair.
     return (
-        f"{blocked} -> blocked by the app's Content-Security-Policy "
-        f"({directive}). This is the policy a PUBLISHED app is served under, "
-        "so it would otherwise have failed only after publishing — and a "
-        "refused script does not throw, so nothing else would name it. "
-        "blob:/data: urls, eval, and new Function are not permitted; load "
-        "code from the app's own files instead."
+        f"{blocked} -> {served}. Serve it from the app's own files "
+        f"(a relative url) or an https host the {directive} directive allows."
     )
 
 
@@ -448,10 +495,17 @@ async def _run_actions(
 
     # One declaration (AppsConfig.script_hosts) drives interception here
     # AND the served CSP: what verifies headlessly matches what serves.
-    script_hosts = runtime.config.script_hosts
     from .serve import resolve_csp
 
     csp = resolve_csp(runtime.config)
+    # Interception must agree with the policy actually enforced. With the
+    # derived policy these are the same list; with a custom one, its
+    # script origins join in, so a host the served policy allows is not
+    # aborted here (a false red, and the same divergence pointed the
+    # other way).
+    script_hosts = tuple(
+        dict.fromkeys((*runtime.config.script_hosts, *_csp_script_origins(csp)))
+    )
 
     # Repeated console lines are near-pure context tax: one audited
     # session spent 39% of all test_app result bytes (7,922 of 20,279)
@@ -464,6 +518,7 @@ async def _run_actions(
     results: list[ActionResult] = []
     screenshots: list[str] = []
     rejected: dict[str, None] = {}  # ordered de-dupe
+    csp_blocked_code: list[str] = []  # violations that stopped code running
     shot_counter = 0
     loop = asyncio.get_running_loop()
 
@@ -496,6 +551,12 @@ async def _run_actions(
             return  # page closed / navigated away: a diagnostic, not the run
         for directive, blocked in hits or ():
             _reject(_csp_note(directive, blocked, script_hosts))
+            if blocks_code(directive):
+                # A run whose code was refused is not a PASS. Without
+                # this the whole change only makes the failure VISIBLE,
+                # while `ok` keeps saying the app works — the false
+                # green it exists to remove, one layer up.
+                csp_blocked_code.append(blocked)
 
     async def _rendered_errors() -> tuple[str, ...]:
         """Render collected page errors, reading the agent's source for
@@ -780,7 +841,7 @@ async def _run_actions(
 
             await _collect_csp(page)
             return TestAppResult(
-                ok=ok and not page_error_records,
+                ok=ok and not page_error_records and not csp_blocked_code,
                 results=tuple(results),
                 console=_console_lines(),
                 page_errors=await _rendered_errors(),

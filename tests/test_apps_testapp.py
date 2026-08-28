@@ -568,3 +568,52 @@ def test_a_disallowed_host_keeps_the_allowlist_message(chromium_available):
         assert "allowlist" in note and "esm.sh" in note
     finally:
         ws.close()
+
+
+def test_a_blocked_script_fails_the_run(chromium_available):
+    """Making the violation VISIBLE is not enough: `ok` has to move too,
+    or render_test_app still prints PASS over an app whose code never
+    ran -- the false green this change exists to remove, one layer up."""
+    ws, rt = _csp_ws("csp5", BLOB_SCRIPT)
+    try:
+        result = rt.test_app([{"read": "#out"}])
+        assert result.results[0].ok  # the action itself succeeded ...
+        assert not result.ok  # ... but the run did not
+        assert "FAIL" in render_test_app(result)
+    finally:
+        ws.close()
+
+
+def test_a_blocked_image_is_a_warning_not_a_failure(chromium_available):
+    """A refused image is a blemish on a page that otherwise works.
+    Failing the run for it would train agents to ignore red."""
+    body = b"""<html><body><div id="out">ok</div>
+<img src="http://insecure.example.com/x.png" />
+</body></html>"""
+    ws, rt = _csp_ws("csp6", body, csp="default-src 'self'; img-src 'self'")
+    try:
+        result = rt.test_app([{"read": "#out"}])
+        assert result.ok
+        note = next((r for r in result.rejected if "insecure.example" in r), None)
+        if note:  # the img may be refused by interception first
+            assert "eval" not in note  # script advice on an image is wrong advice
+    finally:
+        ws.close()
+
+
+def test_a_custom_policy_extends_the_intercepted_origins(chromium_available):
+    """A host the SERVED policy allows must not be aborted here: that is
+    the same divergence pointed the other way (a false red), and this
+    PR is what made a custom policy possible."""
+    from nontainer.apps.testapp import _csp_script_origins
+
+    csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://esm.corp.internal"
+    assert _csp_script_origins(csp) == ("esm.corp.internal",)
+    # keywords, scheme-only sources and wildcards are deliberately skipped
+    assert _csp_script_origins("script-src 'self' https: *.evil.com") == ()
+    # the derived policy yields exactly the declared hosts, so the
+    # default path is unchanged
+    from nontainer.apps import DEFAULT_SCRIPT_HOSTS
+    from nontainer.apps.serve import build_csp
+
+    assert _csp_script_origins(build_csp(DEFAULT_SCRIPT_HOSTS)) == DEFAULT_SCRIPT_HOSTS
