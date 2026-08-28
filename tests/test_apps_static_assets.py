@@ -83,13 +83,25 @@ def test_missing_asset_is_404_not_a_workspace_lookup(assets):
         ws.close()
 
 
-def test_asset_traversal_out_of_the_prefix_is_refused(assets):
+def test_asset_traversal_stays_confined(assets):
+    """Paths are canonicalized before anything reads them, so the
+    confinement that matters is unchanged: nothing escapes the app root,
+    and nothing reaches handler source. Note `/vendor/../x.txt`
+    canonically MEANS `/x.txt` and serves that app file — the prefix is
+    not a jail, the app root is."""
     ws, rt = make_ws(assets)
     try:
         ws.fs.makedirs("/workspace/app", exist_ok=True)
-        ws.fs.write("/workspace/app/secret.txt", b"s3cret")
-        assert get(rt, "/vendor/../secret.txt").status == 404
+        ws.fs.write("/workspace/app/page.txt", b"an ordinary app file")
+        ws.fs.write("/workspace/outside.txt", b"OUTSIDE")
+        ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.fs.write("/workspace/app/api/h.py", b"def get(req): return 'x'")
+
+        assert get(rt, "/vendor/../../outside.txt").status == 404
+        assert get(rt, "/../outside.txt").status == 404
+        assert get(rt, "/vendor/../api/h.py").status == 404
         assert get(rt, "/vendor/").status == 404
+        assert get(rt, "/vendor/../page.txt").status == 200  # == /page.txt
     finally:
         ws.close()
 
@@ -221,3 +233,80 @@ def test_notes_mention_assets_only_when_declared(assets):
     # turn and produced a file that will be shadowed.
     assert "NOT" in notes and "ls" in notes
     assert "curl vendor/" in notes
+
+
+# -- review regressions ----------------------------------------------------
+
+
+def test_dot_segments_cannot_bypass_asset_precedence(assets):
+    """`/x/../vendor/lib.js` must resolve to the asset, not fall through
+    to a workspace file at the same canonical path — otherwise the
+    'your file is NOT served' promise is false for any caller that
+    preserves dot segments, and the shadow note never fires either."""
+    ws, rt = make_ws(assets)
+    try:
+        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.fs.write("/workspace/app/vendor/lib.js", b"WORKSPACE")
+        assert get(rt, "/x/../vendor/lib.js").text == "export const x = 1;\n"
+        assert get(rt, "/./vendor/lib.js").text == "export const x = 1;\n"
+    finally:
+        ws.close()
+
+
+def test_shadow_note_does_not_dirty_a_clean_workspace(assets):
+    """The note fires on a static GET, and a page load is the read-only
+    request that most often precedes a POST. Writing it would dirty the
+    workspace, and _dispatch_api gates per-request atomicity on
+    `not ws.dirty` — so the note would cost the next mutating handler
+    its rollback."""
+    ws, rt = make_ws(assets)
+    try:
+        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.fs.write("/workspace/app/vendor/lib.js", b"MINE")
+        ws.checkpoint()
+        assert not ws.dirty
+
+        assert get(rt, "/vendor/lib.js").text == "export const x = 1;\n"
+        assert not ws.dirty  # the note is buffered, not written
+
+        # ... and it still reaches the log where the agent reads it.
+        rt.flush_log()
+        assert "shadowed" in ws.fs.read("/workspace/app/logs/api.log").decode()
+    finally:
+        ws.close()
+
+
+def test_a_get_leaves_a_later_handler_its_rollback(assets):
+    """The consequence the buffering protects, end to end: page GET,
+    then a POST that raises, whose staged writes must still roll back."""
+    ws, rt = make_ws(assets)
+    try:
+        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.fs.write("/workspace/app/vendor/lib.js", b"MINE")
+        ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.fs.write(
+            "/workspace/app/api/save.py",
+            b"def post(req):\n"
+            b"    open('/workspace/partial.txt', 'w').write('half')\n"
+            b"    raise ValueError('boom')\n",
+        )
+        ws.checkpoint()
+        assert not ws.dirty
+
+        get(rt, "/vendor/lib.js")  # the shadowing page load
+        assert rt.dispatch(request("POST", "/api/save")).status == 500
+        assert not ws.fs.exists("/workspace/partial.txt")
+    finally:
+        ws.close()
+
+
+def test_served_csp_allows_wasm_compilation():
+    """Browsers gate WebAssembly compilation on script-src. test_app
+    enforces the allowlist by intercepting requests rather than sending
+    this header, so without 'wasm-unsafe-eval' a wasm-backed bundle
+    verifies green and dies only once published."""
+    from nontainer.apps.serve import build_csp
+
+    csp = build_csp(("esm.sh",))
+    assert "'wasm-unsafe-eval'" in csp
+    assert "'unsafe-eval'" not in csp.replace("'wasm-unsafe-eval'", "")

@@ -58,11 +58,21 @@ _logger = logging.getLogger("nontainer.apps")
 # should tighten via build_router(csp=...).
 def build_csp(script_hosts: tuple[str, ...]) -> str:
     """The default served-HTML Content-Security-Policy for a given
-    script-host allowlist."""
+    script-host allowlist.
+
+    ``'wasm-unsafe-eval'`` is present because browsers gate WebAssembly
+    compilation on ``script-src``: without it, a vendored library with a
+    wasm core (duckdb-wasm, sql.js, pyodide) verifies green under
+    test_app — which enforces the allowlist by intercepting requests, not
+    by sending this header — and then dies only once published. That is
+    the verify-green/publish-broken split this whole declaration exists
+    to close. It permits wasm compilation ONLY; it does not enable
+    ``eval``, and it is far narrower than the ``'unsafe-inline'`` already
+    on this line."""
     hosts = " ".join(f"https://{h}" for h in script_hosts)
     return (
         "default-src 'self'; "
-        f"script-src 'self' 'unsafe-inline' {hosts}; "
+        f"script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' {hosts}; "
         "style-src 'self' 'unsafe-inline' https:; "
         "connect-src 'self' https:; "
         "font-src 'self' https: data:; "
