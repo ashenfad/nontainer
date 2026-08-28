@@ -475,3 +475,96 @@ async def test_mcp_test_app_tool_returns_image_content(app_ws):
     types = {type(c).__name__ for c in contents}
     assert "ImageContent" in types
     assert any("PASS" in getattr(c, "text", "") for c in contents)
+
+
+# -- the served CSP, enforced during verification -----------------------------
+#
+# Interception reproduces a CSP's ORIGIN rules. A CSP also governs
+# BEHAVIOUR -- eval, new Function, blob workers, blob module scripts --
+# and none of that involves a request to intercept. Those used to pass
+# here and fail only once published, silently: a refused script does not
+# throw, so a page-level try/catch sees nothing either.
+
+
+def _csp_ws(session, body: bytes, **cfg):
+    from nontainer.apps import AppsConfig
+
+    ws = Workspace(KvgitProvider.open(None, session=session))
+    rt = enable_apps(ws, AppsConfig(**cfg))
+    ws.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.fs.write("/workspace/app/index.html", body)
+    ws.checkpoint()
+    return ws, rt
+
+
+BLOB_SCRIPT = b"""<html><body><div id="out">init</div>
+<script>
+  const blob = new Blob(["document.getElementById('out').textContent='ran'"],
+                        {type: 'text/javascript'});
+  const s = document.createElement('script');
+  s.src = URL.createObjectURL(blob);
+  document.head.appendChild(s);
+</script></body></html>"""
+
+
+def test_a_blob_script_is_refused_and_named(chromium_available):
+    """The failure this change exists to surface. `Babel.transformScriptTags`
+    -- the obvious JSX entry point -- compiles to a blob, which serves
+    fine and is refused once published."""
+    ws, rt = _csp_ws("csp1", BLOB_SCRIPT)
+    try:
+        result = rt.test_app([{"read": "#out"}])
+        assert result.results[0].value == "init"  # it did NOT run
+        note = next((r for r in result.rejected if "blob:" in r), None)
+        assert note, result.rejected
+        assert "Content-Security-Policy" in note
+        assert "only after publishing" in note  # says WHY it matters
+    finally:
+        ws.close()
+
+
+def test_disabling_the_csp_lets_it_through(chromium_available):
+    """csp="" is the opt-out, and it must really opt out -- otherwise an
+    embedder serving without a policy verifies under one."""
+    ws, rt = _csp_ws("csp2", BLOB_SCRIPT, csp="")
+    try:
+        result = rt.test_app([{"read": "#out"}])
+        assert result.results[0].value == "ran"
+        assert not any("Content-Security-Policy" in r for r in result.rejected)
+    finally:
+        ws.close()
+
+
+def test_an_inline_module_script_still_runs(chromium_available):
+    """The recipe the JSX loader depends on: inject the compiled source
+    INLINE rather than as a blob. 'unsafe-inline' covers it, so this is
+    the shape that survives publishing."""
+    body = b"""<html><body><div id="out">init</div>
+<script>
+  const s = document.createElement('script');
+  s.type = 'module';
+  s.textContent = "document.getElementById('out').textContent='ran'";
+  document.head.appendChild(s);
+</script></body></html>"""
+    ws, rt = _csp_ws("csp3", body)
+    try:
+        result = rt.test_app([{"read": "#out"}])
+        assert result.results[0].value == "ran"
+        assert not any("Content-Security-Policy" in r for r in result.rejected)
+    finally:
+        ws.close()
+
+
+def test_a_disallowed_host_keeps_the_allowlist_message(chromium_available):
+    """The CSP refuses an external script before interception can, so
+    the harness's better-worded message has to come from the violation
+    path too -- otherwise enforcing the policy DOWNGRADES a diagnostic."""
+    body = b"""<html><body><div id="out">init</div>
+<script src="https://evil.example.com/lib.js"></script></body></html>"""
+    ws, rt = _csp_ws("csp4", body)
+    try:
+        result = rt.test_app([{"read": "#out"}])
+        note = next(r for r in result.rejected if "evil.example.com" in r)
+        assert "allowlist" in note and "esm.sh" in note
+    finally:
+        ws.close()

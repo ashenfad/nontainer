@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **`test_app` now sends the served Content-Security-Policy**, instead of
+  only mimicking its origin rules by intercepting requests.
+
+  Interception reproduces *where things may load from* faithfully, and
+  that was long treated as equivalent. It isn't. A CSP also governs
+  *behaviour* — `eval`, `new Function`, blob workers, blob module
+  scripts — and none of that involves a request there is anything to
+  intercept. Those passed verification and failed only once published.
+
+  The case that forced it, found while spiking browser-side JSX:
+  `Babel.transformScriptTags()` — the obvious entry point — compiles to a
+  **blob** and loads it as a module script. Measured in Chromium:
+
+  | | no CSP (what test_app did) | with CSP (what publishing does) |
+  |---|---|---|
+  | inline injection | ran | ran |
+  | blob injection | ran | **blocked** |
+
+  And the failure is silent: a refused script does not throw, so a
+  page-level `try`/`catch` sees nothing and `page_errors` stays empty. The
+  app verified green and was quietly broken in production.
+
+  **This is a behaviour change.** An app that relies on `eval`,
+  `new Function`, or a blob-loaded script will now FAIL verification
+  rather than passing and breaking later — which is the point, but it can
+  turn a green app red without the app having changed.
+
+- **CSP violations are reported as fixes, in `[rejected requests]`.** An
+  external script the allowlist doesn't cover keeps the allowlist wording
+  it always had: the browser now refuses it *before* interception can, so
+  the harness's better-worded message had to move to the violation path
+  too. Enforcing a policy must not downgrade a diagnostic.
+
+### Added
+
+- **`AppsConfig.csp`** — the policy served HTML carries *and* the one
+  `test_app` enforces. `None` derives it from `script_hosts`, `""`
+  disables it, a string is used verbatim.
+
+  It belongs on the config because a policy declared in one place and
+  verified against another is the divergence this config exists to
+  prevent. `build_router(csp=…)` still wins where an embedder passes it,
+  for compatibility — but a policy passed only there is one verification
+  never sees.
+
 ## 0.3.4 - 2026-08-28
 
 ### Added

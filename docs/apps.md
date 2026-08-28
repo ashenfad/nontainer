@@ -300,6 +300,33 @@ agent-facing apps notes, and curl's external-URL error. What verifies
 headlessly, what serves published, and what the agent is *told* cannot
 disagree.
 
+**test_app sends the served policy, it doesn't just mimic it.**
+Interception reproduces a CSP's *origin* rules faithfully, and for a
+long time that was taken as equivalent. It isn't: a CSP also governs
+*behaviour* — `eval`, `new Function`, blob workers, blob module
+scripts — and none of that involves a request there is anything to
+intercept. So test_app also sets the real `Content-Security-Policy`
+header on served HTML, derived from `AppsConfig.csp` (which defaults to
+`build_csp(script_hosts)`).
+
+The case that forced it: `Babel.transformScriptTags()` — the obvious
+entry point for browser-side JSX — compiles to a **blob** and loads it
+as a module script. Under interception that passes; under the served
+policy `script-src` has no `blob:` and it is refused. Worse, a refused
+script does not throw, so a page-level `try`/`catch` sees nothing and
+`page_errors` stays empty. The app verified green and was silently
+broken once published.
+
+Declare the policy on the config rather than only on
+`build_router(csp=…)`: verification reads the config, so a policy passed
+only to the router is one test_app never sees. `csp=""` disables it in
+both places.
+
+A violation is reported in `[rejected requests]` phrased as the fix, and
+an external script the allowlist doesn't cover keeps the allowlist
+wording it always had — the browser now refuses it before interception
+can, and enforcing a policy must not *downgrade* a diagnostic.
+
 `AppsConfig.apps_primer` is embedder guidance appended to those notes —
 the place to teach a private component library's known-good import
 block, in the same copy-this-exactly style as the built-in Preact

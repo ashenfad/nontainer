@@ -298,6 +298,40 @@ def _describe_elsewhere(frames: list[Frame]) -> str:
     return f"{_frames(vendor)} in library code, {opaque} in {generated}"
 
 
+def blocked_script_note(url: str, script_hosts: tuple[str, ...]) -> str:
+    """The harness's message for a script from a host that isn't allowed.
+    Shared, because the block can now come from either side: request
+    interception, or the CSP that reaches the browser first."""
+    return (
+        f"{url} -> blocked: scripts may only load "
+        f"from the CDN allowlist ({', '.join(script_hosts) or 'none'})"
+    )
+
+
+def _csp_note(directive: str, blocked: str, script_hosts: tuple[str, ...]) -> str:
+    """Phrase one CSP violation as the fix.
+
+    An external script the allowlist doesn't cover gets the SAME message
+    the route handler would have given, because now it never reaches the
+    route handler — the browser refuses it first. Reporting the generic
+    policy text there would be a worse diagnostic than before the CSP
+    was enforced, which is the trap this whole change is meant to avoid.
+    """
+    is_script = directive.startswith("script")
+    if is_script and blocked.startswith(("http://", "https://")):
+        host = urlsplit(blocked).netloc
+        if host not in script_hosts:
+            return blocked_script_note(blocked, script_hosts)
+    return (
+        f"{blocked} -> blocked by the app's Content-Security-Policy "
+        f"({directive}). This is the policy a PUBLISHED app is served under, "
+        "so it would otherwise have failed only after publishing — and a "
+        "refused script does not throw, so nothing else would name it. "
+        "blob:/data: urls, eval, and new Function are not permitted; load "
+        "code from the app's own files instead."
+    )
+
+
 def _line_reader(runtime: "AppRuntime") -> Any:
     """``(rel, lineno) -> source line | None``, read from the workspace.
 
@@ -415,6 +449,9 @@ async def _run_actions(
     # One declaration (AppsConfig.script_hosts) drives interception here
     # AND the served CSP: what verifies headlessly matches what serves.
     script_hosts = runtime.config.script_hosts
+    from .serve import resolve_csp
+
+    csp = resolve_csp(runtime.config)
 
     # Repeated console lines are near-pure context tax: one audited
     # session spent 39% of all test_app result bytes (7,922 of 20,279)
@@ -445,6 +482,20 @@ async def _run_actions(
         return tuple(
             line if n == 1 else f"{line} (x{n})" for line, n in console.items()
         )
+
+    async def _collect_csp(page: Any) -> None:
+        """Fold any CSP violations into `rejected`, phrased as the fix.
+
+        These used to be invisible: test_app sent no policy, so an app
+        using a blob module script or eval verified green and broke only
+        once published — and the block never throws into the page, so
+        nothing in page_errors named it either."""
+        try:
+            hits = await page.evaluate("window.__nt_csp || []")
+        except Exception:
+            return  # page closed / navigated away: a diagnostic, not the run
+        for directive, blocked in hits or ():
+            _reject(_csp_note(directive, blocked, script_hosts))
 
     async def _rendered_errors() -> tuple[str, ...]:
         """Render collected page errors, reading the agent's source for
@@ -484,8 +535,22 @@ async def _run_actions(
             # serializes under ws.lock so parallel fetches don't
             # reenter the sandbox (or race tool calls)
             wire = await loop.run_in_executor(None, runtime.dispatch, req)
+            headers = dict(wire.headers)
+            # Send the SERVED policy on HTML. Interception reproduces a
+            # CSP's origin rules, but a CSP also governs BEHAVIOUR —
+            # eval, new Function, blob workers, blob module scripts —
+            # and none of those involve a request to intercept. Without
+            # the real header those pass here and fail only once
+            # published, silently: a blocked blob script never throws
+            # into the page, so a try/catch around it sees nothing.
+            # setdefault, like serve.py: an agent-set policy wins.
+            if csp and wire.content_type.startswith("text/html"):
+                headers.setdefault("content-security-policy", csp)
             await route.fulfill(
-                status=wire.status, body=wire.content, content_type=wire.content_type
+                status=wire.status,
+                body=wire.content,
+                content_type=wire.content_type,
+                headers=headers,
             )
         elif parts.netloc in script_hosts:
             await route.continue_()
@@ -502,10 +567,7 @@ async def _run_actions(
             await route.continue_()
         else:
             if request.resource_type == "script":
-                _reject(
-                    f"{request.url} -> blocked: scripts may only load "
-                    f"from the CDN allowlist ({', '.join(script_hosts)})"
-                )
+                _reject(blocked_script_note(request.url, script_hosts))
             else:
                 _reject(
                     f"{request.url} -> blocked "
@@ -569,6 +631,18 @@ async def _run_actions(
                     )
                 )
 
+            # A CSP violation surfaces in the console as browser prose,
+            # which is the wrong shape for the agent's repair loop and
+            # easy to lose in a chatty tail. Capture the structured
+            # event instead and render it beside the harness's own
+            # refusals, where the agent already looks.
+            await context.add_init_script(
+                "document.addEventListener('securitypolicyviolation', e => {"
+                "  (window.__nt_csp = window.__nt_csp || []).push("
+                "    [e.effectiveDirective || e.violatedDirective,"
+                "     e.blockedURI || '(inline)']);"
+                "});"
+            )
             page = await context.new_page()
             page.on("console", _console)
             page.on("pageerror", _page_error)
@@ -581,6 +655,7 @@ async def _run_actions(
                 await page.goto(_BASE_URL, timeout=load_timeout_ms)
                 await settle(page)
             except Exception as e:
+                await _collect_csp(page)
                 return TestAppResult(
                     ok=False,
                     console=_console_lines(),
@@ -703,6 +778,7 @@ async def _run_actions(
                     ok = False
                     break  # later actions depend on earlier ones
 
+            await _collect_csp(page)
             return TestAppResult(
                 ok=ok and not page_error_records,
                 results=tuple(results),

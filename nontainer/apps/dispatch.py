@@ -233,8 +233,27 @@ class AppsConfig:
     What stays regardless, because it is about the SHAPE of the code
     rather than its origin: relative URLs, "plain DOM is the most
     reliable choice", and the rule against swapping a named import for
-    a guessed global. Declared LAST so the 0.3.3 positional signature
-    still binds ``static_assets`` sixth."""
+    a guessed global. Declared after ``static_assets`` so the 0.3.3
+    positional signature still binds that one sixth."""
+    csp: str | None = None
+    """The Content-Security-Policy served HTML carries — and, since
+    0.3.5, the one ``test_app`` enforces during verification.
+
+    ``None`` derives it from ``script_hosts`` via ``serve.build_csp``;
+    ``""`` disables it; a string is used verbatim.
+
+    It lives here rather than only on ``build_router`` because a policy
+    declared in one place and verified against another is the divergence
+    this config exists to prevent. test_app reproduces the ORIGIN rules
+    by intercepting requests, but a CSP also governs BEHAVIOUR — `eval`,
+    `new Function`, blob workers, blob module scripts — and none of that
+    involves a request to intercept. Sending the real header is the only
+    way verification sees those.
+
+    ``build_router(csp=...)`` still wins where an embedder passes it,
+    for compatibility; prefer setting it here so both halves agree.
+
+    Declared last: see ``frontend_notes``."""
 
 
 class AppRuntime:

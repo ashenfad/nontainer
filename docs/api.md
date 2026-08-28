@@ -565,6 +565,12 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   block says "copy this exactly" and names a CDN — a
            #   correction underneath it would lose. Air-gapped
            #   deployments set this alongside static_assets.
+           csp=None)  # the Content-Security-Policy served HTML carries
+           #   AND the one test_app enforces. None derives it from
+           #   script_hosts (serve.build_csp); "" disables; a string is
+           #   verbatim. Declare it HERE rather than only on
+           #   build_router: verification reads the config, so a policy
+           #   passed only to the router is one test_app never sees.
            static_assets={})  # {url_prefix: host_dir} — fixed files
            #   served WITH the app but absent from the workspace: a
            #   vendored component library, fonts, a charting bundle.
@@ -627,8 +633,10 @@ build_router(
     resolve: Callable[[str], Workspace | None],   # token → read-only ws @ commit
     *,
     config: AppsConfig | None = None,
-    csp: str | None = None,  # None → derived from config.script_hosts
-    #   (build_csp); a string overrides wholesale; "" disables.
+    csp: str | None = None,  # None → config.csp, itself defaulting to
+    #   build_csp(config.script_hosts); a string overrides wholesale
+    #   HERE ONLY (test_app reads the config, so prefer AppsConfig.csp);
+    #   "" disables.
     #   Carries 'wasm-unsafe-eval': browsers gate WebAssembly on
     #   script-src, and test_app enforces the allowlist by intercepting
     #   requests rather than sending this header — so without it a
