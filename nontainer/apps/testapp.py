@@ -586,6 +586,7 @@ async def _run_actions(
     screenshots: list[str] = []
     rejected: dict[str, None] = {}  # ordered de-dupe
     csp_blocked_code: list[str] = []  # violations that stopped code running
+    relocatability_bugs: list[str] = []  # absolute urls: always an app bug
     shot_counter = 0
     loop = asyncio.get_running_loop()
 
@@ -645,6 +646,13 @@ async def _run_actions(
                     "a prefix — use relative URLs: fetch('api/x'), not "
                     "fetch('/api/x'))"
                 )
+                # Fails the run. Relocatability is an invariant this
+                # harness exists to enforce (docs/apps.md), an absolute
+                # url is always an app bug rather than a choice, and the
+                # 404 below carries a JSON body -- so an app that calls
+                # .json() without checking .ok renders as if fine and
+                # reports PASS while being broken in production.
+                relocatability_bugs.append(parts.path)
                 await route.fulfill(
                     status=404,
                     body=_ABSOLUTE_PATH_HINT,
@@ -741,6 +749,44 @@ async def _run_actions(
             f"page did not settle within {settle_cap:.1f}s ({detail}); "
             'results may be stale -- prefer {"assert": ...} (it retries)'
         )
+
+    _SELECTOR_ACTIONS = ("click", "type", "select", "read")
+
+    async def _selectors_present(page: Any) -> str:
+        """What the page actually offers, for a selector that missed.
+
+        Playwright says only what it waited for, so an agent re-guesses
+        blind. Everywhere else this module names the door -- the
+        /api/foo.py 404, the select-not-type message, the stray-verb
+        note -- and a miss is the most common action failure there is."""
+        try:
+            found = await page.evaluate(
+                "() => [...new Set(["
+                "  ...[...document.querySelectorAll('[id]')].map(e => '#' + e.id),"
+                "  ...[...document.querySelectorAll('[data-key]')]"
+                '      .map(e => `[data-key="${e.dataset.key}"]`),'
+                "])].slice(0, 25)"
+            )
+        except Exception:
+            return ""  # a diagnostic must never replace the real error
+        if not found:
+            return " — the page has no element with an id or data-key"
+        return " — selectors on the page: " + ", ".join(found)
+
+    async def _capture(page: Any, label: str) -> str | None:
+        """Screenshot into the workspace; None when capped or impossible."""
+        nonlocal shot_counter
+        if shot_counter >= max_screenshots:
+            return None
+        try:
+            png = await page.screenshot()
+        except Exception:
+            return None
+        shot_counter += 1
+        path = f"{runtime._app_root}/screenshots/{label}-{shot_counter}.png"
+        await loop.run_in_executor(None, _save_screenshot, runtime, path, png)
+        screenshots.append(path)
+        return path
 
     async with sema:
         context = await browser.new_context(viewport=vp)
@@ -842,6 +888,14 @@ async def _run_actions(
                         note = await settle(page)
                         value = await page.text_content(action["read"], timeout=5_000)
                     elif "eval" in action:
+                        # Settle first, for the reason `read` does: an
+                        # expression evaluated against a page still
+                        # fetching reads stale DOM and reports it as
+                        # fact. `eval` is where agents ask the questions
+                        # `read` cannot express -- counts, attributes,
+                        # computed styles -- so it needs the guarantee
+                        # more, not less.
+                        note = await settle(page)
                         value = repr(await page.evaluate(action["eval"]))
                     elif "assert" in action:
                         # Web-first assertion: retry the predicate until
@@ -863,7 +917,8 @@ async def _run_actions(
                         ok = ok and passed
                         continue
                     elif "screenshot" in action:
-                        if shot_counter >= max_screenshots:
+                        shot = await _capture(page, "shot")
+                        if shot is None:
                             # Soft skip, not a failure: hitting the cap
                             # must not abort the test — later actions
                             # (especially asserts) still run and count.
@@ -879,18 +934,15 @@ async def _run_actions(
                                 )
                             )
                             continue
-                        shot_counter += 1
-                        png = await page.screenshot()
-                        path = (
-                            f"{runtime._app_root}/screenshots/shot-{shot_counter}.png"
-                        )
-                        # off the loop AND under the dispatch lock (ws.fs
-                        # is shared with executor-hopped dispatch)
-                        await loop.run_in_executor(
-                            None, _save_screenshot, runtime, path, png
-                        )
-                        screenshots.append(path)
-                        value = path
+                        value = shot
+                    elif "goto" in action:
+                        # CSP violations live on `window`, so harvest
+                        # them before the navigation discards the page.
+                        await _collect_csp(page)
+                        target = str(action["goto"]).lstrip("/")
+                        await page.goto(_BASE_URL + target, timeout=load_timeout_ms)
+                        note = await settle(page)
+                        value = target
                     elif "wait" in action:
                         await page.wait_for_timeout(int(action["wait"]))
                     else:
@@ -899,13 +951,31 @@ async def _run_actions(
                         ActionResult(i, action, ok=True, value=value, error=note)
                     )
                 except Exception as e:
-                    results.append(ActionResult(i, action, ok=False, error=str(e)))
+                    detail = str(e)
+                    selector = next(
+                        (action[k] for k in _SELECTOR_ACTIONS if k in action), None
+                    )
+                    if isinstance(selector, (list, tuple)):
+                        selector = selector[0]
+                    if selector and "waiting for locator" in detail:
+                        detail += await _selectors_present(page)
+                    # The run stops here (later actions depend on this
+                    # one), so this is the last look at the page there
+                    # will be. Without it the agent re-runs the whole
+                    # test just to add a screenshot and see the state.
+                    shot = await _capture(page, "failure")
+                    if shot:
+                        detail += f"\n  page at failure: {shot}"
+                    results.append(ActionResult(i, action, ok=False, error=detail))
                     ok = False
                     break  # later actions depend on earlier ones
 
             await _collect_csp(page)
             return TestAppResult(
-                ok=ok and not page_error_records and not csp_blocked_code,
+                ok=ok
+                and not page_error_records
+                and not csp_blocked_code
+                and not relocatability_bugs,
                 results=tuple(results),
                 console=_console_lines(),
                 page_errors=await _rendered_errors(),
@@ -982,6 +1052,24 @@ async def arun_test_app(
         _flush_log(runtime)
 
 
+def _console_excerpt(console: tuple[str, ...], tail: int = 10) -> list[str]:
+    """The last few lines, plus any earlier error/warning they buried.
+
+    A chatty page pushes the one line that explains the failure out of a
+    plain tail — and console noise is exactly what a chatty page has a
+    lot of. Errors keep their chronological position; they are simply
+    not allowed to fall off the end."""
+    kept = list(console[-tail:])
+    earlier = [
+        line
+        for line in console[:-tail]
+        if line.startswith(("[error]", "[warning]")) and line not in kept
+    ]
+    if not earlier:
+        return kept
+    return [*earlier[-5:], f"… {len(console) - len(kept) - 1} more lines …", *kept]
+
+
 def render_test_app(result: TestAppResult) -> str:
     """Observation rendering for adapters (paths, never bytes)."""
     parts: list[str] = [f"test_app: {'PASS' if result.ok else 'FAIL'}"]
@@ -1006,6 +1094,5 @@ def render_test_app(result: TestAppResult) -> str:
     if result.page_errors:
         parts.append("[page errors]\n" + "\n".join(result.page_errors))
     if result.console:
-        tail = result.console[-10:]
-        parts.append("[console tail]\n" + "\n".join(tail))
+        parts.append("[console tail]\n" + "\n".join(_console_excerpt(result.console)))
     return "\n".join(parts)

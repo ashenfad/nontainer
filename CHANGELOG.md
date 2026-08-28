@@ -45,6 +45,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docstring and the doc; and `quick-start` still said serving alone drives
   the CSP.
 
+## Unreleased
+
+### Changed
+
+- **An absolute url now FAILS verification.** `apps.md` has always said
+  relocatability violations "fail during verification, not at delivery";
+  they only warned. Worse, the harness 404s an absolute path with a JSON
+  body, so an app calling `.json()` without checking `.ok` renders as if
+  fine and reports PASS while being broken in production. An absolute url
+  is always an app bug, never a choice — apps are served under an
+  arbitrary `/apps/{token}/` prefix.
+
+  **This can turn a currently-green app red**, which is the point.
+
+- **`eval` settles before observing, as `read` already did.** On a page
+  still fetching, `eval` returned the stale value and reported it as
+  fact — and `eval` is where agents ask what `read` cannot express
+  (counts, attributes, computed styles), so it needed the guarantee more,
+  not less.
+
+- **A failed action captures the page**, and a selector that missed names
+  the ids and `data-key`s actually present. The run stops at a failure,
+  so a trailing `{"screenshot": true}` never runs and the agent re-runs
+  the whole test just to look; and Playwright reports only what it waited
+  for, which leaves an agent re-guessing blind.
+
+- **An early console error is no longer buried** by a chatty tail — the
+  noise a broken page produces is exactly what pushes the explanation off
+  the end.
+
+### Added
+
+- **`{"goto": "about.html"}`** — a multi-page app could previously only
+  be verified at its entry point. CSP violations are harvested before the
+  navigation discards them.
+
 ## 0.3.6 - 2026-08-28
 
 ### Fixed
