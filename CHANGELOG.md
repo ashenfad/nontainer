@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than which approach to take: relative URLs, and the rule against
   swapping a named import for a `<script src>` build or a guessed global.
 
+- **Docs realigned with 0.3.3–0.3.6.** An audit after that run found five
+  places still describing superseded behaviour: `apps.md` called
+  HTM+Preact "the default idiom" and recommended `@babel/standalone` with
+  a size claim that is off by 50% and an entry point the served CSP
+  refuses; it said *"test_app is indifferent to all of this"*, which
+  stopped being true when test_app began sending the policy; it described
+  `assert` as using `wait_for_function`, replaced in 0.3.6 for exactly
+  that reason; `TestAppResult.ok` omitted the CSP clause in both the
+  docstring and the doc; and `quick-start` still said serving alone drives
+  the CSP.
+
 ## 0.3.6 - 2026-08-28
 
 ### Fixed

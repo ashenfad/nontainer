@@ -148,18 +148,30 @@ Structural constraint first: termish commands are pure-Python over the
 `FileSystem` protocol — **external binaries (esbuild, node) cannot see
 a virtual filesystem**. That wall sorts the options:
 
-Supported (all zero-machinery — conventions in the app template that
-ships in the tool description, plus the CDN allowlist):
+What the DEFAULT `frontend_notes` block offers, for an embedder that
+vendors nothing and can reach the CDN allowlist. An embedder that ships
+its own stack replaces this wholesale — including which of these to
+prefer, which is why the list is no longer phrased as a ranking.
 
 1. **HTM + Preact, no build** — `import from 'https://esm.sh/preact'`
-   + `html\`...\`` templates. The default idiom.
+   + `html\`...\`` templates. What the built-in block teaches.
 2. **Vanilla ESM + import maps** — multi-file module structure with
    bare specifiers mapped to esm.sh in `index.html`. Just modern JS.
-3. **JSX via Babel-standalone** — `<script type="text/babel"
-   data-type="module">`; the browser transpiles at load. Real JSX
-   (the most-trained frontend idiom) with zero server tooling. ~2MB +
-   transpile-at-load is irrelevant at agent-app scale. This is the
-   answer to "agents keep writing JSX": let them.
+   An import map can also be injected by a loader script before it
+   imports, so a page need not carry one.
+3. **JSX transpiled in the browser** — real JSX, the most-trained
+   frontend idiom, with zero server tooling.
+
+   Two things about (3) are measured rather than assumed, because the
+   obvious approach fails in a way nothing reports. `@babel/standalone`
+   is ~3.1MB, and its `transformScriptTags` entry point compiles to a
+   **Blob** loaded as a module script — which the served CSP refuses
+   (`script-src` has no `blob:`), *silently*, since a refused script
+   does not throw. Inject the compiled source INLINE instead. And a
+   line-preserving transpiler (sucrase, ~200KB) keeps `Error.stack`
+   pointing at the agent's own JSX line, which test_app then quotes;
+   add `//# sourceURL=app.jsx` so the frame names the file at all
+   (`sourceMappingURL` does not reach `Error.stack`).
 
 Deliberately out of scope:
 
@@ -174,8 +186,13 @@ Deliberately out of scope:
 
 The insight: agents don't need build *tooling*, they need build
 *semantics* — and at agent-app scale the browser supplies those
-itself. test_app is indifferent to all of this; it serves whatever is
-under /app.
+itself.
+
+test_app used to be indifferent to how that happened, and is not any
+more: it sends the served CSP, so an approach that only works without
+one now fails verification instead of passing and breaking published.
+That is the point, and it is why the blob caveat above is a blocker
+rather than a preference.
 
 ### Vendored assets: files served with the app, absent from the workspace
 
@@ -411,9 +428,14 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,
 `{"assert": js}`, `{"screenshot": true}`, `{"wait": ms}`.
 
-- Waiting is two-tier. Playwright's idiom is OUTCOME-based — web-first
-  assertions that retry — and the `assert` action follows it
-  (`wait_for_function`, retry until truthy or ~2s). But
+- Waiting is two-tier. The idiom is OUTCOME-based — assertions that
+  retry — and the `assert` action follows it, polled from the harness
+  with `page.evaluate` until truthy or ~2s. (NOT Playwright's
+  `wait_for_function`: it installs its poller into the page, which
+  needs `'unsafe-eval'` — withheld by the CSP test_app now sends, so
+  every retry died and a correct app that settles asynchronously
+  failed. The deadline bounds each evaluation, since `evaluate` awaits
+  a promise the expression returns.) But
   expectation-free `read` observations have no outcome to retry
   against (`networkidle` is sticky post-navigation and discouraged
   upstream), so click/type — and `read` itself, before observing —
@@ -458,6 +480,9 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   from a bundle. Same rule as the parse-error branch: a misleading
   diagnostic is worse than an absent one, because it sends the repair
   loop somewhere the agent cannot fix.
+- `TestAppResult.ok` is: loaded, no action errored, no assert falsy,
+  and no CSP violation stopped code running. A refused image or font
+  is a warning; refused *code* is a failure.
 - `TestAppResult`: per-action results, console messages, page errors,
   screenshots as PNG bytes (host-side; adapters write them to
   `/workspace/app/screenshots/` and return workspace paths in the observation —
