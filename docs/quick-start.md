@@ -209,18 +209,28 @@ app.mount("/apps", router)     # FastAPI or Starlette
 ```
 
 **Pass the SAME `AppsConfig` to `enable_apps` and `build_router`.** It is
-one declaration governing two lifecycles: authoring drives `test_app`'s
-interception and the agent's tool description, serving drives the CSP and
-which static assets exist. Two configs that disagree are an app that
-verifies green and breaks published — the one failure `test_app` cannot
-catch. Both default when omitted, so a mismatch stays invisible until you
-customize one.
+one declaration governing two lifecycles: authoring drives `test_app` —
+its request interception, the policy it enforces, and the agent's tool
+description — while serving drives what a published snapshot is served
+under. Two configs that disagree are an app that verifies green and
+breaks published, and verification cannot catch it: the workspace
+test_app runs against is not the one the router serves. Both default when
+omitted, so a mismatch stays invisible until you customize one.
 
-Fixed files the app needs but the agent shouldn't author — a vendored
-component library, fonts, a charting bundle — go on that config as
-`static_assets={"vendor": "/srv/assets"}` and serve at `vendor/…`. They
-never enter the workspace, which is what makes an air-gapped deployment
-work without a CDN. See [apps.md](apps.md).
+Three fields make the app the embedder's rather than the library's:
+
+- `frontend_notes` — which frontend approach to reach for and which
+  libraries exist. Unset, agents are told plain DOM first with Preact and
+  plotly from the CDN allowlist; set it and that is replaced wholesale,
+  which is how a house design system gets a consistent look.
+- `static_assets={"vendor": "/srv/assets"}` — the bytes those libraries
+  live in, served at `vendor/…` and never entering the workspace. This is
+  what makes an air-gapped deployment work without a CDN.
+- `csp` — the policy served HTML carries **and** the one `test_app`
+  enforces while verifying. Declare it here rather than on
+  `build_router`, or verification runs under a policy you do not serve.
+
+See [apps.md](apps.md).
 
 Serving is read-only and concurrent. Mutable app state does **not** go
 in the workspace — it goes to an external store (a sqlite/postgres

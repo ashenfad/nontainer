@@ -150,7 +150,7 @@ crash containment, or kernel defense-in-depth without a VM, use
 
 ## App handlers (the `[apps]` extra)
 
-Agents author full-stack apps: a Preact/HTM frontend plus **request
+Agents author full-stack apps: a no-build frontend plus **request
 handlers** -- serverless semantics, not resident servers. A file's path is
 its route (`/workspace/app/api/scores.py` → `/api/scores`), its exported `get`/`post`
 are the verbs. The agent builds and verifies entirely in-loop: a `curl`
@@ -161,11 +161,13 @@ the app read-only and concurrently at `/apps/{token}/...`; mutable app state
 lives in an external store injected via `host_objects`, not the (frozen)
 workspace.
 
-Fixed browser files the agent shouldn't author -- a vendored component
-library, fonts, a charting bundle -- are declared once as
-`AppsConfig.static_assets` and served alongside the app without entering
-the workspace. That's what a house design system rides on, and what makes
-an **air-gapped** deployment work with no CDN in reach.
+Which frontend the agent reaches for is the **embedder's** call, not
+ours: `AppsConfig.frontend_notes` states the approach and the libraries,
+and `static_assets` serves the bytes alongside the app without them
+entering the workspace. Together they are what a house design system
+rides on, and what makes an **air-gapped** deployment work with no CDN
+in reach. Leave both unset and agents get the built-in guidance --
+plain DOM first, Preact and plotly from the CDN allowlist.
 
 Full design -- handler contract, execution model, test_app DSL,
 serving/threat model: [docs/apps.md](docs/apps.md).

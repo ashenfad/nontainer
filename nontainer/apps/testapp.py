@@ -501,7 +501,13 @@ class ActionResult:
 @dataclass(frozen=True)
 class TestAppResult:
     ok: bool
-    """Load succeeded, no action errored, and no assert was falsy."""
+    """Load succeeded, no action errored, no assert was falsy, and no
+    Content-Security-Policy violation stopped code running.
+
+    That last clause is not bookkeeping: reporting a refused script while
+    still printing PASS would leave the false green intact one layer up.
+    A refused image or font stays a warning — a blemish on a page that
+    otherwise works."""
 
     results: tuple[ActionResult, ...] = ()
     console: tuple[str, ...] = ()
