@@ -37,6 +37,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `classify_frame`, `describe_page_error`), so the source read is injected
   and the behavior is testable without a browser.
 
+  The location comes from the *last* parenthesised group in a frame, since
+  a function name can contain parentheses of its own; and the quoted line
+  is clipped to a glanceable size, windowed on the error column so a
+  minified or generated line still shows the fault rather than its first
+  200 characters.
+
 ### Added
 
 - **`AppsConfig.static_assets`** — a URL prefix → host directory mapping of
