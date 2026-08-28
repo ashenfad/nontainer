@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **`fork()` no longer drops the workspace's mounts.** A fork rebuilt its
+  `Workspace` from a hand-listed set of constructor arguments, and `mounts`
+  was added after that list was written — so the fork silently lost every
+  mount point. Because publishing a snapshot *is* a fork, an embedder who
+  mounted a dataset had it work while authoring, verify green under
+  `test_app`, and then 404 the moment the app was published: a
+  verified-green/published-broken split that verification could not catch.
+
+  Worse than absent, in one case: a write the mount should refuse
+  (`echo x > /data/new.txt` under a read-only mount) stopped erroring in
+  the fork and silently landed in its own tree instead, because the path
+  was no longer a mount point at all.
+
+  The fields a fork replays now come from one record rather than a list at
+  the call site, and a test asserts every pass-through parameter of
+  `Workspace.__init__` is in it — so the next argument cannot fall out the
+  same way. `provider`, `executor`, and `commands` are excluded for stated
+  reasons.
+
+### Changed
+
+- **`Mount`'s docstring, the README, and `docs/api.md` now say what "not
+  copied by forks" meant.** The sentence was ambiguous between "the fork
+  does not snapshot the mounted data" (true, and intended) and "the fork
+  has no mount" (what the code did). Both halves are now explicit: a fork
+  **inherits the mount point**, and the data behind it stays a live view of
+  the host directory that neither parent nor fork can roll back.
+
 ## 0.3.2 - 2026-08-24
 
 ### Changed

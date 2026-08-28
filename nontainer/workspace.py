@@ -67,7 +67,13 @@ class Mount:
     (+ ``IsolatedFS``, + ``ReadOnlyFS`` when ``readonly``).
 
     Mounted paths are live views of the real directory: they are NOT
-    versioned, NOT captured by checkpoints, and NOT copied by forks.
+    versioned and NOT captured by checkpoints, so a rollback or restore
+    leaves them exactly as they are.
+
+    A fork **inherits the mount point** and does NOT copy the data
+    behind it: parent and fork observe the same live directory, and
+    neither can roll it back.
+
     Write-enabled mounts therefore punch through the time-travel
     story — prefer ``readonly=True`` (the default) and have the agent
     copy inputs into the workspace when it needs to own them.
@@ -524,6 +530,46 @@ class _SyncingFS:
         return f"<syncing {self._fs!r}>"
 
 
+@dataclass(frozen=True)
+class _Settings:
+    """The construction arguments a fork replays onto its own provider.
+
+    ``fork()`` used to re-list these by hand, which is how ``mounts``
+    came to be silently dropped: it was added after the list was
+    written, so a forked (or published) workspace lost every mount.
+    Capturing them once means the next argument cannot fall out the
+    same way — ``tests/test_mounts_and_cache.py`` asserts every
+    pass-through parameter of ``Workspace.__init__`` lands here.
+
+    Two constructor arguments are deliberately absent:
+
+    - ``provider`` — the fork gets its own; that IS the fork.
+    - ``executor`` — a ready instance is bound to one session and
+      cannot be shared (see the executor block in ``__init__``); forks
+      fall back to ``executor_factory``.
+
+    ``commands`` is absent for a different reason and is handled
+    separately in ``fork()``: it is not the constructor argument any
+    more by then. ``register_command`` mutates the built set after
+    construction (``enable_apps`` injects ``curl`` that way), so a fork
+    replays the live set, not the original mapping.
+    """
+
+    python: "PythonConfig"
+    mounts: Mapping[str, Mount] | None
+    cache: bool
+    autocheckpoint: bool
+    max_observation: int
+    executor_factory: "Callable[[], Executor] | None"
+    root: str
+
+    def as_kwargs(self) -> dict[str, Any]:
+        """Shallow field mapping for ``Workspace(**...)``. Deliberately
+        not ``dataclasses.asdict``, which recurses — it would flatten
+        ``PythonConfig`` and each ``Mount`` into plain dicts."""
+        return dict(vars(self))
+
+
 class Workspace:
     """A fake little computer: files + shell + python + cache, versioned.
 
@@ -640,6 +686,24 @@ class Workspace:
             self._executor = executor_factory()
         else:
             self._executor = LocalExecutor()
+
+        # -- what a fork replays. Captured from the NORMALIZED values,
+        # not the raw arguments, so a fork starts from the same state
+        # this workspace resolved to (``root`` collapsed by segment,
+        # ``autocheckpoint`` already ANDed with the provider's
+        # versioning capability). ``mounts`` is the argument itself:
+        # mount points are inherited, while the data behind them stays
+        # a live view of the host directory, never snapshotted (see
+        # :class:`Mount`).
+        self._settings = _Settings(
+            python=self._python_config,
+            mounts=mounts,
+            cache=self._cache_enabled,
+            autocheckpoint=self._autocheckpoint,
+            max_observation=self._max_observation,
+            executor_factory=self._executor_factory,
+            root=self._root,
+        )
 
         # -- versioned initialization baseline: root + cwd belong to
         # workspace state, not to the first tool call. They must exist
@@ -1226,24 +1290,29 @@ class Workspace:
 
     def fork(self, name: str) -> "Workspace":
         """Independent session seeded from current state. Inherits this
-        workspace's python config, commands, and settings. Cost varies
-        by backend (see ``caps.cheap_fork`` and the README tradeoffs)."""
+        workspace's construction settings (see :class:`_Settings`) —
+        python config, mounts, root, executor factory — plus its
+        terminal commands. Cost varies by backend (see
+        ``caps.cheap_fork`` and the README tradeoffs)."""
         # Mutating despite appearances: providers may checkpoint pending
         # staged changes so the fork sees current state (kvgit does).
         with self._lock:
             forked = self._provider.fork(name)
+        # Commands are replayed from the LIVE set rather than from
+        # _settings: register_command mutates it after construction, so
+        # the original argument is no longer the truth. The reserved
+        # bridge names are stripped because __init__ re-adds them.
+        # (A command closed over THIS workspace still points at it from
+        # the fork — the fork-bleed tracked in
+        # scratch/plan-http-unification.md, whose Phase 0 removes the
+        # closure rather than rebinding it here.)
         user_commands = {
             k: v for k, v in self._commands.items() if k not in RESERVED_COMMANDS
         }
         return Workspace(
             forked,
-            python=self._python_config,
             commands=user_commands,
-            cache=self._cache_enabled,
-            autocheckpoint=self._autocheckpoint,
-            max_observation=self._max_observation,
-            executor_factory=self._executor_factory,
-            root=self._root,
+            **self._settings.as_kwargs(),
         )
 
     def discard(self) -> None:
