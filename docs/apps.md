@@ -273,11 +273,18 @@ from below would leave the wrong instruction both first and more
 emphatic. For an air-gapped deployment the agent would follow it, and
 the block that fails is precisely the one it was told to trust.
 
-**What is NOT supply, and stays regardless:** relative URLs, "plain DOM
-is the most reliable choice", "ES modules, not UMD, don't guess
-globals". Those describe the shape of the code rather than its origin,
-they are true wherever the bytes come from, and agents get them wrong
-often enough that no embedder should be able to drop them by accident.
+**What is NOT supply, and stays in the template regardless:** relative
+URLs, "plain DOM is the most reliable choice", and the rule against
+swapping a named import for a `<script src>` build or a guessed global.
+Those describe the shape of the code rather than its origin, they are
+true wherever the bytes come from, and agents get them wrong often
+enough that no embedder should be able to drop them by accident.
+
+The anti-guessing rule in particular belongs in the template *because*
+of this seam, not despite it: a vendored `vendor/mui.js` gives an agent
+no CDN URL to anchor on, so reaching for `window.MUI` from memory gets
+more likely, not less. The guidance must not travel with the block an
+embedder replaces.
 
 Air-gapped deployments will usually also set `script_hosts=()`, which
 states the rule positively — *scripts may load only from this app
