@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`AppsConfig.frontend_notes`** — the block of the apps notes that says
+  *which frontend libraries exist and where they come from*, now owned by
+  the embedder.
+
+  0.3.3 made vendored libraries possible (`static_assets`) without moving
+  the guidance that describes them, so the tool description still told the
+  agent — emphatically, and by example — to import Preact from `esm.sh`
+  and plotly from `cdn.jsdelivr.net`. For an air-gapped deployment that is
+  an instruction to fetch from hosts that do not resolve, sitting in the
+  one block introduced with *"copy this known-good pattern exactly"*.
+  `apps_primer` could not fix it: it appends, so the correction landed
+  below the wrong instruction, which was also the more emphatic one.
+
+  `None` (default) keeps the built-in block, so a plain install renders an
+  unchanged prompt; `""` omits it; a string replaces it. Import
+  `nontainer.adapters.render.DEFAULT_FRONTEND_NOTES` to extend rather than
+  discard.
+
+  The split is supply vs. shape: *where the bytes come from* is the
+  embedder's, while relative URLs, "plain DOM is the most reliable
+  choice", and "ES modules, not UMD, don't guess globals" stay in the
+  template — they are true wherever the bytes come from, and agents get
+  them wrong often enough that no embedder should be able to drop them by
+  accident.
+
+### Changed
+
+- **An empty `script_hosts` reads as a rule instead of a bug.** `()` is
+  the air-gapped shape, and it used to render "Browser SCRIPTS may only
+  load from these hosts:" followed by nothing — a dangling colon that
+  reads as a broken prompt. It now states the rule positively: scripts may
+  load only from the app itself.
+
 ## 0.3.3 - 2026-08-27
 
 ### Changed
