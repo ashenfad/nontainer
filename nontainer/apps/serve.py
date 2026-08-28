@@ -80,6 +80,17 @@ def build_csp(script_hosts: tuple[str, ...]) -> str:
     )
 
 
+def resolve_csp(config: "AppsConfig") -> str:
+    """The policy this config means: ``csp`` verbatim when set, else one
+    derived from ``script_hosts``.
+
+    One function, both halves — the router sends this on served HTML and
+    ``test_app`` sends it during verification, so an app cannot pass
+    under one policy and be served another."""
+    declared = getattr(config, "csp", None)
+    return build_csp(config.script_hosts) if declared is None else declared
+
+
 def mint_token(nbytes: int = 32) -> str:
     """A capability-grade token (~43 url-safe chars for the default).
     Distinct from session ids by design — session ids may be guessable;
@@ -104,8 +115,13 @@ def build_router(
     logger).
 
     ``csp``: the Content-Security-Policy set on served HTML. Default
-    (``None``) derives from ``config.script_hosts`` via ``build_csp``;
-    pass a full policy string to override, or ``""`` to disable.
+    (``None``) takes ``config.csp``, which itself defaults to a policy
+    derived from ``config.script_hosts`` via ``build_csp``; pass a full
+    policy string to override, or ``""`` to disable.
+
+    Prefer declaring it on the config: ``test_app`` enforces
+    ``config.csp`` during verification, so a policy passed only here is
+    one verification never sees.
     """
     try:
         from starlette.responses import Response as HttpResponse
@@ -119,7 +135,7 @@ def build_router(
 
     cfg = config or AppsConfig()
     if csp is None:
-        csp = build_csp(cfg.script_hosts)
+        csp = resolve_csp(cfg)
     log_sink = on_log or (lambda m: _logger.warning("app: %s", m))
 
     def _handle_sync(
