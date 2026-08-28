@@ -243,9 +243,11 @@ half a deployment.
 ### Frontend libraries: `frontend_notes` (the embedder's, not ours)
 
 Once an embedder can supply the libraries, the prompt can no longer
-hardcode where they come from. `AppsConfig.frontend_notes` is the one
-block that states **supply** — which libraries exist, and how to import
-them — and it **replaces** rather than appends:
+hardcode which approach to take or where the code comes from.
+`AppsConfig.frontend_notes` is the one block that states **the default
+frontend choice and its supply** — which approach to reach for, which
+libraries exist, and how to import them — and it **replaces** rather
+than appends:
 
 ```python
 AppsConfig(
@@ -257,10 +259,10 @@ AppsConfig(
 )
 ```
 
-- `None` (default) keeps the built-in block — Preact/htm from esm.sh,
-  plotly from jsdelivr. That is the right answer when nothing is
-  vendored and the allowlist is reachable, so a plain install sees no
-  change.
+- `None` (default) keeps the built-in block — *plain DOM is the most
+  reliable choice*, Preact/htm from esm.sh, plotly from jsdelivr. That
+  is the right answer when nothing is vendored and the allowlist is
+  reachable, so a plain install sees no change.
 - `""` omits it, for an embedder that would rather say nothing.
 - A string replaces it. Import
   `nontainer.adapters.render.DEFAULT_FRONTEND_NOTES` to extend the
@@ -273,12 +275,20 @@ from below would leave the wrong instruction both first and more
 emphatic. For an air-gapped deployment the agent would follow it, and
 the block that fails is precisely the one it was told to trust.
 
-**What is NOT supply, and stays in the template regardless:** relative
-URLs, "plain DOM is the most reliable choice", and the rule against
-swapping a named import for a `<script src>` build or a guessed global.
-Those describe the shape of the code rather than its origin, they are
-true wherever the bytes come from, and agents get them wrong often
-enough that no embedder should be able to drop them by accident.
+**What stays in the template regardless:** relative URLs, and the rule
+against swapping a named import for a `<script src>` build or a guessed
+global. Those describe the shape of the code rather than which approach
+to take, they are true wherever the bytes come from, and agents get them
+wrong often enough that no embedder should be able to drop them by
+accident.
+
+*"Plain DOM is the most reliable choice"* is **not** in that set, though
+it reads like it. It is a default-CHOICE opinion, written when the only
+alternative was Preact over a CDN — and for an embedder that vendors a
+component library and wants every app to look like it came from the same
+place, it is precisely wrong. A prompt cannot both recommend plain DOM
+and steer at a design system; the emphatic sentence wins, and it should
+be the embedder's.
 
 The anti-guessing rule in particular belongs in the template *because*
 of this seam, not despite it: a vendored `vendor/mui.js` gives an agent

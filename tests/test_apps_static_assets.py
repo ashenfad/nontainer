@@ -357,11 +357,17 @@ def test_frontend_notes_can_be_omitted_entirely():
     assert "esm.sh/preact" not in notes
     assert "plotly.js-dist-min" not in notes
     assert "scattergeo" not in notes
-    assert "MOST RELIABLE" in notes and "RELATIVE urls" in notes
+    # The DEFAULT CHOICE goes with them: an embedder that omits the
+    # block is not left being told plain DOM is the better option.
+    assert "MOST RELIABLE" not in notes
+    assert "RELATIVE urls" in notes  # shape guidance stays
 
 
 SHAPE_GUIDANCE = (
-    "MOST RELIABLE",  # plain DOM first
+    # NOT "plain DOM is MOST RELIABLE" -- that is a default-CHOICE
+    # opinion, and it moved into the replaceable block. It contradicts
+    # an embedder that vendors a component library and wants every app
+    # to look like it came from the same place.
     "fetch('api/scores')",  # relative urls
     "fetch('/api/x')",  # ... and the absolute form to avoid
     "<script src>",  # don't swap a named import for a script tag
@@ -419,3 +425,23 @@ def test_positional_construction_matches_0_3_3():
     cfg = AppsConfig(5.0, 10_000_000, 2_000_000, ("esm.sh",), "primer", {"vendor": "."})
     assert cfg.static_assets == {"vendor": "."}
     assert cfg.frontend_notes is None
+
+
+def test_the_default_frontend_choice_is_the_embedders():
+    """ "Plain DOM is the MOST RELIABLE choice" was written when the
+    alternative was Preact over a CDN. For an embedder that vendors a
+    component library and wants a consistent look across apps, it is
+    exactly wrong -- and it was the more emphatic sentence, so it won.
+    """
+    from nontainer.adapters.render import apps_notes
+
+    default = apps_notes(AppsConfig())
+    assert "MOST RELIABLE" in default  # unchanged for a plain install
+
+    house = apps_notes(AppsConfig(frontend_notes="Components: MUI, always."))
+    assert "MOST RELIABLE" not in house  # no longer argued with
+    assert "Components: MUI, always." in house
+    # ... and the shape rules are untouched either way
+    for notes in (default, house):
+        assert "fetch('api/scores')" in notes
+        assert "never guess a global" in notes
