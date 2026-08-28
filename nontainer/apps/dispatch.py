@@ -230,11 +230,19 @@ class AppsConfig:
     ``nontainer.adapters.render.DEFAULT_FRONTEND_NOTES`` to extend the
     default rather than discard it.
 
+    It also carries the default CHOICE — "plain DOM is the most reliable
+    choice" is the first line of the built-in block, not template prose —
+    so an embedder that vendors a design system is not contradicted by
+    the library it embeds. Overriding this therefore replaces the
+    recommended APPROACH as well as the library list.
+
     What stays regardless, because it is about the SHAPE of the code
-    rather than its origin: relative URLs, "plain DOM is the most
-    reliable choice", and the rule against swapping a named import for
-    a guessed global. Declared after ``static_assets`` so the 0.3.3
-    positional signature still binds that one sixth."""
+    rather than which approach to take: relative URLs, and the rule
+    against swapping a named import for a ``<script src>`` build or a
+    guessed global.
+
+    Declared after ``static_assets`` so the 0.3.3 positional signature
+    still binds that one sixth."""
     csp: str | None = None
     """The Content-Security-Policy served HTML carries — and, since
     0.3.5, the one ``test_app`` enforces during verification.
