@@ -1191,7 +1191,7 @@ mcp = [
 [package.metadata]
 requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
-    { name = "agno", marker = "extra == 'agno'", specifier = ">=2" },
+    { name = "agno", marker = "extra == 'agno'", specifier = ">=2.1" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
     { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.3.0" },
     { name = "httpx2", marker = "extra == 'dev'" },

@@ -50,15 +50,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The `agno` extra claimed a floor it does not have.** `agno>=1.0` was
-  false: the adapter imports `agno.tools.function.ToolResult`, which does
-  not exist in agno 1.x, so `pip install 'nontainer[agno]'` resolving to
-  1.0.0 failed at import. The floor is now `agno>=2`, verified on 2.0.0,
-  2.4.0, 2.7.2 and 3.0.1.
+  false twice over. The adapter imports `agno.tools.function.ToolResult`,
+  which does not exist in agno 1.x at all — so `pip install
+  'nontainer[agno]'` resolving to 1.0.0 failed at import. And the SHIPPED
+  INTEGRATIONS need `pre_hooks`/`post_hooks` on `Agent`, which landed in
+  2.1.0: `examples/analyst.py` passes `post_hooks`, so a floor the
+  adapter cleared would still have shipped an example that could not run
+  on it. The floor is now `agno>=2.1`, verified on 2.1.0, 2.7.2 and 3.0.1.
 
-  It stayed wrong for two months because CI installs agno unpinned and so
-  only ever tested the newest release. A new `agno-floor` job exercises
-  the declared minimum, and a test names the four-import surface the
-  adapter actually depends on.
+  It stayed wrong because CI installs agno unpinned and so only ever
+  tested the newest release. An `agno-versions` job now pins the floor
+  and the current major, a test names the four-import surface the adapter
+  depends on, and a second test constructs the `Agent` shapes the README
+  and examples actually document — which is what caught the `post_hooks`
+  gap that testing the adapter alone missed.
 
 ### Changed
 

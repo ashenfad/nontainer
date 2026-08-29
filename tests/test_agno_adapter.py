@@ -236,3 +236,39 @@ def test_the_agno_surface_this_adapter_depends_on():
     # here rather than inside a tool call at runtime.
     assert ToolResult(content="x").content == "x"
     assert Image(filepath="x.png").filepath == "x.png"
+
+
+def test_the_documented_integration_shapes_construct():
+    """The adapter clearing a floor is not the same as the SHIPPED
+    INTEGRATIONS clearing it.
+
+    `agno>=2` looked right — `WorkspaceTools` builds fine on 2.0.0 and
+    every adapter test passes there. But examples/analyst.py passes
+    `post_hooks` and studio passes `pre_hooks`, and both landed in
+    2.1.0, so the declared floor shipped an example that could not run
+    on it. Nothing caught that because nothing constructed an Agent the
+    way the README and examples tell people to.
+
+    `model=None` keeps this a construction check: no key, no network,
+    no model call — a renamed or dropped kwarg is a TypeError right
+    here.
+    """
+    from agno.agent import Agent
+
+    ws = make_ws()
+    toolkit = WorkspaceTools(ws)
+
+    # README / quick-start
+    Agent(model=None, tools=[toolkit])
+    # examples/analyst.py
+    Agent(
+        model=None,
+        tools=[toolkit],
+        tool_call_limit=12,
+        markdown=False,
+        post_hooks=[toolkit.end_turn],
+    )
+    # examples/webapp.py
+    Agent(model=None, tools=[toolkit], tool_call_limit=30)
+    # nontainer-studio's shape, so a floor bump there is caught here too
+    Agent(model=None, tools=[toolkit], pre_hooks=[lambda **kw: None])

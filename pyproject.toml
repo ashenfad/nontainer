@@ -59,17 +59,20 @@ apps = [
     "anyio>=4",
 ]
 agno = [
-    # The floor is 2.0, not 1.0: the adapter imports
-    # `agno.tools.function.ToolResult`, which does not exist in agno 1.x
-    # (`pip install 'nontainer[agno]'` resolving to 1.0.0 fails at
-    # import). Verified across 2.0.0 / 2.4.0 / 2.7.2 / 3.0.1, and CI
-    # pins this floor in its own job so the claim keeps being true.
+    # The floor is 2.1, not 1.0. Two things set it, and they are
+    # different: the adapter imports `agno.tools.function.ToolResult`,
+    # which does not exist in agno 1.x at all, and the SHIPPED
+    # INTEGRATIONS need `pre_hooks`/`post_hooks` on Agent, which landed
+    # in 2.1.0 (examples/analyst.py passes post_hooks; studio passes
+    # pre_hooks). A floor that only the adapter clears would still ship
+    # an example that cannot run. Verified on 2.1.0 / 2.7.2 / 3.0.1;
+    # CI pins it in its own job so the claim keeps being true.
     #
     # No upper bound: agno 3.0's breaking changes are all in surfaces
     # this adapter never touches (the runs table, renamed Agent params,
     # Workflow/HITL, MultiMCPTools). It builds a Toolkit and returns
     # ToolResult, and that has been stable across both majors.
-    "agno>=2",
+    "agno>=2.1",
 ]
 mcp = [
     # The adapter targets mcp.server.fastmcp, removed in MCP 2.0.

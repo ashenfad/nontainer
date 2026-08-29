@@ -45,19 +45,34 @@ jobs:
   # The matrix above installs agno unpinned, so it only ever proves the
   # LATEST release works. That is how `agno>=1.0` went two months
   # claiming support for a version the adapter cannot even import on
-  # (agno 1.x has no `ToolResult`). This job exercises the declared
-  # floor, so the constraint stays a tested claim rather than a guess.
-  agno-floor:
+  # (agno 1.x has no `ToolResult`). These pins cover the other points:
+  # the declared floor, and the current major — so when agno 5 ships and
+  # "latest" moves on, 3.x does not silently stop being tested.
+  agno-versions:
+    strategy:
+      matrix:
+        agno: ["2.1.0", "3.0.1"]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
-    - name: Install with the OLDEST supported agno
+    - name: Install with agno ${{ matrix.agno }}
       run: |
         python -m pip install --upgrade pip
         pip install -e ".[dev,apps]"
-        pip install "agno==2.0.0"
+        pip install "agno==${{ matrix.agno }}"
+    - name: Confirm the pin actually took
+      # Belt and braces: an overlay that silently loses to an already
+      # installed agno would make every assertion below vacuous, and a
+      # green run would mean nothing. This bit us locally — `uv run
+      # --with agno==X pytest` runs the PROJECT's pytest, not the
+      # overlay's, so four "passes on 3.0.1" results were really the
+      # installed 2.6.22.
+      run: |
+        python -c "import agno, sys; \
+          assert agno.__version__ == '${{ matrix.agno }}', agno.__version__; \
+          print('agno', agno.__version__)"
     - name: Run the agno adapter tests
-      run: pytest tests/ -v -k agno
+      run: python -m pytest tests/ -v -k agno
