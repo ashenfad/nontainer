@@ -210,3 +210,29 @@ def test_agno_view_image():
     assert not miss.images and "cannot read" in miss.content
     assert "next message" not in miss.content  # no image, no note
     ws.close()
+
+
+def test_the_agno_surface_this_adapter_depends_on():
+    """The whole of nontainer's agno contract, named in one place.
+
+    It is four imports, which is why `agno>=2` carries no upper bound:
+    agno 3.0's breaking changes are all in surfaces this adapter never
+    touches (the runs table, renamed Agent params, Workflow/HITL,
+    MultiMCPTools). Verified on 2.0.0, 2.4.0, 2.7.2 and 3.0.1.
+
+    The FLOOR is the part worth pinning down. `agno>=1.0` stood for two
+    months while being false — ToolResult does not exist in agno 1.x, so
+    `pip install 'nontainer[agno]'` resolving to 1.0.0 failed at import.
+    Nothing noticed because CI installs unpinned and therefore only ever
+    tested the newest release; the agno-floor job now covers the other
+    end.
+    """
+    from agno.media import Image
+    from agno.tools import Toolkit
+    from agno.tools.function import ToolResult
+
+    assert issubclass(WorkspaceTools, Toolkit)
+    # Constructed by the adapter, so a move or rename must fail loudly
+    # here rather than inside a tool call at runtime.
+    assert ToolResult(content="x").content == "x"
+    assert Image(filepath="x.png").filepath == "x.png"
