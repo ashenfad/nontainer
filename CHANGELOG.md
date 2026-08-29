@@ -47,7 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **The `agno` extra claimed a floor it does not have.** `agno>=1.0` was
+  false: the adapter imports `agno.tools.function.ToolResult`, which does
+  not exist in agno 1.x, so `pip install 'nontainer[agno]'` resolving to
+  1.0.0 failed at import. The floor is now `agno>=2`, verified on 2.0.0,
+  2.4.0, 2.7.2 and 3.0.1.
+
+  It stayed wrong for two months because CI installs agno unpinned and so
+  only ever tested the newest release. A new `agno-floor` job exercises
+  the declared minimum, and a test names the four-import surface the
+  adapter actually depends on.
+
 ### Changed
+
+- **agno 3.0 is supported, with no upper bound.** Its breaking changes
+  are all in surfaces this adapter never touches (the runs table, renamed
+  `Agent` params, `Workflow`/HITL, `MultiMCPTools`); nontainer builds a
+  `Toolkit` and returns `ToolResult`, stable across both majors. The full
+  suite passes on 3.0.1.
 
 - **An absolute url now FAILS verification.** `apps.md` has always said
   relocatability violations "fail during verification, not at delivery";
