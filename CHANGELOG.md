@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ws.read_artifact(path) -> bytes | None`** — an artifact's bytes,
+  or `None` when unreadable. That is precisely the `read_bytes`
+  contract `turn_to_a2ui` documents, so wiring a surface is one
+  argument instead of a hand-rolled wrapper:
+
+  ```python
+  turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, surface_id=sid)
+  ```
+
+  The `None` is the point: `ws.fs.read` raises `FileNotFoundError` for
+  a missing artifact, and the obvious lambda over it breaks the
+  envelope's never-raises guarantee mid-stream. Bytes rather than a
+  parsed payload, because every consumer parses for itself and a typed
+  loader would invite reading an artifact as the original object —
+  which a `head(200)` table cannot honour.
+
 - **`ArtifactPath`** — what a `ui` value becomes once it is a file.
   Rich values (plotly figure, DataFrame, matplotlib figure, PIL image)
   cannot cross a process or machine boundary, so they are written to

@@ -1347,6 +1347,39 @@ class Workspace:
             out.write_bytes(data)
         return data
 
+    def read_artifact(self, path: str) -> bytes | None:
+        """An artifact's bytes, or ``None`` if it cannot be read.
+
+        Shaped to be handed straight to the a2ui envelope, whose
+        ``read_bytes`` parameter is exactly this signature::
+
+            turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, ...)
+
+        The ``None`` is the whole point. ``turn_to_a2ui`` owns no I/O
+        policy on purpose and documents ``None`` as "unreadable, degrade
+        gracefully" — but the obvious ``lambda p: ws.fs.read(p)`` raises
+        ``FileNotFoundError`` for a missing artifact and breaks that
+        never-raises guarantee mid-stream, in an egress path. Holding
+        that contract here means each consumer does not have to restate
+        it correctly.
+
+        Returns bytes rather than a parsed payload deliberately. Every
+        consumer in this stack parses for itself (a2ui degrades on
+        malformed JSON rather than raising), and a typed loader would
+        invite reading it as "give me my DataFrame back" — which a
+        ``head(200)`` artifact cannot honour. ``ArtifactPath.kind``
+        says how to interpret the bytes when you want to.
+
+        Read-only; never checkpoints. Any path works, not only ``/ui``
+        — artifact notes are the usual source, but nothing here needs
+        to police that.
+        """
+        try:
+            self._check_open()
+            return self._fs.read(path)
+        except Exception:  # noqa: BLE001 - unreadable IS the answer here
+            return None
+
     @property
     def cache(self) -> MutableMapping[str, Any]:
         """The agent's persistent dict, host-side view. Key rules: str

@@ -9,6 +9,8 @@ agent code, two outcomes, neither visible from the API.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from nontainer import ArtifactPath, PythonConfig, Workspace, artifact_kind
@@ -234,3 +236,54 @@ def test_an_oversized_value_fails_identically_on_both_rungs():
     finally:
         local.close()
         dud.close()
+
+
+def test_read_artifact_fits_the_a2ui_contract():
+    """`turn_to_a2ui` takes `read_bytes(path) -> bytes | None` and owns
+    no I/O policy, documenting None as "unreadable, degrade". The
+    obvious `lambda p: ws.fs.read(p)` raises FileNotFoundError instead
+    and breaks that guarantee mid-stream — so the contract lives here.
+    """
+    pytest.importorskip("pandas")
+    import inspect
+
+    from nontainer.adapters.a2ui import turn_to_a2ui
+    from nontainer.presets import dataframes
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="ap-read"),
+        python=PythonConfig(modules=[dataframes()]),
+    )
+    try:
+        r = ws.run_python(
+            "import pandas as pd\nui = {'chart': pd.DataFrame({'a': [1]})}\n"
+        )
+        assert r.error is None, r.error
+        art = r.namespace["ui"]["chart"]
+
+        data = ws.read_artifact(art)
+        assert isinstance(data, bytes)
+        assert json.loads(data)["columns"] == ["a"]
+
+        # Missing: None, not an exception — this is the half a hand-rolled
+        # lambda gets wrong.
+        assert ws.read_artifact("/workspace/ui/nope.json") is None
+        with pytest.raises(Exception):
+            ws.fs.read("/workspace/ui/nope.json")
+
+        # And it is signature-compatible with the parameter it exists for.
+        params = inspect.signature(turn_to_a2ui).parameters
+        assert "read_bytes" in params
+    finally:
+        ws.close()
+
+
+def test_read_artifact_never_raises_on_a_closed_workspace():
+    """An egress path may outlive the workspace; an envelope being
+    composed must degrade, not blow up."""
+    ws = Workspace(KvgitProvider.open(None, session="ap-read-closed"))
+    ws.write_file("ui/x.txt", "hi")
+    path = "/workspace/ui/x.txt"
+    assert ws.read_artifact(path) == b"hi"
+    ws.close()
+    assert ws.read_artifact(path) is None

@@ -528,6 +528,22 @@ answer — agents put ordinary strings in `ui` too. `.kind` is **derived**
 from the suffix via `artifact_kind`, never stored, so it cannot
 disagree with the path.
 
+`ws.read_artifact(path) -> bytes | None` fetches one. It returns
+`None` rather than raising when the file is unreadable, which is
+exactly the `read_bytes` contract `turn_to_a2ui` documents — the
+obvious `lambda p: ws.fs.read(p)` raises `FileNotFoundError` and breaks
+the envelope's never-raises guarantee mid-stream:
+
+```python
+turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, surface_id=sid)
+```
+
+Bytes, not a parsed payload: every consumer here parses for itself
+(a2ui degrades on malformed JSON rather than raising), and a typed
+loader would invite reading an artifact as the original object — which
+a `head(200)` table cannot honour. Use `ArtifactPath.kind` to decide
+how to interpret them.
+
 Because this lives in `run_python` rather than an adapter, it is the
 same on every executor: a VM guest serializes the object where it lives
 and sends a claim home, the in-process path serializes it here, and
