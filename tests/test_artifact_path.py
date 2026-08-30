@@ -188,3 +188,49 @@ def test_a_forged_claim_is_not_an_artifact():
     finally:
         local.close()
         dud.close()
+
+
+def test_an_oversized_value_fails_identically_on_both_rungs():
+    """The cap is a RENDERER limit advertised to the agent in the
+    primer ("Artifacts are capped at 8MB..."), so the note is the
+    feedback half of that contract — and it has to look the same
+    wherever the value was serialized.
+
+    It did not: the guest wrote `<name>.json` carrying `{"error": ...}`
+    while the host wrote `<name>.txt` carrying the plain message, so
+    one condition produced two artifact kinds. And the guest's message
+    reached nobody, because only the in-process path fed `ui_problems`.
+    """
+    pytest.importorskip("pandas")
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+    from nontainer.presets import dataframes
+
+    # WIDE, not long: materialization keeps head(200), so row count
+    # alone never reaches the cap.
+    code = (
+        "import pandas as pd\nui = {'huge': pd.DataFrame({'s': ['x' * 60000] * 300})}\n"
+    )
+    local = Workspace(
+        KvgitProvider.open(None, session="ap-cap-l"),
+        python=PythonConfig(modules=[dataframes()]),
+    )
+    dud = Workspace(
+        KvgitProvider.open(None, session="ap-cap-d"),
+        executor=DudExecutor(backend="subprocess"),
+    )
+    try:
+        seen = []
+        for ws in (local, dud):
+            r = ws.run_python(code)
+            assert r.error is None, r.error
+            art = r.namespace["ui"]["huge"]
+            assert isinstance(art, ArtifactPath)
+            assert art.kind == "text", "same kind, whichever rung wrote it"
+            assert r.ui_problems, "the agent must learn why"
+            assert "too large" in r.ui_problems[0]
+            seen.append((str(art), r.ui_problems))
+        assert seen[0] == seen[1], "byte-identical outcome across rungs"
+    finally:
+        local.close()
+        dud.close()

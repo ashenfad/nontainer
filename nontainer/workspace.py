@@ -994,10 +994,26 @@ class Workspace:
         # so a claim can be checked against a filesystem that has the
         # file — `ui` is agent-authored, and an ordinary dict wearing
         # the tag must not become an ArtifactPath on one rung only.
-        claimed = {k: p for k, v in ui.items() if (p := self._claimed(v))}
+        from .dud_outputs import _PROBLEM
+
+        claimed, claim_problems = {}, []
+        for key, value in ui.items():
+            path = self._claimed(value)
+            if path is None:
+                continue
+            claimed[key] = path
+            # The guest's own diagnosis (the size cap, a serializer that
+            # raised). Without carrying it the agent was told the rule
+            # up front and then got silence when it broke it — on this
+            # rung only, which is worse than either.
+            note = value.get(_PROBLEM)
+            if isinstance(note, str):
+                claim_problems.append(note)
         if claimed:
             ui = {**ui, **claimed}
             result = replace(result, namespace={**result.namespace, "ui": ui})
+        if claim_problems:
+            result = replace(result, ui_problems=(*result.ui_problems, *claim_problems))
         # ONLY the values that cannot cross as data. Materializing the
         # rest would replace an agent's plain string or dict with a
         # path, which is a far larger change to `ui` than swapping a
@@ -1526,9 +1542,13 @@ class Workspace:
         stays a dict, on every rung.
         """
         from .artifacts import ArtifactPath
-        from .dud_outputs import _CLAIM
+        from .dud_outputs import _CLAIM, _PROBLEM
 
-        if not (isinstance(value, dict) and set(value) == {_CLAIM}):
+        if not (
+            isinstance(value, dict)
+            and _CLAIM in value
+            and set(value) <= {_CLAIM, _PROBLEM}
+        ):
             return None
         rel = value[_CLAIM]
         if not isinstance(rel, str) or rel.startswith("/") or ".." in rel:

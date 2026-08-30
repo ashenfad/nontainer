@@ -20,7 +20,12 @@ from typing import Any, Literal
 # artifact_kind is re-exported: it moved to core so `Workspace` could
 # reach it without importing an adapter, but it is public here (docs,
 # a2ui) and stays importable from this module.
-from ..artifacts import ArtifactPath, artifact_kind  # noqa: F401
+from ..artifacts import MAX_ARTIFACT_BYTES as _MAX_ARTIFACT_BYTES
+from ..artifacts import (
+    ArtifactPath,
+    artifact_kind,  # noqa: F401  (public re-export)
+)
+from ..artifacts import too_large_note as _too_large_note
 from ..workspace import PythonResult, TerminalResult, Workspace
 
 ToolsMode = Literal["auto", "terminal", "split"]
@@ -547,8 +552,6 @@ traces (scattergl, scattermapbox) and keep the spec lean: per-point
 customdata/hover text is the usual size killer — aggregate or sample
 it rather than shipping every row."""
 
-_MAX_ARTIFACT_BYTES = 8_000_000
-
 
 def ui_root(ws: Workspace) -> str:
     """Where `ui = {...}` artifacts land: ``<ws.root>/ui``."""
@@ -609,24 +612,6 @@ def _column_types(frame: Any) -> list[str] | None:
         ]
     except Exception:
         return None
-
-
-def _too_large_note(name: str, size: int, mod: str) -> str:
-    """Actionable diagnosis for the cap: the agent reads this in the
-    tool result and self-corrects; the human sees it where the figure
-    would have been."""
-    note = (
-        f"ui artifact {name!r} NOT rendered: too large "
-        f"({size / 1e6:.1f}MB > {_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
-    )
-    if mod.startswith("plotly"):
-        return note + (
-            " The usual culprit is per-point customdata/hover text — drop or"
-            " aggregate it. Coordinates are cheap (binary-encoded); WebGL"
-            " traces (scattergl, scattermapbox) render 100k+ points fine,"
-            " but the spec must still fit the cap."
-        )
-    return note + " Downsample or aggregate before assigning to `ui`."
 
 
 def _is_stat(i: object) -> bool:

@@ -29,6 +29,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **An oversized artifact now fails identically on either rung.** The
+  guest wrote `<name>.json` carrying `{"error": ...}` while the host
+  wrote `<name>.txt` carrying the plain message — one condition, two
+  artifact kinds — and the guest's message reached nobody, because only
+  the in-process path fed `ui_problems`. Both now use the same
+  `too_large_note`, write the same `.txt`, and surface the same
+  `ui_problems`. The cap is a *renderer* limit advertised to the agent
+  in the primer, so the note is the feedback half of that contract.
+
 - **`ui` artifacts now happen for every consumer, on every rung.**
   Materialization moved out of the agno adapter and into
   `Workspace.run_python`, which is the funnel every caller passes
