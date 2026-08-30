@@ -37,7 +37,7 @@ import re
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import ModuleType
@@ -188,6 +188,14 @@ class PythonResult:
     checkpoint: str | None = None
     """Id of the commit this call's autocheckpoint created (``None``
     when nothing was committed) — see ``TerminalResult.checkpoint``."""
+
+    ui_problems: tuple[str, ...] = ()
+    """Why a ``ui`` value did not render as intended — today the 8 MB
+    artifact cap, with the remediation. Actionable text meant to reach
+    the agent: it reads this in the tool result and self-corrects, and
+    the human sees it where the figure would have been. Carried on the
+    result because materialization happens in ``run_python`` now, so an
+    adapter rendering afterwards has no other way to learn of it."""
 
     def __bool__(self) -> bool:
         return self.error is None
@@ -651,6 +659,9 @@ class Workspace:
 
         # autocheckpoint is meaningless (and forced off) when the
         # provider can't checkpoint.
+        # Set while an operation writes on a call's behalf, so nested
+        # write_file checkpoints fold into that call's single commit.
+        self._defer_checkpoints = False
         self._autocheckpoint = autocheckpoint and provider.caps.versioned
         # Construction owns the workspace root + initial cwd, but it
         # must never absorb caller-owned staged work into an automatic
@@ -975,6 +986,18 @@ class Workspace:
         ui = result.namespace.get("ui")
         if not isinstance(ui, dict) or not ui:
             return result
+        # A guest that materialized during execution left CLAIMS, since
+        # it cannot know this namespace: the paths coincide on a VM rung
+        # only because the workspace is mounted at the host root, and
+        # diverge on a subprocess rung. Resolved here rather than in the
+        # executor because only here is the harvest already absorbed,
+        # so a claim can be checked against a filesystem that has the
+        # file — `ui` is agent-authored, and an ordinary dict wearing
+        # the tag must not become an ArtifactPath on one rung only.
+        claimed = {k: p for k, v in ui.items() if (p := self._claimed(v))}
+        if claimed:
+            ui = {**ui, **claimed}
+            result = replace(result, namespace={**result.namespace, "ui": ui})
         # ONLY the values that cannot cross as data. Materializing the
         # rest would replace an agent's plain string or dict with a
         # path, which is a far larger change to `ui` than swapping a
@@ -990,13 +1013,22 @@ class Workspace:
         from .adapters.render import materialize_ui
 
         claims: dict[Any, Any] = {}
+        problems: list[str] = []
         try:
-            materialize_ui(self, rich, claims=claims)
+            # Artifact writes go through the public write_file, which
+            # checkpoints for itself. Suppressed: they are part of THIS
+            # call and ride its commit.
+            with self._one_checkpoint():
+                _, problems = materialize_ui(self, rich, claims=claims)
         except Exception:  # noqa: BLE001 - rendering agent data is never fatal
             return result
-        if not claims:
+        if not claims and not problems:
             return result
-        return replace(result, namespace={**result.namespace, "ui": {**ui, **claims}})
+        return replace(
+            result,
+            namespace={**result.namespace, "ui": {**ui, **claims}},
+            ui_problems=tuple(problems),
+        )
 
     # -- async host facades ---------------------------------------------
     #
@@ -1485,10 +1517,57 @@ class Workspace:
             pass
         return False
 
+    def _claimed(self, value: Any) -> Any:
+        """An artifact claim from the guest, resolved and verified.
+
+        The envelope must be *only* the tag, its value a workspace
+        relative path, and the file must be there. Anything else is the
+        agent's own data: ``ui = {"cfg": {"__nt_artifact__": "nope"}}``
+        stays a dict, on every rung.
+        """
+        from .artifacts import ArtifactPath
+        from .dud_outputs import _CLAIM
+
+        if not (isinstance(value, dict) and set(value) == {_CLAIM}):
+            return None
+        rel = value[_CLAIM]
+        if not isinstance(rel, str) or rel.startswith("/") or ".." in rel:
+            return None
+        base = "" if self.root == "/" else self.root.rstrip("/")
+        path = f"{base}/{rel}"
+        try:
+            if not self._fs.exists(path):
+                return None
+        except Exception:  # noqa: BLE001 - a VFS miss just means "not a claim"
+            return None
+        return ArtifactPath(path)
+
+    @contextmanager
+    def _one_checkpoint(self):
+        """Suppress nested checkpoints for the duration of an operation.
+
+        ``write_file`` checkpoints, by design — it is a tool in its own
+        right. But when the *workspace* writes on a call's behalf (``ui``
+        artifacts), those writes belong to that call, not to a
+        ``file_write`` of their own. Without this, materializing two
+        rich values committed twice under the wrong tool and left
+        ``result.checkpoint`` None, which reads as "nothing was
+        committed" while the head had in fact moved.
+        """
+        outer = self._defer_checkpoints
+        self._defer_checkpoints = True
+        try:
+            yield
+        finally:
+            self._defer_checkpoints = outer
+
     def _maybe_checkpoint(self, tool: str) -> str | None:
         """Commit this call's staged changes. Returns the created
         commit's id, or None when nothing was committed (no changes,
-        autocheckpoint off, unversioned provider)."""
+        autocheckpoint off, unversioned provider, or a nested write
+        inside an operation that will commit for itself)."""
+        if self._defer_checkpoints:
+            return None
         if self._autocheckpoint and self._provider.dirty:
             return self._provider.checkpoint(info={"tool": tool})
         return None
