@@ -42,6 +42,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 from typing import Any
 
 #: Parity with the host renderer's cap (`adapters/render.py`). Same
@@ -80,13 +81,25 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
 
     remaining: dict[Any, Any] = {}
     consumed = False
-    for name, value in ui.items():
+    for raw_name, value in ui.items():
+        name = _safe_name(raw_name)
         try:
-            written = _materialize(str(name), value, workspace)
-        except Exception:  # noqa: BLE001 - third-party serializers raise anything
-            written = None
+            written = _materialize(name, value, workspace)
+        except Exception as exc:  # noqa: BLE001 - serializers raise anything
+            # Handing the live object back would recreate exactly the
+            # data loss this hook exists to prevent: it is the thing
+            # dud cannot encode, so the whole `ui` binding becomes
+            # unrepresentable and its plain siblings vanish with it.
+            # Consume it and say why, as the oversized path does.
+            written = _note(
+                workspace,
+                name,
+                f"ui artifact {raw_name!r} NOT rendered: "
+                f"{type(value).__name__} failed to serialize "
+                f"({type(exc).__name__}: {exc}).",
+            )
         if written is None:
-            remaining[name] = value
+            remaining[raw_name] = value
         else:
             consumed = True
 
@@ -98,37 +111,75 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
     return {"ui"}
 
 
-def _write(workspace: str, relpath: str, data: bytes, name: str, mod: str) -> str:
-    """Write one artifact, or a note saying why it could not be.
+def _safe_name(raw_name: Any) -> str:
+    """The filename for a ``ui`` key, sanitized exactly as the host
+    renderer sanitizes it (``adapters/render.py``).
 
-    Over the cap the *note* is still written and the name still
-    consumed. Returning None here instead would leave a live object in
-    ``ui``, which makes the whole binding unrepresentable and silently
-    takes its representable siblings down with it — a much worse
-    outcome than a rendered explanation.
+    Not cosmetic. A key like ``"sales chart"`` written verbatim
+    produces a path with a space, and the artifacts note is parsed as
+    ``([\\w.-]+) -> (/\\S+)`` — so the file would be written and
+    consumed and then fail to display. A key containing ``/`` would
+    additionally create a nested directory the adapter's flat ``ui``
+    scan never looks in.
+
+    And it has to be the *same* transform on both sides, or the same
+    figure lands at two different paths depending on which rung
+    produced it — which is the exact parity this module exists to keep.
     """
-    if len(data) > _MAX_ARTIFACT_BYTES:
-        relpath = f"ui/{name}.json"
-        data = json.dumps(
-            {
-                "error": (
-                    f"ui artifact {name!r} NOT rendered: too large "
-                    f"({len(data) / 1e6:.1f}MB > "
-                    f"{_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
-                    + (
-                        " The usual culprit is per-point customdata/hover text —"
-                        " drop or aggregate it."
-                        if mod.startswith("plotly")
-                        else " Downsample or aggregate before assigning to `ui`."
-                    )
-                )
-            }
-        ).encode()
+    return re.sub(r"[^\w.-]+", "-", str(raw_name)).strip("-.") or "artifact"
+
+
+def _note(workspace: str, name: str, message: str) -> str | None:
+    """Write a representable explanation in place of an artifact.
+
+    Consuming the name and leaving a note beats returning the live
+    object, which dud cannot encode and which therefore takes the whole
+    ``ui`` binding down with it. Returns None only if even this fails,
+    where there is nothing better left to do than let the value cross
+    and be dropped.
+    """
+    try:
+        return _put(
+            workspace, f"ui/{name}.json", json.dumps({"error": message}).encode()
+        )
+    except OSError:
+        return None
+
+
+def _put(workspace: str, relpath: str, data: bytes) -> str:
     full = os.path.join(workspace, relpath)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "wb") as f:
         f.write(data)
     return relpath
+
+
+def _write(
+    workspace: str, relpath: str, data: bytes, name: str, mod: str
+) -> str | None:
+    """Write one artifact, or a note saying why it could not be.
+
+    Over the cap the *note* is still written and the name still
+    consumed, for the same reason a failed serializer is: returning
+    None here would leave a live object in ``ui``, which makes the
+    whole binding unrepresentable and silently takes its representable
+    siblings down with it.
+    """
+    if len(data) > _MAX_ARTIFACT_BYTES:
+        return _note(
+            workspace,
+            name,
+            f"ui artifact {name!r} NOT rendered: too large "
+            f"({len(data) / 1e6:.1f}MB > "
+            f"{_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
+            + (
+                " The usual culprit is per-point customdata/hover text —"
+                " drop or aggregate it."
+                if mod.startswith("plotly")
+                else " Downsample or aggregate before assigning to `ui`."
+            ),
+        )
+    return _put(workspace, relpath, data)
 
 
 def _materialize(name: str, value: Any, workspace: str) -> str | None:

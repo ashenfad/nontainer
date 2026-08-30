@@ -77,18 +77,49 @@ def test_a_plain_ui_is_not_rewritten(tmp_path):
     assert not (tmp_path / "ui").exists()
 
 
-def test_a_serializer_that_raises_leaves_its_value_alone(tmp_path):
-    """Third-party serializers raise anything. One bad value must not
-    lose the others."""
+def test_a_serializer_that_raises_is_consumed_with_a_note(tmp_path):
+    """Third-party serializers raise anything, and handing the live
+    object back would recreate the very data loss this hook prevents:
+    it is the thing dud cannot encode, so `ui` becomes unrepresentable
+    and its plain siblings vanish too. Consume it and explain, exactly
+    as the oversized path does.
+
+    The first cut of this test asserted the opposite and was VACUOUS
+    either way: `__module__` set in a class body is not inherited, so
+    the subclass read as `tests.test_dud_outputs` and was never treated
+    as rich — `to_json` was never called and nothing ever raised.
+    """
 
     class _Exploding(_FakeFigure):
+        __module__ = "plotly.graph_objs._figure"  # NOT inherited
+
         def to_json(self):
             raise RuntimeError("boom")
 
-    harvest = {"ui": {"bad": _Exploding(), "good": _FakeFigure('{"ok":1}')}}
+    harvest = {"ui": {"bad": _Exploding(), "good": _FakeFigure('{"ok":1}'),
+                      "note": "plain"}}
     assert flatten(harvest, str(tmp_path)) == set()
-    assert set(harvest["ui"]) == {"bad"}
+    assert harvest["ui"] == {"note": "plain"}, "no live object handed back"
     assert (tmp_path / "ui" / "good.plotly.json").exists()
+    problem = json.loads((tmp_path / "ui" / "bad.json").read_bytes())
+    assert "failed to serialize" in problem["error"]
+    assert "RuntimeError: boom" in problem["error"]
+
+
+def test_artifact_names_are_sanitized_like_the_host_renderer(tmp_path):
+    r"""A key is agent-authored text, not a filename. The artifacts note
+    is parsed as `([\w.-]+) -> (/\S+)`, so a space means the file is
+    written and consumed and then cannot be displayed; a slash makes a
+    nested dir the adapter's flat scan never looks in. `render.py`
+    applies exactly this transform, and the two must agree or one
+    figure lands at two paths depending on the rung."""
+    harvest = {"ui": {"sales chart": _FakeFigure(), "a/b": _FakeFigure(),
+                      "!!!": _FakeFigure()}}
+    assert flatten(harvest, str(tmp_path)) == {"ui"}
+    written = sorted(p.name for p in (tmp_path / "ui").iterdir())
+    assert written == ["a-b.plotly.json", "artifact.plotly.json",
+                       "sales-chart.plotly.json"]
+    assert not (tmp_path / "ui" / "a").exists(), "no nested directory"
 
 
 def test_an_oversized_artifact_writes_a_note_and_still_consumes(tmp_path):
