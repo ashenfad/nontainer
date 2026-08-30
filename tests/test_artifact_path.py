@@ -109,3 +109,82 @@ def test_a_rerun_still_names_its_artifact():
         assert isinstance(second["chart"], ArtifactPath)
     finally:
         ws.close()
+
+
+# -- what review caught ------------------------------------------------------
+
+
+def test_artifacts_ride_the_calls_own_checkpoint():
+    """Materialization writes through `write_file`, which checkpoints
+    for itself — so materializing inside `run_python` committed under
+    the wrong tool, once per rich value, and left `result.checkpoint`
+    None while the head had in fact moved."""
+    pytest.importorskip("pandas")
+    from nontainer.presets import dataframes
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="ap-cp"),
+        python=PythonConfig(modules=[dataframes()]),
+    )
+    try:
+        before = len(list(ws.history()))
+        r = ws.run_python(
+            "import pandas as pd\n"
+            "ui = {'a': pd.DataFrame({'x': [1]}), 'b': pd.DataFrame({'y': [2]})}\n"
+        )
+        assert r.error is None, r.error
+        entries = list(ws.history())
+        assert len(entries) - before == 1, "two artifacts, one commit"
+        assert entries[0].info == {"tool": "run_python"}
+        assert r.checkpoint == ws.head, "the call must report its own commit"
+    finally:
+        ws.close()
+
+
+def test_an_oversized_value_still_explains_itself():
+    """The 8MB cap message is actionable text the agent self-corrects
+    from. Materialization moved into run_python, so the adapter's later
+    pass sees an already-made artifact and reports nothing — the result
+    has to carry it."""
+    pytest.importorskip("pandas")
+    from nontainer.presets import dataframes
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="ap-big"),
+        python=PythonConfig(modules=[dataframes()]),
+    )
+    try:
+        r = ws.run_python(
+            "import pandas as pd\n"
+            # WIDE, not long: materialization keeps head(200), so
+            # row count alone never reaches the cap.
+            "ui = {'huge': pd.DataFrame({'s': ['x' * 60000] * 300})}\n"
+        )
+        assert r.error is None, r.error
+        assert r.ui_problems, "the cap message was dropped"
+        assert "too large" in r.ui_problems[0]
+    finally:
+        ws.close()
+
+
+def test_a_forged_claim_is_not_an_artifact():
+    """`ui` is agent-authored. An ordinary dict wearing the wire tag
+    must not become an ArtifactPath — that would diverge the rungs
+    again, which is the thing this type exists to prevent."""
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+
+    forged = "ui = {'cfg': {'__nt_artifact__': 'not-a-file'}}\n"
+    local = Workspace(KvgitProvider.open(None, session="ap-forge-l"))
+    dud = Workspace(
+        KvgitProvider.open(None, session="ap-forge-d"),
+        executor=DudExecutor(backend="subprocess"),
+    )
+    try:
+        for ws in (local, dud):
+            r = ws.run_python(forged)
+            assert r.error is None, r.error
+            assert r.namespace["ui"]["cfg"] == {"__nt_artifact__": "not-a-file"}
+    finally:
+        local.close()
+        dud.close()

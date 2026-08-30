@@ -250,8 +250,17 @@ class WorkspaceTools(Toolkit):
                         if path not in claimed and self._ws.fs.isfile(path):
                             artifacts.append((fname, path))
                     text += artifacts_note(artifacts)
-                    for problem in problems:  # e.g. the 8MB cap, with the fix
-                        text += f"\n[ui note: {problem}]"
+                    # Problems from BOTH passes. Materialization now
+                    # happens in run_python, so the value reaching here
+                    # is already an ArtifactPath and this adapter's own
+                    # pass reports nothing for it -- the 8MB cap message
+                    # and its remediation would otherwise vanish from
+                    # the tool result the agent reads.
+                    seen = set()
+                    for problem in (*result.ui_problems, *problems):
+                        if problem not in seen:
+                            seen.add(problem)
+                            text += f"\n[ui note: {problem}]"
                     return text
 
             run_python.__doc__ = python_description(
