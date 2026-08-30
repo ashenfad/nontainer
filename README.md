@@ -109,6 +109,14 @@ code that has never heard of it still gets a working absolute path.
 Code that cares asks `isinstance(v, ArtifactPath)` — which a bare
 string could not answer, since agents put ordinary strings in `ui` too.
 
+`ws.read_artifact(path)` returns the bytes, or `None` if it cannot be
+read — the shape the a2ui envelope wants, so wiring a surface is one
+argument rather than a hand-rolled wrapper:
+
+```python
+turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, surface_id=sid)
+```
+
 This happens in `run_python` itself, so it is the same on every
 executor. On a VM the object cannot leave the guest, so it is
 serialized there; in-process it is serialized here. Either way you get
