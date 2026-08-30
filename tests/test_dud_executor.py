@@ -16,6 +16,8 @@ choice is spelled out at every site so no test quietly depends on a
 zero-isolation default.
 """
 
+import json
+
 import pytest
 
 from nontainer import Workspace
@@ -999,3 +1001,29 @@ def test_no_host_objects_means_an_empty_allowlist(monkeypatch):
     )
     DudExecutor(backend="subprocess")._make_session({}, {})
     assert captured["allow"] == {}
+
+
+def test_rich_ui_flattens_through_the_dud_boundary(ws):
+    """The end-to-end gap that let a breaking change land unnoticed.
+
+    A DataFrame cannot cross dud's codec, so before 0.4.0 dud itself
+    serialized it guest-side. 0.4.0 moved that out to a hook the host
+    names, and nothing here covered it — so the suite passed against a
+    dud that had stopped doing it, and the failure was not a missing
+    artifact but `ui` returning None with its plain siblings gone.
+    """
+    pd = pytest.importorskip("pandas")
+    assert pd  # the guest imports its own copy; this just gates the test
+
+    r = ws.run_python(
+        "import pandas as pd\n"
+        "ui = {'table': pd.DataFrame({'a': [1, 2, 3]}), 'note': 'plain'}\n"
+    )
+    assert r, r.error
+    # The rich value left the binding as a file...
+    assert ws.fs.exists("/workspace/ui/table.table.json")
+    payload = json.loads(ws.fs.read("/workspace/ui/table.table.json"))
+    assert payload["total"] == 3
+    # ...and the representable remainder still crossed, which is the
+    # half that used to disappear.
+    assert r.namespace["ui"] == {"note": "plain"}
