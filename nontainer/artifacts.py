@@ -23,6 +23,14 @@ executor and your adapter.
 
 from __future__ import annotations
 
+#: Bytes past which an artifact is refused and replaced by a note. A
+#: RENDERER limit, not a transport one: it is advertised to the agent
+#: in the python primer ("Artifacts are capped at 8MB..."), and the
+#: remediation it suggests is all about spec leanness. It also bounds
+#: what a regenerated artifact commits into the version store on every
+#: run.
+MAX_ARTIFACT_BYTES = 8_000_000
+
 #: (module prefix, method) pairs identifying values that cannot cross a
 #: process or machine boundary as data. Duck-typed rather than
 #: imported, so this costs nothing in an environment that has none of
@@ -47,6 +55,24 @@ def is_rich(value: object) -> bool:
     """
     mod = type(value).__module__ or ""
     return any(mod.startswith(p) and hasattr(value, a) for p, a in _RICH)
+
+
+def too_large_note(name: str, size: int, mod: str) -> str:
+    """Actionable diagnosis for the cap: the agent reads this in the
+    tool result and self-corrects; the human sees it where the figure
+    would have been."""
+    note = (
+        f"ui artifact {name!r} NOT rendered: too large "
+        f"({size / 1e6:.1f}MB > {MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
+    )
+    if mod.startswith("plotly"):
+        return note + (
+            " The usual culprit is per-point customdata/hover text — drop or"
+            " aggregate it. Coordinates are cheap (binary-encoded); WebGL"
+            " traces (scattergl, scattermapbox) render 100k+ points fine,"
+            " but the spec must still fit the cap."
+        )
+    return note + " Downsample or aggregate before assigning to `ui`."
 
 
 def artifact_kind(path: str) -> str:

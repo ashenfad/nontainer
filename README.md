@@ -86,6 +86,34 @@ executors: a dud VM mounts its guest workspace at the same path, so
 `/workspace/data/in.csv` names the same file whether agent code runs
 in the local sandbox or a real machine.
 
+Values an agent wants *shown* go in a `ui` dict. Anything that can
+cross as data stays as it is; a live object that cannot — a plotly
+figure, a DataFrame, a matplotlib figure, a PIL image — is written to
+`<root>/ui/<name>.<ext>` and the binding names where it went:
+
+```python
+r = ws.run_python("""
+import pandas as pd
+ui = {"chart": pd.DataFrame({"a": [1, 2, 3]}), "note": "top three"}
+""")
+
+r.namespace["ui"]["chart"]        # ArtifactPath('/workspace/ui/chart.table.json',
+                                  #              kind='table')
+r.namespace["ui"]["chart"].kind   # 'table'  -- derived from the suffix
+r.namespace["ui"]["note"]         # 'top three'  -- plain data is untouched
+r.ui_problems                     # () -- or why something did not render
+```
+
+`ArtifactPath` is a `str` subclass, so knowing about it is optional:
+code that has never heard of it still gets a working absolute path.
+Code that cares asks `isinstance(v, ArtifactPath)` — which a bare
+string could not answer, since agents put ordinary strings in `ui` too.
+
+This happens in `run_python` itself, so it is the same on every
+executor. On a VM the object cannot leave the guest, so it is
+serialized there; in-process it is serialized here. Either way you get
+the same binding and the same file.
+
 Adapters are one import away:
 
 ```python

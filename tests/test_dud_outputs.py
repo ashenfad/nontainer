@@ -16,7 +16,7 @@ import json
 
 import pytest
 
-from nontainer.dud_outputs import _CLAIM, flatten
+from nontainer.dud_outputs import _CLAIM, _PROBLEM, flatten
 
 
 class _FakeFigure:
@@ -111,12 +111,14 @@ def test_a_serializer_that_raises_is_consumed_with_a_note(tmp_path):
         "ui": {"bad": _Exploding(), "good": _FakeFigure('{"ok":1}'), "note": "plain"}
     }
     assert flatten(harvest, str(tmp_path)) == set()
-    assert harvest["ui"]["bad"] == {_CLAIM: "ui/bad.json"}, "note, not the object"
+    claim = harvest["ui"]["bad"]
+    assert claim[_CLAIM] == "ui/bad.txt", "a note, not the live object"
+    assert "failed to serialize" in claim[_PROBLEM], "the agent must be told"
     assert harvest["ui"]["note"] == "plain"
     assert (tmp_path / "ui" / "good.plotly.json").exists()
-    problem = json.loads((tmp_path / "ui" / "bad.json").read_bytes())
-    assert "failed to serialize" in problem["error"]
-    assert "RuntimeError: boom" in problem["error"]
+    written = (tmp_path / "ui" / "bad.txt").read_text()
+    assert "failed to serialize" in written
+    assert "RuntimeError: boom" in written
 
 
 def test_artifact_names_are_sanitized_like_the_host_renderer(tmp_path):
@@ -152,11 +154,17 @@ def test_an_oversized_artifact_writes_a_note_and_still_consumes(tmp_path):
     huge = _FakeFigure('{"d":"' + "x" * 9_000_000 + '"}')
     harvest = {"ui": {"big": huge, "note": "keep me"}}
     assert flatten(harvest, str(tmp_path)) == set()
-    assert harvest["ui"]["big"] == {_CLAIM: "ui/big.json"}
+    claim = harvest["ui"]["big"]
+    assert claim[_CLAIM] == "ui/big.txt"
     assert harvest["ui"]["note"] == "keep me"
-    note = json.loads((tmp_path / "ui" / "big.json").read_bytes())
-    assert "too large" in note["error"]
-    assert "customdata" in note["error"], "plotly gets the plotly advice"
+    note = (tmp_path / "ui" / "big.txt").read_text()
+    assert "too large" in note
+    assert "customdata" in note, "plotly gets the plotly advice"
+    # The SAME text the host renderer writes -- one function builds it.
+    from nontainer.artifacts import too_large_note
+
+    assert note == too_large_note("big", len(huge.to_json()), "plotly.x")
+    assert claim[_PROBLEM] == note, "and it rides home for ui_problems"
     assert not (tmp_path / "ui" / "big.plotly.json").exists()
 
 

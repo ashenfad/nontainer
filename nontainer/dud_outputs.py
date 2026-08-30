@@ -45,17 +45,17 @@ import os
 import re
 from typing import Any
 
-from .artifacts import is_rich
-
-#: Parity with the host renderer's cap (`adapters/render.py`). Same
-#: number on both sides, or the same figure renders on one rung and not
-#: the other.
-_MAX_ARTIFACT_BYTES = 8_000_000
+from .artifacts import MAX_ARTIFACT_BYTES, is_rich, too_large_note
 
 #: Wire tag for "this value became a file at <workspace-relative path>".
 #: Read by ``DudExecutor._map_result``, which is the only place that
 #: knows how a guest path maps onto the host's workspace root.
 _CLAIM = "__nt_artifact__"
+
+#: Optional companion to a claim: why the value did not render as
+#: intended. Rides the envelope so `ui_problems` reaches the agent on
+#: this rung too -- without it the cap message existed only in-process.
+_PROBLEM = "__nt_problem__"
 
 #: numpy dtype kind -> the column type the shell themes on. Mirrors
 #: `render._COLUMN_KINDS`.
@@ -90,21 +90,21 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
     consumed = False
     for raw_name, value in ui.items():
         name = _safe_name(raw_name)
+        problem = None
         try:
-            written = _materialize(name, value, workspace)
+            written, problem = _materialize(name, value, workspace)
         except Exception as exc:  # noqa: BLE001 - serializers raise anything
             # Handing the live object back would recreate exactly the
             # data loss this hook exists to prevent: it is the thing
             # dud cannot encode, so the whole `ui` binding becomes
             # unrepresentable and its plain siblings vanish with it.
             # Consume it and say why, as the oversized path does.
-            written = _note(
-                workspace,
-                name,
+            problem = (
                 f"ui artifact {raw_name!r} NOT rendered: "
                 f"{type(value).__name__} failed to serialize "
-                f"({type(exc).__name__}: {exc}).",
+                f"({type(exc).__name__}: {exc})."
             )
+            written = _note(workspace, name, problem)
         if written is None:
             remaining[raw_name] = value
         else:
@@ -116,7 +116,13 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
             # what keeps this module ignorant of a namespace it cannot
             # see. `ui` therefore stays fully representable and crosses
             # as data.
-            remaining[raw_name] = {_CLAIM: written}
+            claim = {_CLAIM: written}
+            if problem is not None:
+                # Carried home rather than left in the file: this text
+                # is what the agent reads to self-correct, and the host
+                # has no way to reconstruct it from a path.
+                claim[_PROBLEM] = problem
+            remaining[raw_name] = claim
             consumed = True
 
     if consumed:
@@ -152,9 +158,10 @@ def _note(workspace: str, name: str, message: str) -> str | None:
     and be dropped.
     """
     try:
-        return _put(
-            workspace, f"ui/{name}.json", json.dumps({"error": message}).encode()
-        )
+        # `.txt`, matching what the host renderer writes for the same
+        # condition. A `.json` here meant one rung produced kind "json"
+        # and the other "text" for an identical failure.
+        return _put(workspace, f"ui/{name}.txt", message.encode())
     except OSError:
         return None
 
@@ -169,7 +176,7 @@ def _put(workspace: str, relpath: str, data: bytes) -> str:
 
 def _write(
     workspace: str, relpath: str, data: bytes, name: str, mod: str
-) -> str | None:
+) -> tuple[str | None, str | None]:
     """Write one artifact, or a note saying why it could not be.
 
     Over the cap the *note* is still written and the name still
@@ -178,24 +185,18 @@ def _write(
     whole binding unrepresentable and silently takes its representable
     siblings down with it.
     """
-    if len(data) > _MAX_ARTIFACT_BYTES:
-        return _note(
-            workspace,
-            name,
-            f"ui artifact {name!r} NOT rendered: too large "
-            f"({len(data) / 1e6:.1f}MB > "
-            f"{_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
-            + (
-                " The usual culprit is per-point customdata/hover text —"
-                " drop or aggregate it."
-                if mod.startswith("plotly")
-                else " Downsample or aggregate before assigning to `ui`."
-            ),
-        )
-    return _put(workspace, relpath, data)
+    if len(data) > MAX_ARTIFACT_BYTES:
+        # Same text the host renderer produces for the same condition,
+        # from the same function -- two copies of this message drifted
+        # once already.
+        problem = too_large_note(name, len(data), mod)
+        return _note(workspace, name, problem), problem
+    return _put(workspace, relpath, data), None
 
 
-def _materialize(name: str, value: Any, workspace: str) -> str | None:
+def _materialize(
+    name: str, value: Any, workspace: str
+) -> tuple[str | None, str | None]:
     """One rich value -> one ``ui/`` file. None if it can cross as data.
 
     Gated on the shared predicate rather than on these branches alone,
@@ -203,7 +204,7 @@ def _materialize(name: str, value: Any, workspace: str) -> str | None:
     in-process path replaces.
     """
     if not is_rich(value):
-        return None
+        return None, None
     mod = type(value).__module__ or ""
 
     if mod.startswith("plotly") and hasattr(value, "to_json"):
@@ -231,7 +232,7 @@ def _materialize(name: str, value: Any, workspace: str) -> str | None:
         value.save(buf, format="PNG")
         return _write(workspace, f"ui/{name}.png", buf.getvalue(), name, mod)
 
-    return None  # representable: let it cross to the host renderer
+    return None, None  # representable: let it cross to the host renderer
 
 
 def _column_types(frame: Any) -> list[str] | None:

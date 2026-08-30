@@ -126,6 +126,10 @@ class PythonResult:
     namespace: Mapping[str, Any] = {}   # for the HOST; adapters never
                                         # inline it into observations
     checkpoint: str | None = None       # commit this call created
+    ui_problems: tuple[str, ...] = ()   # why a `ui` value did not render
+                                        # as intended (the 8MB cap, with
+                                        # the remediation) -- actionable
+                                        # text meant to reach the agent
     # truthy iff error is None
 
 @dataclass(frozen=True)
@@ -504,6 +508,31 @@ after the render output and before any `[ui note: ...]` problem lines).
 (`plotly`/`table`/`cards`/`image`/`html`/`json`/`text`/`binary`) — the
 single source of truth mirroring studio's `Artifact.svelte` dispatch;
 compound spec suffixes win over the bare `.json` floor.
+
+**`ArtifactPath` (`nontainer.ArtifactPath`).** Values that cannot cross
+as data — a plotly figure, a DataFrame, a matplotlib figure, a PIL
+image — are written to `<root>/ui/<name>.<ext>` by `run_python` itself,
+and the binding becomes an `ArtifactPath`:
+
+```python
+r.namespace["ui"]["chart"]        # ArtifactPath('/workspace/ui/chart.table.json',
+                                  #              kind='table')
+r.namespace["ui"]["note"]         # 'top three'   -- plain data untouched
+```
+
+A `str` subclass, so knowing the type is optional: an embedder that has
+never heard of it still gets a working absolute path (it compares,
+joins and serializes as one). One that cares uses
+`isinstance(v, ArtifactPath)`, which a bare path string could not
+answer — agents put ordinary strings in `ui` too. `.kind` is **derived**
+from the suffix via `artifact_kind`, never stored, so it cannot
+disagree with the path.
+
+Because this lives in `run_python` rather than an adapter, it is the
+same on every executor: a VM guest serializes the object where it lives
+and sends a claim home, the in-process path serializes it here, and
+both produce the same binding, the same file, and the same
+`ui_problems` when the 8MB cap is hit.
 
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
