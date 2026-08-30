@@ -98,8 +98,7 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
     return {"ui"}
 
 
-def _write(workspace: str, relpath: str, data: bytes, name: str,
-           mod: str) -> str:
+def _write(workspace: str, relpath: str, data: bytes, name: str, mod: str) -> str:
     """Write one artifact, or a note saying why it could not be.
 
     Over the cap the *note* is still written and the name still
@@ -110,16 +109,21 @@ def _write(workspace: str, relpath: str, data: bytes, name: str,
     """
     if len(data) > _MAX_ARTIFACT_BYTES:
         relpath = f"ui/{name}.json"
-        data = json.dumps({
-            "error": (
-                f"ui artifact {name!r} NOT rendered: too large "
-                f"({len(data) / 1e6:.1f}MB > "
-                f"{_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
-                + (" The usual culprit is per-point customdata/hover text —"
-                   " drop or aggregate it." if mod.startswith("plotly")
-                   else " Downsample or aggregate before assigning to `ui`.")
-            )
-        }).encode()
+        data = json.dumps(
+            {
+                "error": (
+                    f"ui artifact {name!r} NOT rendered: too large "
+                    f"({len(data) / 1e6:.1f}MB > "
+                    f"{_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
+                    + (
+                        " The usual culprit is per-point customdata/hover text —"
+                        " drop or aggregate it."
+                        if mod.startswith("plotly")
+                        else " Downsample or aggregate before assigning to `ui`."
+                    )
+                )
+            }
+        ).encode()
     full = os.path.join(workspace, relpath)
     os.makedirs(os.path.dirname(full), exist_ok=True)
     with open(full, "wb") as f:
@@ -132,19 +136,19 @@ def _materialize(name: str, value: Any, workspace: str) -> str | None:
     mod = type(value).__module__ or ""
 
     if mod.startswith("plotly") and hasattr(value, "to_json"):
-        return _write(workspace, f"ui/{name}.plotly.json",
-                      value.to_json().encode(), name, mod)
+        return _write(
+            workspace, f"ui/{name}.plotly.json", value.to_json().encode(), name, mod
+        )
 
     if mod.startswith("pandas") and hasattr(value, "columns"):
-        payload = json.loads(
-            value.head(200).to_json(orient="split", date_format="iso")
-        )
+        payload = json.loads(value.head(200).to_json(orient="split", date_format="iso"))
         payload["total"] = len(value)  # renderers say "showing N of total"
         kinds = _column_types(value)
         if kinds is not None:
             payload["columnTypes"] = kinds
-        return _write(workspace, f"ui/{name}.table.json",
-                      json.dumps(payload).encode(), name, mod)
+        return _write(
+            workspace, f"ui/{name}.table.json", json.dumps(payload).encode(), name, mod
+        )
 
     if mod.startswith("matplotlib") and hasattr(value, "savefig"):
         buf = io.BytesIO()
@@ -163,7 +167,8 @@ def _column_types(frame: Any) -> list[str] | None:
     """Per-column kinds, or None if unreadable — metadata must never be
     the reason an artifact fails to render."""
     try:
-        return [_COLUMN_KINDS.get(getattr(dt, "kind", ""), "string")
-                for dt in frame.dtypes]
+        return [
+            _COLUMN_KINDS.get(getattr(dt, "kind", ""), "string") for dt in frame.dtypes
+        ]
     except Exception:  # noqa: BLE001 - pandas internals, best effort
         return None
