@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **dud 0.4.0**, which moves rich `ui` flattening out of the guest and
+  into a hook the host names. `nontainer.dud_outputs:flatten` is that
+  hook, and `DudExecutor` names it on both rungs — so a plotly figure,
+  DataFrame, matplotlib figure or PIL image assigned into `ui` still
+  becomes a `/ui/<name>.<ext>` artifact, written guest-side where the
+  live object is.
+
+  Without it the failure was quiet and larger than a missing artifact:
+  one DataFrame makes the whole `ui` dict unrepresentable, so dud drops
+  the *entire binding* and the plain strings beside it disappear too.
+  `namespace["ui"]` came back `None`, which reads like the agent never
+  set it. Nothing caught that, because nothing covered a rich value
+  crossing a dud boundary — now `tests/test_dud_outputs.py` and one
+  end-to-end case in `tests/test_dud_executor.py` do.
+
+  The guest copy stays deliberately small: only the four types that
+  cannot cross the wire. Everything else still crosses as data and
+  `adapters/render.py` materializes it, so there is one authority for
+  the shape rules rather than two implementations drifting apart. The
+  DataFrame artifact now also carries `columnTypes`, which the host
+  renderer wrote and the old guest copy did not.
+
+  Two notes for VM rungs. The hook is an ordinary import *inside the
+  guest*, so on `backend="vm"` the module has to be layered in with
+  `vm={"packages": [...]}` — alongside whatever provides pandas or
+  plotly, without which nothing in `ui` can be rich enough to need it.
+  And dud 0.4.0 turned same-content park affinity off by default, so
+  the `state=` tag `DudExecutor` passes is a no-op on firecracker
+  unless `$DUD_VM_MAX_AFFINITY` is set; it still applies on
+  macOS/vfkit, which parks every release regardless.
+
+### CI
+
+- **Python 3.14** joins the test matrix.
+
+- **The `dud` extra is now installed in CI.** `tests/test_dud_executor.py`
+  guards itself with `importorskip("dud")`, and CI never installed the
+  extra — so all 56 of those tests skipped silently, which is how a
+  breaking change in a dependency reached us unnoticed. The extra's
+  `python_version >= "3.11"` marker keeps 3.10 skipping them by design.
+
 ## 0.3.7 - 2026-08-28
 
 ### Changed

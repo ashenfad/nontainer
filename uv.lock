@@ -458,11 +458,11 @@ wheels = [
 
 [[package]]
 name = "dud"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f4/70/eba8eefb8be644d1db5b593918f71d5d5551f5c1f18814f48a97d3c99b04/dud-0.3.0.tar.gz", hash = "sha256:0656913719a1b0e6c2ee7fb9674ba57deb62447f1023cb85df1a6ef517ce5e01", size = 171242, upload-time = "2026-08-20T16:37:41.562Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b2/a3/14196ebd197918daba0af810bc10bbcc865024843a3aa2a5d1b50fd01e0e/dud-0.4.0.tar.gz", hash = "sha256:f4af9512094c037a3a29959feb96976b660e0de6fa563d268004a768ed33018e", size = 274821, upload-time = "2026-08-30T20:02:31.078Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c5/fa/184001b7ea665ce0ec5644acee44784f81e56e0b20f3fda2971aa7eb4143/dud-0.3.0-py3-none-any.whl", hash = "sha256:6669010936bc5ba10cfced181569918130542deb01ff57befb52ede36c6648d1", size = 114216, upload-time = "2026-08-20T16:37:40.335Z" },
+    { url = "https://files.pythonhosted.org/packages/6a/b5/a0dc9a2a541fc0c93ebe425250ca04b5af2a7837899c1ae80fe63d677f62/dud-0.4.0-py3-none-any.whl", hash = "sha256:86e55daa5f0e489dfa7ca0df3d44d747ceb2d262597424c4098968723a8158a3", size = 159188, upload-time = "2026-08-30T20:02:30.015Z" },
 ]
 
 [[package]]
@@ -1193,7 +1193,7 @@ requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=2.1" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
-    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.3.0" },
+    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.0" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.2" },
     { name = "matplotlib", marker = "extra == 'dev'" },

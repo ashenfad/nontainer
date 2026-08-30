@@ -1,0 +1,169 @@
+"""Guest-side flattening of rich ``ui`` values, for dud's ``outputs_hook``.
+
+This used to live inside dud, as ``dud/guest/ui.py``. dud 0.4.0 moved it
+out: the guest no longer knows what a plotly figure is, nor that anyone
+calls their output dict ``ui``. It offers every top-level binding to a
+hook the host names, and drops the names the hook returns. So the
+vocabulary (``ui``) and the formats (``.plotly.json``, ``.table.json``)
+are nontainer's again, which is where they belong — they are this
+layer's convention, and dud having known them meant dud knew about the
+layer above it.
+
+**Why a guest-side copy exists at all.** Most ``ui`` values cross the
+wire as ordinary codec values and
+:mod:`nontainer.adapters.render` materializes them host-side, which
+keeps one authority for the shape rules. Four types cannot cross: a
+plotly ``Figure``, a pandas ``DataFrame``, a matplotlib figure and a
+PIL image are live objects, not data. On the ``subprocess`` rung that
+is merely inconvenient; on a VM rung there is no shared address space
+at all. So those four are serialized *here*, where the libraries and
+the objects live, writing the same files the host would — and they
+ride home as ordinary workspace writes.
+
+Everything else is deliberately left alone. The host renderer has tiers
+this does not (cards, html, image magic bytes, the json floor), and
+duplicating them would be two implementations of one contract drifting
+apart on someone else's schedule.
+
+**The failure this replaced is worth recording**, because nothing
+caught it: with no hook configured, a ``ui`` dict holding one
+DataFrame is wholly unrepresentable, so dud drops the *entire binding*
+— including the plain strings beside it. The observable symptom is
+``namespace["ui"]`` coming back ``None``, which reads like the agent
+never set it.
+
+Detection is duck-typed by module name plus method, so this imports no
+third-party library and costs nothing in an image that has none of
+them.
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+from typing import Any
+
+#: Parity with the host renderer's cap (`adapters/render.py`). Same
+#: number on both sides, or the same figure renders on one rung and not
+#: the other.
+_MAX_ARTIFACT_BYTES = 8_000_000
+
+#: numpy dtype kind -> the column type the shell themes on. Mirrors
+#: `render._COLUMN_KINDS`.
+_COLUMN_KINDS = {
+    "i": "number",
+    "u": "number",
+    "f": "number",
+    "b": "boolean",
+    "M": "datetime",
+}
+
+
+def flatten(harvest: dict, workspace: str) -> set[str]:
+    """dud's ``outputs_hook``: serialize rich ``ui`` values to files.
+
+    Receives *every* top-level binding (a shallow copy dud owns) and
+    returns the names it fully consumed. Touches only ``ui``, and only
+    the values in it that cannot cross the wire — a bare top-level
+    DataFrame is the agent's variable, not a declared output, and
+    turning it into an artifact would be this hook inventing a
+    convention nobody asked for.
+
+    Rebinds ``ui`` to the remainder rather than mutating it in place:
+    the dict handed over is the agent's own object, and editing it
+    would make a hook that raised halfway leave visible damage.
+    """
+    ui = harvest.get("ui")
+    if not isinstance(ui, dict):
+        return set()
+
+    remaining: dict[Any, Any] = {}
+    consumed = False
+    for name, value in ui.items():
+        try:
+            written = _materialize(str(name), value, workspace)
+        except Exception:  # noqa: BLE001 - third-party serializers raise anything
+            written = None
+        if written is None:
+            remaining[name] = value
+        else:
+            consumed = True
+
+    if not consumed:
+        return set()
+    if remaining:
+        harvest["ui"] = remaining
+        return set()
+    return {"ui"}
+
+
+def _write(workspace: str, relpath: str, data: bytes, name: str,
+           mod: str) -> str:
+    """Write one artifact, or a note saying why it could not be.
+
+    Over the cap the *note* is still written and the name still
+    consumed. Returning None here instead would leave a live object in
+    ``ui``, which makes the whole binding unrepresentable and silently
+    takes its representable siblings down with it — a much worse
+    outcome than a rendered explanation.
+    """
+    if len(data) > _MAX_ARTIFACT_BYTES:
+        relpath = f"ui/{name}.json"
+        data = json.dumps({
+            "error": (
+                f"ui artifact {name!r} NOT rendered: too large "
+                f"({len(data) / 1e6:.1f}MB > "
+                f"{_MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
+                + (" The usual culprit is per-point customdata/hover text —"
+                   " drop or aggregate it." if mod.startswith("plotly")
+                   else " Downsample or aggregate before assigning to `ui`.")
+            )
+        }).encode()
+    full = os.path.join(workspace, relpath)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "wb") as f:
+        f.write(data)
+    return relpath
+
+
+def _materialize(name: str, value: Any, workspace: str) -> str | None:
+    """One rich value -> one ``ui/`` file. None if it can cross as data."""
+    mod = type(value).__module__ or ""
+
+    if mod.startswith("plotly") and hasattr(value, "to_json"):
+        return _write(workspace, f"ui/{name}.plotly.json",
+                      value.to_json().encode(), name, mod)
+
+    if mod.startswith("pandas") and hasattr(value, "columns"):
+        payload = json.loads(
+            value.head(200).to_json(orient="split", date_format="iso")
+        )
+        payload["total"] = len(value)  # renderers say "showing N of total"
+        kinds = _column_types(value)
+        if kinds is not None:
+            payload["columnTypes"] = kinds
+        return _write(workspace, f"ui/{name}.table.json",
+                      json.dumps(payload).encode(), name, mod)
+
+    if mod.startswith("matplotlib") and hasattr(value, "savefig"):
+        buf = io.BytesIO()
+        value.savefig(buf, format="png", bbox_inches="tight")
+        return _write(workspace, f"ui/{name}.png", buf.getvalue(), name, mod)
+
+    if mod.startswith("PIL") and hasattr(value, "save"):
+        buf = io.BytesIO()
+        value.save(buf, format="PNG")
+        return _write(workspace, f"ui/{name}.png", buf.getvalue(), name, mod)
+
+    return None  # representable: let it cross to the host renderer
+
+
+def _column_types(frame: Any) -> list[str] | None:
+    """Per-column kinds, or None if unreadable — metadata must never be
+    the reason an artifact fails to render."""
+    try:
+        return [_COLUMN_KINDS.get(getattr(dt, "kind", ""), "string")
+                for dt in frame.dtypes]
+    except Exception:  # noqa: BLE001 - pandas internals, best effort
+        return None

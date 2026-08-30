@@ -67,6 +67,21 @@ from .executor import (
 )
 from .workspace import PythonResult, TerminalResult
 
+#: The guest-side flattener dud calls to serialize rich ``ui`` values
+#: (see :mod:`nontainer.dud_outputs`). Named rather than discovered:
+#: dud 0.4.0 stopped knowing what ``ui`` means, so this is the string
+#: that tells it. ``ping()["outputs_hook"]` echoes it back and marks it
+#: ``(not found)`` when the image lacks the module, which is the only
+#: way the VM rungs report the difference.
+#:
+#: Resolution is an ordinary import *inside the guest*, so on the
+#: ``subprocess`` rung this is nontainer's own module and always
+#: present. On a VM rung the guest is an OCI image, so the module has
+#: to be layered in with ``vm={"packages": [...]}`` alongside whatever
+#: provides pandas or plotly in the first place — without those, no
+#: value in ``ui`` can be rich enough to need flattening anyway.
+_OUTPUTS_HOOK = "nontainer.dud_outputs:flatten"
+
 
 def _lost_exc() -> Any:
     """dud's ``SessionLost``, or a never-matching sentinel (the empty
@@ -321,6 +336,7 @@ class DudExecutor:
                 host_objects=host_objects,
                 allow=allow,
                 cache=cache,
+                outputs_hook=_OUTPUTS_HOOK,
             )
 
         vm = dict(self._vm)
@@ -344,6 +360,7 @@ class DudExecutor:
             host_objects=host_objects,
             allow=allow,
             cache=cache,
+            outputs_hook=_OUTPUTS_HOOK,
             **vm,
         )
 
