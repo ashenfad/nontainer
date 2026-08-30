@@ -45,10 +45,17 @@ import os
 import re
 from typing import Any
 
+from .artifacts import is_rich
+
 #: Parity with the host renderer's cap (`adapters/render.py`). Same
 #: number on both sides, or the same figure renders on one rung and not
 #: the other.
 _MAX_ARTIFACT_BYTES = 8_000_000
+
+#: Wire tag for "this value became a file at <workspace-relative path>".
+#: Read by ``DudExecutor._map_result``, which is the only place that
+#: knows how a guest path maps onto the host's workspace root.
+_CLAIM = "__nt_artifact__"
 
 #: numpy dtype kind -> the column type the shell themes on. Mirrors
 #: `render._COLUMN_KINDS`.
@@ -101,14 +108,20 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
         if written is None:
             remaining[raw_name] = value
         else:
+            # A CLAIM, not a removal. The name the agent chose is the
+            # only place the artifact is identified, so dropping it lost
+            # information the host had no way to recover. The executor
+            # turns this into an `ArtifactPath` once it can resolve the
+            # guest path against the host root; the relative form is
+            # what keeps this module ignorant of a namespace it cannot
+            # see. `ui` therefore stays fully representable and crosses
+            # as data.
+            remaining[raw_name] = {_CLAIM: written}
             consumed = True
 
-    if not consumed:
-        return set()
-    if remaining:
+    if consumed:
         harvest["ui"] = remaining
-        return set()
-    return {"ui"}
+    return set()
 
 
 def _safe_name(raw_name: Any) -> str:
@@ -183,7 +196,14 @@ def _write(
 
 
 def _materialize(name: str, value: Any, workspace: str) -> str | None:
-    """One rich value -> one ``ui/`` file. None if it can cross as data."""
+    """One rich value -> one ``ui/`` file. None if it can cross as data.
+
+    Gated on the shared predicate rather than on these branches alone,
+    so the set of types this claims cannot drift from the set the
+    in-process path replaces.
+    """
+    if not is_rich(value):
+        return None
     mod = type(value).__module__ or ""
 
     if mod.startswith("plotly") and hasattr(value, "to_json"):

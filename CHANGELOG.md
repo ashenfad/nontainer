@@ -7,7 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+
+- **`ArtifactPath`** — what a `ui` value becomes once it is a file.
+  Rich values (plotly figure, DataFrame, matplotlib figure, PIL image)
+  cannot cross a process or machine boundary, so they are written to
+  `<root>/ui/<name>.<ext>` and the binding is replaced with an
+  `ArtifactPath` naming where it went. Exported from `nontainer`.
+
+  A `str` subclass on purpose, so knowing about it is optional: an
+  embedder that has never heard of it still gets a working absolute
+  path that compares, joins and serializes like one. An embedder that
+  cares asks `isinstance(v, ArtifactPath)` — which a bare path string
+  could not answer, since agents put ordinary strings in `ui` too.
+
+  `.kind` (`"plotly"`, `"table"`, `"image"`, ...) is **derived** from
+  the suffix via the same `artifact_kind` the adapters dispatch on,
+  never stored. A stored copy could disagree with the path — a `.png`
+  labelled `"table"` would be expressible — and one fact belongs in
+  one place.
+
 ### Changed
+
+- **`ui` artifacts now happen for every consumer, on every rung.**
+  Materialization moved out of the agno adapter and into
+  `Workspace.run_python`, which is the funnel every caller passes
+  through.
+
+  It was incoherent before, and not by anyone's choice: on the dud
+  rung the file was written *during execution* (the guest has no other
+  way) and the binding was then deleted, losing the name the agent
+  picked; in-process the live object stayed in `ui` and became a file
+  only if the agno adapter happened to run. Whether a chart became a
+  file at all depended on your executor **and** your adapter. Now both
+  rungs yield the same thing: `ui["chart"]` is an `ArtifactPath`.
+
+  Only values that genuinely cannot cross are replaced — a plain
+  string or dict in `ui` stays itself. Adapters still render
+  everything for display; that is a separate question from what the
+  binding holds.
+
+  This also fixes a regenerated artifact going unnoticed after its
+  first run (#46): the adapter's fallback claimed only files that
+  *appeared* during a call, so overwriting a chart under a stable name
+  produced no note the second time.
+
 
 - **dud 0.4.0**, which moves rich `ui` flattening out of the guest and
   into a hook the host names. `nontainer.dud_outputs:flatten` is that

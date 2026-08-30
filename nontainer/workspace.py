@@ -944,8 +944,59 @@ class Workspace:
             if torn is not None:
                 error = f"{result.error}\n\n{torn}" if result.error else torn
                 return replace(result, error=error)
+            result = self._materialize_ui(result)
             cp = self._maybe_checkpoint("run_python")
         return replace(result, checkpoint=cp) if cp else result
+
+    def _materialize_ui(self, result: PythonResult) -> PythonResult:
+        """Turn live ``ui`` values into files, and the bindings into
+        :class:`~nontainer.artifacts.ArtifactPath`.
+
+        Here rather than in an adapter because it is not a presentation
+        choice: on a VM rung the object cannot leave the guest, so it
+        is *already* serialized during execution. Leaving the
+        in-process case to whoever happened to be rendering meant a
+        chart became a file on one executor and stayed a live object on
+        the other — and on the second, only if you used one particular
+        adapter. Same code, different outcome, for no reason a caller
+        could see.
+
+        Runs before the checkpoint so the artifacts belong to the call
+        that produced them, and after the unwind check so a torn call
+        writes nothing.
+
+        Idempotent by construction: an ``ArtifactPath`` is a path
+        string, and the renderer's reference tier resolves an existing
+        workspace path to itself. So a value the guest already
+        materialized passes through unchanged rather than being
+        written twice — which is also what makes a *re*-run of the same
+        code re-claim its artifact instead of going unnoticed.
+        """
+        ui = result.namespace.get("ui")
+        if not isinstance(ui, dict) or not ui:
+            return result
+        # ONLY the values that cannot cross as data. Materializing the
+        # rest would replace an agent's plain string or dict with a
+        # path, which is a far larger change to `ui` than swapping a
+        # live object nobody could have used anyway. Adapters still
+        # render everything for display; that is a different question
+        # from what the binding holds.
+        from .artifacts import is_rich
+
+        rich = {k: v for k, v in ui.items() if is_rich(v)}
+        if not rich:
+            return result
+        # Lazy: adapters.render imports Workspace at module scope.
+        from .adapters.render import materialize_ui
+
+        claims: dict[Any, Any] = {}
+        try:
+            materialize_ui(self, rich, claims=claims)
+        except Exception:  # noqa: BLE001 - rendering agent data is never fatal
+            return result
+        if not claims:
+            return result
+        return replace(result, namespace={**result.namespace, "ui": {**ui, **claims}})
 
     # -- async host facades ---------------------------------------------
     #

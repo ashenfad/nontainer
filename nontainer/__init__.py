@@ -18,6 +18,7 @@ Adapters (optional extras):
     python -m nontainer.mcp  -- MCP server (stdio)
 """
 
+from .artifacts import ArtifactPath, artifact_kind
 from .cache import Cache, CacheError
 from .editing import EditOutcome
 from .errors import (
@@ -46,6 +47,8 @@ from .workspace import (
 )
 
 __all__ = [
+    "ArtifactPath",
+    "artifact_kind",
     "workspace",
     "delete_workspace",
     "Workspace",

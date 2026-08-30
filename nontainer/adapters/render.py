@@ -17,6 +17,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+# artifact_kind is re-exported: it moved to core so `Workspace` could
+# reach it without importing an adapter, but it is public here (docs,
+# a2ui) and stays importable from this module.
+from ..artifacts import ArtifactPath, artifact_kind  # noqa: F401
 from ..workspace import PythonResult, TerminalResult, Workspace
 
 ToolsMode = Literal["auto", "terminal", "split"]
@@ -801,7 +805,7 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
 
 
 def materialize_ui(
-    ws: Workspace, ui: object
+    ws: Workspace, ui: object, *, claims: dict | None = None
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """Turn the agent's ``ui = {name: value}`` namespace binding into
     workspace artifacts under ``/ui/`` (checkpointed writes). Returns
@@ -810,7 +814,15 @@ def materialize_ui(
     as intended (today: the size cap) — the adapter puts those in the
     tool result so the agent can self-correct. Values that defeat every
     renderer land as a capped ``repr`` — a debuggable floor, not a
-    silent drop."""
+    silent drop.
+
+    ``claims``, when given, is filled with ``{original_key:
+    ArtifactPath}`` so a caller can swap the rendered values out of the
+    agent's own dict. An out-param rather than a second return value
+    because the ``(artifacts, problems)`` pair is public and unpacked
+    by name at call sites — and rather than re-deriving the mapping
+    from the returned *sanitized* names, which two different keys can
+    collide on."""
     import re as _re
 
     if not isinstance(ui, dict):
@@ -861,6 +873,8 @@ def materialize_ui(
             except Exception:
                 continue
         out.append((name, path))
+        if claims is not None:
+            claims[raw_name] = ArtifactPath(path)
     return out, problems
 
 
@@ -869,31 +883,6 @@ def materialize_ui(
 # parse tool results with a public function, never a private regex. Builder
 # and parser live side by side so the grammar stays honest.
 # ---------------------------------------------------------------------------
-
-
-def artifact_kind(path: str) -> str:
-    """Suffix -> render kind, the single source of truth mirroring
-    studio's ``Artifact.svelte`` dispatch. The compound spec suffixes
-    (``.plotly.json`` / ``.table.json`` / ``.cards.json``) MUST be
-    tested before the bare ``.json`` floor — a plain ``.json`` still
-    means ``"json"`` here, though consumers may content-sniff it as
-    plotly, as studio does."""
-    lower = path.lower()
-    if lower.endswith(".plotly.json"):
-        return "plotly"
-    if lower.endswith(".table.json"):
-        return "table"
-    if lower.endswith(".cards.json"):
-        return "cards"
-    if lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
-        return "image"
-    if lower.endswith(".html"):
-        return "html"
-    if lower.endswith(".json"):
-        return "json"
-    if lower.endswith(".txt"):
-        return "text"
-    return "binary"
 
 
 def artifacts_note(artifacts: list[tuple[str, str]]) -> str:

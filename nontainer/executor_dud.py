@@ -673,6 +673,7 @@ class DudExecutor:
             namespace = {
                 k: _rebuild_dataclass(v, contract) for k, v in namespace.items()
             }
+        namespace = self._resolve_artifact_claims(namespace)
 
         stdout, trunc = _truncate(result.transcript, ctx.max_observation)
         return PythonResult(
@@ -684,6 +685,38 @@ class DudExecutor:
             truncated=trunc,
             namespace=namespace,
         )
+
+    def _resolve_artifact_claims(self, namespace: dict[str, Any]) -> dict[str, Any]:
+        """Turn the guest hook's claims into :class:`ArtifactPath`.
+
+        The guest writes ``{"__nt_artifact__": "ui/chart.table.json"}``
+        — deliberately *relative*, because the guest cannot know the
+        host's namespace. It only coincides on a VM rung, where the
+        workspace happens to be mounted at the host root; on the
+        subprocess rung the guest writes under its own scratch dir
+        (measured: ``/var/folders/.../dud-*/work`` against a host
+        ``/workspace``), and a future rung that rents a machine would
+        differ again.
+
+        So the mapping happens here, through the same ``_fs_rel`` every
+        harvested diff path already goes through — one place that knows
+        both sides, rather than a guest guessing.
+        """
+        ui = namespace.get("ui")
+        if not isinstance(ui, dict):
+            return namespace
+        from .artifacts import ArtifactPath
+        from .dud_outputs import _CLAIM
+
+        resolved = {}
+        for name, value in ui.items():
+            rel = value.get(_CLAIM) if isinstance(value, dict) else None
+            resolved[name] = (
+                ArtifactPath("/" + self._fs_rel(rel)) if isinstance(rel, str) else value
+            )
+        if resolved == ui:
+            return namespace
+        return {**namespace, "ui": resolved}
 
     # -- shell -----------------------------------------------------------
 

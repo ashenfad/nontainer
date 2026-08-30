@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from nontainer import Workspace
+from nontainer import ArtifactPath, Workspace
 from nontainer.providers import KvgitProvider
 
 pytest.importorskip("dud")
@@ -1020,10 +1020,24 @@ def test_rich_ui_flattens_through_the_dud_boundary(ws):
         "ui = {'table': pd.DataFrame({'a': [1, 2, 3]}), 'note': 'plain'}\n"
     )
     assert r, r.error
-    # The rich value left the binding as a file...
+    # The rich value became a file...
     assert ws.fs.exists("/workspace/ui/table.table.json")
     payload = json.loads(ws.fs.read("/workspace/ui/table.table.json"))
     assert payload["total"] == 3
-    # ...and the representable remainder still crossed, which is the
-    # half that used to disappear.
-    assert r.namespace["ui"] == {"note": "plain"}
+    # ...and the binding names where it went, with the same type the
+    # in-process executor produces. The name used to be deleted here,
+    # which is how a re-run stopped being noticed (issue #46).
+    art = r.namespace["ui"]["table"]
+    assert isinstance(art, ArtifactPath)
+    assert art == "/workspace/ui/table.table.json"
+    assert art.kind == "table"
+    assert r.namespace["ui"]["note"] == "plain"
+
+    # Run it again: the artifact is overwritten rather than created, so
+    # anything keyed on "files that appeared" would miss it.
+    r2 = ws.run_python(
+        "import pandas as pd\n"
+        "ui = {'table': pd.DataFrame({'a': [1, 2]}), 'note': 'plain'}\n"
+    )
+    assert r2, r2.error
+    assert isinstance(r2.namespace["ui"]["table"], ArtifactPath)
