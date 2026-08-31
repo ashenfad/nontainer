@@ -24,7 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A bare **stat** (`{label, value}`) is deliberately *not* adopted —
   that shape collides with ordinary data an agent may want shown as
   JSON — but it now gets a note saying to wrap it in a list, because
-  silence is what made this a bug report rather than a typo.
+  silence is what made this a bug report rather than a typo. The note
+  skips tagged callouts, which satisfy both predicates when they carry
+  `label`/`value` and do render as a row.
 
 ## 0.4.0 - 2026-08-30
 
