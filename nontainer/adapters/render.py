@@ -638,6 +638,15 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
     tier — say which item broke the row and why, in the problems channel
     the agent already reads (the 8MB cap's lesson: name the fix, not just
     the failure). None when the list isn't card-shaped enough to diagnose."""
+    # A lone stat, unwrapped. Not adopted the way a lone callout is —
+    # {label, value} is too ordinary a shape to claim — but silence is
+    # what made the callout case a bug report, so say the fix.
+    if isinstance(value, dict) and _is_stat(value):
+        return (
+            f"{str(name)!r} looks like a single stat, but a card row is a "
+            f"LIST — wrap it as [{{...}}] to render it as a card. On its "
+            f"own it renders as JSON."
+        )
     if not isinstance(value, list) or not value:
         return None
     matched = sum(1 for i in value if _is_stat(i) or _is_callout(i))
@@ -725,12 +734,22 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     # single element is neither, the whole list falls through to the JSON
     # floor. The renderer never infers sentiment from a value's sign —
     # direction lives in the sublabel's words, tone only on callouts.
-    if (
-        isinstance(value, list)
-        and value
-        and all(_is_stat(i) or _is_callout(i) for i in value)
-    ):
-        items = [_normalize_card(i) for i in value[:24]]  # cap: a wall past
+    # A bare TAGGED callout is adopted as a one-item row. Same
+    # forgiveness `materialize_ui` already applies to a bare list
+    # assigned straight to `ui`, one level in: the item is perfect, only
+    # the list wrapper is missing. Observed in the wild — a single
+    # caveat callout rendered as raw JSON, and said nothing about why.
+    #
+    # Callouts only. `type: "callout"` is an explicit marker nobody
+    # writes by accident, so there is nothing to guess; a bare
+    # {label, value} stat collides with ordinary data an agent may well
+    # want shown as JSON, so that one gets a note instead of a guess
+    # (see `_card_row_near_miss`).
+    cards = (
+        value if isinstance(value, list) else [value] if _is_callout(value) else None
+    )
+    if cards and all(_is_stat(i) or _is_callout(i) for i in cards):
+        items = [_normalize_card(i) for i in cards[:24]]  # cap: a wall past
         # two dozen is noise. default=str: stat values are routinely numpy
         # scalars (df.sum()), which json.dumps rejects — degrade them to
         # strings, not the repr fallback.
