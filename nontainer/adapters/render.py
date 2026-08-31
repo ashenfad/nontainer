@@ -641,7 +641,12 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
     # A lone stat, unwrapped. Not adopted the way a lone callout is —
     # {label, value} is too ordinary a shape to claim — but silence is
     # what made the callout case a bug report, so say the fix.
-    if isinstance(value, dict) and _is_stat(value):
+    # `not _is_callout`: the two predicates overlap — a tagged callout
+    # carrying label/value metadata satisfies both — and for those
+    # `_materialize_one` DOES render a one-item row. Without this the
+    # note would tell an agent to fix a value that already worked,
+    # which is worse than the silence it replaced.
+    if isinstance(value, dict) and _is_stat(value) and not _is_callout(value):
         return (
             f"{str(name)!r} looks like a single stat, but a card row is a "
             f"LIST — wrap it as [{{...}}] to render it as a card. On its "

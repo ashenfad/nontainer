@@ -306,6 +306,18 @@ def test_a_lone_stat_is_not_adopted_but_is_explained(ws):
     assert "lonely" in problems[0]
 
 
+def test_a_callout_carrying_stat_metadata_is_not_scolded(ws):
+    """The predicates overlap: a tagged callout that also carries
+    `label`/`value` satisfies `_is_stat` too. It renders as a one-item
+    row, so the lone-stat note must not fire — telling an agent to fix
+    a value that already worked is worse than the silence it
+    replaced."""
+    both = {"type": "callout", "title": "T", "body": "B", "label": "x", "value": 1}
+    out, problems = materialize_ui(ws, {"note": both})
+    assert out == [("note", "/workspace/ui/note.cards.json")]
+    assert problems == [], problems
+
+
 def test_ordinary_dicts_are_not_mistaken_for_cards(ws):
     """No false positives: a dict that is neither tagged nor
     stat-shaped renders as JSON and says nothing."""
