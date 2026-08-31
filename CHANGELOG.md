@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A lone callout rendered as raw JSON.** `ui = {"caveats": {"type":
+  "callout", ...}}` — a correctly-formed callout, just not inside a
+  list — fell past the cards tier (which requires a list), past the
+  html tiers, and landed on the JSON floor. It also said nothing:
+  `_card_row_near_miss` only diagnoses a *list* with bad items, so a
+  bare dict produced no note and the agent had no way to learn what to
+  change.
+
+  A bare **tagged** callout is now adopted as a one-item row — the same
+  forgiveness already applied to a bare list assigned straight to `ui`,
+  one level in: the item is perfect, only the wrapper is missing.
+
+  A bare **stat** (`{label, value}`) is deliberately *not* adopted —
+  that shape collides with ordinary data an agent may want shown as
+  JSON — but it now gets a note saying to wrap it in a list, because
+  silence is what made this a bug report rather than a typo.
+
 ## 0.4.0 - 2026-08-30
 
 ### Breaking

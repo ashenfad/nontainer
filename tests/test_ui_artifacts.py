@@ -268,6 +268,52 @@ def test_bare_card_list_adopts_default_envelope(ws):
     assert [i["type"] for i in payload["items"]] == ["stat", "callout"]
 
 
+def test_a_lone_callout_renders_as_a_one_item_row(ws):
+    """From a real report: a single, correctly-formed caveat callout
+    rendered as raw JSON. The item was perfect — only the LIST wrapper
+    was missing, which is the same mistake the bare-list envelope
+    forgiveness already covers, one level in.
+
+    `type: "callout"` is an explicit marker nobody writes by accident,
+    so there is nothing to guess.
+    """
+    out, problems = materialize_ui(
+        ws,
+        {
+            "caveats": {
+                "type": "callout",
+                "title": "Read the caveats before quoting these numbers",
+                "body": "179,538 BEVs have electric range = 0.",
+            }
+        },
+    )
+    assert out == [("caveats", "/workspace/ui/caveats.cards.json")]
+    assert problems == []
+    payload = json.loads(ws.fs.read("/workspace/ui/caveats.cards.json"))
+    assert [i["type"] for i in payload["items"]] == ["callout"]
+    assert payload["items"][0]["title"].startswith("Read the caveats")
+
+
+def test_a_lone_stat_is_not_adopted_but_is_explained(ws):
+    """The other half, deliberately asymmetric. `{label, value}` is too
+    ordinary a shape to claim — an agent may well want it shown as JSON
+    — so it is not adopted. But silence is what made the callout case a
+    bug report, so it says the fix."""
+    out, problems = materialize_ui(ws, {"lonely": {"label": "BEVs", "value": "280k"}})
+    assert out == [("lonely", "/workspace/ui/lonely.json")]
+    assert len(problems) == 1
+    assert "card row is a LIST" in problems[0]
+    assert "lonely" in problems[0]
+
+
+def test_ordinary_dicts_are_not_mistaken_for_cards(ws):
+    """No false positives: a dict that is neither tagged nor
+    stat-shaped renders as JSON and says nothing."""
+    out, problems = materialize_ui(ws, {"cfg": {"a": 1, "b": 2}})
+    assert out == [("cfg", "/workspace/ui/cfg.json")]
+    assert problems == []
+
+
 def test_bare_non_card_list_still_renders_nothing(ws):
     assert materialize_ui(ws, [1, 2, 3]) == ([], [])
     assert materialize_ui(ws, []) == ([], [])
