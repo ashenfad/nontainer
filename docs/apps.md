@@ -667,8 +667,11 @@ not the shape to copy.
 - the CSP on the wire is the one you configured — a handler returning
   its own is dropped
 - response headers are allowlisted, so an app cannot set a cookie on
-  your origin, grant other origins read access to its responses, or
-  hand a command to a proxy in front
+  your origin or grant other origins read access to its responses, and
+  cannot reach a proxy in front through the command headers that have a
+  known convention (`x-accel-*`, `x-sendfile`, `x-lighttpd-send-file`).
+  A custom `x-*` header *your* proxy consumes still passes — suppressing
+  that one is yours, below
 - frozen snapshots are read-only; handlers cannot mutate the VFS
 - per-request time and output budgets; `{token}` is capability-grade
 
@@ -710,15 +713,20 @@ The fix is not a header. It is an origin.
 
 ### Choosing a shape
 
-| shape | separates apps from your control plane | separates apps from each other |
-|---|---|---|
-| `example.com/apps/{token}` | ✗ | ✗ |
-| `localhost:9000/{token}` (second port, dev) | mostly — see cookies | ✗ |
-| `apps.example.com/{token}` | ✓ | ✗ |
-| `{token}.apps.example.com` (wildcard DNS + cert) | ✓ | ✓ |
-| a separate registrable domain | ✓✓ | with a wildcard, ✓ |
+Storage and cookies answer differently, so they get their own columns —
+two apps can be unable to read each other's `localStorage` while still
+sharing a cookie jar.
 
-Two things worth knowing before you pick, both of which surprise people:
+| shape | isolated from your control plane | apps' storage/DOM isolated | apps' cookies isolated |
+|---|---|---|---|
+| `example.com/apps/{token}` | ✗ | ✗ | ✗ |
+| `localhost:9000/{token}` (second port, dev) | storage yes, cookies no | ✗ | ✗ |
+| `apps.example.com/{token}` | ✓ | ✗ | ✗ |
+| `{token}.apps.example.com` (wildcard DNS + cert) | ✓ | ✓ | ✗, unless the parent is a public suffix |
+| `apps.example.com` on the Public Suffix List | ✓ | ✓ | ✓ |
+| one registrable domain per app | ✓ | ✓ | ✓ (impractical past a handful) |
+
+Three things worth knowing before you pick, all of which surprise people:
 
 **Cookies do not respect ports.** A cookie set on `localhost:8000` is
 sent to `localhost:9000` — the same-origin policy counts the port, the
@@ -727,22 +735,37 @@ and storage, which makes it right for local development, but it is not
 one for cookies. Keep session cookies off any host you also serve apps
 from.
 
-**A subdomain is a one-way boundary.** A cookie set on `example.com`
-*without* a `Domain=` attribute is host-only and never reaches
-`apps.example.com` — good. But a page on `apps.example.com` may set a
-cookie *with* `Domain=example.com`, and the parent will receive it. The
-response-header allowlist stops a handler doing this, but nothing stops
-the app's own JavaScript, which you are also not the author of. Only a
-separate **registrable** domain removes the relationship entirely; the
-Public Suffix List is what makes that boundary real, and it is why
-`example-apps.com` is a stronger answer than `apps.example.com` when the
-app code is genuinely untrusted.
+**A subdomain is a one-way boundary against the parent.** A cookie set
+on `example.com` *without* a `Domain=` attribute is host-only and never
+reaches `apps.example.com` — good. But a page on `apps.example.com` may
+set a cookie *with* `Domain=example.com`, and the parent will receive
+it. The response-header allowlist stops a handler doing this; nothing
+stops the app's own JavaScript, which you are also not the author of.
 
-Serving each app on its own subdomain is the only shape that isolates
-published apps from *one another*. On a shared origin they share storage,
-and one app's page can address another's endpoints — the capability token
-makes that hard to reach blind, but it is a guess away rather than a
-boundary away.
+**And sibling subdomains share a cookie jar.** The same mechanism runs
+sideways: a page on `a.apps.example.com` can set `Domain=apps.example.com`,
+and `b.apps.example.com` both receives that cookie and can read it from
+`document.cookie`. Per-app subdomains separate storage, the DOM and
+`fetch`; they do not by themselves separate cookies. So if your apps are
+mutually untrusted, a wildcard alone is not the boundary you wanted.
+
+**Making the sibling boundary real: the Public Suffix List.** A domain
+on the PSL is treated by browsers as a registry-like boundary, so
+nothing under it may set a cookie on it — which is exactly the missing
+guarantee above, and exactly why `github.io`, `netlify.app` and
+`vercel.app` are all on it. If you are hosting mutually untrusted apps
+on subdomains at any scale, submitting your apps domain to the list's
+PRIVATE section is the intended answer rather than an exotic one.
+
+Go in knowing the cost: submission is reviewed by volunteers and takes
+weeks, the boundary only exists for browsers that have shipped a list
+including you, and removal is slower still — so use a domain dedicated
+to this and never one you also serve your control plane from.
+
+Until then, the honest fallback is that mutually untrusted apps want
+mutually distinct registrable domains, and that this does not scale;
+apps you are willing to treat as one trust domain (a single team's
+dashboards, say) are fine on a shared parent.
 
 ### Auth and cookies
 
@@ -772,7 +795,31 @@ and `X-Sendfile` is the same mechanism in Apache and lighttpd. Those
 names are refused, but the list covers the conventions that exist rather
 than every one that could — a proxy with its own is beyond what a
 library can know about its deployment. If yours consumes headers as
-commands, tell it not to trust these (`proxy_ignore_headers` in nginx).
+commands, tell it not to trust these (`proxy_ignore_headers` in nginx),
+and remember that a custom `x-*` command header of your own invention
+reaches it unfiltered, because to this library it is indistinguishable
+from the app metadata the `x-*` allowance exists to permit.
+
+**If you serve apps on per-app subdomains**, the router still routes by
+path: it matches `/{token}` and `/{token}/{path}`, so a request to
+`https://<token>.apps.example.com/` arrives with a path of `/` and
+matches nothing. Wildcard DNS and a certificate are necessary but not
+sufficient — something has to move the token from the host into the
+path. In nginx:
+
+```nginx
+server {
+    server_name ~^(?<token>[^.]+)\.apps\.example\.com$;
+    location / {
+        proxy_pass http://backend/apps/$token$request_uri;
+    }
+}
+```
+
+or as ASGI middleware in front of the mounted router, rewriting
+`scope["path"]` to `f"/{token}{path}"` from the `Host` header. Either
+way the app still sees itself under a prefix, which is why the
+relative-URL rule holds unchanged.
 
 ## Known gaps
 
