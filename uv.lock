@@ -927,11 +927,11 @@ wheels = [
 
 [[package]]
 name = "kvgit"
-version = "0.3.2"
+version = "0.3.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/cd/76/ac2b1f6bb0c5a52f67847e0df1923202bb10e00abfa7d0f77b2157559896/kvgit-0.3.2.tar.gz", hash = "sha256:bd55e716a21059a738764e5d6f1f31f784b0bd4eb1d85cddb35730c160ef45e9", size = 65636, upload-time = "2026-07-20T21:13:37.396Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/5a/6b5913baf17696c85157ef1745a1b3116d0fcc437ec9c2e99654b4e6105b/kvgit-0.3.4.tar.gz", hash = "sha256:bb7e7d2bd0b73603a28020fe7f3a90e27c204b03339d4ec0e4ab377e582cc148", size = 74559, upload-time = "2026-09-01T17:20:51.713Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/78/54/5ac244675697cf5d746d8fdd9118cbe81d8314213d81a22727487139d871/kvgit-0.3.2-py3-none-any.whl", hash = "sha256:4baa76dcd70027eb87cd791c82c1e45329d82e268460d1079949f16ad9d0cfdc", size = 61076, upload-time = "2026-07-20T21:13:36.176Z" },
+    { url = "https://files.pythonhosted.org/packages/58/6b/5482893aafd956fb2710f31b520ae65c02b51c15e53b5612f5edc193f9ff/kvgit-0.3.4-py3-none-any.whl", hash = "sha256:7651623667bf6693ab5cfd8f48a9bffed030918cfc552b711d47a1b7323aa801", size = 68183, upload-time = "2026-09-01T17:20:50.563Z" },
 ]
 
 [package.optional-dependencies]
@@ -1137,11 +1137,11 @@ wheels = [
 
 [[package]]
 name = "monkeyfs"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ce/53/4c44dec0bbbb91127f5f3d7ecb63787c0be22141449d66520675b435005b/monkeyfs-0.1.6.tar.gz", hash = "sha256:98a5cc5a531cae0ccf41f4681c30cade8d19626944bc70b2643e691a3ef81901", size = 66278, upload-time = "2026-08-04T14:47:43.188Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/1f/52a83252c79566853fa18de1f89bc508efc3a46292ff2f91359acb597098/monkeyfs-0.1.7.tar.gz", hash = "sha256:360f037ed3412bf6fe2a736dc72274a8d85119677ba8a34b7d5cca4a6946a2cf", size = 95661, upload-time = "2026-09-01T03:22:01.551Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/c6/b528788b2b0ad20bb077fb87186211b228c73e217ab16b00fe4ea80ae54f/monkeyfs-0.1.6-py3-none-any.whl", hash = "sha256:f2e7a259b3e78a43208c116094d572c57dd65ecccf60712fc44dbde0bb423dad", size = 40289, upload-time = "2026-08-04T14:47:42.119Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/ed/ede4112842e0785bf9ed3956af945c182d0d351ef452deacc9626c0f9ffc/monkeyfs-0.1.7-py3-none-any.whl", hash = "sha256:f010a2daadb1d384021a7ba73855602ac96bc6e38161df122836cf19a2a126f0", size = 51454, upload-time = "2026-09-01T03:22:00.407Z" },
 ]
 
 [[package]]
@@ -1195,16 +1195,16 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
     { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.0" },
     { name = "httpx2", marker = "extra == 'dev'" },
-    { name = "kvgit", extras = ["disk"], specifier = ">=0.3.2" },
+    { name = "kvgit", extras = ["disk"], specifier = ">=0.3.4" },
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
-    { name = "monkeyfs", specifier = ">=0.1.6" },
+    { name = "monkeyfs", specifier = ">=0.1.7" },
     { name = "numpy", marker = "extra == 'dev'" },
     { name = "pandas", marker = "extra == 'dev'" },
     { name = "playwright", marker = "extra == 'apps'", specifier = ">=1.40" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
-    { name = "reprobate", specifier = ">=0.1.1" },
+    { name = "reprobate", specifier = ">=0.1.3" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "sandtrap", specifier = ">=0.3.3" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
@@ -2083,11 +2083,11 @@ wheels = [
 
 [[package]]
 name = "reprobate"
-version = "0.1.1"
+version = "0.1.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ea/46/76ecb1d7a3b1fa3a6b9fceef1dfa316dfe035f1b7f7ee80b93842ee22d5b/reprobate-0.1.1.tar.gz", hash = "sha256:7afecb107bc209993e3fffcd2f0067664f546f37da0b7c5f8cc6ab1bbe1b8f14", size = 15579, upload-time = "2026-02-28T20:59:23.334Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a0/0c/f39f4fd6458b5cf17e358dd8f6fb38fa3690bd35804cc3b26d136fec15ac/reprobate-0.1.3.tar.gz", hash = "sha256:80a991b4545aed975768c54c436002732e980cfd33b6490760e8e5844b4b5e8b", size = 35537, upload-time = "2026-07-31T16:18:20.589Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/8b/f5226983f9283829def06664d99c806f5029a24e6d19ccf305d28efa2d87/reprobate-0.1.1-py3-none-any.whl", hash = "sha256:a0205da5008cb3a8a662888c0b29fd304171feb6a002aa698cb69513cd717aad", size = 13269, upload-time = "2026-02-28T20:59:22.317Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/b0/3e1790d0bc6600cea9f202a1934e03dac0304959941fee2294a34acfee54/reprobate-0.1.3-py3-none-any.whl", hash = "sha256:8716ade3ae519480fb9f2e8bbf36577695425533a7c36e47d353d35b4c3a088a", size = 26861, upload-time = "2026-07-31T16:18:19.483Z" },
 ]
 
 [[package]]

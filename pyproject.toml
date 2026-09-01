@@ -26,21 +26,42 @@ dependencies = [
     # error BODY reaches the agent, not just "HTTP 404" (every hint
     # dispatch writes rides in that body)
     "termish>=0.1.9",
-    # 0.1.6: bytes/os.PathLike paths, dir_fd arguments, and host
-    # directory descriptors no longer bypass filesystem interception —
-    # sandboxed code could otherwise read and write the real filesystem
-    "monkeyfs>=0.1.6",
-    # 0.2.12: Policy.module_root — VFS imports resolve from the
-    # workspace root (the /workspace path contract)
-    # 0.2.13: close_fds and worker lifecycle fixes — process workers
-    # release unrelated host descriptors and inherited control endpoints
-    # 0.2.14: StForkUnsafe names a fork-hostile host instead of looping,
-    # and worker setup failures report their own traceback
+    # 0.1.7: os.lchmod/os.lchflags, extended attributes, and 3.10's
+    # Path.chmod no longer reach the real filesystem; os.utime stops
+    # discarding ns= and retargeting symlinks; scandir stops describing
+    # a symlink as its target. Same interception-bypass class the
+    # earlier floor was set for. Also reference-counts patch()'s
+    # process-global shims, so one workspace leaving does not unpatch
+    # another that is still running.
+    "monkeyfs>=0.1.7",
+    # 0.3.0: process workers come from a forkserver broker instead of
+    # forking the embedding process — the arrangement executor.py's
+    # pooling and fork-hazard notes describe
+    # 0.3.2: sandbox() accepts preload_grants, which executor.py passes
+    # directly, so this is the hard floor
+    # 0.3.3: dynamic __import__ is gated by the same policy as the
+    # statement form
     "sandtrap>=0.3.3",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
-    "kvgit[disk]>=0.3.2",
-    "reprobate>=0.1.1",
+    # 0.3.3: the incremental orphan sweep no longer deletes chunks that
+    # surviving commits still reference. Chunks are content-addressed
+    # and therefore shared, and delete_branches sweeps orphans on every
+    # session teardown, so under codecs="scientific" dropping one
+    # session could corrupt the numpy/pandas values of another.
+    # 0.3.4: HEAD recovery stops resurrecting a branch whose HEAD is
+    # absent and stops repairing from a read path, and the prev-HEAD
+    # backup is written only after the swap succeeds. Commit-scan
+    # recovery became opt-in here; nontainer does not opt in, so a
+    # corrupt HEAD surfaces instead of being rebuilt from a scan
+    # nothing validated.
+    "kvgit[disk]>=0.3.4",
+    # 0.1.3: value-based collapsing is restricted to exact builtin
+    # scalar types, so a rendered object's own __eq__ can no longer
+    # raise out of render(). The values rendered here are agent-authored
+    # and render() is on the path that reports errors, where an
+    # exception would replace the diagnostic with itself.
+    "reprobate>=0.1.3",
 ]
 
 [project.urls]
