@@ -101,6 +101,48 @@ def filter_headers(raw: Any) -> dict[str, str]:
     return out
 
 
+_RESPONSE_HEADER_ALLOW = frozenset(
+    {
+        "content-type",
+        "cache-control",
+        "etag",
+        "last-modified",
+        "content-disposition",
+        "location",
+    }
+)
+
+
+_RESPONSE_HEADER_DENY = frozenset({"x-frame-options"})
+"""Named because they would otherwise slip through the ``x-*`` rule for
+custom headers; they are security directives, not app metadata."""
+
+
+def filter_response_headers(raw: Any) -> dict[str, str]:
+    """The headers a handler may put on the wire: representation and
+    caching metadata plus any ``x-*`` custom header, lowercased.
+
+    Handler code is agent-authored and runs on the embedder's serving
+    origin, so the headers that grant privileges on that origin are not
+    the app's to set. Dropped, with the concrete abuse each one is:
+    ``set-cookie`` (planting a cookie on the serving origin),
+    ``access-control-allow-*`` (granting other origins read access to
+    responses the embedder isolated), ``content-security-policy`` (an
+    app relaxing its own containment), and framing controls such as
+    ``x-frame-options`` (opting into or out of embedding the embedder
+    decided). An embedder who needs one of these wraps the mountable
+    router in middleware of their own; that keeps the app unable to
+    reach them at all."""
+    out: dict[str, str] = {}
+    for k, v in dict(raw or {}).items():
+        lk = str(k).lower()
+        if lk in _RESPONSE_HEADER_DENY:
+            continue
+        if lk in _RESPONSE_HEADER_ALLOW or lk.startswith("x-"):
+            out[lk] = str(v)
+    return out
+
+
 def make_request(
     method: str,
     url: str,
@@ -140,7 +182,9 @@ class Response:
     headers: dict[str, str] = field(default_factory=dict)
     """HTTP headers are case-insensitive: keys here may be any casing
     (``Content-Type`` and ``content-type`` alike); :func:`normalize`
-    lowercases them on the way to the wire."""
+    lowercases them on the way to the wire, and
+    :func:`filter_response_headers` drops the ones an app may not set
+    on the serving origin."""
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
-from .contract import filter_headers, make_request
+from .contract import filter_headers, filter_response_headers, make_request
 
 if TYPE_CHECKING:
     from .dispatch import AppRuntime
@@ -671,7 +671,12 @@ async def _run_actions(
             # serializes under ws.lock so parallel fetches don't
             # reenter the sandbox (or race tool calls)
             wire = await loop.run_in_executor(None, runtime.dispatch, req)
-            headers = dict(wire.headers)
+            # Verification must see the wire the router would produce,
+            # so the same response-header allowlist applies: a handler
+            # setting Set-Cookie or Access-Control-Allow-Origin has to
+            # fail HERE rather than depend on a header it will never be
+            # served.
+            headers = filter_response_headers(wire.headers)
             # Send the SERVED policy on HTML. Interception reproduces a
             # CSP's origin rules, but a CSP also governs BEHAVIOUR —
             # eval, new Function, blob workers, blob module scripts —
@@ -679,9 +684,10 @@ async def _run_actions(
             # the real header those pass here and fail only once
             # published, silently: a blocked blob script never throws
             # into the page, so a try/catch around it sees nothing.
-            # setdefault, like serve.py: an agent-set policy wins.
+            # It is the CONFIGURED policy, assigned rather than
+            # deferred, because that is what the app will be served.
             if csp and wire.content_type.startswith("text/html"):
-                headers.setdefault("content-security-policy", csp)
+                headers["content-security-policy"] = csp
             await route.fulfill(
                 status=wire.status,
                 body=wire.content,
