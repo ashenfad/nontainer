@@ -377,9 +377,8 @@ carries commands a server in front *executes* rather than forwards, so
 `x-accel-*` (nginx), `x-sendfile` and `x-lighttpd-send-file` are
 refused; without that, a handler could reach an internal location
 through the proxy. That list covers the conventions that exist rather
-than every one that could: **a reverse proxy with its own magic headers
-is something only you can tell it to ignore** (`proxy_ignore_headers`
-in nginx). The library cannot see what it is deployed behind.
+than every one that could, which leaves an obligation on whoever
+deploys this — see **Hosting for real (the embedder's half)**.
 
 A violation is reported in `[rejected requests]` phrased as the fix, and
 an external script the allowlist doesn't cover keeps the allowlist
@@ -551,8 +550,10 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 
 nontainer's delivery surface is exactly: the `/workspace/app` convention, the
 dispatch function, the mountable `APIRouter`, and the token shape.
-Hosting, TLS, domains, user auth, deploy targets — the harness's.
-Composable paths that already exist with no new API:
+Hosting, TLS, domains, user auth, deploy targets — the harness's. Some
+of those are not merely yours to choose but load-bearing for the
+guarantees above: **Hosting for real (the embedder's half)**, below,
+says which and why. Composable paths that already exist with no new API:
 
 - **Export**: `tar -czf app.tgz app` in the terminal + `ws.get(...)`
   — a frontend-only app is deliverable to any static host today.
@@ -644,9 +645,134 @@ app.mount("/apps", router)      # serves /apps/{token}/...
 - **Rate limiting / quotas are edge concerns** — put them at your
   gateway; the router doesn't presume to.
 - **Threat framing:** anonymous HTTP triggers agent-authored code under
-  your sandbox policy. The default posture keeps it boring — read-only
-  VFS, no network unless the PythonConfig granted it, per-request
-  budgets, and a strict-ish CSP on served HTML.
+  your sandbox policy. The default posture keeps the BACKEND boring —
+  read-only VFS, no network unless the PythonConfig granted it,
+  per-request budgets. The browser side is only as isolated as the
+  origin you serve it from, which is yours to choose: see below.
+
+## Hosting for real (the embedder's half)
+
+Everything above describes what the library does. This describes what it
+assumes you did, because several of its defaults are sound only under a
+deployment condition it cannot see from the inside.
+
+Read this before serving an app to anyone but yourself. A local testbed
+that mounts the router next to its own API is fine as a testbed and is
+not the shape to copy.
+
+### Who owns what
+
+**nontainer guarantees**, and an app cannot opt out:
+
+- the CSP on the wire is the one you configured — a handler returning
+  its own is dropped
+- response headers are allowlisted, so an app cannot set a cookie on
+  your origin, grant other origins read access to its responses, or
+  hand a command to a proxy in front
+- frozen snapshots are read-only; handlers cannot mutate the VFS
+- per-request time and output budgets; `{token}` is capability-grade
+
+**You provide**, and nontainer cannot:
+
+- **a dedicated origin for served apps** — the load-bearing one
+- auth and cookies scoped to your control origin, never the app origin
+- rate limits and quotas at your edge
+- a tightened `connect-src` if egress matters
+- `proxy_ignore_headers` if you front this with a proxy that consumes
+  headers as commands
+
+### Origins: the one that is not optional
+
+An **origin** is scheme + host + port — `https://example.com` is a
+different origin from `https://apps.example.com`, from
+`http://example.com`, and from `https://example.com:8443`. **Path is not
+part of it.** So mounting the router at `/apps` on the server that also
+serves `/api/sessions` puts agent-authored code on *the same origin as
+your control plane*, and the browser will treat it as your own first-party
+code, because by that definition it is.
+
+What follows from that, none of which nontainer can prevent:
+
+- the app's JavaScript can `fetch('/api/sessions')` with the user's
+  ambient credentials attached, and read the response
+- nontainer's default `connect-src 'self'` **authorizes** it to, since
+  `'self'` is that shared origin
+- it shares `localStorage`, `sessionStorage` and IndexedDB with your
+  control UI
+
+Note what does *not* help. Binding to `127.0.0.1` is not a defence: the
+attacker is a page in the user's own browser, and that page can reach
+localhost. Neither is CORS — CORS governs whether a response can be
+*read*, never whether a request is *sent*, and same-origin requests were
+never subject to it in the first place.
+
+The fix is not a header. It is an origin.
+
+### Choosing a shape
+
+| shape | separates apps from your control plane | separates apps from each other |
+|---|---|---|
+| `example.com/apps/{token}` | ✗ | ✗ |
+| `localhost:9000/{token}` (second port, dev) | mostly — see cookies | ✗ |
+| `apps.example.com/{token}` | ✓ | ✗ |
+| `{token}.apps.example.com` (wildcard DNS + cert) | ✓ | ✓ |
+| a separate registrable domain | ✓✓ | with a wildcard, ✓ |
+
+Two things worth knowing before you pick, both of which surprise people:
+
+**Cookies do not respect ports.** A cookie set on `localhost:8000` is
+sent to `localhost:9000` — the same-origin policy counts the port, the
+cookie protocol does not. A second port is a real boundary for `fetch`
+and storage, which makes it right for local development, but it is not
+one for cookies. Keep session cookies off any host you also serve apps
+from.
+
+**A subdomain is a one-way boundary.** A cookie set on `example.com`
+*without* a `Domain=` attribute is host-only and never reaches
+`apps.example.com` — good. But a page on `apps.example.com` may set a
+cookie *with* `Domain=example.com`, and the parent will receive it. The
+response-header allowlist stops a handler doing this, but nothing stops
+the app's own JavaScript, which you are also not the author of. Only a
+separate **registrable** domain removes the relationship entirely; the
+Public Suffix List is what makes that boundary real, and it is why
+`example-apps.com` is a stronger answer than `apps.example.com` when the
+app code is genuinely untrusted.
+
+Serving each app on its own subdomain is the only shape that isolates
+published apps from *one another*. On a shared origin they share storage,
+and one app's page can address another's endpoints — the capability token
+makes that hard to reach blind, but it is a guess away rather than a
+boundary away.
+
+### Auth and cookies
+
+Give the app origin no ambient authority. The `{token}` in the URL is
+the capability, and it is sufficient; a session cookie that also happens
+to reach the app origin adds nothing except a credential the app can
+spend. Requests reaching handlers already have `cookie` stripped by the
+request allowlist, so this is about what the *browser* attaches on the
+app's behalf, not about what your handlers can read.
+
+### CSP
+
+The default policy pins where executable code may come from
+(`script_hosts`) and nothing more: `connect-src 'self' https:` permits
+fetching **any HTTPS endpoint**, deliberately, because data apps need map
+tiles, remote imagery and third-party APIs and handlers have no network
+to proxy through. It is a supply-chain control, not an egress control.
+If the app must not phone home, say so explicitly with
+`AppsConfig(csp=...)`. Declare it on the config rather than on
+`build_router` so `test_app` verifies against the policy that will
+actually ship.
+
+### If something sits in front
+
+nginx acts on `X-Accel-Redirect` in an upstream response by default,
+and `X-Sendfile` is the same mechanism in Apache and lighttpd. Those
+names are refused, but the list covers the conventions that exist rather
+than every one that could — a proxy with its own is beyond what a
+library can know about its deployment. If yours consumes headers as
+commands, tell it not to trust these (`proxy_ignore_headers` in nginx).
 
 ## Known gaps
 
