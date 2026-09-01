@@ -105,17 +105,40 @@ _RESPONSE_HEADER_ALLOW = frozenset(
     {
         "content-type",
         "cache-control",
+        "vary",
         "etag",
         "last-modified",
         "content-disposition",
         "location",
     }
 )
+"""``vary`` belongs with ``cache-control`` and cannot be split from it.
+A handler may vary its output on an allowlisted REQUEST header —
+``authorization`` or an ``x-*`` custom such as a tenant id — and serving
+a cacheable response without naming what it varied on lets a shared
+cache key on the URL alone and hand one caller's variant to the next."""
 
 
-_RESPONSE_HEADER_DENY = frozenset({"x-frame-options"})
-"""Named because they would otherwise slip through the ``x-*`` rule for
-custom headers; they are security directives, not app metadata."""
+_RESPONSE_HEADER_DENY = frozenset(
+    {
+        "x-frame-options",
+        "x-sendfile",
+        "x-lighttpd-send-file",
+    }
+)
+_RESPONSE_HEADER_DENY_PREFIXES = ("x-accel-",)
+"""The ``x-`` namespace is not only custom app metadata, so allowing it
+wholesale would readmit two classes of header the allowlist exists to
+keep out: security directives (``x-frame-options``), and commands a
+reverse proxy EXECUTES on the response's behalf. nginx acts on
+``x-accel-redirect`` from an upstream unless configured not to, serving
+an internal location the caller could not request directly;
+``x-sendfile`` is the same mechanism in Apache and lighttpd.
+
+This cannot be complete — it covers the conventions that exist, and a
+proxy with its own is beyond what this library can see. An embedder
+fronting the router with one is the only party who can tell it to
+ignore them."""
 
 
 def filter_response_headers(raw: Any) -> dict[str, str]:
@@ -128,15 +151,16 @@ def filter_response_headers(raw: Any) -> dict[str, str]:
     ``set-cookie`` (planting a cookie on the serving origin),
     ``access-control-allow-*`` (granting other origins read access to
     responses the embedder isolated), ``content-security-policy`` (an
-    app relaxing its own containment), and framing controls such as
+    app relaxing its own containment), framing controls such as
     ``x-frame-options`` (opting into or out of embedding the embedder
-    decided). An embedder who needs one of these wraps the mountable
-    router in middleware of their own; that keeps the app unable to
-    reach them at all."""
+    decided), and proxy commands such as ``x-accel-redirect`` (reaching
+    an internal location through the server in front). An embedder who
+    needs one of these wraps the mountable router in middleware of their
+    own; that keeps the app unable to reach them at all."""
     out: dict[str, str] = {}
     for k, v in dict(raw or {}).items():
         lk = str(k).lower()
-        if lk in _RESPONSE_HEADER_DENY:
+        if lk in _RESPONSE_HEADER_DENY or lk.startswith(_RESPONSE_HEADER_DENY_PREFIXES):
             continue
         if lk in _RESPONSE_HEADER_ALLOW or lk.startswith("x-"):
             out[lk] = str(v)

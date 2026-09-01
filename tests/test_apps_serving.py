@@ -54,12 +54,15 @@ def get(req):
         body={"ok": True},
         headers={
             "Cache-Control": "max-age=60",
+            "Vary": "Authorization",
             "ETag": '"v1"',
             "X-Custom": "1",
             "Set-Cookie": "sid=abc; Path=/",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Credentials": "true",
             "X-Frame-Options": "ALLOWALL",
+            "X-Accel-Redirect": "/internal/secrets",
+            "X-Sendfile": "/etc/passwd",
         },
     )
 """
@@ -123,11 +126,20 @@ def test_agent_content_type_wins_but_not_the_policy():
 
 def test_response_headers_are_allowlisted():
     """Representation, caching and x-* custom headers reach the wire;
-    the ones that grant privileges on the serving origin do not."""
+    the ones that grant privileges on the serving origin do not.
+
+    Vary travels with Cache-Control: a handler may vary on an
+    allowlisted request header, and a cacheable response that does not
+    say so lets a shared cache hand one caller's variant to the next.
+    The x-* customs that a server in front would execute rather than
+    forward do not reach it — nginx acts on x-accel-redirect from an
+    upstream, which would reach an internal location through the
+    proxy."""
     ws, token, client = make_served()
     r = client.get(f"/apps/{token}/api/headers")
     assert r.status_code == 200
     assert r.headers["cache-control"] == "max-age=60"
+    assert r.headers["vary"] == "Authorization"
     assert r.headers["etag"] == '"v1"'
     assert r.headers["x-custom"] == "1"
     assert "set-cookie" not in r.headers
@@ -135,6 +147,8 @@ def test_response_headers_are_allowlisted():
     assert "access-control-allow-origin" not in r.headers
     assert "access-control-allow-credentials" not in r.headers
     assert "x-frame-options" not in r.headers
+    assert "x-accel-redirect" not in r.headers
+    assert "x-sendfile" not in r.headers
     ws.close()
 
 
