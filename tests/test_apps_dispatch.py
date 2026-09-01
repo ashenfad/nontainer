@@ -112,6 +112,35 @@ def test_normalize_header_casing():
     assert r.headers == {"x-custom": "1"}
 
 
+def test_filter_response_headers():
+    """The response allowlist, mirroring the request one: content and
+    caching metadata plus x-* customs survive; anything that grants a
+    privilege on the serving origin is dropped, whatever its casing."""
+    from nontainer.apps.contract import filter_response_headers
+
+    kept = {
+        "Content-Type": "text/csv",
+        "Cache-Control": "no-store",
+        "ETag": "abc",
+        "Last-Modified": "Thu, 01 Jan 1970 00:00:00 GMT",
+        "Content-Disposition": "attachment; filename=x.csv",
+        "Location": "/elsewhere",
+        "X-Total-Count": "3",
+    }
+    dropped = {
+        "Set-Cookie": "sid=1",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Credentials": "true",
+        "Content-Security-Policy": "default-src 'none'",
+        "X-Frame-Options": "ALLOWALL",
+        "Strict-Transport-Security": "max-age=0",
+        "Server": "nope",
+    }
+    out = filter_response_headers({**kept, **dropped})
+    assert out == {k.lower(): v for k, v in kept.items()}
+    assert filter_response_headers(None) == {}
+
+
 # -- dispatch: routing -----------------------------------------------------
 
 

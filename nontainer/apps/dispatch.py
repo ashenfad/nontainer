@@ -250,6 +250,11 @@ class AppsConfig:
     ``None`` derives it from ``script_hosts`` via ``serve.build_csp``;
     ``""`` disables it; a string is used verbatim.
 
+    The resolved policy is what goes on the wire, unconditionally: a
+    handler that returns its own ``Content-Security-Policy`` header has
+    it dropped, because contained code choosing its own containment is
+    not a policy an embedder configured.
+
     It lives here rather than only on ``build_router`` because a policy
     declared in one place and verified against another is the divergence
     this config exists to prevent. test_app reproduces the ORIGIN rules

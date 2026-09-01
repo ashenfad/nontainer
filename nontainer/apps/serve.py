@@ -41,7 +41,7 @@ import secrets
 from typing import Any, Callable
 
 from ..workspace import Workspace
-from .contract import filter_headers, make_request
+from .contract import filter_headers, filter_response_headers, make_request
 from .dispatch import AppRuntime, AppsConfig
 
 _logger = logging.getLogger("nontainer.apps")
@@ -119,6 +119,12 @@ def build_router(
     derived from ``config.script_hosts`` via ``build_csp``; pass a full
     policy string to override, or ``""`` to disable.
 
+    Whatever it resolves to is what served HTML carries — a handler
+    cannot substitute a policy of its own. Handler response headers are
+    allowlisted the way request headers are (representation and caching
+    metadata plus ``x-*``); an embedder needing more wraps this router
+    in their own middleware.
+
     Prefer declaring it on the config: ``test_app`` enforces
     ``config.csp`` during verification, so a policy passed only here is
     one verification never sees.
@@ -167,12 +173,17 @@ def build_router(
             body,
             filter_headers(request.headers),
         )
-        # wire.headers keys are lowercased by normalize(), so this
-        # setdefault correctly defers to an agent-set CSP (any casing)
-        # instead of emitting a duplicate header.
-        headers = dict(wire.headers)
+        # The app gets representation and caching metadata; the
+        # embedder keeps the headers that grant privileges on the
+        # serving origin (cookies, cross-origin reads, framing).
+        headers = filter_response_headers(wire.headers)
+        # The served policy is the CONFIGURED policy. Contained code
+        # does not get to choose its own containment, so this assigns
+        # rather than defers -- an app that names a policy of its own
+        # has already lost it to the filter above, and an empty csp
+        # means no header at all.
         if csp and wire.content_type.startswith("text/html"):
-            headers.setdefault("content-security-policy", csp)
+            headers["content-security-policy"] = csp
         return HttpResponse(
             wire.content,
             status_code=wire.status,

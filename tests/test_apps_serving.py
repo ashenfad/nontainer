@@ -33,8 +33,8 @@ def post(req):
     return {"ok": True}
 """
 
-# agent-set headers, idiomatically cased — the served response must
-# honor them (content type) and defer to them (CSP), not duplicate.
+# agent-set headers, idiomatically cased — the served response honors
+# the content type and REPLACES the app's CSP with the configured one.
 HTMLER = """
 def get(req):
     return Response(
@@ -42,6 +42,24 @@ def get(req):
         headers={
             "Content-Type": "text/html",
             "Content-Security-Policy": "default-src 'none'",
+        },
+    )
+"""
+
+# every category of response header an app can reach for: kept
+# (representation/caching/custom) and dropped (origin privileges).
+HEADERER = """
+def get(req):
+    return Response(
+        body={"ok": True},
+        headers={
+            "Cache-Control": "max-age=60",
+            "ETag": '"v1"',
+            "X-Custom": "1",
+            "Set-Cookie": "sid=abc; Path=/",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Credentials": "true",
+            "X-Frame-Options": "ALLOWALL",
         },
     )
 """
@@ -55,6 +73,7 @@ def make_served(*, python=None, on_log=None, **router_kwargs):
     ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
     ws.fs.write("/workspace/app/api/writer.py", WRITER.encode())
     ws.fs.write("/workspace/app/api/page.py", HTMLER.encode())
+    ws.fs.write("/workspace/app/api/headers.py", HEADERER.encode())
     ws.cache["scores"] = ["alice", "amy", "bob"]
     ws.checkpoint()
 
@@ -87,15 +106,55 @@ def test_static_and_csp():
     ws.close()
 
 
-def test_agent_headers_win_over_defaults():
-    """Cased agent headers are honored: Content-Type overrides the
-    inferred type; an agent CSP defers the router default (once, not
-    a duplicate pair, which browsers would intersect)."""
-    ws, token, client = make_served()
+def test_agent_content_type_wins_but_not_the_policy():
+    """Cased agent headers are honored where they describe the
+    RESPONSE: Content-Type overrides the inferred type. A policy is not
+    a description — the configured CSP replaces the app's own, once, so
+    handler code cannot pick the containment it runs under. (This test
+    once asserted the opposite: that an app-set CSP deferred the router
+    default. That deference was the bug.)"""
+    ws, token, client = make_served(csp="default-src 'self'")
     r = client.get(f"/apps/{token}/api/page")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
-    assert r.headers.get_list("content-security-policy") == ["default-src 'none'"]
+    assert r.headers.get_list("content-security-policy") == ["default-src 'self'"]
+    ws.close()
+
+
+def test_response_headers_are_allowlisted():
+    """Representation, caching and x-* custom headers reach the wire;
+    the ones that grant privileges on the serving origin do not."""
+    ws, token, client = make_served()
+    r = client.get(f"/apps/{token}/api/headers")
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "max-age=60"
+    assert r.headers["etag"] == '"v1"'
+    assert r.headers["x-custom"] == "1"
+    assert "set-cookie" not in r.headers
+    assert not r.cookies
+    assert "access-control-allow-origin" not in r.headers
+    assert "access-control-allow-credentials" not in r.headers
+    assert "x-frame-options" not in r.headers
+    ws.close()
+
+
+def test_an_app_cannot_disable_its_own_csp():
+    """csp="" is the EMBEDDER's opt-out. An app naming its own policy
+    on an otherwise-configured router is dropped, not honored."""
+    ws, token, client = make_served()
+    r = client.get(f"/apps/{token}/api/page")
+    assert r.headers["content-security-policy"] != "default-src 'none'"
+    assert "'unsafe-inline'" in r.headers["content-security-policy"]
+    ws.close()
+
+
+def test_no_duplicate_content_type():
+    """media_type and the allowlisted content-type header name the same
+    value, so the wire carries exactly one."""
+    ws, token, client = make_served()
+    for path in ("/", "api/page", "api/scores"):
+        r = client.get(f"/apps/{token}/{path.lstrip('/')}")
+        assert len(r.headers.get_list("content-type")) == 1, path
     ws.close()
 
 
@@ -236,5 +295,8 @@ def test_csp_override_and_disable():
 
     ws, token, client = make_served(csp="")
     r = client.get(f"/apps/{token}/")
+    assert "content-security-policy" not in r.headers
+    # and the app cannot reinstate one on its own behalf
+    r = client.get(f"/apps/{token}/api/page")
     assert "content-security-policy" not in r.headers
     ws.close()

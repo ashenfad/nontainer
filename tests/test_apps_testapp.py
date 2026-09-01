@@ -570,6 +570,62 @@ def test_a_disallowed_host_keeps_the_allowlist_message(chromium_available):
         ws.close()
 
 
+HEADER_PROBE_PAGE = b"""<html><body><div id="out">init</div>
+<script>
+  fetch('api/page').then(r => {
+    document.getElementById('out').textContent = JSON.stringify({
+      csp: r.headers.get('content-security-policy'),
+      acao: r.headers.get('access-control-allow-origin'),
+      custom: r.headers.get('x-custom'),
+      cookie: document.cookie,
+    });
+  });
+</script></body></html>"""
+
+HEADER_PROBE_HANDLER = """
+def get(req):
+    return Response(
+        body="<html><body>frame</body></html>",
+        headers={
+            "Content-Type": "text/html",
+            "Content-Security-Policy": "default-src *",
+            "Set-Cookie": "sid=abc; Path=/",
+            "Access-Control-Allow-Origin": "*",
+            "X-Custom": "1",
+        },
+    )
+"""
+
+
+def test_verification_serves_the_configured_headers(chromium_available):
+    """test_app fulfills what the router would serve, so a handler's
+    own headers get the same treatment: the configured policy replaces
+    an app-set Content-Security-Policy, Set-Cookie and
+    Access-Control-Allow-Origin never reach the browser, and an x-*
+    custom header does. Filtering only at serve time would let an app
+    verify green against a header it will never be served."""
+    import json as _json
+
+    policy = "default-src 'self'; script-src 'self' 'unsafe-inline'"
+    ws, rt = _csp_ws("csp-headers", HEADER_PROBE_PAGE, csp=policy)
+    try:
+        ws.fs.write("/workspace/app/api/page.py", HEADER_PROBE_HANDLER.encode())
+        ws.checkpoint()
+        result = rt.test_app(
+            [
+                {"assert": "document.getElementById('out').textContent !== 'init'"},
+                {"read": "#out"},
+            ]
+        )
+        seen = _json.loads(result.results[1].value)
+        assert seen["csp"] == policy  # not the app's "default-src *"
+        assert seen["acao"] is None
+        assert seen["custom"] == "1"
+        assert seen["cookie"] == ""  # Set-Cookie was dropped, not planted
+    finally:
+        ws.close()
+
+
 def test_a_blocked_script_fails_the_run(chromium_available):
     """Making the violation VISIBLE is not enough: `ok` has to move too,
     or render_test_app still prints PASS over an app whose code never

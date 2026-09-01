@@ -657,9 +657,12 @@ Request(method, path, params, headers, body, json)
     # bools are never numbers.
 Response(status=200, body=None, headers={})
     # header keys may be any casing; normalized (lowercased) on the
-    # wire — an agent-set Content-Type wins over the inferred type,
-    # and an agent-set Content-Security-Policy defers the served
-    # default instead of duplicating it.
+    # wire, where an agent-set Content-Type wins over the inferred
+    # type. Serving allowlists the rest: content-type, cache-control,
+    # etag, last-modified, content-disposition, location, and any x-*
+    # custom header. Everything else is dropped — set-cookie,
+    # access-control-allow-*, content-security-policy, x-frame-options
+    # are the embedder's to set, not the app's.
 HttpError(status, message)
 ```
 
@@ -685,6 +688,8 @@ build_router(
     #   build_csp(config.script_hosts); a string overrides wholesale
     #   HERE ONLY (test_app reads the config, so prefer AppsConfig.csp);
     #   "" disables.
+    #   Whatever it resolves to is what served HTML carries: a handler
+    #   returning its own Content-Security-Policy has it dropped.
     #   Carries 'wasm-unsafe-eval': browsers gate WebAssembly on
     #   script-src, and test_app enforces the allowlist by intercepting
     #   requests rather than sending this header — so without it a

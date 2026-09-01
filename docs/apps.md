@@ -58,7 +58,9 @@ def post(req):
 - **Liberal returns**: `dict`/`list` → JSON 200 · `str` → text/html by
   extension sniff · `bytes` → octet-stream · `Response(status=, body=,
   headers=)` for control · `raise HttpError(404, "msg")` for error
-  paths. Anything else → 500 + logged.
+  paths. Anything else → 500 + logged. Response headers are
+  allowlisted on the way out (content/caching metadata plus `x-*`); see
+  the CSP section below for what is dropped and why.
 - **Structural REST (authoring)**: `get` handlers execute against a
   read-only filesystem view (`ReadOnlyFS`) — a GET that writes gets a
   `PermissionError`, which teaches the agent better than a style rule.
@@ -348,6 +350,22 @@ Declare the policy on the config rather than only on
 `build_router(csp=…)`: verification reads the config, so a policy passed
 only to the router is one test_app never sees. `csp=""` disables it in
 both places.
+
+**The configured policy is the one that goes on the wire.** A handler
+returning its own `Content-Security-Policy` header does not get it
+served — contained code does not choose its own containment. That is
+one case of a general rule: handler response headers are allowlisted
+the way request headers are. `content-type`, `cache-control`, `etag`,
+`last-modified`, `content-disposition`, `location`, and any `x-*`
+custom header reach the browser; everything else is dropped, because
+the rest grant privileges on the *embedder's* serving origin —
+`set-cookie` plants a cookie there, `access-control-allow-*` hands
+other origins read access to responses the embedder isolated, and
+`x-frame-options` decides embedding. test_app applies the same filter,
+so an app cannot verify against a header it will never be served. An
+embedder who needs one of those wraps the mountable router in
+middleware of their own; there is no config flag, which is what keeps
+the guarantee structural.
 
 A violation is reported in `[rejected requests]` phrased as the fix, and
 an external script the allowlist doesn't cover keeps the allowlist
