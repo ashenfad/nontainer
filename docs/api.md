@@ -659,10 +659,13 @@ Response(status=200, body=None, headers={})
     # header keys may be any casing; normalized (lowercased) on the
     # wire, where an agent-set Content-Type wins over the inferred
     # type. Serving allowlists the rest: content-type, cache-control,
-    # etag, last-modified, content-disposition, location, and any x-*
-    # custom header. Everything else is dropped — set-cookie,
+    # vary, etag, last-modified, content-disposition, location, and any
+    # x-* custom header. Everything else is dropped — set-cookie,
     # access-control-allow-*, content-security-policy, x-frame-options
-    # are the embedder's to set, not the app's.
+    # are the embedder's to set, not the app's, and the proxy commands
+    # x-accel-* / x-sendfile / x-lighttpd-send-file are refused out of
+    # the x-* namespace so a handler cannot reach an internal location
+    # through a server in front.
 HttpError(status, message)
 ```
 

@@ -355,10 +355,10 @@ both places.
 returning its own `Content-Security-Policy` header does not get it
 served — contained code does not choose its own containment. That is
 one case of a general rule: handler response headers are allowlisted
-the way request headers are. `content-type`, `cache-control`, `etag`,
-`last-modified`, `content-disposition`, `location`, and any `x-*`
-custom header reach the browser; everything else is dropped, because
-the rest grant privileges on the *embedder's* serving origin —
+the way request headers are. `content-type`, `cache-control`, `vary`,
+`etag`, `last-modified`, `content-disposition`, `location`, and any
+`x-*` custom header reach the browser; everything else is dropped,
+because the rest grant privileges on the *embedder's* serving origin —
 `set-cookie` plants a cookie there, `access-control-allow-*` hands
 other origins read access to responses the embedder isolated, and
 `x-frame-options` decides embedding. test_app applies the same filter,
@@ -366,6 +366,20 @@ so an app cannot verify against a header it will never be served. An
 embedder who needs one of those wraps the mountable router in
 middleware of their own; there is no config flag, which is what keeps
 the guarantee structural.
+
+Two edges of that rule are worth naming. `vary` is allowed because it
+cannot be split from `cache-control`: a handler may vary its output on
+an allowlisted request header (`authorization`, or an `x-*` tenant id),
+and a cacheable response that does not say what it varied on lets a
+shared cache key on the URL alone and hand one caller's variant to the
+next. And the `x-*` allowance is not blanket — that namespace also
+carries commands a server in front *executes* rather than forwards, so
+`x-accel-*` (nginx), `x-sendfile` and `x-lighttpd-send-file` are
+refused; without that, a handler could reach an internal location
+through the proxy. That list covers the conventions that exist rather
+than every one that could: **a reverse proxy with its own magic headers
+is something only you can tell it to ignore** (`proxy_ignore_headers`
+in nginx). The library cannot see what it is deployed behind.
 
 A violation is reported in `[rejected requests]` phrased as the fix, and
 an external script the allowlist doesn't cover keeps the allowlist

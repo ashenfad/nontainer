@@ -115,12 +115,19 @@ def test_normalize_header_casing():
 def test_filter_response_headers():
     """The response allowlist, mirroring the request one: content and
     caching metadata plus x-* customs survive; anything that grants a
-    privilege on the serving origin is dropped, whatever its casing."""
+    privilege on the serving origin is dropped, whatever its casing.
+
+    Vary is kept because dropping it from a response that keeps
+    Cache-Control is what lets a shared cache serve one caller's variant
+    to the next. The x-* names are dropped because that namespace also
+    carries security directives and commands a reverse proxy executes,
+    neither of which is app metadata."""
     from nontainer.apps.contract import filter_response_headers
 
     kept = {
         "Content-Type": "text/csv",
         "Cache-Control": "no-store",
+        "Vary": "Authorization, X-Tenant",
         "ETag": "abc",
         "Last-Modified": "Thu, 01 Jan 1970 00:00:00 GMT",
         "Content-Disposition": "attachment; filename=x.csv",
@@ -133,6 +140,10 @@ def test_filter_response_headers():
         "Access-Control-Allow-Credentials": "true",
         "Content-Security-Policy": "default-src 'none'",
         "X-Frame-Options": "ALLOWALL",
+        "X-Accel-Redirect": "/internal/secrets",
+        "X-Accel-Buffering": "no",
+        "X-Sendfile": "/etc/passwd",
+        "X-Lighttpd-Send-File": "/etc/passwd",
         "Strict-Transport-Security": "max-age=0",
         "Server": "nope",
     }
