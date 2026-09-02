@@ -468,19 +468,34 @@ class KvgitSessionDb(JsonDb):
                 record["run_ids"] = run_ids
                 kv[SESSION_KEY] = record
 
+    def _commit_management_write(self, tool: str, *, was_clean: bool) -> None:
+        """Commit a delete or rename made between turns.
+
+        These arrive from outside the run loop — a session list, an
+        admin action — and nothing else would commit them, so the
+        store's listing (which reads committed heads) and a reopen of
+        the branch would both still show the old conversation. When the
+        workspace already holds a turn's staged work, the write stays
+        staged with it: committing then would close the turn early
+        with the agent's half-finished files in it."""
+        if was_clean and self._ws.caps.versioned and self._ws.dirty:
+            self._ws.checkpoint(info={"tool": tool})
+
     def delete_session(self, session_id: str, user_id: str | None = None) -> bool:
-        """Clear the session and run keys. The delete is staged like any
-        other write — the next checkpoint captures it."""
+        """Clear the session and run keys, committed when the workspace
+        was clean; otherwise staged with the turn in flight."""
         with self._ws.lock:
             record = self._record()
             if record is None or not self._matches(
                 record, session_id=session_id, user_id=user_id
             ):
                 return False
+            was_clean = not self._ws.dirty
             kv = _kv(self._ws)
             for key in _run_keys(kv):
                 del kv[key]
             del kv[SESSION_KEY]
+            self._commit_management_write("delete_session", was_clean=was_clean)
             return True
 
     def delete_sessions(
@@ -507,10 +522,12 @@ class KvgitSessionDb(JsonDb):
                 session_type=session_type,
             ):
                 return None
+            was_clean = not self._ws.dirty
             session_data = dict(record.get("session_data") or {})
             session_data["session_name"] = session_name
             record["session_data"] = session_data
             _kv(self._ws)[SESSION_KEY] = record
+            self._commit_management_write("rename_session", was_clean=was_clean)
         data = self._assembled(record)
         if not deserialize:
             return data
@@ -708,7 +725,10 @@ class KvgitStoreDb(JsonDb):
         matched: list[tuple[str, dict[str, Any]]] = []
         for branch in self._branches():
             record = self._peek(branch, SESSION_KEY)
-            if not isinstance(record, dict):
+            # A plain Workspace.fork() — a published snapshot, say —
+            # inherits its parent's record under the parent's id. Only a
+            # branch whose record names it holds a session.
+            if not isinstance(record, dict) or record.get("session_id") != branch:
                 continue
             if not KvgitSessionDb._matches(
                 record,
