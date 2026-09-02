@@ -451,7 +451,7 @@ WorkspaceTools(
     tools: "auto" | "terminal" | "split" = "auto",
     apps: AppRuntime | None = None,     # adds the test_app tool
     checkpoint: "call" | "turn" = "call",
-    session_db: KvgitSessionDb | None = None,  # conversation in the branch
+    session_db: KvgitSessionDb | KvgitStoreDb | None = None,  # conversation in the branch
     terminal_primer: str | None = None, # host guidance → terminal tool
     python_primer: str | None = None,   # host guidance → run_python tool
     **toolkit_kwargs,
@@ -594,10 +594,12 @@ harmless to leave in `post_hooks`.
 **One session per workspace.** `get_session` answers only for the
 branch's session id, `get_sessions` returns at most one, and an upsert
 with any other id raises `NotSupportedError` naming `fork_session` —
-which is what stops agno's own `Agent.fork_session` (it copies runs
-into a *new* session id through the *same* db). Note that agno logs and
-swallows exceptions from `upsert_session`, so what the caller sees is
-that nothing was written. Team and workflow sessions raise too.
+which is what stops agno's own `Agent.fork_session` over a per-branch
+db (it copies runs into a *new* session id through the *same* db). Note
+that agno logs and swallows exceptions from `upsert_session`, so what
+the caller sees is that nothing was written. Team and workflow sessions
+raise too. For agno's cross-session features, and for agno's own fork,
+use `KvgitStoreDb` below.
 
 **Rewind.** Leave `Agent.cache_session` at its default (`False`): agno
 then re-reads the session every run, so a restore needs no invalidation.
@@ -611,8 +613,9 @@ child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
 ```
 
 Returns the forked `Workspace`. The fork's session key is rewritten
-with `session_id = name` and `forked_from_session_id = <parent>`, and
-that rewrite is checkpointed, so the fork's head is consistent. Drive
+with `session_id = name` and `session_data["forked_from_session_id"]
+= <parent>` (where agno keeps fork lineage), and that rewrite is
+checkpointed, so the fork's head is consistent. Drive
 it with an agent whose `session_id` is the fork name. `"fresh"` drops
 the run keys: a clean chat over the forked files. Rewind first to
 branch from any checkpoint with the conversation as it was there.
@@ -627,6 +630,39 @@ agent2 = Agent(model=..., db=db2, session_id=child.session, tools=[tk2])
 
 kvgit refuses to fork a branch with staged changes, so fork between
 turns; in per-turn mode that is exactly when the workspace is clean.
+
+#### `KvgitStoreDb` — one db per store, a branch per session
+
+```python
+from nontainer.adapters.agno_db import KvgitStoreDb
+
+db = KvgitStoreDb(
+    store,                      # the same store= you pass to workspace()
+    open=registry.open,         # session_id -> the LIVE Workspace
+    db_path="/var/agno",        # inherited tables, shared by all sessions
+)
+ws = registry.open("chat-42")
+tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+agent = Agent(model=..., db=db, session_id="chat-42", tools=[tk])
+```
+
+The agno-shaped face over the per-branch view: every session call is
+routed to a `KvgitSessionDb` over the workspace `open` returns, so the
+commit trigger and the guards are the same. `open` must return the
+live workspace for an open session (the one its toolkit writes through)
+and resume or create the branch otherwise; `WorkspaceTools` checks that
+through `db.owns(workspace)`.
+
+What the store adds: `get_sessions` lists every branch (committed heads,
+read without opening; filters, `sort_by` `created_at`/`updated_at`,
+`limit`/`page`; runs loaded for the returned page only), so
+`search_past_sessions` and the AgentOS routers see the store's
+sessions. `Agent.fork_session` works: a new id carrying
+`session_data["forked_from_session_id"]` forks the parent's branch and
+seeds agno's re-keyed copy of the runs — files shared by hash, the
+conversation copy not. `get_session` for an unknown id returns `None`
+and creates nothing. `delete_session` clears the conversation and
+leaves the branch to the embedder.
 
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 

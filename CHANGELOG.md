@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`KvgitStoreDb`** — one agno db over a whole kvgit store, a branch
+  per session: built from the store path and the embedder's
+  `open(session_id) -> Workspace`, routing every session call to a
+  per-branch `KvgitSessionDb` over the live workspace. It is the
+  agno-shaped face over the per-branch view. `get_sessions` lists
+  every branch by reading committed heads without opening them, so
+  `search_past_sessions` and the AgentOS session routers see the
+  store's sessions; agno's own `Agent.fork_session` works, forking the
+  parent's branch and seeding agno's copy of the runs; an unknown id
+  reads as `None` and creates nothing. `WorkspaceTools(session_db=)`
+  accepts either db and checks ownership through `db.owns(workspace)`.
+
+- Fork lineage now lives in `session_data["forked_from_session_id"]`,
+  where agno keeps it, so agno's readers find it and it rides along on
+  every upsert instead of needing to be preserved by hand.
+
 - **`nontainer.adapters.agno_db`** — the agno conversation stored in
   the workspace branch, so one commit holds the turn's files, `cache`,
   cwd *and* memory. `ws.restore()` rewinds all four together;
