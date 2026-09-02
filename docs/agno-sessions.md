@@ -1,7 +1,8 @@
-# agno sessions in the workspace (design)
+# agno sessions in the workspace
 
-Status: design, not yet implemented. Ships under the `[agno]` extra
-as `nontainer.adapters.agno_db` when it lands.
+Status: implemented. Ships under the `[agno]` extra as
+`nontainer.adapters.agno_db` (`KvgitSessionDb`, `fork_session`); the
+API reference has the usage shape.
 
 ## Goal
 
