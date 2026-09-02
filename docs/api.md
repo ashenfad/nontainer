@@ -615,12 +615,6 @@ it with an agent whose `session_id` is the fork name. `"fresh"` drops
 the run keys: a clean chat over the forked files. Rewind first to
 branch from any checkpoint with the conversation as it was there.
 
-`get_tool_results_for_session(session_id, limit=None)` is reassembled
-from the run keys — rows of `result_id` (agno's `tool_call_id`),
-`run_id`, `tool_name`, `tool_args`, `result`, `created_at`, newest
-first. It is not the offloaded-payload index other backends keep under
-that name; agno's `offload_tool_results` store is not wired here.
-
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
 ```python

@@ -449,42 +449,6 @@ class KvgitSessionDb(JsonDb):
             return data
         return AgentSession.from_dict(data)
 
-    def get_tool_results_for_session(
-        self, session_id: str, limit: int | None = None
-    ) -> list[dict[str, Any]]:
-        """The session's tool calls and their results, newest first.
-
-        Reassembled from the run keys: the inherited implementation
-        reads a table on disk that this db never writes, and would
-        report a conversation with tools in it as having none. Rows
-        carry the tool call as the run recorded it (``result_id`` is
-        agno's ``tool_call_id``), not the offloaded-payload index other
-        backends keep under this name — offloading stores payloads
-        outside the workspace and is not wired here.
-        """
-        record = self._record()
-        if record is None or record.get("session_id") != session_id:
-            return []
-        rows: list[dict[str, Any]] = []
-        for run in self._read_runs(list(record.get("run_ids") or [])):
-            for call in run.get("tools") or []:
-                rows.append(
-                    {
-                        "result_id": call.get("tool_call_id"),
-                        "session_id": session_id,
-                        "run_id": run.get("run_id"),
-                        "tool_name": call.get("tool_name"),
-                        "tool_args": call.get("tool_args"),
-                        "result": call.get("result"),
-                        "created_at": call.get("created_at"),
-                    }
-                )
-        rows.reverse()
-        if limit is not None:
-            rows = rows[:limit]
-        return rows
-
-
 def fork_session(
     ws: Workspace, name: str, *, conversation: str = "inherit"
 ) -> Workspace:

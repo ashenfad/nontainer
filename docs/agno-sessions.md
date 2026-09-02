@@ -65,9 +65,15 @@ through it lands in that branch.
   writing a second session into the branch (see Fork below).
 - `delete_session` clears the keys; `rename_session` rewrites the
   session key.
-- `get_tool_results_for_session` (agno 3.x) is reassembled from the
-  run keys, because the inherited implementation would read the
-  sessions table on disk and find nothing.
+
+One thing to know about every refusal above: agno's run loop wraps
+its storage calls in a catch-all that logs a warning and carries on.
+Calling the db directly raises; driving it through an `Agent` shows
+a warning and the observable effect is that nothing was written. In
+per-turn mode a refused or failed upsert also means no commit fired,
+so the turn's staged files ride into the next turn's commit. That is
+agno's behaviour, not a choice here, and it is why the guards refuse
+*before* writing anything.
 
 Only `AgentSession` is supported. Team and workflow sessions raise
 `NotSupportedError`.
@@ -82,7 +88,7 @@ draws everywhere: session state versions, world state does not.
 
 Subclassing `JsonDb` rather than implementing `BaseDb` from scratch
 is deliberate. `BaseDb` is roughly 150 abstract methods; the sessions
-table is seven of them (eight on 3.x). Overriding seven public
+table is seven of them. Overriding seven public
 methods is the whole exposure to agno churn.
 
 ## Values
@@ -193,8 +199,12 @@ add the session-db tests so a bump re-checks them.
 
 - `BaseDb` session methods and signatures: `get_session`,
   `get_sessions`, `upsert_session`, `upsert_sessions`,
-  `delete_session`, `delete_sessions`, `rename_session`; on 3.x also
-  `get_tool_results_for_session(session_id, limit)`.
+  `delete_session`, `delete_sessions`, `rename_session`. agno 3.x
+  also declares `get_tool_results_for_session`, which is its
+  offloaded-payload index and not a tool-results view; `JsonDb` does
+  not implement it, nothing in agno calls it, and this db inherits
+  that not-implemented state rather than answering a different
+  question under the same name.
 - `AgentSession.to_dict()` emits `runs` as a list of dicts with
   `run_id`; `AgentSession.from_dict` accepts the same. `RunOutput`
   carries `forked_from_session_id`.
@@ -235,10 +245,9 @@ Against a real `Agent` with a scripted model (no LLM key):
 - `fork_session(..., conversation="inherit")` produces a branch whose
   session id is the fork's and whose runs equal the parent's at that
   commit; `"fresh"` produces an empty run list over the same files;
-- `Agent.fork_session()` over the db raises `NotSupportedError`;
+- `Agent.fork_session()` over the db writes nothing (the guard
+  raises inside the db; agno logs and swallows it);
 - a team session raises `NotSupportedError`;
 - an upsert whose prior runs are not the branch's runs (the
   `cache_session=True` shape: restore, then a run from a stale
-  in-memory session) raises and writes nothing;
-- on 3.x, `get_tool_results_for_session` returns the tool results
-  from the run keys.
+  in-memory session) raises and writes nothing.
