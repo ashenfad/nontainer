@@ -50,6 +50,7 @@ from __future__ import annotations
 import io
 import os
 import pickle
+import re
 import shlex
 import sys
 import tarfile
@@ -57,6 +58,7 @@ import threading
 import time
 from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Literal
 
 from .cache import PREFIX
@@ -67,6 +69,7 @@ from .executor import (
     StagedDiff,
     ViewSpec,
     _apply_diff,
+    _flatten_grants,
     _is_plain_data,
     _truncate,
 )
@@ -235,6 +238,46 @@ class _KvBytesCache(MutableMapping[str, bytes]):
         return sum(1 for k in self._kv.keys() if k.startswith(PREFIX))
 
 
+def _canonical(name: str) -> str:
+    """A distribution name as the packaging rules compare it: case does
+    not matter, and runs of hyphens, underscores and dots are one
+    hyphen."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _requirement_name(spec: str) -> str:
+    """The distribution a requirement string names, canonicalized."""
+    for sep in ("==", ">=", "<=", "~=", "!=", "===", ">", "<", "[", ";", "@"):
+        spec = spec.split(sep, 1)[0]
+    return _canonical(spec.strip())
+
+
+def _owning_distributions(module: Any, candidates: list[str]) -> list[str]:
+    """Which of ``candidates`` ship the file this module was imported
+    from. A shared namespace (``google``, ``azure``) maps one top-level
+    name to every distribution that populates it, and only the one
+    owning the granted module's file belongs in the guest. A module
+    with no file (a namespace package itself) keeps every candidate."""
+    from importlib import metadata
+
+    if len(candidates) < 2:
+        return list(candidates)
+    path = getattr(module, "__file__", None)
+    if not path:
+        return list(candidates)
+    target = Path(path).resolve()
+    owners = []
+    for name in candidates:
+        try:
+            dist = metadata.distribution(name)
+            files = dist.files or []
+            if any(Path(dist.locate_file(f)).resolve() == target for f in files):
+                owners.append(name)
+        except Exception:
+            continue
+    return owners or list(candidates)
+
+
 def _packages_from_grants(grants: Any) -> list[str]:
     """The distributions the granted modules come from, pinned to the
     host's installed versions, in grant order without repeats."""
@@ -249,16 +292,16 @@ def _packages_from_grants(grants: Any) -> list[str]:
         top = getattr(module, "__name__", "").partition(".")[0]
         if not top or top in stdlib or top in sys.builtin_module_names:
             continue
-        dists = dists_by_module.get(top)
-        if not dists:
+        candidates = list(dists_by_module.get(top) or [])
+        if not candidates:
             raise NotSupportedError(
                 f"Granted module {top!r} has no installed distribution to layer "
                 "into the VM guest, so the guest could not import it. Pass "
                 'vm={"packages": [...]} for an image that carries it, or '
                 'vm={"packages_from_grants": False} for a custom image.'
             )
-        for dist in dists:
-            key = dist.lower()
+        for dist in _owning_distributions(module, candidates):
+            key = _canonical(dist)
             if key in seen:
                 continue
             seen.add(key)
@@ -269,18 +312,13 @@ def _packages_from_grants(grants: Any) -> list[str]:
 def _merge_packages(derived: list[str], explicit: Any) -> list[str]:
     """Explicit ``vm={"packages": [...]}`` entries win over derived pins
     for the same distribution; everything else is kept, explicit first."""
-
-    def name(spec: str) -> str:
-        for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "["):
-            spec = spec.split(sep, 1)[0]
-        return spec.strip().lower()
-
     merged = [str(p) for p in (explicit or [])]
-    names = {name(p) for p in merged}
+    names = {_requirement_name(p) for p in merged}
     for spec in derived:
-        if name(spec) not in names:
+        key = _requirement_name(spec)
+        if key not in names:
             merged.append(spec)
-            names.add(name(spec))
+            names.add(key)
     return merged
 
 
@@ -471,7 +509,8 @@ class DudExecutor:
                 "stdlib=False on a VM rung: a guest's Python carries its whole "
                 "standard library and cannot withhold it."
             )
-        for grant in cfg.modules:
+        grants = _flatten_grants(cfg)
+        for grant in grants:
             if getattr(grant, "network", False):
                 name = getattr(getattr(grant, "module", None), "__name__", "?")
                 raise NotSupportedError(
@@ -481,7 +520,7 @@ class DudExecutor:
 
         if self._vm.get("packages_from_grants", True) is False:
             return []
-        return _packages_from_grants(cfg.modules)
+        return _packages_from_grants(grants)
 
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
