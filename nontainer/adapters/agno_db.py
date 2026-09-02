@@ -153,9 +153,14 @@ class KvgitSessionDb(JsonDb):
 
     def _assembled(self, record: dict[str, Any]) -> dict[str, Any]:
         """The session dict agno expects: the record with its
-        ``run_ids`` resolved back into a ``runs`` list."""
+        ``run_ids`` resolved back into a ``runs`` list.
+
+        An empty conversation is ``None`` rather than ``[]``, which is
+        the shape ``AgentSession.to_dict()`` emits and what every agno
+        db therefore stores; some agno versions index ``runs[0]`` after
+        a bare ``is not None`` check and raise on the empty list."""
         data = {k: v for k, v in record.items() if k != "run_ids"}
-        data["runs"] = self._read_runs(list(record.get("run_ids") or []))
+        data["runs"] = self._read_runs(list(record.get("run_ids") or [])) or None
         return data
 
     @staticmethod
@@ -199,8 +204,8 @@ class KvgitSessionDb(JsonDb):
         ):
             return None
         data = self._assembled(record)
-        if runs_limit is not None:
-            data["runs"] = data["runs"][-runs_limit:]
+        if runs_limit is not None and data["runs"]:
+            data["runs"] = data["runs"][-runs_limit:] or None
         if not deserialize:
             return data
         return AgentSession.from_dict(data)

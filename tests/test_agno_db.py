@@ -291,6 +291,10 @@ def test_a_foreign_session_id_is_refused(tmp_path):
     ws.close()
 
 
+@pytest.mark.skipif(
+    not hasattr(Agent, "fork_session"),
+    reason="Agent.fork_session arrived after the declared agno floor",
+)
 def test_agno_fork_session_cannot_write_a_second_session(tmp_path):
     """agno's own fork deep-copies the runs into a new session id
     through the SAME db, which assumes one db holding many sessions.
