@@ -1041,3 +1041,99 @@ def test_rich_ui_flattens_through_the_dud_boundary(ws):
     )
     assert r2, r2.error
     assert isinstance(r2.namespace["ui"]["table"], ArtifactPath)
+
+
+# -- config honesty: refuse what a rung cannot honour ------------------------
+
+
+def _cfg(**kw):
+    from nontainer.workspace import PythonConfig
+
+    return PythonConfig(**kw)
+
+
+def test_vm_rung_refuses_network():
+    from nontainer.errors import NotSupportedError
+
+    with pytest.raises(NotSupportedError, match="no network interface"):
+        DudExecutor(backend="vfkit")._prepare_config(_cfg(network=True))
+
+
+def test_vm_rung_refuses_a_network_grant():
+    import json
+
+    from nontainer.errors import NotSupportedError
+    from nontainer.workspace import ModuleGrant
+
+    with pytest.raises(NotSupportedError, match="ModuleGrant\\(json, network=True\\)"):
+        DudExecutor(backend="firecracker")._prepare_config(
+            _cfg(modules=[ModuleGrant(json, network=True)])
+        )
+
+
+def test_vm_rung_refuses_withholding_the_stdlib():
+    from nontainer.errors import NotSupportedError
+
+    with pytest.raises(NotSupportedError, match="stdlib=False"):
+        DudExecutor(backend="vfkit")._prepare_config(_cfg(stdlib=False))
+
+
+def test_vm_rung_accepts_any_isolation():
+    assert DudExecutor(backend="vfkit")._prepare_config(_cfg(isolation="kernel")) == []
+
+
+def test_subprocess_rung_enforces_nothing_but_refuses_an_isolation_ask():
+    from nontainer.errors import NotSupportedError
+
+    ex = DudExecutor(backend="subprocess")
+    assert ex._prepare_config(_cfg(network=True)) == []
+    assert ex._prepare_config(_cfg(network=False, stdlib=False)) == []
+    with pytest.raises(NotSupportedError, match="subprocess rung"):
+        ex._prepare_config(_cfg(isolation="process"))
+
+
+def test_grants_become_pinned_guest_packages():
+    """A granted module's distribution, pinned to the host's version;
+    stdlib grants add nothing."""
+    import json
+    from importlib import metadata
+
+    packages = DudExecutor(backend="vfkit")._prepare_config(
+        _cfg(modules=[json, pytest])
+    )
+    assert packages == [f"pytest=={metadata.version('pytest')}"]
+
+
+def test_a_local_module_grant_cannot_be_layered_in():
+    import types
+
+    from nontainer.errors import NotSupportedError
+
+    helper = types.ModuleType("local_helper")
+    with pytest.raises(NotSupportedError, match="local_helper"):
+        DudExecutor(backend="vfkit")._prepare_config(_cfg(modules=[helper]))
+
+
+def test_packages_from_grants_can_be_turned_off_for_a_custom_image():
+    import types
+
+    helper = types.ModuleType("local_helper")
+    ex = DudExecutor(backend="vfkit", vm={"packages_from_grants": False})
+    assert ex._prepare_config(_cfg(modules=[helper, pytest])) == []
+
+
+def test_explicit_vm_packages_win_over_derived_pins(monkeypatch):
+    import dud
+
+    captured = {}
+
+    def fake_session(backend, **kw):
+        captured.update(kw, backend=backend)
+        return "pooled-session"
+
+    monkeypatch.setattr(dud, "session", fake_session)
+    ex = DudExecutor(backend="vfkit", vm={"packages": ["pytest>=1", "extra-pkg"]})
+    ex._packages = ex._prepare_config(_cfg(modules=[pytest]))
+    ex._make_session({}, {})
+    assert captured["packages"] == ["pytest>=1", "extra-pkg"]
+    assert "packages_from_grants" not in captured

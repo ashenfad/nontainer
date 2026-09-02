@@ -19,10 +19,14 @@ gated in-process option.
 
 Intended deltas vs LocalExecutor (pinned by tests/test_dud_executor.py):
 
-- **Policy narrows to reality.** ``PythonConfig.modules`` grants and
-  ``stdlib``/``network``/``isolation`` knobs are meaningless here —
-  what's importable is what's installed in the guest environment, and
-  the rung-1 guest IS the host env. ``host_objects`` survive: live
+- **Policy is honoured or refused, never narrowed.** On VM rungs the
+  guest has no network interface, so ``network=True`` (on the config
+  or a ``ModuleGrant``) and ``stdlib=False`` raise at open; any
+  ``isolation`` is exceeded by the VM. Module grants become the
+  guest image's package list, pinned to the host's versions. The
+  subprocess rung enforces nothing (the rung-1 guest IS the host
+  env) and only refuses an explicit ``isolation`` above ``"none"``.
+  ``host_objects`` survive: live
   objects become hostcall proxies behind dud's allowlist, granted
   their public methods so the reachable surface matches what
   ``LocalExecutor`` bridges over RPC; plain data is injected per call
@@ -47,6 +51,7 @@ import io
 import os
 import pickle
 import shlex
+import sys
 import tarfile
 import threading
 import time
@@ -230,6 +235,55 @@ class _KvBytesCache(MutableMapping[str, bytes]):
         return sum(1 for k in self._kv.keys() if k.startswith(PREFIX))
 
 
+def _packages_from_grants(grants: Any) -> list[str]:
+    """The distributions the granted modules come from, pinned to the
+    host's installed versions, in grant order without repeats."""
+    from importlib import metadata
+
+    dists_by_module = metadata.packages_distributions()
+    stdlib = getattr(sys, "stdlib_module_names", frozenset())
+    packages: list[str] = []
+    seen: set[str] = set()
+    for grant in grants:
+        module = getattr(grant, "module", grant)
+        top = getattr(module, "__name__", "").partition(".")[0]
+        if not top or top in stdlib or top in sys.builtin_module_names:
+            continue
+        dists = dists_by_module.get(top)
+        if not dists:
+            raise NotSupportedError(
+                f"Granted module {top!r} has no installed distribution to layer "
+                "into the VM guest, so the guest could not import it. Pass "
+                'vm={"packages": [...]} for an image that carries it, or '
+                'vm={"packages_from_grants": False} for a custom image.'
+            )
+        for dist in dists:
+            key = dist.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            packages.append(f"{dist}=={metadata.version(dist)}")
+    return packages
+
+
+def _merge_packages(derived: list[str], explicit: Any) -> list[str]:
+    """Explicit ``vm={"packages": [...]}`` entries win over derived pins
+    for the same distribution; everything else is kept, explicit first."""
+
+    def name(spec: str) -> str:
+        for sep in ("==", ">=", "<=", "~=", "!=", ">", "<", "["):
+            spec = spec.split(sep, 1)[0]
+        return spec.strip().lower()
+
+    merged = [str(p) for p in (explicit or [])]
+    names = {name(p) for p in merged}
+    for spec in derived:
+        if name(spec) not in names:
+            merged.append(spec)
+            names.add(name(spec))
+    return merged
+
+
 class DudExecutor:
     """Executor over a dud backend — a host process or a real microVM.
 
@@ -296,6 +350,7 @@ class DudExecutor:
         self._ws_root = ""
         self._plain: dict[str, Any] = {}  # plain-data host_objects
         self._live: dict[str, Any] = {}  # live host_objects (for recovery)
+        self._packages: list[str] = []  # image packages derived from grants
         self._cache: Any | None = None  # kv-backed cache view (for recovery)
         self._closed = False
         # Guest tree diverged from the provider: set while a push is in
@@ -353,6 +408,10 @@ class DudExecutor:
         # (see close()); on such a match `resumed` is set and open()
         # skips the push entirely.
         pooled = vm.pop("pooled", True)
+        vm.pop("packages_from_grants", None)
+        packages = _merge_packages(self._packages, vm.pop("packages", None))
+        if packages:
+            vm["packages"] = packages
         return dud.session(
             self._backend,
             pooled=pooled,
@@ -364,10 +423,71 @@ class DudExecutor:
             **vm,
         )
 
+    def _prepare_config(self, cfg: Any) -> list[str]:
+        """Fail closed on config a rung cannot honour; derive the image
+        packages the grants imply.
+
+        A VM guest has no network interface at all, so ``network=True``
+        — on the config or on a ``ModuleGrant`` — asks for egress that
+        does not exist; ``stdlib=False`` asks to withhold what every
+        guest carries. Both raise rather than narrow silently, because
+        a knob that reads as a policy and does nothing is worse than an
+        error. Anything ``isolation`` asks for, a VM already exceeds.
+
+        The subprocess rung enforces no policy at all and says so
+        wherever it is named; it is the declared no-containment rung,
+        so the config's defaults are not errors there. The one thing it
+        refuses is an explicit ``isolation`` above ``"none"``, which is
+        an ask for containment it cannot give.
+
+        Module grants become the guest's package list on VM rungs:
+        each granted module's distribution, pinned to the host's
+        version, so what the agent may import is the same set on both
+        rungs (plus the guest's stdlib and the packages' own
+        dependencies). A granted module with no distribution — a local
+        helper — cannot be layered in and raises. ``vm={
+        "packages_from_grants": False}`` turns the derivation off for a
+        custom image that already carries what it needs; an explicit
+        ``vm={"packages": [...]}`` is merged either way, its pins
+        winning."""
+        if self._backend == "subprocess":
+            if cfg.isolation != "none":
+                raise NotSupportedError(
+                    f"isolation={cfg.isolation!r} on the subprocess rung: it "
+                    "runs agent code as the host user with no containment. "
+                    "Use LocalExecutor for process/kernel isolation, or a VM "
+                    "rung for a real boundary."
+                )
+            return []
+
+        if cfg.network:
+            raise NotSupportedError(
+                "network=True on a VM rung: dud guests have no network "
+                "interface, so there is no egress to grant. Drop network=True, "
+                "or run in-process (LocalExecutor) where sandtrap can grant it."
+            )
+        if not cfg.stdlib:
+            raise NotSupportedError(
+                "stdlib=False on a VM rung: a guest's Python carries its whole "
+                "standard library and cannot withhold it."
+            )
+        for grant in cfg.modules:
+            if getattr(grant, "network", False):
+                name = getattr(getattr(grant, "module", None), "__name__", "?")
+                raise NotSupportedError(
+                    f"ModuleGrant({name}, network=True) on a VM rung: dud guests "
+                    "have no network interface, so the grant cannot be honoured."
+                )
+
+        if self._vm.get("packages_from_grants", True) is False:
+            return []
+        return _packages_from_grants(cfg.modules)
+
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
         self._ws_root = "" if context.root == "/" else context.root.rstrip("/")
         cfg = context.python_config
+        self._packages = self._prepare_config(cfg)
         # Live host objects cross as hostcall proxies behind dud's method
         # allowlist, granted their public methods in _make_session (dud 0.3
         # requires the grant explicitly). Plain data can't be proxied —
