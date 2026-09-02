@@ -156,6 +156,27 @@ call (max durability); `WorkspaceTools(ws, checkpoint="turn")` plus
 `Agent(post_hooks=[tk.end_turn])` gives the agex model — one commit
 per agent turn, so `rollback(1)` undoes a whole turn.
 
+The conversation can live in the workspace too, so a rollback or a
+fork carries the agent's memory along with the files:
+
+```python
+from nontainer.adapters.agno_db import KvgitSessionDb, fork_session
+
+ws = workspace(session_id)
+db = KvgitSessionDb(ws, db_path="/var/agno")   # agno's other tables go here
+tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk])
+
+child = fork_session(ws, "what-if")            # files + chat, O(1)
+```
+
+One commit per turn then holds files, `cache`, cwd and the run agno
+just persisted; `ws.restore()` rewinds all four and `fork_session()`
+branches all four. Drive the fork with the same three objects built
+over `child`. The reasoning, and what agno's own `fork_session` does
+over this db (nothing), are in [agno-sessions.md](agno-sessions.md);
+the shapes are in the [API reference](api.md).
+
 Tool exposure is automatic: a plain python environment gets ONE
 `terminal` tool (with a `python` builtin); an augmented one (cache or
 host objects) gets a separate `run_python` tool whose description
