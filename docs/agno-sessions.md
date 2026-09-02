@@ -153,13 +153,18 @@ the rewound conversation with no invalidation step.
 object in memory across runs, so after a restore it would append to
 the stale, pre-rewind run list and write the rewound turns back.
 
-The db catches that. agno's upsert hands over the whole session, run
-list included, so the db compares the incoming prior runs with the
-branch's `run_ids`. When the incoming list carries runs the branch
-does not hold, the in-memory session is stale, and the upsert raises
-with a message naming `cache_session`. Nothing is written. The same
-guard catches any other path that would write a conversation the
-branch's history does not lead to.
+The db catches that. agno's upsert hands over the session's run
+list, so the db checks that everything before the turn's new run is
+a contiguous tail of the branch's `run_ids`. When the incoming list
+carries runs the branch does not hold, the in-memory session is
+stale, and the upsert raises with a message naming `cache_session`.
+Nothing is written. The same guard catches any other path that would
+write a conversation the branch's history does not lead to.
+
+A tail rather than the whole list because agno 3.x reads the session
+with a run limit and writes back only the most recent runs plus the
+new one. The branch keeps its full list on such a write; a limited
+read never shortens history.
 
 A crash mid-turn loses the staged conversation and the staged files
 together. That is the correct outcome: both or neither.

@@ -278,6 +278,50 @@ def test_a_stale_session_is_refused_and_writes_nothing(tmp_path):
     ws.close()
 
 
+def test_a_limited_read_written_back_keeps_the_full_history(tmp_path):
+    """agno 3.x reads the session with a run limit. The write after the
+    turn then carries only the most recent runs plus the new one, and
+    the branch must keep everything it held before."""
+    ws, db, tk, agent = build(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    run_turn(agent, write_turn("b.txt", "B"))
+    full = [r["run_id"] for r in db.get_session(ws.session, deserialize=False)["runs"]]
+    assert len(full) == 2
+
+    limited = db.get_session(ws.session, deserialize=False, runs_limit=1)
+    assert [r["run_id"] for r in limited["runs"]] == full[-1:]
+
+    head = ws.head
+    third = dict(limited["runs"][-1])
+    third["run_id"] = "run-3"
+    limited["runs"] = [*limited["runs"], third]
+    db.upsert_session(AgentSession.from_dict(limited))
+
+    assert kv_of(ws)[SESSION_KEY]["run_ids"] == [*full, "run-3"]
+    assert len(db.get_session(ws.session).runs) == 3
+    assert ws.head != head and not ws.dirty  # the turn committed
+    ws.close()
+
+
+def test_a_limited_stale_read_is_still_refused(tmp_path):
+    """A run limit does not weaken the guard: after a restore, a limited
+    view that still holds the rewound run is not a tail of the branch."""
+    ws, db, tk, agent = build(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    head = ws.head
+    run_turn(agent, write_turn("b.txt", "B"))
+    stale = db.get_session(ws.session, deserialize=False, runs_limit=1)
+    ws.restore(head)
+
+    third = dict(stale["runs"][-1])
+    third["run_id"] = "run-from-the-future"
+    stale["runs"] = [*stale["runs"], third]
+    with pytest.raises(NotSupportedError, match="cache_session"):
+        db.upsert_session(AgentSession.from_dict(stale))
+    assert len(db.get_session(ws.session).runs) == 1
+    ws.close()
+
+
 # -- one session per workspace -------------------------------------------------
 
 

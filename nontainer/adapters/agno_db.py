@@ -199,7 +199,9 @@ class KvgitSessionDb(JsonDb):
 
         A ``session_type`` that is not the agent one finds nothing;
         ``runs_limit``, where agno passes it, trims the answer to the
-        most recent N runs."""
+        most recent N runs. The branch keeps the full list: a session
+        read this way and written back after a turn reconciles against
+        the branch's ``run_ids`` in ``upsert_session``."""
         record = self._record()
         if record is None or not self._matches(
             record, session_id=session_id, user_id=user_id, session_type=session_type
@@ -298,22 +300,28 @@ class KvgitSessionDb(JsonDb):
                 )
 
             known = list(record.get("run_ids") or []) if record else []
-            # The turn appends at most one run, so everything before it
-            # must be exactly what the branch holds. A longer tail means
-            # the caller is writing from a session object that predates a
-            # restore.
+            # The turn appends at most one run. agno may have read the
+            # session with a run limit, so the write can carry only the
+            # most recent runs: everything before the new run must be a
+            # contiguous tail of what the branch holds. Runs the branch
+            # does not hold mean the caller is writing from a session
+            # object that predates a restore. The branch keeps its full
+            # list either way; a limited read never shortens history.
             prior = (
                 incoming[:-1] if incoming and incoming[-1] not in known else incoming
             )
-            if prior != known:
+            kept = len(known) - len(prior)
+            if kept < 0 or known[kept:] != prior:
                 raise NotSupportedError(
                     "Refusing to write a conversation this branch's history "
-                    f"does not lead to: the branch holds {len(known)} run(s), "
-                    f"the write carries {len(prior)} prior run(s). This is "
-                    "what cache_session=True produces after ws.restore() — "
-                    "agno keeps the pre-rewind session in memory and appends "
-                    "to it. Leave cache_session at its default."
+                    f"does not lead to: the branch holds {len(known)} run(s) "
+                    f"and the write carries {len(prior)} prior run(s) that are "
+                    "not its most recent ones. This is what "
+                    "cache_session=True produces after ws.restore() — agno "
+                    "keeps the pre-rewind session in memory and appends to "
+                    "it. Leave cache_session at its default."
                 )
+            run_ids = known[:kept] + incoming
 
             changed = False
             for run in runs:
@@ -325,7 +333,7 @@ class KvgitSessionDb(JsonDb):
             now = int(time.time())
             stored = {k: v for k, v in data.items() if k != "runs"}
             stored["session_type"] = "agent"
-            stored["run_ids"] = incoming
+            stored["run_ids"] = run_ids
             if record is None:
                 stored["created_at"] = data.get("created_at") or now
                 stored["updated_at"] = stored["created_at"]
@@ -448,6 +456,7 @@ class KvgitSessionDb(JsonDb):
         if not deserialize:
             return data
         return AgentSession.from_dict(data)
+
 
 def fork_session(
     ws: Workspace, name: str, *, conversation: str = "inherit"
