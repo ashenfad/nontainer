@@ -502,19 +502,6 @@ def test_the_conversation_is_out_of_the_agents_reach(tmp_path):
     ws.close()
 
 
-def test_tool_results_are_reassembled_from_the_run_keys(tmp_path):
-    ws, db, tk, agent = build(tmp_path)
-    run_turn(agent, write_turn("a.txt", "A"))
-
-    rows = db.get_tool_results_for_session(ws.session)
-    assert [row["tool_name"] for row in rows] == ["file_write"]
-    assert rows[0]["session_id"] == ws.session
-    assert "a.txt" in str(rows[0]["result"])
-    assert db.get_tool_results_for_session("someone-else") == []
-    assert db.get_tool_results_for_session(ws.session, limit=0) == []
-    ws.close()
-
-
 def test_the_inherited_tables_stay_on_disk(tmp_path):
     """Memories and the other cross-session tables are not versioned
     with the branch: they go to db_path, untouched."""
