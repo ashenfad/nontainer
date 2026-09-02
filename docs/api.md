@@ -601,8 +601,10 @@ that nothing was written. Team and workflow sessions raise too.
 
 **Rewind.** Leave `Agent.cache_session` at its default (`False`): agno
 then re-reads the session every run, so a restore needs no invalidation.
-With it on, the upsert whose prior runs are not exactly the branch's
-`run_ids` raises (naming `cache_session`) and writes nothing.
+With it on, an upsert whose prior runs are not a tail of the branch's
+`run_ids` raises (naming `cache_session`) and writes nothing. A tail,
+not the whole list, because agno 3.x reads with a run limit and writes
+back only the most recent runs; the branch keeps its full list.
 
 ```python
 child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"

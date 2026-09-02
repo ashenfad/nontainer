@@ -61,9 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   Leave `Agent.cache_session` at its default: agno then re-reads the
   session every run, so `ws.restore()` needs no invalidation step.
-  With it on, an upsert whose prior runs are not exactly the branch's
+  With it on, an upsert whose prior runs are not a tail of the branch's
   `run_ids` raises and writes nothing, rather than quietly writing the
-  rewound turns back.
+  rewound turns back. (A tail, because agno 3.x reads the session with
+  a run limit; the branch keeps its full history on such a write.)
 
 ## 0.4.1 - 2026-28-30
 
