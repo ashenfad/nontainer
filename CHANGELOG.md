@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **`DudExecutor` honours or refuses `PythonConfig`, never narrows it.**
+  VM guests have no network interface, so `network=True` — on the
+  config or a `ModuleGrant` — and `stdlib=False` now raise
+  `NotSupportedError` at open instead of being ignored; any
+  `isolation` is exceeded by the VM. The subprocess rung, the declared
+  no-containment rung, enforces nothing and refuses only an explicit
+  `isolation` above `"none"`. Module grants now become the guest
+  image's package list (each granted module's distribution, pinned to
+  the host's version, merged with an explicit `vm={"packages": [...]}`
+  whose pins win), so what the agent may import is the same set on both
+  rungs. A granted local module with no distribution raises;
+  `vm={"packages_from_grants": False}` opts a custom image out.
+
 ### Added
 
 - **`KvgitStoreDb`** — one agno db over a whole kvgit store, a branch
