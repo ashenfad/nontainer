@@ -576,14 +576,17 @@ def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
     fresh = make_ws("moved")
     fresh_db = KvgitSessionDb(fresh, db_path=str(tmp_path / "agno"))
     before = len(list(fresh.history()))
-    exported["session_id"] = "moved"
-    fresh_db.seed(AgentSession.from_dict(exported))
+    # the exported record still names its source session; seed binds it
+    # to the branch it lands in
+    seeded = fresh_db.seed(AgentSession.from_dict(exported))
 
+    assert seeded.session_id == "moved"
     assert len(list(fresh.history())) == before + 1
     assert not fresh.dirty
-    assert [r.run_id for r in fresh_db.get_session("moved").runs] == [
-        r["run_id"] for r in exported["runs"]
-    ]
+    moved = fresh_db.get_session("moved")
+    assert [r.run_id for r in moved.runs] == [r["run_id"] for r in exported["runs"]]
+    assert all(r.session_id == "moved" for r in moved.runs)
+    assert fresh_db.get_session(ws.session) is None  # the old id names nothing here
     with pytest.raises(NotSupportedError, match="already holds"):
         fresh_db.seed(AgentSession.from_dict(exported))
 

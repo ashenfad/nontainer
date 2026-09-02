@@ -159,9 +159,17 @@ class KvgitSessionDb(JsonDb):
         Neither is one new run on the branch's history, so neither can
         pass ``upsert_session``'s guard. Seeding is allowed only where
         that guard has nothing to protect — a branch with no runs — and
-        commits so a fresh open of the branch sees the conversation."""
+        commits so a fresh open of the branch sees the conversation.
+
+        The session lands under THIS branch's id, whatever id it
+        carried where it came from: a branch holds the session named
+        after it, and an agent opened on ``session_id=ws.session`` must
+        find what was imported. The runs are re-bound the same way."""
         data = session.to_dict()
-        runs = [dict(run) for run in (data.get("runs") or [])]
+        data["session_id"] = self._ws.session
+        runs = [
+            dict(run, session_id=self._ws.session) for run in (data.get("runs") or [])
+        ]
         run_ids = [str(run.get("run_id")) for run in runs]
         if any(not rid or rid == "None" for rid in run_ids):
             raise WorkspaceError(
@@ -194,7 +202,7 @@ class KvgitSessionDb(JsonDb):
             out.pop("run_ids", None)
             out["runs"] = runs or None
             return out
-        return session
+        return AgentSession.from_dict({**stored, "runs": runs or None})
 
     # -- keys ----------------------------------------------------------
 
