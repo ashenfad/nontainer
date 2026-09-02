@@ -197,7 +197,9 @@ class KvgitSessionDb(JsonDb):
     ) -> Any:
         """The branch's session when the id matches, else None.
 
-        ``runs_limit`` (newer agno) trims to the most recent N runs."""
+        A ``session_type`` that is not the agent one finds nothing;
+        ``runs_limit``, where agno passes it, trims the answer to the
+        most recent N runs."""
         record = self._record()
         if record is None or not self._matches(
             record, session_id=session_id, user_id=user_id, session_type=session_type
@@ -344,7 +346,7 @@ class KvgitSessionDb(JsonDb):
         if not deserialize:
             out = dict(stored)
             out.pop("run_ids", None)
-            out["runs"] = runs
+            out["runs"] = runs or None
             return out
         return session
 
