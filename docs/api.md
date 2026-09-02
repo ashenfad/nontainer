@@ -615,6 +615,17 @@ it with an agent whose `session_id` is the fork name. `"fresh"` drops
 the run keys: a clean chat over the forked files. Rewind first to
 branch from any checkpoint with the conversation as it was there.
 
+Driving the fork is the same three constructions over the child:
+
+```python
+db2 = KvgitSessionDb(child, db_path="/var/agno")
+tk2 = WorkspaceTools(child, checkpoint="turn", session_db=db2)
+agent2 = Agent(model=..., db=db2, session_id=child.session, tools=[tk2])
+```
+
+kvgit refuses to fork a branch with staged changes, so fork between
+turns; in per-turn mode that is exactly when the workspace is clean.
+
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
 ```python
