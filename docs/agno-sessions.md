@@ -121,6 +121,16 @@ agno may also upsert the session before the first run (creating the
 record). That write carries no run, so it does not commit; it is
 staged and rides into the turn's commit.
 
+One commit per turn is a preference, not a requirement. It keeps
+the "a commit is a turn" invariant that `rollback(steps=)` and
+`history()` lean on, and it costs nothing when the db is the
+trigger. If that proves awkward in practice, the acceptable fallback
+is the post hook committing files and the db committing the
+conversation as a second commit, with the first stamped
+`info={"tool": "turn", "partial": True}` so history consumers can
+skip it. That fallback is what the two-commit shape costs: step
+counts off by one unless callers skip partials.
+
 Under `checkpoint="call"` every mutating tool call still commits,
 and the db commits its own trailing write, so the head at the next
 user message includes the conversation.
