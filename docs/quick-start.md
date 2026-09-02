@@ -173,9 +173,11 @@ child = fork_session(ws, "what-if")            # files + chat, O(1)
 One commit per turn then holds files, `cache`, cwd and the run agno
 just persisted; `ws.restore()` rewinds all four and `fork_session()`
 branches all four. Drive the fork with the same three objects built
-over `child`. The reasoning, and what agno's own `fork_session` does
-over this db (nothing), are in [agno-sessions.md](agno-sessions.md);
-the shapes are in the [API reference](api.md).
+over `child`. When agno's cross-session features matter — its
+past-sessions tool, AgentOS, its own `fork_session` — use
+`KvgitStoreDb` over the whole store instead of a db per workspace.
+The reasoning is in [agno-sessions.md](agno-sessions.md); the shapes
+are in the [API reference](api.md).
 
 Tool exposure is automatic: a plain python environment gets ONE
 `terminal` tool (with a `python` builtin); an augmented one (cache or

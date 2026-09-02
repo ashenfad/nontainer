@@ -181,21 +181,75 @@ child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
 
 which does `ws.fork(name)` and then, in the fork, rewrites one key:
 `__agno__/session` gets `session_id = name` and
-`forked_from_session_id = <parent session id>` (agno's own lineage
-field, so tooling that reads it stays honest). With
+`session_data["forked_from_session_id"] = <parent session id>`,
+which is where agno keeps fork lineage, so agno's own readers find
+it and it rides along on every later upsert. With
 `conversation="fresh"` the run keys are deleted and `run_ids`
 cleared, giving a clean chat over the forked files. Run ids are
 left as they are: agno mints fresh ones on its own fork only to
 avoid collisions inside a shared db, and branches never share one.
 
-agno's `Agent.fork_session` cannot be used over this db. It
+agno's `Agent.fork_session` cannot be used over a per-branch db. It
 deep-copies every run into a *new session id through the same db*,
 which assumes one db holding many sessions. The single-session
 guard above turns that into a `NotSupportedError` whose message
-names `fork_session(ws, ...)`.
+names `fork_session(ws, ...)`. Over the store-level db below it
+works, because the store can create the branch.
 
 Rewind-then-fork branches from any checkpoint with the conversation
 as it was at that checkpoint.
+
+## The store-level db
+
+A `KvgitSessionDb` is a view over one branch, which is the right
+building block and a narrower object than agno expects a db to be.
+`KvgitStoreDb` is the agno-shaped face over it: one db per kvgit
+store, one branch per session, built from the store path and the
+embedder's `open(session_id) -> Workspace`.
+
+```python
+from nontainer.adapters.agno_db import KvgitStoreDb
+
+db = KvgitStoreDb(store, open=registry.open, db_path="/var/agno")
+ws = registry.open("chat-42")
+tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+agent = Agent(model=..., db=db, session_id="chat-42", tools=[tk])
+```
+
+`open` must hand back the *live* workspace for a session that is
+open — the one its toolkit writes through, since a second
+`Workspace` over the same branch would split a turn across two
+staging buffers — and resume or create the branch for one that is
+not. The toolkit checks this through the db's `owns(workspace)`.
+Every session call is routed to a per-branch view over that
+workspace, so the commit trigger and the guards are unchanged. The
+store adds:
+
+- **Listing.** `get_sessions` reads the session key at every
+  branch's committed head, without opening the branch, then filters,
+  sorts and paginates. agno's `search_past_sessions` tool and the
+  AgentOS session routers see every session in the store; with a
+  store per user, that is the user's sessions. Runs are read only for
+  the page returned. A turn in flight in an open session shows once
+  its commit lands.
+- **agno's own fork.** `Agent.fork_session` writes a session under a
+  new id whose `session_data["forked_from_session_id"]` names the
+  parent. The store forks the parent's branch (files, cache, cwd, in
+  one kvgit operation) and seeds agno's copy of the runs into it,
+  under agno's fresh run ids. The files are shared by hash; the
+  conversation copy is agno's, so it is not. `fork_session(ws, name)`
+  remains the O(1) form.
+- **Nothing created by a read.** `get_session` for an id with no
+  branch returns `None`. A write to such an id opens it through the
+  embedder.
+
+`delete_session` clears a branch's conversation and leaves the
+branch; a branch's life belongs to the embedder. The inherited
+tables at `db_path` are shared by every session, which is what agno
+expects of memories and metrics.
+
+The store path is the same `store=` the embedder passes to
+`workspace()`; the kvgit store is its `kvgit/` subdirectory.
 
 ## agno assumptions this rides on
 
@@ -212,7 +266,10 @@ add the session-db tests so a bump re-checks them.
   question under the same name.
 - `AgentSession.to_dict()` emits `runs` as a list of dicts with
   `run_id`; `AgentSession.from_dict` accepts the same. `RunOutput`
-  carries `forked_from_session_id`.
+  carries `forked_from_session_id`; a forked session carries its
+  parent in `session_data["forked_from_session_id"]`, and
+  `Agent.fork_session` copies runs under fresh ids into a new
+  session id through the same db.
 - `Agent.cache_session` defaults to `False`.
 - `JsonDb.__init__(db_path=..., session_table=..., ...)` and that
   every non-session table goes through the inherited implementation
@@ -238,14 +295,10 @@ add the session-db tests so a bump re-checks them.
 - The app `db` host object is unaffected. External state has no
   history, on purpose.
 - No attempt to version user memories or any cross-session table.
-- No cross-session listing. agno's `get_sessions` is its "all of a
-  user's sessions" call, and this db can only answer with its own
-  branch, so agno's session-history tools, the AgentOS session
-  routers, and the chat-interface adapters see one session through
-  it. Listing sessions is the embedder's registry's job here, since
-  the embedder owns the workspaces. If agno's listing features are
-  wanted, the fix is a store-level helper that reads the session key
-  at each branch head, not a multi-session db.
+- A per-branch `KvgitSessionDb` lists one session. agno's
+  `get_sessions` is its "all of a user's sessions" call, and a view
+  over one branch can only answer with that branch. Use
+  `KvgitStoreDb` where agno's cross-session features matter.
 
 ## Tests
 
@@ -258,8 +311,12 @@ Against a real `Agent` with a scripted model (no LLM key):
 - `fork_session(..., conversation="inherit")` produces a branch whose
   session id is the fork's and whose runs equal the parent's at that
   commit; `"fresh"` produces an empty run list over the same files;
-- `Agent.fork_session()` over the db writes nothing (the guard
-  raises inside the db; agno logs and swallows it);
+- `Agent.fork_session()` over a per-branch db writes nothing (the
+  guard raises inside the db; agno logs and swallows it); over the
+  store db it forks the parent's branch and seeds the copied runs;
+- the store db lists every branch, filters by user, sorts and
+  paginates, reads committed heads without opening a workspace, and
+  agno's `search_past_sessions` sees the other sessions through it;
 - a team session raises `NotSupportedError`;
 - an upsert whose prior runs are not the branch's runs (the
   `cache_session=True` shape: restore, then a run from a stale
