@@ -93,6 +93,10 @@ pitch; the pitch is the *workspace*.
 
 ## Later / maybe
 
+- **agno sessions in the workspace** — the conversation stored as
+  per-run keys beside files and cache, so one commit holds the whole
+  turn and rewind/fork cover memory. Designed in
+  [agno-sessions.md](agno-sessions.md); not yet implemented.
 - **run-ts** — a Node sidecar wrapping
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,
   bridged over an RPC filesystem. The only piece that needs Node;
