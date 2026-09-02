@@ -114,6 +114,14 @@ class KvgitSessionDb(JsonDb):
 
     Only ``AgentSession`` is supported; team and workflow sessions
     raise. Give those their own db.
+
+    **What sees one session through this.** agno's run loop never
+    lists sessions, so persisting, loading and rewinding a conversation
+    are unaffected. The features that do list — the opt-in
+    ``search_past_sessions`` tool and the AgentOS session routers —
+    get this branch's one session. Listing a user's sessions is the
+    embedder's registry's job here; a store-level helper over the
+    branches is the fix if those features are wanted.
     """
 
     def __init__(
