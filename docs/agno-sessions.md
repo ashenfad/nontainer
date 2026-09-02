@@ -238,6 +238,14 @@ add the session-db tests so a bump re-checks them.
 - The app `db` host object is unaffected. External state has no
   history, on purpose.
 - No attempt to version user memories or any cross-session table.
+- No cross-session listing. agno's `get_sessions` is its "all of a
+  user's sessions" call, and this db can only answer with its own
+  branch, so agno's session-history tools, the AgentOS session
+  routers, and the chat-interface adapters see one session through
+  it. Listing sessions is the embedder's registry's job here, since
+  the embedder owns the workspaces. If agno's listing features are
+  wanted, the fix is a store-level helper that reads the session key
+  at each branch head, not a multi-session db.
 
 ## Tests
 
