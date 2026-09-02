@@ -603,9 +603,11 @@ use `KvgitStoreDb` below.
 
 **Import.** `db.seed(session)` writes a whole `AgentSession` into a
 branch that holds no runs yet and commits it — the path for moving an
-existing conversation out of another agno db. It refuses a branch that
-already holds runs, which is what keeps the rewind guard meaningful
-everywhere else.
+existing conversation out of another agno db. The session and its runs
+land under the branch's own id, whatever id they carried at the source,
+so an agent opened on `session_id=ws.session` finds them. It refuses a
+branch that already holds runs, which is what keeps the rewind guard
+meaningful everywhere else.
 
 **Rewind.** Leave `Agent.cache_session` at its default (`False`): agno
 then re-reads the session every run, so a restore needs no invalidation.
