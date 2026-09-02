@@ -94,19 +94,21 @@ branch to plain files) stays trivial. `AgentSession.from_dict` /
 
 ## The commit trigger
 
-`WorkspaceTools(checkpoint="session")` is a third mode beside
-`"call"` and `"turn"`:
+The two checkpoint modes stay as they are. What changes is what
+fires the per-turn commit when a session db is wired in.
 
-- the toolkit does **not** commit on tool calls and registers no
-  post hook;
-- `KvgitSessionDb.upsert_session` writes its keys and then, if the
-  upsert added or changed a run, calls `ws.checkpoint(info={"tool":
-  "session"})`.
+`WorkspaceTools(checkpoint="turn")` means one commit per turn. Today
+that commit comes from the `end_turn` post hook. With a
+`KvgitSessionDb` on the same workspace it comes from the db instead:
+`upsert_session` writes its keys and then, if the upsert added or
+changed a run, calls `ws.checkpoint(info={"tool": "turn"})`. The
+post hook becomes a no-op on such a workspace, so wiring it stays
+harmless and existing embedder code keeps working.
 
 So the turn's files, cache, cwd, and conversation land in one
 commit, and the commit happens at the moment agno persists the run.
 
-Why the db and not a post hook: in agno's sync run loop, post hooks
+Why the db and not the hook: in agno's sync run loop, post hooks
 execute before the session is persisted. A hook-driven commit would
 capture the turn's files but not its conversation, and the
 conversation would ride into the *next* turn's first commit — which
@@ -119,12 +121,9 @@ agno may also upsert the session before the first run (creating the
 record). That write carries no run, so it does not commit; it is
 staged and rides into the turn's commit.
 
-Under `checkpoint="call"` the db still commits its own trailing
-write, so the head at the next user message includes the
-conversation. Under `checkpoint="turn"` the post hook commits files
-and the db commits the conversation as a second commit; that mode
-keeps working but is not the point of this feature, and the docs
-steer session-db users to `"session"`.
+Under `checkpoint="call"` every mutating tool call still commits,
+and the db commits its own trailing write, so the head at the next
+user message includes the conversation.
 
 ## Rewind
 
@@ -133,11 +132,17 @@ agno reads the session from the db at the start of every run
 (`Agent.cache_session` defaults to `False`), so the next run sees
 the rewound conversation with no invalidation step.
 
-`cache_session=True` breaks this: agno would append to a stale
-in-memory run list and write the rewound turns back. The db cannot
-see the agent, so it cannot enforce this; the adapter docs state it
-as a requirement, and the studio-style embedder that rebuilds the
-agent after a restore is safe either way.
+`cache_session=True` would break this: agno keeps the loaded session
+object in memory across runs, so after a restore it would append to
+the stale, pre-rewind run list and write the rewound turns back.
+
+The db catches that. agno's upsert hands over the whole session, run
+list included, so the db compares the incoming prior runs with the
+branch's `run_ids`. When the incoming list carries runs the branch
+does not hold, the in-memory session is stale, and the upsert raises
+with a message naming `cache_session`. Nothing is written. The same
+guard catches any other path that would write a conversation the
+branch's history does not lead to.
 
 A crash mid-turn loses the staged conversation and the staged files
 together. That is the correct outcome: both or neither.
@@ -221,5 +226,8 @@ Against a real `Agent` with a scripted model (no LLM key):
   commit; `"fresh"` produces an empty run list over the same files;
 - `Agent.fork_session()` over the db raises `NotSupportedError`;
 - a team session raises `NotSupportedError`;
+- an upsert whose prior runs are not the branch's runs (the
+  `cache_session=True` shape: restore, then a run from a stale
+  in-memory session) raises and writes nothing;
 - on 3.x, `get_tool_results_for_session` returns the tool results
   from the run keys.
