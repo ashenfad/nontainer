@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`KvgitSessionDb.seed(session)`** — import a whole `AgentSession`
+  into a branch that holds no runs yet, committed. The path for moving
+  an existing conversation out of another agno db (a studio migrating
+  its chat store, say). Refuses a branch that already holds runs, so the
+  rewind guard keeps its meaning. It was the private step behind the
+  store's handling of agno's own fork; now it is the documented import.
+
 ## 0.5.0 - 2026-09-02
 
 ### Changed

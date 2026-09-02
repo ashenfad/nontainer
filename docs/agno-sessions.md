@@ -161,6 +161,12 @@ stale, and the upsert raises with a message naming `cache_session`.
 Nothing is written. The same guard catches any other path that would
 write a conversation the branch's history does not lead to.
 
+A conversation that already exists elsewhere — a session being moved
+out of another agno db — is not one new run either. `seed(session)`
+imports a whole session into a branch that holds no runs and commits
+it; it refuses a branch that holds any, so the guard above keeps its
+meaning everywhere a conversation is live.
+
 A tail rather than the whole list because agno 3.x reads the session
 with a run limit and writes back only the most recent runs plus the
 new one. The branch keeps its full list on such a write; a limited
