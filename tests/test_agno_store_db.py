@@ -5,6 +5,8 @@ store; the db routes each session call to a view over the live
 workspace and lists sessions by reading branch heads.
 """
 
+import importlib.util
+
 import pytest
 
 from nontainer import workspace
@@ -142,6 +144,10 @@ def test_listing_reads_committed_heads_without_opening(registry, tmp_path):
     assert registry.live == {}  # listing opened no workspace
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("agno.agent._default_tools") is None,
+    reason="the past-sessions tool arrived after the declared agno floor",
+)
 def test_search_past_sessions_sees_the_other_sessions(registry, tmp_path):
     """agno's own tool, through the store: the current session is
     skipped and the others come back with previews."""
@@ -161,9 +167,27 @@ def test_search_past_sessions_sees_the_other_sessions(registry, tmp_path):
     assert [p["session_id"] for p in previews] == ["chat-1"]
 
 
+def test_listing_ignores_branches_that_only_inherit_a_record(registry, tmp_path):
+    """A plain Workspace.fork() — a published snapshot, say — carries the
+    parent's session key under the parent's id. It is not a session and
+    must not show up as a duplicate of its parent."""
+    db, ws, agent = build(registry, tmp_path, "chat-1")
+    run_turn(agent, write_turn("a.txt", "A"))
+    snapshot = ws.fork("snapshot-1")
+    registry.live["snapshot-1"] = snapshot
+
+    rows, total = db.get_sessions(deserialize=False)
+    assert total == 1 and [row["session_id"] for row in rows] == ["chat-1"]
+    assert db.get_session("snapshot-1") is None
+
+
 # -- fork ----------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not hasattr(Agent, "fork_session"),
+    reason="Agent.fork_session arrived after the declared agno floor",
+)
 def test_agno_fork_session_forks_the_files_and_copies_the_chat(registry, tmp_path):
     db, ws, agent = build(registry, tmp_path, "chat-1", user_id="ann")
     run_turn(agent, write_turn("a.txt", "A"))
@@ -232,6 +256,35 @@ def test_delete_clears_the_conversation_and_leaves_the_branch(registry, tmp_path
     assert ws.fs.read("a.txt") == b"A"
     assert "chat-1" in db._branches()
     assert db.delete_session("nope") is False
+
+    # committed, so the listing (committed heads) and a reopen agree
+    assert not ws.dirty
+    assert db.get_sessions() == []
+    registry.close()
+    assert db.get_session("chat-1") is None
+
+
+def test_rename_between_turns_commits_and_shows_in_the_listing(registry, tmp_path):
+    db, ws, agent = build(registry, tmp_path, "chat-1")
+    run_turn(agent, write_turn("a.txt", "A"))
+
+    db.rename_session("chat-1", None, "The plan")
+    assert not ws.dirty
+    rows, _ = db.get_sessions(deserialize=False)
+    assert rows[0]["session_data"]["session_name"] == "The plan"
+
+
+def test_rename_mid_turn_stays_staged(registry, tmp_path):
+    """A management write while a turn has staged work must not commit
+    that work as if the turn were done."""
+    db, ws, agent = build(registry, tmp_path, "chat-1")
+    run_turn(agent, write_turn("a.txt", "A"))
+    head = ws.head
+    ws.fs.write("in-flight.txt", b"...")
+    assert ws.dirty
+
+    db.rename_session("chat-1", None, "Mid-turn")
+    assert ws.dirty and ws.head == head
 
 
 def test_rename_routes_to_the_branch(registry, tmp_path):
