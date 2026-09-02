@@ -44,6 +44,12 @@ them as **one atomic commit** carrying `info` metadata (`{"tool":
   model). Cleaner history; a crash mid-turn loses that turn's staged
   work (kvgit staging is in-memory).
 
+Storing the agno session in the workspace moves the per-turn commit
+off that hook: the db fires it when agno persists the run, because post
+hooks run *before* that, and a hook-driven commit would hold the turn's
+files but leave its conversation for the next commit. See
+[agno-sessions.md](agno-sessions.md).
+
 Individual writes are deliberately *not* the unit: a handler that writes
 three files mid-request, then raises, should leave nothing behind. The
 staged buffer gives that atomicity for free, and high-tempo operational
@@ -93,10 +99,6 @@ pitch; the pitch is the *workspace*.
 
 ## Later / maybe
 
-- **agno sessions in the workspace** — the conversation stored as
-  per-run keys beside files and cache, so one commit holds the whole
-  turn and rewind/fork cover memory. Designed in
-  [agno-sessions.md](agno-sessions.md); not yet implemented.
 - **run-ts** — a Node sidecar wrapping
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,
   bridged over an RPC filesystem. The only piece that needs Node;

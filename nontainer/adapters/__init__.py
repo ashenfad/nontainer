@@ -2,6 +2,9 @@
 
 - ``nontainer.adapters.agno`` — ``WorkspaceTools`` (agno Toolkit);
   requires the ``[agno]`` extra.
+- ``nontainer.adapters.agno_db`` — ``KvgitSessionDb``, an agno db that
+  keeps the conversation in the workspace branch beside the files, so
+  one commit holds the whole turn and rewind/fork cover memory too.
 - ``nontainer.adapters.mcp`` — FastMCP server; requires the ``[mcp]``
   extra. Run via ``python -m nontainer.adapters.mcp``.
 

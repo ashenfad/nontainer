@@ -451,6 +451,7 @@ WorkspaceTools(
     tools: "auto" | "terminal" | "split" = "auto",
     apps: AppRuntime | None = None,     # adds the test_app tool
     checkpoint: "call" | "turn" = "call",
+    session_db: KvgitSessionDb | None = None,  # conversation in the branch
     terminal_primer: str | None = None, # host guidance → terminal tool
     python_primer: str | None = None,   # host guidance → run_python tool
     **toolkit_kwargs,
@@ -459,6 +460,8 @@ WorkspaceTools(
 # tk.end_turn into Agent(post_hooks=[...]). Crash mid-turn can lose
 # the turn's staged work; "call" trades chattier history for max
 # durability. Workspace.autocheckpoint is also publicly settable.
+# session_db: the db over this same workspace (see below). Naming it
+# makes end_turn a no-op — the db commits the turn instead.
 ```
 
 `"auto"`: plain python env → one `terminal` tool; cache or host
@@ -549,6 +552,74 @@ same on every executor: a VM guest serializes the object where it lives
 and sends a claim home, the in-process path serializes it here, and
 both produce the same binding, the same file, and the same
 `ui_problems` when the 8MB cap is hit.
+
+### agno sessions (`nontainer.adapters.agno_db`, `[agno]` extra)
+
+The agent's conversation stored in the workspace branch, so one commit
+holds the turn's files, `cache`, cwd **and** memory — `ws.restore()`
+rewinds all four, `fork_session()` branches all four.
+
+```python
+from nontainer.adapters.agno_db import KvgitSessionDb, fork_session
+
+ws = workspace("chat-42")
+db = KvgitSessionDb(ws, db_path="/var/agno")  # db_path: inherited tables
+tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk],
+              post_hooks=[tk.end_turn])
+```
+
+`KvgitSessionDb` is an agno `JsonDb` whose **sessions table** lives in
+the branch:
+
+| key | value |
+|---|---|
+| `__agno__/session` | session dict minus runs, plus ordered `run_ids` |
+| `__agno__/runs/<run_id>` | one run dict each |
+
+One key per run so kvgit shares every earlier run by hash; values are
+the JSON-shaped dicts agno hands over, never pickled agno objects.
+Every other `BaseDb` table (memories, metrics, traces, evals,
+knowledge) is inherited unchanged and writes to `db_path`: those are
+cross-session and must not version with one branch.
+
+**The commit trigger.** `upsert_session` writes its keys and then, when
+the upsert added or changed a run, checkpoints with `{"tool": "turn"}`
+— so the commit happens at the moment agno persists the run. This is
+why `session_db=` exists: agno runs post hooks *before* it persists the
+session, so `tk.end_turn` would commit the files without the
+conversation. With a session db wired, `end_turn` is a no-op and stays
+harmless to leave in `post_hooks`.
+
+**One session per workspace.** `get_session` answers only for the
+branch's session id, `get_sessions` returns at most one, and an upsert
+with any other id raises `NotSupportedError` naming `fork_session` —
+which is what stops agno's own `Agent.fork_session` (it copies runs
+into a *new* session id through the *same* db). Note that agno logs and
+swallows exceptions from `upsert_session`, so what the caller sees is
+that nothing was written. Team and workflow sessions raise too.
+
+**Rewind.** Leave `Agent.cache_session` at its default (`False`): agno
+then re-reads the session every run, so a restore needs no invalidation.
+With it on, the upsert whose prior runs are not exactly the branch's
+`run_ids` raises (naming `cache_session`) and writes nothing.
+
+```python
+child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
+```
+
+Returns the forked `Workspace`. The fork's session key is rewritten
+with `session_id = name` and `forked_from_session_id = <parent>`, and
+that rewrite is checkpointed, so the fork's head is consistent. Drive
+it with an agent whose `session_id` is the fork name. `"fresh"` drops
+the run keys: a clean chat over the forked files. Rewind first to
+branch from any checkpoint with the conversation as it was there.
+
+`get_tool_results_for_session(session_id, limit=None)` is reassembled
+from the run keys — rows of `result_id` (agno's `tool_call_id`),
+`run_id`, `tool_name`, `tool_args`, `result`, `created_at`, newest
+first. It is not the offloaded-payload index other backends keep under
+that name; agno's `offload_tool_results` store is not wired here.
 
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 

@@ -245,9 +245,8 @@ environment layer alone, offered to someone else's loop.
   model, commit granularity, tool exposure) and what's still ahead
 - [Apps design](docs/apps.md) -- handler contract, execution model,
   test_app, serving/threat model
-- [agno sessions](docs/agno-sessions.md) -- design for keeping the
-  agent's conversation in the workspace, so rewind and fork cover
-  memory too (not yet implemented)
+- [agno sessions](docs/agno-sessions.md) -- keeping the agent's
+  conversation in the workspace, so rewind and fork cover memory too
 - [Examples](examples/) -- live agno agents: a data analyst
   (`analyst.py`) and a build-and-verify web app (`webapp.py`)
 

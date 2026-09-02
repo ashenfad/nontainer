@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`nontainer.adapters.agno_db`** — the agno conversation stored in
+  the workspace branch, so one commit holds the turn's files, `cache`,
+  cwd *and* memory. `ws.restore()` rewinds all four together;
+  `fork_session()` branches all four together. The join an embedder
+  used to hand-maintain (stamp the workspace head onto each turn,
+  truncate agno's run list by hand, hope the two writes never diverge)
+  disappears: one store, one commit, one restore.
+
+  ```python
+  db = KvgitSessionDb(ws, db_path="/var/agno")
+  tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+  agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk])
+  ```
+
+  `KvgitSessionDb` is an agno `JsonDb` with the sessions table moved
+  into the branch, one key per run (`__agno__/runs/<run_id>`) plus a
+  small `__agno__/session` holding the ordered `run_ids`. One key per
+  run because kvgit dedups per key: a turn writes one new run key and
+  shares the hundred earlier runs by hash with every prior commit,
+  fork and branch, where a single conversation blob would rewrite
+  everything every turn. Values are the JSON-shaped dicts agno hands
+  over, so a branch never depends on agno's class layout. Every other
+  `BaseDb` table is inherited and stays on disk at `db_path` — user
+  memories and metrics are cross-session and must not version with one
+  branch.
+
+  **The per-turn commit moves to the db.** `upsert_session` fires it
+  once it has written a new or changed run. It cannot be the
+  `end_turn` post hook: agno runs post hooks *before* it persists the
+  session, so a hook-driven commit would capture the turn's files and
+  leave its conversation to ride into the next turn's commit — the
+  exact files-versus-memory divergence this exists to remove.
+
+- **`WorkspaceTools(..., session_db=db)`** — names the db that owns
+  the turn commit, which makes `tk.end_turn` a no-op so wiring the
+  hook stays harmless and existing embedder code keeps working. Wired
+  explicitly rather than sniffed off the workspace, so the call site
+  shows which object commits; a db built over a different workspace is
+  refused.
+
+- **`fork_session(ws, name, conversation="inherit" | "fresh")`** —
+  forking is a workspace verb here. It does `ws.fork(name)`, rewrites
+  the fork's session key with its own `session_id` and
+  `forked_from_session_id`, and checkpoints that rewrite.
+  `"fresh"` drops the run keys for a clean chat over the forked files.
+  agno's own `Agent.fork_session` copies runs into a new session id
+  through the *same* db, which assumes one db holding many sessions;
+  the single-session guard refuses that write (agno logs and swallows
+  the error, so what the caller sees is that nothing was written).
+
+  Leave `Agent.cache_session` at its default: agno then re-reads the
+  session every run, so `ws.restore()` needs no invalidation step.
+  With it on, an upsert whose prior runs are not exactly the branch's
+  `run_ids` raises and writes nothing, rather than quietly writing the
+  rewound turns back.
+
 ## 0.4.1 - 2026-28-30
 
 ### Fixed
