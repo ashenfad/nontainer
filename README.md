@@ -176,9 +176,26 @@ fidelity: C extensions, real subprocesses, sqlite on real files,
 memory-mapped parquet -- the workloads the in-process emulation serves
 worst.
 
+`PythonConfig` is honoured or refused on a VM rung, never narrowed.
+The guest has **no network interface at all**, so `network=False` holds
+by construction and `network=True` (on the config or a `ModuleGrant`)
+raises at open rather than pretending; `stdlib=False` raises for the
+same reason, and any `isolation` is exceeded by the VM. Module grants
+become the guest image's package list, pinned to the host's installed
+versions, so what the agent may import is the same set on both rungs
+(plus the guest's stdlib and those packages' own dependencies); a
+granted local module with no distribution raises, and
+`vm={"packages_from_grants": False}` opts a custom image out. What a
+real machine changes rather than restricts -- stderr merged into
+stdout, no tick counts, results crossing as data rather than live
+objects, cache reads of guest-written keys as bytes, no injected
+builtins in real bash -- is listed in the executor's docstring.
+
 Note the last row: `backend="subprocess"` is real bash and real Python
 with **no containment at all** -- agent code runs as you, with your
-network and your files. It buys fidelity, not a boundary, so it's
+network and your files. It enforces none of `PythonConfig`'s policy and
+refuses only an explicit `isolation` above `"none"`, which is an ask
+for containment it cannot give. It buys fidelity, not a boundary, so it's
 opt-in rather than the default: it's the only backend that needs no
 hypervisor, which makes it the dev/CI floor. If you want policy gating,
 crash containment, or kernel defense-in-depth without a VM, use
