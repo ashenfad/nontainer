@@ -92,7 +92,15 @@ class WorkspaceTools(Toolkit):
         Tolerant signature so it slots into agno ``post_hooks``; also
         callable directly by embedders after ``agent.run(...)``.
         Returns the turn's commit id, or None when nothing changed or
-        the workspace is unversioned."""
+        the workspace is unversioned.
+
+        A no-op when the toolkit was given a ``session_db``: that db
+        commits the turn itself, at the moment agno persists the run,
+        so the conversation lands in the same commit as the files.
+        Post hooks run BEFORE the session is persisted, so committing
+        here would leave the conversation for the next turn's commit."""
+        if self._session_db is not None:
+            return None
         ws = self._ws
         if ws.caps.versioned and ws.dirty:
             with self._lock:
@@ -106,6 +114,7 @@ class WorkspaceTools(Toolkit):
         tools: ToolsMode = "auto",
         apps: Any = None,
         checkpoint: str = "call",
+        session_db: Any = None,
         terminal_primer: str | None = None,
         python_primer: str | None = None,
         vision: bool = True,
@@ -132,9 +141,25 @@ class WorkspaceTools(Toolkit):
             agent = Agent(model=..., tools=[tk], post_hooks=[tk.end_turn])
 
         Turn mode defers commits to the hook, so a crash mid-turn can
-        lose that turn's staged work (kvgit staging is in-memory)."""
+        lose that turn's staged work (kvgit staging is in-memory).
+
+        ``session_db``: a ``nontainer.adapters.agno_db.KvgitSessionDb``
+        over the SAME workspace, when the conversation is stored in the
+        branch too. Naming it here is what makes :meth:`end_turn` stand
+        down — the db commits the turn when agno persists the run, so
+        files and conversation land in one commit — and it is wired
+        explicitly rather than sniffed off the workspace so a reader of
+        the call site can see which object owns the commit."""
         self._ws = workspace
         self._lock = threading.Lock()
+        if session_db is not None and getattr(session_db, "workspace", None) is not (
+            workspace
+        ):
+            raise ValueError(
+                "session_db must be built over this same workspace; it holds "
+                "the conversation in the branch the tools write to."
+            )
+        self._session_db = session_db
         if checkpoint not in ("call", "turn"):
             raise ValueError(f"checkpoint must be 'call' or 'turn': {checkpoint!r}")
         self._turn_checkpoints = checkpoint == "turn"
