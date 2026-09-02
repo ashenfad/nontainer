@@ -251,10 +251,15 @@ class KvgitSessionDb(JsonDb):
         if matched and page is not None and page > 1:
             matched = False
 
-        found = [self._assembled(record)] if matched else []  # type: ignore[arg-type]
+        # agno's interface returns a list (with a count when raw dicts are
+        # asked for); this branch holds one session, so the list is empty
+        # or that one.
+        if not matched:
+            return ([], 0) if not deserialize else []
+        data = self._assembled(record)  # type: ignore[arg-type]
         if not deserialize:
-            return found, len(found)
-        return [AgentSession.from_dict(data) for data in found]
+            return [data], 1
+        return [AgentSession.from_dict(data)]
 
     def upsert_session(
         self, session: Session, deserialize: bool | None = True, **_: Any
