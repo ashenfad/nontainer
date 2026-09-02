@@ -144,21 +144,23 @@ class WorkspaceTools(Toolkit):
         lose that turn's staged work (kvgit staging is in-memory).
 
         ``session_db``: a ``nontainer.adapters.agno_db.KvgitSessionDb``
-        over the SAME workspace, when the conversation is stored in the
-        branch too. Naming it here is what makes :meth:`end_turn` stand
-        down — the db commits the turn when agno persists the run, so
-        files and conversation land in one commit — and it is wired
-        explicitly rather than sniffed off the workspace so a reader of
-        the call site can see which object owns the commit."""
+        over the SAME workspace, or a ``KvgitStoreDb`` whose ``open``
+        hands back this workspace for its session, when the conversation
+        is stored in the branch too. Naming it here is what makes
+        :meth:`end_turn` stand down — the db commits the turn when agno
+        persists the run, so files and conversation land in one commit —
+        and it is wired explicitly rather than sniffed off the workspace
+        so a reader of the call site can see which object owns the
+        commit. The db's ``owns(workspace)`` is the check."""
         self._ws = workspace
         self._lock = threading.Lock()
-        if session_db is not None and getattr(session_db, "workspace", None) is not (
-            workspace
-        ):
-            raise ValueError(
-                "session_db must be built over this same workspace; it holds "
-                "the conversation in the branch the tools write to."
-            )
+        if session_db is not None:
+            owns = getattr(session_db, "owns", None)
+            if owns is None or not owns(workspace):
+                raise ValueError(
+                    "session_db must cover this same workspace; it holds the "
+                    "conversation in the branch the tools write to."
+                )
         self._session_db = session_db
         if checkpoint not in ("call", "turn"):
             raise ValueError(f"checkpoint must be 'call' or 'turn': {checkpoint!r}")

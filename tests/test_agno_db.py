@@ -400,7 +400,10 @@ def test_fork_session_inherits_the_conversation(tmp_path):
     session = child_db.get_session("what-if")
     assert session is not None
     assert [r.run_id for r in session.runs] == parent_runs
-    assert kv_of(child)[SESSION_KEY]["forked_from_session_id"] == ws.session
+    assert (
+        kv_of(child)[SESSION_KEY]["session_data"]["forked_from_session_id"]
+        == ws.session
+    )
     assert child.fs.read("a.txt") == b"A" and child.fs.read("b.txt") == b"B"
     # the parent is untouched
     assert kv_of(ws)[SESSION_KEY]["session_id"] == ws.session
@@ -425,8 +428,8 @@ def test_fork_session_fresh_keeps_the_files_and_drops_the_chat(tmp_path):
 
 
 def test_the_fork_marker_survives_the_next_turn(tmp_path):
-    """agno's session object has no lineage field, so the first upsert
-    after a fork must not erase it."""
+    """The lineage lives in session_data, which agno round-trips, so the
+    first upsert after a fork carries it rather than erasing it."""
     ws, db, tk, agent = build(tmp_path)
     run_turn(agent, write_turn("a.txt", "A"))
     child = fork_session(ws, "branch-b")
@@ -445,7 +448,7 @@ def test_the_fork_marker_survives_the_next_turn(tmp_path):
     run_turn(child_agent, write_turn("c.txt", "C"))
 
     record = kv_of(child)[SESSION_KEY]
-    assert record["forked_from_session_id"] == ws.session
+    assert record["session_data"]["forked_from_session_id"] == ws.session
     assert record["session_id"] == "branch-b"
     assert len(child_db.get_session("branch-b").runs) == 2
     child.close()

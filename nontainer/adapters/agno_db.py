@@ -40,6 +40,8 @@ branch. Session state versions, world state does not.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from agno.db.json import JsonDb
@@ -119,9 +121,8 @@ class KvgitSessionDb(JsonDb):
     lists sessions, so persisting, loading and rewinding a conversation
     are unaffected. The features that do list — the opt-in
     ``search_past_sessions`` tool and the AgentOS session routers —
-    get this branch's one session. Listing a user's sessions is the
-    embedder's registry's job here; a store-level helper over the
-    branches is the fix if those features are wanted.
+    get this branch's one session. ``KvgitStoreDb`` is the db over the
+    whole store for embedders that want those features.
     """
 
     def __init__(
@@ -141,6 +142,57 @@ class KvgitSessionDb(JsonDb):
     def workspace(self) -> Workspace:
         """The branch this db is bound to."""
         return self._ws
+
+    def owns(self, workspace: Workspace) -> bool:
+        """Whether this db commits the turns of ``workspace`` — what
+        ``WorkspaceTools(session_db=...)`` checks before standing its
+        own turn hook down."""
+        return workspace is self._ws
+
+    def _seed(self, session: AgentSession, *, deserialize: bool | None = True) -> Any:
+        """Write a whole session into a branch that holds no runs yet.
+
+        The store's answer to agno's own ``Agent.fork_session``: agno
+        hands over a complete copy of the parent's runs under fresh ids,
+        which is not one new run on the branch's history and so cannot
+        pass ``upsert_session``'s guard. Seeding is allowed only where
+        that guard has nothing to protect — a branch with no runs — and
+        commits so a fresh open of the branch sees the conversation."""
+        data = session.to_dict()
+        runs = [dict(run) for run in (data.get("runs") or [])]
+        run_ids = [str(run.get("run_id")) for run in runs]
+        if any(not rid or rid == "None" for rid in run_ids):
+            raise WorkspaceError(
+                "A run without a run_id cannot be stored: runs are "
+                "addressed by id in the workspace."
+            )
+        with self._ws.lock:
+            record = self._record()
+            if record is not None and record.get("run_ids"):
+                raise NotSupportedError(
+                    "Refusing to seed a branch that already holds a "
+                    "conversation; seeding is for a branch with no runs."
+                )
+            kv = _kv(self._ws)
+            for run, rid in zip(runs, run_ids):
+                kv[RUN_PREFIX + rid] = run
+            now = int(time.time())
+            stored = {k: v for k, v in data.items() if k != "runs"}
+            stored["session_type"] = "agent"
+            stored["run_ids"] = run_ids
+            stored["created_at"] = data.get("created_at") or now
+            stored["updated_at"] = now
+            kv[SESSION_KEY] = stored
+            if self._ws.caps.versioned and self._ws.dirty:
+                self._ws.checkpoint(
+                    info={"tool": "fork_session", "conversation": "copy"}
+                )
+        if not deserialize:
+            out = dict(stored)
+            out.pop("run_ids", None)
+            out["runs"] = runs or None
+            return out
+        return session
 
     # -- keys ----------------------------------------------------------
 
@@ -353,12 +405,6 @@ class KvgitSessionDb(JsonDb):
             else:
                 stored["created_at"] = record.get("created_at") or now
                 stored["updated_at"] = now
-                # agno's session object has no lineage field, so a plain
-                # copy of what it hands over would erase the fork marker
-                # on the first turn after a fork.
-                lineage = record.get("forked_from_session_id")
-                if lineage:
-                    stored["forked_from_session_id"] = lineage
             kv[SESSION_KEY] = stored
 
             if changed and self._ws.caps.versioned:
@@ -479,8 +525,10 @@ def fork_session(
     Forking is a workspace verb here, not an agno one. ``ws.fork(name)``
     gives the new branch every key; this then rewrites
     ``__agno__/session`` so the fork carries its own ``session_id``
-    (the branch name) and records ``forked_from_session_id``, and
-    checkpoints that rewrite so the fork's head is consistent.
+    (the branch name) and records the parent in
+    ``session_data["forked_from_session_id"]``, where agno keeps fork
+    lineage, and checkpoints that rewrite so the fork's head is
+    consistent.
 
     ``conversation="inherit"`` keeps the parent's runs — the branch is
     the same chat over its own files from here on. ``"fresh"`` deletes
@@ -507,7 +555,11 @@ def fork_session(
             record = dict(record)
             record["session_id"] = name
             if parent_id:
-                record["forked_from_session_id"] = parent_id
+                # Where agno keeps fork lineage, so agno's own readers
+                # find it and the field rides along on every upsert.
+                session_data = dict(record.get("session_data") or {})
+                session_data["forked_from_session_id"] = parent_id
+                record["session_data"] = session_data
             if conversation == "fresh":
                 for key in _run_keys(kv):
                     del kv[key]
@@ -518,3 +570,279 @@ def fork_session(
                 info={"tool": "fork_session", "conversation": conversation}
             )
     return child
+
+
+class KvgitStoreDb(JsonDb):
+    """agno ``BaseDb`` over a whole kvgit store: one branch per session.
+
+    The embedder owns the workspaces, so this db is built from the
+    store path — the same ``store=`` the embedder passes to
+    ``workspace()`` — plus its ``open(session_id) -> Workspace``.
+    ``open`` must return the LIVE workspace for a session that is open
+    (the one its toolkit writes through — a second ``Workspace`` over
+    the same branch would split the turn across two staging buffers)
+    and resume or create the branch for one that is not. Every session
+    call is routed to a ``KvgitSessionDb`` view over that workspace, so
+    the commit trigger and the guards are the view's. What the store
+    adds:
+
+    - ``get_sessions`` lists the store's branches, reading each
+      committed head without opening it. agno's cross-session features
+      — ``search_past_sessions``, the AgentOS session routers — see
+      every session in the store; with a store per user, that is the
+      user's sessions.
+    - agno's own ``Agent.fork_session`` works. It writes a session
+      under a new id whose ``session_data["forked_from_session_id"]``
+      names the parent; the store forks the parent's branch (files,
+      cache, cwd, in one kvgit operation) and seeds agno's copy of the
+      runs into it. That copy is agno's — every run under a fresh id —
+      so the conversation is not shared by hash the way
+      ``fork_session(ws, name)`` shares it. The files are.
+    - ``get_session`` for an id with no branch returns ``None`` and
+      creates nothing; a write to such an id opens it through the
+      embedder.
+
+    Listing reads committed heads, so a turn in flight in an open
+    session shows there once its commit lands. ``delete_session``
+    clears a branch's conversation and leaves the branch; the branch's
+    life belongs to the embedder (``delete_workspace``). Every other
+    ``BaseDb`` table is inherited from ``JsonDb`` and lives at
+    ``db_path``, shared across all sessions, which is what agno expects
+    of memories and metrics.
+    """
+
+    def __init__(
+        self,
+        store: str | Path,
+        *,
+        open: Callable[[str], Workspace],
+        db_path: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(db_path=db_path, **kwargs)
+        # The same ``store`` the embedder passes to ``workspace()``; the
+        # kvgit store lives in its ``kvgit/`` subdirectory.
+        self._store = Path(store).expanduser() / "kvgit"
+        self._open = open
+        self._view_kwargs: dict[str, Any] = {"db_path": db_path, **kwargs}
+        self._disk: Any = None
+        self._handle: Any = None
+
+    def owns(self, workspace: Workspace) -> bool:
+        """Whether this db commits the turns of ``workspace``: true when
+        the embedder's ``open`` hands back that very object for its
+        session, which is the live-instance contract above."""
+        return self._open(workspace.session) is workspace
+
+    # -- the store -----------------------------------------------------
+
+    def _branches(self) -> list[str]:
+        from kvgit.kv.disk import Disk
+        from kvgit.versioned.kv import VersionedKV
+
+        if self._disk is None:
+            self._store.mkdir(parents=True, exist_ok=True)
+            self._disk = Disk(str(self._store))
+        return VersionedKV.branches(self._disk)
+
+    def _peek(self, branch: str, key: str) -> Any:
+        """Read one key at a branch's committed head without opening the
+        branch as a workspace. The kvgit handle is opened on an existing
+        branch, since opening a name creates it; reads for other
+        branches go through ``peek`` and never switch."""
+        if self._handle is None:
+            import kvgit
+
+            if branch not in self._branches():
+                return None
+            self._handle = kvgit.store(
+                kind="disk", path=str(self._store), branch=branch
+            )
+        return self._handle.peek(key, branch=branch)
+
+    def _exists(self, session_id: str) -> bool:
+        return session_id in self._branches()
+
+    def _view(self, session_id: str) -> KvgitSessionDb:
+        return KvgitSessionDb(self._open(session_id), **self._view_kwargs)
+
+    # -- sessions ------------------------------------------------------
+
+    def get_session(
+        self,
+        session_id: str,
+        session_type: Any = None,
+        user_id: str | None = None,
+        deserialize: bool | None = True,
+        **kwargs: Any,
+    ) -> Any:
+        if not self._exists(session_id):
+            return None
+        return self._view(session_id).get_session(
+            session_id,
+            session_type=session_type,
+            user_id=user_id,
+            deserialize=deserialize,
+            **kwargs,
+        )
+
+    def get_sessions(
+        self,
+        session_type: Any = None,
+        user_id: str | None = None,
+        component_id: str | None = None,
+        session_name: str | None = None,
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
+        limit: int | None = None,
+        page: int | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        deserialize: bool | None = True,
+        **_: Any,
+    ) -> Any:
+        """Every session in the store that passes the filters, sorted
+        (``created_at`` or ``updated_at``, newest first unless asked
+        otherwise) and paginated. Runs are read only for the page
+        returned."""
+        matched: list[tuple[str, dict[str, Any]]] = []
+        for branch in self._branches():
+            record = self._peek(branch, SESSION_KEY)
+            if not isinstance(record, dict):
+                continue
+            if not KvgitSessionDb._matches(
+                record,
+                user_id=user_id,
+                session_type=session_type,
+                component_id=component_id,
+            ):
+                continue
+            if session_name is not None:
+                stored = (record.get("session_data") or {}).get("session_name") or ""
+                if session_name.lower() not in stored.lower():
+                    continue
+            created = record.get("created_at") or 0
+            if start_timestamp is not None and created < start_timestamp:
+                continue
+            if end_timestamp is not None and created > end_timestamp:
+                continue
+            matched.append((branch, record))
+
+        key = sort_by if sort_by in ("created_at", "updated_at") else "created_at"
+        matched.sort(
+            key=lambda item: item[1].get(key) or 0, reverse=sort_order != "asc"
+        )
+        total = len(matched)
+        if limit is not None:
+            start = max((page or 1) - 1, 0) * limit
+            matched = matched[start : start + limit]
+
+        found: list[dict[str, Any]] = []
+        for branch, record in matched:
+            data = {k: v for k, v in record.items() if k != "run_ids"}
+            runs = []
+            for rid in record.get("run_ids") or []:
+                run = self._peek(branch, RUN_PREFIX + str(rid))
+                if isinstance(run, dict):
+                    runs.append(dict(run))
+            data["runs"] = runs or None
+            found.append(data)
+        if not deserialize:
+            return found, total
+        return [AgentSession.from_dict(data) for data in found]
+
+    def upsert_session(
+        self, session: Session, deserialize: bool | None = True, **kwargs: Any
+    ) -> Any:
+        if not isinstance(session, AgentSession):
+            raise NotSupportedError(
+                f"{type(session).__name__} is not supported: a workspace "
+                "branch holds one agent session. Give teams and workflows "
+                "their own db."
+            )
+        session_id = session.session_id
+        if not session_id:
+            raise WorkspaceError("A session without a session_id cannot be stored.")
+        if self._exists(session_id):
+            return self._view(session_id).upsert_session(
+                session, deserialize=deserialize, **kwargs
+            )
+
+        # A new id naming a parent is agno's own fork: branch the parent
+        # so the files come along, then seed agno's copy of the runs.
+        parent = (session.session_data or {}).get("forked_from_session_id")
+        if parent and self._exists(parent):
+            child = fork_session(self._open(parent), session_id, conversation="fresh")
+            try:
+                return KvgitSessionDb(child, **self._view_kwargs)._seed(
+                    session, deserialize=deserialize
+                )
+            finally:
+                # The embedder's ``open`` resumes the branch from here on;
+                # this handle would otherwise be a second one over it.
+                child.close()
+
+        return self._view(session_id).upsert_session(
+            session, deserialize=deserialize, **kwargs
+        )
+
+    def upsert_sessions(
+        self,
+        sessions: list[Session],
+        deserialize: bool | None = True,
+        preserve_updated_at: bool = False,
+        **_: Any,
+    ) -> list[Any]:
+        results = []
+        for session in sessions:
+            if session is None:
+                continue
+            result = self.upsert_session(session, deserialize=deserialize)
+            if result is not None:
+                results.append(result)
+        return results
+
+    def upsert_run(
+        self,
+        run: Any,
+        session_id: str,
+        user_id: str | None = None,
+        run_index: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if not self._exists(session_id):
+            return
+        self._view(session_id).upsert_run(
+            run, session_id, user_id=user_id, run_index=run_index, **kwargs
+        )
+
+    def delete_session(self, session_id: str, user_id: str | None = None) -> bool:
+        if not self._exists(session_id):
+            return False
+        return self._view(session_id).delete_session(session_id, user_id=user_id)
+
+    def delete_sessions(
+        self, session_ids: list[str], user_id: str | None = None
+    ) -> None:
+        for session_id in session_ids:
+            self.delete_session(session_id, user_id=user_id)
+
+    def rename_session(
+        self,
+        session_id: str,
+        session_type: Any,
+        session_name: str,
+        user_id: str | None = None,
+        deserialize: bool | None = True,
+        **kwargs: Any,
+    ) -> Any:
+        if not self._exists(session_id):
+            return None
+        return self._view(session_id).rename_session(
+            session_id,
+            session_type,
+            session_name,
+            user_id=user_id,
+            deserialize=deserialize,
+            **kwargs,
+        )
