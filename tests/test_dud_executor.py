@@ -1137,3 +1137,69 @@ def test_explicit_vm_packages_win_over_derived_pins(monkeypatch):
     ex._make_session({}, {})
     assert captured["packages"] == ["pytest>=1", "extra-pkg"]
     assert "packages_from_grants" not in captured
+
+
+def test_preset_lists_flatten_before_derivation_and_checks():
+    """``PythonConfig(modules=[preset()])`` is a nested list; the grants
+    inside must be derived and validated like top-level ones."""
+    import json
+
+    from nontainer.errors import NotSupportedError
+    from nontainer.workspace import ModuleGrant
+
+    packages = DudExecutor(backend="vfkit")._prepare_config(
+        _cfg(modules=[[ModuleGrant(pytest)], json])
+    )
+    assert packages and packages[0].startswith("pytest==")
+    with pytest.raises(NotSupportedError, match="network=True"):
+        DudExecutor(backend="vfkit")._prepare_config(
+            _cfg(modules=[[ModuleGrant(json, network=True)]])
+        )
+
+
+def test_merge_compares_distribution_names_the_way_packaging_does():
+    from nontainer.executor_dud import _merge_packages
+
+    merged = _merge_packages(
+        ["typing_extensions==4.0", "Some.Pkg==1"],
+        ["typing-extensions>=5", "some-pkg[extra]"],
+    )
+    assert merged == ["typing-extensions>=5", "some-pkg[extra]"]
+
+
+def test_a_namespace_grant_installs_only_its_owning_distribution(monkeypatch, tmp_path):
+    """Several distributions can populate one top-level namespace; only
+    the one that ships the granted module's file is layered in."""
+    import types
+    from importlib import metadata
+
+    from nontainer.executor_dud import _packages_from_grants
+
+    owned = tmp_path / "ns" / "storage" / "__init__.py"
+    owned.parent.mkdir(parents=True)
+    owned.write_text("")
+    module = types.ModuleType("ns.storage")
+    module.__file__ = str(owned)
+
+    class FakeDist:
+        def __init__(self, files):
+            self._files = files
+
+        @property
+        def files(self):
+            return self._files
+
+        def locate_file(self, f):
+            return tmp_path / f
+
+    dists = {
+        "ns-storage": FakeDist(["ns/storage/__init__.py"]),
+        "ns-other": FakeDist(["ns/other/__init__.py"]),
+    }
+    monkeypatch.setattr(
+        metadata, "packages_distributions", lambda: {"ns": ["ns-other", "ns-storage"]}
+    )
+    monkeypatch.setattr(metadata, "distribution", lambda name: dists[name])
+    monkeypatch.setattr(metadata, "version", lambda name: "9.9")
+
+    assert _packages_from_grants([module]) == ["ns-storage==9.9"]
