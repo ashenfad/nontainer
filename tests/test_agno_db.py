@@ -562,3 +562,41 @@ def test_the_inherited_tables_stay_on_disk(tmp_path):
     assert not any(k.startswith("__agno__") for k in kv_of(ws).keys())
     assert (tmp_path / "agno").is_dir()
     ws.close()
+
+
+def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
+    """The migration path: a session that lived in another agno db lands
+    in the branch in one commit, and the branch carries on from it."""
+    ws, db, tk, agent = build(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    run_turn(agent, write_turn("b.txt", "B"))
+    exported = db.get_session(ws.session, deserialize=False)
+    ws.close()
+
+    fresh = make_ws("moved")
+    fresh_db = KvgitSessionDb(fresh, db_path=str(tmp_path / "agno"))
+    before = len(list(fresh.history()))
+    exported["session_id"] = "moved"
+    fresh_db.seed(AgentSession.from_dict(exported))
+
+    assert len(list(fresh.history())) == before + 1
+    assert not fresh.dirty
+    assert [r.run_id for r in fresh_db.get_session("moved").runs] == [
+        r["run_id"] for r in exported["runs"]
+    ]
+    with pytest.raises(NotSupportedError, match="already holds"):
+        fresh_db.seed(AgentSession.from_dict(exported))
+
+    # and the conversation continues as an ordinary session
+    tk2 = WorkspaceTools(fresh, checkpoint="turn", session_db=fresh_db)
+    moved_agent = Agent(
+        model=ScriptedModel(),
+        db=fresh_db,
+        session_id="moved",
+        tools=[tk2],
+        add_history_to_context=True,
+        telemetry=False,
+    )
+    run_turn(moved_agent, write_turn("c.txt", "C"))
+    assert len(fresh_db.get_session("moved").runs) == 3
+    fresh.close()

@@ -149,12 +149,14 @@ class KvgitSessionDb(JsonDb):
         own turn hook down."""
         return workspace is self._ws
 
-    def _seed(self, session: AgentSession, *, deserialize: bool | None = True) -> Any:
+    def seed(self, session: AgentSession, *, deserialize: bool | None = True) -> Any:
         """Write a whole session into a branch that holds no runs yet.
 
-        The store's answer to agno's own ``Agent.fork_session``: agno
-        hands over a complete copy of the parent's runs under fresh ids,
-        which is not one new run on the branch's history and so cannot
+        The import path for a conversation that already exists
+        elsewhere: an embedder moving sessions out of another agno db,
+        or the store honouring agno's own ``Agent.fork_session``, which
+        hands over a complete copy of the parent's runs under fresh ids.
+        Neither is one new run on the branch's history, so neither can
         pass ``upsert_session``'s guard. Seeding is allowed only where
         that guard has nothing to protect — a branch with no runs — and
         commits so a fresh open of the branch sees the conversation."""
@@ -794,7 +796,7 @@ class KvgitStoreDb(JsonDb):
         if parent and self._exists(parent):
             child = fork_session(self._open(parent), session_id, conversation="fresh")
             try:
-                return KvgitSessionDb(child, **self._view_kwargs)._seed(
+                return KvgitSessionDb(child, **self._view_kwargs).seed(
                     session, deserialize=deserialize
                 )
             finally:

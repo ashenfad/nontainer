@@ -601,6 +601,12 @@ the caller sees is that nothing was written. Team and workflow sessions
 raise too. For agno's cross-session features, and for agno's own fork,
 use `KvgitStoreDb` below.
 
+**Import.** `db.seed(session)` writes a whole `AgentSession` into a
+branch that holds no runs yet and commits it — the path for moving an
+existing conversation out of another agno db. It refuses a branch that
+already holds runs, which is what keeps the rewind guard meaningful
+everywhere else.
+
 **Rewind.** Leave `Agent.cache_session` at its default (`False`): agno
 then re-reads the session every run, so a restore needs no invalidation.
 With it on, an upsert whose prior runs are not a tail of the branch's
