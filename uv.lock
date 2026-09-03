@@ -927,11 +927,11 @@ wheels = [
 
 [[package]]
 name = "kvgit"
-version = "0.3.4"
+version = "0.3.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ed/5a/6b5913baf17696c85157ef1745a1b3116d0fcc437ec9c2e99654b4e6105b/kvgit-0.3.4.tar.gz", hash = "sha256:bb7e7d2bd0b73603a28020fe7f3a90e27c204b03339d4ec0e4ab377e582cc148", size = 74559, upload-time = "2026-09-01T17:20:51.713Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/66/b4/25767e5307cae606d3083f721cddaa100ec941933e1b55de2fd4a36cd8e0/kvgit-0.3.5.tar.gz", hash = "sha256:05ab905da1fe6eabc7274b4074f3839eff32cf2473daa1d2d49f62f771b5eba4", size = 80717, upload-time = "2026-09-03T00:39:09.214Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/58/6b/5482893aafd956fb2710f31b520ae65c02b51c15e53b5612f5edc193f9ff/kvgit-0.3.4-py3-none-any.whl", hash = "sha256:7651623667bf6693ab5cfd8f48a9bffed030918cfc552b711d47a1b7323aa801", size = 68183, upload-time = "2026-09-01T17:20:50.563Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/78/84f236a75457f3225e17efb2c93e42fc2b42b464525f474d82d138ecdff9/kvgit-0.3.5-py3-none-any.whl", hash = "sha256:8fc7804cfc51e68121dcf3c7cade51abe66f2af0a50e8ba9e993c40e17e172dd", size = 74325, upload-time = "2026-09-03T00:39:07.904Z" },
 ]
 
 [package.optional-dependencies]
@@ -1195,7 +1195,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
     { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.0" },
     { name = "httpx2", marker = "extra == 'dev'" },
-    { name = "kvgit", extras = ["disk"], specifier = ">=0.3.4" },
+    { name = "kvgit", extras = ["disk"], specifier = ">=0.3.5" },
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
     { name = "monkeyfs", specifier = ">=0.1.7" },
