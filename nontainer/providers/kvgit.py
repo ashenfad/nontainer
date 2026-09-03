@@ -21,16 +21,16 @@ kvgit's content-addressed HAMT), ``merge`` (CAS + key-level three-way
 Tag storage: kvgit tags live in one flat namespace per store, so
 nontainer prefixes every tag with its scope. A session tag ``v1`` made
 by session ``alice`` is stored as ``alice/v1``, a store tag ``v1`` as
-``store/v1`` — both under kvgit's reserved ``refs/tags/``. That is what
+``@store/v1`` — both under kvgit's reserved ``refs/tags/``. That is what
 lets two sessions each hold a ``v1``, lets ``tags()`` list a session's
 own without seeing anyone else's, and lets session teardown drop a
 session's tags by prefix while store tags stay. Callers never see the
 prefix: names go in and come out bare.
 
-One name collides by construction: a session literally called ``store``
-writes its session tags into the store scope's prefix. Teardown resolves
-it in favour of the publications — ``delete`` never sweeps the ``store/``
-prefix — so such a session's tags survive it.
+The store prefix leads with ``@`` so that no session can reach it: a
+session id must begin with a letter, digit, underscore or hyphen, so
+``@store`` is not a name any session can have, and the two prefixes
+cannot collide however a session is named.
 """
 
 from __future__ import annotations
@@ -60,7 +60,9 @@ _KVGIT_CAPS = Capabilities(
 
 SESSION_SCOPE = "session"
 STORE_SCOPE = "store"
-_STORE_PREFIX = f"{STORE_SCOPE}/"
+# Leading "@": session ids cannot start with one (SESSION_ID_RE), so no
+# session's tag namespace can ever be the store's.
+_STORE_PREFIX = "@store/"
 
 
 class KvgitProvider:
@@ -133,11 +135,13 @@ class KvgitProvider:
         A session's own tags go with it: every tag stored under
         ``<name>/`` is deleted alongside the branch, because a
         session-scoped tag belongs to that session. Store-scoped tags
-        (``store/``) are left exactly where they are — that scope exists
+        (``@store/``) are left exactly where they are — that scope exists
         so a publication can outlive the session that made it, and
-        teardown is where that promise is kept. Removing a tag is what
-        makes its commits collectable, so the sweep runs first and the
-        branch deletion's own orphan sweep finishes the job.
+        teardown is where that promise is kept; no session id can spell
+        that prefix, so no name passed here can reach them. Removing a
+        tag is what makes its commits collectable, so the sweep runs
+        first and the branch deletion's own orphan sweep finishes the
+        job.
 
         This lives in kvgit now: :func:`kvgit.delete_branches` opens the
         raw backend with no current branch, so it can drop any branch —
@@ -179,16 +183,12 @@ class KvgitProvider:
         them — so the backend is opened directly here, the way
         :func:`kvgit.delete_tags` opens it, rather than through a handle
         that would have to invent a branch to sit on.
-
-        ``store`` is never swept: a session by that name shares the store
-        scope's prefix, and dropping publications with it would be the
-        worse reading of an ambiguous name.
         """
         import kvgit
         from kvgit.kv.disk import Disk
         from kvgit.versioned.kv import tags as store_tags
 
-        prefixes = tuple(f"{s}/" for s in sessions if s != STORE_SCOPE)
+        prefixes = tuple(f"{s}/" for s in sessions)
         if not prefixes:
             return
         backend = Disk(str(path))
@@ -348,9 +348,10 @@ class KvgitProvider:
         """The stored tag name for a caller's name in a scope.
 
         Rejects a name that already carries a scope prefix, so a caller
-        cannot reach the store scope by spelling ``store/x`` as a session
-        tag, or its own session's namespace from the store scope. Beyond
-        that the rule is kvgit's: any non-empty name without ``%``.
+        cannot reach the store scope by spelling ``@store/x`` as a
+        session tag, or its own session's namespace from the store
+        scope. Beyond that the rule is kvgit's: any non-empty name
+        without ``%``.
         """
         if not isinstance(name, str) or not name:
             raise ValueError("Tag name must be a non-empty string")

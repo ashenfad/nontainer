@@ -236,8 +236,10 @@ handing embedders one flat namespace to partition themselves:
 `ws.tags()` lists only the scope you ask for, so two sessions can each
 hold a `v1` and neither sees the other's. Names come back the way you
 passed them; the scope prefix kvgit stores them under (`<session>/`,
-`store/`) never surfaces, and a name that starts with one is rejected
-so a scope can't be spoofed. Otherwise the rule is kvgit's: any
+`@store/`) never surfaces, and a name that starts with one is rejected
+so a scope can't be spoofed. The store prefix leads with `@`, which a
+session id can never start with, so the two scopes cannot collide
+however a session is named. Otherwise the rule is kvgit's: any
 non-empty name without `%`, `/` included. Tags never move — an existing
 name raises rather than being repointed. `ws.tag()` checkpoints staged
 work first (`info={"tool": "tag", "name": ...}`, like `fork`), so the
