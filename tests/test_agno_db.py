@@ -624,3 +624,20 @@ def test_fork_session_at_a_checkpoint_carries_that_conversation(tmp_path):
     assert ws.head == parent_head and len(db.get_session(ws.session).runs) == 2
     child.close()
     ws.close()
+
+
+def test_fork_session_at_keeps_lineage_after_the_conversation_was_deleted(tmp_path):
+    """The parent is the workspace's session even when its head no
+    longer holds a conversation record."""
+    ws, db, tk, agent = build(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    at = ws.head
+    assert db.delete_session(ws.session) is True
+
+    child = fork_session(ws, "revived", at=at)
+    child_db = KvgitSessionDb(child, db_path=str(tmp_path / "agno"))
+    session = child_db.get_session("revived")
+    assert session is not None and len(session.runs) == 1
+    assert session.session_data["forked_from_session_id"] == ws.session
+    child.close()
+    ws.close()

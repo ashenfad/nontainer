@@ -573,8 +573,11 @@ def fork_session(
     if conversation not in ("inherit", "fresh"):
         raise ValueError(f"conversation must be 'inherit' or 'fresh': {conversation!r}")
 
-    parent = _kv(ws).get(SESSION_KEY)
-    parent_id = parent.get("session_id") if isinstance(parent, dict) else None
+    # The parent is this workspace's session. Read from the head's
+    # record it could be missing — a conversation deleted after the
+    # checkpoint being forked from — while the id is a fact about the
+    # branch, not about what its head currently holds.
+    parent_id = ws.session
 
     child = ws.fork(name, at=at)
     with child.lock:
