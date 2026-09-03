@@ -114,11 +114,29 @@ def test_store_tags_are_visible_from_another_workspace(tmp_path):
 
 def test_scope_prefixes_cannot_be_spoofed(kv_ws):
     kv_ws.terminal("echo one > a.txt")
-    for name in ("store/x", "test-session/x"):
+    for name in ("@store/x", "test-session/x"):
         with pytest.raises(ValueError):
             kv_ws.tag(name)
         with pytest.raises(ValueError):
             kv_ws.tag(name, scope="store")
+
+
+def test_no_session_can_be_named_into_the_store_scope(tmp_path):
+    """The store prefix starts with ``@``, which a session id cannot,
+    so the scopes stay separate however sessions are named."""
+    with workspace("store", store=tmp_path) as ws:
+        ws.terminal("echo x > x.txt")
+        ws.tag("mine")
+        assert ws.tags(scope="store") == {}
+
+    with workspace("reader", store=tmp_path) as reader:
+        reader.terminal("echo y > y.txt")
+        reader.tag("ours", scope="store")
+
+    delete_workspace("store", store=tmp_path)
+    remaining = set(_store_tags(tmp_path))
+    assert "store/mine" not in remaining  # the session's own tag went
+    assert "@store/ours" in remaining  # the publication stayed
 
 
 # -- teardown ----------------------------------------------------------------
@@ -137,7 +155,7 @@ def test_delete_workspace_takes_session_tags_and_leaves_store_tags(tmp_path):
 
     remaining = set(_store_tags(tmp_path))
     assert "doomed/mine" not in remaining
-    assert "store/ours" in remaining  # a publication is not session state
+    assert "@store/ours" in remaining  # a publication is not session state
     assert "bystander/kept" in remaining  # someone else's session untouched
 
 

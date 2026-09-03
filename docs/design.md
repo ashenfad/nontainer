@@ -81,6 +81,11 @@ the difference an embedder actually has: a checkpoint worth naming
 inside a conversation, versus a publication that has to outlive the
 conversation — the snapshot an app serves, the state a link points at.
 
+Storage keeps that separation honest rather than by convention: a
+session tag is stored under `<session>/`, a store tag under `@store/`,
+and a session id can never begin with `@` — so no session, however it
+is named, can write into the scope that outlives it.
+
 Both ride kvgit's tags, which are branch heads under a reserved name,
 so a tagged checkpoint anchors garbage collection with no rule of its
 own: the state a publication names stays readable after everything else
