@@ -55,7 +55,11 @@ dependencies = [
     # recovery became opt-in here; nontainer does not opt in, so a
     # corrupt HEAD surfaces instead of being rebuilt from a scan
     # nothing validated.
-    "kvgit[disk]>=0.3.4",
+    # 0.3.5: tags — named, immutable commit pointers stored as reserved
+    # ``refs/tags/`` branch heads, so they anchor garbage collection in
+    # every kvgit version; plus checkout(tag=), peek(..., tag=) and the
+    # anchor-free kvgit.delete_tags the tag verbs are built on.
+    "kvgit[disk]>=0.3.5",
     # 0.1.3: value-based collapsing is restricted to exact builtin
     # scalar types, so a rendered object's own __eq__ can no longer
     # raise out of render(). The values rendered here are agent-authored
