@@ -23,8 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Frozen workspaces** — `ws.at_tag("v1")` opens the tagged state as a
   `Workspace` that reads but never writes: `autocheckpoint` off, the
   write tools and `checkpoint` / `fork` / `tag` refusing up front, and
-  the executor holding a read-only filesystem so agent code's own
-  writes fail where they happen. It inherits the parent's settings the
+  the executor holding a read-only filesystem and cache so agent code's
+  own writes fail where they happen. An executor that runs against its
+  own substrate writes there first, so the workspace refuses to absorb
+  the harvest and reports the refusal on the call instead. It inherits the parent's settings the
   way `fork` does, live host objects included — the files are frozen,
   the host's world is not.
 

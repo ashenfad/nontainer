@@ -544,6 +544,50 @@ class _SyncingFS:
         return f"<syncing {self._fs!r}>"
 
 
+def _frozen_message(tag: str | None) -> str:
+    """What a frozen workspace tells whoever tried to write to it."""
+    where = f" at tag {tag!r}" if tag else ""
+    return f"this workspace is a frozen snapshot{where}; it accepts no writes"
+
+
+class _FrozenKV(MutableMapping):
+    """Read-only view of the provider's kv for a frozen workspace.
+
+    The executor builds the agent-facing ``cache`` on whatever kv the
+    context carries, so a snapshot has to hand it a mapping that refuses
+    writes — otherwise ``cache['x'] = 1`` succeeds against a checkout
+    that can never commit it, in-process and in a guest's cache service
+    alike. A ``MutableMapping`` so the derived mutators (``pop``,
+    ``clear``, ``update``, ``setdefault``) route through the two that
+    raise rather than reaching the underlying store.
+    """
+
+    def __init__(self, kv: MutableMapping[str, Any], tag: str | None) -> None:
+        self._kv = kv
+        self._message = _frozen_message(tag)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._kv[key]
+
+    def __iter__(self) -> Any:
+        return iter(self._kv)
+
+    def __len__(self) -> int:
+        return len(self._kv)
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._kv
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._kv.get(key, default)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        raise PermissionError(self._message)
+
+    def __delitem__(self, key: str) -> None:
+        raise PermissionError(self._message)
+
+
 def _frozen_fs(fs: Any, tag: str | None) -> Any:
     """A read-only view over a frozen workspace's filesystem.
 
@@ -555,8 +599,7 @@ def _frozen_fs(fs: Any, tag: str | None) -> Any:
     """
     from monkeyfs import ReadOnlyFS
 
-    where = f" at tag {tag!r}" if tag else ""
-    message = f"this workspace is a frozen snapshot{where}; it accepts no writes"
+    message = _frozen_message(tag)
 
     class FrozenFS(ReadOnlyFS):
         # Two refusal paths to override, because the wrapper has two:
@@ -705,6 +748,11 @@ class Workspace:
         # property, and a third-party provider without it is not frozen.
         self._frozen = bool(getattr(provider, "frozen", False))
         self._frozen_at = getattr(provider, "frozen_at", None)
+        # What the executor's cache and the host-side ``cache`` build
+        # on: the provider's kv, or a refusing view of it when frozen.
+        self._kv_view: MutableMapping[str, Any] = (
+            _FrozenKV(provider.kv, self._frozen_at) if self._frozen else provider.kv
+        )
 
         # autocheckpoint is meaningless (and forced off) when the
         # provider can't checkpoint.
@@ -824,13 +872,14 @@ class Workspace:
         self._executor.open(
             ExecutionContext(
                 fs=_frozen_fs(self._fs, self._frozen_at) if self._frozen else self._fs,
-                kv=provider.kv,
+                kv=self._kv_view,
                 commands=self._commands,
                 python_config=self._python_config,
                 cache_enabled=self._cache_enabled,
                 max_observation=self._max_observation,
                 head=_state_identity(provider),
                 root=self._root,
+                frozen=self._frozen,
             )
         )
 
@@ -1005,7 +1054,12 @@ class Workspace:
             self._check_open()
             self._sync_executor_if_stale()
             was_dirty = self._provider.dirty
-            result = self._executor.exec_shell(command)
+            try:
+                result = self._executor.exec_shell(command)
+            except PermissionError as e:
+                return TerminalResult(
+                    stdout="", exit_code=1, stderr=self._refused_frozen(e)
+                )
             torn = self._absorb_or_unwind(was_dirty)
             self._save_cwd()
             if torn is not None:
@@ -1033,7 +1087,10 @@ class Workspace:
         with self._lock:
             self._check_open()
             was_dirty = self._provider.dirty
-            result = self.exec_python(code, inputs=inputs)
+            try:
+                result = self.exec_python(code, inputs=inputs)
+            except PermissionError as e:
+                return PythonResult(stdout="", error=self._refused_frozen(e))
             torn = self._absorb_or_unwind(was_dirty)
             self._save_cwd()
             if torn is not None:
@@ -1477,7 +1534,10 @@ class Workspace:
             raise NotSupportedError(
                 "cache is disabled for this workspace (cache=False)"
             )
-        return Cache(self._provider.kv)
+        # Frozen: the same refusing view the executor got, so a host
+        # write raises ``PermissionError`` here exactly as an agent's
+        # ``cache['x'] = 1`` does inside the sandbox.
+        return Cache(self._kv_view)
 
     # ------------------------------------------------------------------
     # versioning (gated by caps; see protocol.py)
@@ -1769,6 +1829,23 @@ class Workspace:
         if self._closed:
             raise WorkspaceError("Workspace is closed")
 
+    def _refused_frozen(self, exc: PermissionError) -> str:
+        """Turn a write refused by the executor itself into this call's
+        result text — the shape ``terminal`` and ``run_python`` report
+        every other failure in, since a refused tool call is a result
+        and not a host error. An executor may write back on its own
+        after the code ran (a guest's cache service is the case in
+        hand), so the refusal can arrive as an exception rather than as
+        something the sandbox caught. The executor's substrate is left
+        marked stale, so the next call starts from the frozen tree
+        again. Only frozen workspaces refuse this way; anything else is
+        a real error and re-raises.
+        """
+        if not self._frozen:
+            raise exc
+        self._mark_executor_stale()
+        return str(exc)
+
     def _check_writable(self, op: str) -> None:
         """Refuse a host-side write on a frozen workspace, up front.
 
@@ -1855,23 +1932,49 @@ class Workspace:
             return self._provider.checkpoint(info={"tool": tool})
         return None
 
-    def _absorb_executor_diff(self) -> None:
+    def _absorb_executor_diff(self) -> str | None:
         """Land a remote executor's staged writes in the provider,
         BEFORE the checkpoint flow — so the normal atomic commit and
         ``result.checkpoint`` semantics apply unchanged whichever
         executor produced the writes. ``None`` (LocalExecutor always;
         a remote executor after a read-only call) costs nothing and
-        dirties nothing. Callers hold the lock."""
+        dirties nothing. Callers hold the lock.
+
+        This is also where a frozen workspace's refusal has to hold for
+        executors that run against their own substrate: a guest writes
+        to its own tree and reports the harvest afterwards, so nothing
+        earlier in the call could have stopped it. A non-empty harvest
+        is DROPPED, the executor is marked stale so the next execution
+        re-pushes the frozen tree over what the guest did, and the
+        message comes back for the caller to put on the result — the
+        same shape a torn call uses, and the same refusal the local
+        read-only filesystem raises in-process. Returns that message,
+        or None when there was nothing to refuse.
+        """
         d = self._executor.diff()
         if d is None:
-            return
+            return None
+        if self._frozen:
+            if not (d.writes or d.deletes):
+                return None  # a read-only call on a snapshot: nothing to do
+            self._mark_executor_stale()
+            return (
+                f"{_frozen_message(self._frozen_at)}; this call's writes were "
+                "made in the executor's own tree and have been discarded"
+            )
         from .executor import _apply_diff
 
         _apply_diff(self._fs, d.writes, d.deletes)
+        return None
 
     def _absorb_or_unwind(self, was_dirty: bool) -> str | None:
         """:meth:`_absorb_executor_diff`, honoring the torn-call
-        contract: ``HarvestLost`` means the guest died between a
+        contract — and passing through its frozen refusal, which
+        reaches the caller by the same route (a message on an errored
+        result) because it is the same kind of news: the call did not
+        land.
+
+        The torn-call contract: ``HarvestLost`` means the guest died between a
         successful exec and its write harvest — the call's fs writes
         are unrecoverable while its cache write-backs may already sit
         in provider staging. Returns an error message for the result
@@ -1884,8 +1987,7 @@ class Workspace:
         from .executor import HarvestLost
 
         try:
-            self._absorb_executor_diff()
-            return None
+            return self._absorb_executor_diff()
         except HarvestLost as e:
             if not was_dirty:
                 try:

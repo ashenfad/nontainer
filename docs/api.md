@@ -254,10 +254,18 @@ store — damage, not an ordinary state).
 tagged state that can be read but never written: `ws.frozen` is True,
 `autocheckpoint` is forced off, `file_write` / `file_edit` / `put` /
 `checkpoint` / `fork` / `tag` / `rollback` raise `NotSupportedError`,
-and the executor holds a read-only filesystem, so a shell redirect or
-`open(..., "w")` from agent code fails where it happens with a message
-naming the tag. Reads, `run_python` that only reads, and apps dispatch
-all work; `discard()` and `close()` work. It inherits the parent's
+and the executor holds a read-only filesystem **and a read-only
+cache**, so a shell redirect, `open(..., "w")` or `cache["x"] = 1` from
+agent code fails where it happens with a message naming the tag
+(`ws.cache["x"] = 1` from the host raises `PermissionError` the same
+way). On an executor with its own substrate — a dud guest — the write
+lands in that substrate before anything here can stop it, so the
+workspace refuses the harvest instead: nothing is absorbed, the guest
+is re-synced from the frozen tree, and the call comes back with a
+non-zero `exit_code` / an `error` carrying the same refusal.
+`ExecutionContext.frozen` tells an executor it may refuse earlier;
+nothing depends on it doing so. Reads, `run_python` that only reads,
+and apps dispatch all work; `discard()` and `close()` work. It inherits the parent's
 construction settings the way `fork` does — python config **including
 its live host objects**, mounts, root, executor factory, commands — so
 an app served from a snapshot still talks to the session's live db.
