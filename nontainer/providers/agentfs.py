@@ -39,7 +39,13 @@ from pathlib import Path
 from typing import Any
 
 from ..errors import NotSupportedError
-from ..protocol import Capabilities, CheckpointInfo, validate_session_id
+from ..protocol import (
+    Capabilities,
+    CheckpointInfo,
+    TagInfo,
+    WorkspaceDiff,
+    validate_session_id,
+)
 
 _AGENTFS_CAPS = Capabilities(
     versioned=False,
@@ -48,6 +54,7 @@ _AGENTFS_CAPS = Capabilities(
     merge=False,
     sql_audit=True,
     fuse_mount=False,
+    tags=False,
 )
 
 _PICKLE_KEY = "__pickle_b64__"
@@ -506,6 +513,33 @@ class AgentFSProvider:
 
     def discard(self) -> None:
         raise self._unsupported("discard")
+
+    # -- tags: unsupported ---------------------------------------------
+
+    def tag(
+        self,
+        name: str,
+        *,
+        at: str | None = None,
+        info: dict[str, Any] | None = None,
+        scope: str = "session",
+    ) -> str:
+        raise self._unsupported("tag")
+
+    def tags(self, *, scope: str = "session") -> dict[str, str]:
+        raise self._unsupported("tags")
+
+    def tag_info(self, name: str, *, scope: str = "session") -> "TagInfo | None":
+        raise self._unsupported("tag_info")
+
+    def delete_tag(self, name: str, *, scope: str = "session") -> None:
+        raise self._unsupported("delete_tag")
+
+    def at_tag(self, name: str, *, scope: str = "session") -> "AgentFSProvider":
+        raise self._unsupported("at_tag")
+
+    def diff(self, a: str, b: str) -> "WorkspaceDiff":
+        raise self._unsupported("diff")
 
     def mount(self) -> Any:
         raise NotSupportedError(
