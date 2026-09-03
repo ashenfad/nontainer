@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Tags** — `ws.tag("v1")` names the current state immutably, and the
+  name anchors garbage collection: the checkpoint and its ancestry stay
+  reachable for as long as the tag does. Two scopes, decided here
+  rather than left to embedders: a **session** tag (the default) is the
+  session's own — two sessions can each hold a `v1`, and
+  `delete_workspace` takes it with the branch — while a **store** tag
+  belongs to no session, is listable from any workspace on the store,
+  and survives the session that made it, which is what a publication
+  needs. `ws.tags()`, `ws.tag_info()`, `ws.delete_tag()` complete the
+  set; `caps.tags` gates them, and unversioned providers raise.
+
+- **Frozen workspaces** — `ws.at_tag("v1")` opens the tagged state as a
+  `Workspace` that reads but never writes: `autocheckpoint` off, the
+  write tools and `checkpoint` / `fork` / `tag` refusing up front, and
+  the executor holding a read-only filesystem so agent code's own
+  writes fail where they happen. It inherits the parent's settings the
+  way `fork` does, live host objects included — the files are frozen,
+  the host's world is not.
+
+- **`ws.changed_since(ref)` and `ws.diff(a, b)`** — what changed
+  between two checkpoints, as workspace file paths (`ref` may be a tag
+  name or a checkpoint id). Framework keys — cache, cwd, the stored
+  conversation — never appear: an embedder sees files.
+
+- **`CheckpointInfo.tree` and `ws.head_tree`** — the content hash of a
+  checkpoint, where `id` identifies the point in history. Equal trees
+  mean identical content.
+
 - **`KvgitSessionDb.seed(session)`** — import a whole `AgentSession`
   into a branch that holds no runs yet, committed. The path for moving
   an existing conversation out of another agno db (a studio migrating
