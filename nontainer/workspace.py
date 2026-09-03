@@ -45,7 +45,13 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .cache import Cache
 from .errors import CheckpointNotFoundError, NotSupportedError, WorkspaceError
-from .protocol import Capabilities, CheckpointInfo, WorkspaceProvider
+from .protocol import (
+    Capabilities,
+    CheckpointInfo,
+    TagInfo,
+    WorkspaceDiff,
+    WorkspaceProvider,
+)
 
 if TYPE_CHECKING:
     from .editing import EditOutcome
@@ -538,6 +544,41 @@ class _SyncingFS:
         return f"<syncing {self._fs!r}>"
 
 
+def _frozen_fs(fs: Any, tag: str | None) -> Any:
+    """A read-only view over a frozen workspace's filesystem.
+
+    The executor gets this instead of the live fs, so a write attempted
+    by agent code — a shell redirect, ``open(..., "w")``, a python
+    ``os.remove`` — is refused where it happens, with a message the
+    agent can act on rather than a silent write that could never be
+    committed. Reads pass straight through.
+    """
+    from monkeyfs import ReadOnlyFS
+
+    where = f" at tag {tag!r}" if tag else ""
+    message = f"this workspace is a frozen snapshot{where}; it accepts no writes"
+
+    class FrozenFS(ReadOnlyFS):
+        # Two refusal paths to override, because the wrapper has two:
+        # mode-sensitive operations call ``_deny`` directly, and a
+        # mutating method is served by a stand-in built by
+        # ``_refuse_write``. Both say the same thing here.
+        def _deny(self) -> None:  # type: ignore[override]
+            raise PermissionError(message)
+
+        def _refuse_write(self, name: str) -> Callable[..., Any]:  # type: ignore[override]
+            def denied(*args: Any, **kwargs: Any) -> Any:
+                raise PermissionError(f"{message} ({name}() would change them)")
+
+            denied.__name__ = name
+            return denied
+
+        def touch(self, path: str) -> None:
+            self._deny()
+
+    return FrozenFS(fs)
+
+
 @dataclass(frozen=True)
 class _Settings:
     """The construction arguments a fork replays onto its own provider —
@@ -657,12 +698,22 @@ class Workspace:
         # workspace's public API must serialize, not deadlock.
         self._lock = threading.RLock()
 
+        # A frozen provider is a snapshot at a tag (provider.at_tag):
+        # reads work, nothing commits. A workspace over one refuses its
+        # mutating surface up front and hands the executor a read-only
+        # filesystem. Read through getattr: `frozen` is a kvgit-side
+        # property, and a third-party provider without it is not frozen.
+        self._frozen = bool(getattr(provider, "frozen", False))
+        self._frozen_at = getattr(provider, "frozen_at", None)
+
         # autocheckpoint is meaningless (and forced off) when the
         # provider can't checkpoint.
         # Set while an operation writes on a call's behalf, so nested
         # write_file checkpoints fold into that call's single commit.
         self._defer_checkpoints = False
-        self._autocheckpoint = autocheckpoint and provider.caps.versioned
+        self._autocheckpoint = (
+            autocheckpoint and provider.caps.versioned and not self._frozen
+        )
         # Construction owns the workspace root + initial cwd, but it
         # must never absorb caller-owned staged work into an automatic
         # init baseline. Embedders may deliberately seed provider.fs /
@@ -758,8 +809,12 @@ class Workspace:
             except Exception:
                 pass  # path may no longer exist; start at the fs root
         initialized = self._save_cwd() or initialized
+        # A frozen workspace commits nothing, init baseline included: the
+        # tagged checkpoint already holds a root and a cwd, and a
+        # snapshot that wrote a commit of its own would not be one.
         if provider.caps.versioned and initialized and not was_dirty:
-            provider.checkpoint(info={"tool": "init"})
+            if not self._frozen:
+                provider.checkpoint(info={"tool": "init"})
 
         # open() LAST: it may fork a persistent isolation worker (see
         # LocalExecutor.open), and opening after everything else means
@@ -768,7 +823,7 @@ class Workspace:
         # root/cwd are provider state, independent of executor health.
         self._executor.open(
             ExecutionContext(
-                fs=self._fs,
+                fs=_frozen_fs(self._fs, self._frozen_at) if self._frozen else self._fs,
                 kv=provider.kv,
                 commands=self._commands,
                 python_config=self._python_config,
@@ -868,7 +923,9 @@ class Workspace:
 
     @autocheckpoint.setter
     def autocheckpoint(self, value: bool) -> None:
-        self._autocheckpoint = bool(value) and self._provider.caps.versioned
+        self._autocheckpoint = (
+            bool(value) and self._provider.caps.versioned and not self._frozen
+        )
 
     @property
     def head(self) -> str | None:
@@ -886,6 +943,31 @@ class Workspace:
         """Staged-but-uncommitted changes exist (always False without
         ``caps.staging``)."""
         return self._provider.dirty
+
+    @property
+    def frozen(self) -> bool:
+        """This workspace is a snapshot at a tag (see :meth:`at_tag`).
+
+        Reads work; nothing can be written or committed.
+        ``autocheckpoint`` is forced off, the write tools refuse, and
+        the executor sees a read-only filesystem — so a shell redirect
+        or ``open(..., "w")`` from agent code fails where it happens
+        instead of staging a change that could never land."""
+        return self._frozen
+
+    @property
+    def head_tree(self) -> str | None:
+        """Content hash of the current head — the identity of *what the
+        files and cache are*, where :attr:`head` identifies the point in
+        history. Equal trees mean identical content. ``None`` for an
+        unversioned provider, an empty history, or a provider that keeps
+        no such hash. Staged changes are not in it: check
+        :attr:`dirty`."""
+        if not self._provider.caps.versioned:
+            return None
+        for entry in self.history(limit=1):
+            return entry.tree
+        return None
 
     @property
     def cache_enabled(self) -> bool:
@@ -1252,6 +1334,7 @@ class Workspace:
         data = content.encode() if isinstance(content, str) else content
         with self._lock:
             self._check_open()
+            self._check_writable("file_write")
             created = not self._fs.exists(path)
             # PurePosixPath: workspace paths are POSIX regardless of host OS
             parent = str(PurePosixPath(path).parent)
@@ -1289,6 +1372,7 @@ class Workspace:
 
         with self._lock:
             self._check_open()
+            self._check_writable("file_edit")
             try:
                 text = self._fs.read(path).decode("utf-8")
             except Exception as e:
@@ -1320,6 +1404,7 @@ class Workspace:
         ws_path = dest or src_path.name
         with self._lock:
             self._check_open()
+            self._check_writable("put")
             created = not self._fs.exists(ws_path)
             parent = str(PurePosixPath(ws_path).parent)
             if parent not in (".", "/", ""):
@@ -1398,6 +1483,7 @@ class Workspace:
 
     def checkpoint(self, info: dict[str, Any] | None = None) -> str:
         with self._lock:
+            self._check_writable("checkpoint")
             return self._provider.checkpoint(info)
 
     def restore(self, checkpoint_id: str) -> None:
@@ -1491,6 +1577,132 @@ class Workspace:
             self._mark_executor_stale()  # see restore()
 
     # ------------------------------------------------------------------
+    # tags (gated by caps.tags)
+    # ------------------------------------------------------------------
+
+    def _require_tags(self, op: str) -> None:
+        if not self._provider.caps.tags:
+            raise NotSupportedError(
+                f"{type(self._provider).__name__} has no tags: {op}() is not "
+                "supported. Use the kvgit backend for named checkpoints."
+            )
+
+    def tag(
+        self,
+        name: str,
+        *,
+        info: dict[str, Any] | None = None,
+        scope: str = "session",
+    ) -> str:
+        """Name the current state, immutably; returns the checkpoint id.
+
+        Two scopes, and nontainer decides what each means rather than
+        handing embedders a flat namespace to partition themselves:
+
+        - ``scope="session"`` (default) — the name belongs to this
+          session. :meth:`tags` lists only its own, another session's
+          ``v1`` is a different tag, and deleting the session
+          (:func:`delete_workspace`) deletes it. This is the checkpoint
+          you want to be able to name later: "before the refactor".
+        - ``scope="store"`` — the name belongs to no session. Every
+          workspace on the store can list and read it, and it survives
+          the deletion of the session that made it. This is a
+          publication: the state an app serves, the snapshot a report
+          links to, anything that must outlive the conversation.
+
+        Tags never move: an existing name raises rather than being
+        repointed (delete it and tag again, so the move is visible in
+        the calling code). A tag also anchors garbage collection — the
+        named checkpoint and its ancestry stay reachable for as long as
+        the tag exists.
+
+        Staged changes are committed first (``info={"tool": "tag"}``),
+        the way :meth:`fork` does, so the name means what the caller saw
+        rather than the last commit before it.
+        """
+        with self._lock:
+            self._check_open()
+            self._require_tags("tag")
+            self._check_writable("tag")
+            if self._provider.dirty:
+                self._provider.checkpoint(info={"tool": "tag", "name": name})
+            return self._provider.tag(name, info=info, scope=scope)
+
+    def tags(self, *, scope: str = "session") -> dict[str, str]:
+        """Tag name → checkpoint id, for one scope (see :meth:`tag`)."""
+        with self._lock:
+            self._require_tags("tags")
+            return self._provider.tags(scope=scope)
+
+    def tag_info(self, name: str, *, scope: str = "session") -> TagInfo | None:
+        """Describe one tag, or ``None`` if there is no such tag."""
+        with self._lock:
+            self._require_tags("tag_info")
+            return self._provider.tag_info(name, scope=scope)
+
+    def delete_tag(self, name: str, *, scope: str = "session") -> None:
+        """Drop a tag. What it named survives only while something else
+        still reaches it — a branch, or another tag."""
+        with self._lock:
+            self._check_open()
+            self._require_tags("delete_tag")
+            self._check_writable("delete_tag")
+            self._provider.delete_tag(name, scope=scope)
+
+    def at_tag(self, name: str, *, scope: str = "session") -> "Workspace":
+        """A frozen workspace over the tagged state.
+
+        Reads see the tagged files, cache and cwd; nothing can be
+        written or committed (see :attr:`frozen`). It inherits this
+        workspace's construction settings the way :meth:`fork` does —
+        python config and its live host objects, mounts, root, executor
+        factory, terminal commands — so an app served from a snapshot
+        still reaches the session's live db, which is the point: the
+        *files* are frozen, the host's world is not.
+
+        Close it when done; it holds an executor of its own.
+        """
+        with self._lock:
+            self._require_tags("at_tag")
+            frozen = self._provider.at_tag(name, scope=scope)
+        # Same replay as fork(): commands and autocheckpoint come from
+        # the live attributes because both can change after construction
+        # (see _Settings). autocheckpoint is forced off for a frozen
+        # provider regardless; passing it keeps the two paths identical.
+        user_commands = {
+            k: v for k, v in self._commands.items() if k not in RESERVED_COMMANDS
+        }
+        return Workspace(
+            frozen,
+            commands=user_commands,
+            autocheckpoint=self._autocheckpoint,
+            **self._settings.as_kwargs(),
+        )
+
+    def diff(self, a: str, b: str) -> WorkspaceDiff:
+        """File-level changes between two checkpoint ids: which
+        workspace paths were added, removed and modified. Framework
+        state — cache, cwd, the stored conversation — is not a file and
+        never appears."""
+        with self._lock:
+            self._require_tags("diff")
+            return self._provider.diff(a, b)
+
+    def changed_since(self, ref: str, *, scope: str = "session") -> WorkspaceDiff:
+        """What the files look like now versus at ``ref``.
+
+        ``ref`` is a tag name or a checkpoint id — the tag is tried
+        first, in ``scope``, so the everyday spelling is
+        ``ws.changed_since("v1")``. The comparison ends at the current
+        head, so staged-but-uncommitted work is not in it (check
+        :attr:`dirty`).
+        """
+        with self._lock:
+            self._require_tags("changed_since")
+            info = self._provider.tag_info(ref, scope=scope)
+            return self._provider.diff(info.id if info else ref, self._provider.head)
+
+    # ------------------------------------------------------------------
     # power modes / lifecycle
     # ------------------------------------------------------------------
 
@@ -1553,6 +1765,21 @@ class Workspace:
     def _check_open(self) -> None:
         if self._closed:
             raise WorkspaceError("Workspace is closed")
+
+    def _check_writable(self, op: str) -> None:
+        """Refuse a host-side write on a frozen workspace, up front.
+
+        The tools that write by name — ``file_write``, ``file_edit``,
+        ``put`` — say so before touching anything, because there is
+        nothing partial to attempt. Writes that only *might* happen
+        inside a shell command or python call are refused by the
+        read-only filesystem instead, at the moment they occur."""
+        if self._frozen:
+            where = f" at tag {self._frozen_at!r}" if self._frozen_at else ""
+            raise NotSupportedError(
+                f"frozen: this workspace is a snapshot{where}; it accepts no "
+                f"writes, so {op} is not supported"
+            )
 
     def _save_cwd(self) -> bool:
         # Guarded: an unconditional write would dirty staging providers
@@ -1759,7 +1986,11 @@ def delete_workspace(
     ``~/.nontainer``) to the same per-backend layout the factory built:
 
     - ``"kvgit"``: deletes the named branches from the shared store at
-      ``store/kvgit``.
+      ``store/kvgit``, and with each branch the session-scoped tags it
+      owns (everything under ``<session>/``). Store-scoped tags are left
+      alone: that scope exists so a publication outlives the session
+      that made it, and its checkpoints stay reachable through the tag
+      even once every branch that reached them is gone.
     - ``"dir"``: removes the ``store/<session>/`` directory trees.
     - ``"agentfs"``: unlinks the ``store/<session>.db`` files.
 
