@@ -545,7 +545,7 @@ class KvgitSessionDb(JsonDb):
 
 
 def fork_session(
-    ws: Workspace, name: str, *, conversation: str = "inherit"
+    ws: Workspace, name: str, *, conversation: str = "inherit", at: str | None = None
 ) -> Workspace:
     """Branch the files, the cache, the cwd AND the conversation.
 
@@ -564,8 +564,10 @@ def fork_session(
     fork only to avoid collisions inside a shared db, and branches
     never share one.
 
-    Rewind first to branch from any checkpoint with the conversation as
-    it was there. Drive the fork with an agent whose ``session_id`` is
+    ``at`` branches from an earlier checkpoint of this session — files
+    and conversation as they stood there — without rewinding this
+    session to get there; it is what "branch from where I published"
+    wants. Drive the fork with an agent whose ``session_id`` is
     ``name``.
     """
     if conversation not in ("inherit", "fresh"):
@@ -574,7 +576,7 @@ def fork_session(
     parent = _kv(ws).get(SESSION_KEY)
     parent_id = parent.get("session_id") if isinstance(parent, dict) else None
 
-    child = ws.fork(name)
+    child = ws.fork(name, at=at)
     with child.lock:
         kv = _kv(child)
         record = kv.get(SESSION_KEY)

@@ -133,3 +133,10 @@ def test_fs_satisfies_termish_protocol(tmp_path):
         "glob",
     ):
         assert callable(getattr(fs, method, None)), f"fs missing {method}()"
+
+
+def test_dir_fork_at_is_not_supported(dir_ws):
+    from nontainer.errors import NotSupportedError
+
+    with pytest.raises(NotSupportedError):
+        dir_ws.fork("child", at="anything")

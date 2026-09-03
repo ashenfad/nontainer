@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ws.fork(name, at=<checkpoint>)`** and **`fork_session(..., at=)`** —
+  branch from an earlier checkpoint of a session without rewinding the
+  session to get there. Without `at` a fork still checkpoints staged
+  changes first and branches from the present; with `at` the staged
+  changes are left alone, since they belong to the session's present
+  and not to the past being branched. A `fork_session` with `at`
+  carries the conversation as it stood at that checkpoint, under the
+  child's own id. This is what "branch from where I published" needs:
+  the origin session keeps running while the child opens at the
+  publish. The dir backend raises `NotSupportedError` for `at`, having
+  no history to branch from.
+
 - **Tags** — `ws.tag("v1")` names the current state immutably, and the
   name anchors garbage collection: the checkpoint and its ancestry stay
   reachable for as long as the tag does. Two scopes, decided here

@@ -485,3 +485,44 @@ def test_delete_workspace_convenience(tmp_path):
     delete_workspace("via-helper", store=tmp_path, backend="kvgit")
     with workspace("via-helper", store=tmp_path, backend="kvgit") as ws2:
         assert not ws2.terminal("cat b.txt")
+
+
+def test_fork_at_an_earlier_checkpoint_leaves_the_parent_alone(tmp_path):
+    """A fork at a past checkpoint starts there; the parent, including
+    its staged work, is not rewound or committed to get it there."""
+    from nontainer import workspace
+
+    ws = workspace("parent", store=tmp_path)
+    ws.fs.write("/workspace/a.txt", b"A")
+    first = ws.checkpoint(info={"tool": "test"})
+    ws.fs.write("/workspace/b.txt", b"B")
+    ws.checkpoint(info={"tool": "test"})
+    ws.fs.write("/workspace/staged.txt", b"S")  # staged, uncommitted
+    head = ws.head
+
+    child = ws.fork("child", at=first)
+    try:
+        assert child.fs.read("/workspace/a.txt") == b"A"
+        assert not child.fs.exists("/workspace/b.txt")
+        assert not child.fs.exists("/workspace/staged.txt")
+        assert child.head == first
+        # the parent kept its head AND its staged work
+        assert ws.head == head and ws.dirty
+        assert ws.fs.read("/workspace/staged.txt") == b"S"
+    finally:
+        child.close()
+        ws.close()
+
+
+def test_fork_at_an_unknown_checkpoint_raises(tmp_path):
+    from nontainer import workspace
+    from nontainer.errors import CheckpointNotFoundError
+
+    ws = workspace("parent", store=tmp_path)
+    ws.fs.write("/workspace/a.txt", b"A")
+    ws.checkpoint()
+    try:
+        with pytest.raises(CheckpointNotFoundError):
+            ws.fork("child", at="0" * 64)
+    finally:
+        ws.close()
