@@ -19,7 +19,7 @@ in the factory that builds the provider, not here.
 Planned implementations:
 
 - ``KvgitProvider``   (default) — kvgit ``Staged`` per session branch.
-  staging=True, cheap_fork=True, merge=True.
+  staging=True, cheap_fork=True, merge=True, tags=True.
 - ``DirProvider``     — a real directory via monkeyfs ``IsolatedFS``.
   versioned=False; the tools work, the time-travel verbs raise.
 - ``AgentFSProvider`` (spike) — Turso AgentFS via its Python SDK.
@@ -91,6 +91,14 @@ class Capabilities:
     """``mount()`` can expose the workspace at a real path for
     subprocesses / C extensions."""
 
+    tags: bool = False
+    """Checkpoints can be given names that outlive the call that made
+    them: immutable references that also anchor garbage collection, so
+    a named checkpoint (and everything it descends from) is kept for as
+    long as the name exists. When False, ``tag`` / ``tags`` /
+    ``tag_info`` / ``delete_tag`` / ``at_tag`` / ``diff`` raise
+    ``NotSupportedError``."""
+
 
 @dataclass(frozen=True)
 class CheckpointInfo:
@@ -104,6 +112,57 @@ class CheckpointInfo:
 
     info: dict[str, Any] = field(default_factory=dict)
     """Caller-supplied metadata (``{"tool": "run_python", ...}``)."""
+
+    tree: str | None = None
+    """Hash of the checkpoint's content (kvgit: the keyset root) —
+    the identity of *what the files and cache are*, as opposed to
+    ``id``, the identity of *this point in history*. Two checkpoints
+    with equal trees hold identical content, whatever their metadata,
+    ancestry or time. ``None`` on providers with no such hash."""
+
+
+@dataclass(frozen=True)
+class TagInfo:
+    """What a provider records about one tag."""
+
+    name: str
+    """The name as the caller gave it — no scope prefix."""
+
+    scope: str
+    """``"session"`` or ``"store"`` (see ``WorkspaceProvider.tag``)."""
+
+    id: str
+    """The checkpoint the tag names."""
+
+    tree: str | None
+    """The tagged checkpoint's content hash (see
+    ``CheckpointInfo.tree``)."""
+
+    time: float | None
+    """When the tag was made, unix epoch seconds. ``None`` when the
+    provider has no record of it."""
+
+    info: dict[str, Any] | None
+    """Caller metadata passed to ``tag()``, or ``None``."""
+
+    dangling: bool
+    """The named checkpoint is not in the store — damage rather than an
+    ordinary state, and such a tag keeps nothing alive."""
+
+
+@dataclass(frozen=True)
+class WorkspaceDiff:
+    """What changed between two checkpoints, as workspace file paths.
+
+    Absolute VFS paths, the way agent code and ``ws.fs`` name files
+    (``/workspace/data/in.csv``). Framework keys — the cache, cwd, the
+    stored conversation, the filesystem's own bookkeeping — are not
+    files and never appear here.
+    """
+
+    added: frozenset[str]
+    removed: frozenset[str]
+    modified: frozenset[str]
 
 
 @runtime_checkable
@@ -184,6 +243,66 @@ class WorkspaceProvider(Protocol):
 
     def discard(self) -> None:
         """Drop uncommitted staged writes (requires ``caps.staging``)."""
+        ...
+
+    # -- tags (gated by caps.tags) -------------------------------------
+
+    def tag(
+        self,
+        name: str,
+        *,
+        at: str | None = None,
+        info: dict[str, Any] | None = None,
+        scope: str = "session",
+    ) -> str:
+        """Name a checkpoint immutably; return the checkpoint id.
+
+        Two scopes, and nontainer picks which one applies rather than
+        leaving the namespace to embedders:
+
+        - ``"session"`` (default) — the name belongs to this session.
+          ``tags()`` lists only its own, two sessions can both hold a
+          ``v1``, and deleting the session deletes them.
+        - ``"store"`` — the name belongs to no session. It is visible
+          from every session on the store and survives the deletion of
+          the session that made it: the scope for a publication that
+          must outlive its author.
+
+        Tags never move: an existing name raises rather than being
+        repointed. ``at`` defaults to the current head; ``info`` must be
+        JSON-serializable.
+        """
+        ...
+
+    def tags(self, *, scope: str = "session") -> dict[str, str]:
+        """Tag name (no scope prefix) → checkpoint id, in one scope."""
+        ...
+
+    def tag_info(self, name: str, *, scope: str = "session") -> TagInfo | None:
+        """Describe one tag, or ``None`` if there is no such tag."""
+        ...
+
+    def delete_tag(self, name: str, *, scope: str = "session") -> None:
+        """Drop a tag. The checkpoint it named survives only if
+        something else still reaches it."""
+        ...
+
+    def at_tag(self, name: str, *, scope: str = "session") -> "WorkspaceProvider":
+        """A FROZEN provider over the tagged checkpoint.
+
+        Reads see the tagged state. Nothing can commit: ``checkpoint``,
+        ``restore``, ``fork``, ``tag`` and ``delete_tag`` raise
+        ``NotSupportedError``; writes may stage (so ``dirty`` can become
+        True) but have nowhere to land, and ``discard`` drops them.
+
+        Such a provider reports ``frozen`` True; a provider without the
+        attribute reads as not frozen, which is what a workspace over a
+        third-party provider assumes.
+        """
+        ...
+
+    def diff(self, a: str, b: str) -> WorkspaceDiff:
+        """File-level changes between two checkpoint ids."""
         ...
 
     # -- power modes / lifecycle ---------------------------------------

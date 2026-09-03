@@ -33,7 +33,13 @@ from typing import Any
 from monkeyfs import IsolatedFS
 
 from ..errors import NotSupportedError
-from ..protocol import Capabilities, CheckpointInfo, validate_session_id
+from ..protocol import (
+    Capabilities,
+    CheckpointInfo,
+    TagInfo,
+    WorkspaceDiff,
+    validate_session_id,
+)
 
 _KV_DIR = ".nontainer"
 _KV_FILE = "kv.pkl"
@@ -45,6 +51,7 @@ _DIR_CAPS = Capabilities(
     merge=False,
     sql_audit=False,
     fuse_mount=False,
+    tags=False,
 )
 
 
@@ -162,7 +169,7 @@ class DirProvider:
     def _unsupported(self, op: str) -> NotSupportedError:
         return NotSupportedError(
             f"DirProvider is unversioned: {op}() is not supported. "
-            "Use the kvgit backend for checkpoints, history, and forking."
+            "Use the kvgit backend for checkpoints, history, tags, and forking."
         )
 
     @property
@@ -183,6 +190,33 @@ class DirProvider:
 
     def discard(self) -> None:
         raise self._unsupported("discard")
+
+    # -- tags: unsupported ---------------------------------------------
+
+    def tag(
+        self,
+        name: str,
+        *,
+        at: str | None = None,
+        info: dict[str, Any] | None = None,
+        scope: str = "session",
+    ) -> str:
+        raise self._unsupported("tag")
+
+    def tags(self, *, scope: str = "session") -> dict[str, str]:
+        raise self._unsupported("tags")
+
+    def tag_info(self, name: str, *, scope: str = "session") -> "TagInfo | None":
+        raise self._unsupported("tag_info")
+
+    def delete_tag(self, name: str, *, scope: str = "session") -> None:
+        raise self._unsupported("delete_tag")
+
+    def at_tag(self, name: str, *, scope: str = "session") -> "DirProvider":
+        raise self._unsupported("at_tag")
+
+    def diff(self, a: str, b: str) -> "WorkspaceDiff":
+        raise self._unsupported("diff")
 
     # -- power modes / lifecycle ---------------------------------------
 
