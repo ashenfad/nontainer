@@ -22,4 +22,8 @@ class SessionIdError(WorkspaceError):
 
 
 class CheckpointNotFoundError(WorkspaceError):
-    """``restore()`` was given an id that doesn't exist in history."""
+    """A checkpoint was named and the provider doesn't have it.
+
+    ``restore()`` given an id that isn't in history, or a tag verb
+    given a name the store doesn't hold.
+    """
