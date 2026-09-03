@@ -421,3 +421,66 @@ def test_dir_workspace_has_no_tags(dir_ws):
     ):
         with pytest.raises(NotSupportedError):
             call()
+
+
+def test_fork_without_at_works_for_a_provider_that_predates_at(tmp_path):
+    """A provider written to the older fork(name) shape keeps working
+    for the call that has no ``at``."""
+    from nontainer import Workspace, workspace
+
+    class OldShape:
+        def __init__(self, inner):
+            self._inner = inner
+            self.calls = []
+
+        def fork(self, name):
+            self.calls.append(name)
+            return self._inner.fork(name)
+
+        def __getattr__(self, item):
+            return getattr(self._inner, item)
+
+    ws = workspace("parent", store=tmp_path)
+    ws.fs.write("/workspace/a.txt", b"A")
+    ws.checkpoint()
+    wrapped = Workspace(OldShape(ws._provider))
+    child = wrapped.fork("child")
+    try:
+        assert wrapped._provider.calls == ["child"]
+        assert child.fs.read("/workspace/a.txt") == b"A"
+    finally:
+        child.close()
+        wrapped.close()
+        ws.close()
+
+
+def test_a_frozen_snapshot_refuses_a_handler_file_write_under_process_isolation(
+    tmp_path,
+):
+    """Under isolation="process" the worker pushes a written file at
+    close; sandtrap refuses it at open, so a frozen snapshot's handler
+    that writes a file fails loudly instead of silently succeeding."""
+    pytest.importorskip("sandtrap")
+    from nontainer import PythonConfig, workspace
+    from nontainer.apps import AppRuntime, Request
+
+    ws = workspace("s1", store=tmp_path, python=PythonConfig(isolation="process"))
+    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.fs.write(
+        "/workspace/app/api/note.py",
+        b"def post(req):\n"
+        b"    open('/workspace/app/scribble.txt', 'w').write('nope')\n"
+        b"    return {'ok': True}\n",
+    )
+    ws.checkpoint()
+    ws.tag("v1", scope="store")
+    snap = ws.at_tag("v1", scope="store")
+    try:
+        resp = AppRuntime(snap, frozen=True).dispatch(
+            Request(method="POST", path="/api/note")
+        )
+        assert resp.status == 500
+        assert not snap.fs.exists("/workspace/app/scribble.txt")
+    finally:
+        snap.close()
+        ws.close()

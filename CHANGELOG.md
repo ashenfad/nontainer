@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+
+- **sandtrap floor to 0.3.4.** A frozen workspace under
+  `isolation="process"` now refuses a handler's file write loudly: the
+  worker used to push a written file at close, and a garbage-collected
+  close swallowed the read-only refusal, so a published snapshot's
+  handler that wrote a file returned success with nothing written.
+  sandtrap 0.3.4 refuses at `open()`, and a test here pins the 500.
+
 ### Added
 
 - **`ws.fork(name, at=<checkpoint>)`** and **`fork_session(..., at=)`** —

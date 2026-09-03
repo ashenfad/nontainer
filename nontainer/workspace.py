@@ -1615,7 +1615,14 @@ class Workspace:
         # Mutating despite appearances: providers may checkpoint pending
         # staged changes so the fork sees current state (kvgit does).
         with self._lock:
-            forked = self._provider.fork(name, at=at)
+            # Providers written to the older fork(name) shape — a custom
+            # one, say — must keep working for the call that has no
+            # ``at``; only a fork from the past asks them for more.
+            forked = (
+                self._provider.fork(name)
+                if at is None
+                else self._provider.fork(name, at=at)
+            )
         # Commands and autocheckpoint are replayed from the LIVE
         # attributes rather than from _settings, because both can change
         # after construction (see _Settings). register_command mutates

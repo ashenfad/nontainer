@@ -41,7 +41,11 @@ dependencies = [
     # directly, so this is the hard floor
     # 0.3.3: dynamic __import__ is gated by the same policy as the
     # statement form
-    "sandtrap>=0.3.3",
+    # 0.3.4: a process worker refuses a write to a read-only filesystem
+    # at open rather than losing it at a garbage-collected close. Frozen
+    # workspaces rely on that under isolation="process": a snapshot's
+    # handler that writes a file must fail loudly, not silently succeed.
+    "sandtrap>=0.3.4",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
     # 0.3.3: the incremental orphan sweep no longer deletes chunks that
