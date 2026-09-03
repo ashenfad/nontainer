@@ -508,7 +508,7 @@ class AgentFSProvider:
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
         raise self._unsupported("history")
 
-    def fork(self, name: str) -> "AgentFSProvider":
+    def fork(self, name: str, *, at: str | None = None) -> "AgentFSProvider":
         raise self._unsupported("fork")
 
     def discard(self) -> None:
