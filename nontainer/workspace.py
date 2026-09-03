@@ -959,7 +959,9 @@ class Workspace:
     def head_tree(self) -> str | None:
         """Content hash of the current head — the identity of *what the
         files and cache are*, where :attr:`head` identifies the point in
-        history. Equal trees mean identical content. ``None`` for an
+        history. Equal trees mean identical content; the converse does
+        not hold, since a rewrite is stamped with its own time (see
+        :class:`~nontainer.protocol.CheckpointInfo`). ``None`` for an
         unversioned provider, an empty history, or a provider that keeps
         no such hash. Staged changes are not in it: check
         :attr:`dirty`."""
@@ -1683,7 +1685,8 @@ class Workspace:
         """File-level changes between two checkpoint ids: which
         workspace paths were added, removed and modified. Framework
         state — cache, cwd, the stored conversation — is not a file and
-        never appears."""
+        never appears; a file that was rewritten counts as modified even
+        if its bytes did not change."""
         with self._lock:
             self._require_tags("diff")
             return self._provider.diff(a, b)

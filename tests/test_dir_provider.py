@@ -15,6 +15,7 @@ def test_caps_unversioned(tmp_path):
     assert not p.caps.versioned
     assert not p.caps.staging
     assert not p.caps.cheap_fork
+    assert not p.caps.tags
 
 
 def test_session_id_validated(tmp_path):
@@ -36,6 +37,22 @@ def test_versioning_verbs_raise(tmp_path):
         p.discard()
     with pytest.raises(NotSupportedError):
         p.mount()
+
+
+def test_tag_verbs_raise(tmp_path):
+    p = DirProvider(tmp_path / "ws", session="s1")
+    with pytest.raises(NotSupportedError):
+        p.tag("v1")
+    with pytest.raises(NotSupportedError):
+        p.tags()
+    with pytest.raises(NotSupportedError):
+        p.tag_info("v1")
+    with pytest.raises(NotSupportedError):
+        p.delete_tag("v1")
+    with pytest.raises(NotSupportedError):
+        p.at_tag("v1")
+    with pytest.raises(NotSupportedError):
+        p.diff("a", "b")
 
 
 def test_kv_persists_across_instances(tmp_path):

@@ -116,9 +116,12 @@ class CheckpointInfo:
     tree: str | None = None
     """Hash of the checkpoint's content (kvgit: the keyset root) —
     the identity of *what the files and cache are*, as opposed to
-    ``id``, the identity of *this point in history*. Two checkpoints
-    with equal trees hold identical content, whatever their metadata,
-    ancestry or time. ``None`` on providers with no such hash."""
+    ``id``, the identity of *this point in history*. Equal trees mean
+    identical content, whatever the metadata, ancestry or time around
+    it; that implication runs one way only, because a store may stamp
+    each write with when it happened (kvgit does), so rewriting a value
+    with the same bytes still yields a different tree. ``None`` on
+    providers with no such hash."""
 
 
 @dataclass(frozen=True)
@@ -158,6 +161,10 @@ class WorkspaceDiff:
     (``/workspace/data/in.csv``). Framework keys — the cache, cwd, the
     stored conversation, the filesystem's own bookkeeping — are not
     files and never appear here.
+
+    A file counts as modified when it was written between the two
+    checkpoints, which is not quite the same as its bytes differing: a
+    rewrite with identical content is still a write, and shows up.
     """
 
     added: frozenset[str]
