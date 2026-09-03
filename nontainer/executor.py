@@ -183,6 +183,17 @@ class ExecutionContext:
     a tag must never name a state the tree doesn't exactly hold.
     Callable so it's read at tag time, not frozen at open."""
 
+    frozen: bool = False
+    """This workspace is a read-only snapshot at a tag.
+
+    An executor that can refuse writes should: ``LocalExecutor`` needs
+    no code for it, since the ``fs`` and ``kv`` bound here are already
+    read-only views that raise where the write happens. An executor
+    that runs against its own substrate (a guest tree) may write freely
+    and report the harvest; the workspace refuses to absorb it and
+    tells the caller the call was refused, so honouring the flag is an
+    optimization, never the guarantee."""
+
     root: str = "/workspace"
     """The workspace root: the absolute VFS path agent-visible files
     live under — the ONE path contract shared across executors.

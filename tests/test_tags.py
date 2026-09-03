@@ -264,6 +264,60 @@ def test_frozen_workspace_serves_a_get_handler(kv_ws):
         assert "one" in response.text
 
 
+def test_frozen_workspace_refuses_a_cache_write(snapshot):
+    result = snapshot.run_python("cache['x'] = 1")
+    assert "frozen snapshot at tag 'v1'" in result.error
+    assert not snapshot.dirty
+
+    with pytest.raises(PermissionError, match="frozen snapshot"):
+        snapshot.cache["x"] = 1
+    assert "x" not in snapshot.cache
+
+
+def test_frozen_refusal_survives_a_remote_executor(tmp_path):
+    """An executor with its own substrate writes before anything here
+    can stop it, so the workspace refuses the harvest instead: the
+    frozen state is untouched, the call says so, and the next call
+    reads the frozen bytes again."""
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+
+    def dud():
+        return DudExecutor(backend="subprocess")
+
+    parent = Workspace(
+        KvgitProvider.open(tmp_path / "kvgit", session="remote"),
+        executor_factory=dud,
+    )
+    try:
+        parent.terminal("echo one > a.txt")
+        parent.tag("v1")
+        tagged = parent.head
+    finally:
+        parent.close()
+
+    reader = Workspace(
+        KvgitProvider.open(tmp_path / "kvgit", session="remote"),
+        executor_factory=dud,  # a factory, so the snapshot gets one too
+    )
+    try:
+        with reader.at_tag("v1") as snapshot:
+            assert type(snapshot._executor) is DudExecutor
+            write = snapshot.terminal("echo changed > a.txt; echo new > b.txt")
+            assert write.exit_code != 0
+            assert "frozen snapshot at tag 'v1'" in write.stderr
+            assert not snapshot.dirty
+
+            assert snapshot.terminal("cat a.txt").stdout.strip() == "one"
+            assert not snapshot.fs.exists("/workspace/b.txt")
+            assert snapshot.head == tagged
+
+            cache_write = snapshot.run_python("cache['x'] = 1")
+            assert "frozen snapshot at tag 'v1'" in cache_write.error
+    finally:
+        reader.close()
+
+
 def test_at_tag_unknown_name(kv_ws):
     kv_ws.terminal("echo one > a.txt")
     with pytest.raises(CheckpointNotFoundError):
