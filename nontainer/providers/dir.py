@@ -185,7 +185,14 @@ class DirProvider:
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
         raise self._unsupported("history")
 
-    def fork(self, name: str) -> "DirProvider":
+    def fork(self, name: str, *, at: str | None = None) -> "DirProvider":
+        if at is not None:
+            from ..errors import NotSupportedError
+
+            raise NotSupportedError(
+                "fork(at=...) needs history to branch from; the dir backend "
+                "keeps none. Fork the current state instead."
+            )
         raise self._unsupported("fork")
 
     def discard(self) -> None:

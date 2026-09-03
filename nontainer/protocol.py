@@ -241,7 +241,7 @@ class WorkspaceProvider(Protocol):
         """Checkpoints, newest first."""
         ...
 
-    def fork(self, name: str) -> "WorkspaceProvider":
+    def fork(self, name: str, *, at: str | None = None) -> "WorkspaceProvider":
         """New independent session seeded from current state.
 
         kvgit: O(1) branch. AgentFS: file copy. ``name`` is validated

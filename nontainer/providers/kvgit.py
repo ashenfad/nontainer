@@ -326,16 +326,30 @@ class KvgitProvider:
         root = safe_loads(raw)
         return root if isinstance(root, str) else None
 
-    def fork(self, name: str) -> "KvgitProvider":
-        """O(1) branch sharing storage. Pending staged changes are
-        checkpointed first so the fork sees current state."""
+    def fork(self, name: str, *, at: str | None = None) -> "KvgitProvider":
+        """O(1) branch sharing storage.
+
+        Without ``at``, pending staged changes are checkpointed first so
+        the fork sees current state. With ``at`` the fork starts from
+        that earlier checkpoint instead, and the staged changes are left
+        alone: they belong to this session's present, not to the past
+        the fork is branching from.
+        """
         self._refuse_frozen("fork")
         validate_session_id(name)
         if name in self._staged.list_branches():
             raise WorkspaceError(f"Branch already exists: {name!r}")
-        if self._staged.has_changes:
-            self.checkpoint(info={"tool": "fork", "target": name})
-        forked = self._staged.create_branch(name)
+        if at is None:
+            if self._staged.has_changes:
+                self.checkpoint(info={"tool": "fork", "target": name})
+            forked = self._staged.create_branch(name)
+        else:
+            try:
+                forked = self._staged.create_branch(name, at=at)
+            except ValueError as e:
+                if "does not exist" in str(e):
+                    raise CheckpointNotFoundError(at) from e
+                raise
         return KvgitProvider(forked, session=name)
 
     def discard(self) -> None:

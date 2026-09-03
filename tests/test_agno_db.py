@@ -603,3 +603,24 @@ def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
     run_turn(moved_agent, write_turn("c.txt", "C"))
     assert len(fresh_db.get_session("moved").runs) == 3
     fresh.close()
+
+
+def test_fork_session_at_a_checkpoint_carries_that_conversation(tmp_path):
+    """Branch from where a publish happened: the child holds the files
+    and the runs as they stood at that commit, under its own id, and the
+    parent is not rewound to produce it."""
+    ws, db, tk, agent = build(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    at = ws.head
+    run_turn(agent, write_turn("b.txt", "B"))
+    parent_head = ws.head
+
+    child = fork_session(ws, "from-a", at=at)
+    child_db = KvgitSessionDb(child, db_path=str(tmp_path / "agno"))
+    session = child_db.get_session("from-a")
+    assert session is not None and len(session.runs) == 1
+    assert session.session_data["forked_from_session_id"] == ws.session
+    assert child.fs.read("a.txt") == b"A" and not child.fs.exists("b.txt")
+    assert ws.head == parent_head and len(db.get_session(ws.session).runs) == 2
+    child.close()
+    ws.close()

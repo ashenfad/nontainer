@@ -1601,16 +1601,21 @@ class Workspace:
     def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
         return self._provider.history(limit=limit)
 
-    def fork(self, name: str) -> "Workspace":
-        """Independent session seeded from current state. Inherits this
-        workspace's construction settings (see :class:`_Settings`) —
-        python config, mounts, root, executor factory — plus its
-        terminal commands. Cost varies by backend (see
-        ``caps.cheap_fork`` and the README tradeoffs)."""
+    def fork(self, name: str, *, at: str | None = None) -> "Workspace":
+        """Independent session seeded from current state — or, with
+        ``at``, from an earlier checkpoint of this session, leaving this
+        session where it is. Inherits this workspace's construction
+        settings (see :class:`_Settings`) — python config, mounts, root,
+        executor factory — plus its terminal commands. Cost varies by
+        backend (see ``caps.cheap_fork`` and the README tradeoffs).
+
+        ``at`` is what "branch from where I published" wants: the
+        child starts at that commit with everything the commit holds,
+        and nothing here is rewound to get it there."""
         # Mutating despite appearances: providers may checkpoint pending
         # staged changes so the fork sees current state (kvgit does).
         with self._lock:
-            forked = self._provider.fork(name)
+            forked = self._provider.fork(name, at=at)
         # Commands and autocheckpoint are replayed from the LIVE
         # attributes rather than from _settings, because both can change
         # after construction (see _Settings). register_command mutates
