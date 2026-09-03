@@ -226,14 +226,24 @@ def test_frozen_workspace_leaves_its_parent_alone(kv_ws):
     assert not kv_ws.fs.exists("/workspace/c.txt")
 
 
-def test_frozen_workspace_serves_a_get_handler(snapshot):
+def test_frozen_workspace_serves_a_get_handler(kv_ws):
     """Apps dispatch through a snapshot: the read path an embedder
     publishes an app on."""
     from nontainer.apps import enable_apps, request
 
-    runtime = enable_apps(snapshot)
-    response = runtime.dispatch(request("GET", "/api/note"))
-    assert response.status == 404  # no handler tagged; the path still runs
+    kv_ws.fs.makedirs("/workspace/app/api", exist_ok=True)
+    kv_ws.fs.write(
+        "/workspace/app/api/note.py",
+        b"def get(req):\n    return {'note': open('/workspace/a.txt').read().strip()}\n",
+    )
+    kv_ws.terminal("echo one > a.txt")
+    kv_ws.tag("v1")
+
+    with kv_ws.at_tag("v1") as snapshot:
+        runtime = enable_apps(snapshot)
+        response = runtime.dispatch(request("GET", "/api/note"))
+        assert response.status == 200
+        assert "one" in response.text
 
 
 def test_at_tag_unknown_name(kv_ws):
