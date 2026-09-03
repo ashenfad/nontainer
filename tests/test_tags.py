@@ -311,6 +311,23 @@ def test_tree_names_the_content_a_checkpoint_holds(kv_ws):
     assert kv_ws.tag_info("v1").tree == tagged  # the tag did not
 
 
+def test_a_same_bytes_rewrite_is_not_a_change(kv_ws):
+    """``changed_since`` answers the content question: re-saving a file
+    with the bytes it already had changed nothing, however many commits
+    it took. ``tree`` still moves — it identifies the write, not the
+    content."""
+    kv_ws.terminal("echo one > a.txt")
+    published = kv_ws.head
+    tree = kv_ws.head_tree
+
+    kv_ws.terminal("echo one > a.txt")  # identical content, new commit
+
+    assert kv_ws.head != published
+    assert kv_ws.head_tree != tree
+    diff = kv_ws.changed_since(published)
+    assert not (diff.added or diff.removed or diff.modified)
+
+
 # -- unversioned providers ---------------------------------------------------
 
 

@@ -31,7 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ws.changed_since(ref)` and `ws.diff(a, b)`** — what changed
   between two checkpoints, as workspace file paths (`ref` may be a tag
   name or a checkpoint id). Framework keys — cache, cwd, the stored
-  conversation — never appear: an embedder sees files.
+  conversation — never appear: an embedder sees files. `modified` is
+  the content question, so a file re-saved with the bytes it already
+  had is not a change, even though kvgit's own key diff counts the
+  write.
 
 - **`CheckpointInfo.tree` and `ws.head_tree`** — the content hash of a
   checkpoint, where `id` identifies the point in history. Equal trees

@@ -450,20 +450,45 @@ class KvgitProvider:
         the rest, so an embedder sees the workspace's own paths and
         never a framework key (the cache, cwd, the stored conversation,
         the filesystem's metadata).
+
+        ``modified`` answers the content question, not the write
+        question. kvgit compares per-commit blob pointers, so a file
+        re-saved with the same bytes reads as modified there; here the
+        bytes are read at both commits and the path is kept only if they
+        differ. That costs one read per candidate key per side — paid
+        only for files the pointer diff already flagged — and it is what
+        makes "what changed since I published" mean what it says. The
+        commit's ``tree`` still moves for such a rewrite, since kvgit
+        stamps each entry with when it was written: ``tree`` identifies
+        this exact write, ``diff`` identifies the content.
         """
         raw = self._staged.versioned.diff(a, b)
         return WorkspaceDiff(
-            added=self._paths(raw.added),
-            removed=self._paths(raw.removed),
-            modified=self._paths(raw.modified),
+            added=frozenset(self._file_keys(raw.added).values()),
+            removed=frozenset(self._file_keys(raw.removed).values()),
+            modified=self._changed_content(self._file_keys(raw.modified), a, b),
         )
 
-    def _paths(self, keys: Iterable[str]) -> frozenset[str]:
-        """The workspace file paths among a set of store keys."""
+    def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
+        """Of these file keys, the paths whose bytes actually differ."""
+        if not keys:
+            return frozenset()
+        at_a = self._staged.checkout(a)
+        at_b = self._staged.checkout(b)
+        if at_a is None or at_b is None:
+            # A commit that cannot be opened cannot be compared; the
+            # pointer diff is then the most this can honestly say.
+            return frozenset(keys.values())
+        return frozenset(
+            path for key, path in keys.items() if at_a.get(key) != at_b.get(key)
+        )
+
+    def _file_keys(self, keys: Iterable[str]) -> dict[str, str]:
+        """Store key → workspace file path, for the keys that are files."""
         from monkeyfs import VirtualFS
 
         vfs = self.fs
-        out: set[str] = set()
+        out: dict[str, str] = {}
         for key in keys:
             if not isinstance(key, str) or not key.startswith(VirtualFS.PREFIX):
                 continue
@@ -475,10 +500,10 @@ class KvgitProvider:
                 # It stores paths root-relative, so the leading slash
                 # goes back on: these are the absolute paths agent code
                 # and ``ws.fs`` use (``/workspace/data/in.csv``).
-                out.add("/" + vfs._decode_path(key).lstrip("/"))
+                out[key] = "/" + vfs._decode_path(key).lstrip("/")
             except Exception:  # noqa: BLE001 - an undecodable key is not a file
                 continue
-        return frozenset(out)
+        return out
 
     # -- power modes / lifecycle ---------------------------------------
 
