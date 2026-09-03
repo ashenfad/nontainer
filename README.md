@@ -72,7 +72,13 @@ print(rows)
 r.checkpoint                 # commit id this call produced; ws.restore(it) undoes it
 fork = ws.fork("what-if")    # O(1) branch; the original is untouched
 ws.rollback(steps=1)         # or time-travel by steps
+ws.tag("v1")                 # name this state; it outlives the call that made it
+snap = ws.at_tag("v1")       # a frozen workspace at that name: reads, never writes
 ```
+
+A tag is session-scoped by default and dies with the session;
+`ws.tag("v1", scope="store")` makes a publication that outlives it,
+readable from any session on the store.
 
 Checkpoints cover workspace-owned files and cache. Host-object calls
 and mounts are external effects: their data is not checkpointed,

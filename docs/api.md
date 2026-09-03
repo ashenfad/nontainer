@@ -50,9 +50,11 @@ delete_workspace(
 
 The counterpart to `workspace(...)`: drops a session's entire stored
 state, dispatching by `backend` to the same layout the factory built —
-`kvgit` deletes the named branches from `store/kvgit`, `dir` removes
-the `store/<session>/` trees, `agentfs` unlinks the `store/<session>.db`
-files. Plural because a caller often owns more than one branch/dir/db
+`kvgit` deletes the named branches from `store/kvgit` — and with each
+branch the session-scoped tags it owns, leaving store-scoped ones
+alone, since that scope exists so a publication outlives its session —
+`dir` removes the `store/<session>/` trees, `agentfs` unlinks the
+`store/<session>.db` files. Plural because a caller often owns more than one branch/dir/db
 per logical session (an app publishing snapshot branches, a batch
 cleanup); `sessions` may be a single id or any iterable. Idempotent —
 a name that doesn't exist and a store that was never created are both
@@ -191,12 +193,82 @@ ws.rollback(steps: int = 1) -> str
 ws.history(limit: int | None = None) -> Iterable[CheckpointInfo]
 ws.fork(name: str) -> Workspace                  # cost varies by backend
 ws.discard() -> None                             # drop staged writes
+ws.head_tree: str | None # content hash of the head — the identity of
+                         # WHAT the files and cache are, where `head`
+                         # identifies the point in history
 ```
 
 Unversioned providers raise `NotSupportedError`; `autocheckpoint` is
 forced off for them. With autocheckpoint on, each successful mutating
 tool call commits with `info={"tool": ...}`; read-only calls never
 commit. `info` dicts must be JSON-serializable.
+
+Equal trees mean identical content, whatever the metadata or ancestry
+around it. The converse does not hold: kvgit stamps each write with
+when it happened, so rewriting a file with the same bytes still moves
+the tree. `CheckpointInfo.tree` carries the same hash per history
+entry (`None` on a provider that keeps no such hash).
+
+#### Tags (`ws.caps.tags`)
+
+A tag is a name for a checkpoint that outlives the call that made it —
+immutable, and a garbage-collection root: the named checkpoint and its
+ancestry stay reachable for as long as the name does.
+
+```python
+ws.tag(name, *, info=None, scope="session") -> str    # checkpoint id
+ws.tags(*, scope="session") -> dict[str, str]         # name -> checkpoint id
+ws.tag_info(name, *, scope="session") -> TagInfo | None
+ws.delete_tag(name, *, scope="session") -> None
+ws.at_tag(name, *, scope="session") -> Workspace      # frozen; see below
+ws.diff(a, b) -> WorkspaceDiff                        # two checkpoint ids
+ws.changed_since(ref, *, scope="session") -> WorkspaceDiff  # tag name or id
+```
+
+**Two scopes, and nontainer decides what they mean** rather than
+handing embedders one flat namespace to partition themselves:
+
+| scope | belongs to | survives `delete_workspace` | for |
+|---|---|---|---|
+| `"session"` (default) | this session | ❌ — it goes with the branch | checkpoints worth naming: "before the refactor", "the state the report was built from" |
+| `"store"` | no session | ✅ | publications: the snapshot an app serves, the state a link points at |
+
+`ws.tags()` lists only the scope you ask for, so two sessions can each
+hold a `v1` and neither sees the other's. Names come back the way you
+passed them; the scope prefix kvgit stores them under (`<session>/`,
+`store/`) never surfaces, and a name that starts with one is rejected
+so a scope can't be spoofed. Otherwise the rule is kvgit's: any
+non-empty name without `%`, `/` included. Tags never move — an existing
+name raises rather than being repointed. `ws.tag()` checkpoints staged
+work first (`info={"tool": "tag", "name": ...}`, like `fork`), so the
+name means what the caller saw.
+
+`TagInfo` carries `name`, `scope`, `id` (the checkpoint), `tree`,
+`time`, the `info` dict, and `dangling` (the checkpoint is not in the
+store — damage, not an ordinary state).
+
+**Frozen workspaces.** `ws.at_tag(name)` returns a `Workspace` over the
+tagged state that can be read but never written: `ws.frozen` is True,
+`autocheckpoint` is forced off, `file_write` / `file_edit` / `put` /
+`checkpoint` / `fork` / `tag` / `rollback` raise `NotSupportedError`,
+and the executor holds a read-only filesystem, so a shell redirect or
+`open(..., "w")` from agent code fails where it happens with a message
+naming the tag. Reads, `run_python` that only reads, and apps dispatch
+all work; `discard()` and `close()` work. It inherits the parent's
+construction settings the way `fork` does — python config **including
+its live host objects**, mounts, root, executor factory, commands — so
+an app served from a snapshot still talks to the session's live db.
+The files are frozen; the host's world is not.
+
+**`changed_since`** takes a tag name or a checkpoint id (the tag is
+tried first, in `scope`) and compares it with the current head.
+`WorkspaceDiff` holds `added` / `removed` / `modified` as absolute
+workspace paths — `/workspace/data/in.csv`, the way agent code and
+`ws.fs` name files. Framework keys (cache, cwd, the stored
+conversation, the filesystem's own bookkeeping) are not files and never
+appear. A file that was rewritten counts as modified even if its bytes
+did not change, and staged-but-uncommitted work is not in the diff at
+all (check `ws.dirty`).
 
 ### Introspection
 
@@ -206,6 +278,7 @@ ws.caps: Capabilities
 ws.cache_enabled: bool
 ws.python_config: PythonConfig
 ws.root: str                  # the workspace root (see the factory)
+ws.frozen: bool               # a read-only snapshot at a tag (at_tag)
 ws.supports_commands: bool    # executor capability, below
 ```
 
@@ -397,7 +470,8 @@ plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
 
 All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
 `session`, `caps`, `fs`, `kv`, `dirty`, `checkpoint/restore/history/
-fork/discard`, `mount`, `close`.
+fork/discard`, `tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`,
+`close`.
 
 ```python
 KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store
@@ -426,11 +500,11 @@ resolve `<session>/` and `<session>.db` under it).
 
 Capabilities at a glance:
 
-| | versioned | staging | cheap_fork | merge | sql_audit |
-|---|---|---|---|---|---|
-| Kvgit | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Dir | ❌ | ❌ | ❌ | ❌ | ❌ |
-| AgentFS | ❌ (spike) | ❌ | ❌ | ❌ | ✅ |
+| | versioned | staging | cheap_fork | merge | tags | sql_audit |
+|---|---|---|---|---|---|---|
+| Kvgit | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Dir | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| AgentFS | ❌ (spike) | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 `codecs="scientific"` on kvgit enables numpy/pandas chunk dedup
 (requires `kvgit[scientific]`).

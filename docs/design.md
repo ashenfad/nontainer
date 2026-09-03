@@ -61,6 +61,34 @@ Results pin the commit they produced — `result.checkpoint` is the id
 compensation by identity rather than counting steps. Read-only calls
 don't commit at all; `ws.head` pins the state they observed.
 
+## Tags have two scopes, and nontainer picks them
+
+A checkpoint id is precise and unmemorable, so checkpoints get names.
+The question a naming feature has to answer is what a name *belongs
+to*, and leaving that to embedders is how one flat namespace becomes a
+convention nobody wrote down: session ids stuffed into tag strings, two
+sessions racing for `v1`, and teardown that either orphans names or
+deletes someone else's.
+
+So the scope is part of the API. A **session** tag belongs to the
+session that made it: another session's `v1` is a different tag, a
+session lists only its own, and deleting the session deletes them —
+that is what makes tagging cheap, because naming a state costs nothing
+you have to clean up later. A **store** tag belongs to no session: it
+is visible from every workspace on the store and survives the deletion
+of the session that made it. That is the whole difference, and it is
+the difference an embedder actually has: a checkpoint worth naming
+inside a conversation, versus a publication that has to outlive the
+conversation — the snapshot an app serves, the state a link points at.
+
+Both ride kvgit's tags, which are branch heads under a reserved name,
+so a tagged checkpoint anchors garbage collection with no rule of its
+own: the state a publication names stays readable after everything else
+about its session is gone. `at_tag` opens it as a **frozen** workspace —
+the files read-only down to the executor's filesystem, nothing able to
+commit — because a published snapshot that could be written to is not
+a snapshot.
+
 ## Tool exposure adapts to the environment
 
 `WorkspaceTools(tools="auto")` picks the surface from the config:
