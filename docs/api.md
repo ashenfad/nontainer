@@ -206,8 +206,9 @@ commit. `info` dicts must be JSON-serializable.
 Equal trees mean identical content, whatever the metadata or ancestry
 around it. The converse does not hold: kvgit stamps each write with
 when it happened, so rewriting a file with the same bytes still moves
-the tree. `CheckpointInfo.tree` carries the same hash per history
-entry (`None` on a provider that keeps no such hash).
+the tree — ask `changed_since` when the question is content.
+`CheckpointInfo.tree` carries the same hash per history entry (`None`
+on a provider that keeps no such hash).
 
 #### Tags (`ws.caps.tags`)
 
@@ -268,9 +269,17 @@ tried first, in `scope`) and compares it with the current head.
 workspace paths — `/workspace/data/in.csv`, the way agent code and
 `ws.fs` name files. Framework keys (cache, cwd, the stored
 conversation, the filesystem's own bookkeeping) are not files and never
-appear. A file that was rewritten counts as modified even if its bytes
-did not change, and staged-but-uncommitted work is not in the diff at
-all (check `ws.dirty`).
+appear, and staged-but-uncommitted work is not in the diff at all
+(check `ws.dirty`).
+
+`modified` is the content question: a file re-saved with the bytes it
+already had is not a change, even though it is a new write. kvgit
+compares blob pointers, so the provider reads the bytes at both
+commits for the paths that diff flagged — one read per candidate per
+side — and keeps only the ones that really differ. `tree` behaves the
+other way and is meant to: it moves on any write, because kvgit stamps
+each entry with when it happened. `tree` identifies this exact write;
+`diff` identifies the content.
 
 ### Introspection
 
