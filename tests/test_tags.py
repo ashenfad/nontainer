@@ -65,6 +65,29 @@ def test_tags_are_immutable(kv_ws):
         kv_ws.tag("v1")
 
 
+@pytest.mark.parametrize("name", ["v1", "@store/x", "test-session/x", ""])
+def test_a_refused_tag_commits_nothing(name):
+    """Everything checkable is checked before the commit a dirty
+    workspace needs: a refused name must not leave the history — a
+    whole turn's worth of it, in turn-granularity mode — advanced."""
+    ws = Workspace(KvgitProvider.open(None, session="test-session"))
+    try:
+        ws.terminal("echo one > a.txt")
+        ws.tag("v1")
+        ws.autocheckpoint = False
+        ws.terminal("echo two > a.txt")
+        head, dirty = ws.head, ws.dirty
+        assert dirty
+
+        with pytest.raises((WorkspaceError, ValueError)):
+            ws.tag(name)
+
+        assert ws.head == head
+        assert ws.dirty
+    finally:
+        ws.close()
+
+
 def test_delete_unknown_tag_raises(kv_ws):
     with pytest.raises(CheckpointNotFoundError):
         kv_ws.delete_tag("never")

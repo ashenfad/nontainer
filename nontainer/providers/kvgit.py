@@ -374,6 +374,10 @@ class KvgitProvider:
             f"{SESSION_SCOPE!r} or {STORE_SCOPE!r}"
         )
 
+    def check_tag(self, name: str, *, scope: str = SESSION_SCOPE) -> None:
+        """Apply the name and scope rules without writing anything."""
+        self._scoped(name, scope)
+
     def tag(
         self,
         name: str,

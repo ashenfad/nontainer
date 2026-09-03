@@ -203,6 +203,9 @@ class DirProvider:
     ) -> str:
         raise self._unsupported("tag")
 
+    def check_tag(self, name: str, *, scope: str = "session") -> None:
+        raise self._unsupported("check_tag")
+
     def tags(self, *, scope: str = "session") -> dict[str, str]:
         raise self._unsupported("tags")
 

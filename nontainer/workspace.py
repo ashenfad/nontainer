@@ -1680,12 +1680,24 @@ class Workspace:
 
         Staged changes are committed first (``info={"tool": "tag"}``),
         the way :meth:`fork` does, so the name means what the caller saw
-        rather than the last commit before it.
+        rather than the last commit before it. Everything that can be
+        checked is checked BEFORE that commit — the name and scope
+        rules, and whether the name is taken — because a refusal after
+        it would leave the history permanently advanced by a call that
+        failed, which in turn-granularity mode is the whole turn the
+        caller believed had not happened. The provider's own
+        compare-and-set still decides a race between two taggers.
         """
         with self._lock:
             self._check_open()
             self._require_tags("tag")
             self._check_writable("tag")
+            self._provider.check_tag(name, scope=scope)
+            if self._provider.tag_info(name, scope=scope) is not None:
+                raise WorkspaceError(
+                    f"Tag already exists: {name!r} in scope {scope!r} — tags "
+                    "never move; delete it first if you mean to repoint it"
+                )
             if self._provider.dirty:
                 self._provider.checkpoint(info={"tool": "tag", "name": name})
             return self._provider.tag(name, info=info, scope=scope)
@@ -1745,8 +1757,9 @@ class Workspace:
         """File-level changes between two checkpoint ids: which
         workspace paths were added, removed and modified. Framework
         state — cache, cwd, the stored conversation — is not a file and
-        never appears; a file that was rewritten counts as modified even
-        if its bytes did not change."""
+        never appears, and ``modified`` holds the paths whose BYTES
+        differ: a file re-saved with the content it already had is not
+        a change, though the store's own key diff counts the write."""
         with self._lock:
             self._require_tags("diff")
             return self._provider.diff(a, b)

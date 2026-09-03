@@ -162,9 +162,10 @@ class WorkspaceDiff:
     stored conversation, the filesystem's own bookkeeping — are not
     files and never appear here.
 
-    A file counts as modified when it was written between the two
-    checkpoints, which is not quite the same as its bytes differing: a
-    rewrite with identical content is still a write, and shows up.
+    ``modified`` holds the paths whose BYTES differ between the two
+    checkpoints. A file re-saved with the content it already had is not
+    a change here, even where the store's own key-level diff counts the
+    write — the provider compares the content.
     """
 
     added: frozenset[str]
@@ -278,6 +279,17 @@ class WorkspaceProvider(Protocol):
         Tags never move: an existing name raises rather than being
         repointed. ``at`` defaults to the current head; ``info`` must be
         JSON-serializable.
+        """
+        ...
+
+    def check_tag(self, name: str, *, scope: str = "session") -> None:
+        """Validate a name and scope without writing anything.
+
+        The rules ``tag`` would apply, available before the commit a
+        caller may have to make first: a workspace with staged work
+        checkpoints before naming it, and a name rejected afterwards
+        would leave that commit behind for nothing. Raises the same
+        ``ValueError`` ``tag`` raises.
         """
         ...
 
