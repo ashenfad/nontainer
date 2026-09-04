@@ -252,6 +252,10 @@ Three fields make the app the embedder's rather than the library's:
 - `csp` — the policy served HTML carries **and** the one `test_app`
   enforces while verifying. Declare it here rather than on
   `build_router`, or verification runs under a policy you do not serve.
+  To widen one directive instead of restating the whole policy — an
+  intranet tile server on plain `http://`, say — use
+  `csp_extend={"img-src": ("http://tiles.internal",)}`, which keeps the
+  rest of the policy derived from `script_hosts`.
 
 See [apps.md](apps.md).
 

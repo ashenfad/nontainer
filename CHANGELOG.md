@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **`blob:` images and media in the default served CSP**
+  ([#58](https://github.com/ashenfad/nontainer/issues/58)). `img-src`
+  gains `blob:` and a `media-src 'self' https: data: blob:` directive
+  joins the policy, where media previously fell through to `default-src
+  'self'`. This is a loosening, taken deliberately: plotly — the library
+  the default frontend notes recommend — rasterizes a chart by putting
+  its SVG in a Blob and drawing it onto a canvas through an `<img>`, so
+  the modebar's *download as png* and `Plotly.toImage()` were refused
+  under the old policy. An image violation is a warning during
+  verification rather than a failure, so it showed as a line in
+  `[rejected requests]` and the app shipped broken. A blob URL is
+  same-origin and same-document — the page can only display bytes it
+  already holds — which is the risk class `data:` already had on those
+  directives. Code from a blob is a different question and is still
+  refused: `script-src` has no `blob:`, and no `worker-src`/`child-src`
+  is added.
+
+### Added
+
+- **`AppsConfig.csp_extend`** — `{directive: sources}` merged onto the
+  DERIVED policy, so an embedder can widen one directive without
+  restating the whole thing. `csp_extend={"connect-src":
+  ("http://api.internal",)}` is what an air-gapped intranet deployment
+  needs: the browser is the only network path an app has (handlers have
+  no network), and a tile server or API on plain `http://` is refused by
+  `connect-src 'self' https:`. The alternative — copying the derived
+  policy into `csp` — is a snapshot that silently loses its link to
+  `script_hosts` and misses whatever the derived policy gains later.
+  Extend-only by design: sources are appended (de-duplicated, derived
+  sources first) or a missing directive is added, and nothing can be
+  removed — a policy that must be tighter is declared whole in `csp`.
+  Setting both `csp` and a non-empty `csp_extend` raises `ValueError`
+  rather than ignoring the extension, since a verbatim policy has
+  nothing to extend.
+
 ## 0.5.1 - 2026-09-03
 
 ### Changed

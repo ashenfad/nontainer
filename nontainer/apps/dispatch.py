@@ -165,6 +165,12 @@ DEFAULT_SCRIPT_HOSTS = (
 )
 
 
+def _is_csp_token(text: str) -> bool:
+    """A CSP directive name or source with nothing in it that could
+    splice the policy: non-empty, no whitespace, no ``;``."""
+    return bool(text) and ";" not in text and not any(c.isspace() for c in text)
+
+
 @dataclass(frozen=True)
 class AppsConfig:
     request_timeout: float = 5.0
@@ -266,7 +272,76 @@ class AppsConfig:
     ``build_router(csp=...)`` still wins where an embedder passes it,
     for compatibility; prefer setting it here so both halves agree.
 
+    Setting this AND a non-empty ``csp_extend`` is a configuration
+    error: a verbatim policy has nothing to extend."""
+    csp_extend: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    """Sources to ADD to individual directives of the DERIVED policy::
+
+        AppsConfig(csp_extend={
+            "img-src": ("blob:",),
+            "connect-src": ("http://tiles.internal", "wss:"),
+        })
+
+    The case this exists for is an intranet deployment where the only
+    network path an app has is the browser's: a tile server or API on
+    plain ``http://`` is refused by ``connect-src 'self' https:`` and
+    ``img-src 'self' https:``, and the alternative — copying the whole
+    policy into ``csp`` — silently drops its link to ``script_hosts``
+    and ``'wasm-unsafe-eval'``, so anything later added to the derived
+    policy is missing from the copy with nothing to say so.
+
+    EXTEND-ONLY, deliberately. Each entry appends its sources to that
+    directive of the derived policy (de-duplicated, derived sources
+    first, directive names matched case-insensitively), or adds the
+    directive when the derived policy has none (``frame-src``,
+    ``worker-src``). Removing a source, or making a directive stricter,
+    is not expressible here — declare the whole policy in ``csp`` for
+    that.
+
+    Extending ``script-src`` is allowed (an embedder may need
+    ``'unsafe-eval'``), but ``script_hosts`` remains the declaration for
+    script HOSTS: it also drives test_app's request interception,
+    curl's external-URL message, and the allowlist sentence the agent
+    reads, none of which a policy string reaches. A host added here
+    does still join test_app's interception allowlist, because test_app
+    parses the resolved policy for script origins.
+
     Declared last: see ``frontend_notes``."""
+
+    def __post_init__(self) -> None:
+        """Validate ``csp_extend`` at construction, where the traceback
+        still points at the embedder's own call, rather than shipping a
+        malformed directive into a served header (a stray ``;`` or
+        space would splice a new directive into the policy)."""
+        if not self.csp_extend:
+            return
+        if self.csp is not None:
+            raise ValueError(
+                "csp_extend cannot be combined with csp: a verbatim policy has "
+                "nothing to extend. Put the added sources in the csp string, or "
+                "drop csp and let the policy derive from script_hosts."
+            )
+        for name, sources in self.csp_extend.items():
+            if (
+                not isinstance(name, str)
+                or not _is_csp_token(name)
+                or name.lower() != name
+            ):
+                raise ValueError(
+                    f"csp_extend directive must be a lowercase name with no "
+                    f"whitespace or ';': {name!r}"
+                )
+            if isinstance(sources, str) or not isinstance(sources, (tuple, list)):
+                raise ValueError(
+                    f"csp_extend[{name!r}] must be a tuple or list of source "
+                    f"strings, not {sources!r}"
+                )
+            for src in sources:
+                if not isinstance(src, str) or not _is_csp_token(src):
+                    raise ValueError(
+                        f"csp_extend[{name!r}] source must be a non-empty string "
+                        f"with no whitespace or ';': {src!r}"
+                    )
 
 
 class AppRuntime:
