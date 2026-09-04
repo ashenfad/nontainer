@@ -63,7 +63,13 @@ dependencies = [
     # ``refs/tags/`` branch heads, so they anchor garbage collection in
     # every kvgit version; plus checkout(tag=), peek(..., tag=) and the
     # anchor-free kvgit.delete_tags the tag verbs are built on.
-    "kvgit[disk]>=0.3.5",
+    # 0.3.6: kvgit.merges — text merge with conflict markers, the merge
+    # function the ws-git provider verb registers for file keys.
+    # 0.3.7: Staged.merge / VersionedKV.merge_heads — public
+    # cross-branch merge, which the provider verb calls WITHOUT a
+    # post_check so conflict markers commit with the merge (flagged in
+    # the outcome, never blocking); only non-file hard conflicts abort.
+    "kvgit[disk]>=0.3.7",
     # 0.1.3: value-based collapsing is restricted to exact builtin
     # scalar types, so a rendered object's own __eq__ can no longer
     # raise out of render(). The values rendered here are agent-authored

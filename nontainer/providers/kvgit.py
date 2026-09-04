@@ -35,6 +35,7 @@ cannot collide however a session is named.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Iterator, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,7 @@ from ..errors import CheckpointNotFoundError, NotSupportedError, WorkspaceError
 from ..protocol import (
     Capabilities,
     CheckpointInfo,
+    MergeOutcome,
     TagInfo,
     WorkspaceDiff,
     validate_session_id,
@@ -57,6 +59,77 @@ _KVGIT_CAPS = Capabilities(
     fuse_mount=False,
     tags=True,
 )
+
+
+def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
+    """Positional session state (cwd): the merger's context wins."""
+    return ours if ours is not None else theirs
+
+
+def _merge_vfs_metadata(old: Any, ours: Any, theirs: Any) -> bytes:
+    """Field-aware merge for the monkeyfs file table.
+
+    The table (``{path: {size, created_at, modified_at, is_dir}}``)
+    contests on every two-sided change through timestamp noise alone,
+    so line-merge is the wrong tool: merge per path instead. Unchanged
+    on one side takes the other; changed on both takes the latest
+    ``modified_at`` with the earliest ``created_at`` (timestamps are
+    advisory — content truth lives in the file blobs this table
+    describes); deleted on one side and unmodified on the other drops;
+    deleted-against-modified keeps the modified record (the content
+    markers flag the path anyway); ``is_dir`` disagreement raises.
+    Unparseable raises ``CantMark``: filed as a conflict like binary.
+    """
+    from kvgit.merges import CantMark
+
+    def table(value: Any) -> dict:
+        if value is None:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError) as e:
+            raise CantMark(f"VFS metadata not JSON: {e}") from e
+        if not isinstance(parsed, dict):
+            raise CantMark("VFS metadata not a table")
+        return parsed
+
+    old_t, ours_t, theirs_t = table(old), table(ours), table(theirs)
+    merged: dict[str, Any] = {}
+    for path in old_t.keys() | ours_t.keys() | theirs_t.keys():
+        o, u, t = old_t.get(path), ours_t.get(path), theirs_t.get(path)
+        if u == t:
+            if u is not None:
+                merged[path] = u
+        elif o == u:
+            if t is not None:
+                merged[path] = t
+        elif o == t:
+            if u is not None:
+                merged[path] = u
+        else:
+            if u is None:
+                merged[path] = t
+            elif t is None:
+                merged[path] = u
+            else:
+                if u.get("is_dir", False) != t.get("is_dir", False):
+                    raise ValueError(f"is_dir disagreement on {path!r}: not mergeable")
+                winner = (
+                    u if u.get("modified_at", "") >= t.get("modified_at", "") else t
+                )
+                created = [
+                    r.get("created_at", "")
+                    for r in (o, u, t)
+                    if isinstance(r, dict) and r.get("created_at")
+                ]
+                merged[path] = {
+                    "size": winner.get("size", 0),
+                    "created_at": min(created) if created else "",
+                    "modified_at": winner.get("modified_at", ""),
+                    "is_dir": winner.get("is_dir", False),
+                }
+    return json.dumps(merged, sort_keys=True).encode()
+
 
 SESSION_SCOPE = "session"
 STORE_SCOPE = "store"
@@ -486,6 +559,119 @@ class KvgitProvider:
             removed=frozenset(self._file_keys(raw.removed).values()),
             modified=self._changed_content(self._file_keys(raw.modified), a, b),
         )
+
+    def merge(self, source: str) -> MergeOutcome:
+        """Merge another branch into this one.
+
+        Reads the source HEAD commit (anything uncommitted there is not
+        included), three-way merges file content with marker merge (see
+        ``kvgit.merges``), and commits the result tagged as a merge.
+        Overlapping text lands with conflict markers in the working tree
+        and the outcome reports it. Framework state merges by rule, not
+        by text: the VFS metadata table merges field-aware (timestamps
+        are advisory), cwd keys keep ours, and anything else contested
+        raises as a hard conflict rather than merging silently.
+        """
+        from kvgit import MergeConflict
+        from kvgit.merges import text as text_merge
+        from monkeyfs import VirtualFS
+
+        self._refuse_frozen("merge")
+        if self.dirty:
+            raise WorkspaceError(
+                "uncommitted changes on this branch; checkpoint or discard them first"
+            )
+        if source == self._staged.current_branch:
+            raise ValueError("cannot merge a branch into itself")
+        other = self._open_branch(source)
+        source_head = other.current_commit
+
+        # Text merge applies to file-content keys only: the merge fn
+        # receives no key, so a blanket default would marker-merge cache
+        # blobs. Enumerate from both heads; the union is harmless
+        # (uncontested keys never consult a fn). No try/except:
+        # enumeration failing means store trouble, and that must
+        # surface, not silently narrow the merge.
+        file_keys: set[str] = set()
+        for handle in (self._staged, other):
+            file_keys.update(self._file_keys(handle.keys()).keys())
+        merge_fns = {key: text_merge for key in file_keys}
+        merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
+        for cwd_key in ("__cwd__", VirtualFS.CWD_KEY):
+            merge_fns[cwd_key] = _keep_ours
+
+        # Markers commit WITH the merge (flagged in the outcome), they
+        # don't block it: the agent resolves with ordinary edit tools
+        # and checkpoints, so no merge-state machine is needed. Only
+        # non-file hard conflicts abort untouched (no fn can resolve
+        # them). Hence no post_check here — kvgit keeps the hook for
+        # callers that genuinely want blocking; we want markers.
+        try:
+            self._staged.merge(
+                source_head,
+                merge_fns=merge_fns,
+                info={"tool": "ws-git.merge", "source": source},
+            )
+        except MergeConflict as e:
+            return MergeOutcome(
+                merged=False,
+                commit=None,
+                conflicts=tuple(sorted(self._display_conflicts(e))),
+                auto_merged=(),
+            )
+        # What the merge brought in: first parent is our pre-merge head
+        # (git convention), so this diff lists exactly the merge's work.
+        # Conflict markers are detected by scan: any brought file still
+        # carrying them needs resolution.
+        parents = self._staged.versioned.parents()
+        base = parents[0] if parents else self._staged.current_commit
+        brought = self.diff(base, self._staged.current_commit)
+        conflicts = tuple(
+            sorted(
+                path
+                for path in brought.added | brought.removed | brought.modified
+                if self._file_has_markers(path)
+            )
+        )
+        return MergeOutcome(
+            merged=True,
+            commit=self._staged.current_commit,
+            conflicts=conflicts,
+            auto_merged=tuple(
+                sorted(
+                    (brought.added | brought.removed | brought.modified)
+                    - set(conflicts)
+                )
+            ),
+        )
+
+    def _open_branch(self, source: str):
+        """A throwaway read handle on another branch's HEAD.
+
+        kvgit has no "head of branch X" lookup; a fresh checkout switched
+        in place lands exactly there without touching our own handle.
+        Unknown branches raise ValueError naming them.
+        """
+        probe = self._staged.checkout(self._staged.current_commit)
+        try:
+            probe.switch_branch(source)
+        except ValueError:
+            raise ValueError(f"unknown branch {source!r}") from None
+        return probe
+
+    def _display_conflicts(self, exc: Exception) -> list[str]:
+        """Conflicting keys as display paths (raw keys for non-files)."""
+        keys: set[str] = set(getattr(exc, "conflicting_keys", ()))
+        paths = self._file_keys(keys)
+        return [paths.get(key, key) for key in keys]
+
+    def _file_has_markers(self, path: str) -> bool:
+        """Whether a display path's current bytes carry conflict markers."""
+        for key, display in self._file_keys(self._staged.keys()).items():
+            if display == path:
+                value = self._staged.get(key)
+                return isinstance(value, bytes) and b"<<<<<<< " in value
+        return False
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""

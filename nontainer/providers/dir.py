@@ -198,6 +198,9 @@ class DirProvider:
     def discard(self) -> None:
         raise self._unsupported("discard")
 
+    def merge(self, source: str) -> Any:
+        raise self._unsupported("merge")
+
     # -- tags: unsupported ---------------------------------------------
 
     def tag(

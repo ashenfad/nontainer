@@ -173,6 +173,26 @@ class WorkspaceDiff:
     modified: frozenset[str]
 
 
+@dataclass(frozen=True)
+class MergeOutcome:
+    """What merging another branch produced, as workspace file paths.
+
+    ``merged`` tells whether a merge commit was created. File conflicts
+    materialize as conflict markers IN that commit (flagged here, never
+    blocking): resolve with ordinary edits and checkpoint. ``merged``
+    False with ``commit`` None means nothing changed — non-file
+    contested state, which no merge function can resolve, aborts
+    untouched. ``conflicts`` names the paths needing resolution (raw
+    store keys for non-files); ``auto_merged`` names what the merge
+    took without judgment.
+    """
+
+    merged: bool
+    commit: str | None
+    conflicts: tuple[str, ...]
+    auto_merged: tuple[str, ...]
+
+
 @runtime_checkable
 class WorkspaceProvider(Protocol):
     """Substrate contract. See module docstring for the three surfaces."""
@@ -322,6 +342,18 @@ class WorkspaceProvider(Protocol):
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
         """File-level changes between two checkpoint ids."""
+        ...
+
+    def merge(self, source: str) -> MergeOutcome:
+        """Merge another branch into this one (requires ``caps.merge``).
+
+        ``source`` names the branch; the merge reads its HEAD commit, so
+        anything uncommitted on the source is not included. Refuses with
+        ``WorkspaceError`` on uncommitted changes here (checkpoint or
+        discard first) and with ``ValueError`` for unknown or self
+        branches. Providers without the capability raise
+        ``NotSupportedError``.
+        """
         ...
 
     # -- power modes / lifecycle ---------------------------------------
