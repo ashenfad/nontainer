@@ -44,6 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than ignoring the extension, since a verbatim policy has
   nothing to extend.
 
+### Fixed
+
+- **test_app's interception now derives its non-script allowances from
+  the served policy.** Its own rule — data and imagery from any https
+  host — was the whole story, so an origin the policy permits but that
+  rule does not (an intranet `http://` API in `connect-src`, an
+  `http://` tile host in `img-src`, a framed origin in `frame-src`,
+  whose sub-frame request was aborted outright) served fine and was
+  aborted during verification: a false red, and the divergence this
+  harness exists to close pointed the other way. The old rule still
+  stands; the policy is consulted as well as it, so nothing that
+  verified before stops verifying. A refusal now names the directive
+  that would have to allow the request instead of calling the
+  environment https-only.
+
+- **Script origins with an explicit port are honoured.**
+  `https://scripts.internal:8443` in a policy was read as a scheme-only
+  source and dropped, so a script host on a non-default port was served
+  and then aborted by verification.
+
 ## 0.5.1 - 2026-09-03
 
 ### Changed

@@ -841,10 +841,14 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   script_hosts. Appends (de-duplicated, derived sources
            #   first) or adds a directive the derived policy lacks;
            #   it cannot tighten one — that is what csp is for. Setting
-           #   both csp and csp_extend raises ValueError. A host added
-           #   to script-src joins test_app's interception too, but
-           #   script HOSTS belong in script_hosts, which also drives
-           #   curl's message and the agent-facing allowlist sentence.
+           #   both csp and csp_extend raises ValueError. test_app's
+           #   interception reads the RESOLVED policy, so an origin the
+           #   extension permits (an http tile host in img-src, an
+           #   intranet API in connect-src, a framed host in frame-src)
+           #   verifies the way it serves instead of being aborted;
+           #   script HOSTS still belong in script_hosts, which also
+           #   drives curl's message and the agent-facing allowlist
+           #   sentence.
            static_assets={})  # {url_prefix: host_dir} — fixed files
            #   served WITH the app but absent from the workspace: a
            #   vendored component library, fonts, a charting bundle.
