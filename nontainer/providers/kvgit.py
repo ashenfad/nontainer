@@ -77,8 +77,9 @@ def _merge_vfs_metadata(old: Any, ours: Any, theirs: Any) -> bytes:
     advisory — content truth lives in the file blobs this table
     describes); deleted on one side and unmodified on the other drops;
     deleted-against-modified keeps the modified record (the content
-    markers flag the path anyway); ``is_dir`` disagreement raises.
-    Unparseable raises ``CantMark``: filed as a conflict like binary.
+    markers flag the path anyway); ``is_dir`` disagreement and
+    unparseable tables raise ``CantMark``: filed as a hard conflict
+    (the merge aborts untouched) like binary.
     """
     from kvgit.merges import CantMark
 
@@ -113,7 +114,7 @@ def _merge_vfs_metadata(old: Any, ours: Any, theirs: Any) -> bytes:
                 merged[path] = u
             else:
                 if u.get("is_dir", False) != t.get("is_dir", False):
-                    raise ValueError(f"is_dir disagreement on {path!r}: not mergeable")
+                    raise CantMark(f"is_dir disagreement on {path!r}: not mergeable")
                 winner = (
                     u if u.get("modified_at", "") >= t.get("modified_at", "") else t
                 )
@@ -570,7 +571,12 @@ class KvgitProvider:
         and the outcome reports it. Framework state merges by rule, not
         by text: the VFS metadata table merges field-aware (timestamps
         are advisory), cwd keys keep ours, and anything else contested
-        raises as a hard conflict rather than merging silently.
+        raises as a hard conflict rather than merging silently. After
+        the merge, VFS sizes are corrected from the merged blobs
+        (metadata-only commit, only when they differ) and the
+        filesystem caches are invalidated; marker conflicts are
+        reported by provenance, so pre-existing marker-like bytes in a
+        brought file don't count as conflicts.
         """
         from kvgit import MergeConflict
         from kvgit.merges import text as text_merge
@@ -621,28 +627,36 @@ class KvgitProvider:
             )
         # What the merge brought in: first parent is our pre-merge head
         # (git convention), so this diff lists exactly the merge's work.
-        # Conflict markers are detected by scan: any brought file still
-        # carrying them needs resolution.
+        # Conflict markers are reported by provenance, not by scan: a
+        # brought file may legitimately contain marker-like bytes, so
+        # only markers absent from both parents' versions count.
         parents = self._staged.versioned.parents()
         base = parents[0] if parents else self._staged.current_commit
         brought = self.diff(base, self._staged.current_commit)
+        at_base = self._staged.checkout(base)
+        rev = {
+            display: key for key, display in self._file_keys(self._staged.keys()).items()
+        }
+        candidates = brought.added | brought.removed | brought.modified
         conflicts = tuple(
             sorted(
                 path
-                for path in brought.added | brought.removed | brought.modified
-                if self._file_has_markers(path)
+                for path in candidates
+                if self._markers_introduced(rev.get(path), at_base, other)
             )
         )
+        # Merged bytes match neither branch, but the metadata merge
+        # copied one branch's size: correct sizes from the blobs before
+        # reporting. Metadata-only, so ``brought`` still describes this.
+        self._fix_merged_sizes(brought.added | brought.modified, rev)
+        # HEAD moved underneath the VirtualFS object: drop its caches
+        # like restore()/discard() do, or listings and stat go stale.
+        self._invalidate_fs()
         return MergeOutcome(
             merged=True,
             commit=self._staged.current_commit,
             conflicts=conflicts,
-            auto_merged=tuple(
-                sorted(
-                    (brought.added | brought.removed | brought.modified)
-                    - set(conflicts)
-                )
-            ),
+            auto_merged=tuple(sorted(set(candidates) - set(conflicts))),
         )
 
     def _open_branch(self, source: str):
@@ -665,13 +679,60 @@ class KvgitProvider:
         paths = self._file_keys(keys)
         return [paths.get(key, key) for key in keys]
 
-    def _file_has_markers(self, path: str) -> bool:
-        """Whether a display path's current bytes carry conflict markers."""
-        for key, display in self._file_keys(self._staged.keys()).items():
-            if display == path:
-                value = self._staged.get(key)
-                return isinstance(value, bytes) and b"<<<<<<< " in value
-        return False
+    def _markers_introduced(self, key: str | None, at_base: Any, other: Any) -> bool:
+        """Whether this merge introduced conflict markers into a key.
+
+        Marker-like bytes can predate the merge (docs, fixtures), so
+        current bytes carrying them are not enough: the markers must
+        be absent from both parents' versions. Reads stay scoped to
+        scan-positive candidates, so the common case costs one blob.
+        """
+        if key is None:
+            return False
+        value = self._staged.get(key)
+        if not isinstance(value, bytes) or b"<<<<<<< " not in value:
+            return False
+        for handle in (at_base, other):
+            if handle is None:
+                continue
+            parent = handle.get(key)
+            if isinstance(parent, bytes) and b"<<<<<<< " in parent:
+                return False
+        return True
+
+    def _fix_merged_sizes(self, paths: set[str], rev: dict[str, str]) -> None:
+        """Correct VFS metadata sizes from the merged blobs.
+
+        The metadata merge copies ``size`` from one branch, but merged
+        file bytes (clean unions, marker content) match neither side.
+        Sizes are advisory next to content truth, so rewrite them here
+        and commit metadata-only. Commits only when a size actually
+        differs, so clean merges stay a single commit.
+        """
+        from monkeyfs import VirtualFS
+
+        raw = self._staged.get(VirtualFS.METADATA_KEY)
+        if raw is None:
+            return
+        table = json.loads(raw)
+        fixed = False
+        for path in paths:
+            key = rev.get(path)
+            if key is None:
+                continue
+            blob = self._staged.get(key)
+            if not isinstance(blob, bytes):
+                continue
+            entry = table.get(self.fs._decode_path(key))
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("size") != len(blob):
+                entry["size"] = len(blob)
+                fixed = True
+        if not fixed:
+            return
+        self._staged[VirtualFS.METADATA_KEY] = json.dumps(table, sort_keys=True).encode()
+        self.checkpoint({"tool": "ws-git.merge", "sizes": "recomputed"})
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""

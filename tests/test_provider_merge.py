@@ -194,3 +194,90 @@ def test_workspace_factory_smoke(tmp_path):
             fork.close()
     finally:
         ws.close()
+
+
+def test_fs_caches_invalidated(kv_ws):
+    kv_ws.terminal("echo one > a.txt")
+    assert "a.txt" in kv_ws.fs.list("/workspace")  # warms the FS caches
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo two > b.txt")
+        out = _provider(kv_ws).merge("worker")
+        assert out.merged
+        # Without invalidation these read the pre-merge tree.
+        assert "b.txt" in kv_ws.fs.list("/workspace")
+        assert kv_ws.fs.stat("/workspace/b.txt").size == 4
+    finally:
+        fork.close()
+
+
+def test_merged_sizes_recomputed(kv_ws):
+    # Disjoint edits merge cleanly, but the bytes match neither branch —
+    # so a size copied from one branch would be wrong.
+    kv_ws.fs.write("/workspace/doc.txt", b"a\nb\n")
+    kv_ws.checkpoint()
+    fork = kv_ws.fork("worker")
+    try:
+        fork.fs.write("/workspace/doc.txt", b"a\nb\nfork\n")
+        fork.checkpoint()
+        kv_ws.fs.write("/workspace/doc.txt", b"main\na\nb\n")
+        kv_ws.checkpoint()
+
+        out = _provider(kv_ws).merge("worker")
+        assert out.merged
+        assert out.conflicts == ()
+        body = kv_ws.terminal("cat doc.txt").stdout.encode()
+        assert kv_ws.fs.stat("/workspace/doc.txt").size == len(body)
+    finally:
+        fork.close()
+
+
+def test_file_vs_dir_is_hard_conflict(kv_ws):
+    import json
+
+    from monkeyfs import VirtualFS
+
+    p = _provider(kv_ws)
+    kv_ws.terminal("echo file > x")
+    fork = kv_ws.fork("worker")
+    try:
+        # Shell writes cannot contest one table row (`>` and `>>`
+        # normalize to different keys upstream), so stage the
+        # disagreement directly: base says file, main edits the
+        # record, the fork records a directory on the same row.
+        row = "workspace/x"
+        key = VirtualFS.METADATA_KEY
+        ours = json.loads(p._staged.get(key))
+        ours[row]["size"] += 1
+        p._staged[key] = json.dumps(ours).encode()
+        kv_ws.checkpoint()
+
+        fp = fork._provider
+        theirs = json.loads(fp._staged.get(key))
+        theirs[row]["is_dir"] = True
+        fp._staged[key] = json.dumps(theirs).encode()
+        fork.checkpoint()
+
+        before = p.head
+        out = p.merge("worker")
+        assert not out.merged
+        assert out.commit is None
+        assert p.head == before
+        assert out.conflicts == (VirtualFS.METADATA_KEY,)
+    finally:
+        fork.close()
+
+
+def test_preexisting_markers_not_flagged(kv_ws):
+    kv_ws.terminal("echo one > a.txt")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.fs.write("/workspace/notes.txt", b"see <<<<<<< HEAD for details\n")
+        fork.checkpoint()
+
+        out = _provider(kv_ws).merge("worker")
+        assert out.merged
+        assert out.conflicts == ()
+        assert "/workspace/notes.txt" in out.auto_merged
+    finally:
+        fork.close()
