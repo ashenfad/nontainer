@@ -300,11 +300,16 @@ class AppsConfig:
 
     Extending ``script-src`` is allowed (an embedder may need
     ``'unsafe-eval'``), but ``script_hosts`` remains the declaration for
-    script HOSTS: it also drives test_app's request interception,
-    curl's external-URL message, and the allowlist sentence the agent
-    reads, none of which a policy string reaches. A host added here
-    does still join test_app's interception allowlist, because test_app
-    parses the resolved policy for script origins.
+    script HOSTS: it also drives curl's external-URL message and the
+    allowlist sentence the agent reads, neither of which a policy
+    string reaches.
+
+    Verification follows the extension either way: test_app reads the
+    RESOLVED policy, taking script origins from ``script-src`` and, for
+    every other resource, asking whether the policy permits the request
+    before aborting it. So an intranet host added to ``img-src`` or
+    ``connect-src`` verifies the way it serves rather than being
+    aborted as a false red.
 
     Declared last: see ``frontend_notes``."""
 

@@ -378,6 +378,14 @@ browser is the only network path an app has — handlers have no network —
 and the tile server or API answers on plain `http://`, which
 `connect-src 'self' https:` refuses.
 
+Interception follows the resolved policy for those resources, not just
+for scripts. It has its own rule — scripts from `script_hosts`, data and
+imagery from any https host — and a request the *policy* permits is now
+let through on top of it, so an http host in `img-src` or `connect-src`,
+or a framed origin in `frame-src`, verifies the way it serves. Widening
+a directive an embedder cannot verify against would be the divergence
+this harness exists to close, pointed at a false red.
+
 **The configured policy is the one that goes on the wire.** A handler
 returning its own `Content-Security-Policy` header does not get it
 served — contained code does not choose its own containment. That is

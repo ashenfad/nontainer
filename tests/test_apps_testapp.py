@@ -692,6 +692,122 @@ def test_a_host_added_by_csp_extend_is_intercepted_too():
     assert set(cfg.script_hosts) <= set(origins)  # the declared hosts remain
 
 
+def test_script_origins_keep_an_explicit_port():
+    """`scripts.internal:8443` is the origin the browser connects to,
+    and it is what a request's netloc is compared against — dropping
+    the port would abort a script the served policy allows. Sources
+    that name no host at all are still skipped."""
+    from nontainer.apps.testapp import _csp_script_origins
+
+    csp = "script-src 'self' https://scripts.internal:8443 https: data: *.cdn.example"
+    assert _csp_script_origins(csp) == ("scripts.internal:8443",)
+    assert _csp_script_origins("script-src 'self' blob: data: https:") == ()
+
+
+def _permits(resource_type, url, **cfg):
+    """Would the policy this config resolves to allow that request?"""
+    from nontainer.apps import AppsConfig
+    from nontainer.apps.serve import resolve_csp
+    from nontainer.apps.testapp import _csp_permits
+
+    return _csp_permits(resolve_csp(AppsConfig(**cfg)), resource_type, url)
+
+
+def test_interception_honours_a_widened_directive():
+    """The documented csp_extend case: an intranet API the browser is
+    the only path to. Served under the extended policy and aborted by
+    interception would be a false red — and only for the directive that
+    was actually widened."""
+    extend = {"csp_extend": {"connect-src": ("http://api.internal",)}}
+    assert _permits("fetch", "http://api.internal/x", **extend)
+    assert _permits("xhr", "http://api.internal/x", **extend)
+    assert not _permits("image", "http://api.internal/x", **extend)  # img-src didn't
+    assert not _permits("fetch", "http://other.internal/x", **extend)
+    assert not _permits("fetch", "http://api.internal/x")  # nor without the extension
+
+
+def test_interception_honours_wildcards_and_ports():
+    """Source matching is the browser's, not a substring test: `*.` is
+    subdomains only, and a port named in the source is part of the
+    origin."""
+    star = {"csp_extend": {"connect-src": ("http://*.tiles.internal",)}}
+    assert _permits("fetch", "http://a.tiles.internal/z", **star)
+    assert not _permits("fetch", "http://tiles.internal/z", **star)
+
+    # http, because the derived connect-src already allows every https
+    # host by scheme — a port test on https would prove nothing.
+    port = {"csp_extend": {"connect-src": ("http://scripts.internal:8443",)}}
+    assert _permits("fetch", "http://scripts.internal:8443/z", **port)
+    assert not _permits("fetch", "http://scripts.internal:9000/z", **port)
+
+
+def test_interception_honours_frame_src():
+    """A sub-frame's request has resource type "document" and used to be
+    aborted outright, so frame-src was unverifiable."""
+    frame = {"csp_extend": {"frame-src": ("https://maps.internal",)}}
+    assert _permits("document", "https://maps.internal/embed", **frame)
+    assert not _permits("document", "https://maps.internal/embed")
+
+
+def test_a_disabled_policy_permits_nothing_by_itself():
+    """csp="" is no header at all, so there is no policy to read an
+    allowance out of — the caller's own https rule decides, exactly as
+    it did before."""
+    from nontainer.apps.testapp import _csp_permits
+
+    assert not _csp_permits("", "fetch", "http://x.internal/y")
+    # keywords and non-network sources never match a network request
+    assert not _csp_permits("connect-src 'self' data: blob:", "fetch", "http://x/y")
+    assert _csp_permits("connect-src https:", "fetch", "https://x/y")
+    assert _csp_permits("default-src *", "media", "http://x/y")  # via default-src
+
+
+INTRANET_FETCH = b"""<html><body><div id="out">init</div>
+<script>
+  fetch('http://api.internal/x')
+    .catch(() => {})
+    .finally(() => { document.getElementById('out').textContent = 'done'; });
+</script></body></html>"""
+
+
+def test_a_widened_connect_src_is_not_aborted(chromium_available):
+    """End to end for the intranet case: the request must reach the
+    network, where it fails on DNS like any unreachable host. What
+    matters is that interception did not abort it -- an abort would be
+    a rejection note about a request the published app makes fine."""
+    ws, rt = _csp_ws(
+        "csp-intranet-on",
+        INTRANET_FETCH,
+        csp_extend={"connect-src": ("http://api.internal",)},
+    )
+    try:
+        result = rt.test_app(
+            [
+                {"assert": "document.getElementById('out').textContent === 'done'"},
+                {"read": "#out"},
+            ]
+        )
+        assert result.results[1].value == "done"
+        assert not any("api.internal" in r for r in result.rejected), result.rejected
+    finally:
+        ws.close()
+
+
+def test_an_unwidened_connect_src_is_still_aborted(chromium_available):
+    """Without the extension the request is refused, and the note names
+    the directive that would have to allow it rather than the app. The
+    browser gets there first here -- it enforces the real header, so the
+    fetch never becomes a request to intercept -- which is exactly the
+    behaviour widening the directive has to restore."""
+    ws, rt = _csp_ws("csp-intranet-off", INTRANET_FETCH)
+    try:
+        result = rt.test_app([{"wait": 400}, {"read": "#out"}])
+        note = next((r for r in result.rejected if "api.internal" in r), None)
+        assert note and "connect-src" in note, result.rejected
+    finally:
+        ws.close()
+
+
 BLOB_IMAGE = b"""<html><body><div id="out">init</div>
 <script>
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>';

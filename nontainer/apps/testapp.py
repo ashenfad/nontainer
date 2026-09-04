@@ -378,6 +378,31 @@ def blocks_code(directive: str) -> bool:
     return directive.startswith("script") or directive in ("worker-src", "child-src")
 
 
+def _csp_directives(csp: str) -> dict[str, list[str]]:
+    """``{directive: [source, ...]}`` for one policy string."""
+    out: dict[str, list[str]] = {}
+    for part in (csp or "").split(";"):
+        tokens = part.split()
+        if tokens:
+            out[tokens[0].lower()] = tokens[1:]
+    return out
+
+
+# A source naming a scheme and nothing else: `https:`, `data:`, `blob:`.
+# Distinguished from a bare host with a port (`scripts.internal:8443`),
+# which names an origin and must keep its port.
+_SCHEME_ONLY = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:$")
+
+
+def _csp_source_netloc(src: str) -> str | None:
+    """The ``host[:port]`` a source names, or ``None`` when it names no
+    host — a quoted keyword (``'self'``) or a scheme-only source."""
+    if src.startswith("'") or _SCHEME_ONLY.match(src):
+        return None
+    rest = src.split("://", 1)[1] if "://" in src else src
+    return rest.split("/", 1)[0].lower() or None
+
+
 def _csp_script_origins(csp: str) -> tuple[str, ...]:
     """Host origins a policy permits scripts from.
 
@@ -387,23 +412,100 @@ def _csp_script_origins(csp: str) -> tuple[str, ...]:
     and a divergence in the other direction.
 
     Conservative by design — quoted keywords (``'self'``), scheme-only
-    sources (``https:``) and wildcards are skipped. Those cannot be
-    honored by a hostname check, so list them in ``script_hosts``
-    explicitly rather than having this guess."""
-    directives: dict[str, list[str]] = {}
-    for part in (csp or "").split(";"):
-        tokens = part.split()
-        if tokens:
-            directives[tokens[0].lower()] = tokens[1:]
-    sources = directives.get("script-src") or directives.get("default-src") or []
+    sources (``https:``, ``data:``) and wildcards are skipped. Those
+    cannot be honored by a hostname check, so list them in
+    ``script_hosts`` explicitly rather than having this guess. An
+    explicit port is KEPT (``scripts.internal:8443``): that is the
+    origin the browser connects to, and it is what a request's netloc
+    is compared against."""
+    directives = _csp_directives(csp)
+    sources = directives.get("script-src") or directives.get("default-src")
     out: list[str] = []
-    for src in sources:
-        if src.startswith("'") or "*" in src:
+    for src in sources or []:
+        if "*" in src:
             continue
-        host = src.split("://", 1)[-1].split("/", 1)[0]
-        if host and ":" not in host:  # drops `https:` / `data:` scheme sources
-            out.append(host)
+        netloc = _csp_source_netloc(src)
+        if netloc:
+            out.append(netloc)
     return tuple(out)
+
+
+# Which directive governs each Playwright resource type, in the order a
+# browser consults them (the specific directive, then its fallback).
+# A top-level document never reaches this table — it is the app's own
+# origin — so ``document`` here means a SUB-FRAME, governed by
+# frame-src. Anything unlisted falls through to default-src, which is
+# also every listed directive's fallback when the policy omits it.
+_RESOURCE_DIRECTIVES: dict[str, tuple[str, ...]] = {
+    "image": ("img-src",),
+    "xhr": ("connect-src",),
+    "fetch": ("connect-src",),
+    "eventsource": ("connect-src",),
+    "websocket": ("connect-src",),
+    "stylesheet": ("style-src",),
+    "font": ("font-src",),
+    "media": ("media-src",),
+    "document": ("frame-src", "child-src"),
+    "worker": ("worker-src", "child-src"),
+    "manifest": ("manifest-src",),
+}
+
+
+def csp_directive_for(resource_type: str) -> str:
+    """The directive a request of this type is judged by — what an
+    abort note must name for the fix to be actionable."""
+    return _RESOURCE_DIRECTIVES.get(resource_type, ("default-src",))[0]
+
+
+def _source_matches(src: str, parts: Any) -> bool:
+    """Does one CSP source cover this request's origin?
+
+    Modest on purpose: scheme-only sources match by scheme, host
+    sources by scheme (when given) plus host, and a leading ``*.``
+    matches subdomains but not the bare domain. A source WITHOUT a port
+    matches any port, which is looser than a browser — the cost of
+    guessing wrong here is aborting a request the served policy allows,
+    a false red, and that is the failure this matching exists to
+    prevent. Keywords and ``data:``/``blob:`` never match: they name the
+    document's own origin or bytes it already holds, not a network
+    fetch this handler could let through."""
+    if src == "*":
+        return True
+    if src.startswith("'") or src in ("data:", "blob:", "filesystem:", "mediastream:"):
+        return False
+    if _SCHEME_ONLY.match(src):
+        return parts.scheme == src[:-1].lower()
+    scheme = src.split("://", 1)[0].lower() if "://" in src else ""
+    host = _csp_source_netloc(src)
+    if not host or (scheme and parts.scheme != scheme):
+        return False
+    netloc = parts.netloc.lower()
+    if ":" in host:  # an explicit port is part of the origin
+        return netloc == host
+    hostname = netloc.split(":", 1)[0]
+    if host.startswith("*."):
+        return hostname.endswith(host[1:])  # a subdomain, not the bare domain
+    return hostname == host
+
+
+def _csp_permits(csp: str, resource_type: str, url: str) -> bool:
+    """Would the SERVED policy let this non-script request through?
+
+    Interception aborts what the policy would refuse, so it must also
+    let through what the policy allows — otherwise an embedder who
+    widened one directive (``csp_extend={"connect-src":
+    ("http://api.internal",)}`` for an intranet API the browser is the
+    only path to) gets an app that serves fine and fails verification.
+    An empty policy means no header at all: nothing here to permit
+    anything, so the caller's own rule decides."""
+    parts = urlsplit(url)
+    if not parts.netloc:
+        return False
+    directives = _csp_directives(csp)
+    for name in (*_RESOURCE_DIRECTIVES.get(resource_type, ()), "default-src"):
+        if name in directives:
+            return any(_source_matches(src, parts) for src in directives[name])
+    return False
 
 
 def _csp_note(directive: str, blocked: str, script_hosts: tuple[str, ...]) -> str:
@@ -696,20 +798,36 @@ async def _run_actions(
             )
         elif parts.netloc in script_hosts:
             await route.continue_()
-        elif parts.scheme == "https" and request.resource_type in (
-            "image",
-            "xhr",
-            "fetch",
-            "stylesheet",
-            "font",
+        elif request.resource_type != "script" and (
+            (
+                parts.scheme == "https"
+                and request.resource_type
+                in ("image", "xhr", "fetch", "stylesheet", "font")
+            )
+            or _csp_permits(csp, request.resource_type, request.url)
         ):
             # Mirror the serving CSP: scripts only from the allowlist,
             # but data/imagery (map tiles!) from any https host — so
-            # what verifies here matches what serves published.
+            # what verifies here matches what serves published. The
+            # policy itself is the second half of that: an origin it
+            # permits (an intranet http API in connect-src, a framed
+            # host in frame-src) is served, so aborting it here would be
+            # the same divergence pointed at a false red.
             await route.continue_()
         else:
             if request.resource_type == "script":
                 _reject(blocked_script_note(request.url, script_hosts))
+            elif csp:
+                # Name the directive that would have to allow it: the
+                # fix is a source on that directive, and a note saying
+                # only "blocked" sends the repair looking at the app.
+                _reject(
+                    f"{request.url} -> blocked ({request.resource_type}: not "
+                    "permitted by the served policy's "
+                    f"{csp_directive_for(request.resource_type)}; https hosts "
+                    "are allowed, anything else needs AppsConfig.csp_extend "
+                    "or csp)"
+                )
             else:
                 _reject(
                     f"{request.url} -> blocked "
