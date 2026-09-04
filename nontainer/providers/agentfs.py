@@ -511,6 +511,9 @@ class AgentFSProvider:
     def fork(self, name: str, *, at: str | None = None) -> "AgentFSProvider":
         raise self._unsupported("fork")
 
+    def merge(self, source: str) -> Any:
+        raise self._unsupported("merge")
+
     def discard(self) -> None:
         raise self._unsupported("discard")
 
