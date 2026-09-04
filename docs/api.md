@@ -828,12 +828,23 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   block says "copy this exactly" and names a CDN — a
            #   correction underneath it would lose. Air-gapped
            #   deployments set this alongside static_assets.
-           csp=None)  # the Content-Security-Policy served HTML carries
+           csp=None,  # the Content-Security-Policy served HTML carries
            #   AND the one test_app enforces. None derives it from
            #   script_hosts (serve.build_csp); "" disables; a string is
            #   verbatim. Declare it HERE rather than only on
            #   build_router: verification reads the config, so a policy
            #   passed only to the router is one test_app never sees.
+           csp_extend={},  # {directive: sources} ADDED to the derived
+           #   policy: {"connect-src": ("http://tiles.internal",)} lets
+           #   an intranet app reach a plain-http API without copying
+           #   the whole policy into csp and losing its link to
+           #   script_hosts. Appends (de-duplicated, derived sources
+           #   first) or adds a directive the derived policy lacks;
+           #   it cannot tighten one — that is what csp is for. Setting
+           #   both csp and csp_extend raises ValueError. A host added
+           #   to script-src joins test_app's interception too, but
+           #   script HOSTS belong in script_hosts, which also drives
+           #   curl's message and the agent-facing allowlist sentence.
            static_assets={})  # {url_prefix: host_dir} — fixed files
            #   served WITH the app but absent from the workspace: a
            #   vendored component library, fonts, a charting bundle.
@@ -903,9 +914,9 @@ build_router(
     *,
     config: AppsConfig | None = None,
     csp: str | None = None,  # None → config.csp, itself defaulting to
-    #   build_csp(config.script_hosts); a string overrides wholesale
-    #   HERE ONLY (test_app reads the config, so prefer AppsConfig.csp);
-    #   "" disables.
+    #   build_csp(config.script_hosts) extended by config.csp_extend; a
+    #   string overrides wholesale HERE ONLY (test_app reads the config,
+    #   so prefer AppsConfig.csp / AppsConfig.csp_extend); "" disables.
     #   Whatever it resolves to is what served HTML carries: a handler
     #   returning its own Content-Security-Policy has it dropped.
     #   Carries 'wasm-unsafe-eval': browsers gate WebAssembly on

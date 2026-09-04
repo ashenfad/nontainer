@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
 from ..workspace import Workspace
@@ -54,9 +55,28 @@ _logger = logging.getLogger("nontainer.apps")
 # host: data apps legitimately need map tiles, remote imagery, and
 # third-party APIs, and there is no proxy path inside the walls
 # (handlers have no network). The cost is reopening beacon-style
-# exfiltration channels — embedders serving untrusted audiences
-# should tighten via build_router(csp=...).
-def build_csp(script_hosts: tuple[str, ...]) -> str:
+# exfiltration channels — an embedder serving untrusted audiences
+# tightens by declaring a whole policy in ``AppsConfig.csp``, and
+# loosens one directive with ``AppsConfig.csp_extend``.
+#
+# ``blob:`` is allowed on ``img-src`` and ``media-src`` and refused on
+# ``script-src``, which is not an inconsistency. A blob URL names bytes
+# the page already holds, in this document and on this origin: it
+# reaches no other origin's data, and as an image or a video it is
+# DISPLAYED, never executed — the same risk class as ``data:``, which
+# these directives already allow. Charting libraries need it (plotly
+# rasterizes by drawing a Blob-backed <img> onto a canvas, which is how
+# "download as png" and ``Plotly.toImage()`` work), and a client-side
+# audio/video preview built from a Blob needs the same on media. A
+# blob-loaded SCRIPT or worker is the opposite case: it is CODE, and
+# code from a blob is code from nowhere the allowlist can name, so
+# ``script-src`` (and the absent ``worker-src``/``child-src``, which
+# fall through to ``default-src 'self'``) keep refusing it.
+def build_csp(
+    script_hosts: tuple[str, ...],
+    *,
+    extend: Mapping[str, Sequence[str]] | None = None,
+) -> str:
     """The default served-HTML Content-Security-Policy for a given
     script-host allowlist.
 
@@ -68,27 +88,57 @@ def build_csp(script_hosts: tuple[str, ...]) -> str:
     the verify-green/publish-broken split this whole declaration exists
     to close. It permits wasm compilation ONLY; it does not enable
     ``eval``, and it is far narrower than the ``'unsafe-inline'`` already
-    on this line."""
-    hosts = " ".join(f"https://{h}" for h in script_hosts)
-    return (
-        "default-src 'self'; "
-        f"script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' {hosts}; "
-        "style-src 'self' 'unsafe-inline' https:; "
-        "connect-src 'self' https:; "
-        "font-src 'self' https: data:; "
-        "img-src 'self' https: data:"
+    on this line.
+
+    ``extend`` (``AppsConfig.csp_extend``) is EXTEND-ONLY: each
+    ``{directive: sources}`` entry appends those sources to the derived
+    directive — de-duplicated, derived sources first, directive names
+    matched case-insensitively — or adds the directive when the derived
+    policy has none. It cannot remove a source or a directive; a policy
+    that must be TIGHTER is declared whole in ``AppsConfig.csp``."""
+    directives: list[tuple[str, list[str]]] = [
+        ("default-src", ["'self'"]),
+        (
+            "script-src",
+            [
+                "'self'",
+                "'unsafe-inline'",
+                "'wasm-unsafe-eval'",
+                *(f"https://{h}" for h in script_hosts),
+            ],
+        ),
+        ("style-src", ["'self'", "'unsafe-inline'", "https:"]),
+        ("connect-src", ["'self'", "https:"]),
+        ("font-src", ["'self'", "https:", "data:"]),
+        ("img-src", ["'self'", "https:", "data:", "blob:"]),
+        ("media-src", ["'self'", "https:", "data:", "blob:"]),
+    ]
+    for raw_name, sources in (extend or {}).items():
+        name = raw_name.lower()
+        for existing, current in directives:
+            if existing == name:
+                current.extend(s for s in sources if s not in current)
+                break
+        else:
+            directives.append((name, list(dict.fromkeys(sources))))
+    return "; ".join(
+        f"{name} {' '.join(sources)}" for name, sources in directives if sources
     )
 
 
 def resolve_csp(config: "AppsConfig") -> str:
     """The policy this config means: ``csp`` verbatim when set, else one
-    derived from ``script_hosts``.
+    derived from ``script_hosts`` and extended by ``csp_extend``.
 
     One function, both halves — the router sends this on served HTML and
     ``test_app`` sends it during verification, so an app cannot pass
     under one policy and be served another."""
     declared = getattr(config, "csp", None)
-    return build_csp(config.script_hosts) if declared is None else declared
+    if declared is not None:
+        return declared
+    return build_csp(
+        config.script_hosts, extend=getattr(config, "csp_extend", None) or None
+    )
 
 
 def mint_token(nbytes: int = 32) -> str:
@@ -116,8 +166,9 @@ def build_router(
 
     ``csp``: the Content-Security-Policy set on served HTML. Default
     (``None``) takes ``config.csp``, which itself defaults to a policy
-    derived from ``config.script_hosts`` via ``build_csp``; pass a full
-    policy string to override, or ``""`` to disable.
+    derived from ``config.script_hosts`` via ``build_csp`` and extended
+    per-directive by ``config.csp_extend``; pass a full policy string to
+    override, or ``""`` to disable.
 
     Whatever it resolves to is what served HTML carries — a handler
     cannot substitute a policy of its own. Handler response headers are

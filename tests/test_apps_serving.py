@@ -314,3 +314,142 @@ def test_csp_override_and_disable():
     r = client.get(f"/apps/{token}/api/page")
     assert "content-security-policy" not in r.headers
     ws.close()
+
+
+def _directives(csp):
+    """{name: [sources]} for one policy string."""
+    out = {}
+    for part in csp.split(";"):
+        tokens = part.split()
+        if tokens:
+            out[tokens[0]] = tokens[1:]
+    return out
+
+
+def test_the_default_policy_allows_blob_images_and_media():
+    """A blob URL is bytes the page already holds, displayed rather than
+    executed — the same risk class as data:, which img-src already
+    allows. plotly rasterizes charts by drawing a Blob-backed <img> onto
+    a canvas, so without this the modebar's "download as png" fails in
+    a published app. Code from a blob stays refused."""
+    from nontainer.apps import DEFAULT_SCRIPT_HOSTS
+    from nontainer.apps.serve import build_csp
+
+    d = _directives(build_csp(DEFAULT_SCRIPT_HOSTS))
+    assert "blob:" in d["img-src"]
+    assert "blob:" in d["media-src"]
+    assert "blob:" not in d["script-src"]
+    # blob scripts and workers are CODE: no directive is added for them,
+    # so they fall through to default-src 'self' and stay blocked.
+    assert "worker-src" not in d and "child-src" not in d
+
+
+def test_csp_extend_appends_to_a_derived_directive():
+    """Extension is additive and de-duplicated, derived sources first —
+    an added source can never displace one the derived policy relies on.
+    """
+    from nontainer.apps.serve import build_csp
+
+    base = _directives(build_csp(("esm.sh",)))
+    extended = _directives(
+        build_csp(
+            ("esm.sh",),
+            extend={"connect-src": ("http://tiles.internal", "wss:", "'self'")},
+        )
+    )
+    assert extended["connect-src"] == [
+        *base["connect-src"],
+        "http://tiles.internal",
+        "wss:",
+    ]  # 'self' was already there, and is not repeated
+    assert extended["img-src"] == base["img-src"]  # nothing else moved
+
+
+def test_csp_extend_adds_a_missing_directive():
+    """A directive the derived policy doesn't name (frame-src,
+    worker-src) is appended whole, so an embedder can permit framing or
+    a same-origin worker without restating the policy."""
+    from nontainer.apps.serve import build_csp
+
+    csp = build_csp(("esm.sh",), extend={"frame-src": ("https://maps.internal",)})
+    assert _directives(csp)["frame-src"] == ["https://maps.internal"]
+    assert csp.startswith("default-src 'self';")  # appended, not prepended
+
+
+def test_csp_extend_matches_directives_case_insensitively():
+    """Directive names are case-insensitive to the browser, so a
+    mixed-case key must extend img-src rather than add a second,
+    shadowed copy of it."""
+    from nontainer.apps.serve import build_csp
+
+    d = _directives(build_csp(("esm.sh",), extend={"IMG-SRC": ("http://t.internal",)}))
+    assert "IMG-SRC" not in d
+    assert d["img-src"][-1] == "http://t.internal"
+
+
+def test_an_empty_extension_is_the_derived_policy():
+    from nontainer.apps.serve import build_csp
+
+    assert build_csp(("esm.sh",), extend={}) == build_csp(("esm.sh",))
+    assert build_csp(("esm.sh",), extend=None) == build_csp(("esm.sh",))
+
+
+def test_csp_and_csp_extend_together_are_refused():
+    """Silently ignoring the extension would serve a policy the embedder
+    believes they widened. A verbatim policy has nothing to extend, and
+    "" — no header at all — has even less."""
+    from nontainer.apps import AppsConfig
+
+    with pytest.raises(ValueError, match="nothing to extend"):
+        AppsConfig(csp="default-src 'self'", csp_extend={"img-src": ("blob:",)})
+    with pytest.raises(ValueError, match="nothing to extend"):
+        AppsConfig(csp="", csp_extend={"img-src": ("blob:",)})
+
+
+def test_csp_extend_rejects_values_that_would_splice_the_policy():
+    """A directive name or source carrying ';' or a space would inject a
+    whole directive into the served header, which is the one way an
+    extension could TIGHTEN something by accident."""
+    from nontainer.apps import AppsConfig
+
+    for bad in (
+        {"img-src blob:": ("x",)},
+        {"IMG-SRC": ("blob:",)},
+        {"": ("blob:",)},
+        {"img-src": ("blob:; script-src *",)},
+        {"img-src": ("",)},
+        {"img-src": "blob:"},  # a bare string is not a source list
+    ):
+        with pytest.raises(ValueError):
+            AppsConfig(csp_extend=bad)
+
+
+def test_resolve_csp_applies_the_extension():
+    from nontainer.apps import AppsConfig
+    from nontainer.apps.serve import build_csp, resolve_csp
+
+    cfg = AppsConfig(csp_extend={"connect-src": ("http://api.internal",)})
+    assert resolve_csp(cfg) == build_csp(
+        cfg.script_hosts, extend={"connect-src": ("http://api.internal",)}
+    )
+    # a verbatim policy is still verbatim
+    assert resolve_csp(AppsConfig(csp="default-src 'none'")) == "default-src 'none'"
+
+
+def test_served_html_carries_the_extended_policy():
+    """The extension has to reach the wire, not just resolve_csp: it
+    exists so an intranet app can load plain-http tiles in a browser."""
+    from nontainer.apps import AppsConfig
+
+    cfg = AppsConfig(csp_extend={"img-src": ("http://tiles.internal",)})
+    ws, token, client = make_served(config=cfg)
+    r = client.get(f"/apps/{token}/")
+    d = _directives(r.headers["content-security-policy"])
+    assert d["img-src"] == [
+        "'self'",
+        "https:",
+        "data:",
+        "blob:",
+        "http://tiles.internal",
+    ]
+    ws.close()

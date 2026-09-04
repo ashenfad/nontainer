@@ -351,6 +351,33 @@ Declare the policy on the config rather than only on
 only to the router is one test_app never sees. `csp=""` disables it in
 both places.
 
+**`blob:` is allowed for images and media, and refused for code.** The
+default policy carries `img-src 'self' https: data: blob:` and the same
+list on `media-src`. A blob URL names bytes the page already holds, in
+this document and on this origin — it reaches no other origin's data,
+and as an image or a video it is *displayed*, never executed, which is
+the risk class `data:` already had on those directives. Charting
+libraries need it: plotly rasterizes by drawing a Blob-backed `<img>`
+onto a canvas, so without it the modebar's *download as png* and
+`Plotly.toImage()` fail, and only once published — an image violation
+is a warning during verification, not a failure. A blob-loaded script or
+worker is the opposite case, code from a source no allowlist can name,
+so `script-src` still has no `blob:` and no `worker-src`/`child-src` is
+added (they fall through to `default-src 'self'`).
+
+**`csp_extend` widens a directive; `csp` replaces the policy.**
+`AppsConfig.csp_extend={"connect-src": ("http://api.internal",)}` appends
+those sources to the derived policy, or adds a directive it does not
+name at all. It cannot remove a source — a policy that must be *tighter*
+is written out whole in `csp`, and setting both raises. The reason to
+prefer it over a copied policy is the same one that put the CSP behind
+`script_hosts`: a verbatim string is a snapshot, and it silently misses
+whatever the derived policy gains later (`'wasm-unsafe-eval'` was such a
+gain). The case it exists for is an intranet deployment where the
+browser is the only network path an app has — handlers have no network —
+and the tile server or API answers on plain `http://`, which
+`connect-src 'self' https:` refuses.
+
 **The configured policy is the one that goes on the wire.** A handler
 returning its own `Content-Security-Policy` header does not get it
 served — contained code does not choose its own containment. That is

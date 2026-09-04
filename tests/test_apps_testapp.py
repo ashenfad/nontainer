@@ -675,6 +675,75 @@ def test_a_custom_policy_extends_the_intercepted_origins(chromium_available):
     assert _csp_script_origins(build_csp(DEFAULT_SCRIPT_HOSTS)) == DEFAULT_SCRIPT_HOSTS
 
 
+def test_a_host_added_by_csp_extend_is_intercepted_too():
+    """script_hosts stays the declaration for script HOSTS -- it also
+    drives interception, curl's message and the agent notes -- but a
+    host appended to script-src through csp_extend still reaches the
+    interception allowlist, because test_app reads the RESOLVED policy
+    rather than the tuple. Otherwise the served policy would allow a
+    host verification aborts: a false red."""
+    from nontainer.apps import AppsConfig
+    from nontainer.apps.serve import resolve_csp
+    from nontainer.apps.testapp import _csp_script_origins
+
+    cfg = AppsConfig(csp_extend={"script-src": ("https://esm.corp.internal",)})
+    origins = _csp_script_origins(resolve_csp(cfg))
+    assert "esm.corp.internal" in origins
+    assert set(cfg.script_hosts) <= set(origins)  # the declared hosts remain
+
+
+BLOB_IMAGE = b"""<html><body><div id="out">init</div>
+<script>
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"></svg>';
+  const url = URL.createObjectURL(new Blob([svg], {type: 'image/svg+xml'}));
+  const img = new Image();
+  img.onload = () => { document.getElementById('out').textContent = 'loaded'; };
+  img.onerror = () => { document.getElementById('out').textContent = 'failed'; };
+  img.src = url;
+  document.body.appendChild(img);
+</script></body></html>"""
+
+
+def test_a_blob_image_loads_under_the_default_policy(chromium_available):
+    """plotly rasterizes a chart by drawing a Blob-backed <img> onto a
+    canvas -- how the modebar's "download as png" and Plotly.toImage()
+    work. With no blob: on img-src they failed only once published, and
+    only as a warning here, so apps shipped broken."""
+    ws, rt = _csp_ws("csp-blob-img", BLOB_IMAGE)
+    try:
+        result = rt.test_app(
+            [
+                {"assert": "document.getElementById('out').textContent !== 'init'"},
+                {"read": "#out"},
+            ]
+        )
+        assert result.results[1].value == "loaded"
+        assert not any("blob:" in r for r in result.rejected)
+    finally:
+        ws.close()
+
+
+def test_a_blob_image_is_refused_when_the_policy_omits_it(chromium_available):
+    """The other half: the allowance is the DEFAULT policy's, not the
+    browser's. An embedder who declares a stricter csp still gets a
+    refusal -- and it stays a warning, since a refused image is a
+    blemish on a page that otherwise works."""
+    # 'unsafe-inline' is kept so the page's own script still builds the
+    # blob: without it the refusal under test never gets a chance to
+    # happen, and the run would only prove the script was blocked.
+    strict = "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self'"
+    ws, rt = _csp_ws("csp-blob-img-off", BLOB_IMAGE, csp=strict)
+    try:
+        result = rt.test_app([{"wait": 400}, {"read": "#out"}])
+        assert result.results[1].value != "loaded"  # the img never decoded
+        # Chromium reports the blocked URI of a blob as bare "blob".
+        note = next((r for r in result.rejected if "img-src" in r), None)
+        assert note and note.startswith("blob"), result.rejected
+        assert result.ok  # a refused image does not fail the run
+    finally:
+        ws.close()
+
+
 def test_an_assert_still_retries_under_the_enforced_csp(chromium_available):
     """The regression 0.3.5 shipped. page.wait_for_function installs its
     poller INTO the page, which needs 'unsafe-eval' -- blocked by the
