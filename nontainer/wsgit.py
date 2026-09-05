@@ -129,7 +129,9 @@ def register_wsgit(ws: Any) -> None:
     # own ``ws-git`` command (the ws-* prefix reservation was decided
     # but never enforced — RESERVED_COMMANDS holds only python/python3).
     fn._nontainer_wsgit = True
-    ws.register_command("ws-git", fn)
+    # Framework-owned: a fork/snapshot rebuilds this bound to itself
+    # instead of inheriting the parent-bound closure (the fork-bleed).
+    ws.register_command("ws-git", fn, rebind=register_wsgit)
 
 
 def _guest_ctx(args: list[str], cwd: str) -> Any:

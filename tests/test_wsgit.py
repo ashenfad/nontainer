@@ -273,6 +273,63 @@ def test_bare_and_help(ws):
     assert "Compose\nstage-first" in r.stdout
 
 
+def test_fork_wsgit_binds_fork():
+    """The fork-bleed fix: a fork's ws-git operates on the fork branch,
+    not the parent's. Rebinding (not copying the closure) is what makes
+    this hold."""
+    provider = KvgitProvider.open(None, session="wsgit-forkbleed")
+    w = Workspace(provider)
+    register_wsgit(w)
+    try:
+        w.fs.write("/workspace/a.txt", b"one\n")
+        w.checkpoint()
+        fork = w.fork("wsgit-forkbleed-kid")
+        try:
+            assert fork._commands["ws-git"] is not w._commands["ws-git"]
+            fork.fs.write("/workspace/kid.txt", b"kid\n")
+            r = fork.terminal("ws-git stage kid.txt")
+            assert r.exit_code == 0, r.stderr
+            assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
+            assert w.terminal("ws-git status").stdout == ""
+            p0 = len(list(w.history()))
+            f0 = len(list(fork.history()))
+            assert fork.terminal('ws-git commit -m "kid work"').exit_code == 0
+            assert len(list(w.history())) == p0
+            assert len(list(fork.history())) == f0 + 1
+            assert fork.terminal("ws-git status").stdout == ""
+        finally:
+            fork.close()
+    finally:
+        w.close()
+
+
+def test_snapshot_wsgit_reads_snapshot():
+    """A snapshot's verbs read the tagged state, not the live parent —
+    and refuse writes as frozen."""
+    provider = KvgitProvider.open(None, session="wsgit-snaphole")
+    w = Workspace(provider)
+    register_wsgit(w)
+    try:
+        w.fs.write("/workspace/a.txt", b"one\n")
+        w.checkpoint()
+        w.tag("v1")
+        snap = w.at_tag("v1")
+        try:
+            assert snap._commands["ws-git"] is not w._commands["ws-git"]
+            # The parent moves on; the snapshot doesn't follow.
+            w.fs.write("/workspace/b.txt", b"two\n")
+            w.terminal("ws-git stage b.txt")
+            assert w.terminal("ws-git status").stdout == "M  b.txt\n"
+            assert snap.terminal("ws-git status").stdout == ""
+            r = snap.terminal("ws-git stage a.txt")
+            assert r.exit_code == 1
+            assert "frozen" in r.stderr
+        finally:
+            snap.close()
+    finally:
+        w.close()
+
+
 def test_no_index_provider_refused(tmp_path):
     from nontainer.providers.dir import DirProvider
 
@@ -297,11 +354,13 @@ def test_register_gated_on_supports_commands():
         supports_commands = True
         _provider = object()
 
-        def register_command(self, name, fn):
-            seen.append((name, fn))
+        def register_command(self, name, fn, *, rebind=None):
+            seen.append((name, fn, rebind))
 
     register_wsgit(FakeWs())
-    assert [name for name, _ in seen] == ["ws-git"]
+    assert [name for name, _, _ in seen] == ["ws-git"]
+    # Framework-owned: the rebind factory travels with the registration.
+    assert [rebind for _, _, rebind in seen] == [register_wsgit]
 
     class DeafWs(FakeWs):
         supports_commands = False

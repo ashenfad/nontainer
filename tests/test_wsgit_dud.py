@@ -199,6 +199,31 @@ def test_guest_to_host_mapping(ws):
     assert ex._guest_to_host(f"{work}-other") is None
 
 
+def test_dud_fork_wsgit_binds_fork():
+    """Fork-bleed on the dud rung: the fork's verbs operate on the fork
+    branch (the fork gets a fresh executor + rebound command)."""
+    provider = KvgitProvider.open(None, session="wsgit-dud-forkbleed")
+    w = Workspace(provider, executor_factory=lambda: DudExecutor(backend="subprocess"))
+    register_wsgit(w)
+    try:
+        w.terminal("printf 'one\\n' > a.txt")
+        w.checkpoint()
+        fork = w.fork("wsgit-dud-forkbleed-kid")
+        try:
+            # Host-side write: a guest-side write in its own terminal
+            # call would autocheckpoint before the stage runs (standard
+            # per-call commit semantics on every rung).
+            fork.fs.write("/workspace/kid.txt", b"kid\n")
+            r = fork.terminal("ws-git stage kid.txt")
+            assert r.exit_code == 0, r.stdout
+            assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
+            assert w.terminal("ws-git status").stdout == ""
+        finally:
+            fork.close()
+    finally:
+        w.close()
+
+
 def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypatch):
     """A mid-call harvest the provider refuses must neither checkpoint
     partials nor poison the guest: the verb reads errored, the call
