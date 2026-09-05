@@ -239,6 +239,24 @@ def test_guest_to_host_mapping(ws):
     assert ex._guest_to_host(f"{work}/sub/f.txt") == "/workspace/sub/f.txt"
     assert ex._guest_to_host(work) == "/workspace"
     assert ex._guest_to_host("/elsewhere/x.txt") is None
+    # A sibling sharing the string prefix is outside, not inside.
+    assert ex._guest_to_host(f"{work}-other/f.txt") is None
+    assert ex._guest_to_host(f"{work}-other") is None
+
+
+def test_plain_data_ws_git_name_refused():
+    """A plain-data host object named ``ws_git`` fails closed like a
+    live one: it rides ``_plain`` past a live-only check, so the guard
+    reads the pre-split config names."""
+    from nontainer import PythonConfig
+
+    provider = KvgitProvider.open(None, session="wsgit-collide")
+    with pytest.raises(ValueError, match="Reserved host object name"):
+        Workspace(
+            provider,
+            executor=DudExecutor(backend="subprocess"),
+            python=PythonConfig(host_objects={"ws_git": {"key": "value"}}),
+        )
 
 
 def test_map_argv_leaves_message_text_alone():
