@@ -522,8 +522,15 @@ class KvgitProvider:
         The write sits in the staging buffer next to file writes; it
         lands through the CAS-guarded commit path like everything else
         (see the contention spike in ``scratch/ws-git-impl.md`` gap 3).
+        When the bytes equal HEAD, retract instead of writing: kvgit
+        has no per-key unstage, so an identical write would linger as
+        phantom dirt (and a later read-only op would checkpoint it).
+        The blob key is provider-owned — never user-addressed — so
+        dropping its staged update is safe; staged removals are left
+        alone (only direct handle use records those). Guarded: without
+        these internals, fall back to the plain staged write.
         """
-        self._staged[_WS_BLOB_KEY] = json.dumps(
+        value = json.dumps(
             {
                 "version": _WS_BLOB_VERSION,
                 "index": sorted(set(index)),
@@ -531,6 +538,16 @@ class KvgitProvider:
             },
             sort_keys=True,
         ).encode()
+        head_handle = self._staged.checkout(self._staged.current_commit)
+        head_raw = head_handle.get(_WS_BLOB_KEY) if head_handle is not None else None
+        if self._parse_blob(head_raw) == self._parse_blob(value):
+            updates = getattr(self._staged, "_updates", None)
+            cache = getattr(self._staged, "_cache", None)
+            if updates is not None and cache is not None:
+                updates.pop(_WS_BLOB_KEY, None)
+                cache.pop(_WS_BLOB_KEY, None)
+                return
+        self._staged[_WS_BLOB_KEY] = value
 
     def _resolve_stage_paths(self, paths: Iterable[str]) -> dict[str, str]:
         """Display path → store key, for stageable paths.
@@ -658,6 +675,12 @@ class KvgitProvider:
             # writing anything, so there is nothing to unwind).
             raise WorkspaceError("nothing staged to commit")
         self._write_blob(set(), False)
+        # Snapshot live rows before the fixup: the subset commit below
+        # clears the table key from the buffer, which would leave the
+        # fixed-up table as live truth — unstaged additions rowless,
+        # unstaged edits HEAD-stale, and the next checkpoint persisting
+        # the mismatch. Restoring afterwards keeps reads truthful.
+        live_table = self._staged.get(VirtualFS.METADATA_KEY)
         self._commit_table(index)
         keys = set(pending) | {_WS_BLOB_KEY}
         for extra in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY, "__cwd__"):
@@ -671,8 +694,19 @@ class KvgitProvider:
                 f"commit failed: conflicting concurrent commit on branch "
                 f"{self._session!r} (CAS): {result}"
             )
-        # The table fixup wrote around the VFS: drop its caches so
-        # post-commit reads see committed state, not pre-fixup rows.
+        if live_table is not None:
+            # Normalize: the restore must stage bytes — a decoded value
+            # written back raw would break VFS table reads.
+            if not isinstance(live_table, bytes):
+                live_table = (
+                    live_table.encode()
+                    if isinstance(live_table, str)
+                    else json.dumps(live_table, sort_keys=True).encode()
+                )
+            if self._staged.get(VirtualFS.METADATA_KEY) != live_table:
+                self._staged[VirtualFS.METADATA_KEY] = live_table
+        # Fixup and restore both wrote around the VFS: drop its caches
+        # once, at the end, so post-commit reads see live state.
         self._invalidate_fs()
         return self._staged.current_commit
 
