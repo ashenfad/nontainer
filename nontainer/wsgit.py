@@ -85,17 +85,154 @@ stage-first: stage paths (suspends autocheckpoint), then edit, then
 commit — writes before the first stage checkpoint immediately."""
 
 
+#: The dud host-object name fronting ws-git on guest rungs. A user
+#: host object under the same name refuses at executor open (fail
+#: closed, like RESERVED_COMMANDS) rather than shadowing either way.
+DUD_OBJECT = "ws_git"
+
+#: The shell function every dud exec prepends when ``ws-git`` is
+#: registered. Calls home over ``dud-hostcall`` with the guest cwd
+#: first; a tiny python3 split (present in every guest — stdlib can't
+#: be withheld) separates the triple onto the real streams and exits
+#: with the verb's code. ``type ws-git`` shows a function (fine);
+#: sudo/env -i drop it (acceptable — the rung, not the verb).
+SHELL_FUNCTION = """ws-git() {
+  dud-hostcall ws_git run "$PWD" "$@" | python3 -c '
+import json, sys
+t = json.loads(sys.stdin.read())
+sys.stdout.write(t["stdout"])
+sys.stderr.write(t["stderr"])
+sys.exit(t["exit_code"])
+'
+}
+"""
+
+
 def register_wsgit(ws: Any) -> None:
     """Register the ``ws-git`` terminal builtin on a workspace.
 
     Follows the ``enable_apps``/``register_command`` pattern. No-op
-    where the executor cannot run commands (the ``supports_commands``
-    gate doubles as the primer gate: agents on such executors are
-    never told about terminal builtins).
+    where the executor cannot run commands (the gate doubles as the
+    primer gate: agents on such executors are never told about
+    terminal builtins). A dud-backed executor reports
+    ``supports_commands`` False (real bash has no registry) yet
+    ferries the verbs to the guest another way (PR 4) — detected by
+    the guest-path mapping the handler needs, not by importing the
+    executor (which would cycle).
     """
-    if not ws.supports_commands:
+    if not ws.supports_commands and not hasattr(
+        getattr(ws, "_executor", None), "_guest_to_host"
+    ):
         return
-    ws.register_command("ws-git", make_wsgit_command(ws))
+    fn = make_wsgit_command(ws)
+    # Tags OUR registration: the dud handler must not front a user's
+    # own ``ws-git`` command (the ws-* prefix reservation was decided
+    # but never enforced — RESERVED_COMMANDS holds only python/python3).
+    fn._nontainer_wsgit = True
+    ws.register_command("ws-git", fn)
+
+
+def _guest_ctx(args: list[str], cwd: str) -> Any:
+    """A termish-shaped context for invoking the command off-rung.
+
+    The closure only touches ``args``, ``stdout``, and ``fs.getcwd()``
+    — so the fake fs is one method, returning the guest-reported cwd
+    (already mapped host-side by the caller).
+    """
+    from io import StringIO
+
+    class _CwdFS:
+        def __init__(self, cwd: str):
+            self._cwd = cwd
+
+        def getcwd(self) -> str:
+            return self._cwd
+
+    class _Ctx:
+        def __init__(self):
+            self.args = args
+            self.stdout = StringIO()
+            self.fs = _CwdFS(cwd)
+
+    return _Ctx()
+
+
+class DudHostHandler:
+    """The dud host object fronting ws-git on guest rungs (PR 4).
+
+    One public method, ``run(cwd, *argv)`` — the shape ``dud-hostcall``
+    delivers (every word past METHOD arrives verbatim). It invokes the
+    SAME command closure the local rung runs, with a guest-shaped
+    context, so both rungs share behavior byte-for-byte — including
+    the known frozen hole (#63 fixes both at once; a snapshot here
+    would merely diverge).
+
+    The triple comes back JSON-safe (``{"stdout","stderr","exit_code"}``);
+    the guest function splits it onto the real streams. ``stderr``
+    carries termish's ``"ws-git: "`` prefix (added by the local shell
+    layer, not the command) so both rungs read identically.
+    """
+
+    def __init__(self, ws: Any):
+        self._ws = ws
+        self._command = make_wsgit_command(ws)
+
+    def run(self, cwd: str, *argv: str) -> dict:
+        ws = self._ws
+        with ws._lock:
+            cmd = ws._commands.get("ws-git")
+            if cmd is None:
+                return {
+                    "stdout": "",
+                    "stderr": "ws-git: not registered on this workspace",
+                    "exit_code": 1,
+                }
+            if not getattr(cmd, "_nontainer_wsgit", False):
+                return {
+                    "stdout": "",
+                    "stderr": (
+                        "ws-git: a custom command owns that name here — "
+                        "the dud rung only fronts the framework one"
+                    ),
+                    "exit_code": 1,
+                }
+            mapper = getattr(getattr(ws, "_executor", None), "_guest_to_host", None)
+            host_cwd = (mapper(cwd) if mapper else None) or cwd
+            ctx = _guest_ctx(self._map_argv(mapper, list(argv)), host_cwd)
+            try:
+                result = self._command(ctx)
+            except Exception as e:  # noqa: BLE001 — parity: termish wraps these
+                return {
+                    "stdout": ctx.stdout.getvalue(),
+                    "stderr": f"ws-git: execution error: {e}",
+                    "exit_code": 1,
+                }
+            out = ctx.stdout.getvalue()
+            if result is None:
+                return {"stdout": out, "stderr": "", "exit_code": 0}
+            err = result.stderr or ""
+            if err and not err.startswith("ws-git:"):
+                err = f"ws-git: {err}"
+            return {"stdout": out, "stderr": err, "exit_code": result.exit_code}
+
+    @staticmethod
+    def _map_argv(mapper: Any, argv: list[str]) -> list[str]:
+        """Guest-absolute argv entries to host-absolute. The
+        ``-m``/``--message`` value is free text, never a path.
+        Unmappable entries pass through; the provider refuses them."""
+        if mapper is None:
+            return argv
+        out: list[str] = []
+        message_next = False
+        for word in argv:
+            if message_next:
+                message_next = False
+            elif word in ("-m", "--message"):
+                message_next = True
+            elif word.startswith("/"):
+                word = mapper(word) or word
+            out.append(word)
+        return out
 
 
 def make_wsgit_command(ws: Any) -> Any:

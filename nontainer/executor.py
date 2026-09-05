@@ -203,6 +203,17 @@ class ExecutionContext:
     ``"/"`` selects the pre-0.2 layout (files at the fs root — a VM
     guest can't mount there, so absolute paths diverge on VM rungs)."""
 
+    workspace: Any = None
+    """The live workspace, for framework callbacks that must act AS it.
+
+    Executors that call back into workspace state (dud's ws-git verb
+    handler invoking the registered terminal command) bind this, not a
+    snapshot: provider, lock, and command mapping are read per call.
+    Same behavior as the local rung by construction — including its
+    known holes (the fork-bleed tracked in #63), which a snapshot
+    would merely diverge from. ``None`` when constructed by hand
+    (tests, embedders): framework callbacks are then unoffered."""
+
 
 @dataclass(frozen=True)
 class ViewSpec:

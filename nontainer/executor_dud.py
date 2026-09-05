@@ -538,6 +538,24 @@ class DudExecutor:
                 self._plain[name] = obj
             else:
                 live[name] = obj
+        # Framework host object fronting ws-git (PR 4): registered
+        # unconditionally when a workspace is bound, refused at call
+        # time when ws-git isn't registered there — so post-open
+        # register_wsgit and fork-carried registration both work with
+        # no lifecycle coupling. A user object under the same name
+        # fails closed (like RESERVED_COMMANDS) rather than shadowing
+        # either way. Without a bound workspace there is nothing to
+        # front, and the guest function is unoffered with it.
+        ws = context.workspace
+        if ws is not None:
+            from .wsgit import DUD_OBJECT, DudHostHandler
+
+            if DUD_OBJECT in live:
+                raise ValueError(
+                    f"Reserved host object name: {DUD_OBJECT!r} fronts "
+                    f"the ws-git terminal command — rename yours."
+                )
+            live[DUD_OBJECT] = DudHostHandler(ws)
         self._live = live
         self._cache = _KvBytesCache(context.kv)
         self._session = self._make_session(live, self._cache)
@@ -854,6 +872,16 @@ class DudExecutor:
         nonzero exit with everything in the merged transcript. Exit
         codes carry through untouched (127 for not-found, etc.)."""
         ctx = self._require_ctx()
+        # ws-git as a guest shell function (PR 4): prepended per exec,
+        # so registration is read live — post-open register_wsgit and
+        # fork-carried registration both take effect with no session
+        # rebuild. Only the framework registration counts (a user's own
+        # ws-git command stays a local-rung creature); otherwise the
+        # name is simply absent, as on any unoffered rung.
+        if getattr(ctx.commands.get("ws-git"), "_nontainer_wsgit", False):
+            from .wsgit import SHELL_FUNCTION
+
+            script = SHELL_FUNCTION + script
         with self._lock:
             result = self._with_recovery(
                 lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
@@ -980,6 +1008,28 @@ class DudExecutor:
         if rel:
             self._session.shell(f"cd {shlex.quote(rel)}", timeout=10.0)
 
+    def _guest_to_host(self, guest_path: str) -> str | None:
+        """A guest-absolute path to its host-absolute twin (the ws-git
+        verb handler's cwd and absolute argv spellings).
+
+        Same math as the cwd mirror below: guest <work>/x rides the
+        host root as <root>/x. ``None`` when the path is outside the
+        workspace — callers pass those through unchanged, and the
+        provider then refuses them as unknown, honestly, instead of
+        the mapping guessing.
+        """
+        work = self._work
+        if work:
+            if not guest_path.startswith(work):
+                # A real shell reports resolved paths; the configured
+                # workspace may ride a symlink (macOS /var -> /private/var).
+                work = os.path.realpath(work)
+            if guest_path.startswith(work):
+                rel = guest_path[len(work) :].lstrip("/")
+                base = self._ws_root
+                return f"{base}/{rel}" if rel else (base or "/")
+        return None
+
     def _mirror_cwd(self, guest_cwd: str) -> None:
         """The guest owns cwd within a session (real `cd`); mirror it
         onto the host fs after each shell call so Workspace._save_cwd
@@ -990,16 +1040,9 @@ class DudExecutor:
         ctx = self._require_ctx()
         if not self._work:
             return
-        work = self._work
-        if not guest_cwd.startswith(work):
-            # A real shell reports resolved paths; the configured
-            # workspace may ride a symlink (macOS /var -> /private/var).
-            work = os.path.realpath(work)
-            if not guest_cwd.startswith(work):
-                return
-        rel = guest_cwd[len(work) :].lstrip("/")
-        base = self._ws_root
-        host = f"{base}/{rel}" if rel else (base or "/")
+        host = self._guest_to_host(guest_cwd)
+        if host is None:
+            return
         try:
             if ctx.fs.getcwd() != host and ctx.fs.isdir(host):
                 ctx.fs.chdir(host)
