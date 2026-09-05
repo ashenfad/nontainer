@@ -514,6 +514,25 @@ class AgentFSProvider:
     def merge(self, source: str) -> Any:
         raise self._unsupported("merge")
 
+    def stage(self, paths: Any) -> Any:
+        raise self._unsupported("stage")
+
+    def unstage(self, paths: Any) -> Any:
+        raise self._unsupported("unstage")
+
+    def commit(self, info: Any = None) -> Any:
+        raise self._unsupported("commit")
+
+    def discard_staged(self) -> Any:
+        raise self._unsupported("discard_staged")
+
+    def status(self) -> Any:
+        raise self._unsupported("status")
+
+    def stage_suspended(self) -> bool:
+        # Not a capability verb but a query: no index, never suspended.
+        return False
+
     def discard(self) -> None:
         raise self._unsupported("discard")
 

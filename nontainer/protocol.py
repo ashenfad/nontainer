@@ -80,9 +80,14 @@ class Capabilities:
     ``versioned``, fork may still work — just expensively (file copy)."""
 
     merge: bool = False
-    """Concurrent sessions over one lineage can reconcile (CAS +
-    key-level three-way merge). Reserved for the merge-preset roadmap;
-    nothing in the v1 toolkit calls it."""
+    """This branch can merge another branch's HEAD (CAS + key-level
+    three-way merge with conflict markers)."""
+
+    index: bool = False
+    """A staged set (the index) with selective commit: ``stage`` /
+    ``unstage`` compose a commit across calls while ``commit`` flushes
+    only staged keys. Staging suspends autocheckpoint until the
+    composition lands or is abandoned."""
 
     sql_audit: bool = False
     """Operation-level audit log queryable with SQL (AgentFS)."""
@@ -191,6 +196,37 @@ class MergeOutcome:
     commit: str | None
     conflicts: tuple[str, ...]
     auto_merged: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StageResult:
+    """What staging a batch of paths did, as workspace file paths."""
+
+    staged: tuple[str, ...]
+    """Paths newly added to the index by this call."""
+
+    suspended: bool
+    """True only when this call suspended autocheckpoint (the first
+    stage op of a composition)."""
+
+
+@dataclass(frozen=True)
+class WorkspaceStatus:
+    """Staged vs unstaged file paths plus live merge context."""
+
+    branch: str
+    staged: tuple[str, ...]
+    """Indexed paths that differ from HEAD — the next ``commit``."""
+    unstaged: tuple[str, ...]
+    """Modified paths outside the index."""
+    merge_source: str | None
+    """Source of the most recent merge whose markers are still in HEAD,
+    or ``None``. Derived live from history, never stored."""
+    merge_unresolved: tuple[str, ...]
+    """HEAD-tree paths still carrying conflict markers (empty unless a
+    merge is outstanding). A marker scan at read time, so
+    pre-existing marker-like bytes committed long ago can appear
+    here — resolve them like any other marker."""
 
 
 @runtime_checkable
@@ -355,6 +391,54 @@ class WorkspaceProvider(Protocol):
         ``NotSupportedError``.
         """
         ...
+
+    def stage(self, paths: Iterable[str]) -> StageResult:
+        """Stage workspace file paths for the next selective ``commit``
+        (requires ``caps.index``). Unknown paths raise ``ValueError``;
+        valid-but-unstaged paths are silently ignored by ``unstage``.
+        The first call suspends autocheckpoint until the composition
+        lands (``commit``) or is abandoned (``discard_staged`` or
+        unstaging everything) — reported in the result, since there is
+        no terminal yet to say it aloud. Providers without the
+        capability raise ``NotSupportedError``.
+        """
+        ...
+
+    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Remove workspace file paths from the index (requires
+        ``caps.index``). Unstaging the last staged path resumes
+        autocheckpoint. Returns the paths actually removed.
+        """
+        ...
+
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        """Commit staged keys plus index bookkeeping, leaving unstaged
+        writes dirty (requires ``caps.index``). Tagged
+        ``{"tool": "ws-git.commit"}`` unless ``info`` says otherwise.
+        Raises ``WorkspaceError`` when nothing staged would change the
+        tree. Returns the new commit hash.
+        """
+        ...
+
+    def discard_staged(self) -> None:
+        """Abandon the composition: clear the index and resume
+        autocheckpoint (requires ``caps.index``). Working-tree writes
+        stay dirty but unindexed.
+        """
+        ...
+
+    def status(self) -> WorkspaceStatus:
+        """Staged vs unstaged file paths plus live merge context
+        (requires ``caps.index``). Pure read: never writes, commits, or
+        mutates the index on any path.
+        """
+        ...
+
+    def stage_suspended(self) -> bool:
+        """Whether staging currently suspends autocheckpoint on this
+        branch. Always ``False`` where ``caps.index`` is False.
+        """
+        return False
 
     # -- power modes / lifecycle ---------------------------------------
 
