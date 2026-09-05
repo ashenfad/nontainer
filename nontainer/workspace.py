@@ -801,6 +801,15 @@ class Workspace:
         user_commands["python"] = self._python_command
         user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
+        # Framework-owned commands (ws-git, curl) and how to re-bind
+        # them: a command closure captures the workspace it was built
+        # for, so a fork/snapshot that merely copied the mapping would
+        # dispatch into its parent — the fork-bleed. fork()/at_tag()
+        # drop these names from the copy and rebuild them bound to the
+        # new workspace instead (see _adopt_commands). Populated via
+        # register_command(rebind=...), never from _Settings: like
+        # commands themselves, factories arrive after construction.
+        self._framework_commands: dict[str, Callable[[Workspace], None]] = {}
 
         # -- execution: bound behind the Executor seam (executor.py).
         # Default is the in-process sandtrap+termish LocalExecutor.
@@ -1360,16 +1369,32 @@ class Workspace:
             return CommandResult(exit_code=0, stderr=result.stderr)
         return None
 
-    def register_command(self, name: str, fn: Callable[..., Any]) -> None:
+    def register_command(
+        self,
+        name: str,
+        fn: Callable[..., Any],
+        *,
+        rebind: Callable[[Workspace], None] | None = None,
+    ) -> None:
         """Add a terminal command after construction (termish
         ``CommandFunc`` signature). Used by extras (e.g. apps' `curl`);
         also public for embedders. Reserved names and collisions with
-        existing injections are rejected."""
+        existing injections are rejected.
+
+        ``rebind`` marks a framework-owned command: a factory taking
+        the new workspace (usually the same function that called this)
+        that rebuilds the command bound to a fork/snapshot.
+        Without it the fork would inherit the parent-bound closure and
+        dispatch into the parent — the fork-bleed. Embedder commands
+        omit it and copy across as-is.
+        """
         if name in RESERVED_COMMANDS:
             raise ValueError(f"Reserved terminal command name: {name!r}")
         if name in self._commands:
             raise ValueError(f"Terminal command already registered: {name!r}")
         self._commands[name] = fn
+        if rebind is not None:
+            self._framework_commands[name] = rebind
 
     # ------------------------------------------------------------------
     # direct (host-side) access
@@ -1661,19 +1686,40 @@ class Workspace:
         # because __init__ re-adds them. autocheckpoint has a public
         # setter, and a fork of a turn-granularity session must stay in
         # turn granularity.
-        # (A command closed over THIS workspace still points at it from
-        # the fork — the fork-bleed tracked in
-        # scratch/plan-http-unification.md, whose Phase 0 removes the
-        # closure rather than rebinding it here.)
-        user_commands = {
-            k: v for k, v in self._commands.items() if k not in RESERVED_COMMANDS
-        }
-        return Workspace(
+        new_ws = Workspace(
             forked,
-            commands=user_commands,
+            commands=self._forkable_commands(),
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
+        self._adopt_commands(new_ws)
+        return new_ws
+
+    def _forkable_commands(self) -> dict[str, Callable[..., Any]]:
+        """User commands safe to inherit: everything except the
+        reserved bridge names (__init__ re-adds them) and
+        framework-owned commands, which _adopt_commands rebuilds bound
+        to the new workspace instead of inheriting parent-bound."""
+        skip = RESERVED_COMMANDS | self._framework_commands.keys()
+        return {k: v for k, v in self._commands.items() if k not in skip}
+
+    def _adopt_commands(self, new_ws: Workspace) -> None:
+        """Re-bind framework-owned commands onto a fork/snapshot.
+
+        A command closure captures the workspace it was built for, so
+        inheriting the mapping would dispatch the fork into its parent
+        (the fork-bleed). Each recorded factory rebuilds its command
+        bound to ``new_ws`` instead. A factory that raises closes the
+        half-built workspace and propagates — never a fork whose verbs
+        silently belong to someone else.
+        """
+        new_ws._framework_commands = dict(self._framework_commands)
+        try:
+            for factory in self._framework_commands.values():
+                factory(new_ws)
+        except BaseException:
+            new_ws.close()
+            raise
 
     def discard(self) -> None:
         """Drop writes since the last checkpoint (staging providers)."""
@@ -1818,17 +1864,18 @@ class Workspace:
             frozen = self._provider.at_tag(name, scope=scope)
         # Same replay as fork(): commands and autocheckpoint come from
         # the live attributes because both can change after construction
-        # (see _Settings). autocheckpoint is forced off for a frozen
-        # provider regardless; passing it keeps the two paths identical.
-        user_commands = {
-            k: v for k, v in self._commands.items() if k not in RESERVED_COMMANDS
-        }
-        return Workspace(
+        # (see _Settings) — including the framework re-binding, so a
+        # snapshot's verbs read the snapshot, not the live parent.
+        # autocheckpoint is forced off for a frozen provider regardless;
+        # passing it keeps the two paths identical.
+        new_ws = Workspace(
             frozen,
-            commands=user_commands,
+            commands=self._forkable_commands(),
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
+        self._adopt_commands(new_ws)
+        return new_ws
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
         """File-level changes between two checkpoint ids: which

@@ -754,7 +754,13 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     runtime = AppRuntime(ws, config)
     from .curl import make_curl_command
 
-    ws.register_command("curl", make_curl_command(runtime))
+    # Framework-owned: a fork/snapshot rebuilds its own runtime bound
+    # to itself instead of inheriting the parent-bound closure.
+    ws.register_command(
+        "curl",
+        make_curl_command(runtime),
+        rebind=lambda fork: enable_apps(fork, config),
+    )
     return runtime
 
 

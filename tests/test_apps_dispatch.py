@@ -598,6 +598,26 @@ def test_buffered_lines_flush_in_order_when_a_handler_errors():
     ws.close()
 
 
+def test_fork_curl_binds_fork():
+    """Fork-bleed for curl: the fork rebuilds its own runtime bound to
+    itself, so its curl serves the fork's handlers, not the parent's."""
+    ws, rt = make_ws()
+    write_handler(ws, "forkbleed", "def get(req):\n    return {'side': 'parent'}\n")
+    fork = ws.fork("apps-forkbleed-kid")
+    try:
+        assert fork._commands["curl"] is not ws._commands["curl"]
+        write_handler(fork, "forkbleed", "def get(req):\n    return {'side': 'fork'}\n")
+        r = fork.terminal("curl /api/forkbleed")
+        assert r, r.stderr
+        assert json.loads(r.stdout) == {"side": "fork"}
+        r = ws.terminal("curl /api/forkbleed")
+        assert r, r.stderr
+        assert json.loads(r.stdout) == {"side": "parent"}
+    finally:
+        fork.close()
+    ws.close()
+
+
 def test_curl_flushes_the_log_it_tells_the_agent_to_read():
     """curl runs inside a tool call that checkpoints anyway, and the
     agent's next move is to tail the log."""
