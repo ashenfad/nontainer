@@ -116,6 +116,33 @@ def test_unstaged_diff_and_status_columns(ws):
     assert ws.terminal("ws-git diff b.txt").stdout == ""
 
 
+def test_diff_trailing_newline_change(ws):
+    ws.fs.write("/workspace/e.txt", b"a\n")
+    ws.checkpoint()
+    ws.fs.write("/workspace/e.txt", b"a")
+    assert ws.terminal("ws-git diff").stdout == (
+        "diff --git a/e.txt b/e.txt\n"
+        "--- a/e.txt\n"
+        "+++ b/e.txt\n"
+        "@@ -1 +1 @@\n"
+        "-a\n"
+        "+a\n"
+        "\\ No newline at end of file\n"
+    )
+
+
+def test_diff_check_honors_cached(ws):
+    ws.fs.write("/workspace/m.txt", b"<<<<<<< HEAD\nx\n")
+    ws.terminal("ws-git stage m.txt")
+    ws.fs.write("/workspace/u.txt", b"y\n=======\n")
+    r = ws.terminal("ws-git diff --check")
+    assert r.exit_code == 2
+    assert r.stdout == "u.txt:2: leftover conflict marker\n"
+    r = ws.terminal("ws-git diff --cached --check")
+    assert r.exit_code == 2
+    assert r.stdout == "m.txt:1: leftover conflict marker\n"
+
+
 def test_unstage_last_resumes(ws):
     ws.fs.write("/workspace/a.txt", b"one\n")
     ws.terminal("ws-git stage a.txt")
