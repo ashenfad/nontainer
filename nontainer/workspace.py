@@ -882,6 +882,7 @@ class Workspace:
                 head=_state_identity(provider),
                 root=self._root,
                 frozen=self._frozen,
+                workspace=self,
             )
         )
 

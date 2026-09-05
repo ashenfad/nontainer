@@ -126,7 +126,10 @@ dud = [
     # (/workspace), so agent absolute paths match LocalExecutor's.
     # 0.4.0: rich `ui` flattening moved out of dud into the image, so
     # it is now named by `outputs_hook=` rather than built in.
-    "dud>=0.4.0; python_version >= '3.11'",
+    # 0.4.1: synchronous shell hostcalls (`dud-hostcall` + supervisor
+    # relay, rootfs shim, pipeline v6) — the transport PR4's ws-git
+    # guest functions call home over.
+    "dud>=0.4.1; python_version >= '3.11'",
 ]
 dev = [
     "ruff",
