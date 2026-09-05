@@ -550,7 +550,11 @@ class DudExecutor:
         if ws is not None:
             from .wsgit import DUD_OBJECT, DudHostHandler
 
-            if DUD_OBJECT in live:
+            # Pre-split names: a plain-data object under the same name
+            # rides ``_plain``, not ``live`` — checking only ``live``
+            # would miss the collision and register the framework
+            # handler alongside the user's value.
+            if DUD_OBJECT in cfg.host_objects:
                 raise ValueError(
                     f"Reserved host object name: {DUD_OBJECT!r} fronts "
                     f"the ws-git terminal command — rename yours."
@@ -1020,11 +1024,16 @@ class DudExecutor:
         """
         work = self._work
         if work:
-            if not guest_path.startswith(work):
+            # Path-boundary containment: a sibling sharing the string
+            # prefix (/workspace-other vs /workspace) is outside, not
+            # an in-workspace path with a funny first component.
+            boundary = work if work.endswith("/") else work + "/"
+            if guest_path != work and not guest_path.startswith(boundary):
                 # A real shell reports resolved paths; the configured
                 # workspace may ride a symlink (macOS /var -> /private/var).
                 work = os.path.realpath(work)
-            if guest_path.startswith(work):
+                boundary = work if work.endswith("/") else work + "/"
+            if guest_path == work or guest_path.startswith(boundary):
                 rel = guest_path[len(work) :].lstrip("/")
                 base = self._ws_root
                 return f"{base}/{rel}" if rel else (base or "/")
