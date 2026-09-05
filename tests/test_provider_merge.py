@@ -233,36 +233,21 @@ def test_merged_sizes_recomputed(kv_ws):
 
 
 def test_file_vs_dir_is_hard_conflict(kv_ws):
-    import json
-
     from monkeyfs import VirtualFS
 
-    p = _provider(kv_ws)
     kv_ws.terminal("echo file > x")
     fork = kv_ws.fork("worker")
     try:
-        # Shell writes cannot contest one table row (`>` and `>>`
-        # normalize to different keys upstream), so stage the
-        # disagreement directly: base says file, main edits the
-        # record, the fork records a directory on the same row.
-        row = "workspace/x"
-        key = VirtualFS.METADATA_KEY
-        ours = json.loads(p._staged.get(key))
-        ours[row]["size"] += 1
-        p._staged[key] = json.dumps(ours).encode()
-        kv_ws.checkpoint()
+        # Both sides touch the same table row (single-row keys since
+        # monkeyfs 0.1.8); the fork then swaps the file for a dir.
+        kv_ws.terminal("echo more >> x")
+        fork.terminal("rm x && mkdir x && echo hi > x/inner.txt")
 
-        fp = fork._provider
-        theirs = json.loads(fp._staged.get(key))
-        theirs[row]["is_dir"] = True
-        fp._staged[key] = json.dumps(theirs).encode()
-        fork.checkpoint()
-
-        before = p.head
-        out = p.merge("worker")
+        before = _provider(kv_ws).head
+        out = _provider(kv_ws).merge("worker")
         assert not out.merged
         assert out.commit is None
-        assert p.head == before
+        assert _provider(kv_ws).head == before
         assert out.conflicts == (VirtualFS.METADATA_KEY,)
     finally:
         fork.close()
