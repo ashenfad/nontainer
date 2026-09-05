@@ -635,7 +635,8 @@ class KvgitProvider:
         brought = self.diff(base, self._staged.current_commit)
         at_base = self._staged.checkout(base)
         rev = {
-            display: key for key, display in self._file_keys(self._staged.keys()).items()
+            display: key
+            for key, display in self._file_keys(self._staged.keys()).items()
         }
         candidates = brought.added | brought.removed | brought.modified
         conflicts = tuple(
@@ -731,7 +732,9 @@ class KvgitProvider:
                 fixed = True
         if not fixed:
             return
-        self._staged[VirtualFS.METADATA_KEY] = json.dumps(table, sort_keys=True).encode()
+        self._staged[VirtualFS.METADATA_KEY] = json.dumps(
+            table, sort_keys=True
+        ).encode()
         self.checkpoint({"tool": "ws-git.merge", "sizes": "recomputed"})
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
