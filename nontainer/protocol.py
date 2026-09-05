@@ -83,12 +83,6 @@ class Capabilities:
     """This branch can merge another branch's HEAD (CAS + key-level
     three-way merge with conflict markers)."""
 
-    index: bool = False
-    """A staged set (the index) with selective commit: ``stage`` /
-    ``unstage`` compose a commit across calls while ``commit`` flushes
-    only staged keys. Staging suspends autocheckpoint until the
-    composition lands or is abandoned."""
-
     sql_audit: bool = False
     """Operation-level audit log queryable with SQL (AgentFS)."""
 
@@ -103,6 +97,13 @@ class Capabilities:
     long as the name exists. When False, ``tag`` / ``tags`` /
     ``tag_info`` / ``delete_tag`` / ``at_tag`` / ``diff`` raise
     ``NotSupportedError``."""
+
+    index: bool = False
+    """A staged set (the index) with selective commit: ``stage`` /
+    ``unstage`` compose a commit across calls while ``commit`` flushes
+    only staged keys. Staging suspends autocheckpoint until the
+    composition lands or is abandoned. Appended last so earlier
+    positional ``Capabilities(...)`` constructions keep their meaning."""
 
 
 @dataclass(frozen=True)

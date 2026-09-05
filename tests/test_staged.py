@@ -302,6 +302,42 @@ def test_merge_unions_staging_blobs(kv_ws):
         fork.close()
 
 
+def test_selective_commit_preserves_live_table(kv_ws):
+    import json
+
+    from monkeyfs import VirtualFS
+
+    p = _provider(kv_ws)
+    kv_ws.fs.write("/workspace/a.txt", b"one")
+    kv_ws.fs.write("/workspace/b.txt", b"two")
+    p.stage(["/workspace/a.txt"])
+    p.commit()
+
+    # Live reads still see the uncommitted file: its row survives as
+    # unstaged state, not as the fixed-up commit table.
+    live = json.loads(p._staged.get(VirtualFS.METADATA_KEY))
+    assert live["workspace/b.txt"]["size"] == 3
+    # And the next checkpoint persists that truth, not HEAD staleness.
+    n0 = len(_history(kv_ws))
+    kv_ws.terminal("echo three > c.txt")
+    assert len(_history(kv_ws)) == n0 + 1
+    committed = json.loads(p._staged.checkout(p.head).get(VirtualFS.METADATA_KEY))
+    assert committed["workspace/b.txt"]["size"] == 3
+
+
+def test_abandoned_clean_index_leaves_no_dirt(kv_ws):
+    kv_ws.terminal("echo one > a.txt")
+    p = _provider(kv_ws)
+    p.stage(["/workspace/a.txt"])  # clean file: index moves, tree doesn't
+    assert p.dirty
+    p.discard_staged()
+    assert not p.dirty
+    # A read-only op mints nothing.
+    n0 = len(_history(kv_ws))
+    kv_ws.terminal("ls a.txt")
+    assert len(_history(kv_ws)) == n0
+
+
 def test_merge_after_selective_commit(kv_ws):
     # Selective commit must leave the tree mergeable: framework keys
     # ride along with the table fixed up, so no metadata staleness
