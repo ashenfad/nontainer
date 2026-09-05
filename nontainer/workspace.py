@@ -782,6 +782,12 @@ class Workspace:
         # executor's back; the public ``fs`` hands out a wrapper that
         # flags it, and the next execution syncs (see _SyncingFS).
         self._executor_stale = False
+        # A ws-git verb's mid-call harvest can fail after the guest
+        # baseline advanced (provider refused part of the harvest):
+        # the handler stashes the message here and terminal() unwinds
+        # the partial staging like a torn call instead of
+        # checkpointing it. Transient per-call state, never replayed.
+        self._pending_sync_error: str | None = None
         self._public_fs = _SyncingFS(self._fs, self._mark_executor_stale)
 
         # -- terminal commands: user injections + the python bridge --
@@ -1064,6 +1070,28 @@ class Workspace:
                     stdout="", exit_code=1, stderr=self._refused_frozen(e)
                 )
             torn = self._absorb_or_unwind(was_dirty)
+            pending = self._pending_sync_error
+            self._pending_sync_error = None
+            if pending is not None:
+                # A ws-git verb's pre-verb harvest failed after the
+                # guest baseline advanced, so staging may hold partial
+                # writes the post-call harvest can no longer see. Same
+                # contract as a torn call: entry-clean staging holds
+                # only this call's effects, so discard restores exact
+                # pre-call state; entry-dirty staging holds earlier
+                # work that is not ours to drop — leave it, and say so.
+                if not was_dirty:
+                    try:
+                        self._provider.discard()
+                        pending += "; this call's staged changes were rolled back"
+                    except Exception:
+                        pass
+                else:
+                    pending += (
+                        "; WARNING: this call's staged changes may remain "
+                        "and would ride the next checkpoint"
+                    )
+                torn = pending if torn is None else f"{pending}\n{torn}"
             self._save_cwd()
             if torn is not None:
                 stderr = f"{result.stderr}\n{torn}" if result.stderr else torn
