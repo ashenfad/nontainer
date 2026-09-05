@@ -33,7 +33,12 @@ dependencies = [
     # earlier floor was set for. Also reference-counts patch()'s
     # process-global shims, so one workspace leaving does not unpatch
     # another that is still running.
-    "monkeyfs>=0.1.7",
+    # 0.1.8: the metadata table is keyed resolved-against-CWD in every
+    # consumer, so one file holds one row however callers spell the
+    # path. The ws-git merge verb depends on it: its field-aware table
+    # merge and size correction match rows to blobs, which breaks when
+    # a file holds two rows.
+    "monkeyfs>=0.1.8",
     # 0.3.0: process workers come from a forkserver broker instead of
     # forking the embedding process — the arrangement executor.py's
     # pooling and fork-hazard notes describe
