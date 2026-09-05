@@ -72,6 +72,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log) [...]
   status            staged vs unstaged (git-short XY columns)
   diff [--cached] [--check] [paths...]
                     unified worktree diff; --cached for staged
+                    --check finds leftover conflict markers
+                    (unstaged, or staged with --cached;
+                    unresolved merges always)
   log [-n N]        newest-first checkpoint hashes and messages
   help              this text
 
@@ -305,7 +308,7 @@ def _diff(provider: Any, ctx: Any, rest: list[str]) -> Any:
             paths.append(_abspath(ctx, flag))
     st = provider.status()
     if check:
-        return _diff_check(provider, ctx, st, paths)
+        return _diff_check(provider, ctx, st, paths, cached)
     want = set(st.staged) if cached else set(st.unstaged)
     if paths:
         want &= set(paths)
@@ -324,12 +327,10 @@ def _diff(provider: Any, ctx: Any, rest: list[str]) -> Any:
             continue
         out.append(f"diff --git a/{show} b/{show}")
         out.extend(
-            difflib.unified_diff(
-                old.decode("utf-8", errors="replace").splitlines(),
-                new.decode("utf-8", errors="replace").splitlines(),
-                fromfile=f"a/{show}",
-                tofile=f"b/{show}",
-                lineterm="",
+            _unified_with_newline_markers(
+                old.decode("utf-8", errors="replace"),
+                new.decode("utf-8", errors="replace"),
+                show,
             )
         )
     if out:
@@ -337,17 +338,51 @@ def _diff(provider: Any, ctx: Any, rest: list[str]) -> Any:
     return None
 
 
+def _unified_with_newline_markers(old: str, new: str, show: str) -> list[str]:
+    """Unified diff lines with git's end-of-file newline markers.
+
+    ``splitlines(keepends=True)`` preserves a trailing-newline-only
+    change (plain ``splitlines()`` erases it, emitting a bare header
+    with no hunk); difflib itself never marks the missing newline, so
+    a content line yielded without one earns git's
+    ``\\ No newline at end of file`` line. Output lines carry no
+    endings — the caller joins them.
+    """
+    lines: list[str] = []
+    chunks = difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=f"a/{show}",
+        tofile=f"b/{show}",
+        lineterm="",
+    )
+    for chunk in chunks:
+        body = chunk[:-1] if chunk.endswith("\n") else chunk
+        lines.append(body)
+        if (
+            not chunk.endswith("\n")
+            and body[:1] in ("-", "+", " ")
+            and body[:3] not in ("---", "+++")
+        ):
+            lines.append("\\ No newline at end of file")
+    return lines
+
+
 _MARKERS = (b"<<<<<<< ", b"=======", b">>>>>>> ")
 
 
-def _diff_check(provider: Any, ctx: Any, st: Any, paths: list[str]) -> Any:
+def _diff_check(
+    provider: Any, ctx: Any, st: Any, paths: list[str], cached: bool
+) -> Any:
     from termish import CommandResult
 
     live, _, _ = _content_maps(provider)
-    # Unresolved merge paths count even when the tree is clean: their
-    # markers committed WITH the merge (PR 1), so a clean tree can
-    # still be mid-resolution — that is exactly what --check is for.
-    want = (set(st.staged) | set(st.unstaged) | set(st.merge_unresolved)) & set(live)
+    # Like git: bare --check scans the unstaged worktree, --cached scans
+    # the staged set. Unresolved merge paths always count: their markers
+    # committed WITH the merge (PR 1), so a clean tree can still be
+    # mid-resolution — that is exactly what --check is for.
+    base = set(st.staged) if cached else set(st.unstaged)
+    want = (base | set(st.merge_unresolved)) & set(live)
     if paths:
         want &= set(paths)
     hits: list[str] = []
