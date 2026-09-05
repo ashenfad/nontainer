@@ -199,6 +199,62 @@ def test_guest_to_host_mapping(ws):
     assert ex._guest_to_host(f"{work}-other") is None
 
 
+def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypatch):
+    """A mid-call harvest the provider refuses must neither checkpoint
+    partials nor poison the guest: the verb reads errored, the call
+    unwinds like a torn call, history holds, and the guest is flagged
+    for rematerialization on the next call.
+
+    The harvest shape is supplied directly: the subprocess rung runs
+    against host paths, so it cannot see workspace mounts guest-side
+    (a VM rung materializes them via the tree push — that end-to-end
+    half is VM-only). What this pins is the unwind/stale/pending
+    plumbing from the refused StagedDiff onward.
+    """
+    from nontainer import Mount
+    from nontainer.executor import StagedDiff
+
+    src = tmp_path / "ro"
+    src.mkdir()
+    provider = KvgitProvider.open(None, session=f"wsgit-ro-{tmp_path.name}")
+    w = Workspace(
+        provider,
+        executor=DudExecutor(backend="subprocess"),
+        mounts={"/data": Mount(src)},
+    )
+    register_wsgit(w)
+    try:
+        before = len(list(w.history()))
+        calls = []
+
+        def fake_diff():
+            calls.append(1)
+            if len(calls) == 1:
+                # One appliable write, then the mount refusal.
+                return StagedDiff(
+                    writes={"workspace/ok.txt": b"ok\n", "data/evil.txt": b"x"},
+                    deletes=(),
+                )
+            return None
+
+        monkeypatch.setattr(w._executor, "diff", fake_diff)
+        r = w.terminal("ws-git status")
+        assert r.exit_code != 0
+        # The verb's triple rides the merged dud transcript...
+        assert "mid-call sync failed" in r.stdout
+        # ...while the outer unwind lands on the result like a torn call.
+        assert "rolled back" in (r.stderr or "")
+        assert len(list(w.history())) == before
+        assert not w.fs.exists("/workspace/ok.txt")
+        assert not (src / "evil.txt").exists()
+        # Guest flagged for rematerialization; the next call re-syncs.
+        assert w._executor_stale is True
+        assert w.terminal("ws-git status").exit_code == 0
+        assert w._executor_stale is False
+    finally:
+        w.close()
+
+
 def test_plain_data_ws_git_name_refused():
     """A plain-data host object named ``ws_git`` fails closed like a
     live one: it rides ``_plain`` past a live-only check, so the guard

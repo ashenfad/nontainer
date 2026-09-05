@@ -212,6 +212,16 @@ class DudHostHandler:
             try:
                 torn = ws._absorb_or_unwind(ws._provider.dirty)
             except Exception as e:  # noqa: BLE001 — honest triple, below
+                # Absorption failed AFTER the guest baseline advanced
+                # (rebase rides the harvest): the guest holds content
+                # the provider refuses, staging may hold partial writes,
+                # and the post-call harvest will read empty. So the
+                # triple alone would let terminal() checkpoint the
+                # partials as a routine success: rematerialize the guest
+                # next call, and stash the failure for terminal(), which
+                # unwinds the partial staging like a torn call instead.
+                ws._mark_executor_stale()
+                ws._pending_sync_error = f"mid-call sync failed: {e}"
                 return {
                     "stdout": "",
                     "stderr": f"ws-git: mid-call sync failed: {e}",
