@@ -13,7 +13,9 @@ live under ``__cache__/`` — no collisions by construction.
 Capabilities: ``staging`` (writes are invisible until checkpoint;
 ``discard()`` drops them), ``cheap_fork`` (branches share storage via
 kvgit's content-addressed HAMT), ``merge`` (CAS + key-level three-way
-— unused by the v1 toolkit, reserved for concurrent-session presets).
+with conflict markers), ``index`` (a staged set with selective
+``commit``; staging suspends autocheckpoint until the composition
+lands or is abandoned).
 
 ``info`` dicts attached to checkpoints must be JSON-serializable
 (kvgit hashes them into the commit id).
@@ -45,8 +47,10 @@ from ..protocol import (
     Capabilities,
     CheckpointInfo,
     MergeOutcome,
+    StageResult,
     TagInfo,
     WorkspaceDiff,
+    WorkspaceStatus,
     validate_session_id,
 )
 
@@ -55,10 +59,61 @@ _KVGIT_CAPS = Capabilities(
     staging=True,
     cheap_fork=True,
     merge=True,
+    index=True,
     sql_audit=False,
     fuse_mount=False,
     tags=True,
 )
+
+_WS_BLOB_KEY = "__ws_git__"
+_WS_BLOB_VERSION = 1
+
+
+def _merge_ws_blob(old: Any, ours: Any, theirs: Any) -> bytes:
+    """Union merge for the ws-git staging blob.
+
+    Both sides' composition intent survives: the index unions, and a
+    suspended autocheckpoint on either side stays suspended. Unchanged
+    on one side takes the other (so commit/unstage on one side win
+    over a quiet other); unparseable raises ``CantMark`` like binary.
+    """
+    from kvgit.merges import CantMark
+
+    def blob(value: Any) -> dict:
+        if value is None:
+            return {"index": [], "suspended": False}
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError) as e:
+            raise CantMark(f"staging blob not JSON: {e}") from e
+        if not isinstance(parsed, dict):
+            raise CantMark("staging blob not a table")
+        index = parsed.get("index") or []
+        return {
+            "index": sorted(k for k in index if isinstance(k, str)),
+            "suspended": bool(parsed.get("suspended")),
+        }
+
+    o, u, t = blob(old), blob(ours), blob(theirs)
+    if u == t:
+        result = u
+    elif o == u:
+        result = t
+    elif o == t:
+        result = u
+    else:
+        result = {
+            "index": sorted(set(u["index"]) | set(t["index"])),
+            "suspended": u["suspended"] or t["suspended"],
+        }
+    return json.dumps(
+        {
+            "version": _WS_BLOB_VERSION,
+            "index": result["index"],
+            "suspended": result["suspended"],
+        },
+        sort_keys=True,
+    ).encode()
 
 
 def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
@@ -430,6 +485,302 @@ class KvgitProvider:
         self._staged.reset()
         self._invalidate_fs()
 
+    # -- staged mode (the index) -----------------------------------------
+
+    @staticmethod
+    def _parse_blob(raw: Any) -> dict[str, Any]:
+        """Blob value → normalized dict (tolerant of absence and shapes).
+
+        Accepts whatever a handle ``get`` returns — bytes, str, or an
+        already-decoded dict — so staged and HEAD reads compare equal.
+        """
+        if raw is None:
+            return {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
+        if isinstance(raw, dict):
+            parsed = raw
+        else:
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
+        if not isinstance(parsed, dict):
+            return {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
+        index = parsed.get("index") or []
+        return {
+            "version": _WS_BLOB_VERSION,
+            "index": sorted(k for k in index if isinstance(k, str)),
+            "suspended": bool(parsed.get("suspended")),
+        }
+
+    def _read_blob(self) -> dict[str, Any]:
+        """The staging blob (tolerant of absence and older shapes)."""
+        return self._parse_blob(self._staged.get(_WS_BLOB_KEY))
+
+    def _write_blob(self, index: Iterable[str], suspended: bool) -> None:
+        """Stage (not commit) index bookkeeping.
+
+        The write sits in the staging buffer next to file writes; it
+        lands through the CAS-guarded commit path like everything else
+        (see the contention spike in ``scratch/ws-git-impl.md`` gap 3).
+        """
+        self._staged[_WS_BLOB_KEY] = json.dumps(
+            {
+                "version": _WS_BLOB_VERSION,
+                "index": sorted(set(index)),
+                "suspended": suspended,
+            },
+            sort_keys=True,
+        ).encode()
+
+    def _resolve_stage_paths(self, paths: Iterable[str]) -> dict[str, str]:
+        """Display path → store key, for stageable paths.
+
+        Encoding is pure, so a path deleted from the live tree still
+        resolves (verified against HEAD); a path that names nothing —
+        live, at HEAD, or a directory — raises ``ValueError``.
+        """
+        live = {
+            display: key
+            for key, display in self._file_keys(self._staged.keys()).items()
+        }
+        head_handle = self._staged.checkout(self._staged.current_commit)
+        head_displays = (
+            set(self._file_keys(head_handle.keys()).values())
+            if head_handle is not None
+            else set()
+        )
+        vfs = self.fs
+        out: dict[str, str] = {}
+        for path in paths:
+            if path in live:
+                out[path] = live[path]
+                continue
+            if path in head_displays:
+                # Encoding is pure (no tree lookup), so a deleted file
+                # re-derives the key VFS wrote — same private-access
+                # justification as ``_file_keys``' decode.
+                out[path] = vfs._encode_path(path)
+                continue
+            if vfs.isdir(path):
+                raise ValueError(f"cannot stage {path!r}: stage files, not directories")
+            raise ValueError(
+                f"unknown path {path!r}: no such file at HEAD or in the working tree"
+            )
+        return out
+
+    def _modified_displays(self) -> set[str]:
+        """Live-tree display paths differing from HEAD (add/rm/edit)."""
+        live = {
+            display: key
+            for key, display in self._file_keys(self._staged.keys()).items()
+        }
+        head_handle = self._staged.checkout(self._staged.current_commit)
+        if head_handle is None:
+            return set(live)
+        head = self._file_keys(head_handle.keys())
+        head_displays = set(head.values())
+        live_displays = set(live)
+        modified = (live_displays - head_displays) | (head_displays - live_displays)
+        head_by_display = {display: key for key, display in head.items()}
+        for display in live_displays & head_displays:
+            if self._staged.get(live[display]) != head_handle.get(
+                head_by_display[display]
+            ):
+                modified.add(display)
+        return modified
+
+    def stage(self, paths: Iterable[str]) -> StageResult:
+        """Stage workspace file paths; first call suspends autocheckpoint.
+
+        The index names store keys, not snapshots: edits made after
+        staging ride along into the selective ``commit``.
+        """
+        self._refuse_frozen("stage")
+        if isinstance(paths, str):
+            paths = [paths]
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return StageResult(staged=(), suspended=False)
+        resolved = self._resolve_stage_paths(paths)
+        blob = self._read_blob()
+        index = set(blob["index"])
+        added = [p for p in paths if resolved[p] not in index]
+        new_index = index | set(resolved.values())
+        suspending = not blob["suspended"]
+        if not added and not suspending:
+            return StageResult(staged=(), suspended=False)
+        self._write_blob(new_index, True)
+        return StageResult(staged=tuple(added), suspended=suspending)
+
+    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Remove paths from the index; emptying it resumes autocheckpoint."""
+        self._refuse_frozen("unstage")
+        if isinstance(paths, str):
+            paths = [paths]
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return ()
+        resolved = self._resolve_stage_paths(paths)
+        blob = self._read_blob()
+        index = set(blob["index"])
+        removed = [p for p in paths if resolved[p] in index]
+        if not removed:
+            return ()
+        index -= {resolved[p] for p in removed}
+        old_suspended = blob["suspended"]
+        self._write_blob(index, old_suspended and bool(index))
+        return tuple(removed)
+
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        """Commit staged keys plus index bookkeeping; unstaged stays dirty.
+
+        Framework keys (the VFS table, cwd, the blob itself) ride along
+        when staged — the table is fixed up first so the new commit's
+        rows describe its own blobs exactly, not uncommitted work.
+        Cache keys never ride: unrelated agent state stays dirty.
+        """
+        from monkeyfs import VirtualFS
+
+        self._refuse_frozen("commit")
+        blob = self._read_blob()
+        index = set(blob["index"])
+        pending = {key for key in index if self._staged.is_staged(key)}
+        head_handle = self._staged.checkout(self._staged.current_commit)
+        head_blob = (
+            self._parse_blob(head_handle.get(_WS_BLOB_KEY))
+            if head_handle is not None
+            else self._parse_blob(None)
+        )
+        cleared = {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
+        if not pending and head_blob == cleared:
+            # Nothing staged and the bookkeeping is already clean:
+            # refuse instead of minting an empty commit (decided before
+            # writing anything, so there is nothing to unwind).
+            raise WorkspaceError("nothing staged to commit")
+        self._write_blob(set(), False)
+        self._commit_table(index)
+        keys = set(pending) | {_WS_BLOB_KEY}
+        for extra in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY, "__cwd__"):
+            if self._staged.is_staged(extra):
+                keys.add(extra)
+        result = self._staged.commit(
+            keys=keys, info={"tool": "ws-git.commit", **(info or {})}
+        )
+        if not result.merged:
+            raise WorkspaceError(
+                f"commit failed: conflicting concurrent commit on branch "
+                f"{self._session!r} (CAS): {result}"
+            )
+        # The table fixup wrote around the VFS: drop its caches so
+        # post-commit reads see committed state, not pre-fixup rows.
+        self._invalidate_fs()
+        return self._staged.current_commit
+
+    def _commit_table(self, staged: set[str]) -> None:
+        """Rewrite the VFS table to match the blobs selective commit takes.
+
+        The table is monolithic but the commit is partial: rows for
+        files outside the commit keep their HEAD versions, rows for
+        staged files take their live versions (staged deletions drop
+        their rows). Directory rows stay at HEAD versions — the VFS
+        detects implicit dirs from blob keys. Skips the write when the
+        table already matches.
+        """
+        from monkeyfs import VirtualFS
+
+        def table(raw: Any) -> dict:
+            if raw is None:
+                return {}
+            try:
+                parsed = json.loads(raw)
+            except (ValueError, TypeError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+
+        vfs = self.fs
+        live_table = table(self._staged.get(VirtualFS.METADATA_KEY))
+        head_handle = self._staged.checkout(self._staged.current_commit)
+        head_table = (
+            table(head_handle.get(VirtualFS.METADATA_KEY))
+            if head_handle is not None
+            else {}
+        )
+        live_keys = set(self._file_keys(self._staged.keys()))
+        committed = dict(head_table)
+        for key in staged:
+            try:
+                row = vfs._decode_path(key).lstrip("/")
+            except Exception:  # noqa: BLE001 - undecodable key is not a file
+                continue
+            if key in live_keys and row in live_table:
+                committed[row] = live_table[row]
+            else:
+                committed.pop(row, None)
+        if committed != live_table:
+            self._staged[VirtualFS.METADATA_KEY] = json.dumps(
+                committed, sort_keys=True
+            ).encode()
+
+    def discard_staged(self) -> None:
+        """Abandon the composition; working-tree writes stay dirty."""
+        self._refuse_frozen("discard_staged")
+        blob = self._read_blob()
+        if not blob["index"] and not blob["suspended"]:
+            return
+        self._write_blob(set(), False)
+
+    def status(self) -> WorkspaceStatus:
+        """Staged vs unstaged paths plus live merge context. Pure read."""
+        modified = self._modified_displays() if self.dirty else set()
+        index = set(self._read_blob()["index"])
+        # Decode index keys directly: a staged deletion has no live
+        # display, so mapping through the live tree would drop it.
+        vfs = self.fs
+        indexed = set()
+        for key in index:
+            try:
+                indexed.add("/" + vfs._decode_path(key).lstrip("/"))
+            except Exception:  # noqa: BLE001 - undecodable key is not a file
+                continue
+        staged = sorted(modified & indexed)
+        unstaged = sorted(modified - indexed)
+        merge_source, merge_unresolved = self._merge_context()
+        return WorkspaceStatus(
+            branch=self._staged.current_branch,
+            staged=tuple(staged),
+            unstaged=tuple(unstaged),
+            merge_source=merge_source,
+            merge_unresolved=tuple(merge_unresolved),
+        )
+
+    def stage_suspended(self) -> bool:
+        """Whether staging currently suspends autocheckpoint here."""
+        return self._read_blob()["suspended"]
+
+    def _merge_context(self) -> tuple[str | None, list[str]]:
+        """Newest merge source with markers still in HEAD, if any.
+
+        Markers are scanned at read time (committed ones count — an
+        agent mid-resolution shows clean-tree progress in ``unstaged``
+        while the merge stays outstanding until the clearing commit).
+        History is consulted only when markers exist.
+        """
+        head_handle = self._staged.checkout(self._staged.current_commit)
+        if head_handle is None:
+            return None, []
+        marked = sorted(
+            display
+            for key, display in self._file_keys(head_handle.keys()).items()
+            for value in (head_handle.get(key),)
+            if isinstance(value, bytes) and b"<<<<<<< " in value
+        )
+        if not marked:
+            return None, []
+        for entry in self.history():
+            if entry.info.get("tool") == "ws-git.merge":
+                return entry.info.get("source"), marked
+        return None, marked
+
     # -- tags ------------------------------------------------------------
 
     def _scoped(self, name: str, scope: str) -> str:
@@ -603,6 +954,7 @@ class KvgitProvider:
             file_keys.update(self._file_keys(handle.keys()).keys())
         merge_fns = {key: text_merge for key in file_keys}
         merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
+        merge_fns[_WS_BLOB_KEY] = _merge_ws_blob
         for cwd_key in ("__cwd__", VirtualFS.CWD_KEY):
             merge_fns[cwd_key] = _keep_ours
 
@@ -649,7 +1001,9 @@ class KvgitProvider:
         # Merged bytes match neither branch, but the metadata merge
         # copied one branch's size: correct sizes from the blobs before
         # reporting. Metadata-only, so ``brought`` still describes this.
-        self._fix_merged_sizes(brought.added | brought.modified, rev)
+        # The follow-up carries the source tag: it is part of the merge,
+        # and status derives merge context from history.
+        self._fix_merged_sizes(brought.added | brought.modified, rev, source)
         # HEAD moved underneath the VirtualFS object: drop its caches
         # like restore()/discard() do, or listings and stat go stale.
         self._invalidate_fs()
@@ -701,14 +1055,17 @@ class KvgitProvider:
                 return False
         return True
 
-    def _fix_merged_sizes(self, paths: set[str], rev: dict[str, str]) -> None:
+    def _fix_merged_sizes(
+        self, paths: set[str], rev: dict[str, str], source: str
+    ) -> None:
         """Correct VFS metadata sizes from the merged blobs.
 
         The metadata merge copies ``size`` from one branch, but merged
         file bytes (clean unions, marker content) match neither side.
         Sizes are advisory next to content truth, so rewrite them here
         and commit metadata-only. Commits only when a size actually
-        differs, so clean merges stay a single commit.
+        differs, so clean merges stay a single commit. Tagged with the
+        merge source: the follow-up is part of the merge.
         """
         from monkeyfs import VirtualFS
 
@@ -735,7 +1092,9 @@ class KvgitProvider:
         self._staged[VirtualFS.METADATA_KEY] = json.dumps(
             table, sort_keys=True
         ).encode()
-        self.checkpoint({"tool": "ws-git.merge", "sizes": "recomputed"})
+        self.checkpoint(
+            {"tool": "ws-git.merge", "source": source, "sizes": "recomputed"}
+        )
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""

@@ -8,7 +8,8 @@ Public surface:
     PythonConfig        -- what sandboxed code may touch
     TerminalResult, PythonResult, WriteOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
-    Capabilities, CheckpointInfo, TagInfo, WorkspaceDiff
+    Capabilities, CheckpointInfo, TagInfo, WorkspaceDiff,
+    MergeOutcome, StageResult, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CheckpointNotFoundError
 
@@ -31,9 +32,12 @@ from .protocol import (
     SESSION_ID_RE,
     Capabilities,
     CheckpointInfo,
+    MergeOutcome,
+    StageResult,
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
+    WorkspaceStatus,
     validate_session_id,
 )
 from .workspace import (
@@ -64,8 +68,11 @@ __all__ = [
     "WorkspaceProvider",
     "Capabilities",
     "CheckpointInfo",
+    "MergeOutcome",
+    "StageResult",
     "TagInfo",
     "WorkspaceDiff",
+    "WorkspaceStatus",
     "SESSION_ID_RE",
     "validate_session_id",
     "Cache",

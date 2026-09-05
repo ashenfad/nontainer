@@ -48,9 +48,11 @@ from .errors import CheckpointNotFoundError, NotSupportedError, WorkspaceError
 from .protocol import (
     Capabilities,
     CheckpointInfo,
+    StageResult,
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
+    WorkspaceStatus,
 )
 
 if TYPE_CHECKING:
@@ -1651,6 +1653,40 @@ class Workspace:
             self._mark_executor_stale()  # see restore()
 
     # ------------------------------------------------------------------
+    # staged mode (requires caps.index; other providers raise
+    # NotSupportedError naming the verb — see protocol for semantics)
+    # ------------------------------------------------------------------
+
+    def stage(self, paths: Iterable[str]) -> StageResult:
+        """Stage workspace file paths; first call suspends autocheckpoint."""
+        with self._lock:
+            self._check_writable("ws-git stage")
+            return self._provider.stage(paths)
+
+    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Remove paths from the index; emptying it resumes autocheckpoint."""
+        with self._lock:
+            self._check_writable("ws-git unstage")
+            return self._provider.unstage(paths)
+
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        """Commit staged keys; unstaged writes stay dirty. Returns the hash."""
+        with self._lock:
+            self._check_writable("ws-git commit")
+            return self._provider.commit(info)
+
+    def discard_staged(self) -> None:
+        """Abandon the composition; working-tree writes stay dirty."""
+        with self._lock:
+            self._check_writable("ws-git discard_staged")
+            return self._provider.discard_staged()
+
+    def status(self) -> WorkspaceStatus:
+        """Staged vs unstaged paths plus live merge context. Pure read —
+        ungated like ``diff``/``history``: reads are the point of snapshots."""
+        return self._provider.status()
+
+    # ------------------------------------------------------------------
     # tags (gated by caps.tags)
     # ------------------------------------------------------------------
 
@@ -1953,7 +1989,15 @@ class Workspace:
         inside an operation that will commit for itself)."""
         if self._defer_checkpoints:
             return None
-        if self._autocheckpoint and self._provider.dirty:
+        # getattr: stage_suspended is new in the protocol — providers
+        # written against the old surface (in or out of this repo)
+        # never suspend. Same tolerance as the `frozen` read.
+        suspended = getattr(self._provider, "stage_suspended", None)
+        if (
+            self._autocheckpoint
+            and not (callable(suspended) and suspended())
+            and self._provider.dirty
+        ):
             return self._provider.checkpoint(info={"tool": tool})
         return None
 
