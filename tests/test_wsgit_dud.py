@@ -187,6 +187,51 @@ def test_dud_edges_match_local(ws):
         assert r.stdout.startswith(prefix), (cmd, r.stdout)
 
 
+def test_dud_same_script_write_then_stage(ws):
+    """Sync-on-verb: writes earlier in the SAME script are visible to
+    the verb — the heredoc pattern agents favor. Without the pre-verb
+    harvest this rejects an unknown path and autocheckpoints later."""
+    before = len(list(ws.history()))
+    r = ws.terminal("cat > same.txt <<'EOF'\nhello\nEOF\nws-git stage same.txt")
+    assert r.exit_code == 0
+    assert "suspended autocheckpoint" in r.stdout
+    assert ws.terminal("ws-git diff --cached same.txt").stdout == (
+        "diff --git a/same.txt b/same.txt\n"
+        "--- a/same.txt\n"
+        "+++ b/same.txt\n"
+        "@@ -0,0 +1 @@\n"
+        "+hello\n"
+    )
+    # Staged, not autocheckpointed away: no new commit.
+    assert len(list(ws.history())) == before
+
+
+def test_dud_same_script_write_stage_commit(ws):
+    """A full write → stage → commit flow inside one script lands one
+    commit, with nothing left staged or unstaged."""
+    before = len(list(ws.history()))
+    r = ws.terminal(
+        "cat > flow.txt <<'EOF'\nflow\nEOF\nws-git stage flow.txt\nws-git commit -m flow"
+    )
+    assert r.exit_code == 0
+    # One transcript: the stage line, then the commit line.
+    assert re.fullmatch(
+        rf"suspended autocheckpoint \(resume: ws-git commit, ws-git reset\)\n"
+        rf"\[wsgit-dud {SHORT}\] flow \(1 file\)\n",
+        r.stdout,
+    )
+    assert len(list(ws.history())) == before + 1
+    assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_dud_same_script_status_sees_fresh_write(ws):
+    """Reads need the sync too: status in the same script names the
+    just-written file instead of reporting a clean tree."""
+    r = ws.terminal("printf 'fresh\\n' > fresh.txt; ws-git status")
+    assert r.exit_code == 0
+    assert r.stdout == " M fresh.txt\n"
+
+
 def test_guest_to_host_mapping(ws):
     ex = ws._executor
     work = ex._work
