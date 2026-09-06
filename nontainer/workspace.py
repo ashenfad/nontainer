@@ -798,6 +798,17 @@ class Workspace:
                 f"Reserved terminal command name(s): {sorted(reserved)}. "
                 "'python' is nontainer's bridge into run_python."
             )
+        # Same ws-* reservation as register_command: constructor
+        # injections are equally public, and without this a
+        # user-claimed ws-* name would collide halfway through a later
+        # framework registration, leaving it partially configured.
+        prefixed = sorted(k for k in user_commands if k.startswith("ws-"))
+        if prefixed:
+            raise ValueError(
+                f"Reserved terminal command prefix: {prefixed} — the 'ws-' "
+                "prefix names framework verbs (ws-git, ws-curl); "
+                "rename yours."
+            )
         user_commands["python"] = self._python_command
         user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
