@@ -606,8 +606,13 @@ def test_fork_curl_binds_fork():
     fork = ws.fork("apps-forkbleed-kid")
     try:
         assert fork._commands["curl"] is not ws._commands["curl"]
+        assert fork._commands["ws-curl"] is not ws._commands["ws-curl"]
         write_handler(fork, "forkbleed", "def get(req):\n    return {'side': 'fork'}\n")
         r = fork.terminal("curl /api/forkbleed")
+        assert r, r.stderr
+        assert json.loads(r.stdout) == {"side": "fork"}
+        # The ws-curl spelling rides the same rebound runtime.
+        r = fork.terminal("ws-curl /api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "fork"}
         r = ws.terminal("curl /api/forkbleed")
@@ -616,6 +621,39 @@ def test_fork_curl_binds_fork():
     finally:
         fork.close()
     ws.close()
+
+
+def test_ws_curl_deferred_on_dud_rung():
+    """Phase 1 ships the alias local-only; the dud ferry is Phase 2.
+    Pinned so the deferral is explicit rather than drift: the guest
+    has no ws-curl function yet, so it reads as an absent command."""
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+    from nontainer.providers import KvgitProvider
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="apps-wscurl-deferred"),
+        executor=DudExecutor(backend="subprocess"),
+    )
+    enable_apps(ws)
+    try:
+        r = ws.terminal("ws-curl /api/nums")
+        assert r.exit_code == 127
+        assert "command not found" in r.stdout
+    finally:
+        ws.close()
+
+
+def test_ws_curl_alias_matches_curl():
+    """The portable spelling behaves identically to the deprecated one."""
+    ws, rt = make_ws()
+    write_handler(ws, "nums", "def get(req):\n    return {'nums': [3, 1, 2]}\n")
+    try:
+        r = ws.terminal("ws-curl /api/nums | jq -r '.nums[]' | sort")
+        assert r, r.stderr
+        assert r.stdout.split() == ["1", "2", "3"]
+    finally:
+        ws.close()
 
 
 def test_curl_flushes_the_log_it_tells_the_agent_to_read():

@@ -314,7 +314,7 @@ class Executor(Protocol):
 
     Tool descriptions are built against this. Teaching an agent a
     command that answers ``command not found`` costs it turns, so the
-    apps primer advertises ``curl`` only where it exists.
+    apps primer advertises ``ws-curl`` only where it exists.
     """
 
     # -- lifecycle -------------------------------------------------------

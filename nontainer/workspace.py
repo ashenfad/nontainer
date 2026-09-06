@@ -648,7 +648,7 @@ class _Settings:
     the live attribute instead:
 
     - ``commands`` — ``register_command`` mutates the built set
-      (``enable_apps`` injects ``curl`` that way).
+      (``enable_apps`` injects ``ws-curl``/``curl`` that way).
     - ``autocheckpoint`` — has a public setter, and the documented
       turn-granularity path uses it (``WorkspaceTools(ws,
       checkpoint="turn")`` sets ``ws.autocheckpoint = False``). Replaying
@@ -801,7 +801,7 @@ class Workspace:
         user_commands["python"] = self._python_command
         user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
-        # Framework-owned commands (ws-git, curl) and how to re-bind
+        # Framework-owned commands (ws-git, ws-curl/curl) and how to re-bind
         # them: a command closure captures the workspace it was built
         # for, so a fork/snapshot that merely copied the mapping would
         # dispatch into its parent — the fork-bleed. fork()/at_tag()
@@ -965,8 +965,9 @@ class Workspace:
 
         An executor capability (``Executor.supports_commands``): true
         for the in-process termish shell, false for one running real
-        bash in a guest. Tool descriptions gate on it — apps' ``curl``
-        is only worth teaching where it exists.
+        bash in a guest. Tool descriptions gate on it — apps' fetch
+        verbs (``ws-curl``, and the deprecated ``curl`` spelling) are
+        only worth teaching where they exist.
 
         Defaults to true for executors predating the flag: that's the
         historical behavior, so a third-party executor keeps whatever
@@ -1387,9 +1388,20 @@ class Workspace:
         Without it the fork would inherit the parent-bound closure and
         dispatch into the parent — the fork-bleed. Embedder commands
         omit it and copy across as-is.
+
+        The ``ws-`` prefix is reserved the same way: user-injected
+        commands cannot claim it, so framework verbs never fight an
+        agent's own command and no rename is ever needed. Framework
+        registrations pass ``rebind`` and are exempt.
         """
         if name in RESERVED_COMMANDS:
             raise ValueError(f"Reserved terminal command name: {name!r}")
+        if name.startswith("ws-") and rebind is None:
+            raise ValueError(
+                f"Reserved terminal command prefix: {name!r} — the 'ws-' "
+                "prefix names framework verbs (ws-git, ws-curl); "
+                "rename yours."
+            )
         if name in self._commands:
             raise ValueError(f"Terminal command already registered: {name!r}")
         self._commands[name] = fn

@@ -11,12 +11,12 @@ import re
 
 _NO_PROCESS = (
     "the sandbox can't spawn processes — run shell commands with the "
-    "terminal tool (its curl reaches workspace app endpoints directly: "
-    "curl api/<name>?...)"
+    "terminal tool (its ws-curl reaches workspace app endpoints directly: "
+    "ws-curl api/<name>?...)"
 )
 _NO_NETWORK = (
     "sandboxed python has no network access — workspace app endpoints "
-    "are reachable via the terminal tool's curl (curl api/<name>?...)"
+    "are reachable via the terminal tool's ws-curl (ws-curl api/<name>?...)"
 )
 
 _BLOCKED_IMPORT_HINTS = {
