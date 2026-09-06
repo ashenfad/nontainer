@@ -6,7 +6,7 @@ workspace internals (live command mapping, guest path math, provider
 staging for oversized captures, executor staleness) that the
 apps↔workspace extension surface deliberately withholds — see
 tests/test_apps_surface.py. The command itself stays in
-apps/curl.py; this module only ferries it.
+apps/wscurl.py; this module only ferries it.
 """
 
 from __future__ import annotations
