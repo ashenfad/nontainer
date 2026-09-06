@@ -751,7 +751,7 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     """Wire the apps runtime into a workspace: builds the AppRuntime
     and registers the ``ws-curl`` fetch terminal builtin. Returns the
     runtime (also the live router's dispatch source)."""
-    from .curl import make_curl_command
+    from .wscurl import make_curl_command
 
     # Framework-owned: a fork/snapshot rebuilds its own runtime bound
     # to itself instead of inheriting the parent-bound closure.
