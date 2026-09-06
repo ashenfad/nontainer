@@ -110,6 +110,17 @@ class WsCurlHostHandler:
                     "stderr": "ws-curl: framework command unavailable here",
                     "exit_code": 1,
                 }
+            # Sync-on-verb, same as the ws-git ferry: a script such as
+            # `write handler > app/api/x.py; ws-curl /api/x` dispatches
+            # before the outer shell's writes are harvested, and the
+            # runtime reads handler source host-side — without this the
+            # new handler 404s and an edited one runs stale. The nested
+            # harvest is safe for the same reason (blocked guest,
+            # re-entrant locks), and fetch needs no push-back: it reads
+            # no provider state.
+            err = ws._absorb_before_verb("ws-curl")
+            if err is not None:
+                return err
             mapper = getattr(getattr(ws, "_executor", None), "_guest_to_host", None)
             unmapper = getattr(getattr(ws, "_executor", None), "_host_to_guest", None)
             host_cwd = (mapper(cwd) if mapper else None) or cwd
@@ -135,7 +146,7 @@ class WsCurlHostHandler:
                 }
             body_len = len(out.encode()) + sum(len(d) for _, _, d in landed)
             if body_len > _FRAME_BUDGET:
-                return self._over_budget(ws, out, landed)
+                return self._over_budget(ws, out, landed, result)
             encoded = {
                 guest: base64.b64encode(data).decode("ascii")
                 for _, guest, data in landed
@@ -194,10 +205,19 @@ class WsCurlHostHandler:
         return landed
 
     @staticmethod
-    def _over_budget(ws: Any, out: str, landed: list[tuple[str, str, bytes]]) -> dict:
+    def _over_budget(
+        ws: Any, out: str, landed: list[tuple[str, str, bytes]], result: Any
+    ) -> dict:
         """Over the guest frame budget: ``-o`` captures still land —
         in the provider, with the guest flagged for re-sync — while a
-        stdout answer refuses honestly instead of truncating mid-body."""
+        stdout answer refuses honestly instead of truncating mid-body.
+
+        Either way the command's own failure is preserved: an HTTP
+        error with a large body stays an HTTP error (its exit code and
+        stderr ride through), so ``&&`` chains stop and callers never
+        read a failed endpoint as successful just because its error
+        body was big.
+        """
         if landed:
             try:
                 for host_path, _, data in landed:
@@ -214,10 +234,29 @@ class WsCurlHostHandler:
                 "ws-curl: body exceeded the guest round-trip frame; "
                 "captures landed in the workspace (visible to the next call)"
             )
+            if result is None:
+                return {
+                    "stdout": out + note + "\n",
+                    "stderr": "",
+                    "exit_code": 0,
+                    "files": {},
+                }
             return {
                 "stdout": out + note + "\n",
-                "stderr": "",
-                "exit_code": 0,
+                "stderr": result.stderr or "",
+                "exit_code": result.exit_code,
+                "files": {},
+            }
+        if result is not None:
+            # No captures: the body is unobservable either way, so the
+            # command's own failure reads exactly as it would under
+            # budget — with one clause naming the withheld body.
+            err = result.stderr or ""
+            withheld = "ws-curl: response body withheld (exceeds guest frame)"
+            return {
+                "stdout": "",
+                "stderr": f"{err}\n{withheld}" if err else withheld,
+                "exit_code": result.exit_code,
                 "files": {},
             }
         total = len(out.encode()) + sum(len(d) for _, _, d in landed)

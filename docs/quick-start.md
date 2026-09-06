@@ -8,7 +8,7 @@ Python-based agent harness. No Docker, no cloud sandbox.
 pip install nontainer            # core: workspace + terminal + run_python
 pip install nontainer[agno]     # + agno Toolkit adapter
 pip install nontainer[mcp]      # + MCP server
-pip install nontainer[apps]     # + app handlers, curl, test_app, serving
+pip install nontainer[apps]     # + app handlers, ws-curl, test_app, serving
 pip install nontainer[agentfs]  # + AgentFS backend
 ```
 
@@ -144,7 +144,7 @@ agent = Agent(model=..., tools=[WorkspaceTools(ws)])
 
 ```bash
 python -m nontainer.adapters.mcp --session my-project --module math
-python -m nontainer.adapters.mcp --session webdev --apps  # + curl & test_app
+python -m nontainer.adapters.mcp --session webdev --apps  # + ws-curl & test_app
 ```
 
 Agents also get `file_write` / `file_edit` tools in every mode — the
@@ -193,7 +193,7 @@ from nontainer.apps import AppsConfig, enable_apps
 
 APPS = AppsConfig()                       # build ONE; see serving below
 ws = workspace(session_id)
-runtime = enable_apps(ws, APPS)           # registers the `curl` builtin
+runtime = enable_apps(ws, APPS)           # registers the `ws-curl` builtin
 agent = Agent(model=..., tools=[WorkspaceTools(ws, apps=runtime)])
 ```
 
@@ -201,7 +201,7 @@ The agent now has the full loop, no server anywhere:
 
 ```
 echo 'def get(req): return {"ok": True}' > app/api/health.py
-curl /api/health                          # test the backend instantly
+ws-curl /api/health                      # test the backend instantly
 # write app/index.html, then verify headlessly (screenshots included):
 test_app([{"click": "#add"}, {"assert": "..."}, {"screenshot": true}])
 ```
@@ -210,12 +210,13 @@ test_app([{"click": "#add"}, {"assert": "..."}, {"screenshot": true}])
 `playwright install chromium`. Screenshots come back as real images
 to vision models AND persist at `/workspace/app/screenshots/`.
 
-> **`curl` is a `LocalExecutor` affordance.** It's a terminal builtin
-> injected into termish, not a binary — so it exists in the in-process
-> shell and not in a `DudExecutor` guest running real bash. The tool
-> description gates on `Executor.supports_commands` and simply won't
-> teach it where it's absent; there, `test_app` is the verification
-> path. Don't reach for importing a handler and calling its verb
+> **`ws-curl` is a workspace verb.** It's a terminal builtin injected
+> into termish and ferried into `DudExecutor` guests over hostcall — so
+> it exists in the in-process shell and in guests running real bash.
+> The tool description gates on `Executor.supports_commands` /
+> `supports_ws_verbs` and simply won't teach it where it's absent;
+> there, `test_app` is the verification path. Bare `curl` in a guest
+> means the machine's own curl, not the workspace app. Don't reach for importing a handler and calling its verb
 > directly as a substitute: that skips routing and runs GET without
 > its read-only filesystem, so it can pass on code the real request
 > path rejects.
