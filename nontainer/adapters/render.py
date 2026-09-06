@@ -378,8 +378,9 @@ def _static_assets_note(config: Any) -> str:
 
 _CURL_NOTE = """Test endpoints instantly with ws-curl (no server): ws-curl /api/scores?limit=3,
 ws-curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
-ws-curl /api/scores | jq . Bare `curl` still works but is deprecated —
-ws-curl is the portable spelling on every rung; learn that one."""
+ws-curl /api/scores | jq . ws-curl is the portable spelling on every
+rung — bare `curl` is not the workspace app (on real shells it means
+the machine's own tool)."""
 
 _NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and the app
 answers requests only through test_app. Verify endpoints by driving

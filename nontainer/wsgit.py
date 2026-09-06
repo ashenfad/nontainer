@@ -197,39 +197,19 @@ class DudHostHandler:
                     ),
                     "exit_code": 1,
                 }
-            # Sync-on-verb: the guest tree may hold writes this script
-            # made before invoking ws-git, and the provider doesn't see
-            # them until harvest (which runs after exec_shell returns).
-            # Absorb first so every verb dispatches against fresh state
-            # — ``printf x > new.txt; ws-git stage new.txt`` stages
-            # instead of rejecting an unknown path. Reads (status/diff)
-            # need it just as much as mutations. No push-back is needed:
-            # no verb rewrites worktree files (reset is mixed-only), so
-            # the guest stays in agreement and the post-call harvest
-            # picks up whatever the script writes afterwards. A nested
-            # harvest is safe here: the guest shell is blocked on this
-            # hostcall (its tree is quiescent), and both locks are
-            # re-entrant on this thread.
-            try:
-                torn = ws._absorb_or_unwind(ws._provider.dirty)
-            except Exception as e:  # noqa: BLE001 — honest triple, below
-                # Absorption failed AFTER the guest baseline advanced
-                # (rebase rides the harvest): the guest holds content
-                # the provider refuses, staging may hold partial writes,
-                # and the post-call harvest will read empty. So the
-                # triple alone would let terminal() checkpoint the
-                # partials as a routine success: rematerialize the guest
-                # next call, and stash the failure for terminal(), which
-                # unwinds the partial staging like a torn call instead.
-                ws._mark_executor_stale()
-                ws._pending_sync_error = f"mid-call sync failed: {e}"
-                return {
-                    "stdout": "",
-                    "stderr": f"ws-git: mid-call sync failed: {e}",
-                    "exit_code": 1,
-                }
-            if torn is not None:
-                return {"stdout": "", "stderr": f"ws-git: {torn}", "exit_code": 1}
+            # Sync-on-verb: absorb first so every verb dispatches
+            # against fresh state — ``printf x > new.txt; ws-git stage
+            # new.txt`` stages instead of rejecting an unknown path.
+            # Reads (status/diff) need it just as much as mutations. No
+            # push-back is needed: no verb rewrites worktree files
+            # (reset is mixed-only), so the guest stays in agreement
+            # and the post-call harvest picks up whatever the script
+            # writes afterwards. A nested harvest is safe here: the
+            # guest shell is blocked on this hostcall (its tree is
+            # quiescent), and both locks are re-entrant on this thread.
+            err = ws._absorb_before_verb("ws-git")
+            if err is not None:
+                return err
             mapper = getattr(getattr(ws, "_executor", None), "_guest_to_host", None)
             host_cwd = (mapper(cwd) if mapper else None) or cwd
             ctx = _guest_ctx(self._map_argv(mapper, list(argv)), host_cwd)

@@ -2188,6 +2188,33 @@ class Workspace:
                 "staged and would ride the next checkpoint"
             )
 
+    def _absorb_before_verb(self, verb: str) -> dict | None:
+        """Harvest + absorb guest writes before a hostcall-dispatched
+        verb (ws-git, ws-curl): the guest tree may hold writes this
+        script made before invoking the verb, and the provider doesn't
+        see them until harvest (which runs after exec returns).
+
+        Returns an error triple to dispatch instead, or ``None`` to
+        proceed. A failure absorbs AFTER the guest baseline advanced
+        (rebase rides the harvest), so the triple alone would let the
+        outer call checkpoint partials as a routine success: the guest
+        is flagged for rematerialization and the message is stashed
+        for :meth:`terminal`, which unwinds like a torn call instead.
+        """
+        try:
+            torn = self._absorb_or_unwind(self._provider.dirty)
+        except Exception as e:  # noqa: BLE001 — honest triple, below
+            self._mark_executor_stale()
+            self._pending_sync_error = f"mid-call sync failed: {e}"
+            return {
+                "stdout": "",
+                "stderr": f"{verb}: mid-call sync failed: {e}",
+                "exit_code": 1,
+            }
+        if torn is not None:
+            return {"stdout": "", "stderr": f"{verb}: {torn}", "exit_code": 1}
+        return None
+
 
 def workspace(
     session: str,

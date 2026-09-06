@@ -309,10 +309,10 @@ ws.supports_commands: bool    # executor capability, below
 | Executor | `supports_commands` | why |
 |---|---|---|
 | `LocalExecutor` | `True` | termish receives the mapping, so an injected command is a real command |
-| `DudExecutor` | `False` | a guest runs actual bash; there's no hook to inject into |
+| `DudExecutor` | `False` | a guest runs actual bash, so injected commands don't reach it — but `ws-*` verbs (ws-git, ws-curl) ferry in over hostcall |
 
-Tool descriptions gate on it — the apps primer teaches `curl` only
-where it exists, since promising an agent a command that answers
+Tool descriptions gate on it — the apps primer teaches `ws-curl` only
+where it exists (injected commands, or the `ws-*` ferry on guests), since promising an agent a command that answers
 `command not found` costs it turns. An executor that predates the flag
 reads as `True`, keeping its historical behavior.
 
@@ -778,8 +778,9 @@ CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]
 transport). `--apps` enables the apps loop — a `test_app` tool
 (screenshots return as MCP image content; needs the `[apps]` extra +
 `playwright install chromium`, checked lazily at first `test_app`),
-plus the `curl` terminal builtin on executors that support injected
-commands (see `ws.supports_commands` under Introspection). `--mount /data=~/datasets`
+plus the `ws-curl` terminal builtin on executors that support injected
+commands, or ferry `ws-*` verbs into guests (see `ws.supports_commands`
+and `ws.supports_ws_verbs` under Introspection). `--mount /data=~/datasets`
 exposes a host directory inside the workspace (read-only unless
 `:rw`) — the inbound channel for real files, no base64 games.
 `build_server` for anything the flags don't cover (module grants with
@@ -805,8 +806,8 @@ Design doc: [apps.md](apps.md).
 
 ```python
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
-    # builds handler sandboxes + registers the `curl` terminal builtin
-    # (which only reaches the shell where ws.supports_commands)
+    # builds handler sandboxes + registers the `ws-curl` terminal builtin
+    # (injected commands, or the `ws-*` ferry on guests)
 
 AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            max_response_bytes=2_000_000,
@@ -847,7 +848,7 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   intranet API in connect-src, a framed host in frame-src)
            #   verifies the way it serves instead of being aborted;
            #   script HOSTS still belong in script_hosts, which also
-           #   drives curl's message and the agent-facing allowlist
+           #   drives ws-curl's message and the agent-facing allowlist
            #   sentence.
            static_assets={})  # {url_prefix: host_dir} — fixed files
            #   served WITH the app but absent from the workspace: a
@@ -857,7 +858,7 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   handlers: embedder-supplied, reached at request time,
            #   outside the versioning plane — so the agent cannot ls,
            #   read, or edit them (it is told so, in a sentence derived
-           #   from this mapping; `curl vendor/mui.js` still works), and
+           #   from this mapping; `ws-curl vendor/mui.js` still works), and
            #   they add nothing to commits, forks, or a guest tree.
            #   Same-origin, so script_hosts needs no entry. Assets skip
            #   max_response_bytes and win over a workspace file at the

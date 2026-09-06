@@ -13,7 +13,7 @@ forks/rolls back with the session.
 
 ## Scope
 
-Supported: the dispatch core, the handler contract, a `curl` terminal
+Supported: the dispatch core, the handler contract, a `ws-curl` terminal
 builtin, `test_app` via Playwright, a Starlette `APIRouter` for live
 serving, and embedder-supplied static assets served alongside the app
 (`AppsConfig.static_assets` — vendored libraries, fonts; the air-gap
@@ -64,7 +64,7 @@ def post(req):
 - **Structural REST (authoring)**: `get` handlers execute against a
   read-only filesystem view (`ReadOnlyFS`) — a GET that writes gets a
   `PermissionError`, which teaches the agent better than a style rule.
-  During *authoring* (curl / test_app) mutating verbs get staged writes,
+  During *authoring* (ws-curl / test_app) mutating verbs get staged writes,
   atomic per request (a raise discards them). But **serving is frozen**
   (see below): a served handler is read-only regardless of verb, so a
   VFS write is always a 500.
@@ -129,8 +129,8 @@ serialized per session, by design (handlers are ms-scale).
 
 Consumers:
 
-1. **`curl` terminal builtin** (ships with `[apps]`, injected when the
-   workspace has an `/workspace/app` dir or via config): `curl [-X POST] [-d body]
+1. **`ws-curl` terminal builtin** (ships with `[apps]`, injected when the
+   workspace has an `/workspace/app` dir or via config): `ws-curl [-X POST] [-d body]
    /api/scores?limit=3` → dispatch → response rendered to the pipeline.
    The agent's fast inner loop; no browser, no server.
 2. **`test_app`** (headless verify): Playwright intercepts ALL requests
@@ -207,7 +207,7 @@ app.mount("/apps", build_router(resolve, config=config))   # the SAME config
 ```
 
 `/srv/appassets/mui.js` then serves at `vendor/mui.js`, for the agent's
-`curl`, for test_app, for the live preview, and for a published
+`ws-curl`, for test_app, for the live preview, and for a published
 snapshot — all four go through `dispatch`, so one declaration covers
 them. This is the air-gap answer, and the way to put a house component
 library in front of an agent.
@@ -227,7 +227,7 @@ What follows from that:
 - **The agent cannot `ls`, read, or edit them**, and is told so in the
   apps notes — a sentence derived from `static_assets` itself, not
   hand-written into `apps_primer`, so the two cannot drift. It *can*
-  request one (`curl vendor/lib.js | head -c 300`), which is enough to
+  request one (`ws-curl vendor/lib.js | head -c 300`), which is enough to
   confirm a bundle is really there.
 - **No `script_hosts` entry is needed.** Vendored assets are
   same-origin, and `'self'` is always allowed by the served CSP. Adding
@@ -325,7 +325,7 @@ itself* — rather than printing an empty allowlist.
 scripts may load from. Everything that used to be hand-synced derives
 from it: test_app's request interception, the served-HTML CSP's
 `script-src` (`serve.build_csp`), the allowlist sentence in the
-agent-facing apps notes, and curl's external-URL error. What verifies
+agent-facing apps notes, and ws-curl's external-URL error. What verifies
 headlessly, what serves published, and what the agent is *told* cannot
 disagree.
 
