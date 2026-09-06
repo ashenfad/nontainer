@@ -761,11 +761,13 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     # _adopt_commands invokes it exactly once.
     def _register(target: Workspace) -> AppRuntime:
         target_runtime = AppRuntime(target, config)
-        target.register_command(
-            "curl", make_curl_command(target_runtime), rebind=_register
-        )
+        # ws-curl first: a pre-existing claim on either name then fails
+        # before anything is registered, never halfway configured.
         target.register_command(
             "ws-curl", make_curl_command(target_runtime), rebind=_register
+        )
+        target.register_command(
+            "curl", make_curl_command(target_runtime), rebind=_register
         )
         return target_runtime
 

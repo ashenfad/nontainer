@@ -117,6 +117,9 @@ def test_ws_prefix_reserved_for_framework(tmp_path):
         assert "ws-demo" in ws._commands
     finally:
         ws.close()
+    # The constructor path is equally public and equally refused.
+    with pytest.raises(ValueError, match="Reserved terminal command prefix"):
+        Workspace(p, commands={"ws-evil": lambda ctx: None})
 
 
 def test_reserved_python_command_rejected(tmp_path):
