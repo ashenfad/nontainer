@@ -167,7 +167,10 @@ def terminal_description(
         desc += apps_notes(
             None if isinstance(apps, bool) else apps,
             root=ws.root,
-            commands=ws.supports_commands,
+            # The portable verbs exist where injected commands reach
+            # the shell OR ferry into a guest (the dud rung ferries
+            # ws-curl over hostcall despite supports_commands False).
+            commands=ws.supports_commands or ws.supports_ws_verbs,
         )
     if primer:
         desc += "\n\n" + primer
@@ -397,11 +400,11 @@ def apps_notes(
     the workspace root the path examples are written against
     (``ws.root`` — pass it whenever you have the workspace).
 
-    ``curl`` is an injected terminal command, so it exists only where
-    the executor honors those (``Executor.supports_commands``). Pass
-    ``commands=False`` for an executor running a real shell — a primer
-    that teaches a command answering ``command not found`` costs the
-    agent turns."""
+    ``ws-curl`` is an injected terminal command, so it exists only
+    where the executor honors those (``Executor.supports_commands``)
+    or ferries ``ws-*`` verbs into a guest. Pass ``commands=False``
+    for an executor with neither — a primer that teaches a command
+    answering ``command not found`` costs the agent turns."""
     if config is None:
         from ..apps import AppsConfig
 

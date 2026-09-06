@@ -72,7 +72,7 @@ def _exercise(ws: Workspace) -> None:
     r = runtime.dispatch(request("GET", "/api/names"))
     assert r.status == 200 and b'"n": 1' in r.content
     # the curl builtin drives the same dispatch from inside terminal()
-    t = ws.terminal('curl -X POST -d \'{"name": "bo"}\' /api/names')
+    t = ws.terminal('ws-curl -X POST -d \'{"name": "bo"}\' /api/names')
     assert t, t.stderr
     assert ws.fs.read("/workspace/app/last.txt") == b"bo"
 

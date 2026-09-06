@@ -1,6 +1,6 @@
-"""The ``curl`` terminal builtin: the agent's fast inner loop.
+"""The ``ws-curl`` terminal builtin: the agent's fast inner loop.
 
-``curl [-X METHOD] [-d BODY] [-H 'K: V']... URL`` hits the dispatch
+``ws-curl [-X METHOD] [-d BODY] [-H 'K: V']... URL`` hits the dispatch
 directly — no server, no browser. Body → stdout (composes in
 pipelines: ``curl /api/scores | jq .``); status >= 400 → exit code 22
 (curl's --fail convention) with ``HTTP <status>`` on stderr.
@@ -55,7 +55,7 @@ _NOOP_VALUED = {
 
 _SUPPORTED = (
     "supported: -X -d/--data --json -H -i -o -w (plus accepted no-ops: "
-    "-s -f -v -L --max-time ...) — this curl dispatches straight into "
+    "-s -f -v -L --max-time ...) — this command dispatches straight into "
     "the workspace app; there is no network"
 )
 
@@ -113,19 +113,19 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
                 i += 1
             else:
                 return CommandResult(
-                    exit_code=2, stderr=f"curl: unknown flag {a} ({_SUPPORTED})"
+                    exit_code=2, stderr=f"ws-curl: unknown flag {a} ({_SUPPORTED})"
                 )
 
         if url is None:
-            return CommandResult(exit_code=2, stderr=f"curl: no URL ({_SUPPORTED})")
+            return CommandResult(exit_code=2, stderr=f"ws-curl: no URL ({_SUPPORTED})")
         if url.startswith(("http://", "https://")):
             # The single most expensive discovery an agent can make by
             # trial and error — say it outright instead (curl exit 6:
             # could not resolve host).
             return CommandResult(
                 exit_code=6,
-                stderr="curl: external URLs are unreachable — this curl "
-                "dispatches only into the workspace app (try: curl "
+                stderr="ws-curl: external URLs are unreachable — this command "
+                "dispatches only into the workspace app (try: ws-curl "
                 "/api/...). The workspace has no internet access; "
                 "BROWSER-side code may load scripts from the CDN "
                 f"allowlist ({', '.join(runtime.config.script_hosts)}).",
@@ -176,7 +176,10 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
 
     curl.__doc__ = (
         "Test your app's endpoints without a server: "
-        "curl [-X METHOD] [-d BODY] [-i] [-o FILE] [-w '%{http_code}'] URL "
-        "(e.g. curl /api/scores?limit=3)"
+        "ws-curl [-X METHOD] [-d BODY] [-i] [-o FILE] [-w '%{http_code}'] URL "
+        "(e.g. ws-curl /api/scores?limit=3)"
     )
+    # Tags OUR registrations: like ws-git's tag, the dud ferry only
+    # fronts the framework command under this name.
+    curl._nontainer_wscurl = True
     return curl

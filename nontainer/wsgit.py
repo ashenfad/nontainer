@@ -120,9 +120,8 @@ def register_wsgit(ws: Any) -> None:
     the guest-path mapping the handler needs, not by importing the
     executor (which would cycle).
     """
-    if not ws.supports_commands and not hasattr(
-        getattr(ws, "_executor", None), "_guest_to_host"
-    ):
+    # getattr: supports_ws_verbs is new — duck-typed fakes predate it.
+    if not ws.supports_commands and not getattr(ws, "supports_ws_verbs", False):
         return
     fn = make_wsgit_command(ws)
     # Tags OUR registration: the dud handler must not front a user's
