@@ -1,5 +1,5 @@
 """The ws-curl dud-rung ferry: the guest shell function plus the host
-object fronting it (PR 4 treatment, second verb).
+object fronting it — the same ferry pattern as ws-git.
 
 Lives in core rather than apps/ on purpose: the handler reads
 workspace internals (live command mapping, guest path math, provider
