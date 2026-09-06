@@ -71,6 +71,39 @@ def test_custom_command_injection(tmp_path):
     ws.close()
 
 
+def test_fork_runs_shared_rebind_factory_once():
+    """One initializer owning two commands registers itself as both
+    rebinds; the fork invokes it once — a second invocation would
+    collide with the first one's registrations and fail the fork."""
+    from nontainer.providers import KvgitProvider
+
+    calls = []
+
+    def both(ctx):
+        ctx.stdout.write("both\n")
+        return None
+
+    def init(ws):
+        calls.append(1)
+        ws.register_command("alpha", both, rebind=init)
+        ws.register_command("beta", both, rebind=init)
+
+    provider = KvgitProvider.open(None, session="cmd-rebind-once")
+    ws = Workspace(provider)
+    try:
+        init(ws)
+        fork = ws.fork("cmd-rebind-once-kid")
+        try:
+            assert calls == [1, 1]  # once at init, once at fork
+            assert fork.terminal("alpha").stdout == "both\n"
+            assert fork.terminal("beta").stdout == "both\n"
+            assert ws.terminal("alpha").stdout == "both\n"
+        finally:
+            fork.close()
+    finally:
+        ws.close()
+
+
 def test_reserved_python_command_rejected(tmp_path):
     p = DirProvider(tmp_path / "ws", session="s1")
     with pytest.raises(ValueError, match="Reserved"):
