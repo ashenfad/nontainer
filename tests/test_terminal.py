@@ -104,6 +104,21 @@ def test_fork_runs_shared_rebind_factory_once():
         ws.close()
 
 
+def test_ws_prefix_reserved_for_framework(tmp_path):
+    from nontainer.providers import DirProvider
+
+    p = DirProvider(tmp_path / "ws", session="s1")
+    ws = Workspace(p)
+    try:
+        with pytest.raises(ValueError, match="Reserved terminal command prefix"):
+            ws.register_command("ws-evil", lambda ctx: None)
+        # Framework registrations (rebind set) are exempt.
+        ws.register_command("ws-demo", lambda ctx: None, rebind=lambda w: None)
+        assert "ws-demo" in ws._commands
+    finally:
+        ws.close()
+
+
 def test_reserved_python_command_rejected(tmp_path):
     p = DirProvider(tmp_path / "ws", session="s1")
     with pytest.raises(ValueError, match="Reserved"):

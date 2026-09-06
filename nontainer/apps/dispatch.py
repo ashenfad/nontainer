@@ -749,19 +749,27 @@ class AppRuntime:
 
 def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     """Wire the apps runtime into a workspace: builds the AppRuntime
-    and registers the ``curl`` terminal builtin. Returns the runtime
+    and registers the fetch terminal builtin twice — ``ws-curl`` (the
+    portable name, taught to agents) and ``curl`` (the deprecated
+    reflex spelling, removed on a later release). Returns the runtime
     (also the live router's dispatch source)."""
-    runtime = AppRuntime(ws, config)
     from .curl import make_curl_command
 
     # Framework-owned: a fork/snapshot rebuilds its own runtime bound
-    # to itself instead of inheriting the parent-bound closure.
-    ws.register_command(
-        "curl",
-        make_curl_command(runtime),
-        rebind=lambda fork: enable_apps(fork, config),
-    )
-    return runtime
+    # to itself instead of inheriting the parent-bound closure. One
+    # factory registers both spellings, so the rebind dedupe in
+    # _adopt_commands invokes it exactly once.
+    def _register(target: Workspace) -> AppRuntime:
+        target_runtime = AppRuntime(target, config)
+        target.register_command(
+            "curl", make_curl_command(target_runtime), rebind=_register
+        )
+        target.register_command(
+            "ws-curl", make_curl_command(target_runtime), rebind=_register
+        )
+        return target_runtime
+
+    return _register(ws)
 
 
 def request(method: str, url: str, **kwargs: Any) -> Request:
