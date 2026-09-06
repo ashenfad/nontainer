@@ -1715,7 +1715,11 @@ class Workspace:
         """
         new_ws._framework_commands = dict(self._framework_commands)
         try:
-            for factory in self._framework_commands.values():
+            # Deduplicated: one initializer may own several commands
+            # (registering itself as each one's rebind), and a second
+            # invocation would collide with the first one's
+            # registrations and fail the fork.
+            for factory in dict.fromkeys(self._framework_commands.values()):
                 factory(new_ws)
         except BaseException:
             new_ws.close()
