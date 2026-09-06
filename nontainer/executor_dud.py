@@ -560,6 +560,19 @@ class DudExecutor:
                     f"the ws-git terminal command — rename yours."
                 )
             live[DUD_OBJECT] = DudHostHandler(ws)
+            # Same ferry for ws-curl (Phase 2): the handler dispatches
+            # the live workspace command, so post-open enable_apps and
+            # fork-rebound runtimes work with no lifecycle coupling —
+            # nothing to snapshot here.
+            from .wscurl import DUD_OBJECT as CURL_OBJECT
+            from .wscurl import WsCurlHostHandler
+
+            if CURL_OBJECT in cfg.host_objects:
+                raise ValueError(
+                    f"Reserved host object name: {CURL_OBJECT!r} fronts "
+                    f"the ws-curl terminal command — rename yours."
+                )
+            live[CURL_OBJECT] = WsCurlHostHandler(ws)
         self._live = live
         self._cache = _KvBytesCache(context.kv)
         self._session = self._make_session(live, self._cache)
@@ -886,6 +899,14 @@ class DudExecutor:
             from .wsgit import SHELL_FUNCTION
 
             script = SHELL_FUNCTION + script
+        # ws-curl rides the same ferry (Phase 2): the ws-* name is
+        # reservation-guaranteed framework, so presence plus the tag is
+        # the gate. Bare `curl` is deliberately NOT ferried — in a real
+        # shell that name means the machine's own curl.
+        if getattr(ctx.commands.get("ws-curl"), "_nontainer_wscurl", False):
+            from .wscurl import SHELL_FUNCTION as CURL_FUNCTION
+
+            script = CURL_FUNCTION + script
         with self._lock:
             result = self._with_recovery(
                 lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
@@ -1038,6 +1059,32 @@ class DudExecutor:
                 base = self._ws_root
                 return f"{base}/{rel}" if rel else (base or "/")
         return None
+
+    def _host_to_guest(self, host_path: str) -> str | None:
+        """The inverse mapping (the ws-curl ``-o`` write-back): a
+        host-absolute workspace path to its guest-absolute twin.
+        ``None`` outside the workspace root."""
+        base = self._ws_root
+        work = self._work
+        if not work:
+            return None
+        if base:
+            if host_path == base:
+                return work
+            boundary = base if base.endswith("/") else base + "/"
+            if not host_path.startswith(boundary):
+                return None
+            rel = host_path[len(boundary) :]
+        else:
+            if host_path == "/":
+                return work
+            if not host_path.startswith("/"):
+                return None
+            rel = host_path[1:]
+        if not rel:
+            return work
+        sep = "" if work.endswith("/") else "/"
+        return f"{work}{sep}{rel}"
 
     def _mirror_cwd(self, guest_cwd: str) -> None:
         """The guest owns cwd within a session (real `cd`); mirror it

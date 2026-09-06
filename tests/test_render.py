@@ -104,7 +104,7 @@ def test_terminal_description_includes_apps_contract():
     for marker in (
         "def get(req)",
         "HttpError",
-        "curl /api/scores",
+        "ws-curl /api/scores",
         "RELATIVE urls",
         "/workspace/app/logs/api.log",
         "READ-ONLY",
@@ -153,11 +153,11 @@ def test_apps_notes_teach_curl_only_where_it_exists():
     from nontainer.adapters.render import apps_notes
 
     with_curl = apps_notes(commands=True)
-    assert "curl /api/scores?limit=3" in with_curl
+    assert "ws-curl /api/scores?limit=3" in with_curl
     assert "no curl here" not in with_curl
 
     without = apps_notes(commands=False)
-    assert "curl /api/scores" not in without
+    assert "ws-curl /api/scores" not in without
     assert "There is no curl here" in without
     # steered to the path that exists, and warned off the one that
     # looks equivalent but isn't (direct calls skip the read-only GET)
@@ -177,7 +177,7 @@ def test_terminal_description_gates_curl_on_the_executor():
     local = Workspace(KvgitProvider.open(None, session="primer-local"))
     try:
         assert local.supports_commands is True
-        assert "curl /api/scores?limit=3" in terminal_description(
+        assert "ws-curl /api/scores?limit=3" in terminal_description(
             local, apps=True, split=False
         )
     finally:
@@ -189,9 +189,12 @@ def test_terminal_description_gates_curl_on_the_executor():
     )
     try:
         assert guest.supports_commands is False
-        assert "There is no curl here" in terminal_description(
-            guest, apps=True, split=False
-        )
+        # The dud rung ferries ws-* verbs: the primer teaches the
+        # portable spelling instead of the no-curl note.
+        assert guest.supports_ws_verbs is True
+        desc = terminal_description(guest, apps=True, split=False)
+        assert "ws-curl /api/scores?limit=3" in desc
+        assert "There is no curl here" not in desc
     finally:
         guest.close()
 

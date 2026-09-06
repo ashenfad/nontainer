@@ -599,23 +599,23 @@ def test_buffered_lines_flush_in_order_when_a_handler_errors():
 
 
 def test_fork_curl_binds_fork():
-    """Fork-bleed for curl: the fork rebuilds its own runtime bound to
-    itself, so its curl serves the fork's handlers, not the parent's."""
+    """Fork-bleed for ws-curl: the fork rebuilds its own runtime bound
+    to itself, so its fetch serves the fork's handlers, not the
+    parent's."""
     ws, rt = make_ws()
     write_handler(ws, "forkbleed", "def get(req):\n    return {'side': 'parent'}\n")
     fork = ws.fork("apps-forkbleed-kid")
     try:
-        assert fork._commands["curl"] is not ws._commands["curl"]
         assert fork._commands["ws-curl"] is not ws._commands["ws-curl"]
         write_handler(fork, "forkbleed", "def get(req):\n    return {'side': 'fork'}\n")
-        r = fork.terminal("curl /api/forkbleed")
+        r = fork.terminal("ws-curl /api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "fork"}
         # The ws-curl spelling rides the same rebound runtime.
         r = fork.terminal("ws-curl /api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "fork"}
-        r = ws.terminal("curl /api/forkbleed")
+        r = ws.terminal("ws-curl /api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "parent"}
     finally:
@@ -623,29 +623,8 @@ def test_fork_curl_binds_fork():
     ws.close()
 
 
-def test_ws_curl_deferred_on_dud_rung():
-    """Phase 1 ships the alias local-only; the dud ferry is Phase 2.
-    Pinned so the deferral is explicit rather than drift: the guest
-    has no ws-curl function yet, so it reads as an absent command."""
-    pytest.importorskip("dud")
-    from nontainer.executor_dud import DudExecutor
-    from nontainer.providers import KvgitProvider
-
-    ws = Workspace(
-        KvgitProvider.open(None, session="apps-wscurl-deferred"),
-        executor=DudExecutor(backend="subprocess"),
-    )
-    enable_apps(ws)
-    try:
-        r = ws.terminal("ws-curl /api/nums")
-        assert r.exit_code == 127
-        assert "command not found" in r.stdout
-    finally:
-        ws.close()
-
-
-def test_ws_curl_alias_matches_curl():
-    """The portable spelling behaves identically to the deprecated one."""
+def test_ws_curl_get_in_pipeline():
+    """The portable spelling composes in pipelines like the old one did."""
     ws, rt = make_ws()
     write_handler(ws, "nums", "def get(req):\n    return {'nums': [3, 1, 2]}\n")
     try:
@@ -656,13 +635,26 @@ def test_ws_curl_alias_matches_curl():
         ws.close()
 
 
+def test_bare_curl_is_gone():
+    """The rename completed: bare `curl` is not a framework command.
+    (On termish it 127s; on a dud guest the name means the real curl.)"""
+    ws, rt = make_ws()
+    try:
+        assert "curl" not in ws._commands
+        assert "ws-curl" in ws._commands
+        r = ws.terminal("curl /api/nums")
+        assert r.exit_code == 127
+    finally:
+        ws.close()
+
+
 def test_curl_flushes_the_log_it_tells_the_agent_to_read():
     """curl runs inside a tool call that checkpoints anyway, and the
     agent's next move is to tail the log."""
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     ws.checkpoint()
-    assert ws.terminal("curl /api/ok").exit_code == 0
+    assert ws.terminal("ws-curl /api/ok").exit_code == 0
     log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ok -> 200" in log
     ws.close()
@@ -714,7 +706,7 @@ def test_static_requests_are_not_logged():
 def test_curl_get_in_pipeline():
     ws, rt = make_ws()
     write_handler(ws, "nums", "def get(req):\n    return {'nums': [3, 1, 2]}\n")
-    r = ws.terminal("curl /api/nums | jq -r '.nums[]' | sort")
+    r = ws.terminal("ws-curl /api/nums | jq -r '.nums[]' | sort")
     assert r, r.stderr
     assert r.stdout.split() == ["1", "2", "3"]
     ws.close()
@@ -727,7 +719,7 @@ def test_curl_post_with_data():
         "echo2",
         "def post(req):\n    return {'got': req.require('msg')}\n",
     )
-    r = ws.terminal('curl -X POST -d \'{"msg": "hi"}\' /api/echo2')
+    r = ws.terminal('ws-curl -X POST -d \'{"msg": "hi"}\' /api/echo2')
     assert r, r.stderr
     assert json.loads(r.stdout) == {"got": "hi"}
     ws.close()
@@ -741,22 +733,24 @@ def test_curl_absorbs_real_curl_reflexes():
     write_handler(ws, "nums", "def get(req):\n    return {'nums': [1]}\n")
 
     # no-op flags don't break the call
-    r = ws.terminal("curl -s -v -L --max-time 10 --connect-timeout 5 /api/nums")
+    r = ws.terminal("ws-curl -s -v -L --max-time 10 --connect-timeout 5 /api/nums")
     assert r, r.stderr
     assert json.loads(r.stdout) == {"nums": [1]}
 
     # -w substitutes %{http_code} (with \n escapes, curl-style)
-    r = ws.terminal("curl -s -w 'code=%{http_code}\\n' /api/nums")
+    r = ws.terminal("ws-curl -s -w 'code=%{http_code}\\n' /api/nums")
     assert r, r.stderr
     assert "code=200" in r.stdout
 
     # -i prepends status + headers
-    r = ws.terminal("curl -i /api/nums")
+    r = ws.terminal("ws-curl -i /api/nums")
     assert r.stdout.startswith("HTTP/1.1 200")
     assert "content-type:" in r.stdout.lower()
 
     # -o writes the body to the workspace fs (cwd-relative)
-    r = ws.terminal("cd /workspace/app && curl -o out.json /api/nums && cat out.json")
+    r = ws.terminal(
+        "cd /workspace/app && ws-curl -o out.json /api/nums && cat out.json"
+    )
     assert r, r.stderr
     assert json.loads(ws.fs.read("/workspace/app/out.json")) == {"nums": [1]}
 
@@ -764,7 +758,7 @@ def test_curl_absorbs_real_curl_reflexes():
     write_handler(
         ws, "echoraw", "def post(req):\n    return {'raw': req.body.decode()}\n"
     )
-    r = ws.terminal("curl -d a=1 -d b=2 /api/echoraw")
+    r = ws.terminal("ws-curl -d a=1 -d b=2 /api/echoraw")
     assert r, r.stderr
     assert json.loads(r.stdout)["raw"] == "a=1&b=2"
 
@@ -774,12 +768,12 @@ def test_curl_absorbs_real_curl_reflexes():
         "echo3",
         "def post(req):\n    return {'ct': req.headers.get('content-type')}\n",
     )
-    r = ws.terminal("curl --json '{\"a\": 1}' /api/echo3")
+    r = ws.terminal("ws-curl --json '{\"a\": 1}' /api/echo3")
     assert r, r.stderr
     assert json.loads(r.stdout)["ct"] == "application/json"
 
     # unknown flags still fail LOUDLY, now with the supported list
-    r = ws.terminal("curl --resolve foo:80:1.2.3.4 /api/nums")
+    r = ws.terminal("ws-curl --resolve foo:80:1.2.3.4 /api/nums")
     assert not r
     assert "unknown flag --resolve" in r.stderr and "supported:" in r.stderr
     ws.close()
@@ -787,7 +781,7 @@ def test_curl_absorbs_real_curl_reflexes():
 
 def test_curl_failure_exit_code():
     ws, rt = make_ws()
-    r = ws.terminal("curl /api/absent")
+    r = ws.terminal("ws-curl /api/absent")
     assert not r
     assert r.exit_code == 22  # curl --fail convention, preserved by termish>=0.1.7
     assert "HTTP 404" in r.stderr
@@ -801,7 +795,7 @@ def test_curl_agent_loop_write_then_test():
     script = """mkdir -p app/api
 echo 'def get(req):
     return {"status": "alive"}' > app/api/health.py
-curl /api/health"""
+ws-curl /api/health"""
     r = ws.terminal(script)
     assert r, r.stderr
     assert json.loads(r.stdout) == {"status": "alive"}
@@ -877,7 +871,7 @@ def test_curl_external_url_says_offline():
     absolute URLs get an explicit no-internet error, not a confusing
     404 from dispatching the URL as a path."""
     ws, rt = make_ws()
-    r = ws.terminal("curl https://cdn.plot.ly/plotly.min.js")
+    r = ws.terminal("ws-curl https://cdn.plot.ly/plotly.min.js")
     assert r.exit_code == 6
     assert "no internet" in r.stderr and "cdn.jsdelivr.net" in r.stderr
     ws.close()
@@ -891,7 +885,7 @@ def test_curl_external_url_error_names_configured_hosts():
 
     ws = Workspace(KvgitProvider.open(None, session="apps"))
     enable_apps(ws, AppsConfig(script_hosts=("esm.corp.internal",)))
-    r = ws.terminal("curl https://esm.sh/preact@10")
+    r = ws.terminal("ws-curl https://esm.sh/preact@10")
     assert r.exit_code == 6
     assert "esm.corp.internal" in r.stderr
     assert "unpkg.com" not in r.stderr

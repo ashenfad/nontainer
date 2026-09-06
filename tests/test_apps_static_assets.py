@@ -111,7 +111,7 @@ def test_curl_reaches_assets(assets):
     enough to confirm a bundle is really there."""
     ws, rt = make_ws(assets)
     try:
-        r = ws.terminal("curl /vendor/lib.js")
+        r = ws.terminal("ws-curl /vendor/lib.js")
         assert r, r.stderr
         assert "export const x = 1;" in r.stdout
     finally:

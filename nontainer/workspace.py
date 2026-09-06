@@ -977,14 +977,26 @@ class Workspace:
         An executor capability (``Executor.supports_commands``): true
         for the in-process termish shell, false for one running real
         bash in a guest. Tool descriptions gate on it — apps' fetch
-        verbs (``ws-curl``, and the deprecated ``curl`` spelling) are
-        only worth teaching where they exist.
+        verb ``ws-curl`` is only worth teaching where it exists.
 
         Defaults to true for executors predating the flag: that's the
         historical behavior, so a third-party executor keeps whatever
-        it had rather than silently losing the primer's curl section.
+        it had rather than silently losing the primer's fetch section.
         """
         return getattr(self._executor, "supports_commands", True)
+
+    @property
+    def supports_ws_verbs(self) -> bool:
+        """Whether ``ws-*`` verbs ferry into the shell.
+
+        True for guest-bridging executors (the dud rung ferries ws-git
+        and ws-curl over the hostcall channel) even though
+        ``supports_commands`` is false there — real bash has no command
+        registry. Tool descriptions offer the portable verbs where
+        either flag holds. Same probe ``register_wsgit`` gates on, in
+        one place.
+        """
+        return hasattr(self._executor, "_guest_to_host")
 
     @property
     def caps(self) -> Capabilities:
