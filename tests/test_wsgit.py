@@ -285,7 +285,7 @@ def test_fork_wsgit_binds_fork():
         w.checkpoint()
         fork = w.fork("wsgit-forkbleed-kid")
         try:
-            assert fork._commands["ws-git"] is not w._commands["ws-git"]
+            assert fork.runtime.commands["ws-git"] is not w.runtime.commands["ws-git"]
             fork.fs.write("/workspace/kid.txt", b"kid\n")
             r = fork.terminal("ws-git stage kid.txt")
             assert r.exit_code == 0, r.stderr
@@ -315,7 +315,7 @@ def test_snapshot_wsgit_reads_snapshot():
         w.tag("v1")
         snap = w.at_tag("v1")
         try:
-            assert snap._commands["ws-git"] is not w._commands["ws-git"]
+            assert snap.runtime.commands["ws-git"] is not w.runtime.commands["ws-git"]
             # The parent moves on; the snapshot doesn't follow.
             w.fs.write("/workspace/b.txt", b"two\n")
             w.terminal("ws-git stage b.txt")

@@ -396,7 +396,7 @@ def test_a_burst_leaves_only_the_default_resident():
             t.join(timeout=60)
         assert not errors, errors
 
-        pool = ws._executor._pool
+        pool = ws.runtime.executor._pool
         resident = [sb for group in pool._idle.values() for sb in group]
         assert len(resident) == 1
         assert sum(pool._live.values()) == 1  # transients freed their slots too
@@ -418,7 +418,7 @@ def test_view_workers_zero_restores_per_call_workers():
 def test_pooled_worker_is_reaped_on_close():
     ws = _ws("pool-close")
     ws.exec_python(WHICH_WORKER, view=VIEW)
-    pool = ws._executor._pool
+    pool = ws.runtime.executor._pool
     resident = [sb for group in pool._idle.values() for sb in group]
     assert len(resident) == 1
     # Grab the handle now: shutdown() clears the sandbox's own.
@@ -437,7 +437,7 @@ def test_a_worker_that_dies_while_idle_doesnt_poison_the_pool():
         first = ws.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
 
         resident = next(
-            sb for group in ws._executor._pool._idle.values() for sb in group
+            sb for group in ws.runtime.executor._pool._idle.values() for sb in group
         )
         # kill+join, not os.kill: SIGKILL is asynchronous, and a checkout
         # racing the death would hand out a worker that is still alive.

@@ -606,7 +606,7 @@ def test_fork_curl_binds_fork():
     write_handler(ws, "forkbleed", "def get(req):\n    return {'side': 'parent'}\n")
     fork = ws.fork("apps-forkbleed-kid")
     try:
-        assert fork._commands["ws-curl"] is not ws._commands["ws-curl"]
+        assert fork.runtime.commands["ws-curl"] is not ws.runtime.commands["ws-curl"]
         write_handler(fork, "forkbleed", "def get(req):\n    return {'side': 'fork'}\n")
         r = fork.terminal("ws-curl $APP_ORIGIN/api/forkbleed")
         assert r, r.stderr
@@ -640,8 +640,8 @@ def test_bare_curl_is_gone():
     (On termish it 127s; on a dud guest the name means the real curl.)"""
     ws, rt = make_ws()
     try:
-        assert "curl" not in ws._commands
-        assert "ws-curl" in ws._commands
+        assert "curl" not in ws.runtime.commands
+        assert "ws-curl" in ws.runtime.commands
         r = ws.terminal("curl /api/nums")
         assert r.exit_code == 127
     finally:
@@ -811,9 +811,7 @@ def test_follow_location_with_stub_runtime():
         def dispatch(self, req):
             seen.append(req.path)
             if req.path == "/api/old":
-                return WireResponse(
-                    302, b"moved", "text/plain", {"location": "nums"}
-                )
+                return WireResponse(302, b"moved", "text/plain", {"location": "nums"})
             if req.path == "/api/abs-old":
                 return WireResponse(
                     302,
@@ -832,7 +830,6 @@ def test_follow_location_with_stub_runtime():
         res = make_curl_command(StubRt())(ctx)
         assert (res.exit_code if res is not None else 0) == 0
         return ctx.stdout.getvalue()
-
 
     out = run("-L", "/api/old")
     assert seen == ["/api/old", "/api/nums"]

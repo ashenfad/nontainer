@@ -121,8 +121,9 @@ class WsCurlHostHandler:
             err = ws._absorb_before_verb("ws-curl")
             if err is not None:
                 return err
-            mapper = getattr(getattr(ws, "_executor", None), "_guest_to_host", None)
-            unmapper = getattr(getattr(ws, "_executor", None), "_host_to_guest", None)
+            executor = getattr(getattr(ws, "runtime", None), "executor", None)
+            mapper = getattr(executor, "_guest_to_host", None)
+            unmapper = getattr(executor, "_host_to_guest", None)
             host_cwd = (mapper(cwd) if mapper else None) or cwd
             captured: dict[str, bytes] = {}
             ctx = _guest_ctx(self._map_argv(mapper, list(argv)), host_cwd, captured)
@@ -193,7 +194,8 @@ class WsCurlHostHandler:
         paths pass through as guest paths — the guest writes exactly
         what was asked, and the provider is never consulted for them.
         """
-        work = getattr(getattr(ws, "_executor", None), "_work", "")
+        executor = getattr(getattr(ws, "runtime", None), "executor", None)
+        work = getattr(executor, "_work", "")
         landed: list[tuple[str, str, bytes]] = []
         for host_path, data in captured.items():
             guest_path = (unmapper(host_path) if unmapper else None) or host_path

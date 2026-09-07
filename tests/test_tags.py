@@ -325,7 +325,7 @@ def test_frozen_refusal_survives_a_remote_executor(tmp_path):
     )
     try:
         with reader.at_tag("v1") as snapshot:
-            assert type(snapshot._executor) is DudExecutor
+            assert type(snapshot.runtime.executor) is DudExecutor
             write = snapshot.terminal("echo changed > a.txt; echo new > b.txt")
             assert write.exit_code != 0
             assert "frozen snapshot at tag 'v1'" in write.stderr

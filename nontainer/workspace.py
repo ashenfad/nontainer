@@ -26,9 +26,13 @@ Design notes (see README "Design decisions"):
   on versioned providers rollback also restores *where you were*.
 - **Execution is a seam.** How code runs — the python sandbox, the
   shell, worker lifecycle — lives behind :class:`Executor` (see
-  executor.py); the default :class:`LocalExecutor` is the in-process
-  sandtrap + termish wiring. The workspace keeps what execution must
-  not own: the lock, the checkpoint flow, cwd, the cache key rules.
+  protocol.py); the default :class:`LocalExecutor` is the in-process
+  sandtrap + termish wiring, and :class:`~nontainer.runtime.Runtime`
+  (``ws.runtime``) is the workspace-side half that owns it: the
+  executor's lifecycle, the terminal command registry, the shell
+  environment, the raw execution calls. The workspace keeps what
+  execution must not own: the lock, the checkpoint flow, cwd, the
+  cache key rules.
 """
 
 from __future__ import annotations
@@ -57,12 +61,12 @@ from .protocol import (
 
 if TYPE_CHECKING:
     from .editing import EditOutcome
-    from .executor import Executor, ViewSpec
+    from .protocol import Executor, ViewSpec
+    from .runtime import Runtime
 
 Isolation = Literal["none", "process", "kernel"]
 
 _CWD_KEY = "__cwd__"
-RESERVED_COMMANDS = frozenset({"python", "python3"})
 
 
 @dataclass(frozen=True)
@@ -703,7 +707,7 @@ class Workspace:
         root: str = "/workspace",
     ) -> None:
         self._provider = provider
-        self._python_config = python or PythonConfig()
+        python_config = python or PythonConfig()
         self._cache_enabled = cache
         self._max_observation = max_observation
         self._closed = False
@@ -778,60 +782,20 @@ class Workspace:
         # directories (see _Settings).
         normalized_mounts = self._normalize_mounts(mounts)
         self._fs = self._build_fs(provider.fs, normalized_mounts)
-        # Host-side writes move provider state behind a remote
-        # executor's back; the public ``fs`` hands out a wrapper that
-        # flags it, and the next execution syncs (see _SyncingFS).
-        self._executor_stale = False
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
         # the partial staging like a torn call instead of
         # checkpointing it. Transient per-call state, never replayed.
         self._pending_sync_error: str | None = None
+        # Host-side writes move provider state behind a remote
+        # executor's back; the public ``fs`` hands out a wrapper that
+        # flags the runtime, and the next execution syncs (see
+        # _SyncingFS).
         self._public_fs = _SyncingFS(self._fs, self._mark_executor_stale)
 
-        # -- terminal commands: user injections + the python bridge --
-        user_commands = dict(commands or {})
-        reserved = RESERVED_COMMANDS.intersection(user_commands)
-        if reserved:
-            raise ValueError(
-                f"Reserved terminal command name(s): {sorted(reserved)}. "
-                "'python' is nontainer's bridge into run_python."
-            )
-        # Same ws-* reservation as register_command: constructor
-        # injections are equally public, and without this a
-        # user-claimed ws-* name would collide halfway through a later
-        # framework registration, leaving it partially configured.
-        prefixed = sorted(k for k in user_commands if k.startswith("ws-"))
-        if prefixed:
-            raise ValueError(
-                f"Reserved terminal command prefix: {prefixed} — the 'ws-' "
-                "prefix names framework verbs (ws-git, ws-curl); "
-                "rename yours."
-            )
-        user_commands["python"] = self._python_command
-        user_commands["python3"] = self._python_command  # the reflex spelling
-        self._commands = user_commands
-        # Framework-owned commands (ws-git, ws-curl) and how to re-bind
-        # them: a command closure captures the workspace it was built
-        # for, so a fork/snapshot that merely copied the mapping would
-        # dispatch into its parent — the fork-bleed. fork()/at_tag()
-        # drop these names from the copy and rebuild them bound to the
-        # new workspace instead (see _adopt_commands). Populated via
-        # register_command(rebind=...), never from _Settings: like
-        # commands themselves, factories arrive after construction.
-        self._framework_commands: dict[str, Callable[[Workspace], None]] = {}
-        # Shell environment for script executions: `$VAR` expansion on
-        # the termish rung, exported into the guest on dud rungs.
-        # Workspace-owned (not ExecutionContext) so post-construction
-        # features can contribute — `enable_apps` publishes
-        # `$APP_ORIGIN` here. Executors snapshot it per call;
-        # fork()/at_tag() replay it like commands. Embedders may add
-        # their own; the shell never writes back.
-        self._shell_env: dict[str, str] = {}
-
-        # -- execution: bound behind the Executor seam (executor.py).
-        # Default is the in-process sandtrap+termish LocalExecutor.
+        # -- execution: bound behind the Executor seam (protocol.py),
+        # and owned by the Runtime this workspace builds below.
         #
         # Two injection shapes, because an executor is stateful and
         # bound to ONE session (it may own a subprocess / guest VM), so
@@ -843,15 +807,11 @@ class Workspace:
         #   ``fork()`` so a whole session lineage runs on the same
         #   executor kind (what studio's "fork = new universe" needs on
         #   a dud backend). A fresh executor per session, no sharing.
-        from .executor import ExecutionContext, LocalExecutor
-
+        # Resolved here rather than in the Runtime because the factory
+        # is what a fork replays, and _Settings is the workspace's.
         self._executor_factory = executor_factory
-        if executor is not None:
-            self._executor = executor
-        elif executor_factory is not None:
-            self._executor = executor_factory()
-        else:
-            self._executor = LocalExecutor()
+        if executor is None and executor_factory is not None:
+            executor = executor_factory()
 
         # -- what a fork replays. Captured from the NORMALIZED values,
         # not the raw arguments, so a fork starts from the state this
@@ -860,7 +820,7 @@ class Workspace:
         # construction settings are deliberately NOT here (see
         # :class:`_Settings`); fork() reads those live.
         self._settings = _Settings(
-            python=self._python_config,
+            python=python_config,
             mounts=normalized_mounts,
             cache=self._cache_enabled,
             max_observation=self._max_observation,
@@ -900,24 +860,20 @@ class Workspace:
             if not self._frozen:
                 provider.checkpoint(info={"tool": "init"})
 
-        # open() LAST: it may fork a persistent isolation worker (see
-        # LocalExecutor.open), and opening after everything else means
-        # no later __init__ failure can orphan it (PR #10 review).
-        # If open itself fails, the valid init baseline stays committed:
-        # root/cwd are provider state, independent of executor health.
-        self._executor.open(
-            ExecutionContext(
-                fs=_frozen_fs(self._fs, self._frozen_at) if self._frozen else self._fs,
-                kv=self._kv_view,
-                commands=self._commands,
-                python_config=self._python_config,
-                cache_enabled=self._cache_enabled,
-                max_observation=self._max_observation,
-                head=_state_identity(provider),
-                root=self._root,
-                frozen=self._frozen,
-                workspace=self,
-            )
+        # The runtime LAST: building it opens the executor, which may
+        # fork a persistent isolation worker (see LocalExecutor.open),
+        # and doing it after everything else means no later __init__
+        # failure can orphan one (PR #10 review). If the open itself
+        # fails, the valid init baseline stays committed: root/cwd are
+        # provider state, independent of executor health.
+        from .runtime import Runtime
+
+        self._runtime = Runtime(
+            self,
+            executor=executor,
+            python=python_config,
+            commands=commands,
+            max_observation=max_observation,
         )
 
     # ------------------------------------------------------------------
@@ -980,31 +936,15 @@ class Workspace:
 
     @property
     def supports_commands(self) -> bool:
-        """Whether injected terminal commands reach the shell.
-
-        An executor capability (``Executor.supports_commands``): true
-        for the in-process termish shell, false for one running real
-        bash in a guest. Tool descriptions gate on it — apps' fetch
-        verb ``ws-curl`` is only worth teaching where it exists.
-
-        Defaults to true for executors predating the flag: that's the
-        historical behavior, so a third-party executor keeps whatever
-        it had rather than silently losing the primer's fetch section.
-        """
-        return getattr(self._executor, "supports_commands", True)
+        """Whether injected terminal commands reach the shell — an
+        executor capability (see :attr:`Runtime.supports_commands`)."""
+        return self._runtime.supports_commands
 
     @property
     def supports_ws_verbs(self) -> bool:
-        """Whether ``ws-*`` verbs ferry into the shell.
-
-        True for guest-bridging executors (the dud rung ferries ws-git
-        and ws-curl over the hostcall channel) even though
-        ``supports_commands`` is false there — real bash has no command
-        registry. Tool descriptions offer the portable verbs where
-        either flag holds. Same probe ``register_wsgit`` gates on, in
-        one place.
-        """
-        return hasattr(self._executor, "_guest_to_host")
+        """Whether ``ws-*`` verbs ferry into the shell (see
+        :attr:`Runtime.supports_ws_verbs`)."""
+        return self._runtime.supports_ws_verbs
 
     @property
     def caps(self) -> Capabilities:
@@ -1075,8 +1015,15 @@ class Workspace:
         return self._cache_enabled
 
     @property
+    def runtime(self) -> "Runtime":
+        """How code runs against this workspace: the bound executor,
+        the terminal command registry, the shell environment, the raw
+        execution calls. See :class:`~nontainer.runtime.Runtime`."""
+        return self._runtime
+
+    @property
     def python_config(self) -> PythonConfig:
-        return self._python_config
+        return self._runtime.python_config
 
     @property
     def lock(self) -> threading.RLock:
@@ -1102,10 +1049,9 @@ class Workspace:
             # wins the lock either sees the workspace open for its
             # whole execution or raises cleanly — no TOCTOU (PR #7).
             self._check_open()
-            self._sync_executor_if_stale()
             was_dirty = self._provider.dirty
             try:
-                result = self._executor.exec_shell(command)
+                result = self._runtime.exec_shell(command)
             except PermissionError as e:
                 return TerminalResult(
                     stdout="", exit_code=1, stderr=self._refused_frozen(e)
@@ -1306,31 +1252,9 @@ class Workspace:
         view: "ViewSpec | None" = None,
     ) -> PythonResult:
         """EXTENSION SURFACE: the raw execution path — no checkpoint,
-        no lock. For embedders composing execution features on top of
-        the workspace; most callers want :meth:`run_python`. Consumers:
-        ``run_python`` itself, the terminal ``python`` builtin, and the
-        apps dispatch (which passes a ``view`` for restricted handler
-        execution — a read-only fs/cache view, a tighter budget,
-        contract classes).
-
-        ``view`` (see :class:`~nontainer.executor.ViewSpec`) requests a
-        restricted, budgeted execution; it is executor-neutral (no
-        sandbox object crosses the seam). ``echo`` overrides
-        expression-echo for this call (``None`` = ``PythonConfig.echo``;
-        script surfaces pass ``"none"``); ``stdin``/``argv`` expose the
-        synthetic ``sys`` (the terminal ``python`` builtin wires the
-        pipeline in). Safe to call concurrently — a ``view`` mints a
-        fresh sandbox per call (frozen app serving relies on this);
-        callers whose work mutates the workspace serialize via
-        :attr:`lock`.
-
-        Delegates to the executor (``LocalExecutor.exec_python`` —
-        where the namespace assembly and rendering live)."""
-        # The chokepoint for python execution — run_python, the
-        # terminal ``python`` builtin, and apps dispatch all land here,
-        # so a host-side write is visible to every one of them.
-        self._sync_executor_if_stale()
-        return self._executor.exec_python(
+        no lock. Delegates to :meth:`Runtime.exec_python`, where the
+        contract is documented; most callers want :meth:`run_python`."""
+        return self._runtime.exec_python(
             code,
             inputs=inputs,
             stdin=stdin,
@@ -1339,68 +1263,6 @@ class Workspace:
             view=view,
         )
 
-    def _python_command(self, ctx: Any) -> Any:
-        """The reserved ``python`` terminal builtin: a thin bridge over
-        ``exec_python`` with script semantics — stdout flows to the
-        pipeline, errors become exit code 1 + stderr, and the result
-        namespace is deliberately DROPPED (pipelines are text;
-        namespace-out belongs to the direct ``run_python`` surface).
-
-        Forms: ``python -c 'code'`` | ``python file.py`` | piped stdin.
-        Piped input reaches the code as ``sys.stdin`` (real-shell
-        idiom: ``cat data | python script.py``), and ``sys.argv`` is
-        populated — via sandtrap's synthetic ``sys``.
-        """
-        from termish import CommandResult
-
-        args = list(ctx.args)
-        # argv is always set so `sys`/argv are available in every form.
-        if args and args[0] == "-c":
-            if len(args) < 2:
-                return CommandResult(exit_code=2, stderr="python: -c needs code")
-            code = args[1]
-            argv = ["-c", *args[2:]]
-            stdin = ctx.stdin.read()  # piped data (empty when no pipe)
-        elif args and args[0] == "-":
-            # explicit "read program from stdin"; trailing args → argv
-            code = ctx.stdin.read()
-            if not code.strip():
-                return CommandResult(exit_code=2, stderr="python: no code on stdin")
-            argv = ["-", *args[1:]]
-            stdin = ""  # program consumed stdin
-        elif args and args[0].startswith("-"):
-            return CommandResult(
-                exit_code=2,
-                stderr=f"python: unsupported option {args[0]!r} "
-                "(only -c and - are supported)",
-            )
-        elif args:
-            path = args[0]
-            try:
-                code = self._fs.read(path).decode("utf-8")
-            except Exception as e:
-                return CommandResult(exit_code=1, stderr=f"python: {path}: {e}")
-            argv = [path, *args[1:]]
-            stdin = ctx.stdin.read()
-        else:
-            code = ctx.stdin.read()  # stdin IS the code here (consumed)
-            if not code.strip():
-                return CommandResult(
-                    exit_code=2, stderr="python: no code (use -c, a file, or stdin)"
-                )
-            argv = [""]
-            stdin = ""
-
-        # echo="none": script semantics by contract — a bare trailing
-        # expression must not inject repr lines into pipelines
-        result = self.exec_python(code, stdin=stdin, argv=argv, echo="none")
-        ctx.stdout.write(result.stdout)
-        if result.error is not None:
-            return CommandResult(exit_code=1, stderr=result.error)
-        if result.stderr:
-            return CommandResult(exit_code=0, stderr=result.stderr)
-        return None
-
     def register_command(
         self,
         name: str,
@@ -1408,36 +1270,15 @@ class Workspace:
         *,
         rebind: Callable[[Workspace], None] | None = None,
     ) -> None:
-        """Add a terminal command after construction (termish
-        ``CommandFunc`` signature). Used by extras (e.g. apps' `curl`);
-        also public for embedders. Reserved names and collisions with
-        existing injections are rejected.
+        """Add a terminal command after construction. Delegates to
+        :meth:`Runtime.register_command`, where the naming rules and
+        the ``rebind`` contract are documented."""
+        self._runtime.register_command(name, fn, rebind=rebind)
 
-        ``rebind`` marks a framework-owned command: a factory taking
-        the new workspace (usually the same function that called this)
-        that rebuilds the command bound to a fork/snapshot.
-        Without it the fork would inherit the parent-bound closure and
-        dispatch into the parent — the fork-bleed. Embedder commands
-        omit it and copy across as-is.
-
-        The ``ws-`` prefix is reserved the same way: user-injected
-        commands cannot claim it, so framework verbs never fight an
-        agent's own command and no rename is ever needed. Framework
-        registrations pass ``rebind`` and are exempt.
-        """
-        if name in RESERVED_COMMANDS:
-            raise ValueError(f"Reserved terminal command name: {name!r}")
-        if name.startswith("ws-") and rebind is None:
-            raise ValueError(
-                f"Reserved terminal command prefix: {name!r} — the 'ws-' "
-                "prefix names framework verbs (ws-git, ws-curl); "
-                "rename yours."
-            )
-        if name in self._commands:
-            raise ValueError(f"Terminal command already registered: {name!r}")
-        self._commands[name] = fn
-        if rebind is not None:
-            self._framework_commands[name] = rebind
+    def set_shell_env(self, name: str, value: str) -> None:
+        """Publish a variable to shell executions. Delegates to
+        :meth:`Runtime.set_shell_env`."""
+        self._runtime.set_shell_env(name, value)
 
     # ------------------------------------------------------------------
     # direct (host-side) access
@@ -1458,32 +1299,10 @@ class Workspace:
 
     def _mark_executor_stale(self) -> None:
         """Provider state moved without the executor seeing it; the
-        next execution must refresh the guest first."""
-        self._executor_stale = True
-
-    def _sync_executor_if_stale(self) -> None:
-        """Bring a remote executor's view current, once, right before
-        it is used. No-op for ``LocalExecutor``, whose writes are
-        already write-through.
-
-        Cleared BEFORE the push, then RESTORED if the push raises.
-        Clearing first is what keeps a write that lands mid-sync
-        marked — it re-flags and earns its own sync — but a sync that
-        fails leaves the guest exactly as stale as it was, so the flag
-        has to come back or the retry would run against the old tree
-        believing itself current (PR #23 review). The executor may
-        still be recoverable: ``DudExecutor.sync`` handles a lost
-        session itself, and what propagates here is the harder class
-        (tree read, archive, push) where a caller retry is the point.
-        """
-        if not self._executor_stale:
-            return
-        self._executor_stale = False
-        try:
-            self._executor.sync()
-        except BaseException:
-            self._executor_stale = True
-            raise
+        next execution must refresh the guest first. Every workspace
+        path that writes behind the executor's back goes through here
+        (see :meth:`Runtime.mark_stale`)."""
+        self._runtime.mark_stale()
 
     def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
         """Write a file (parents created, overwrites). The quoting-free
@@ -1731,34 +1550,13 @@ class Workspace:
         # turn granularity.
         new_ws = Workspace(
             forked,
-            commands=self._forkable_commands(),
+            commands=self._runtime.forkable_commands(),
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
-        new_ws._shell_env = dict(self._shell_env)
+        new_ws.runtime.shell_env.update(self._runtime.shell_env)
         self._adopt_commands(new_ws)
         return new_ws
-
-    def _forkable_commands(self) -> dict[str, Callable[..., Any]]:
-        """User commands safe to inherit: everything except the
-        reserved bridge names (__init__ re-adds them) and
-        framework-owned commands, which _adopt_commands rebuilds bound
-        to the new workspace instead of inheriting parent-bound."""
-        skip = RESERVED_COMMANDS | self._framework_commands.keys()
-        return {k: v for k, v in self._commands.items() if k not in skip}
-
-    def set_shell_env(self, name: str, value: str) -> None:
-        """Publish a variable to shell executions (``$VAR`` expansion
-        on the termish rung, exported into the guest on dud rungs).
-
-        Used by post-construction features — ``enable_apps`` publishes
-        ``$APP_ORIGIN`` — and available to embedders. Forks and
-        snapshots inherit a copy. The shell never writes back: this is
-        configuration, not state.
-        """
-        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
-            raise ValueError(f"Invalid shell variable name: {name!r}")
-        self._shell_env[name] = value
 
     def _adopt_commands(self, new_ws: Workspace) -> None:
         """Re-bind framework-owned commands onto a fork/snapshot.
@@ -1770,13 +1568,15 @@ class Workspace:
         half-built workspace and propagates — never a fork whose verbs
         silently belong to someone else.
         """
-        new_ws._framework_commands = dict(self._framework_commands)
+        adopted = self._runtime.framework_commands
+        new_ws.runtime.framework_commands.clear()
+        new_ws.runtime.framework_commands.update(adopted)
         try:
             # Deduplicated: one initializer may own several commands
             # (registering itself as each one's rebind), and a second
             # invocation would collide with the first one's
             # registrations and fail the fork.
-            for factory in dict.fromkeys(self._framework_commands.values()):
+            for factory in dict.fromkeys(adopted.values()):
                 factory(new_ws)
         except BaseException:
             new_ws.close()
@@ -1931,11 +1731,11 @@ class Workspace:
         # passing it keeps the two paths identical.
         new_ws = Workspace(
             frozen,
-            commands=self._forkable_commands(),
+            commands=self._runtime.forkable_commands(),
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
-        new_ws._shell_env = dict(self._shell_env)
+        new_ws.runtime.shell_env.update(self._runtime.shell_env)
         self._adopt_commands(new_ws)
         return new_ws
 
@@ -1976,35 +1776,11 @@ class Workspace:
         with self._lock:  # don't close the provider mid-call
             if not self._closed:
                 self._closed = True
-                # Settle a pending sync BEFORE close. A closing
-                # executor may park its tree tagged with the provider
-                # head for later affinity (DudExecutor.close); parking
-                # a stale tree under a matching tag would let a future
-                # session resume it and skip the push, silently losing
-                # host-side writes. Best-effort: a failure here must
-                # not block the provider close.
-                try:
-                    self._sync_executor_if_stale()
-                except Exception:
-                    pass
-                # Executor.close is best-effort-must-not-raise by
-                # contract, but executors are an extension surface —
-                # a third-party one that breaks the contract must not
-                # get to skip the provider close (a held kvgit store).
-                # Warn rather than swallow: the violation is theirs to
-                # fix (PR #19 review).
-                try:
-                    self._executor.close()
-                except Exception:
-                    import warnings
-
-                    warnings.warn(
-                        f"{type(self._executor).__name__}.close() raised — "
-                        "Executor.close must not (best-effort by contract); "
-                        "closing the provider anyway",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
+                # The runtime first: it settles a pending sync and
+                # releases the executor, and it is contracted not to
+                # raise however badly a third-party executor behaves —
+                # so the provider (a held kvgit store) always closes.
+                self._runtime.close()
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
@@ -2022,7 +1798,7 @@ class Workspace:
         """Debug/test peephole into the LocalExecutor's default sandbox
         (the process-isolation tests kill its worker to exercise crash
         recovery). ``None`` for executors without one."""
-        return getattr(self._executor, "_sandbox", None)
+        return getattr(self._runtime.executor, "_sandbox", None)
 
     def _check_open(self) -> None:
         if self._closed:
@@ -2158,7 +1934,7 @@ class Workspace:
         read-only filesystem raises in-process. Returns that message,
         or None when there was nothing to refuse.
         """
-        d = self._executor.diff()
+        d = self._runtime.diff()
         if d is None:
             return None
         if self._frozen:

@@ -114,7 +114,7 @@ def test_ws_prefix_reserved_for_framework(tmp_path):
             ws.register_command("ws-evil", lambda ctx: None)
         # Framework registrations (rebind set) are exempt.
         ws.register_command("ws-demo", lambda ctx: None, rebind=lambda w: None)
-        assert "ws-demo" in ws._commands
+        assert "ws-demo" in ws.runtime.commands
     finally:
         ws.close()
     # The constructor path is equally public and equally refused.

@@ -105,7 +105,7 @@ def test_dud_unregistered_name_absent(bare_ws):
 
 
 def test_dud_handler_refuses_unregistered_direct_call(bare_ws):
-    handler = bare_ws._executor._live["ws_git"]
+    handler = bare_ws.runtime.executor._live["ws_git"]
     assert isinstance(handler, DudHostHandler)
     out = handler.run("/workspace", "status")
     assert out == {
@@ -123,16 +123,16 @@ def test_dud_handler_fronts_framework_only(ws):
     def custom(ctx):
         return None
 
-    ws._commands["ws-git"] = custom
+    ws.runtime.commands["ws-git"] = custom
     try:
         r = ws.terminal("ws-git status")
         assert r.exit_code == 127
-        handler = ws._executor._live["ws_git"]
+        handler = ws.runtime.executor._live["ws_git"]
         out = handler.run("/workspace", "status")
         assert out["exit_code"] == 1
         assert "custom command owns that name" in out["stderr"]
     finally:
-        del ws._commands["ws-git"]
+        del ws.runtime.commands["ws-git"]
         register_wsgit(ws)
 
 
@@ -188,7 +188,7 @@ def test_dud_edges_match_local(ws):
 
 
 def test_guest_to_host_mapping(ws):
-    ex = ws._executor
+    ex = ws.runtime.executor
     work = ex._work
     assert work, "subprocess ping must report a workspace"
     assert ex._guest_to_host(f"{work}/sub/f.txt") == "/workspace/sub/f.txt"
@@ -262,7 +262,7 @@ def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypat
                 )
             return None
 
-        monkeypatch.setattr(w._executor, "diff", fake_diff)
+        monkeypatch.setattr(w.runtime.executor, "diff", fake_diff)
         r = w.terminal("ws-git status")
         assert r.exit_code != 0
         # The verb's triple rides the merged dud transcript...
@@ -273,9 +273,9 @@ def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypat
         assert not w.fs.exists("/workspace/ok.txt")
         assert not (src / "evil.txt").exists()
         # Guest flagged for rematerialization; the next call re-syncs.
-        assert w._executor_stale is True
+        assert w.runtime.stale is True
         assert w.terminal("ws-git status").exit_code == 0
-        assert w._executor_stale is False
+        assert w.runtime.stale is False
     finally:
         w.close()
 

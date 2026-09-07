@@ -123,11 +123,13 @@ def test_oversized_capture_lands_with_http_failure(daws, monkeypatch):
     assert r.exit_code == 22
     assert "HTTP 404" in r.stdout
     assert "exceeded the guest round-trip frame" in r.stdout
-    assert daws._executor_stale is True
+    assert daws.runtime.stale is True
     # Landed in the workspace; under the real budget the next call
     # re-syncs the guest and the capture reads back.
     monkeypatch.undo()
-    r = daws.terminal("cat big.json; echo; ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[0]'")
+    r = daws.terminal(
+        "cat big.json; echo; ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[0]'"
+    )
     assert r.exit_code == 0, r.stdout
     assert "no such endpoint: /api/absent" in r.stdout
     assert r.stdout.splitlines()[-1] == "3"
