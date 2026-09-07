@@ -852,6 +852,92 @@ def test_follow_location_with_stub_runtime():
     assert out == "moved\n"
 
 
+def test_inferred_post_becomes_get_on_redirect():
+    """curl's -L convention: an inferred POST (from -d) turns into a
+    GET on 301/302/303; explicit -X POST — and always 307/308 —
+    resend the body."""
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from nontainer.apps import AppsConfig
+    from nontainer.apps.contract import WireResponse
+    from nontainer.apps.wscurl import make_curl_command
+
+    seen = []
+
+    class StubRt:
+        config = AppsConfig()
+
+        def flush_log(self):
+            pass
+
+        def dispatch(self, req):
+            seen.append((req.method, req.path, req.body))
+            if req.path == "/api/new":
+                return WireResponse(200, b'{"ok": true}', "application/json", {})
+            if req.path == "/api/old-307":
+                return WireResponse(
+                    307, b"moved", "text/plain", {"location": "/api/new"}
+                )
+            return WireResponse(302, b"moved", "text/plain", {"location": "/api/new"})
+
+    def run(*args):
+        ctx = SimpleNamespace(args=list(args), stdout=StringIO(), fs=None)
+        res = make_curl_command(StubRt())(ctx)
+        assert (res.exit_code if res is not None else 0) == 0
+        return ctx.stdout.getvalue()
+
+    run("-L", "-d", "a=1", "/api/old")
+    assert seen == [("POST", "/api/old", b"a=1"), ("GET", "/api/new", b"")]
+
+    seen.clear()
+    run("-L", "-X", "POST", "-d", "a=1", "/api/old")
+    assert seen == [("POST", "/api/old", b"a=1"), ("POST", "/api/new", b"a=1")]
+
+    seen.clear()
+    run("-L", "-d", "a=1", "/api/old-307")
+    assert seen == [("POST", "/api/old-307", b"a=1"), ("POST", "/api/new", b"a=1")]
+
+
+def test_resolve_redirect_url_reference_semantics():
+    """Location resolves as a URL reference: query-only refs keep the
+    path, network-path refs refuse as external, absolute same-origin
+    URLs strip, and the configured origin's host counts as same-origin."""
+    from nontainer.apps.wscurl import _resolve_redirect, _strip_origin
+
+    assert _resolve_redirect("/api/items", "?page=2") == "/api/items?page=2"
+    assert _resolve_redirect("/api/items", "nums") == "/api/nums"
+    assert _resolve_redirect("/api/items", "/abs") == "/abs"
+    assert _resolve_redirect("/api/items", "http://localhost:99/api/x") == "/api/x"
+    assert _resolve_redirect("/api/items", "https://cdn.example/x") is None
+    assert _resolve_redirect("/api/items", "//other.example/x") is None
+    assert (
+        _resolve_redirect("/api/items", "https://app.internal/a", "app.internal")
+        == "/a"
+    )
+    assert _strip_origin("https://app.internal/api/x", "app.internal") == ("/api/x")
+    assert _strip_origin("https://other.example/api/x", "app.internal") is None
+
+
+def test_configured_origin_host_strips_like_localhost():
+    """The taught $APP_ORIGIN form works for embedders that set one;
+    anything else still refuses as external."""
+    from nontainer.apps import AppsConfig, enable_apps
+
+    ws = Workspace(KvgitProvider.open(None, session="s-origin"))
+    try:
+        enable_apps(ws, AppsConfig(origin="https://app.internal"))
+        write_handler(ws, "nums", "def get(req):\n    return {'nums': [3]}\n")
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/nums")
+        assert r.exit_code == 0, r.stderr
+        assert json.loads(r.stdout) == {"nums": [3]}
+        r = ws.terminal("ws-curl https://other.example/api/nums")
+        assert r.exit_code == 6
+        assert "no internet" in (r.stdout + r.stderr)
+    finally:
+        ws.close()
+
+
 def test_curl_failure_exit_code():
     """Real-curl convention: 4xx/5xx reads as a response unless -f."""
     ws, rt = make_ws()
