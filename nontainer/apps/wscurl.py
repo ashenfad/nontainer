@@ -2,14 +2,17 @@
 
 ``ws-curl [-X METHOD] [-d BODY] [-H 'K: V']... URL`` hits the dispatch
 directly — no server, no browser. Body → stdout (composes in
-pipelines: ``curl /api/scores | jq .``); status >= 400 → exit code 22
-(curl's --fail convention) with ``HTTP <status>`` on stderr.
+pipelines: ``ws-curl $APP_ORIGIN/api/scores | jq .``); status >= 400 reads as a
+response unless ``-f/--fail`` turns it into exit code 22 with
+``HTTP <status>`` on stderr (real curl's convention).
 
 Real-curl reflexes are absorbed rather than rejected: ``-i`` prints
 the status line + headers, ``-o FILE`` writes the body to the
 workspace fs, ``-w`` substitutes ``%{http_code}``/``%{size_download}``,
-and network-only flags (``-v``, ``-L``, ``--max-time``, ...) are
-accepted no-ops — an agent debugging its app shouldn't discover our
+``-L`` follows redirects within the app, and network-only spellings
+that change nothing observable (``-s``, ``-k``, ...) are silent
+no-ops. What WOULD change the response (``-v``, ``--max-time``) is
+refused outright — an agent debugging its app shouldn't discover our
 flag surface by silent failure.
 """
 
@@ -23,19 +26,13 @@ from .contract import make_request
 if TYPE_CHECKING:
     from .dispatch import AppRuntime
 
-# accepted-but-meaningless here (no network, no TLS, no redirects —
-# dispatch is a direct call); consuming them beats a cryptic rejection
-_NOOP_FLAGS = {
+# Silent no-ops: no network, no TLS, no globbing, no IPv6 here, so
+# these change nothing observable and are swallowed.
+_SILENT_NOOP = {
     "-s",
     "--silent",
-    "-f",
-    "--fail",
     "-S",
     "--show-error",
-    "-v",
-    "--verbose",
-    "-L",
-    "--location",
     "-k",
     "--insecure",
     "-g",
@@ -44,20 +41,56 @@ _NOOP_FLAGS = {
     "-4",
     "-6",
 }
-_NOOP_VALUED = {
+# Refused: honoring these WOULD change the response the agent sees
+# (timeouts, verbose chatter), and this shell cannot honor them — use
+# real curl where the shell provides it.
+_REFUSED = {
+    "-v",
+    "--verbose",
+}
+_REFUSED_VALUED = {
     "--max-time",
     "--connect-timeout",
     "-m",
     "--retry",
-    "-A",
-    "--user-agent",
 }
 
 _SUPPORTED = (
-    "supported: -X -d/--data --json -H -i -o -w (plus accepted no-ops: "
-    "-s -f -v -L --max-time ...) — this command dispatches straight into "
-    "the workspace app; there is no network"
+    "supported: -X -d/--data --json -H -A -i -o -w -f -L (plus silent "
+    "no-ops: -s -S -k -g --compressed -4 -6) — this command dispatches "
+    "straight into the workspace app; there is no network"
 )
+
+
+def _strip_origin(url: str) -> str | None:
+    """localhost http(s) URLs to their path; ``None`` for anything
+    genuinely external. Any localhost port matches — no listener
+    exists, so the port is fictional; the host is what matters."""
+    if url.startswith(("http://", "https://")):
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        if (parts.hostname or "") not in ("localhost", "127.0.0.1"):
+            return None
+        path = parts.path or "/"
+        if parts.query:
+            path += "?" + parts.query
+        return path
+    if not url.startswith("/"):
+        url = "/" + url
+    return url
+
+
+def _resolve_redirect(path: str, location: str) -> str | None:
+    """A redirect Location to the next request path; ``None`` when it
+    leaves the app (refused like any external URL). Relative targets
+    resolve against the request path; absolute localhost URLs strip to
+    their path, any port."""
+    if location.startswith(("http://", "https://")):
+        return _strip_origin(location)
+    if location.startswith("/"):
+        return location
+    return posixpath.normpath(posixpath.join(posixpath.dirname(path), location))
 
 
 def make_curl_command(runtime: "AppRuntime") -> Any:
@@ -71,6 +104,8 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
         include_headers = False
         out_file = None
         write_fmt = None
+        fail = False
+        follow = False
 
         args = list(ctx.args)
         i = 0
@@ -89,7 +124,17 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             elif a == "--json" and i + 1 < len(args):
                 body = args[i + 1].encode()
                 headers["content-type"] = "application/json"
+                headers.setdefault("accept", "application/json")
                 i += 2
+            elif a in ("-A", "--user-agent") and i + 1 < len(args):
+                headers["user-agent"] = args[i + 1]
+                i += 2
+            elif a in ("-f", "--fail"):
+                fail = True
+                i += 1
+            elif a in ("-L", "--location"):
+                follow = True
+                i += 1
             elif a == "-H" and i + 1 < len(args):
                 if ":" in args[i + 1]:
                     k, v = args[i + 1].split(":", 1)
@@ -104,21 +149,41 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             elif a in ("-w", "--write-out") and i + 1 < len(args):
                 write_fmt = args[i + 1]
                 i += 2
-            elif a in _NOOP_FLAGS:
+            elif a in _SILENT_NOOP:
                 i += 1
-            elif a in _NOOP_VALUED and i + 1 < len(args):
-                i += 2
+            elif a in _REFUSED:
+                return CommandResult(
+                    exit_code=2,
+                    stderr=(
+                        f"ws-curl: {a} is not supported here; use real curl "
+                        f"where the shell provides it ({_SUPPORTED})\n"
+                    ),
+                )
+            elif a in _REFUSED_VALUED and i + 1 < len(args):
+                return CommandResult(
+                    exit_code=2,
+                    stderr=(
+                        f"ws-curl: {a} is not supported here; use real curl "
+                        f"where the shell provides it ({_SUPPORTED})\n"
+                    ),
+                )
             elif not a.startswith("-"):
                 url = a
                 i += 1
             else:
                 return CommandResult(
-                    exit_code=2, stderr=f"ws-curl: unknown flag {a} ({_SUPPORTED})"
+                    exit_code=2,
+                    stderr=f"ws-curl: unknown flag {a} ({_SUPPORTED})\n",
                 )
 
         if url is None:
-            return CommandResult(exit_code=2, stderr=f"ws-curl: no URL ({_SUPPORTED})")
-        if url.startswith(("http://", "https://")):
+            return CommandResult(
+                exit_code=2, stderr=f"ws-curl: no URL ({_SUPPORTED})\n"
+            )
+        origin = runtime.config.origin
+        was_origin = url.startswith(("http://", "https://"))
+        url = _strip_origin(url)
+        if url is None:
             # The single most expensive discovery an agent can make by
             # trial and error — say it outright instead (curl exit 6:
             # could not resolve host).
@@ -126,20 +191,47 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
                 exit_code=6,
                 stderr="ws-curl: external URLs are unreachable — this command "
                 "dispatches only into the workspace app (try: ws-curl "
-                "/api/...). The workspace has no internet access; "
+                "$APP_ORIGIN/api/...). The workspace has no internet access; "
                 "BROWSER-side code may load scripts from the CDN "
-                f"allowlist ({', '.join(runtime.config.script_hosts)}).",
+                f"allowlist ({', '.join(runtime.config.script_hosts)}).\n",
             )
-        if not url.startswith("/"):
-            url = "/" + url
+        notes: list[str] = []
+        if not was_origin:
+            # Bare paths keep working for one release, noisily: the
+            # canonical form names the origin.
+            notes.append(
+                f"ws-curl: prefer {origin}/api/... over bare paths (deprecated)"
+            )
         if method is None:
             method = "POST" if body else "GET"
 
-        resp = runtime.dispatch(make_request(method, url, body=body, headers=headers))
-        # The agent's next move after curl is `tail api.log`, and this
-        # call is already inside a tool call that will checkpoint — so
-        # buffered request lines can go out now (see _flush_if_free).
-        runtime.flush_log()
+        hops = 0
+        while True:
+            resp = runtime.dispatch(
+                make_request(method, url, body=body, headers=headers)
+            )
+            # The agent's next move after curl is `tail api.log`, and this
+            # call is already inside a tool call that will checkpoint — so
+            # buffered request lines can go out now (see _flush_if_free).
+            runtime.flush_log()
+            if (
+                not follow
+                or resp.status not in (301, 302, 303, 307, 308)
+                or hops >= 5
+            ):
+                break
+            location = resp.headers.get("location")
+            if not location:
+                break
+            nxt = _resolve_redirect(url, location)
+            if nxt is None:
+                return CommandResult(
+                    exit_code=6,
+                    stderr="ws-curl: redirect outside the workspace app is "
+                    "unreachable — the app has no internet access.\n",
+                )
+            url = nxt
+            hops += 1
 
         if include_headers:
             ctx.stdout.write(f"HTTP/1.1 {resp.status}\n")
@@ -170,14 +262,25 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             if out and not out.endswith("\n"):
                 ctx.stdout.write("\n")
 
-        if resp.status >= 400:
-            return CommandResult(exit_code=22, stderr=f"HTTP {resp.status}")
+        if resp.status >= 400 and fail:
+            # --fail honored (real curl's convention): without it the
+            # response reads as a response, status line and all.
+            err = f"HTTP {resp.status}"
+            stderr = "\n".join([err, *notes]) if notes else err
+            return CommandResult(exit_code=22, stderr=stderr + "\n")
+        if notes:
+            # Exit-0 stderr rides the transcript on both rungs (termish
+            # merges it; the dud guest re-emits it), so the deprecation
+            # teaches exactly where the old habit runs. Terminated: on
+            # the dud rung the transcript merges both streams, and an
+            # unterminated line would glue onto whatever prints next.
+            return CommandResult(exit_code=0, stderr="\n".join(notes) + "\n")
         return None
 
     curl.__doc__ = (
         "Test your app's endpoints without a server: "
         "ws-curl [-X METHOD] [-d BODY] [-i] [-o FILE] [-w '%{http_code}'] URL "
-        "(e.g. ws-curl /api/scores?limit=3)"
+        "(e.g. ws-curl $APP_ORIGIN/api/scores?limit=3)"
     )
     # Tags OUR registrations: like ws-git's tag, the dud ferry only
     # fronts the framework command under this name.

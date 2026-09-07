@@ -372,15 +372,14 @@ def _static_assets_note(config: Any) -> str:
         "same-origin, so the host list above does not apply). They are NOT in\n"
         "your filesystem: you cannot ls, read, or edit them, and a file you\n"
         "write at one of those paths is NOT served (the host's copy wins). To\n"
-        f"see what one holds, request it: ws-curl {one}/lib.js | head -c 300.\n"
+        f"see what one holds, request it: ws-curl $APP_ORIGIN/{one}/lib.js | head -c 300.\n"
     )
 
 
-_CURL_NOTE = """Test endpoints instantly with ws-curl (no server): ws-curl /api/scores?limit=3,
-ws-curl -X POST -d '{"name": "amy"}' /api/scores. Pipelines work:
-ws-curl /api/scores | jq . ws-curl is the portable spelling on every
-rung — bare `curl` is not the workspace app (on real shells it means
-the machine's own tool)."""
+_CURL_NOTE = """Test endpoints instantly with ws-curl (no server):
+ws-curl $APP_ORIGIN/api/scores?limit=3. `-f` fails the call (exit 22)
+on 4xx/5xx — without it an error status reads as a response. Pipelines
+compose: ws-curl $APP_ORIGIN/api/scores | jq ."""
 
 _NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and the app
 answers requests only through test_app. Verify endpoints by driving

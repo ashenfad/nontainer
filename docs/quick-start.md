@@ -201,7 +201,7 @@ The agent now has the full loop, no server anywhere:
 
 ```
 echo 'def get(req): return {"ok": True}' > app/api/health.py
-ws-curl /api/health                      # test the backend instantly
+ws-curl $APP_ORIGIN/api/health           # test the backend instantly
 # write app/index.html, then verify headlessly (screenshots included):
 test_app([{"click": "#add"}, {"assert": "..."}, {"screenshot": true}])
 ```

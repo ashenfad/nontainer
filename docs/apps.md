@@ -131,7 +131,7 @@ Consumers:
 
 1. **`ws-curl` terminal builtin** (ships with `[apps]`, injected when the
    workspace has an `/workspace/app` dir or via config): `ws-curl [-X POST] [-d body]
-   /api/scores?limit=3` → dispatch → response rendered to the pipeline.
+   $APP_ORIGIN/api/scores?limit=3` → dispatch → response rendered to the pipeline.
    The agent's fast inner loop; no browser, no server.
 2. **`test_app`** (headless verify): Playwright intercepts ALL requests
    from a fresh browser context via `page.route` — static paths served
@@ -227,8 +227,8 @@ What follows from that:
 - **The agent cannot `ls`, read, or edit them**, and is told so in the
   apps notes — a sentence derived from `static_assets` itself, not
   hand-written into `apps_primer`, so the two cannot drift. It *can*
-  request one (`ws-curl vendor/lib.js | head -c 300`), which is enough to
-  confirm a bundle is really there.
+  request one (`ws-curl $APP_ORIGIN/vendor/lib.js | head -c 300`), which is
+  enough to confirm a bundle is really there.
 - **No `script_hosts` entry is needed.** Vendored assets are
   same-origin, and `'self'` is always allowed by the served CSP. Adding
   a host for them would loosen the supply-chain pin for nothing.

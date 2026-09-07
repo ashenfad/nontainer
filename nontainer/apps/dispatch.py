@@ -312,6 +312,16 @@ class AppsConfig:
     aborted as a false red.
 
     Declared last: see ``frontend_notes``."""
+    origin: str = "http://localhost"
+    """Canonical base URL of the app, taught to agents as ``$APP_ORIGIN``.
+
+    Fictional — no listener exists — so the port, if any, is decorative
+    and any localhost port dispatches by path. The origin form is what
+    reads identically on every rung.
+
+    Appended after ``csp_extend`` so the 0.3.3 positional order still
+    binds (see ``test_positional_construction_matches_0_3_3``).
+    """
 
     def __post_init__(self) -> None:
         """Validate ``csp_extend`` at construction, where the traceback
@@ -760,6 +770,10 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
         target.register_command(
             "ws-curl", make_curl_command(target_runtime), rebind=_register
         )
+        # The canonical origin form needs the value in the shell, on
+        # every rung: termish expands it, dud guests get it exported.
+        origin = config.origin if config is not None else AppsConfig.origin
+        target.set_shell_env("APP_ORIGIN", origin)
         return target_runtime
 
     return _register(ws)

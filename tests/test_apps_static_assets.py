@@ -111,7 +111,7 @@ def test_curl_reaches_assets(assets):
     enough to confirm a bundle is really there."""
     ws, rt = make_ws(assets)
     try:
-        r = ws.terminal("ws-curl /vendor/lib.js")
+        r = ws.terminal("ws-curl $APP_ORIGIN/vendor/lib.js")
         assert r, r.stderr
         assert "export const x = 1;" in r.stdout
     finally:
@@ -232,7 +232,7 @@ def test_notes_mention_assets_only_when_declared(assets):
     # with `ls`, finds nothing, and writes its own copy has burned a
     # turn and produced a file that will be shadowed.
     assert "NOT" in notes and "ls" in notes
-    assert "curl vendor/" in notes
+    assert "curl $APP_ORIGIN/vendor/" in notes
 
 
 # -- review regressions ----------------------------------------------------
