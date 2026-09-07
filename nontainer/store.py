@@ -313,9 +313,21 @@ class Store:
         if self._backend == "kvgit":
             names: Iterable[str] = self._branches()
         elif self._backend == "dir":
-            names = (p.name for p in base.iterdir()) if base.is_dir() else ()
+            # A session IS a directory here, so only directories are
+            # sessions. A store directory holds other things — the
+            # kvgit/ subtree when both backends share one, an embedder's
+            # own db file, a stray note — and reporting a plain file as
+            # a session hands the caller a name that open() cannot use.
+            names = (
+                (p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else ()
+            )
         elif self._backend == "agentfs":
-            names = (p.stem for p in base.glob("*.db")) if base.is_dir() else ()
+            # Same rule the other way: a session is one db FILE.
+            names = (
+                (p.stem for p in base.glob("*.db") if p.is_file())
+                if base.is_dir()
+                else ()
+            )
         else:
             raise ValueError(f"Unknown backend: {self._backend!r}")
         return sorted(n for n in names if self._is_session_name(n))

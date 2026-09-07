@@ -360,3 +360,28 @@ def test_tags_add_accepts_forks_and_snapshots_of_its_own(tmp_path):
             kid.terminal("echo y > y.txt")
             st.tags.add(kid, "from-a-fork")
     assert "from-a-fork" in st.tags.list()
+
+
+def test_dir_backend_lists_directories_only(tmp_path):
+    """A session IS a directory on this backend, so a stray file in the
+    store is not one — reporting it would hand back a name open()
+    cannot use."""
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "notes.txt").write_text("not a session")
+    (tmp_path / "loose").write_text("nor is this")
+    st = Store(tmp_path, backend="dir")
+    with st.open("real"):
+        pass
+    assert st.sessions() == ["real"]
+    assert not st.exists("loose")
+    assert not st.exists("notes.txt")
+
+
+def test_agentfs_backend_lists_files_only(tmp_path):
+    """The mirror rule: a session is one db file, so a directory that
+    happens to be named like one is not a session."""
+    (tmp_path / "impostor.db").mkdir()
+    (tmp_path / "real.db").write_bytes(b"")
+    st = Store(tmp_path, backend="agentfs")
+    assert st.sessions() == ["real"]
+    assert not st.exists("impostor")
