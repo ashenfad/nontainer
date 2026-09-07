@@ -3,6 +3,88 @@
 Everything importable from `nontainer`, `nontainer.providers`,
 `nontainer.adapters.*`, and `nontainer.apps`.
 
+## `nontainer.Store` — where sessions live
+
+A `Workspace` is one session's world. A `Store` is the place those
+sessions live in, and it owns the verbs about the *set* of them.
+
+```python
+Store(
+    path: str | Path | None = None,       # default ~/.nontainer
+    *,
+    backend: "kvgit" | "dir" | "agentfs" = "kvgit",
+    provider_factory: Callable[[str], WorkspaceProvider] | None = None,
+)
+nontainer.store(...)                      # the same, as sugar
+
+store.open(session, **workspace kwargs) -> Workspace
+store.sessions() -> list[str]             # session ids on the store
+store.exists(session) -> bool
+store.delete(sessions, *, min_age=3600) -> None
+store.resolve(ref) -> Workspace           # frozen, at session@commit
+store.clean(*, min_age=3600) -> int       # sweep unreachable commits
+store.tags -> StoreTags                   # store-scoped tags (below)
+store.close() -> None                     # also a context manager
+```
+
+Store layout is the backend's: kvgit keeps one shared store at
+`<path>/kvgit` with a branch per session, `dir` keeps
+`<path>/<session>/`, `agentfs` keeps `<path>/<session>.db`.
+`provider_factory` replaces all of that for `open` (bring your own
+substrate); the store-level verbs then refuse, because the layout is
+the factory's and guessing it would be worse than saying so.
+
+`sessions()` lists session ids only: kvgit's `refs/tags/` tag refs,
+the `@` store namespace, and the legacy `__void__` anchor branch are
+reserved names, not sessions.
+
+**`store.delete(sessions, *, min_age=3600)`** drops a session's entire
+stored state, dispatching by backend to the layout `open` built —
+`kvgit` deletes the named branches from `<path>/kvgit`, and with each
+branch the session-scoped tags it owns, leaving store-scoped ones
+alone, since that scope exists so a publication outlives its session;
+`dir` removes the `<path>/<session>/` trees; `agentfs` unlinks the
+`<path>/<session>.db` files. Plural because a caller often owns more
+than one branch/dir/db per logical session (an app publishing snapshot
+branches, a batch cleanup); `sessions` may be a single id or any
+iterable. Idempotent — a name that doesn't exist and a store that was
+never created are both no-ops. Store-level, not live-session: close
+any open `Workspace` on these sessions first (a kvgit store handle
+pins its branch). It cleans only the workspace store, never
+bookkeeping a caller keeps *beside* it. `min_age` is the orphan
+sweep's grace period in seconds (kvgit only), so a concurrent writer
+mid-commit is never swept out from under.
+
+**`store.resolve(ref)`** opens a frozen `Workspace` at the exact
+commit a ref names. A `Ref` is `session@commit`, optionally
+`session@commit:/path` (the path is carried, not yet interpreted);
+`Ref.parse(str)` and `str(ref)` are the two directions. Resolving into
+a session the store has never held raises rather than creating the
+branch.
+
+**`store.tags`** — the store-scoped half of tags, the names that
+deliberately outlive the session that made them:
+
+```python
+store.tags.add(ws_or_ref, name, *, info=None) -> str   # commit id
+store.tags.list() -> dict[str, str]                    # name -> commit id
+store.tags.info(name) -> TagInfo | None
+store.tags.delete(name) -> None
+store.tags.at(name) -> Workspace                       # frozen snapshot
+```
+
+`add` takes the workspace whose current state to name (staged changes
+are committed first, so the name means what the caller saw) or a ref
+naming an exact commit. Session-scoped tags stay on the workspace
+(`ws.tag`, `ws.tags`, `ws.at_tag`). Because a store-scoped tag belongs
+to no session, `store.tags.at(name).session` names whichever live
+branch the read was anchored on — the tag is the identity there, not
+the session — and the read needs at least one session on the store to
+anchor on.
+
+**Not yet:** `store.shared(name)` and `store.publish(...)` raise
+`NotImplementedError`; they are later stages of the API plan.
+
 ## `nontainer.workspace(...)` — the factory
 
 ```python
@@ -23,10 +105,14 @@ workspace(
 ) -> Workspace
 ```
 
-Session resolution: `kvgit` → branch per session in one shared store;
-`dir` → `store/<session>/`; `agentfs` → `store/<session>.db`. Session
-ids are validated (`SESSION_ID_RE`) on every path — they often flow
-from untrusted input.
+Sugar for `Store(store, backend=backend).open(session, ...)` — the
+shortest way in when a caller has one session in mind. Session
+resolution: `kvgit` → branch per session in one shared store; `dir` →
+`store/<session>/`; `agentfs` → `store/<session>.db`. `provider`
+overrides `backend`/`store` entirely, the same substitution
+`Store(provider_factory=...)` makes, for one session. Session ids are
+validated (`SESSION_ID_RE`) on every path — they often flow from
+untrusted input.
 
 `root` is the **workspace root**: the absolute path agent-visible
 files live under, and the one path contract shared across executors.
@@ -36,31 +122,6 @@ to `<root>/skills`, the app tree is `<root>/app` — and a VM executor
 path in agent code names the same file on every executor. Forks
 inherit it. `root="/"` selects the flat pre-0.2 layout (no VM path
 parity — a guest can't mount at the fs root).
-
-## `nontainer.delete_workspace(...)` — teardown
-
-```python
-delete_workspace(
-    sessions: str | Iterable[str],
-    *,
-    store: str | Path | None = None,      # default ~/.nontainer
-    backend: "kvgit" | "dir" | "agentfs" = "kvgit",
-) -> None
-```
-
-The counterpart to `workspace(...)`: drops a session's entire stored
-state, dispatching by `backend` to the same layout the factory built —
-`kvgit` deletes the named branches from `store/kvgit` — and with each
-branch the session-scoped tags it owns, leaving store-scoped ones
-alone, since that scope exists so a publication outlives its session —
-`dir` removes the `store/<session>/` trees, `agentfs` unlinks the
-`store/<session>.db` files. Plural because a caller often owns more than one branch/dir/db
-per logical session (an app publishing snapshot branches, a batch
-cleanup); `sessions` may be a single id or any iterable. Idempotent —
-a name that doesn't exist and a store that was never created are both
-no-ops. Store-level, not live-session: close any open `Workspace` on
-these sessions first (a kvgit store handle pins its branch). It cleans
-only the workspace store, never bookkeeping a caller keeps *beside* it.
 
 ## `Workspace`
 
@@ -229,7 +290,7 @@ ws.changed_since(ref, *, scope="session") -> WorkspaceDiff  # tag name or id
 **Two scopes, and nontainer decides what they mean** rather than
 handing embedders one flat namespace to partition themselves:
 
-| scope | belongs to | survives `delete_workspace` | for |
+| scope | belongs to | survives `Store.delete` | for |
 |---|---|---|---|
 | `"session"` (default) | this session | ❌ — it goes with the branch | checkpoints worth naming: "before the refactor", "the state the report was built from" |
 | `"store"` | no session | ✅ | publications: the snapshot an app serves, the state a link points at |
@@ -299,6 +360,7 @@ ws.python_config: PythonConfig
 ws.root: str                  # the workspace root (see the factory)
 ws.frozen: bool               # a read-only snapshot at a tag (at_tag)
 ws.supports_commands: bool    # executor capability, below
+ws.runtime: Runtime           # how code runs against this state (below)
 ```
 
 **`ws.supports_commands`** — whether injected terminal commands
@@ -330,27 +392,62 @@ these; they are a documented, kept-stable contract so extensions don't
 reach into internals (and stay portable across providers):
 
 ```python
-ws.exec_python(code, *, inputs=None, sandbox=None, cache=None,
-               stdin=None, argv=None) -> PythonResult
-    # the raw execution path: no checkpoint, no lock. `sandbox`
-    # overrides the default sandbox (from build_sandbox); `cache`
-    # overrides the agent-visible cache mapping (None = workspace
-    # default); stdin/argv expose sandtrap's synthetic `sys`. Safe to
-    # call concurrently with distinct sandboxes (frozen app serving
-    # does); callers whose work mutates the workspace hold ws.lock.
-ws.build_sandbox(*, timeout=None, tick_limit=None,
-                 extra_classes=(), filesystem=None) -> Sandbox
-    # a sandbox sharing the frozen PythonConfig's registrations, with
-    # per-purpose overrides: budgets, extra registered classes (e.g. a
-    # request/response contract), a filesystem view (e.g. ReadOnlyFS).
-    # The built Policy is memoized per parameter set, so minting a
-    # fresh sandbox per request is cheap.
+ws.exec_python(code, *, inputs=None, stdin=None, argv=None,
+               echo=None, view=None) -> PythonResult
+    # the raw execution path: no checkpoint, no lock. `view` (a
+    # ViewSpec) requests a restricted, budgeted execution — a
+    # read-only fs/cache view, a tighter timeout/tick budget, contract
+    # classes in scope — and is executor-neutral: no sandbox object
+    # crosses the seam. `echo` overrides expression echo for the call;
+    # stdin/argv expose sandtrap's synthetic `sys`. Safe to call
+    # concurrently with a `view` (frozen app serving does); callers
+    # whose work mutates the workspace hold ws.lock.
 ws.lock: threading.RLock
     # the single-writer lock the mutating public methods hold. Hold it
     # for host-side/extension work that mutates the workspace (ws.fs
     # writes, ws.cache mutation, read-modify-write) and must serialize
     # with tool calls. RLock: safe to hold around locked public calls.
 ```
+
+## `Runtime` (`ws.runtime`)
+
+The executor half of a session. `Workspace` holds the state — the
+provider, the lock, the commit flow, cwd, the cache key rules;
+`Runtime` holds everything about *running code* against it.
+
+```python
+Runtime(ws, *, executor=None, python=None, mounts=None,
+        commands=None, max_observation=32_000)
+
+rt.executor -> Executor            # the bound executor
+rt.python_config -> PythonConfig
+rt.supports_commands / rt.supports_ws_verbs -> bool
+rt.exec_python(code, ...) -> PythonResult   # raw: no lock, no commit
+rt.exec_shell(script) -> TerminalResult     # raw: no lock, no commit
+rt.register_command(name, fn, *, rebind=None) -> None
+rt.set_shell_env(name, value) -> None
+rt.commands / rt.shell_env / rt.framework_commands   # the live mappings
+rt.stale -> bool ; rt.mark_stale() ; rt.sync_if_stale()
+rt.diff() -> StagedDiff | None
+rt.close() -> None
+```
+
+Executors never commit. A runtime returns results and the workspace
+decides what becomes a checkpoint — which is why `ws.terminal` and
+`ws.run_python` (the committing verbs) stay on `Workspace` and the raw
+ones live here. `ws.exec_python`, `ws.register_command`,
+`ws.set_shell_env` and `ws.python_config` are thin delegates.
+
+A `Runtime` is normally built by the workspace and reached as
+`ws.runtime`. It is also constructible **directly over an existing
+workspace, frozen included** — which is what serving a published
+snapshot needs: a second execution environment over the same state,
+with its own executor and its own budget, while the session's own
+runtime keeps running. Closing it releases only its executor.
+
+`mounts=` here are this runtime's alone. Mount composition otherwise
+belongs to the workspace, so that `ws.fs` and execution see the same
+tree.
 
 ## `PythonConfig`
 
@@ -508,7 +605,7 @@ AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
 ```
 
 Each `delete(path, sessions)` is the store-level teardown primitive
-`delete_workspace` dispatches to — plural, idempotent, and validating
+`Store.delete` dispatches to — plural, idempotent, and validating
 session ids first where a bad name could escape the store root (dir,
 agentfs). Kvgit's runs deletions from a hidden `__void__` anchor branch
 (created on first delete, never listed): kvgit can't delete the branch
@@ -738,7 +835,7 @@ turns; in per-turn mode that is exactly when the workspace is clean.
 from nontainer.adapters.agno_db import KvgitStoreDb
 
 db = KvgitStoreDb(
-    store,                      # the same store= you pass to workspace()
+    store.path,                 # a nontainer Store's directory
     open=registry.open,         # session_id -> the LIVE Workspace
     db_path="/var/agno",        # inherited tables, shared by all sessions
 )
@@ -763,7 +860,15 @@ sessions. `Agent.fork_session` works: a new id carrying
 seeds agno's re-keyed copy of the runs — files shared by hash, the
 conversation copy not. `get_session` for an unknown id returns `None`
 and creates nothing. `delete_session` clears the conversation and
-leaves the branch to the embedder.
+leaves the branch to the embedder (`Store.delete`).
+
+This db is store-shaped already: its two arguments are a store
+directory and an `open(session_id) -> Workspace`, which is exactly
+`store.path` and a `Store.open` the embedder wraps. The wrapper is the
+embedder's because `open` must hand back the *live* workspace for a
+session already open — a second `Workspace` over the same branch would
+split the turn across two staging buffers — and only the embedder
+knows which ones it is holding.
 
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 

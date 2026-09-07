@@ -121,6 +121,43 @@ than corrupting each other. `Workspace.run_python()` is always the
 embedder surface; the terminal `python` builtin is a thin bridge over
 it, so the split is about framing, never behavior.
 
+## Three seams, and where a session ends
+
+nontainer separates three contracts that most sandboxes weld together,
+and each is a real object rather than an internal detail:
+
+- **`WorkspaceProvider`** — where state *lives*: fs + kv + the
+  versioning verbs. `Workspace` is the session-scoped face of it.
+- **`Executor`** — how code *runs* against that state: the python
+  sandbox, the shell, worker lifecycle, result rendering. `Runtime`
+  (`ws.runtime`) is the workspace-side face of it.
+- **`SessionRunner`** — how an *agent turn* runs. Declared, not yet
+  used; the embedder owns the model and the loop, so nontainer names
+  the seam rather than implementing one.
+
+The split that matters at runtime is the second one, and it has a
+direction: executors never commit. A runtime produces results (and, on
+a remote executor, a diff of what changed); the workspace absorbs
+them, holds the single-writer lock, and decides what becomes a
+checkpoint. That is why swapping the executor for a real machine never
+touches the versioning semantics — checkpoint-per-call, fork,
+rollback were always properties of the state layer.
+
+The third object is `Store`, and it exists because a session is not
+the only unit. Deleting a session, listing what a user has, sweeping
+storage nothing reaches, and naming a checkpoint that must outlive the
+conversation that made it are all operations on the *set* of sessions.
+Grafted onto a session handle they read as accidents of whichever
+workspace happened to be open — `ws.tag(name, scope="store")` says
+almost the opposite of what it does, since the whole point of that
+scope is that the session is irrelevant. So store-level state lives on
+`Store`, session-level state on `Workspace`, and a caller can tell
+which is which by where the verb is.
+
+`nontainer.workspace(session)` stays as sugar for
+`Store(...).open(session)`: the one-session case is the common one and
+should not get longer.
+
 ## Sandbox honesty
 
 In-process mode (`isolation="none"`) is a walled garden for cooperative

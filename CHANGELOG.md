@@ -5,6 +5,107 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`Store` and `Runtime`: the seams are objects now** — stage 1 of the
+  API v2 plan. nontainer separates where state *lives*
+  (`WorkspaceProvider`) from how code *runs* against it (`Executor`),
+  and both were visible in the docs and invisible in the API, with
+  `Workspace` owning ~45 methods across the two. This release names
+  each half. `Runtime` (reached as `ws.runtime`) holds the executor
+  half: executor construction and lifecycle, `exec_python`, the raw
+  shell call, the terminal command registry, the shell environment, the
+  python config, and the freshness of a remote executor's view.
+  `Workspace` keeps what execution must not own: the provider, the
+  single-writer lock, the checkpoint flow, cwd persistence, the cache
+  key rules, files, history, fork, tags and diffs. `Store` owns what
+  outlives a session — opening and listing them, deletion, the orphan
+  sweep, store-scoped tags, and resolving a `session@commit` ref.
+
+  The two headline verbs stay one call away: `ws.terminal(...)` and
+  `ws.run_python(...)` remain on `Workspace` and delegate, with the
+  commit-after-mutation flow staying on the workspace side. So do
+  `ws.exec_python`, `ws.register_command`, `ws.set_shell_env` and
+  `ws.python_config`, as thin delegates, so nothing has to migrate in
+  this release. This stage is code motion: no renames beyond
+  `delete_workspace`, and no behaviour change to the verbs themselves.
+
+- **`nontainer.workspace(...)` is sugar for `Store(...).open(...)`.**
+  Same signature, same behaviour, one resolution path instead of two —
+  including `provider=`, which now rides in as the store's
+  `provider_factory` and still overrides `backend`/`store` entirely.
+
+- **The `Executor` protocol lives in `protocol.py`**, next to
+  `WorkspaceProvider`, along with `ExecutionContext`, `StagedDiff`,
+  `ViewSpec` and `HarvestLost`. An implementer of either seam reads one
+  file, and nothing has to import `nontainer.executor` — and with it
+  sandtrap and termish — just to type-check against the contract. All
+  five are re-exported from `executor.py`, so existing imports keep
+  working.
+
+- **Private executor peepholes moved with the executor.**
+  `ws._executor` is `ws.runtime.executor`, `ws._executor_stale` is
+  `ws.runtime.stale`, `ws._commands` is `ws.runtime.commands`. These
+  were never public; the note is here because in-repo verbs and tests
+  used them.
+
+- **`KvgitProvider.delete` takes `min_age`**, the orphan sweep's grace
+  period in seconds, so `Store.delete` can name it.
+
+### Removed
+
+- **`nontainer.delete_workspace(...)`.** Use
+  `Store(path, backend=...).delete(sessions, min_age=...)`, which
+  dispatches to the same per-backend layout and is equally plural and
+  idempotent. Deleting a session is a store operation, not a session
+  one — it is the one thing a session handle cannot do to itself — so
+  it belongs on the object that owns the store.
+
+### Added
+
+- **`nontainer.Store`** / `nontainer.store(...)` — `open`, `sessions`,
+  `exists`, `delete`, `resolve`, `clean`, `tags`, `close`. `sessions()`
+  lists session ids only: kvgit's `refs/tags/` tag refs, the `@` store
+  namespace and the legacy `__void__` anchor branch are reserved names,
+  not sessions. `clean(min_age=)` is the standalone orphan sweep for
+  commits a rollback or a deleted tag left unreachable.
+  `store.shared(...)` and `store.publish(...)` raise
+  `NotImplementedError`: they are later stages of the plan, and a
+  half-built version would be worse than an honest one.
+
+- **`Store.tags`** — the store-scoped half of tags as its own surface:
+  `add(ws_or_ref, name, info=)`, `list()`, `info(name)`,
+  `delete(name)`, `at(name)`. Reading a store tag no longer needs a
+  session handle to spell `scope="store"` through. Because such a tag
+  belongs to no session, `at(name)` anchors its read on whichever live
+  session the store has, and says so.
+
+- **`nontainer.Ref`** — `session@commit`, optionally
+  `session@commit:/path`, with `Ref.parse(str)` and `str(ref)`. One
+  exact state on one session, which is what a snapshot or a
+  cross-session read has to quote. The path component is carried but
+  not yet interpreted.
+
+- **`Store.resolve(ref)`** — a frozen `Workspace` at the commit a ref
+  names. Resolving into a session the store has never held raises
+  rather than creating the branch.
+
+- **A `Runtime` is constructible directly over an existing workspace,
+  frozen included** — a second execution environment over the same
+  state, with its own executor and its own budget, while the session's
+  own runtime keeps running. That is what serving a published snapshot
+  needs. Its `mounts=` are that runtime's alone; mount composition
+  otherwise stays with the workspace, so `ws.fs` and execution always
+  see the same tree.
+
+- **`SessionRunner` and `HostObjectFactory`** in `protocol.py` — the
+  loop seam, declared and documented, called by nothing yet. Running a
+  nested agent turn is neither provider-shaped nor executor-shaped: it
+  needs a model, a tool loop and a budget, none of which nontainer
+  owns.
+
 ## 0.5.2 - 2026-09-04
 
 ### Changed
