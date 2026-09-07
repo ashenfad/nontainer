@@ -247,7 +247,9 @@ class KvgitProvider:
         return cls(staged, session=session)
 
     @classmethod
-    def delete(cls, path: str | Path, sessions: Iterable[str]) -> None:
+    def delete(
+        cls, path: str | Path, sessions: Iterable[str], *, min_age: float = 3600
+    ) -> None:
         """Delete the named session branches from the shared store.
 
         Symmetric with :meth:`open`, and plural on purpose: a caller
@@ -276,6 +278,11 @@ class KvgitProvider:
         raw backend with no current branch, so it can drop any branch —
         including the store's only one, the case a branch-anchored handle
         can't reach.
+
+        ``min_age`` is the orphan sweep's grace period in seconds:
+        commits younger than it are left alone, so a concurrent writer
+        mid-commit is never swept out from under. Lower it only when
+        nothing else is writing (tests, a controlled teardown).
         """
         import kvgit
 
@@ -301,7 +308,7 @@ class KvgitProvider:
         # Missing names (including __void__ on stores that never had one)
         # are no-ops, and a dir that isn't a kvgit store has no branch
         # keys to match, so the old tolerance is preserved.
-        kvgit.delete_branches(names, kind="disk", path=str(p))
+        kvgit.delete_branches(names, kind="disk", path=str(p), min_age=min_age)
 
     @staticmethod
     def _delete_session_tags(path: Path, sessions: Iterable[str]) -> None:

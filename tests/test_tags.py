@@ -5,9 +5,9 @@ import pytest
 from nontainer import (
     CheckpointNotFoundError,
     NotSupportedError,
+    Store,
     Workspace,
     WorkspaceError,
-    delete_workspace,
     workspace,
 )
 from nontainer.providers import KvgitProvider
@@ -156,7 +156,7 @@ def test_no_session_can_be_named_into_the_store_scope(tmp_path):
         reader.terminal("echo y > y.txt")
         reader.tag("ours", scope="store")
 
-    delete_workspace("store", store=tmp_path)
+    Store(tmp_path).delete("store")
     remaining = set(_store_tags(tmp_path))
     assert "store/mine" not in remaining  # the session's own tag went
     assert "@store/ours" in remaining  # the publication stayed
@@ -165,7 +165,7 @@ def test_no_session_can_be_named_into_the_store_scope(tmp_path):
 # -- teardown ----------------------------------------------------------------
 
 
-def test_delete_workspace_takes_session_tags_and_leaves_store_tags(tmp_path):
+def test_store_delete_takes_session_tags_and_leaves_store_tags(tmp_path):
     with workspace("doomed", store=tmp_path) as ws:
         ws.terminal("echo x > x.txt")
         ws.tag("mine")
@@ -174,7 +174,7 @@ def test_delete_workspace_takes_session_tags_and_leaves_store_tags(tmp_path):
         other.terminal("echo y > y.txt")
         other.tag("kept")
 
-    delete_workspace("doomed", store=tmp_path)
+    Store(tmp_path).delete("doomed")
 
     remaining = set(_store_tags(tmp_path))
     assert "doomed/mine" not in remaining
@@ -190,7 +190,7 @@ def test_store_tag_outlives_the_session_that_made_it(tmp_path):
         author.terminal("echo published > report.txt")
         author.tag("report", scope="store")
 
-    delete_workspace("author", store=tmp_path)
+    Store(tmp_path).delete("author")
 
     with workspace("reader", store=tmp_path) as reader:
         with reader.at_tag("report", scope="store") as snapshot:

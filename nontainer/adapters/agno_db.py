@@ -637,7 +637,7 @@ class KvgitStoreDb(JsonDb):
     Listing reads committed heads, so a turn in flight in an open
     session shows there once its commit lands. ``delete_session``
     clears a branch's conversation and leaves the branch; the branch's
-    life belongs to the embedder (``delete_workspace``). Every other
+    life belongs to the embedder (``Store.delete``). Every other
     ``BaseDb`` table is inherited from ``JsonDb`` and lives at
     ``db_path``, shared across all sessions, which is what agno expects
     of memories and metrics.

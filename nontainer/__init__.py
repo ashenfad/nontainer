@@ -3,11 +3,16 @@
 Public surface:
 
     workspace(...)      -- factory; the one-liner entry point
-    delete_workspace(...) -- teardown counterpart; drops a session's state
+    store(...)          -- the store those sessions live in
+    Store               -- open/list/delete sessions, store-scoped tags
+    Ref                 -- "session@commit": one exact state, named
     Workspace           -- files + shell + python + cache, versioned
+    Runtime             -- ws.runtime: how code runs against that state
     PythonConfig        -- what sandboxed code may touch
     TerminalResult, PythonResult, WriteOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
+    Executor            -- the execution protocol (bring your own)
+    SessionRunner, HostObjectFactory -- the loop seam (declared; stage 3)
     Capabilities, CheckpointInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, StageResult, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
@@ -32,7 +37,10 @@ from .protocol import (
     SESSION_ID_RE,
     Capabilities,
     CheckpointInfo,
+    Executor,
+    HostObjectFactory,
     MergeOutcome,
+    SessionRunner,
     StageResult,
     TagInfo,
     WorkspaceDiff,
@@ -40,6 +48,8 @@ from .protocol import (
     WorkspaceStatus,
     validate_session_id,
 )
+from .runtime import Runtime
+from .store import Ref, Store, store
 from .workspace import (
     ModuleGrant,
     Mount,
@@ -48,7 +58,6 @@ from .workspace import (
     TerminalResult,
     Workspace,
     WriteOutcome,
-    delete_workspace,
     workspace,
 )
 
@@ -56,8 +65,11 @@ __all__ = [
     "ArtifactPath",
     "artifact_kind",
     "workspace",
-    "delete_workspace",
+    "store",
+    "Store",
+    "Ref",
     "Workspace",
+    "Runtime",
     "PythonConfig",
     "Mount",
     "ModuleGrant",
@@ -66,6 +78,9 @@ __all__ = [
     "WriteOutcome",
     "EditOutcome",
     "WorkspaceProvider",
+    "Executor",
+    "SessionRunner",
+    "HostObjectFactory",
     "Capabilities",
     "CheckpointInfo",
     "MergeOutcome",

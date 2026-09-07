@@ -103,11 +103,11 @@ def test_delete_validates_before_deleting_any(tmp_path):
     assert (tmp_path / "good").is_dir()
 
 
-def test_delete_workspace_convenience(tmp_path):
-    from nontainer import delete_workspace
+def test_store_delete_convenience(tmp_path):
+    from nontainer import Store
 
     DirProvider(tmp_path / "s", session="s").close()
-    delete_workspace("s", store=tmp_path, backend="dir")
+    Store(tmp_path, backend="dir").delete("s")
     assert not (tmp_path / "s").exists()
 
 
