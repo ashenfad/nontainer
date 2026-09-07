@@ -10,6 +10,7 @@ from nontainer.adapters.render import (
     terminal_description,
 )
 from nontainer.providers import KvgitProvider
+from nontainer.runtime import Runtime
 from nontainer.workspace import PythonResult, TerminalResult
 
 
@@ -207,5 +208,6 @@ def test_unknown_executors_keep_the_historical_default():
         pass
 
     ws = Workspace.__new__(Workspace)
-    ws._executor = OldExecutor()
+    ws._runtime = Runtime.__new__(Runtime)
+    ws._runtime._executor = OldExecutor()
     assert ws.supports_commands is True

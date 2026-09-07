@@ -108,7 +108,7 @@ def test_view_sandbox_memoizes_policy():
 
     ws = Workspace(KvgitProvider.open(None, session="memo"))
     try:
-        ex = ws._executor
+        ex = ws.runtime.executor
         view = ViewSpec(timeout=5.0, tick_limit=1000)
         sb1 = ex._build_sandbox(view)
         sb2 = ex._build_sandbox(view)
@@ -132,7 +132,7 @@ def test_view_extra_classes_list_shares_memo():
 
     ws = Workspace(KvgitProvider.open(None, session="memo-list"))
     try:
-        ex = ws._executor
+        ex = ws.runtime.executor
         as_list = ex._build_sandbox(ViewSpec(extra_classes=[Marker]))
         as_tuple = ex._build_sandbox(ViewSpec(extra_classes=(Marker,)))
         assert as_list.policy is as_tuple.policy

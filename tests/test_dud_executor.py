@@ -146,8 +146,8 @@ def test_host_writes_sync_once_not_per_write(ws):
     N-file seeding loop must cost one push, not N. Guards against a
     well-meaning revert to eager syncing on every write."""
     calls = []
-    real_sync = ws._executor.sync
-    ws._executor.sync = lambda: (calls.append(1), real_sync())[1]
+    real_sync = ws.runtime.executor.sync
+    ws.runtime.executor.sync = lambda: (calls.append(1), real_sync())[1]
     try:
         for i in range(5):
             ws.fs.write(f"/workspace/seed{i}.txt", b"x")
@@ -159,7 +159,7 @@ def test_host_writes_sync_once_not_per_write(ws):
         ws.terminal("true")
         assert len(calls) == 1  # and not again while clean
     finally:
-        ws._executor.sync = real_sync
+        ws.runtime.executor.sync = real_sync
 
 
 def test_failed_sync_stays_stale_and_retries(ws):
@@ -173,17 +173,17 @@ def test_failed_sync_stays_stale_and_retries(ws):
     itself; what reaches here is the harder class (tree read, archive,
     wire), where retrying is the whole point (PR #23 review)."""
     ws.fs.write("/workspace/late.txt", b"arrived")
-    assert ws._executor_stale
+    assert ws.runtime.stale
 
     boom = RuntimeError("push failed")
-    real_sync = ws._executor.sync
-    ws._executor.sync = lambda: (_ for _ in ()).throw(boom)
+    real_sync = ws.runtime.executor.sync
+    ws.runtime.executor.sync = lambda: (_ for _ in ()).throw(boom)
     try:
         with pytest.raises(RuntimeError, match="push failed"):
             ws.terminal("cat late.txt")
-        assert ws._executor_stale, "a failed sync consumed the mark"
+        assert ws.runtime.stale, "a failed sync consumed the mark"
     finally:
-        ws._executor.sync = real_sync
+        ws.runtime.executor.sync = real_sync
 
     # the retry syncs for real and sees the write
     assert ws.terminal("cat late.txt").stdout.strip() == "arrived"
@@ -816,7 +816,7 @@ def test_host_files_outside_the_root_never_reach_the_guest(ws):
     with ws.lock:
         ws.fs.write("/host-only.txt", b"secret")
         ws.fs.write("/workspace/inside.txt", b"visible")
-    ws._executor.sync()  # raw fs writes bypass the tool-call sync
+    ws.runtime.executor.sync()  # raw fs writes bypass the tool-call sync
     r = ws.terminal("ls")
     assert "inside.txt" in r.stdout
     assert "host-only.txt" not in r.stdout

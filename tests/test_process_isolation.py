@@ -172,7 +172,7 @@ def test_authoring_dispatch_runs_in_workers(ws):
         # process isolation → the executor's sandbox is a real worker;
         # handler view executions fork one the same way (no longer a
         # long-lived runtime-held worker — one per call)
-        assert hasattr(ws._executor._sandbox, "_process")
+        assert hasattr(ws.runtime.executor._sandbox, "_process")
 
         r = runtime.dispatch(request("POST", "/api/count"))
         assert r.status == 200 and json.loads(r.content) == {"n": 1}
@@ -269,7 +269,7 @@ def test_preload_grants_reaches_the_sandbox():
         python=PythonConfig(isolation="process", preload_grants=True),
     )
     try:
-        assert ws._executor._sandbox._preload_grants is True
+        assert ws.runtime.executor._sandbox._preload_grants is True
     finally:
         ws.close()
 

@@ -210,7 +210,8 @@ class DudHostHandler:
             err = ws._absorb_before_verb("ws-git")
             if err is not None:
                 return err
-            mapper = getattr(getattr(ws, "_executor", None), "_guest_to_host", None)
+            executor = getattr(getattr(ws, "runtime", None), "executor", None)
+            mapper = getattr(executor, "_guest_to_host", None)
             host_cwd = (mapper(cwd) if mapper else None) or cwd
             ctx = _guest_ctx(self._map_argv(mapper, list(argv)), host_cwd)
             try:
