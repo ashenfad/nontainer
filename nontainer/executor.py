@@ -873,8 +873,7 @@ class LocalExecutor:
         ctx = self._require_ctx()
         # Snapshot per call: command mutations of the env dict must not
         # leak across calls (termish shares the dict it is given).
-        rt = getattr(ctx.workspace, "runtime", None)
-        env = dict(rt.shell_env) if rt is not None else {}
+        env = dict(ctx.shell_env or {})
         try:
             output = execute(script, ctx.fs, commands=ctx.commands, env=env)
             exit_code, stderr = 0, ""

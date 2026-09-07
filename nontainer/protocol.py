@@ -583,6 +583,23 @@ class ExecutionContext:
     ``"/"`` selects the pre-0.2 layout (files at the fs root — a VM
     guest can't mount there, so absolute paths diverge on VM rungs)."""
 
+    shell_env: "MutableMapping[str, str] | None" = None
+    """Shell variables for script executions: ``$VAR`` expansion on a
+    termish rung, exported into the guest on a VM rung.
+
+    A LIVE reference, like ``commands``, and for the same reason: the
+    runtime publishes into it after construction (``enable_apps``
+    publishes ``$APP_ORIGIN``), so an executor that copied it at open
+    would run every later call without those variables. Executors
+    snapshot it PER CALL instead — a command mutating the mapping
+    termish is handed must not leak into the next call.
+
+    It belongs to the runtime that bound this context, not to the
+    workspace: one workspace can carry several runtimes (an app served
+    from a snapshot runs on its own), and each has its own variables.
+    ``None`` for a hand-built context: no variables.
+    """
+
     workspace: Any = None
     """The live workspace, for framework callbacks that must act AS it.
 

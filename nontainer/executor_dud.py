@@ -907,10 +907,9 @@ class DudExecutor:
             from .wscurl import SHELL_FUNCTION as CURL_FUNCTION
 
             script = CURL_FUNCTION + script
-        # Workspace shell environment, exported per call (a snapshot:
-        # guest `export` cannot leak back into the workspace).
-        rt = getattr(ctx.workspace, "runtime", None)
-        env = dict(rt.shell_env) if rt is not None else {}
+        # The runtime's shell environment, exported per call (a
+        # snapshot: guest `export` cannot leak back into the workspace).
+        env = dict(ctx.shell_env or {})
         if env:
             import shlex
 

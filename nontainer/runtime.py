@@ -171,6 +171,7 @@ class Runtime:
                 fs=_frozen_fs(self._fs, ws._frozen_at) if ws.frozen else self._fs,
                 kv=ws._kv_view,
                 commands=self._commands,
+                shell_env=self._shell_env,
                 python_config=self._python_config,
                 cache_enabled=ws.cache_enabled,
                 max_observation=self._max_observation,
