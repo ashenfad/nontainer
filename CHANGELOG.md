@@ -54,6 +54,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`KvgitProvider.delete` takes `min_age`**, the orphan sweep's grace
   period in seconds, so `Store.delete` can name it.
 
+### Fixed
+
+- **The `ws-git` and `ws-curl` guest ferries dispatch again on
+  `DudExecutor`.** Both hostcall handlers looked their verb up in
+  `ws._commands`, which stopped existing when the registry moved to
+  `Runtime` — every ferried verb answered with an `AttributeError`.
+  They now read the registry of the runtime whose executor ferried
+  them (`ExecutionContext.commands`), which is also the right answer
+  when a workspace carries more than one runtime: a verb registered on
+  one is not registered on another.
+
+- **A second `Runtime` over one workspace sees its own shell
+  environment.** Both executors fetched `$VAR` expansions through
+  `ctx.workspace.runtime` — the workspace's *primary* runtime — so a
+  runtime's own `set_shell_env` was ignored and the primary's
+  variables leaked into its executions. They read
+  `ExecutionContext.shell_env` now.
+
+- **`Store.tags.add` refuses a workspace from another store.** Tagging
+  goes through the workspace's own provider, so passing a foreign
+  workspace wrote the tag to *that* store and left this one's `list()`
+  empty — a silent no-op. A `Workspace` now carries the `Store` that
+  opened it (across `fork` and `at_tag`), and a mismatch raises
+  `WorkspaceError` naming both stores.
+
+- **`Store.sessions()` on the `dir` backend lists directories only.**
+  A session *is* a directory there, so a plain file in the store
+  directory was reported as a session that `open()` could not then
+  use. The `agentfs` backend gets the mirror rule: a session is one db
+  file, not a directory named like one.
+
 ### Removed
 
 - **`nontainer.delete_workspace(...)`.** Use
@@ -99,6 +130,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   needs. Its `mounts=` are that runtime's alone; mount composition
   otherwise stays with the workspace, so `ws.fs` and execution always
   see the same tree.
+
+- **`ExecutionContext.shell_env`** — the executing runtime's shell
+  variables, bound live the way `commands` already is. Both are the
+  runtime's, not the workspace's: one workspace can carry several
+  runtimes (an app served from a snapshot runs on its own), and each
+  has its own registrations and variables.
 
 - **`SessionRunner` and `HostObjectFactory`** in `protocol.py` — the
   loop seam, declared and documented, called by nothing yet. Running a

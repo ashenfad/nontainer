@@ -75,7 +75,10 @@ store.tags.at(name) -> Workspace                       # frozen snapshot
 
 `add` takes the workspace whose current state to name (staged changes
 are committed first, so the name means what the caller saw) or a ref
-naming an exact commit. Session-scoped tags stay on the workspace
+naming an exact commit. A workspace tags through its own provider, so
+it must be one this store opened — `Store.open`, or a fork/snapshot of
+one; a workspace from elsewhere is refused rather than silently tagging
+*its* store. Session-scoped tags stay on the workspace
 (`ws.tag`, `ws.tags`, `ws.at_tag`). Because a store-scoped tag belongs
 to no session, `store.tags.at(name).session` names whichever live
 branch the read was anchored on — the tag is the identity there, not
