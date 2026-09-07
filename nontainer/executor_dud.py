@@ -559,7 +559,7 @@ class DudExecutor:
                     f"Reserved host object name: {DUD_OBJECT!r} fronts "
                     f"the ws-git terminal command — rename yours."
                 )
-            live[DUD_OBJECT] = DudHostHandler(ws)
+            live[DUD_OBJECT] = DudHostHandler(ws, context.commands)
             # Same ferry for ws-curl (Phase 2): the handler dispatches
             # the live workspace command, so post-open enable_apps and
             # fork-rebound runtimes work with no lifecycle coupling —
@@ -572,7 +572,7 @@ class DudExecutor:
                     f"Reserved host object name: {CURL_OBJECT!r} fronts "
                     f"the ws-curl terminal command — rename yours."
                 )
-            live[CURL_OBJECT] = WsCurlHostHandler(ws)
+            live[CURL_OBJECT] = WsCurlHostHandler(ws, context.commands)
         self._live = live
         self._cache = _KvBytesCache(context.kv)
         self._session = self._make_session(live, self._cache)

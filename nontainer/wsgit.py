@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import difflib
 import posixpath
+from collections.abc import Mapping
 from typing import Any
 
 from .errors import NotSupportedError, WorkspaceError
@@ -174,14 +175,22 @@ class DudHostHandler:
     layer, not the command) so both rungs read identically.
     """
 
-    def __init__(self, ws: Any):
+    def __init__(self, ws: Any, commands: Mapping[str, Any]):
         self._ws = ws
+        # The command registry of the runtime whose executor ferries
+        # this verb — ``ExecutionContext.commands``, bound live. Not the
+        # workspace's: a workspace can carry more than one runtime (an
+        # app served from a snapshot runs on its own), and each has its
+        # own registrations. A verb must dispatch the one registered
+        # where it was invoked, or answer that it is not registered
+        # there.
+        self._commands = commands
         self._command = make_wsgit_command(ws)
 
     def run(self, cwd: str, *argv: str) -> dict:
         ws = self._ws
         with ws._lock:
-            cmd = ws._commands.get("ws-git")
+            cmd = self._commands.get("ws-git")
             if cmd is None:
                 return {
                     "stdout": "",
