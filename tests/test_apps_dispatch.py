@@ -608,14 +608,14 @@ def test_fork_curl_binds_fork():
     try:
         assert fork._commands["ws-curl"] is not ws._commands["ws-curl"]
         write_handler(fork, "forkbleed", "def get(req):\n    return {'side': 'fork'}\n")
-        r = fork.terminal("ws-curl /api/forkbleed")
+        r = fork.terminal("ws-curl $APP_ORIGIN/api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "fork"}
         # The ws-curl spelling rides the same rebound runtime.
-        r = fork.terminal("ws-curl /api/forkbleed")
+        r = fork.terminal("ws-curl $APP_ORIGIN/api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "fork"}
-        r = ws.terminal("ws-curl /api/forkbleed")
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/forkbleed")
         assert r, r.stderr
         assert json.loads(r.stdout) == {"side": "parent"}
     finally:
@@ -628,7 +628,7 @@ def test_ws_curl_get_in_pipeline():
     ws, rt = make_ws()
     write_handler(ws, "nums", "def get(req):\n    return {'nums': [3, 1, 2]}\n")
     try:
-        r = ws.terminal("ws-curl /api/nums | jq -r '.nums[]' | sort")
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[]' | sort")
         assert r, r.stderr
         assert r.stdout.split() == ["1", "2", "3"]
     finally:
@@ -654,7 +654,7 @@ def test_curl_flushes_the_log_it_tells_the_agent_to_read():
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     ws.checkpoint()
-    assert ws.terminal("ws-curl /api/ok").exit_code == 0
+    assert ws.terminal("ws-curl $APP_ORIGIN/api/ok").exit_code == 0
     log = ws.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ok -> 200" in log
     ws.close()
@@ -706,7 +706,7 @@ def test_static_requests_are_not_logged():
 def test_curl_get_in_pipeline():
     ws, rt = make_ws()
     write_handler(ws, "nums", "def get(req):\n    return {'nums': [3, 1, 2]}\n")
-    r = ws.terminal("ws-curl /api/nums | jq -r '.nums[]' | sort")
+    r = ws.terminal("ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[]' | sort")
     assert r, r.stderr
     assert r.stdout.split() == ["1", "2", "3"]
     ws.close()
@@ -719,37 +719,46 @@ def test_curl_post_with_data():
         "echo2",
         "def post(req):\n    return {'got': req.require('msg')}\n",
     )
-    r = ws.terminal('ws-curl -X POST -d \'{"msg": "hi"}\' /api/echo2')
+    r = ws.terminal('ws-curl -X POST -d \'{"msg": "hi"}\' $APP_ORIGIN/api/echo2')
     assert r, r.stderr
     assert json.loads(r.stdout) == {"got": "hi"}
     ws.close()
 
 
 def test_curl_absorbs_real_curl_reflexes():
-    """The glm-5.2 lesson: agents type -v/--max-time/-w from habit, and
-    a rejected flag mid-`;`-sequence fails invisibly. Network-only
-    flags are accepted no-ops; -w/-i/-o do what they say."""
+    """The glm-5.2 lesson: agents type -s/-k/-w from habit, and
+    a rejected flag mid-`;`-sequence fails invisibly. Silent no-ops
+    pass through; -w/-i/-o do what they say; what would change the
+    response (-v, --max-time) fails loudly instead."""
     ws, rt = make_ws()
     write_handler(ws, "nums", "def get(req):\n    return {'nums': [1]}\n")
 
-    # no-op flags don't break the call
-    r = ws.terminal("ws-curl -s -v -L --max-time 10 --connect-timeout 5 /api/nums")
+    # silent no-op flags don't break the call
+    r = ws.terminal("ws-curl -s -S -k -g --compressed -4 $APP_ORIGIN/api/nums")
     assert r, r.stderr
     assert json.loads(r.stdout) == {"nums": [1]}
 
+    # refused flags fail LOUDLY (exit 2), never swallowed
+    r = ws.terminal("ws-curl -s -v $APP_ORIGIN/api/nums")
+    assert r.exit_code == 2
+    assert "not supported here" in r.stderr
+    r = ws.terminal("ws-curl --max-time 10 $APP_ORIGIN/api/nums")
+    assert r.exit_code == 2
+    assert "not supported here" in r.stderr
+
     # -w substitutes %{http_code} (with \n escapes, curl-style)
-    r = ws.terminal("ws-curl -s -w 'code=%{http_code}\\n' /api/nums")
+    r = ws.terminal("ws-curl -s -w 'code=%{http_code}\\n' $APP_ORIGIN/api/nums")
     assert r, r.stderr
     assert "code=200" in r.stdout
 
     # -i prepends status + headers
-    r = ws.terminal("ws-curl -i /api/nums")
+    r = ws.terminal("ws-curl -i $APP_ORIGIN/api/nums")
     assert r.stdout.startswith("HTTP/1.1 200")
     assert "content-type:" in r.stdout.lower()
 
     # -o writes the body to the workspace fs (cwd-relative)
     r = ws.terminal(
-        "cd /workspace/app && ws-curl -o out.json /api/nums && cat out.json"
+        "cd /workspace/app && ws-curl -o out.json $APP_ORIGIN/api/nums && cat out.json"
     )
     assert r, r.stderr
     assert json.loads(ws.fs.read("/workspace/app/out.json")) == {"nums": [1]}
@@ -758,7 +767,7 @@ def test_curl_absorbs_real_curl_reflexes():
     write_handler(
         ws, "echoraw", "def post(req):\n    return {'raw': req.body.decode()}\n"
     )
-    r = ws.terminal("ws-curl -d a=1 -d b=2 /api/echoraw")
+    r = ws.terminal("ws-curl -d a=1 -d b=2 $APP_ORIGIN/api/echoraw")
     assert r, r.stderr
     assert json.loads(r.stdout)["raw"] == "a=1&b=2"
 
@@ -768,22 +777,90 @@ def test_curl_absorbs_real_curl_reflexes():
         "echo3",
         "def post(req):\n    return {'ct': req.headers.get('content-type')}\n",
     )
-    r = ws.terminal("ws-curl --json '{\"a\": 1}' /api/echo3")
+    r = ws.terminal("ws-curl --json '{\"a\": 1}' $APP_ORIGIN/api/echo3")
     assert r, r.stderr
     assert json.loads(r.stdout)["ct"] == "application/json"
 
     # unknown flags still fail LOUDLY, now with the supported list
-    r = ws.terminal("ws-curl --resolve foo:80:1.2.3.4 /api/nums")
+    r = ws.terminal("ws-curl --resolve foo:80:1.2.3.4 $APP_ORIGIN/api/nums")
     assert not r
     assert "unknown flag --resolve" in r.stderr and "supported:" in r.stderr
     ws.close()
 
 
+def test_follow_location_with_stub_runtime():
+    """-L follows in-app redirects (relative and absolute forms, capped
+    at 5 hops); without it the 3xx reads as-is. Stub runtime: handler
+    sandboxes cannot import Response, so redirect sources are pinned
+    here rather than through a live handler."""
+    from io import StringIO
+    from types import SimpleNamespace
+
+    from nontainer.apps import AppsConfig
+    from nontainer.apps.contract import WireResponse
+    from nontainer.apps.wscurl import make_curl_command
+
+    seen = []
+
+    class StubRt:
+        config = AppsConfig()
+
+        def flush_log(self):
+            pass
+
+        def dispatch(self, req):
+            seen.append(req.path)
+            if req.path == "/api/old":
+                return WireResponse(
+                    302, b"moved", "text/plain", {"location": "nums"}
+                )
+            if req.path == "/api/abs-old":
+                return WireResponse(
+                    302,
+                    b"moved",
+                    "text/plain",
+                    {"location": "http://localhost:99/api/nums"},
+                )
+            if req.path == "/api/loop":
+                return WireResponse(
+                    302, b"moved", "text/plain", {"location": "/api/loop"}
+                )
+            return WireResponse(200, b'{"ok": true}', "application/json", {})
+
+    def run(*args):
+        ctx = SimpleNamespace(args=list(args), stdout=StringIO(), fs=None)
+        res = make_curl_command(StubRt())(ctx)
+        assert (res.exit_code if res is not None else 0) == 0
+        return ctx.stdout.getvalue()
+
+
+    out = run("-L", "/api/old")
+    assert seen == ["/api/old", "/api/nums"]
+    assert json.loads(out) == {"ok": True}
+
+    seen.clear()
+    out = run("-L", "/api/abs-old")
+    assert seen == ["/api/abs-old", "/api/nums"]
+
+    seen.clear()
+    out = run("/api/old")
+    assert out == "moved\n"
+
+    seen.clear()
+    out = run("-L", "/api/loop")
+    assert seen == ["/api/loop"] * 6  # initial + 5 follows, then renders last
+    assert out == "moved\n"
+
+
 def test_curl_failure_exit_code():
+    """Real-curl convention: 4xx/5xx reads as a response unless -f."""
     ws, rt = make_ws()
-    r = ws.terminal("ws-curl /api/absent")
+    r = ws.terminal("ws-curl $APP_ORIGIN/api/absent")
+    assert r.exit_code == 0, r.stderr
+    assert json.loads(r.stdout)["error"] == "no such endpoint: /api/absent"
+    r = ws.terminal("ws-curl -f $APP_ORIGIN/api/absent")
     assert not r
-    assert r.exit_code == 22  # curl --fail convention, preserved by termish>=0.1.7
+    assert r.exit_code == 22  # --fail convention, preserved by termish>=0.1.7
     assert "HTTP 404" in r.stderr
     ws.close()
 
@@ -795,7 +872,7 @@ def test_curl_agent_loop_write_then_test():
     script = """mkdir -p app/api
 echo 'def get(req):
     return {"status": "alive"}' > app/api/health.py
-ws-curl /api/health"""
+ws-curl $APP_ORIGIN/api/health"""
     r = ws.terminal(script)
     assert r, r.stderr
     assert json.loads(r.stdout) == {"status": "alive"}

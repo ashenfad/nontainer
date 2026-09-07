@@ -812,7 +812,7 @@ class Workspace:
         user_commands["python"] = self._python_command
         user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
-        # Framework-owned commands (ws-git, ws-curl/curl) and how to re-bind
+        # Framework-owned commands (ws-git, ws-curl) and how to re-bind
         # them: a command closure captures the workspace it was built
         # for, so a fork/snapshot that merely copied the mapping would
         # dispatch into its parent — the fork-bleed. fork()/at_tag()
@@ -821,6 +821,14 @@ class Workspace:
         # register_command(rebind=...), never from _Settings: like
         # commands themselves, factories arrive after construction.
         self._framework_commands: dict[str, Callable[[Workspace], None]] = {}
+        # Shell environment for script executions: `$VAR` expansion on
+        # the termish rung, exported into the guest on dud rungs.
+        # Workspace-owned (not ExecutionContext) so post-construction
+        # features can contribute — `enable_apps` publishes
+        # `$APP_ORIGIN` here. Executors snapshot it per call;
+        # fork()/at_tag() replay it like commands. Embedders may add
+        # their own; the shell never writes back.
+        self._shell_env: dict[str, str] = {}
 
         # -- execution: bound behind the Executor seam (executor.py).
         # Default is the in-process sandtrap+termish LocalExecutor.
@@ -1727,6 +1735,7 @@ class Workspace:
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
+        new_ws._shell_env = dict(self._shell_env)
         self._adopt_commands(new_ws)
         return new_ws
 
@@ -1737,6 +1746,19 @@ class Workspace:
         to the new workspace instead of inheriting parent-bound."""
         skip = RESERVED_COMMANDS | self._framework_commands.keys()
         return {k: v for k, v in self._commands.items() if k not in skip}
+
+    def set_shell_env(self, name: str, value: str) -> None:
+        """Publish a variable to shell executions (``$VAR`` expansion
+        on the termish rung, exported into the guest on dud rungs).
+
+        Used by post-construction features — ``enable_apps`` publishes
+        ``$APP_ORIGIN`` — and available to embedders. Forks and
+        snapshots inherit a copy. The shell never writes back: this is
+        configuration, not state.
+        """
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError(f"Invalid shell variable name: {name!r}")
+        self._shell_env[name] = value
 
     def _adopt_commands(self, new_ws: Workspace) -> None:
         """Re-bind framework-owned commands onto a fork/snapshot.
@@ -1913,6 +1935,7 @@ class Workspace:
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
+        new_ws._shell_env = dict(self._shell_env)
         self._adopt_commands(new_ws)
         return new_ws
 

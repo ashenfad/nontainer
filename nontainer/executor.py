@@ -1118,8 +1118,12 @@ class LocalExecutor:
         from termish.parser import ParseError
 
         ctx = self._require_ctx()
+        # Snapshot per call: command mutations of the env dict must not
+        # leak across calls (termish shares the dict it is given).
+        ws = ctx.workspace
+        env = dict(getattr(ws, "_shell_env", {})) if ws is not None else {}
         try:
-            output = execute(script, ctx.fs, commands=ctx.commands)
+            output = execute(script, ctx.fs, commands=ctx.commands, env=env)
             exit_code, stderr = 0, ""
         except ParseError as e:
             output, exit_code, stderr = "", 2, f"parse error: {e}"
