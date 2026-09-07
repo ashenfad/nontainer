@@ -62,15 +62,22 @@ _SUPPORTED = (
 )
 
 
-def _strip_origin(url: str) -> str | None:
+def _strip_origin(url: str, extra_host: str | None = None) -> str | None:
     """localhost http(s) URLs to their path; ``None`` for anything
     genuinely external. Any localhost port matches — no listener
-    exists, so the port is fictional; the host is what matters."""
+    exists, so the port is fictional; the host is what matters. The
+    configured origin's host is accepted too, so the taught
+    ``$APP_ORIGIN`` form works for embedders that set one."""
+    if url.startswith("//"):
+        url = "http:" + url
     if url.startswith(("http://", "https://")):
         from urllib.parse import urlsplit
 
         parts = urlsplit(url)
-        if (parts.hostname or "") not in ("localhost", "127.0.0.1"):
+        allowed = {"localhost", "127.0.0.1"}
+        if extra_host:
+            allowed.add(extra_host)
+        if (parts.hostname or "") not in allowed:
             return None
         path = parts.path or "/"
         if parts.query:
@@ -81,16 +88,23 @@ def _strip_origin(url: str) -> str | None:
     return url
 
 
-def _resolve_redirect(path: str, location: str) -> str | None:
+def _resolve_redirect(
+    path: str, location: str, extra_host: str | None = None
+) -> str | None:
     """A redirect Location to the next request path; ``None`` when it
-    leaves the app (refused like any external URL). Relative targets
-    resolve against the request path; absolute localhost URLs strip to
-    their path, any port."""
-    if location.startswith(("http://", "https://")):
-        return _strip_origin(location)
-    if location.startswith("/"):
-        return location
-    return posixpath.normpath(posixpath.join(posixpath.dirname(path), location))
+    leaves the app (refused like any external URL). Location resolves
+    as a URL reference against the request path — so ``?page=2`` keeps
+    it and ``../sibling`` walks it — while absolute URLs strip to
+    their path when same-origin, any port."""
+    if location.startswith(("http://", "https://", "//")):
+        return _strip_origin(location, extra_host)
+    from urllib.parse import urljoin, urlsplit
+
+    parts = urlsplit(urljoin(f"http://localhost{path}", location))
+    ref = parts.path or "/"
+    if parts.query:
+        ref += "?" + parts.query
+    return ref
 
 
 def make_curl_command(runtime: "AppRuntime") -> Any:
@@ -181,8 +195,15 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
                 exit_code=2, stderr=f"ws-curl: no URL ({_SUPPORTED})\n"
             )
         origin = runtime.config.origin
+        from urllib.parse import urlsplit as _urlsplit
+
+        origin_host = (
+            _urlsplit(origin).hostname
+            if origin.startswith(("http://", "https://"))
+            else None
+        )
         was_origin = url.startswith(("http://", "https://"))
-        url = _strip_origin(url)
+        url = _strip_origin(url, origin_host)
         if url is None:
             # The single most expensive discovery an agent can make by
             # trial and error — say it outright instead (curl exit 6:
@@ -202,6 +223,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             notes.append(
                 f"ws-curl: prefer {origin}/api/... over bare paths (deprecated)"
             )
+        explicit_method = method is not None
         if method is None:
             method = "POST" if body else "GET"
 
@@ -219,7 +241,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             location = resp.headers.get("location")
             if not location:
                 break
-            nxt = _resolve_redirect(url, location)
+            nxt = _resolve_redirect(url, location, origin_host)
             if nxt is None:
                 return CommandResult(
                     exit_code=6,
@@ -227,6 +249,16 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
                     "unreachable — the app has no internet access.\n",
                 )
             url = nxt
+            if (
+                resp.status in (301, 302, 303)
+                and method == "POST"
+                and not explicit_method
+            ):
+                # curl's convention: an inferred POST (from -d) becomes
+                # a GET on these statuses; only explicit -X POST — and
+                # always 307/308 — resend the body.
+                method = "GET"
+                body = b""
             hops += 1
 
         if include_headers:
