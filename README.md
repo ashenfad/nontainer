@@ -76,8 +76,24 @@ ws.tag("v1")                 # name this state; it outlives the call that made i
 snap = ws.at_tag("v1")       # a frozen workspace at that name: reads, never writes
 ```
 
+A `Workspace` is one session. The `Store` is the place those sessions
+live in, and it owns what outlives one of them — `workspace(...)` is
+sugar for opening one out of it:
+
+```python
+import nontainer
+
+store = nontainer.store()            # default ~/.nontainer
+ws = store.open("user-42")           # what workspace("user-42") does
+
+store.sessions()                     # every session on the store
+store.delete("user-42")              # drop one, storage and all
+store.tags.add(ws, "v1")             # a name that outlives the session
+snap = store.tags.at("v1")           # a frozen workspace at that name
+```
+
 A tag is session-scoped by default and dies with the session;
-`ws.tag("v1", scope="store")` makes a publication that outlives it,
+`store.tags` is the store-scoped half — a publication that outlives it,
 readable from any session on the store.
 
 Checkpoints cover workspace-owned files and cache. Host-object calls
