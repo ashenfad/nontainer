@@ -66,7 +66,9 @@ async def test_mcp_apps_exposure():
     ws.fs.write(
         "/workspace/app/api/ping.py", b"def get(req):\n    return {'pong': True}\n"
     )
-    result = await server.call_tool("terminal", {"command": "ws-curl /api/ping"})
+    result = await server.call_tool(
+        "terminal", {"command": "ws-curl $APP_ORIGIN/api/ping"}
+    )
     text = result[0][0].text if isinstance(result, tuple) else result[0].text
     assert "pong" in text
     ws.close()

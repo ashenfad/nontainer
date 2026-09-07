@@ -858,7 +858,7 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   handlers: embedder-supplied, reached at request time,
            #   outside the versioning plane — so the agent cannot ls,
            #   read, or edit them (it is told so, in a sentence derived
-           #   from this mapping; `ws-curl vendor/mui.js` still works), and
+           #   from this mapping; `ws-curl $APP_ORIGIN/vendor/mui.js` still works), and
            #   they add nothing to commits, forks, or a guest tree.
            #   Same-origin, so script_hosts needs no entry. Assets skip
            #   max_response_bytes and win over a workspace file at the

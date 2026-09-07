@@ -11,7 +11,7 @@ Usage::
     runtime = enable_apps(ws)   # registers the `ws-curl` terminal builtin
 
     # agent writes /app/api/scores.py handlers via its tools, then:
-    ws.terminal("ws-curl /api/scores?limit=3 | jq .")
+    ws.terminal("ws-curl $APP_ORIGIN/api/scores?limit=3 | jq .")
 
     # embedders can dispatch directly:
     from nontainer.apps import request

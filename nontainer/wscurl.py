@@ -101,17 +101,17 @@ class WsCurlHostHandler:
             if cmd is None:
                 return {
                     "stdout": "",
-                    "stderr": "ws-curl: not registered on this workspace",
+                    "stderr": "ws-curl: not registered on this workspace\n",
                     "exit_code": 1,
                 }
             if not getattr(cmd, "_nontainer_wscurl", False):
                 return {
                     "stdout": "",
-                    "stderr": "ws-curl: framework command unavailable here",
+                    "stderr": "ws-curl: framework command unavailable here\n",
                     "exit_code": 1,
                 }
             # Sync-on-verb, same as the ws-git ferry: a script such as
-            # `write handler > app/api/x.py; ws-curl /api/x` dispatches
+            # `write handler > app/api/x.py; ws-curl $APP_ORIGIN/api/x` dispatches
             # before the outer shell's writes are harvested, and the
             # runtime reads handler source host-side — without this the
             # new handler 404s and an edited one runs stale. The nested
@@ -131,7 +131,7 @@ class WsCurlHostHandler:
             except Exception as e:  # noqa: BLE001 — parity: termish wraps these
                 return {
                     "stdout": ctx.stdout.getvalue(),
-                    "stderr": f"ws-curl: execution error: {e}",
+                    "stderr": f"ws-curl: execution error: {e}\n",
                     "exit_code": 1,
                 }
             out = ctx.stdout.getvalue()
@@ -141,7 +141,7 @@ class WsCurlHostHandler:
             if landed is None:
                 return {
                     "stdout": out,
-                    "stderr": "ws-curl: -o path escapes the workspace",
+                    "stderr": "ws-curl: -o path escapes the workspace\n",
                     "exit_code": 1,
                 }
             body_len = len(out.encode()) + sum(len(d) for _, _, d in landed)
@@ -225,7 +225,7 @@ class WsCurlHostHandler:
             except Exception as e:  # noqa: BLE001 — honest triple, below
                 return {
                     "stdout": out,
-                    "stderr": f"ws-curl: oversized capture unwritable: {e}",
+                    "stderr": f"ws-curl: oversized capture unwritable: {e}\n",
                     "exit_code": 1,
                     "files": {},
                 }
@@ -255,7 +255,7 @@ class WsCurlHostHandler:
             withheld = "ws-curl: response body withheld (exceeds guest frame)"
             return {
                 "stdout": "",
-                "stderr": f"{err}\n{withheld}" if err else withheld,
+                "stderr": (f"{err}\n{withheld}" if err else withheld) + "\n",
                 "exit_code": result.exit_code,
                 "files": {},
             }
@@ -265,7 +265,7 @@ class WsCurlHostHandler:
             "stderr": (
                 f"ws-curl: response ({total} bytes) exceeds the guest "
                 "round-trip frame; re-request a narrower body or capture "
-                "it with -o FILE"
+                "it with -o FILE\n"
             ),
             "exit_code": 1,
             "files": {},

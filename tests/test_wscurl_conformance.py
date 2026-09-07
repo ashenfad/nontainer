@@ -68,22 +68,22 @@ def daws(request):
 
 
 def test_get_in_pipeline(aws):
-    r = aws.terminal("ws-curl /api/nums | jq -r '.nums[]' | sort")
+    r = aws.terminal("ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[]' | sort")
     assert r.exit_code == 0, r.stderr
     assert r.stdout.split() == ["1", "2", "3"]
 
 
 def test_post_with_data(aws):
-    r = aws.terminal('ws-curl -X POST -d \'{"msg": "hi"}\' /api/echo')
+    r = aws.terminal('ws-curl -X POST -d \'{"msg": "hi"}\' $APP_ORIGIN/api/echo')
     assert r.exit_code == 0, r.stderr
     assert json.loads(r.stdout) == {"got": "hi"}
 
 
 def test_include_and_write_out(aws):
-    r = aws.terminal("ws-curl -i /api/nums")
+    r = aws.terminal("ws-curl -i $APP_ORIGIN/api/nums")
     assert r.exit_code == 0, r.stderr
     assert r.stdout.startswith("HTTP/1.1 200")
-    r = aws.terminal("ws-curl -s -w 'code=%{http_code}\\n' /api/nums")
+    r = aws.terminal("ws-curl -s -w 'code=%{http_code}\\n' $APP_ORIGIN/api/nums")
     assert r.exit_code == 0, r.stderr
     assert "code=200" in r.stdout
 
@@ -92,7 +92,7 @@ def test_output_to_file_and_same_script_use(aws):
     """``-o`` captures land where the same script can use them — on the
     dud rung via the answer triple, not a provider write the guest
     can't see."""
-    r = aws.terminal("ws-curl -o out.json /api/nums; cat out.json")
+    r = aws.terminal("ws-curl -o out.json $APP_ORIGIN/api/nums; cat out.json")
     assert r.exit_code == 0, r.stderr
     assert json.loads(r.stdout) == {"nums": [3, 1, 2]}
     assert json.loads(aws.fs.read("/workspace/out.json")) == {"nums": [3, 1, 2]}
@@ -106,7 +106,7 @@ def test_same_script_handler_write_then_fetch(aws):
         "def get(req):\n"
         "    return {'fresh': True}\n"
         "EOF\n"
-        "ws-curl /api/fresh"
+        "ws-curl $APP_ORIGIN/api/fresh"
     )
     assert r.exit_code == 0, r.stderr
     assert json.loads(r.stdout) == {"fresh": True}
@@ -119,7 +119,7 @@ def test_oversized_capture_lands_with_http_failure(daws, monkeypatch):
     import nontainer.wscurl as wscurl
 
     monkeypatch.setattr(wscurl, "_FRAME_BUDGET", 16)
-    r = daws.terminal("ws-curl -o big.json /api/absent")
+    r = daws.terminal("ws-curl -f -o big.json $APP_ORIGIN/api/absent")
     assert r.exit_code == 22
     assert "HTTP 404" in r.stdout
     assert "exceeded the guest round-trip frame" in r.stdout
@@ -127,7 +127,7 @@ def test_oversized_capture_lands_with_http_failure(daws, monkeypatch):
     # Landed in the workspace; under the real budget the next call
     # re-syncs the guest and the capture reads back.
     monkeypatch.undo()
-    r = daws.terminal("cat big.json; echo; ws-curl /api/nums | jq -r .nums[0]")
+    r = daws.terminal("cat big.json; echo; ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[0]'")
     assert r.exit_code == 0, r.stdout
     assert "no such endpoint: /api/absent" in r.stdout
     assert r.stdout.splitlines()[-1] == "3"
@@ -139,10 +139,73 @@ def test_oversized_stdout_failure_withholds_body(daws, monkeypatch):
     import nontainer.wscurl as wscurl
 
     monkeypatch.setattr(wscurl, "_FRAME_BUDGET", 16)
-    r = daws.terminal("ws-curl /api/absent")
+    r = daws.terminal("ws-curl -f $APP_ORIGIN/api/absent")
     assert r.exit_code == 22
     assert "HTTP 404" in r.stdout
     assert "withheld (exceeds guest frame)" in r.stdout
+
+
+def test_fail_flag_break(aws):
+    """Real-curl convention, both rungs: 4xx reads as a response
+    unless -f turns it into exit 22."""
+    r = aws.terminal("ws-curl $APP_ORIGIN/api/absent")
+    assert r.exit_code == 0
+    assert json.loads(r.stdout)["error"] == "no such endpoint: /api/absent"
+    r = aws.terminal("ws-curl -f $APP_ORIGIN/api/absent")
+    assert r.exit_code == 22
+    r = aws.terminal("ws-curl -f $APP_ORIGIN/api/nums | jq -r '.nums[0]'")
+    assert r.exit_code == 0
+    assert r.stdout.strip() == "3"
+
+
+def test_error_stderr_terminates_its_line(aws):
+    """ws-curl's stderr is complete lines on both rungs. The dud rung
+    merges both streams into one transcript by design, so an
+    unterminated stderr line would glue onto whatever prints next —
+    the trailing `echo` catches exactly that."""
+    r = aws.terminal("ws-curl --frobnicate $APP_ORIGIN/api/nums; echo done")
+    assert r.exit_code == 0
+    lines = (r.stdout + r.stderr).splitlines()
+    assert "done" in lines, lines
+    assert any("ws-curl: unknown flag" in line for line in lines), lines
+
+
+def test_user_agent_and_json_accept(aws):
+    aws.fs.write(
+        "/workspace/app/api/who.py",
+        b"def get(req):\n"
+        b"    return {'ua': req.headers.get('user-agent'), "
+        b"'accept': req.headers.get('accept')}\n",
+    )
+    try:
+        r = aws.terminal("ws-curl -A 'agent/9' $APP_ORIGIN/api/who")
+        assert r.exit_code == 0
+        assert json.loads(r.stdout)["ua"] == "agent/9"
+        r = aws.terminal("ws-curl --json '{\"a\": 1}' $APP_ORIGIN/api/echo")
+        assert r.exit_code == 0
+    finally:
+        aws.fs.remove("/workspace/app/api/who.py")
+
+
+def test_refused_flags_name_themselves(aws):
+    def said(r, text):
+        return text in (r.stdout + r.stderr)
+
+    r = aws.terminal("ws-curl -v $APP_ORIGIN/api/nums")
+    assert r.exit_code == 2
+    assert said(r, "not supported here")
+    r = aws.terminal("ws-curl --max-time 5 $APP_ORIGIN/api/nums")
+    assert r.exit_code == 2
+    assert said(r, "not supported here")
+
+
+def test_origin_form_dispatches(aws):
+    r = aws.terminal("ws-curl $APP_ORIGIN/api/nums | jq -r '.nums[0]'")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.strip() == "3"
+    r = aws.terminal("ws-curl http://localhost:8080/api/nums | jq -r '.nums[0]'")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.strip() == "3"
 
 
 def test_errors_read_identically(aws):
@@ -151,12 +214,12 @@ def test_errors_read_identically(aws):
     def said(r, text):
         return text in (r.stdout + r.stderr)
 
-    r = aws.terminal("ws-curl --frobnicate /api/nums")
+    r = aws.terminal("ws-curl --frobnicate $APP_ORIGIN/api/nums")
     assert r.exit_code == 2
     assert said(r, "ws-curl: unknown flag")
     r = aws.terminal("ws-curl https://example.com/x")
     assert r.exit_code == 6
     assert said(r, "no internet")
-    r = aws.terminal("ws-curl /api/absent")
+    r = aws.terminal("ws-curl -f $APP_ORIGIN/api/absent")
     assert r.exit_code == 22
     assert said(r, "HTTP 404")
