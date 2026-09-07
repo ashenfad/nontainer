@@ -59,11 +59,23 @@ import time
 import warnings
 from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import contextmanager
-from dataclasses import dataclass
 from types import ModuleType
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Literal
 
 from .cache import Cache
+
+# The contract itself lives in protocol.py, next to WorkspaceProvider,
+# so an implementer reads one file and nothing has to import this
+# module (and with it sandtrap and termish) to type-check against the
+# seam. Re-exported here because this is where the seam is documented
+# and where every implementation imports it from.
+from .protocol import (
+    ExecutionContext,
+    Executor,
+    HarvestLost,
+    StagedDiff,
+    ViewSpec,
+)
 
 # Config/result types (and traceback rendering) stay in workspace.py:
 # they are the public vocabulary both sides of the seam speak. The
@@ -76,18 +88,15 @@ from .workspace import (
     _render_error,
 )
 
-
-class HarvestLost(RuntimeError):
-    """A remote executor lost its guest between a successful exec and
-    the write harvest. The call is TORN, not cleanly absent: dud
-    applies cache write-backs inside the successful exec, but fs
-    writes cross only via the follow-up ``diff()`` — so the cache half
-    may already be staged provider-side while the fs half died,
-    unrecoverable, with the guest. Raised by :meth:`Executor.diff`
-    (after recovering a fresh session) so the workspace can surface an
-    errored result and unwind the staged half — an empty diff here
-    would report success for a call whose fs effects silently
-    vanished."""
+__all__ = [
+    "ExecutionContext",
+    "Executor",
+    "HarvestLost",
+    "LocalExecutor",
+    "StagedDiff",
+    "ViewSpec",
+    "_apply_diff",
+]
 
 
 def _apply_diff(
@@ -111,148 +120,6 @@ def _apply_diff(
             fs.remove("/" + rel.lstrip("/"))
         except Exception:
             pass  # already gone (e.g. parent dir removed first)
-
-
-@dataclass(frozen=True)
-class StagedDiff:
-    """A remote executor's write harvest.
-
-    A remote executor accumulates writes in its own staging area (an
-    overlay upperdir, a scan-diff) rather than writing through to the
-    provider; :meth:`Executor.diff` returns them as a ``StagedDiff``
-    and the workspace stages them into the provider before its normal
-    checkpoint flow — so atomic commit + ``result.checkpoint``
-    semantics are identical across executors. ``LocalExecutor`` never
-    constructs one: its writes land in the provider as they happen.
-    """
-
-    writes: Mapping[str, bytes]
-    """Fs-root-relative path (no leading slash) -> full new content.
-    Executors whose substrate roots the workspace elsewhere (dud's
-    guest mount) translate to fs-root-relative before returning, so
-    the workspace can stage without knowing the substrate layout.
-    Whole-file payloads, not patches — the wire-format decision (dud
-    PLAN #1): one encoding both scan-diff and overlay harvest emit."""
-
-    deletes: tuple[str, ...] = ()
-    """Fs-root-relative paths removed since the last harvest."""
-
-
-@dataclass(frozen=True)
-class ExecutionContext:
-    """What :meth:`Executor.open` binds to: one session's workspace
-    state, as executions see it.
-
-    For ``LocalExecutor`` these are live references — execution works
-    directly against the provider-backed objects, so writes land in
-    the provider the moment they happen. A remote executor instead
-    treats the context as the two ends of its transport: ``fs`` is
-    what it materializes the guest tree from (and whose diff the
-    workspace stages back), ``kv`` backs the cache service, and the
-    rest is policy.
-    """
-
-    fs: Any
-    """The workspace filesystem (termish protocol, mounts composed)."""
-
-    kv: MutableMapping[str, Any]
-    """The provider's kv store; the agent-facing cache builds on it."""
-
-    commands: MutableMapping[str, Callable[..., Any]]
-    """Injected terminal commands (termish ``CommandFunc``). A LIVE
-    reference: the workspace mutates it after construction
-    (``register_command`` — apps' curl) — bind the mapping, don't
-    copy it."""
-
-    python_config: PythonConfig
-
-    cache_enabled: bool
-
-    max_observation: int
-    """Observation budget (chars) for rendered stdout/stderr. Applied
-    executor-side because budget-aware rendering must happen where
-    the printed objects live (see ``_render_prints``)."""
-
-    head: "Callable[[], str | None] | None" = None
-    """State-identity accessor: the commit id the workspace fs
-    currently EQUALS — i.e. the provider head, but None whenever
-    staging is dirty (the fs view then names no committed state) or the
-    provider has no commit identity. Executors with reusable substrates
-    (dud's VM pool) use it as a content-addressed state tag: a parked
-    machine tagged with the same id can resume WITHOUT a tree push, so
-    a tag must never name a state the tree doesn't exactly hold.
-    Callable so it's read at tag time, not frozen at open."""
-
-    frozen: bool = False
-    """This workspace is a read-only snapshot at a tag.
-
-    An executor that can refuse writes should: ``LocalExecutor`` needs
-    no code for it, since the ``fs`` and ``kv`` bound here are already
-    read-only views that raise where the write happens. An executor
-    that runs against its own substrate (a guest tree) may write freely
-    and report the harvest; the workspace refuses to absorb it and
-    tells the caller the call was refused, so honouring the flag is an
-    optimization, never the guarantee."""
-
-    root: str = "/workspace"
-    """The workspace root: the absolute VFS path agent-visible files
-    live under — the ONE path contract shared across executors.
-    ``LocalExecutor`` points sandtrap's module imports here; a VM
-    executor mounts its guest workspace at this exact path, so an
-    absolute path in agent code means the same file everywhere.
-    ``"/"`` selects the pre-0.2 layout (files at the fs root — a VM
-    guest can't mount there, so absolute paths diverge on VM rungs)."""
-
-    workspace: Any = None
-    """The live workspace, for framework callbacks that must act AS it.
-
-    Executors that call back into workspace state (dud's ws-git verb
-    handler invoking the registered terminal command) bind this, not a
-    snapshot: provider, lock, and command mapping are read per call.
-    Same behavior as the local rung by construction — including its
-    known holes (the fork-bleed tracked in #63), which a snapshot
-    would merely diverge from. ``None`` when constructed by hand
-    (tests, embedders): framework callbacks are then unoffered."""
-
-
-@dataclass(frozen=True)
-class ViewSpec:
-    """A per-call restricted, budgeted execution — the apps extra's
-    handler dispatch is the only consumer.
-
-    This is the executor-neutral replacement for the old
-    ``build_sandbox`` + ``exec_python(sandbox=...)`` pair. The caller
-    declares the *intent* — a read-only filesystem/cache view, a
-    tighter timeout/tick budget, contract classes that must be in the
-    handler's scope — and each executor realizes it its own way:
-    ``LocalExecutor`` builds a sandtrap sandbox (policy memoized), a
-    remote executor sets a read-only mount / rejects the write-diff and
-    injects the contract classes by import. No sandbox object crosses
-    the seam, so nothing sandtrap-shaped rides on the ``Executor``
-    protocol.
-    """
-
-    readonly_fs: bool = False
-    """A GET-handler view: writes to the workspace fs are refused.
-    LocalExecutor wraps the fs in ``ReadOnlyFS`` (write-time
-    ``PermissionError``); a remote executor rejects a non-empty
-    write-diff after the call (rung-1 dud) or mounts read-only (VM
-    rungs)."""
-
-    readonly_cache: bool = False
-    """The cache is read-only for this call (GET structural REST)."""
-
-    timeout: float | None = None
-    """Per-call wall-clock budget (else the config's)."""
-
-    tick_limit: int | None = None
-    """Per-call tick budget (LocalExecutor only; remote executors have
-    no tick machinery and ignore it — wall-clock is the guard)."""
-
-    extra_classes: tuple[type, ...] = ()
-    """Classes the handler code must be able to name (apps' ``Request``
-    / ``Response`` / ``HttpError``). LocalExecutor registers them in the
-    sandbox policy; a remote executor imports them by qualified name."""
 
 
 class _ReadOnlyCache(MutableMapping):
@@ -287,120 +154,6 @@ class _ReadOnlyCache(MutableMapping):
 
     def __delitem__(self, key: str) -> None:
         raise PermissionError("cache is read-only in GET handlers")
-
-
-@runtime_checkable
-class Executor(Protocol):
-    """Execution contract. See module docstring for the seam's shape.
-
-    ``diff``/``sync`` exist for executors whose writes don't land in
-    the provider directly. The workspace calls ``diff`` after every
-    mutating exec (absorbing any harvest into the provider before the
-    checkpoint flow) and ``sync`` whenever it changes provider state
-    behind the executor's back (restore/rollback/discard, host-side
-    writes). Both are free no-ops for ``LocalExecutor``.
-    """
-
-    # -- capabilities ----------------------------------------------------
-
-    supports_commands: bool
-    """Whether ``ExecutionContext.commands`` reach the shell.
-
-    A capability flag in the ``WorkspaceProvider`` spirit: declare the
-    difference instead of pretending equivalence. ``LocalExecutor``
-    runs termish and hands it the mapping, so injected builtins (apps'
-    ``curl``) are real commands. An executor running actual bash in a
-    guest has no such hook — the mapping isn't reachable from there.
-
-    Tool descriptions are built against this. Teaching an agent a
-    command that answers ``command not found`` costs it turns, so the
-    apps primer advertises ``ws-curl`` only where it exists.
-    """
-
-    # -- lifecycle -------------------------------------------------------
-
-    def open(self, context: ExecutionContext) -> None:
-        """Bind to a workspace's state and start any resident machinery
-        (LocalExecutor: build the default sandbox, fork the isolation
-        worker; a VM executor: boot/resume and materialize the tree).
-
-        Called once, by ``Workspace.__init__``, as its LAST step — so
-        no construction failure after this point can orphan a worker.
-        Not re-entrant."""
-        ...
-
-    def close(self) -> None:
-        """Release execution resources (workers, VMs). Best-effort and
-        idempotent — must not raise: the workspace closes its provider
-        next regardless of what happens here."""
-        ...
-
-    # -- python ----------------------------------------------------------
-
-    def exec_python(
-        self,
-        code: str,
-        *,
-        inputs: Mapping[str, Any] | None = None,
-        stdin: str | None = None,
-        argv: list[str] | None = None,
-        echo: Literal["none", "last", "all"] | None = None,
-        view: ViewSpec | None = None,
-    ) -> PythonResult:
-        """One scripted python execution against workspace state.
-
-        ``inputs`` are picklable per-call data bound as top-level
-        names; ``PythonConfig.host_objects`` and ``cache`` are injected
-        per the frozen config; ``stdin``/``argv`` feed the synthetic
-        ``sys``; ``echo`` overrides expression echo for this call.
-        Agent-code failure is a result (``PythonResult.error``), never
-        an exception.
-
-        ``view`` (apps handler dispatch) requests a restricted,
-        budgeted execution — a read-only fs/cache view, a tighter
-        budget, contract classes in scope. It is executor-neutral: no
-        sandbox object crosses the seam (see :class:`ViewSpec`). The
-        default (``None``) is the executor's standard environment.
-
-        The result's ``checkpoint`` is ``None``: executors never
-        commit; the workspace stamps checkpoints."""
-        ...
-
-    # -- shell -----------------------------------------------------------
-
-    def exec_shell(self, script: str) -> TerminalResult:
-        """One shell script (pipes, redirects, ``;``) against the
-        workspace fs, with the context's injected commands available.
-        Never raises for command failure — exit codes are results.
-        ``checkpoint`` is ``None`` here too (see ``exec_python``)."""
-        ...
-
-    # -- staging (remote executors) ---------------------------------------
-
-    def diff(self) -> StagedDiff | None:
-        """Harvest writes staged executor-side since the last harvest
-        (or ``sync``). Called by the workspace after every mutating
-        exec, before its checkpoint flow.
-
-        ``LocalExecutor`` returns ``None`` — its writes land in the
-        provider the moment they happen (monkeyfs/termish write
-        through), so there is nothing to harvest; ``None`` also means
-        "nothing staged" from a remote executor after a read-only
-        call, so the workspace's dirty check stays accurate."""
-        ...
-
-    def sync(self) -> None:
-        """Refresh the executor's view of workspace state from the
-        provider. Every path where provider state moves without the
-        executor seeing it marks the workspace stale — restore /
-        rollback / discard, the host-side write helpers
-        (``write_file`` / ``edit_file`` / ``put``), and direct
-        ``ws.fs`` writes — and the workspace calls this once, lazily,
-        before the next execution. Lazy because a remote
-        implementation may re-push the whole tree: N host writes cost
-        one sync, not N. No-op for ``LocalExecutor``: there is no
-        second copy."""
-        ...
 
 
 # ----------------------------------------------------------------------
