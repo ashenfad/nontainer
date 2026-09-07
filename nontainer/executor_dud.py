@@ -907,6 +907,15 @@ class DudExecutor:
             from .wscurl import SHELL_FUNCTION as CURL_FUNCTION
 
             script = CURL_FUNCTION + script
+        # Workspace shell environment, exported per call (a snapshot:
+        # guest `export` cannot leak back into the workspace).
+        ws = ctx.workspace
+        env = dict(getattr(ws, "_shell_env", {})) if ws is not None else {}
+        if env:
+            import shlex
+
+            exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
+            script = exports + script
         with self._lock:
             result = self._with_recovery(
                 lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
