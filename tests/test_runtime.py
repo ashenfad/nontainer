@@ -167,6 +167,41 @@ def test_runtime_takes_mounts_of_its_own(ws, tmp_path):
     assert not ws.fs.exists("/extra/data.txt")
 
 
+def test_each_runtime_sees_only_its_own_shell_environment(ws):
+    """Shell variables belong to the runtime that published them, not
+    to the workspace. Reading them off ``ws.runtime`` gave a second
+    runtime the primary's variables and dropped its own."""
+    ws.runtime.set_shell_env("WHO", "primary")
+    second = Runtime(ws)
+    try:
+        second.set_shell_env("WHO", "second")
+        second.set_shell_env("ONLY_MINE", "yes")
+
+        assert ws.runtime.exec_shell("echo $WHO").stdout.strip() == "primary"
+        assert second.exec_shell("echo $WHO").stdout.strip() == "second"
+        # the primary never sees the second's variables
+        assert "yes" not in ws.runtime.exec_shell("echo $ONLY_MINE").stdout
+        assert second.exec_shell("echo $ONLY_MINE").stdout.strip() == "yes"
+    finally:
+        second.close()
+
+
+def test_each_runtime_sees_only_its_own_commands(ws):
+    """Same rule for the command registry: a command registered on one
+    runtime is not a command on another over the same workspace."""
+    second = Runtime(ws)
+    try:
+        ws.runtime.register_command("only-primary", lambda ctx: ctx.stdout.write("p\n"))
+        second.register_command("only-second", lambda ctx: ctx.stdout.write("s\n"))
+
+        assert ws.runtime.exec_shell("only-primary").stdout.strip() == "p"
+        assert second.exec_shell("only-second").stdout.strip() == "s"
+        assert second.exec_shell("only-primary").exit_code == 127
+        assert ws.runtime.exec_shell("only-second").exit_code == 127
+    finally:
+        second.close()
+
+
 def test_the_guest_ferry_reads_the_registry_it_was_given(ws):
     """The ws-* verbs ferried into a guest dispatch through the
     registry of the runtime whose executor ferried them, not through
