@@ -119,12 +119,19 @@ class StoreTags:
         staged changes are committed first, so the name means what the
         caller saw), or a ref naming an exact commit on a session.
 
+        A workspace tags through its own provider, so it must be one
+        this store opened — a workspace from somewhere else would write
+        the tag to ITS store and leave this one's listing empty, which
+        reads as a silent no-op. Such a call is refused instead. Use
+        that store's own ``tags``, or name the commit by ref.
+
         Tags never move: an existing name raises rather than being
         repointed.
         """
         from .workspace import Workspace
 
         if isinstance(source, Workspace):
+            self._require_own(source)
             return source.tag(name, info=info, scope="store")
         ref = Ref.parse(source)
         provider = self._store._session_provider(ref.session)
@@ -138,6 +145,23 @@ class StoreTags:
             return provider.tag(name, at=ref.commit, info=info, scope="store")
         finally:
             provider.close()
+
+    def _require_own(self, ws: "Workspace") -> None:
+        """Refuse a workspace this store did not open."""
+        owner = getattr(ws, "_store", None)
+        if owner is self._store:
+            return
+        whose = (
+            "was built straight from a provider, so no store owns it"
+            if owner is None
+            else f"belongs to {owner!r}"
+        )
+        raise WorkspaceError(
+            f"Cannot tag through workspace {ws.session!r}: it {whose}, not to "
+            f"{self._store!r}. Tagging goes through the workspace's own "
+            "provider, so this would write to that store and leave this one "
+            "unchanged. Use that store's tags, or name the commit by ref."
+        )
 
     def list(self) -> dict[str, str]:
         """Tag name → commit id, for every store-scoped tag."""
@@ -259,7 +283,7 @@ class Store:
         """
         from .workspace import Workspace
 
-        return Workspace(
+        ws = Workspace(
             self._session_provider(session),
             python=python,
             mounts=mounts,
@@ -270,6 +294,8 @@ class Store:
             executor_factory=executor_factory,
             root=root,
         )
+        ws._store = self
+        return ws
 
     def sessions(self) -> list[str]:
         """Every session id present on the store, sorted.
@@ -283,13 +309,12 @@ class Store:
         that is exactly what they are.
         """
         self._require_own_layout("sessions")
+        base = self._path
         if self._backend == "kvgit":
             names: Iterable[str] = self._branches()
         elif self._backend == "dir":
-            base = self._path
             names = (p.name for p in base.iterdir()) if base.is_dir() else ()
         elif self._backend == "agentfs":
-            base = self._path
             names = (p.stem for p in base.glob("*.db")) if base.is_dir() else ()
         else:
             raise ValueError(f"Unknown backend: {self._backend!r}")
@@ -518,7 +543,9 @@ class Store:
     def _frozen_workspace(self, provider: WorkspaceProvider) -> "Workspace":
         from .workspace import Workspace
 
-        return Workspace(provider)
+        ws = Workspace(provider)
+        ws._store = self
+        return ws
 
     # -- kvgit specifics -------------------------------------------------
     #
