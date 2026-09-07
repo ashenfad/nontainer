@@ -707,6 +707,14 @@ class Workspace:
         root: str = "/workspace",
     ) -> None:
         self._provider = provider
+        # Which Store opened this workspace, when one did. Stamped by
+        # Store.open and carried across fork/at_tag, so a store-level
+        # verb handed a workspace can tell whether it is one of its
+        # own — tagging through a workspace from a different store
+        # would write to that store and leave this one empty. None for
+        # a workspace built straight from a provider: no store claims
+        # it, and none may act on its behalf.
+        self._store: Any = None
         python_config = python or PythonConfig()
         self._cache_enabled = cache
         self._max_observation = max_observation
@@ -1554,6 +1562,7 @@ class Workspace:
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
+        new_ws._store = self._store
         new_ws.runtime.shell_env.update(self._runtime.shell_env)
         self._adopt_commands(new_ws)
         return new_ws
@@ -1735,6 +1744,7 @@ class Workspace:
             autocheckpoint=self._autocheckpoint,
             **self._settings.as_kwargs(),
         )
+        new_ws._store = self._store
         new_ws.runtime.shell_env.update(self._runtime.shell_env)
         self._adopt_commands(new_ws)
         return new_ws

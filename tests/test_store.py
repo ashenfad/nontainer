@@ -11,6 +11,7 @@ from nontainer import (
     NotSupportedError,
     Ref,
     Store,
+    Workspace,
     WorkspaceError,
     store,
     workspace,
@@ -321,3 +322,41 @@ def test_store_is_a_context_manager(tmp_path):
         with st.open("s"):
             pass
         assert st.sessions() == ["s"]
+
+
+def test_tags_add_refuses_a_workspace_from_another_store(tmp_path):
+    """Tagging goes through the workspace's own provider, so a
+    workspace from elsewhere would write to ITS store and leave this
+    one's listing empty — a silent no-op. It is refused instead."""
+    a = Store(tmp_path / "a")
+    b = Store(tmp_path / "b")
+    with b.open("s") as from_b:
+        from_b.terminal("echo x > x.txt")
+        with pytest.raises(WorkspaceError, match="not to"):
+            a.tags.add(from_b, "release")
+        assert a.tags.list() == {}
+        assert b.tags.list() == {}
+
+
+def test_tags_add_refuses_an_unowned_workspace(tmp_path):
+    """A workspace built straight from a provider has no store to
+    speak for it, so no store may tag through it."""
+    ws = Workspace(KvgitProvider.open(None, session="loose"))
+    try:
+        ws.terminal("echo x > x.txt")
+        with pytest.raises(WorkspaceError, match="no store owns it"):
+            Store(tmp_path).tags.add(ws, "release")
+    finally:
+        ws.close()
+
+
+def test_tags_add_accepts_forks_and_snapshots_of_its_own(tmp_path):
+    """The stamp travels with fork() and at_tag(): a fork is still on
+    the store its parent came from."""
+    st = Store(tmp_path)
+    with st.open("parent") as ws:
+        ws.terminal("echo x > x.txt")
+        with ws.fork("kid") as kid:
+            kid.terminal("echo y > y.txt")
+            st.tags.add(kid, "from-a-fork")
+    assert "from-a-fork" in st.tags.list()
