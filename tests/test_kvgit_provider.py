@@ -477,12 +477,12 @@ def test_delete_empty_set_is_noop(tmp_path):
         assert ws2.terminal("cat x.txt").stdout.strip() == "x"
 
 
-def test_delete_workspace_convenience(tmp_path):
-    from nontainer import delete_workspace
+def test_store_delete_convenience(tmp_path):
+    from nontainer import Store
 
     with workspace("via-helper", store=tmp_path, backend="kvgit") as ws:
         ws.terminal("echo bye > b.txt")
-    delete_workspace("via-helper", store=tmp_path, backend="kvgit")
+    Store(tmp_path, backend="kvgit").delete("via-helper")
     with workspace("via-helper", store=tmp_path, backend="kvgit") as ws2:
         assert not ws2.terminal("cat b.txt")
 

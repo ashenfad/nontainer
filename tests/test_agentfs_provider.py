@@ -199,11 +199,11 @@ def test_delete_rejects_bad_session_id(tmp_path):
         AgentFSProvider.delete(tmp_path, {"../escape"})
 
 
-def test_delete_workspace_convenience(tmp_path):
-    from nontainer import delete_workspace
+def test_store_delete_convenience(tmp_path):
+    from nontainer import Store
 
     with workspace("s", store=tmp_path, backend="agentfs"):
         pass
     assert (tmp_path / "s.db").exists()
-    delete_workspace("s", store=tmp_path, backend="agentfs")
+    Store(tmp_path, backend="agentfs").delete("s")
     assert not (tmp_path / "s.db").exists()

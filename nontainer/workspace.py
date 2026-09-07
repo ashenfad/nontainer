@@ -1648,7 +1648,7 @@ class Workspace:
         - ``scope="session"`` (default) — the name belongs to this
           session. :meth:`tags` lists only its own, another session's
           ``v1`` is a different tag, and deleting the session
-          (:func:`delete_workspace`) deletes it. This is the checkpoint
+          (``Store.delete``) deletes it. This is the checkpoint
           you want to be able to name later: "before the refactor".
         - ``scope="store"`` — the name belongs to no session. Every
           workspace on the store can list and read it, and it survives
@@ -2032,6 +2032,11 @@ def workspace(
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
 
+    Sugar for ``Store(store, backend=backend).open(session, ...)``, and
+    the shortest way in when a caller has one session in mind. Reach
+    for :class:`~nontainer.store.Store` directly when the store itself
+    is the subject — listing sessions, deleting one, store-scoped tags.
+
     Session resolution by backend:
 
     - ``"kvgit"``: one shared store at ``store`` (default
@@ -2042,8 +2047,9 @@ def workspace(
       session (unversioned spike).
 
     ``provider`` overrides ``backend``/``store`` entirely (bring your
-    own substrate). ``session`` is validated against ``SESSION_ID_RE``
-    in all paths.
+    own substrate) — the same substitution
+    ``Store(provider_factory=...)`` makes, for one session.
+    ``session`` is validated against ``SESSION_ID_RE`` in all paths.
 
     ``executor_factory`` selects the execution backend for this session
     and every fork of it (default: the in-process ``LocalExecutor``).
@@ -2056,27 +2062,27 @@ def workspace(
     forks.
     """
     from .protocol import validate_session_id
+    from .store import Store
 
     if provider is None:
-        validate_session_id(session)
-        base = Path(store).expanduser() if store else Path.home() / ".nontainer"
-        if backend == "dir":
-            from .providers.dir import DirProvider
-
-            provider = DirProvider(base / session, session=session)
-        elif backend == "kvgit":
-            from .providers.kvgit import KvgitProvider
-
-            provider = KvgitProvider.open(base / "kvgit", session=session)
-        elif backend == "agentfs":
-            from .providers.agentfs import AgentFSProvider
-
-            provider = AgentFSProvider(base / f"{session}.db", session=session)
-        else:
-            raise ValueError(f"Unknown backend: {backend!r}")
-
-    return Workspace(
-        provider,
+        return Store(store, backend=backend).open(
+            session,
+            python=python,
+            mounts=mounts,
+            commands=commands,
+            cache=cache,
+            autocheckpoint=autocheckpoint,
+            max_observation=max_observation,
+            executor_factory=executor_factory,
+            root=root,
+        )
+    # A ready provider is one session's substrate, already built. It
+    # goes in as the factory's answer for every id, and the id is
+    # validated here rather than in Store.open, which leaves naming to
+    # whatever the factory brings.
+    validate_session_id(session)
+    return Store(store, backend=backend, provider_factory=lambda _: provider).open(
+        session,
         python=python,
         mounts=mounts,
         commands=commands,
@@ -2086,57 +2092,3 @@ def workspace(
         executor_factory=executor_factory,
         root=root,
     )
-
-
-def delete_workspace(
-    sessions: str | Iterable[str],
-    *,
-    store: str | Path | None = None,
-    backend: Literal["kvgit", "dir", "agentfs"] = "kvgit",
-) -> None:
-    """Delete one or more sessions' entire stored state.
-
-    The teardown counterpart to :func:`workspace`, and it dispatches by
-    ``backend`` the same way — resolving the same ``store`` (default
-    ``~/.nontainer``) to the same per-backend layout the factory built:
-
-    - ``"kvgit"``: deletes the named branches from the shared store at
-      ``store/kvgit``, and with each branch the session-scoped tags it
-      owns (everything under ``<session>/``). Store-scoped tags are left
-      alone: that scope exists so a publication outlives the session
-      that made it, and its checkpoints stay reachable through the tag
-      even once every branch that reached them is gone.
-    - ``"dir"``: removes the ``store/<session>/`` directory trees.
-    - ``"agentfs"``: unlinks the ``store/<session>.db`` files.
-
-    Plural because a caller often owns more than one branch/dir/db per
-    logical session (an app that publishes snapshot branches, a batch
-    cleanup). ``sessions`` may be a single id or any iterable of ids.
-    Deleting a name that doesn't exist is a no-op; so is deleting from
-    a store that was never created — teardown is idempotent.
-
-    This is a store-level operation, not a live-session one: close any
-    open :class:`Workspace` on these sessions first (a kvgit store
-    handle pins its branch). It does not touch anything a caller keeps
-    *beside* the workspace store (an app's own db files, transcripts) —
-    that bookkeeping is the caller's to clean up.
-    """
-    if isinstance(sessions, str):
-        names: set[str] = {sessions}
-    else:
-        names = set(sessions)
-    base = Path(store).expanduser() if store else Path.home() / ".nontainer"
-    if backend == "dir":
-        from .providers.dir import DirProvider
-
-        DirProvider.delete(base, names)
-    elif backend == "kvgit":
-        from .providers.kvgit import KvgitProvider
-
-        KvgitProvider.delete(base / "kvgit", names)
-    elif backend == "agentfs":
-        from .providers.agentfs import AgentFSProvider
-
-        AgentFSProvider.delete(base, names)
-    else:
-        raise ValueError(f"Unknown backend: {backend!r}")
