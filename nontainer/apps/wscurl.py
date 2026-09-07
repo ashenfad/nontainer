@@ -214,11 +214,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             # call is already inside a tool call that will checkpoint — so
             # buffered request lines can go out now (see _flush_if_free).
             runtime.flush_log()
-            if (
-                not follow
-                or resp.status not in (301, 302, 303, 307, 308)
-                or hops >= 5
-            ):
+            if not follow or resp.status not in (301, 302, 303, 307, 308) or hops >= 5:
                 break
             location = resp.headers.get("location")
             if not location:
