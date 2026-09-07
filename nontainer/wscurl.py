@@ -11,6 +11,7 @@ apps/wscurl.py; this module only ferries it.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 #: Framework host-object name fronting ws-curl on dud rungs.
@@ -89,15 +90,20 @@ class WsCurlHostHandler:
     rather than being written mid-shell.
     """
 
-    def __init__(self, ws: Any):
+    def __init__(self, ws: Any, commands: Mapping[str, Any]):
         self._ws = ws
+        # The registry of the runtime whose executor ferries this verb
+        # (``ExecutionContext.commands``, bound live), not the
+        # workspace's: one workspace can carry several runtimes, each
+        # with its own registrations. See ``DudHostHandler``.
+        self._commands = commands
 
     def run(self, cwd: str, *argv: str) -> dict:
         import base64
 
         ws = self._ws
         with ws._lock:
-            cmd = ws._commands.get("ws-curl")
+            cmd = self._commands.get("ws-curl")
             if cmd is None:
                 return {
                     "stdout": "",
