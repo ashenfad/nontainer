@@ -511,7 +511,7 @@ class AgentFSProvider:
     def fork(self, name: str, *, at: str | None = None) -> "AgentFSProvider":
         raise self._unsupported("fork")
 
-    def merge(self, source: str, *, info: Any = None) -> Any:
+    def merge(self, source: str, *, at: Any = None, info: Any = None) -> Any:
         raise self._unsupported("merge")
 
     def commit_keys(self, info: Any = None, *, keys: Any = ()) -> Any:

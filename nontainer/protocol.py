@@ -388,14 +388,28 @@ class WorkspaceProvider(Protocol):
         """File-level changes between two commit ids."""
         ...
 
-    def merge(self, source: str, *, info: dict[str, Any] | None = None) -> MergeOutcome:
+    def merge(
+        self,
+        source: str,
+        *,
+        at: str | None = None,
+        info: dict[str, Any] | None = None,
+    ) -> MergeOutcome:
         """Merge another branch into this one (requires ``caps.merge``).
 
-        ``source`` names the branch; the merge reads its HEAD commit, so
-        anything uncommitted on the source is not included. Refuses with
-        ``WorkspaceError`` on uncommitted changes here (commit or
-        discard first) and with ``ValueError`` for unknown or self
-        branches. Providers without the capability raise
+        ``source`` names the branch. ``at`` names the commit ON that
+        branch whose state to merge; ``None`` means the branch's
+        current head, and either way anything uncommitted on the source
+        is not included. Both keywords are always passed, so a provider
+        must accept them: ``at`` is how a caller merges a state the
+        source has moved on from — the agent-facing git merges a
+        session's last AGENT commit rather than whatever the framework
+        committed for it since.
+
+        Refuses with ``WorkspaceError`` on uncommitted changes here
+        (commit or discard first) and with ``ValueError`` for unknown
+        or self branches; an ``at`` the provider does not have raises
+        ``CommitNotFoundError``. Providers without the capability raise
         ``NotSupportedError``. ``info`` is caller metadata recorded on
         the merge commit (and on any follow-up the merge needs), which
         is how the agent-facing git threads a merge into its own graph.
