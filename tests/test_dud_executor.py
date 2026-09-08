@@ -1,7 +1,7 @@
 """DudExecutor delta suite: the dud-backed workspace.
 
 Two kinds of assertion live here: (1) the executor seam holds — the
-same Workspace contract (results, checkpoints, history, restore,
+same Workspace contract (results, commits, history, restore,
 fork) over a real machine; (2) the INTENDED divergences from
 LocalExecutor are pinned as facts, not left as surprises (merged
 stderr, codec-narrowed namespace, opaque-bytes cache host-side,
@@ -50,9 +50,9 @@ def test_terminal_basics(ws):
     assert r.exit_code == 0
     # the guest write landed in the PROVIDER (diff absorbed), not just
     # in the guest scratch dir
-    assert ws.fs.read("/workspace/greet.txt").strip() == b"hello"
-    # ...and was committed by the normal autocheckpoint flow
-    assert r.checkpoint is not None
+    assert ws.files.fs.read("/workspace/greet.txt").strip() == b"hello"
+    # ...and was committed by the normal autocommit flow
+    assert r.commit is not None
 
 
 def test_terminal_failure_contract(ws):
@@ -79,7 +79,7 @@ def test_cwd_persists_across_calls(ws):
     r = ws.terminal("pwd")
     assert r.stdout.strip().endswith("/sub")
     # host-side mirror caught up once the diff landed files under sub/
-    assert ws.fs.read("/workspace/sub/here.txt").strip() == b"x"
+    assert ws.files.fs.read("/workspace/sub/here.txt").strip() == b"x"
 
 
 # -- python ------------------------------------------------------------------
@@ -107,35 +107,35 @@ def test_files_shared_between_shell_and_python(ws):
     assert r.namespace["content"] == "data"
     r2 = ws.run_python("open('out.txt', 'w').write('py')")
     assert r2, r2.error
-    assert r2.checkpoint is not None  # the write dirtied the provider
+    assert r2.commit is not None  # the write dirtied the provider
     assert ws.terminal("cat out.txt").stdout.strip() == "py"
-    assert ws.fs.read("/workspace/out.txt") == b"py"
+    assert ws.files.fs.read("/workspace/out.txt") == b"py"
 
 
 def test_host_write_visible_in_guest(ws):
     """write_file goes behind the executor's back; sync() re-materializes."""
-    ws.write_file("seeded.txt", "from host")
+    ws.files.write("seeded.txt", "from host")
     r = ws.terminal("cat seeded.txt")
     assert r.stdout.strip() == "from host"
 
 
 def test_raw_fs_write_visible_in_guest(ws):
-    """The ``ws.fs`` escape hatch syncs too — no intervening write.
+    """The ``ws.files.fs`` escape hatch syncs too — no intervening write.
 
-    ``ws.fs`` writes straight into the provider, so before the syncing
+    ``ws.files.fs`` writes straight into the provider, so before the syncing
     wrapper the guest kept serving its stale baseline and this ``cat``
     reported "No such file or directory". It surfaced only if some
     OTHER path happened to sync first, which made it nondeterministic
     (see ``_SyncingFS``). LocalExecutor cannot catch this — it holds no
     second copy — so the test has to live on a dud rung."""
-    ws.fs.write("/workspace/raw.txt", b"straight to the provider")
+    ws.files.fs.write("/workspace/raw.txt", b"straight to the provider")
     r = ws.terminal("cat raw.txt")
     assert r.stdout.strip() == "straight to the provider"
 
 
 def test_raw_fs_write_visible_to_python_too(ws):
     """Same guarantee on the python chokepoint, not just the shell."""
-    ws.fs.write("/workspace/raw2.txt", b"seen by python")
+    ws.files.fs.write("/workspace/raw2.txt", b"seen by python")
     r = ws.run_python("print(open('raw2.txt').read())")
     assert r, r.error
     assert "seen by python" in r.stdout
@@ -150,8 +150,8 @@ def test_host_writes_sync_once_not_per_write(ws):
     ws.runtime.executor.sync = lambda: (calls.append(1), real_sync())[1]
     try:
         for i in range(5):
-            ws.fs.write(f"/workspace/seed{i}.txt", b"x")
-        ws.write_file("seed5.txt", "x")
+            ws.files.fs.write(f"/workspace/seed{i}.txt", b"x")
+        ws.files.write("seed5.txt", "x")
         assert calls == []  # nothing pushed yet
         r = ws.terminal("ls seed*.txt | wc -l")
         assert len(calls) == 1  # exactly one, at first use
@@ -172,7 +172,7 @@ def test_failed_sync_stays_stale_and_retries(ws):
     believing itself current. DudExecutor.sync recovers a LOST session
     itself; what reaches here is the harder class (tree read, archive,
     wire), where retrying is the whole point (PR #23 review)."""
-    ws.fs.write("/workspace/late.txt", b"arrived")
+    ws.files.fs.write("/workspace/late.txt", b"arrived")
     assert ws.runtime.stale
 
     boom = RuntimeError("push failed")
@@ -195,14 +195,14 @@ def test_failed_close_sync_parks_without_an_affinity_tag():
     close() swallows a failing sync by contract (close must not
     raise), so without this guard the guest would park diverged while
     _head() named a real commit — the provider is clean after
-    write_file's autocheckpoint. A later affinity resume would trust
+    write_file's autocommit. A later affinity resume would trust
     that tag, skip the push, and serve stale files with no error
     anywhere. Untagged costs one push instead (PR #23 review)."""
     ex = DudExecutor(backend="subprocess")
     ws = Workspace(KvgitProvider.open(None, session="dud-park-guard"), executor=ex)
     ws.terminal("echo base > f.txt")  # clean, committed, tree in sync
 
-    ws.write_file("host.txt", "never pushed")  # marks stale
+    ws.files.write("host.txt", "never pushed")  # marks stale
     assert ws.head is not None  # committed: _head() would yield a real tag
     # Fail at the WIRE, inside the real _push_tree — patching the whole
     # method out would skip the very marking under test.
@@ -223,28 +223,28 @@ def test_failed_close_sync_parks_without_an_affinity_tag():
 # -- versioning over dud diffs (the point of the whole design) ---------------
 
 
-def test_checkpoint_restore_history(ws):
+def test_commit_restore_history(ws):
     r1 = ws.terminal("echo one > f.txt")
-    cp1 = r1.checkpoint
+    cp1 = r1.commit
     assert cp1 is not None
     r2 = ws.terminal("echo two > f.txt")
-    assert r2.checkpoint is not None and r2.checkpoint != cp1
-    entries = list(ws.history())
-    assert entries[0].id == r2.checkpoint
+    assert r2.commit is not None and r2.commit != cp1
+    entries = list(ws.log())
+    assert entries[0].id == r2.commit
     assert any(e.info.get("tool") == "terminal" for e in entries)
 
-    ws.restore(cp1)
+    ws.checkout(cp1)
     # provider is back...
-    assert ws.fs.read("/workspace/f.txt").strip() == b"one"
+    assert ws.files.fs.read("/workspace/f.txt").strip() == b"one"
     # ...and so is the GUEST's view (sync re-materialized it)
     assert ws.terminal("cat f.txt").stdout.strip() == "one"
 
 
-def test_read_only_calls_do_not_checkpoint(ws):
+def test_read_only_calls_do_not_commit(ws):
     ws.terminal("echo x > f.txt")
     head = ws.head
     r = ws.terminal("ls")
-    assert r.checkpoint is None
+    assert r.commit is None
     assert ws.head == head
 
 
@@ -260,8 +260,8 @@ def test_fork():
         try:
             assert child.terminal("cat shared.txt").stdout.strip() == "base"
             child.terminal("echo kid > kid.txt")
-            assert child.fs.exists("/workspace/kid.txt")
-            assert not ws.fs.exists("/workspace/kid.txt")  # branches independent
+            assert child.files.fs.exists("/workspace/kid.txt")
+            assert not ws.files.fs.exists("/workspace/kid.txt")  # branches independent
         finally:
             child.close()
     finally:
@@ -291,7 +291,7 @@ def test_fork_inherits_executor_factory(tmp_path):
             r = child.terminal("echo $(echo nested)")  # command substitution
             assert r.stdout.strip() == "nested"
             child.terminal("echo kid > kid.txt")
-            assert not ws.fs.exists("/workspace/kid.txt")
+            assert not ws.files.fs.exists("/workspace/kid.txt")
         finally:
             child.close()
     finally:
@@ -304,7 +304,7 @@ def test_fork_inherits_executor_factory(tmp_path):
 def test_cache_guest_roundtrip_and_host_opacity(ws):
     r = ws.run_python("cache['k'] = {'a': 1}")
     assert r, r.error
-    assert r.checkpoint is not None  # cache write-back is staged + committed
+    assert r.commit is not None  # cache write-back is staged + committed
     # guest round-trips its own pickle
     r2 = ws.run_python("w = cache['k']['a']")
     assert r2, r2.error
@@ -325,8 +325,8 @@ def test_cache_host_seeded_value_reaches_guest(ws):
 def test_cache_survives_restore(ws):
     r1 = ws.run_python("cache['stage'] = 'first'")
     r2 = ws.run_python("cache['stage'] = 'second'")
-    assert r1.checkpoint and r2.checkpoint
-    ws.restore(r1.checkpoint)
+    assert r1.commit and r2.commit
+    ws.checkout(r1.commit)
     r = ws.run_python("s = cache['stage']")
     assert r.namespace["s"] == "first"
 
@@ -360,9 +360,9 @@ def post(req):
 
 
 def _seed_app(ws, name="names.py", src=_APP_HANDLER):
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write(f"/workspace/app/api/{name}", src)
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(f"/workspace/app/api/{name}", src)
+    ws.commit()
 
 
 def test_apps_dispatch_under_dud(ws):
@@ -414,14 +414,14 @@ def test_apps_readonly_get_rejects_fs_write(ws):
     runtime = enable_apps(ws)
     try:
         assert runtime.dispatch(request("GET", "/api/w")).status == 500
-        assert not ws.fs.exists("/sneak.txt")  # discarded, not absorbed
+        assert not ws.files.fs.exists("/sneak.txt")  # discarded, not absorbed
     finally:
         runtime.close()
 
 
 def test_apps_mutating_handler_absorbs_fs_write(ws):
     """A POST writing a relative path lands in the provider, like
-    LocalExecutor's write-through (visible in ws.fs afterward)."""
+    LocalExecutor's write-through (visible in ws.files.fs afterward)."""
     from nontainer.apps import enable_apps, request
 
     _seed_app(
@@ -432,7 +432,7 @@ def test_apps_mutating_handler_absorbs_fs_write(ws):
     runtime = enable_apps(ws)
     try:
         assert runtime.dispatch(request("POST", "/api/mk")).status == 200
-        assert ws.fs.read("/workspace/made.txt") == b"hi"
+        assert ws.files.fs.read("/workspace/made.txt") == b"hi"
     finally:
         runtime.close()
 
@@ -440,7 +440,7 @@ def test_apps_mutating_handler_absorbs_fs_write(ws):
 def test_handler_traceback_is_readable_from_the_terminal(ws):
     """The audited regression, end to end.
 
-    ``AppRuntime._log`` writes through ``ws.fs``, so under a remote
+    ``AppRuntime._log`` writes through ``ws.files.fs``, so under a remote
     executor the traceback landed in the host VFS while ``cat
     app/logs/api.log`` from the guest reported "No such file or
     directory" — the agent's documented repair loop, blind, and
@@ -503,7 +503,7 @@ def test_exec_python_stdin_argv_fail_loud(ws):
     from nontainer.errors import NotSupportedError
 
     with pytest.raises(NotSupportedError):
-        ws.exec_python("pass", stdin="data")
+        ws.runtime.exec_python("pass", stdin="data")
 
 
 def test_bad_inputs_raise_typeerror(ws):
@@ -597,7 +597,7 @@ def test_view_contract_crosses_without_guest_install(ws, tmp_path):
     try:
         spec.loader.exec_module(mod)
         Ping = mod.Ping
-        r = ws.exec_python(
+        r = ws.runtime.exec_python(
             "out = {'loud': ping.loud()}\nresp = Ping(tag='pong')",
             inputs={"ping": Ping(tag="hi")},
             view=ViewSpec(extra_classes=(Ping,)),
@@ -648,9 +648,9 @@ def test_dead_guest_recovers_with_state_and_retries():
             "echo sturdy > f.txt && mkdir -p sub && cd sub && echo x > here.txt"
         )
         # A writing call from within sub/: the cwd mirror lands (sub is
-        # in the provider now) and the checkpoint persists it.
+        # in the provider now) and the commit persists it.
         ws.terminal("echo y > also.txt")
-        assert ws.fs.getcwd() == "/workspace/sub"
+        assert ws.files.fs.getcwd() == "/workspace/sub"
         ex._session._proc.kill()  # VM crash / pool reclaim, guest's view
         r = ws.terminal("cat ../f.txt")
         assert r, r.stdout + (r.stderr or "")
@@ -698,9 +698,9 @@ def test_harvest_loss_is_an_error_not_a_silent_success():
         assert not r  # errored result, never silent success
         assert r.error is not None and "harvest" in r.error
         assert "rolled back" in r.error  # entry-clean staging unwound
-        assert r.checkpoint is None
+        assert r.commit is None
         # zero-times semantics: neither plane of the torn call survives
-        assert not ws.fs.exists("/workspace/lost.txt")
+        assert not ws.files.fs.exists("/workspace/lost.txt")
         assert "torn" not in ws.cache
         assert ws.head == head
         # and the recovered guest carries on normally
@@ -754,7 +754,7 @@ def test_sync_recovery_pushes_the_tree_once():
             return orig()
 
         ex._push_tree = counting
-        ws.write_file("g.txt", "host")  # marks stale; the sync is lazy
+        ws.files.write("g.txt", "host")  # marks stale; the sync is lazy
         assert calls == []
         ex.sync()  # drive it directly: this test is about sync's retry shape
         # 1: sync's own push (dies on the dead guest); 2: recovery's.
@@ -784,7 +784,7 @@ def test_concurrent_view_calls_are_safe(ws):
     def worker(i: int) -> None:
         try:
             for j in range(4):
-                r = ws.exec_python(f"v = {i} * 100 + {j}", view=view)
+                r = ws.runtime.exec_python(f"v = {i} * 100 + {j}", view=view)
                 assert r.error is None, r.error
                 assert r.namespace["v"] == i * 100 + j
         except BaseException as e:  # noqa: BLE001 — collected for the assert
@@ -804,7 +804,7 @@ def test_view_inputs_do_not_ride_back(ws):
     apps dispatch) must not be marshaled back across the wire."""
     from nontainer.executor import ViewSpec
 
-    r = ws.exec_python("out = ping * 2", inputs={"ping": 21}, view=ViewSpec())
+    r = ws.runtime.exec_python("out = ping * 2", inputs={"ping": 21}, view=ViewSpec())
     assert r.error is None, r.error
     assert r.namespace["out"] == 42
     assert "ping" not in r.namespace
@@ -814,8 +814,8 @@ def test_host_files_outside_the_root_never_reach_the_guest(ws):
     """The push covers the <root> subtree only: state an embedder parks
     beside the root (manifests, secrets) is host-only by contract."""
     with ws.lock:
-        ws.fs.write("/host-only.txt", b"secret")
-        ws.fs.write("/workspace/inside.txt", b"visible")
+        ws.files.fs.write("/host-only.txt", b"secret")
+        ws.files.fs.write("/workspace/inside.txt", b"visible")
     ws.runtime.executor.sync()  # raw fs writes bypass the tool-call sync
     r = ws.terminal("ls")
     assert "inside.txt" in r.stdout
@@ -1021,8 +1021,8 @@ def test_rich_ui_flattens_through_the_dud_boundary(ws):
     )
     assert r, r.error
     # The rich value became a file...
-    assert ws.fs.exists("/workspace/ui/table.table.json")
-    payload = json.loads(ws.fs.read("/workspace/ui/table.table.json"))
+    assert ws.files.fs.exists("/workspace/ui/table.table.json")
+    payload = json.loads(ws.files.fs.read("/workspace/ui/table.table.json"))
     assert payload["total"] == 3
     # ...and the binding names where it went, with the same type the
     # in-process executor produces. The name used to be deleted here,

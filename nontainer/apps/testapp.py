@@ -553,9 +553,9 @@ def _line_reader(runtime: "AppRuntime") -> Any:
         path = f"{runtime._app_root}/{rel}"
         try:
             with ws.lock:
-                if not ws.fs.exists(path) or not ws.fs.isfile(path):
+                if not ws.files.fs.exists(path) or not ws.files.fs.isfile(path):
                     return None
-                data = ws.fs.read(path)
+                data = ws.files.fs.read(path)
             if len(data) > _MAX_ANNOTATED_BYTES:
                 return None
             lines = data.decode("utf-8", errors="replace").splitlines()
@@ -630,13 +630,13 @@ class TestAppResult:
 
 def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
     """Write a screenshot to the workspace fs — off the browser loop and
-    under the workspace's single-writer lock, since ``ws.fs`` is shared
+    under the workspace's single-writer lock, since ``ws.files.fs`` is shared
     with the executor-hopped route dispatch (which serializes under the
     same lock inside ``AppRuntime.dispatch``)."""
     ws = runtime._ws
     with ws.lock:
-        ws.fs.makedirs(f"{runtime._app_root}/screenshots", exist_ok=True)
-        ws.fs.write(path, png)
+        ws.files.fs.makedirs(f"{runtime._app_root}/screenshots", exist_ok=True)
+        ws.files.fs.write(path, png)
 
 
 async def _run_actions(

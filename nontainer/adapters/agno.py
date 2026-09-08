@@ -17,7 +17,7 @@ Concurrency: agno's ``arun()`` executes sync tools CONCURRENTLY on
 separate threads — including parallel tool calls from a single model
 turn. ``Workspace`` enforces its own single-writer invariant (mutating
 calls hold an internal lock), so parallel calls serialize safely (each
-atomic + checkpointed) even without adapter help. The toolkit keeps a
+atomic + committed) even without adapter help. The toolkit keeps a
 per-workspace ``threading.Lock`` anyway: it additionally fences
 adapter-level work around the call (``test_app`` + screenshot reads,
 turn-commit checks) and is uncontended under sync ``run()``. The
@@ -104,7 +104,7 @@ class WorkspaceTools(Toolkit):
         ws = self._ws
         if ws.caps.versioned and ws.dirty:
             with self._lock:
-                return ws.checkpoint(info={"tool": "turn"})
+                return ws.commit(info={"tool": "turn"})
         return None
 
     def __init__(
@@ -113,7 +113,7 @@ class WorkspaceTools(Toolkit):
         *,
         tools: ToolsMode = "auto",
         apps: Any = None,
-        checkpoint: str = "call",
+        commit: str = "call",
         session_db: Any = None,
         terminal_primer: str | None = None,
         python_primer: str | None = None,
@@ -131,13 +131,13 @@ class WorkspaceTools(Toolkit):
         attaching media a model can't take errors the whole next call
         ("no endpoints support image input"), losing the turn.
 
-        ``checkpoint``: commit granularity on versioned workspaces.
+        ``commit``: commit granularity on versioned workspaces.
         ``"call"`` (default) commits after each mutating tool call —
         maximum durability, chattier history. ``"turn"`` is the agex
         model — one commit per agent turn; wire :meth:`end_turn` as an
         agno run-level hook::
 
-            tk = WorkspaceTools(ws, checkpoint="turn")
+            tk = WorkspaceTools(ws, commit="turn")
             agent = Agent(model=..., tools=[tk], post_hooks=[tk.end_turn])
 
         Turn mode defers commits to the hook, so a crash mid-turn can
@@ -162,11 +162,11 @@ class WorkspaceTools(Toolkit):
                     "conversation in the branch the tools write to."
                 )
         self._session_db = session_db
-        if checkpoint not in ("call", "turn"):
-            raise ValueError(f"checkpoint must be 'call' or 'turn': {checkpoint!r}")
-        self._turn_checkpoints = checkpoint == "turn"
-        if self._turn_checkpoints:
-            workspace.autocheckpoint = False
+        if commit not in ("call", "turn"):
+            raise ValueError(f"commit must be 'call' or 'turn': {commit!r}")
+        self._turn_commits = commit == "turn"
+        if self._turn_commits:
+            workspace.autocommit = False
         mode = resolve_tools_mode(workspace, tools)
         split = mode == "split"
         if python_primer and not split:
@@ -196,7 +196,7 @@ class WorkspaceTools(Toolkit):
         def file_write(path: str, content: str) -> str:
             """Write a file in the workspace."""
             with self._lock:
-                written = self._ws.write_file(path, content)
+                written = self._ws.files.write(path, content)
                 return f"wrote {written.path} ({written.size} bytes)"
 
         file_write.__doc__ = FILE_WRITE_DESCRIPTION
@@ -212,7 +212,7 @@ class WorkspaceTools(Toolkit):
 
             with self._lock:
                 try:
-                    out = self._ws.edit_file(
+                    out = self._ws.files.edit(
                         path, old_string, new_string, replace_all=replace_all
                     )
                 except WorkspaceError as e:
@@ -252,7 +252,7 @@ class WorkspaceTools(Toolkit):
                 with self._lock:
                     ui_dir = ui_root(self._ws)
                     try:
-                        ui_before = set(self._ws.fs.list(ui_dir))
+                        ui_before = set(self._ws.files.fs.list(ui_dir))
                     except Exception:
                         ui_before = set()
                     result = self._ws.run_python(code)
@@ -268,13 +268,13 @@ class WorkspaceTools(Toolkit):
                     # without a note those files display nowhere. New
                     # files the call created join the artifacts note.
                     try:
-                        ui_after = set(self._ws.fs.list(ui_dir))
+                        ui_after = set(self._ws.files.fs.list(ui_dir))
                     except Exception:
                         ui_after = set()
                     claimed = {p for _, p in artifacts}
                     for fname in sorted(ui_after - ui_before):
                         path = f"{ui_dir}/{fname}"
-                        if path not in claimed and self._ws.fs.isfile(path):
+                        if path not in claimed and self._ws.files.fs.isfile(path):
                             artifacts.append((fname, path))
                     text += artifacts_note(artifacts)
                     # Problems from BOTH passes. Materialization now
@@ -318,7 +318,7 @@ class WorkspaceTools(Toolkit):
                     result = apps.test_app(actions, viewport=viewport)
                     shots = (
                         [
-                            Image(content=self._ws.fs.read(p), format="png", id=p)
+                            Image(content=self._ws.files.fs.read(p), format="png", id=p)
                             for p in result.screenshots
                         ]
                         if vision
@@ -336,9 +336,7 @@ class WorkspaceTools(Toolkit):
             and_python=", and sandboxed python" if split else "",
             or_python=" / run_python" if split else "",
             versioned_note=(
-                "; every mutating call is checkpointed"
-                if workspace.caps.versioned
-                else ""
+                "; every mutating call is committed" if workspace.caps.versioned else ""
             ),
         )
 

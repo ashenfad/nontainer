@@ -40,7 +40,7 @@ class EditOutcome:
     count: int
     mode: str  # "exact" | "trailing_ws" | "indent_flexible" | "already_applied"
 
-    checkpoint: str | None = None
+    commit: str | None = None
     """Commit created when the workspace applied this edit (``None``
     when nothing was committed: no-op edit, turn mode, unversioned
     provider). Attached by ``Workspace.edit_file``; ``apply_edit``

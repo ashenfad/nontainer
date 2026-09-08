@@ -96,7 +96,7 @@ def build_server(
         import mcp.types as types
 
         with lock:
-            out = workspace.write_file(path, content)
+            out = workspace.files.write(path, content)
         # Ground-truth artifact handle: the link exists because the
         # write succeeded — clients can fetch it without trusting prose.
         return [
@@ -116,7 +116,7 @@ def build_server(
 
         with lock:
             try:
-                out = workspace.edit_file(
+                out = workspace.files.edit(
                     path, old_string, new_string, replace_all=replace_all
                 )
             except WorkspaceError as e:
@@ -165,9 +165,9 @@ def build_server(
                 if depth > 32:
                     elided = True
                     return
-                for name in sorted(workspace.fs.list(d)):
+                for name in sorted(workspace.files.fs.list(d)):
                     full = f"{d.rstrip('/')}/{name}"
-                    if workspace.fs.isdir(full):
+                    if workspace.files.fs.isdir(full):
                         walk(full, depth + 1)
                     else:
                         lines.append(full)
@@ -179,7 +179,7 @@ def build_server(
 
     def workspace_file(path: str) -> "str | bytes":
         with lock:
-            data = workspace.fs.read("/" + path.lstrip("/"))
+            data = workspace.files.fs.read("/" + path.lstrip("/"))
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
@@ -247,7 +247,7 @@ def build_server(
                 with lock:
                     result = apps.test_app(actions, viewport=viewport)
                     shots = [
-                        Image(data=workspace.fs.read(p), format="png")
+                        Image(data=workspace.files.fs.read(p), format="png")
                         for p in result.screenshots
                     ]
                     return result, shots
@@ -295,7 +295,7 @@ def _build_parser() -> "Any":
         metavar="POINT=DIR[:rw]",
         help="expose a host directory inside the workspace (repeatable), "
         "e.g. --mount /data=~/datasets. Read-only unless :rw. Mounts "
-        "are live views: not versioned, not captured by checkpoints.",
+        "are live views: not versioned, not captured by commits.",
     )
     return parser
 

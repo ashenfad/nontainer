@@ -1,14 +1,14 @@
 """agno sessions stored in the workspace (``[agno]`` extra).
 
 One kvgit commit holds everything a turn touched: files, ``cache``,
-cwd, and the agent's conversation. ``ws.restore(commit)`` rewinds all
+cwd, and the agent's conversation. ``ws.checkout(commit)`` rewinds all
 four together; ``fork_session(ws, name)`` branches all four together.
 
 Wire it as agno's ``db``::
 
     ws = workspace("chat-42")
     db = KvgitSessionDb(ws, db_path="/var/agno")   # non-session tables
-    tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+    tk = WorkspaceTools(ws, commit="turn", session_db=db)
     agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk])
 
 Layout — one key per run, not one blob::
@@ -26,7 +26,7 @@ Values are the JSON-shaped dicts agno hands over, never pickled agno
 objects, so a branch never depends on agno's class layout and dumping
 one to plain files stays trivial.
 
-The ``__agno__/`` prefix follows the framework convention (``__cwd__``,
+The ``__agno__/`` prefix follows the framework convention (``__vfs_cwd__``,
 ``__cache__/``): the agent's ``cache`` view rejects ``__`` keys at
 write time, so agent code cannot reach the conversation.
 
@@ -56,7 +56,7 @@ RUN_PREFIX = "__agno__/runs/"
 
 def _kv(ws: Workspace) -> Any:
     """The provider's small-value mapping — the same store the files,
-    the cache and the cwd live in, which is what makes one checkpoint
+    the cache and the cwd live in, which is what makes one commit
     cover all of them. Not on ``Workspace``'s public surface; the
     ``__`` prefix on these keys is what keeps them out of the agent's
     ``cache`` view."""
@@ -82,7 +82,7 @@ class KvgitSessionDb(JsonDb):
     to agno churn; everything else is inherited untouched.
 
     **The commit trigger.** ``upsert_session`` writes its keys and then,
-    when the upsert added or changed a run, checkpoints the workspace
+    when the upsert added or changed a run, commits the workspace
     with ``info={"tool": "turn"}``. So the turn's files, cache, cwd and
     conversation land in ONE commit, at the moment agno persists the
     run. The db and not a post hook fires it because agno's run loop
@@ -95,17 +95,17 @@ class KvgitSessionDb(JsonDb):
 
     An upsert that carries no new or changed run (agno creating the
     record before the first run) does not commit; it is staged and
-    rides into the turn's commit. Under ``checkpoint="call"`` the
+    rides into the turn's commit. Under ``commit="call"`` the
     mutating tool calls have already committed and this is the turn's
     trailing write, so the head at the next user message includes the
     conversation either way.
 
     Pass the db to the toolkit as ``WorkspaceTools(ws,
-    checkpoint="turn", session_db=db)``. That is what tells the
+    commit="turn", session_db=db)``. That is what tells the
     toolkit's ``end_turn`` hook to stand down, so wiring the hook stays
     harmless and existing embedder code keeps working.
 
-    **Rewind.** ``ws.restore(commit)`` rewinds the run keys with
+    **Rewind.** ``ws.checkout(commit)`` rewinds the run keys with
     everything else, and agno re-reads the session from the db at the
     start of every run (``Agent.cache_session`` defaults to False), so
     the next run sees the rewound conversation with no invalidation
@@ -194,9 +194,7 @@ class KvgitSessionDb(JsonDb):
             stored["updated_at"] = now
             kv[SESSION_KEY] = stored
             if self._ws.caps.versioned and self._ws.dirty:
-                self._ws.checkpoint(
-                    info={"tool": "fork_session", "conversation": "copy"}
-                )
+                self._ws.commit(info={"tool": "fork_session", "conversation": "copy"})
         if not deserialize:
             out = dict(stored)
             out.pop("run_ids", None)
@@ -392,7 +390,7 @@ class KvgitSessionDb(JsonDb):
                     f"does not lead to: the branch holds {len(known)} run(s) "
                     f"and the write carries {len(prior)} prior run(s) that are "
                     "not its most recent ones. This is what "
-                    "cache_session=True produces after ws.restore() — agno "
+                    "cache_session=True produces after ws.checkout() — agno "
                     "keeps the pre-rewind session in memory and appends to "
                     "it. Leave cache_session at its default."
                 )
@@ -418,7 +416,7 @@ class KvgitSessionDb(JsonDb):
             kv[SESSION_KEY] = stored
 
             if changed and self._ws.caps.versioned:
-                self._ws.checkpoint(info={"tool": "turn"})
+                self._ws.commit(info={"tool": "turn"})
 
         if not deserialize:
             out = dict(stored)
@@ -489,7 +487,7 @@ class KvgitSessionDb(JsonDb):
         staged with it: committing then would close the turn early
         with the agent's half-finished files in it."""
         if was_clean and self._ws.caps.versioned and self._ws.dirty:
-            self._ws.checkpoint(info={"tool": tool})
+            self._ws.commit(info={"tool": tool})
 
     def delete_session(self, session_id: str, user_id: str | None = None) -> bool:
         """Clear the session and run keys, committed when the workspace
@@ -554,7 +552,7 @@ def fork_session(
     ``__agno__/session`` so the fork carries its own ``session_id``
     (the branch name) and records the parent in
     ``session_data["forked_from_session_id"]``, where agno keeps fork
-    lineage, and checkpoints that rewrite so the fork's head is
+    lineage, and commits that rewrite so the fork's head is
     consistent.
 
     ``conversation="inherit"`` keeps the parent's runs — the branch is
@@ -564,7 +562,7 @@ def fork_session(
     fork only to avoid collisions inside a shared db, and branches
     never share one.
 
-    ``at`` branches from an earlier checkpoint of this session — files
+    ``at`` branches from an earlier commit of this session — files
     and conversation as they stood there — without rewinding this
     session to get there; it is what "branch from where I published"
     wants. Drive the fork with an agent whose ``session_id`` is
@@ -575,7 +573,7 @@ def fork_session(
 
     # The parent is this workspace's session. Read from the head's
     # record it could be missing — a conversation deleted after the
-    # checkpoint being forked from — while the id is a fact about the
+    # commit being forked from — while the id is a fact about the
     # branch, not about what its head currently holds.
     parent_id = ws.session
 
@@ -598,9 +596,7 @@ def fork_session(
                 record["run_ids"] = []
             kv[SESSION_KEY] = record
         if child.caps.versioned and child.dirty:
-            child.checkpoint(
-                info={"tool": "fork_session", "conversation": conversation}
-            )
+            child.commit(info={"tool": "fork_session", "conversation": conversation})
     return child
 
 

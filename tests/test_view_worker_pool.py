@@ -359,7 +359,8 @@ def test_view_calls_reuse_one_worker():
     ws = _ws("pool-reuse")
     try:
         pids = {
-            ws.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"] for _ in range(4)
+            ws.runtime.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
+            for _ in range(4)
         }
         assert len(pids) == 1  # four requests, one fork
         assert pids != {os.getpid()}  # ...and it isn't the host
@@ -385,7 +386,7 @@ def test_a_burst_leaves_only_the_default_resident():
         errors: list = []
 
         def hit() -> None:
-            r = ws.exec_python("import time\ntime.sleep(0.3)\nk = 1", view=VIEW)
+            r = ws.runtime.exec_python("import time\ntime.sleep(0.3)\nk = 1", view=VIEW)
             if r.error:
                 errors.append(r.error)
 
@@ -408,7 +409,8 @@ def test_view_workers_zero_restores_per_call_workers():
     ws = _ws("pool-off", warm_view_workers=0)
     try:
         pids = [
-            ws.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"] for _ in range(3)
+            ws.runtime.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
+            for _ in range(3)
         ]
         assert len(set(pids)) == 3
     finally:
@@ -417,7 +419,7 @@ def test_view_workers_zero_restores_per_call_workers():
 
 def test_pooled_worker_is_reaped_on_close():
     ws = _ws("pool-close")
-    ws.exec_python(WHICH_WORKER, view=VIEW)
+    ws.runtime.exec_python(WHICH_WORKER, view=VIEW)
     pool = ws.runtime.executor._pool
     resident = [sb for group in pool._idle.values() for sb in group]
     assert len(resident) == 1
@@ -434,7 +436,7 @@ def test_a_worker_that_dies_while_idle_doesnt_poison_the_pool():
     next checkout finds it dead, drops it, and forks a replacement."""
     ws = _ws("pool-crash")
     try:
-        first = ws.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
+        first = ws.runtime.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
 
         resident = next(
             sb for group in ws.runtime.executor._pool._idle.values() for sb in group
@@ -444,7 +446,7 @@ def test_a_worker_that_dies_while_idle_doesnt_poison_the_pool():
         resident._process.kill()
         resident._process.join(timeout=5.0)
 
-        result = ws.exec_python(WHICH_WORKER, view=VIEW)
+        result = ws.runtime.exec_python(WHICH_WORKER, view=VIEW)
         assert result.error is None
         assert result.namespace["pid"] != first
     finally:
@@ -461,7 +463,7 @@ def test_concurrent_view_calls_stay_correct():
     results: dict[int, tuple] = {}
 
     def work(n: int) -> None:
-        r = ws.exec_python(
+        r = ws.runtime.exec_python(
             f"import os\ntotal = sum(range(200_000)) + {n}\npid = os.getpid()",
             view=VIEW,
         )
@@ -492,7 +494,7 @@ def test_run_python_still_uses_the_session_worker():
         again = ws.run_python(WHICH_WORKER).namespace["pid"]
         assert session_pid == again
 
-        view_pid = ws.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
+        view_pid = ws.runtime.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
         assert view_pid != session_pid  # a view is its own worker
     finally:
         ws.close()

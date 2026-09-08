@@ -7,7 +7,7 @@ these check is that the sugar and the object are the same call.
 import pytest
 
 from nontainer import (
-    CheckpointNotFoundError,
+    CommitNotFoundError,
     NotSupportedError,
     Ref,
     Store,
@@ -92,8 +92,8 @@ def test_sessions_excludes_reserved_names(tmp_path):
     st = Store(tmp_path)
     with st.open("author") as ws:
         ws.terminal("echo x > x.txt")
-        ws.tag("published", scope="store")
-        ws.tag("mine")
+        st.tags.add(ws, "published")
+        ws.tags.add("mine")
     assert st.sessions() == ["author"]
 
 
@@ -169,7 +169,7 @@ def test_resolve_refuses_an_unknown_commit(tmp_path):
     st = Store(tmp_path)
     with st.open("real") as ws:
         ws.terminal("echo x > x.txt")
-    with pytest.raises(CheckpointNotFoundError):
+    with pytest.raises(CommitNotFoundError):
         st.resolve("real@0123456789abcdef")
 
 
@@ -196,7 +196,7 @@ def test_store_tags_round_trip(tmp_path):
     assert st.tags.info("absent") is None
     st.tags.delete("report")
     assert st.tags.list() == {}
-    with pytest.raises(CheckpointNotFoundError):
+    with pytest.raises(CommitNotFoundError):
         st.tags.delete("report")
 
 
@@ -215,7 +215,7 @@ def test_store_tag_can_name_a_ref(tmp_path):
 
 def test_store_tag_outlives_its_session(tmp_path):
     """The publication property, through the store surface: the tag and
-    its checkpoint survive the deletion of the session that made it."""
+    its commit survive the deletion of the session that made it."""
     st = Store(tmp_path)
     with st.open("author") as ws:
         ws.terminal("echo published > report.txt")
@@ -244,7 +244,7 @@ def test_session_scoped_tags_stay_off_the_store_surface(tmp_path):
     st = Store(tmp_path)
     with st.open("author") as ws:
         ws.terminal("echo x > x.txt")
-        ws.tag("mine")  # session scope
+        ws.tags.add("mine")  # session scope
         st.tags.add(ws, "ours")
     assert st.tags.list() == {"ours": st.tags.list()["ours"]}
     assert "mine" not in st.tags.list()

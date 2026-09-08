@@ -38,8 +38,8 @@ def test_parallel_terminal_calls_no_lost_writes(kv_ws):
             r = kv_ws.terminal(f"echo line-{tid}-{i} > /t{tid}-{i}.txt")
             if not r:
                 errors.append(r.stderr)
-            if r.checkpoint is None:
-                errors.append(f"no checkpoint for t{tid}-{i}")
+            if r.commit is None:
+                errors.append(f"no commit for t{tid}-{i}")
 
     threads = [threading.Thread(target=work, args=(t,)) for t in range(n_threads)]
     for t in threads:
@@ -51,11 +51,11 @@ def test_parallel_terminal_calls_no_lost_writes(kv_ws):
     # every call's effect survived...
     for tid in range(n_threads):
         for i in range(per_thread):
-            assert kv_ws.fs.exists(f"/t{tid}-{i}.txt")
+            assert kv_ws.files.fs.exists(f"/t{tid}-{i}.txt")
     # ...and each call minted exactly one commit (plus kvgit's empty
     # seed and the workspace init baseline):
     # interleaved staged writes would have merged calls into one.
-    assert len(list(kv_ws.history())) == n_threads * per_thread + 2
+    assert len(list(kv_ws.log())) == n_threads * per_thread + 2
 
 
 def test_parallel_mixed_mutators(kv_ws):
@@ -73,7 +73,7 @@ def test_parallel_mixed_mutators(kv_ws):
 
     def via_write() -> None:
         barrier.wait()
-        results["write"] = kv_ws.write_file("/from-write.txt", "w")
+        results["write"] = kv_ws.files.write("/from-write.txt", "w")
 
     threads = [
         threading.Thread(target=f) for f in (via_terminal, via_python, via_write)
@@ -85,12 +85,12 @@ def test_parallel_mixed_mutators(kv_ws):
 
     assert all(bool(r) for r in results.values())
     for name in ("from-terminal", "from-python", "from-write"):
-        assert kv_ws.fs.exists(f"/{name}.txt")
-    assert len(list(kv_ws.history())) == 5  # seed + init + one per call
+        assert kv_ws.files.fs.exists(f"/{name}.txt")
+    assert len(list(kv_ws.log())) == 5  # seed + init + one per call
 
 
 def test_fork_races_writer_without_corruption(kv_ws):
-    """fork() checkpoints pending staged state (kvgit) — it must hold
+    """fork() commits pending staged state (kvgit) — it must hold
     the lock so it never commits a half-written staged buffer."""
     kv_ws.terminal("echo base > /base.txt")
     done = threading.Event()
@@ -114,7 +114,7 @@ def test_fork_races_writer_without_corruption(kv_ws):
         t.join()
 
     for f in forks:
-        assert f.fs.exists("/base.txt")
+        assert f.files.fs.exists("/base.txt")
         f.close()
 
 
@@ -138,12 +138,12 @@ def test_host_object_may_reenter_public_api():
     holder: dict[str, Workspace] = {}
 
     def snapshot() -> str:
-        return holder["ws"].checkpoint(info={"tool": "host-snapshot"})
+        return holder["ws"].commit(info={"tool": "host-snapshot"})
 
     ws = Workspace(provider, python=PythonConfig(host_objects={"snapshot": snapshot}))
     holder["ws"] = ws
     try:
-        ws.write_file("/x.txt", "1")
+        ws.files.write("/x.txt", "1")
         r = ws.run_python("cid = snapshot()")
         assert r, r.error
         assert isinstance(r.namespace["cid"], str)
@@ -161,8 +161,8 @@ def test_reads_do_not_take_the_lock(kv_ws):
     def reader() -> None:
         assert kv_ws.head is not None
         assert kv_ws.dirty is False
-        assert kv_ws.get("/a.txt") == b"hi\n"
-        list(kv_ws.history(limit=1))
+        assert kv_ws.files.get("/a.txt") == b"hi\n"
+        list(kv_ws.log(limit=1))
         finished.set()
 
     with kv_ws._lock:  # simulate a long-running mutating call

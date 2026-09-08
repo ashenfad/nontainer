@@ -29,7 +29,7 @@ def test_plotly_figure_becomes_spec(ws):
     fig = plotly.Figure(data=[plotly.Scatter(x=[1, 2], y=[3, 4])])
     out, _ = materialize_ui(ws, {"trend": fig})
     assert out == [("trend", "/workspace/ui/trend.plotly.json")]
-    spec = json.loads(ws.fs.read("/workspace/ui/trend.plotly.json"))
+    spec = json.loads(ws.files.fs.read("/workspace/ui/trend.plotly.json"))
     assert spec["data"][0]["x"] == [1, 2]  # the SPEC, not baked output
 
 
@@ -38,7 +38,7 @@ def test_dataframe_becomes_capped_table(ws):
     df = pd.DataFrame({"a": range(500), "b": range(500)})
     out, _ = materialize_ui(ws, {"rows": df})
     assert out == [("rows", "/workspace/ui/rows.table.json")]
-    table = json.loads(ws.fs.read("/workspace/ui/rows.table.json"))
+    table = json.loads(ws.files.fs.read("/workspace/ui/rows.table.json"))
     assert table["columns"] == ["a", "b"]
     assert len(table["data"]) == 200  # capped...
     assert table["total"] == 500  # ...and the cap announces itself
@@ -63,7 +63,7 @@ def test_table_carries_column_types(ws):
         }
     )
     materialize_ui(ws, {"rows": df})
-    table = json.loads(ws.fs.read("/workspace/ui/rows.table.json"))
+    table = json.loads(ws.files.fs.read("/workspace/ui/rows.table.json"))
     assert table["columnTypes"] == [
         "number",
         "number",
@@ -98,7 +98,7 @@ def test_matplotlib_figure_becomes_png(ws):
     out, _ = materialize_ui(ws, {"chart": fig})
     plt.close(fig)
     assert out == [("chart", "/workspace/ui/chart.png")]
-    assert ws.fs.read("/workspace/ui/chart.png")[:8] == b"\x89PNG\r\n\x1a\n"
+    assert ws.files.fs.read("/workspace/ui/chart.png")[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_bytes_and_html_and_json_tiers(ws):
@@ -125,8 +125,8 @@ def test_bytes_and_html_and_json_tiers(ws):
     )
     assert out["shot"] == "/workspace/ui/shot.png"
     assert out["widget"] == "/workspace/ui/widget.html"
-    assert ws.fs.read("/workspace/ui/widget.html") == b"<b>hi</b>"
-    assert json.loads(ws.fs.read("/workspace/ui/stats.json")) == {"mean": 2.5}
+    assert ws.files.fs.read("/workspace/ui/widget.html") == b"<b>hi</b>"
+    assert json.loads(ws.files.fs.read("/workspace/ui/stats.json")) == {"mean": 2.5}
     assert out["blob"] == "/workspace/ui/blob.bin"
 
 
@@ -140,7 +140,7 @@ def test_unrenderable_lands_as_repr_not_silence(ws):
 
     out, _ = materialize_ui(ws, {"x": Cursed()})
     assert out == [("x", "/workspace/ui/x.txt")]
-    assert ws.fs.read("/workspace/ui/x.txt") == b"<Cursed>"
+    assert ws.files.fs.read("/workspace/ui/x.txt") == b"<Cursed>"
 
 
 def test_name_sanitization_and_non_dict(ws):
@@ -168,7 +168,7 @@ def test_cards_stats_and_callouts_normalize(ws):
     ]
     out, _ = materialize_ui(ws, {"dash": cards})
     assert out == [("dash", "/workspace/ui/dash.cards.json")]
-    payload = json.loads(ws.fs.read("/workspace/ui/dash.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/dash.cards.json"))
     assert payload == {
         "items": [
             {"type": "stat", "label": "Revenue", "value": 42000, "sublabel": "up 8%"},
@@ -191,7 +191,7 @@ def test_cards_callout_tone_clamps_and_defaults(ws):
         {"type": "callout", "body": "no title"},  # tone absent, title missing
     ]
     materialize_ui(ws, {"notes": cards})
-    payload = json.loads(ws.fs.read("/workspace/ui/notes.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/notes.cards.json"))
     assert payload == {
         "items": [
             {"type": "callout", "title": "A", "body": "b", "tone": "info"},
@@ -205,7 +205,7 @@ def test_cards_normalization_drops_unknown_and_coerces_label(ws):
     that reaches the renderer is exactly {type, label, value, sublabel?}."""
     cards = [{"label": 2024, "value": 10, "color": "red", "footnote": "x"}]
     materialize_ui(ws, {"stat": cards})
-    payload = json.loads(ws.fs.read("/workspace/ui/stat.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/stat.cards.json"))
     assert payload == {"items": [{"type": "stat", "label": "2024", "value": 10}]}
 
 
@@ -214,7 +214,7 @@ def test_cards_legacy_delta_and_unit_fold(ws):
     sublabel, and `unit` appends onto the value."""
     cards = [{"label": "Revenue", "value": 42000, "delta": "+8%", "unit": " USD"}]
     materialize_ui(ws, {"kpis": cards})
-    payload = json.loads(ws.fs.read("/workspace/ui/kpis.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/kpis.cards.json"))
     assert payload == {
         "items": [
             {
@@ -232,7 +232,7 @@ def test_cards_explicit_sublabel_beats_legacy_delta(ws):
     dropped as an unknown key."""
     cards = [{"label": "R", "value": 1, "sublabel": "real", "delta": "+9%"}]
     materialize_ui(ws, {"k": cards})
-    payload = json.loads(ws.fs.read("/workspace/ui/k.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/k.cards.json"))
     assert payload == {
         "items": [{"type": "stat", "label": "R", "value": 1, "sublabel": "real"}]
     }
@@ -247,7 +247,7 @@ def test_cards_survive_non_json_scalars(ws):
     cards = [{"label": "revenue", "value": Decimal("12.5")}]
     out, _ = materialize_ui(ws, {"kpi": cards})
     assert out == [("kpi", "/workspace/ui/kpi.cards.json")]
-    payload = json.loads(ws.fs.read("/workspace/ui/kpi.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/kpi.cards.json"))
     assert payload["items"] == [{"type": "stat", "label": "revenue", "value": "12.5"}]
 
 
@@ -264,7 +264,7 @@ def test_bare_card_list_adopts_default_envelope(ws):
     )
     assert out == [("cards", "/workspace/ui/cards.cards.json")]
     assert problems == []
-    payload = json.loads(ws.fs.read("/workspace/ui/cards.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/cards.cards.json"))
     assert [i["type"] for i in payload["items"]] == ["stat", "callout"]
 
 
@@ -289,7 +289,7 @@ def test_a_lone_callout_renders_as_a_one_item_row(ws):
     )
     assert out == [("caveats", "/workspace/ui/caveats.cards.json")]
     assert problems == []
-    payload = json.loads(ws.fs.read("/workspace/ui/caveats.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/caveats.cards.json"))
     assert [i["type"] for i in payload["items"]] == ["callout"]
     assert payload["items"][0]["title"].startswith("Read the caveats")
 
@@ -393,7 +393,7 @@ def test_cards_cap_at_24(ws):
     """The row is capped: 25 tiles in, 24 out."""
     cards = [{"label": f"m{n}", "value": n} for n in range(25)]
     materialize_ui(ws, {"wall": cards})
-    payload = json.loads(ws.fs.read("/workspace/ui/wall.cards.json"))
+    payload = json.loads(ws.files.fs.read("/workspace/ui/wall.cards.json"))
     assert len(payload["items"]) == 24
     assert payload["items"][-1] == {"type": "stat", "label": "m23", "value": 23}
 
@@ -414,7 +414,7 @@ def test_cards_near_miss_falls_to_json_floor(ws, value):
     never half-renders."""
     out, _ = materialize_ui(ws, {"x": value})
     assert out == [("x", "/workspace/ui/x.json")]
-    assert json.loads(ws.fs.read("/workspace/ui/x.json")) == value
+    assert json.loads(ws.files.fs.read("/workspace/ui/x.json")) == value
 
 
 def test_agno_run_python_notes_ui_artifacts():
@@ -425,7 +425,7 @@ def test_agno_run_python_notes_ui_artifacts():
     tk = WorkspaceTools(ws)
     out = tk.functions["run_python"].entrypoint(code="ui = {'stats': {'n': 3}}")
     assert "[ui artifacts: stats -> /workspace/ui/stats.json]" in out
-    assert json.loads(ws.fs.read("/workspace/ui/stats.json")) == {"n": 3}
+    assert json.loads(ws.files.fs.read("/workspace/ui/stats.json")) == {"n": 3}
     # and the tool description teaches the convention
     assert "ui = " in (tk.functions["run_python"].entrypoint.__doc__ or "")
     ws.close()
@@ -441,7 +441,7 @@ def test_agno_run_python_adopts_direct_ui_writes():
     from nontainer.adapters.agno import WorkspaceTools
 
     ws = Workspace(KvgitProvider.open(None, session="ui-adopt"))
-    ws.fs.makedirs("/workspace/ui", exist_ok=True)
+    ws.files.fs.makedirs("/workspace/ui", exist_ok=True)
     tk = WorkspaceTools(ws)
     out = tk.functions["run_python"].entrypoint(
         code=(
@@ -459,18 +459,20 @@ def test_agno_run_python_adopts_direct_ui_writes():
 def test_string_path_to_existing_file_passes_through(ws):
     """The near-miss: the agent saved the file itself (savefig) and put
     its PATH in `ui`. A pointer, not content — honor it as-is."""
-    ws.fs.makedirs("/workspace/ui", exist_ok=True)
-    ws.fs.write("/workspace/ui/plot.png", b"\x89PNG\r\n\x1a\nfake")
+    ws.files.fs.makedirs("/workspace/ui", exist_ok=True)
+    ws.files.fs.write("/workspace/ui/plot.png", b"\x89PNG\r\n\x1a\nfake")
     out, _ = materialize_ui(ws, {"plot": "/workspace/ui/plot.png"})
     assert out == [("plot", "/workspace/ui/plot.png")]
     # untouched: no re-encode, no sidecar artifact
-    assert ws.fs.read("/workspace/ui/plot.png") == b"\x89PNG\r\n\x1a\nfake"
+    assert ws.files.fs.read("/workspace/ui/plot.png") == b"\x89PNG\r\n\x1a\nfake"
 
 
 def test_string_path_to_missing_file_falls_to_data_tier(ws):
     out, _ = materialize_ui(ws, {"ghost": "/nope/missing.png"})
     assert out == [("ghost", "/workspace/ui/ghost.json")]
-    assert json.loads(ws.fs.read("/workspace/ui/ghost.json")) == "/nope/missing.png"
+    assert (
+        json.loads(ws.files.fs.read("/workspace/ui/ghost.json")) == "/nope/missing.png"
+    )
 
 
 def test_plain_strings_stay_data(ws):
@@ -489,7 +491,7 @@ def test_oversize_value_reports_why(ws):
     assert out == [("blob", "/workspace/ui/blob.txt")]
     (problem,) = problems
     assert "NOT rendered: too large" in problem and "9.0MB > 8MB" in problem
-    assert ws.fs.read("/workspace/ui/blob.txt").decode() == problem
+    assert ws.files.fs.read("/workspace/ui/blob.txt").decode() == problem
 
 
 @pytest.mark.parametrize(

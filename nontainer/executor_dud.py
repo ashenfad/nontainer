@@ -5,9 +5,9 @@ against workspace state (termish shell, monkeyfs VFS, sandtrap
 gates), ``DudExecutor`` runs a *real* one: a dud ``Session`` — real
 bash, real python, a real scratch filesystem — materialized from the
 provider's tree, harvested back as a diff. The versioning semantics
-(checkpoint per call, fork, rollback) are untouched: they were always
+(commit per call, fork, rollback) are untouched: they were always
 the provider's, and the workspace stages the harvest through its
-normal checkpoint flow.
+normal commit flow.
 
 Requires the ``dud`` extra (``pip install nontainer[dud]``). The
 default backend is ``"vm"`` — a real microVM boundary, resolved per
@@ -613,7 +613,7 @@ class DudExecutor:
             # affinity). Every synced mutation path keeps guest == fs
             # view, and the head only names COMMITTED state — so a
             # divergent/dirty close simply yields a tag no future head
-            # matches, degrading to the normal push. Raw ``ws.fs``
+            # matches, degrading to the normal push. Raw ``ws.files.fs``
             # writes are inside the guarantee too: they mark the
             # workspace stale, and close() settles that before us.
             #
@@ -754,7 +754,7 @@ class DudExecutor:
         ``extra_classes``. Read-only is enforced (cache write raises
         guest-side; a GET that writes the fs is rejected here), and a
         mutating handler's writes are absorbed into the provider (so
-        ``ws.fs`` reflects them, like LocalExecutor's write-through)."""
+        ``ws.files.fs`` reflects them, like LocalExecutor's write-through)."""
         import base64
         import inspect
         import pickle
@@ -938,7 +938,7 @@ class DudExecutor:
         """Harvest guest writes (rebase: the harvest becomes the new
         baseline, so each call yields only that call's changes).
         ``None`` for a clean harvest keeps read-only calls read-only
-        (no provider dirtying, no phantom checkpoints). A session lost
+        (no provider dirtying, no phantom commits). A session lost
         HERE is a torn call, not a clean miss: the exec already
         committed its cache write-backs (they land inside a successful
         ``session.python``) while the fs writes died unharvested in the

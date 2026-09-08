@@ -1,5 +1,5 @@
 """``isolation="process"``: agent code runs in a forked worker while
-the workspace's world — VirtualFS, cache, checkpoints — stays in the
+the workspace's world — VirtualFS, cache, commits — stays in the
 parent, bridged over sandtrap's RPC channel. A worker crash costs the
 crashing call, never the host or the workspace."""
 
@@ -25,15 +25,15 @@ def ws():
     w.close()
 
 
-def test_writes_land_in_workspace_and_checkpoint(ws):
+def test_writes_land_in_workspace_and_commit(ws):
     r = ws.run_python("open('/x.txt', 'w').write('hi from worker')")
     assert r.error is None
-    assert ws.fs.read("/x.txt") == b"hi from worker"
-    assert r.checkpoint  # the write dirtied the PARENT's fs -> committed
+    assert ws.files.fs.read("/x.txt") == b"hi from worker"
+    assert r.commit  # the write dirtied the PARENT's fs -> committed
 
 
 def test_reads_see_parent_state(ws):
-    ws.write_file("/seed.txt", "from parent")
+    ws.files.write("/seed.txt", "from parent")
     r = ws.run_python("content = open('/seed.txt').read()")
     assert r.error is None
     assert r.namespace["content"] == "from parent"
@@ -50,7 +50,7 @@ def test_cache_round_trips_via_rpc(ws):
 
 
 def test_stdin_and_argv_cross_the_boundary(ws):
-    r = ws.exec_python("line = input()", stdin="hello worker")
+    r = ws.runtime.exec_python("line = input()", stdin="hello worker")
     assert r.error is None
     assert r.namespace["line"] == "hello worker"
 
@@ -151,10 +151,10 @@ def post(req):
 
 
 def _seed_app(w):
-    w.fs.makedirs("/workspace/app/api", exist_ok=True)
-    w.fs.write("/workspace/app/index.html", b"<html><body>hi</body></html>")
-    w.fs.write("/workspace/app/api/count.py", _COUNTER)
-    w.checkpoint()
+    w.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    w.files.fs.write("/workspace/app/index.html", b"<html><body>hi</body></html>")
+    w.files.fs.write("/workspace/app/api/count.py", _COUNTER)
+    w.commit()
 
 
 def test_authoring_dispatch_runs_in_workers(ws):
@@ -193,7 +193,7 @@ def test_frozen_serving_forks_per_request(ws):
 
     _seed_app(ws)
     ws.cache["n"] = 41
-    ws.checkpoint()
+    ws.commit()
     snapshot = ws.fork("frozen-iso")
     try:
         runtime = AppRuntime(snapshot, frozen=True, log_sink=lambda msg: None)
@@ -229,7 +229,7 @@ def test_agent_python_forms_work_under_a_non_forked_worker(ws):
     assert dash_c.exit_code == 0
     assert dash_c.stdout.strip() == "42"
 
-    ws.write_file("/s.py", 'print("from a file")')
+    ws.files.write("/s.py", 'print("from a file")')
     from_file = ws.terminal("python /s.py")
     assert from_file.exit_code == 0
     assert from_file.stdout.strip() == "from a file"

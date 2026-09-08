@@ -177,7 +177,7 @@ def test_terminal_description_gates_curl_on_the_executor():
 
     local = Workspace(KvgitProvider.open(None, session="primer-local"))
     try:
-        assert local.supports_commands is True
+        assert local.runtime.supports_commands is True
         assert "ws-curl $APP_ORIGIN/api/scores?limit=3" in terminal_description(
             local, apps=True, split=False
         )
@@ -189,10 +189,10 @@ def test_terminal_description_gates_curl_on_the_executor():
         executor=DudExecutor(backend="subprocess"),
     )
     try:
-        assert guest.supports_commands is False
+        assert guest.runtime.supports_commands is False
         # The dud rung ferries ws-* verbs: the primer teaches the
         # portable spelling instead of the no-curl note.
-        assert guest.supports_ws_verbs is True
+        assert guest.runtime.supports_ws_verbs is True
         desc = terminal_description(guest, apps=True, split=False)
         assert "ws-curl $APP_ORIGIN/api/scores?limit=3" in desc
         assert "There is no curl here" not in desc
@@ -210,4 +210,4 @@ def test_unknown_executors_keep_the_historical_default():
     ws = Workspace.__new__(Workspace)
     ws._runtime = Runtime.__new__(Runtime)
     ws._runtime._executor = OldExecutor()
-    assert ws.supports_commands is True
+    assert ws.runtime.supports_commands is True

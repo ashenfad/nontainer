@@ -16,7 +16,7 @@ visible in the API:
 - **Workspace-side**: the lock, the commit flow, cwd persistence, and
   the absorb-or-unwind handling of an executor's write harvest.
   Executors never commit; a runtime returns results and the workspace
-  decides what becomes a checkpoint.
+  decides what becomes a commit.
 
 A ``Runtime`` is normally built by ``Workspace.__init__`` and reached
 as ``ws.runtime``. It is also constructible directly over an existing
@@ -73,7 +73,7 @@ class Runtime:
             defaults.
         mounts: Real directories exposed to *this runtime's*
             executions only. A workspace composes its own mounts into
-            the filesystem it hands over — so ``ws.fs`` and execution
+            the filesystem it hands over — so ``ws.files.fs`` and execution
             agree — and passes none here; a standalone runtime uses
             this to add mounts of its own.
         commands: Terminal commands available to shell executions
@@ -105,11 +105,12 @@ class Runtime:
                 existing.python_config if existing is not None else PythonConfig()
             )
         self._max_observation = max_observation
+        self._cache_enabled = ws._cache_enabled
 
         # The filesystem executions see. The workspace has already
         # composed its own mounts into the one it hands over; extra
         # mounts here are this runtime's alone and are deliberately NOT
-        # visible through ``ws.fs``.
+        # visible through ``ws.files.fs``.
         self._fs = ws._fs
         if mounts:
             self._fs = Workspace._build_fs(
@@ -173,7 +174,7 @@ class Runtime:
                 commands=self._commands,
                 shell_env=self._shell_env,
                 python_config=self._python_config,
-                cache_enabled=ws.cache_enabled,
+                cache_enabled=self._cache_enabled,
                 max_observation=self._max_observation,
                 head=_state_identity(ws._provider),
                 root=ws.root,
@@ -200,7 +201,16 @@ class Runtime:
 
     @property
     def python_config(self) -> PythonConfig:
+        """The sandbox policy these executions run under."""
         return self._python_config
+
+    @property
+    def cache_enabled(self) -> bool:
+        """Whether the agent-facing ``cache`` exists for these
+        executions. A workspace-construction choice (``cache=False``),
+        read here because execution is what sees it: the sandbox binds
+        no ``cache`` name, and ``ws.cache`` raises."""
+        return self._cache_enabled
 
     @property
     def max_observation(self) -> int:
@@ -241,7 +251,7 @@ class Runtime:
 
     def exec_shell(self, script: str) -> TerminalResult:
         """EXTENSION SURFACE: run a shell script — no lock, no
-        checkpoint. ``Workspace.terminal`` wraps this with the
+        commit. ``Workspace.terminal`` wraps this with the
         single-writer lock and the commit flow; most callers want that.
 
         The executor's view is brought current first, so a host-side
@@ -259,7 +269,7 @@ class Runtime:
         echo: Literal["none", "last", "all"] | None = None,
         view: "ViewSpec | None" = None,
     ) -> PythonResult:
-        """EXTENSION SURFACE: the raw execution path — no checkpoint,
+        """EXTENSION SURFACE: the raw execution path — no commit,
         no lock. For embedders composing execution features on top of
         the workspace; most callers want ``Workspace.run_python``.
         Consumers: ``run_python`` itself, the terminal ``python``
@@ -375,12 +385,6 @@ class Runtime:
         closures."""
         return self._framework_commands
 
-    @property
-    def shell_env(self) -> dict[str, str]:
-        """The live shell environment for script executions. Executors
-        snapshot it per call."""
-        return self._shell_env
-
     def register_command(
         self,
         name: str,
@@ -419,18 +423,32 @@ class Runtime:
         if rebind is not None:
             self._framework_commands[name] = rebind
 
-    def set_shell_env(self, name: str, value: str) -> None:
-        """Publish a variable to shell executions (``$VAR`` expansion
-        on the termish rung, exported into the guest on dud rungs).
+    def shell_env(
+        self, name: str | None = None, value: str | None = None
+    ) -> "str | dict[str, str] | None":
+        """The shell environment for script executions (``$VAR``
+        expansion on the termish rung, exported into the guest on dud
+        rungs).
 
-        Used by post-construction features — ``enable_apps`` publishes
-        ``$APP_ORIGIN`` — and available to embedders. Forks and
-        snapshots inherit a copy. The shell never writes back: this is
-        configuration, not state.
+        One verb, three forms: with a name and a value it publishes a
+        variable, with a name alone it returns that variable's value
+        (``None`` when unset), and with neither it returns the live
+        mapping — mutable, which is how a fork replays a whole
+        environment at once.
+
+        Publishing is what post-construction features do
+        (``enable_apps`` publishes ``$APP_ORIGIN``), and embedders may
+        add their own. Forks and snapshots inherit a copy. The shell
+        never writes back: this is configuration, not state.
         """
+        if name is None:
+            return self._shell_env
+        if value is None:
+            return self._shell_env.get(name)
         if not _SHELL_VAR_RE.fullmatch(name):
             raise ValueError(f"Invalid shell variable name: {name!r}")
         self._shell_env[name] = value
+        return None
 
     def forkable_commands(self) -> dict[str, Callable[..., Any]]:
         """User commands safe to inherit: everything except the
@@ -454,7 +472,7 @@ class Runtime:
         """Flag the executor's view as out of date. Every path where
         provider state moves behind its back calls this — restore /
         rollback / discard, the host-side write helpers, direct
-        ``ws.fs`` writes."""
+        ``ws.files.fs`` writes."""
         self._executor_stale = True
 
     def sync_if_stale(self) -> None:
@@ -484,7 +502,7 @@ class Runtime:
     def diff(self) -> "StagedDiff | None":
         """Harvest the executor's staged writes since the last harvest.
         ``None`` from an executor that writes through to the provider.
-        The workspace absorbs the result before its checkpoint flow."""
+        The workspace absorbs the result before its commit flow."""
         return self._executor.diff()
 
     # ------------------------------------------------------------------

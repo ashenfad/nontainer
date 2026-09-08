@@ -1,9 +1,10 @@
-"""KvgitProvider: the versioned substrate — checkpoints, forks, time-travel."""
+"""KvgitProvider: the versioned substrate — commits, forks, time-travel."""
 
 import pytest
+from monkeyfs import VirtualFS
 
 from nontainer import (
-    CheckpointNotFoundError,
+    CommitNotFoundError,
     NotSupportedError,
     Workspace,
     WorkspaceError,
@@ -14,7 +15,7 @@ from nontainer.providers import KvgitProvider
 
 @pytest.fixture
 def kv_ws():
-    """Memory-backed kvgit workspace (autocheckpoint on by default)."""
+    """Memory-backed kvgit workspace (autocommit on by default)."""
     provider = KvgitProvider.open(None, session="test-session")
     ws = Workspace(provider)
     yield ws
@@ -37,9 +38,9 @@ def test_session_validated():
 
 def test_no_changes_no_commit():
     p = KvgitProvider.open(None, session="s1")
-    first = p.checkpoint()
-    again = p.checkpoint()
-    assert first == again  # empty checkpoint returns current commit
+    first = p.commit()
+    again = p.commit()
+    assert first == again  # empty commit returns current commit
 
 
 # -- workspace initialization ------------------------------------------------
@@ -51,47 +52,47 @@ def test_fresh_workspace_commits_clean_init_baseline():
 
     ws = Workspace(p)
     try:
-        entries = list(ws.history())
+        entries = list(ws.log())
         assert entries[0].info == {"tool": "init"}
         assert entries[0].id == ws.head
         assert ws.head != empty_head
         assert not ws.dirty
-        assert ws.fs.isdir("/workspace")
-        assert ws.fs.getcwd() == "/workspace"
+        assert ws.files.fs.isdir("/workspace")
+        assert ws.files.fs.getcwd() == "/workspace"
     finally:
         ws.close()
 
 
-@pytest.mark.parametrize("autocheckpoint", [True, False])
-def test_first_readonly_calls_do_not_inherit_initialization(autocheckpoint):
+@pytest.mark.parametrize("autocommit", [True, False])
+def test_first_readonly_calls_do_not_inherit_initialization(autocommit):
     p = KvgitProvider.open(None, session="readonly-init")
-    ws = Workspace(p, autocheckpoint=autocheckpoint)
+    ws = Workspace(p, autocommit=autocommit)
     try:
         init_head = ws.head
-        before = list(ws.history())
+        before = list(ws.log())
 
         shell = ws.terminal("ls")
         python = ws.run_python("value = 1 + 1")
 
-        assert shell.checkpoint is None
-        assert python.checkpoint is None
+        assert shell.commit is None
+        assert python.commit is None
         assert ws.head == init_head
-        assert list(ws.history()) == before
+        assert list(ws.log()) == before
         assert not ws.dirty
     finally:
         ws.close()
 
 
-def test_reopen_does_not_create_another_init_checkpoint(tmp_path):
+def test_reopen_does_not_create_another_init_commit(tmp_path):
     path = tmp_path / "kvgit"
     with Workspace(KvgitProvider.open(path, session="reopen")) as ws:
         init_head = ws.head
-        init_history = list(ws.history())
+        init_history = list(ws.log())
 
     with Workspace(KvgitProvider.open(path, session="reopen")) as reopened:
         assert reopened.head == init_head
-        assert list(reopened.history()) == init_history
-        assert list(reopened.history())[0].info == {"tool": "init"}
+        assert list(reopened.log()) == init_history
+        assert list(reopened.log())[0].info == {"tool": "init"}
         assert not reopened.dirty
 
 
@@ -104,12 +105,12 @@ def test_predirty_provider_preserves_staging_without_init_commit():
     ws = Workspace(p)
     try:
         assert ws.head == head
-        assert list(ws.history()) == history
+        assert list(ws.log()) == history
         assert ws.dirty
         assert p.kv["caller-pending"] == {"keep": True}
-        assert ws.fs.isdir("/workspace")
-        assert ws.fs.getcwd() == "/workspace"
-        assert p.kv["__cwd__"] == "/workspace"
+        assert ws.files.fs.isdir("/workspace")
+        assert ws.files.fs.getcwd() == "/workspace"
+        assert p.kv[VirtualFS.CWD_KEY] == "/workspace"
     finally:
         ws.close()
 
@@ -139,13 +140,13 @@ def test_fresh_workspace_cannot_rollback_below_init():
     try:
         init_head = ws.head
 
-        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+        with pytest.raises(CommitNotFoundError, match="rollback floor"):
             ws.rollback(1)
 
         assert ws.head == init_head
         assert not ws.dirty
-        assert ws.fs.isdir("/workspace")
-        assert ws.fs.getcwd() == "/workspace"
+        assert ws.files.fs.isdir("/workspace")
+        assert ws.files.fs.getcwd() == "/workspace"
     finally:
         ws.close()
 
@@ -158,17 +159,17 @@ def test_rollback_can_target_init_but_not_cross_it():
 
         assert ws.rollback(1) == init_head
         assert ws.head == init_head
-        assert not ws.fs.exists("/workspace/deep")
-        assert ws.fs.isdir("/workspace")
-        assert ws.fs.getcwd() == "/workspace"
+        assert not ws.files.fs.exists("/workspace/deep")
+        assert ws.files.fs.isdir("/workspace")
+        assert ws.files.fs.getcwd() == "/workspace"
 
-        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+        with pytest.raises(CommitNotFoundError, match="rollback floor"):
             ws.rollback(1)
 
         assert ws.head == init_head
         assert not ws.dirty
-        assert ws.fs.isdir("/workspace")
-        assert ws.fs.getcwd() == "/workspace"
+        assert ws.files.fs.isdir("/workspace")
+        assert ws.files.fs.getcwd() == "/workspace"
     finally:
         ws.close()
 
@@ -181,11 +182,11 @@ def test_rollback_floor_survives_reopen(tmp_path):
 
     with Workspace(KvgitProvider.open(path, session="floor-reopen")) as reopened:
         assert reopened.rollback(1) == init_head
-        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+        with pytest.raises(CommitNotFoundError, match="rollback floor"):
             reopened.rollback(1)
         assert reopened.head == init_head
-        assert reopened.fs.isdir("/workspace")
-        assert reopened.fs.getcwd() == "/workspace"
+        assert reopened.files.fs.isdir("/workspace")
+        assert reopened.files.fs.getcwd() == "/workspace"
 
 
 def test_fork_inherits_rollback_floor():
@@ -197,11 +198,11 @@ def test_fork_inherits_rollback_floor():
         child = parent.fork("floor-child")
 
         assert child.rollback(1) == init_head
-        with pytest.raises(CheckpointNotFoundError, match="rollback floor"):
+        with pytest.raises(CommitNotFoundError, match="rollback floor"):
             child.rollback(1)
         assert child.head == init_head
-        assert child.fs.isdir("/workspace")
-        assert child.fs.getcwd() == "/workspace"
+        assert child.files.fs.isdir("/workspace")
+        assert child.files.fs.getcwd() == "/workspace"
     finally:
         if child is not None:
             child.close()
@@ -212,73 +213,72 @@ def test_legacy_history_without_init_keeps_provider_rollback_behavior():
     p = KvgitProvider.open(None, session="legacy-rollback")
     p.fs.makedirs("/workspace", exist_ok=True)
     p.fs.chdir("/workspace")
-    p.kv["__cwd__"] = "/workspace"
     # Similar-looking caller metadata is not nontainer's exact marker.
-    p.checkpoint(info={"tool": "init", "source": "legacy"})
+    p.commit(info={"tool": "init", "source": "legacy"})
     p.fs.write("/workspace/state.txt", b"legacy")
-    p.checkpoint(info={"tool": "legacy-write"})
+    p.commit(info={"tool": "legacy-write"})
 
     ws = Workspace(p)
     try:
-        seed = list(ws.history())[2]
+        seed = list(ws.log())[2]
         assert ws.rollback(2) == seed.id
         assert ws.head == seed.id
-        assert not ws.fs.exists("/workspace")
+        assert not ws.files.fs.exists("/workspace")
     finally:
         ws.close()
 
 
-# -- atomic checkpoint: files + cache together ------------------------------
+# -- atomic commit: files + cache together ------------------------------
 
 
-def test_checkpoint_and_restore_files_and_cache(kv_ws):
+def test_commit_and_restore_files_and_cache(kv_ws):
     kv_ws.terminal("echo v1 > f.txt")
     kv_ws.run_python("cache['gen'] = 1")
-    cp1 = kv_ws.checkpoint(info={"label": "v1"})
+    cp1 = kv_ws.commit(info={"label": "v1"})
 
     kv_ws.terminal("echo v2 > f.txt")
     kv_ws.run_python("cache['gen'] = 2")
-    kv_ws.checkpoint(info={"label": "v2"})
+    kv_ws.commit(info={"label": "v2"})
 
     assert kv_ws.terminal("cat f.txt").stdout.strip() == "v2"
     assert kv_ws.cache["gen"] == 2
 
-    kv_ws.restore(cp1)
+    kv_ws.checkout(cp1)
     # one restore rewinds BOTH planes atomically
     assert kv_ws.terminal("cat f.txt").stdout.strip() == "v1"
     assert kv_ws.cache["gen"] == 1
 
 
 def test_restore_unknown_id(kv_ws):
-    with pytest.raises(CheckpointNotFoundError):
-        kv_ws.restore("0" * 40)
+    with pytest.raises(CommitNotFoundError):
+        kv_ws.checkout("0" * 40)
 
 
-# -- autocheckpoint ---------------------------------------------------------
+# -- autocommit ---------------------------------------------------------
 
 
-def test_autocheckpoint_records_tool_info(kv_ws):
+def test_autocommit_records_tool_info(kv_ws):
     kv_ws.terminal("echo hi > a.txt")
     kv_ws.run_python("cache['x'] = 1")
-    infos = [c.info.get("tool") for c in kv_ws.history()]
+    infos = [c.info.get("tool") for c in kv_ws.log()]
     assert infos[0] == "run_python"
     assert infos[1] == "terminal"
 
 
 def test_readonly_calls_do_not_commit(kv_ws):
     kv_ws.terminal("echo hi > a.txt")  # one commit
-    before = len(list(kv_ws.history()))
+    before = len(list(kv_ws.log()))
     kv_ws.terminal("ls")
     kv_ws.terminal("cat a.txt")
     kv_ws.run_python("v = 1 + 1")
-    after = len(list(kv_ws.history()))
+    after = len(list(kv_ws.log()))
     assert after == before  # pure reads / namespace-only runs don't commit
 
 
 def test_history_limit_and_time(kv_ws):
     kv_ws.terminal("echo a > a.txt")
     kv_ws.terminal("echo b > b.txt")
-    entries = list(kv_ws.history(limit=2))
+    entries = list(kv_ws.log(limit=2))
     assert len(entries) == 2
     assert entries[0].time > 0
 
@@ -302,7 +302,7 @@ def test_rollback_restores_cwd(kv_ws):
 
 def test_rollback_past_history_raises(kv_ws):
     kv_ws.terminal("echo x > f.txt")
-    with pytest.raises(CheckpointNotFoundError):
+    with pytest.raises(CommitNotFoundError):
         kv_ws.rollback(50)
 
 
@@ -311,9 +311,9 @@ def test_rollback_past_history_raises(kv_ws):
 
 def test_discard_staged_writes():
     p = KvgitProvider.open(None, session="s1")
-    ws = Workspace(p, autocheckpoint=False)  # manual checkpointing
+    ws = Workspace(p, autocommit=False)  # manual committing
     ws.terminal("echo keep > keep.txt")
-    ws.checkpoint()
+    ws.commit()
     ws.terminal("echo drop > drop.txt")
     assert ws.terminal("cat drop.txt").stdout.strip() == "drop"
     ws.discard()
@@ -346,10 +346,10 @@ def test_fork_duplicate_name_rejected(kv_ws):
         kv_ws.fork("dup")
 
 
-def test_fork_checkpoints_pending_changes(kv_ws):
+def test_fork_commits_pending_changes(kv_ws):
     kv_ws.terminal("echo pending > p.txt")
-    # autocheckpoint already committed; add a staged-only change
-    kv_ws.fs.write("staged.txt", b"staged")
+    # autocommit already committed; add a staged-only change
+    kv_ws.files.fs.write("staged.txt", b"staged")
     fork = kv_ws.fork("snap")
     assert fork.terminal("cat staged.txt").stdout.strip() == "staged"
     fork.close()
@@ -357,7 +357,7 @@ def test_fork_checkpoints_pending_changes(kv_ws):
 
 def test_mount_not_supported(kv_ws):
     with pytest.raises(NotSupportedError):
-        kv_ws.mount()
+        kv_ws.files.export()
 
 
 # -- disk persistence + factory ------------------------------------------------
@@ -372,7 +372,7 @@ def test_disk_store_persists_across_instances(tmp_path):
         assert ws2.terminal("pwd").stdout.strip() == "/workspace/proj"
         assert ws2.terminal("cat d.txt").stdout.strip() == "data"
         assert ws2.cache["n"] == 7
-        assert len(list(ws2.history())) >= 2
+        assert len(list(ws2.log())) >= 2
 
 
 def test_sessions_are_independent_branches(tmp_path):
@@ -487,42 +487,42 @@ def test_store_delete_convenience(tmp_path):
         assert not ws2.terminal("cat b.txt")
 
 
-def test_fork_at_an_earlier_checkpoint_leaves_the_parent_alone(tmp_path):
-    """A fork at a past checkpoint starts there; the parent, including
+def test_fork_at_an_earlier_commit_leaves_the_parent_alone(tmp_path):
+    """A fork at a past commit starts there; the parent, including
     its staged work, is not rewound or committed to get it there."""
     from nontainer import workspace
 
     ws = workspace("parent", store=tmp_path)
-    ws.fs.write("/workspace/a.txt", b"A")
-    first = ws.checkpoint(info={"tool": "test"})
-    ws.fs.write("/workspace/b.txt", b"B")
-    ws.checkpoint(info={"tool": "test"})
-    ws.fs.write("/workspace/staged.txt", b"S")  # staged, uncommitted
+    ws.files.fs.write("/workspace/a.txt", b"A")
+    first = ws.commit(info={"tool": "test"})
+    ws.files.fs.write("/workspace/b.txt", b"B")
+    ws.commit(info={"tool": "test"})
+    ws.files.fs.write("/workspace/staged.txt", b"S")  # staged, uncommitted
     head = ws.head
 
     child = ws.fork("child", at=first)
     try:
-        assert child.fs.read("/workspace/a.txt") == b"A"
-        assert not child.fs.exists("/workspace/b.txt")
-        assert not child.fs.exists("/workspace/staged.txt")
+        assert child.files.fs.read("/workspace/a.txt") == b"A"
+        assert not child.files.fs.exists("/workspace/b.txt")
+        assert not child.files.fs.exists("/workspace/staged.txt")
         assert child.head == first
         # the parent kept its head AND its staged work
         assert ws.head == head and ws.dirty
-        assert ws.fs.read("/workspace/staged.txt") == b"S"
+        assert ws.files.fs.read("/workspace/staged.txt") == b"S"
     finally:
         child.close()
         ws.close()
 
 
-def test_fork_at_an_unknown_checkpoint_raises(tmp_path):
+def test_fork_at_an_unknown_commit_raises(tmp_path):
     from nontainer import workspace
-    from nontainer.errors import CheckpointNotFoundError
+    from nontainer.errors import CommitNotFoundError
 
     ws = workspace("parent", store=tmp_path)
-    ws.fs.write("/workspace/a.txt", b"A")
-    ws.checkpoint()
+    ws.files.fs.write("/workspace/a.txt", b"A")
+    ws.commit()
     try:
-        with pytest.raises(CheckpointNotFoundError):
+        with pytest.raises(CommitNotFoundError):
             ws.fork("child", at="0" * 64)
     finally:
         ws.close()

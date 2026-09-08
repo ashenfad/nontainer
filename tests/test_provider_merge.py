@@ -13,7 +13,7 @@ from nontainer.providers import KvgitProvider
 
 @pytest.fixture
 def kv_ws():
-    """Memory-backed kvgit workspace (autocheckpoint on by default)."""
+    """Memory-backed kvgit workspace (autocommit on by default)."""
     provider = KvgitProvider.open(None, session="merge-session")
     ws = Workspace(provider)
     yield ws
@@ -58,20 +58,20 @@ def test_disjoint_union(kv_ws):
 
 def test_overlap_conflicts_with_markers(kv_ws):
     # Exact bytes via fs.write (termish printf does not interpret \n);
-    # checkpoint() commits each side since these bypass the terminal.
-    kv_ws.fs.write("/workspace/doc.txt", b"a\nb\n")
-    kv_ws.checkpoint()
+    # commit() commits each side since these bypass the terminal.
+    kv_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    kv_ws.commit()
     fork = kv_ws.fork("worker")
     try:
-        fork.fs.write("/workspace/doc.txt", b"a\nFORK\n")
-        fork.checkpoint()
-        kv_ws.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
-        kv_ws.checkpoint()
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.commit()
+        kv_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+        kv_ws.commit()
 
         before = _provider(kv_ws).head
         out = _provider(kv_ws).merge("worker")
         # Markers commit WITH the merge (flagged, never blocking):
-        # resolve with ordinary edits and checkpoint.
+        # resolve with ordinary edits and commit.
         assert out.merged
         assert out.commit == _provider(kv_ws).head
         assert out.commit != before
@@ -84,20 +84,20 @@ def test_overlap_conflicts_with_markers(kv_ws):
 
 
 def test_marker_resolution_roundtrip(kv_ws):
-    kv_ws.fs.write("/workspace/doc.txt", b"a\nb\n")
-    kv_ws.checkpoint()
+    kv_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    kv_ws.commit()
     fork = kv_ws.fork("worker")
     try:
-        fork.fs.write("/workspace/doc.txt", b"a\nFORK\n")
-        fork.checkpoint()
-        kv_ws.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
-        kv_ws.checkpoint()
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.commit()
+        kv_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+        kv_ws.commit()
 
         out = _provider(kv_ws).merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
-        # Resolve like an agent would: edit, checkpoint, verify clean.
-        kv_ws.fs.write("/workspace/doc.txt", b"a\nBOTH\n")
-        resolved = kv_ws.checkpoint()
+        # Resolve like an agent would: edit, commit, verify clean.
+        kv_ws.files.fs.write("/workspace/doc.txt", b"a\nBOTH\n")
+        resolved = kv_ws.commit()
         assert resolved != out.commit
         assert "<<<<<<< " not in kv_ws.terminal("cat doc.txt").stdout
     finally:
@@ -115,12 +115,12 @@ def test_self_merge_refused(kv_ws):
 
 
 def test_dirty_target_refused(kv_ws):
-    # Write AFTER forking: fork checkpoints pending work, so dirt staged
+    # Write AFTER forking: fork commits pending work, so dirt staged
     # before it would already be committed by merge time.
     fork = kv_ws.fork("worker")
     try:
-        kv_ws.fs.write("/workspace/staged.txt", b"pending")  # uncommitted
-        with pytest.raises(WorkspaceError, match="checkpoint or discard"):
+        kv_ws.files.fs.write("/workspace/staged.txt", b"pending")  # uncommitted
+        with pytest.raises(WorkspaceError, match="commit or discard"):
             _provider(kv_ws).merge("worker")
     finally:
         kv_ws.discard()
@@ -129,8 +129,8 @@ def test_dirty_target_refused(kv_ws):
 
 def test_frozen_refused(kv_ws):
     kv_ws.terminal("echo one > a.txt")
-    kv_ws.tag("v1")
-    snap = kv_ws.at_tag("v1")
+    kv_ws.tags.add("v1")
+    snap = kv_ws.tags.at("v1")
     try:
         with pytest.raises(NotSupportedError, match="frozen"):
             snap._provider.merge("worker")
@@ -164,7 +164,7 @@ def test_merge_commit_tagged(kv_ws):
     try:
         fork.terminal("echo two > b.txt")
         out = _provider(kv_ws).merge("worker")
-        entries = list(kv_ws.history())
+        entries = list(kv_ws.log())
         assert entries[0].id == out.commit
         assert entries[0].info.get("tool") == "ws-git.merge"
         assert entries[0].info.get("source") == "worker"
@@ -198,15 +198,15 @@ def test_workspace_factory_smoke(tmp_path):
 
 def test_fs_caches_invalidated(kv_ws):
     kv_ws.terminal("echo one > a.txt")
-    assert "a.txt" in kv_ws.fs.list("/workspace")  # warms the FS caches
+    assert "a.txt" in kv_ws.files.fs.list("/workspace")  # warms the FS caches
     fork = kv_ws.fork("worker")
     try:
         fork.terminal("echo two > b.txt")
         out = _provider(kv_ws).merge("worker")
         assert out.merged
         # Without invalidation these read the pre-merge tree.
-        assert "b.txt" in kv_ws.fs.list("/workspace")
-        assert kv_ws.fs.stat("/workspace/b.txt").size == 4
+        assert "b.txt" in kv_ws.files.fs.list("/workspace")
+        assert kv_ws.files.fs.stat("/workspace/b.txt").size == 4
     finally:
         fork.close()
 
@@ -214,20 +214,20 @@ def test_fs_caches_invalidated(kv_ws):
 def test_merged_sizes_recomputed(kv_ws):
     # Disjoint edits merge cleanly, but the bytes match neither branch —
     # so a size copied from one branch would be wrong.
-    kv_ws.fs.write("/workspace/doc.txt", b"a\nb\n")
-    kv_ws.checkpoint()
+    kv_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    kv_ws.commit()
     fork = kv_ws.fork("worker")
     try:
-        fork.fs.write("/workspace/doc.txt", b"a\nb\nfork\n")
-        fork.checkpoint()
-        kv_ws.fs.write("/workspace/doc.txt", b"main\na\nb\n")
-        kv_ws.checkpoint()
+        fork.files.fs.write("/workspace/doc.txt", b"a\nb\nfork\n")
+        fork.commit()
+        kv_ws.files.fs.write("/workspace/doc.txt", b"main\na\nb\n")
+        kv_ws.commit()
 
         out = _provider(kv_ws).merge("worker")
         assert out.merged
         assert out.conflicts == ()
         body = kv_ws.terminal("cat doc.txt").stdout.encode()
-        assert kv_ws.fs.stat("/workspace/doc.txt").size == len(body)
+        assert kv_ws.files.fs.stat("/workspace/doc.txt").size == len(body)
     finally:
         fork.close()
 
@@ -257,8 +257,8 @@ def test_preexisting_markers_not_flagged(kv_ws):
     kv_ws.terminal("echo one > a.txt")
     fork = kv_ws.fork("worker")
     try:
-        fork.fs.write("/workspace/notes.txt", b"see <<<<<<< HEAD for details\n")
-        fork.checkpoint()
+        fork.files.fs.write("/workspace/notes.txt", b"see <<<<<<< HEAD for details\n")
+        fork.commit()
 
         out = _provider(kv_ws).merge("worker")
         assert out.merged

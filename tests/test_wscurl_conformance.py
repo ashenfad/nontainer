@@ -31,12 +31,12 @@ def _apps_ws(param, name):
     kw = {"executor": executor} if executor is not None else {}
     w = Workspace(KvgitProvider.open(None, session=f"wscurl-{param}-{name}"), **kw)
     enable_apps(w)
-    w.fs.makedirs("/workspace/app/api", exist_ok=True)
-    w.fs.write(
+    w.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    w.files.fs.write(
         "/workspace/app/api/nums.py",
         b"def get(req):\n    return {'nums': [3, 1, 2]}\n",
     )
-    w.fs.write(
+    w.files.fs.write(
         "/workspace/app/api/echo.py",
         b"def post(req):\n    return {'got': req.require('msg')}\n",
     )
@@ -95,7 +95,7 @@ def test_output_to_file_and_same_script_use(aws):
     r = aws.terminal("ws-curl -o out.json $APP_ORIGIN/api/nums; cat out.json")
     assert r.exit_code == 0, r.stderr
     assert json.loads(r.stdout) == {"nums": [3, 1, 2]}
-    assert json.loads(aws.fs.read("/workspace/out.json")) == {"nums": [3, 1, 2]}
+    assert json.loads(aws.files.fs.read("/workspace/out.json")) == {"nums": [3, 1, 2]}
 
 
 def test_same_script_handler_write_then_fetch(aws):
@@ -173,7 +173,7 @@ def test_error_stderr_terminates_its_line(aws):
 
 
 def test_user_agent_and_json_accept(aws):
-    aws.fs.write(
+    aws.files.fs.write(
         "/workspace/app/api/who.py",
         b"def get(req):\n"
         b"    return {'ua': req.headers.get('user-agent'), "
@@ -186,7 +186,7 @@ def test_user_agent_and_json_accept(aws):
         r = aws.terminal("ws-curl --json '{\"a\": 1}' $APP_ORIGIN/api/echo")
         assert r.exit_code == 0
     finally:
-        aws.fs.remove("/workspace/app/api/who.py")
+        aws.files.fs.remove("/workspace/app/api/who.py")
 
 
 def test_refused_flags_name_themselves(aws):

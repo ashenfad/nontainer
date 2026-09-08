@@ -59,7 +59,7 @@ def build(registry, tmp_path, session_id, *, user_id=None):
         registry.store, open=registry.open, db_path=str(tmp_path / "agno")
     )
     ws = registry.open(session_id)
-    tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+    tk = WorkspaceTools(ws, commit="turn", session_db=db)
     agent = Agent(
         model=ScriptedModel(),
         db=db,
@@ -82,13 +82,13 @@ def kv_of(ws):
 
 def test_turns_route_to_the_live_workspace_and_commit_once(registry, tmp_path):
     db, ws, agent = build(registry, tmp_path, "chat-1")
-    before = len(list(ws.history()))
+    before = len(list(ws.log()))
 
     run_turn(agent, write_turn("a.txt", "A"))
 
-    assert len(list(ws.history())) == before + 1
+    assert len(list(ws.log())) == before + 1
     assert not ws.dirty
-    assert ws.fs.read("a.txt") == b"A"
+    assert ws.files.fs.read("a.txt") == b"A"
     assert len(db.get_session("chat-1").runs) == 1
 
 
@@ -104,12 +104,12 @@ def test_the_toolkit_accepts_a_store_db_that_owns_its_workspace(registry, tmp_pa
         registry.store, open=registry.open, db_path=str(tmp_path / "agno")
     )
     ws = registry.open("chat-1")
-    tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+    tk = WorkspaceTools(ws, commit="turn", session_db=db)
     assert tk.end_turn() is None
 
     stranger = workspace("chat-1", store=tmp_path / "elsewhere")
     with pytest.raises(ValueError, match="same workspace"):
-        WorkspaceTools(stranger, checkpoint="turn", session_db=db)
+        WorkspaceTools(stranger, commit="turn", session_db=db)
     stranger.close()
 
 
@@ -198,7 +198,7 @@ def test_agno_fork_session_forks_the_files_and_copies_the_chat(registry, tmp_pat
 
     assert child_id in db._branches()
     child = registry.open(child_id)
-    assert child.fs.read("a.txt") == b"A" and child.fs.read("b.txt") == b"B"
+    assert child.files.fs.read("a.txt") == b"A" and child.files.fs.read("b.txt") == b"B"
     assert not child.dirty
 
     session = db.get_session(child_id)
@@ -209,7 +209,7 @@ def test_agno_fork_session_forks_the_files_and_copies_the_chat(registry, tmp_pat
     assert len(db.get_session("chat-1").runs) == 2  # the parent is untouched
 
     # the fork carries on as an ordinary session
-    tk = WorkspaceTools(child, checkpoint="turn", session_db=db)
+    tk = WorkspaceTools(child, commit="turn", session_db=db)
     child_agent = Agent(
         model=ScriptedModel(),
         db=db,
@@ -220,7 +220,7 @@ def test_agno_fork_session_forks_the_files_and_copies_the_chat(registry, tmp_pat
     )
     run_turn(child_agent, write_turn("c.txt", "C"))
     assert len(db.get_session(child_id).runs) == 3
-    assert child.fs.read("c.txt") == b"C"
+    assert child.files.fs.read("c.txt") == b"C"
 
 
 def test_the_workspace_fork_shows_its_lineage_in_the_listing(registry, tmp_path):
@@ -253,7 +253,7 @@ def test_delete_clears_the_conversation_and_leaves_the_branch(registry, tmp_path
 
     assert db.delete_session("chat-1") is True
     assert kv_of(ws).get(SESSION_KEY) is None
-    assert ws.fs.read("a.txt") == b"A"
+    assert ws.files.fs.read("a.txt") == b"A"
     assert "chat-1" in db._branches()
     assert db.delete_session("nope") is False
 
@@ -280,7 +280,7 @@ def test_rename_mid_turn_stays_staged(registry, tmp_path):
     db, ws, agent = build(registry, tmp_path, "chat-1")
     run_turn(agent, write_turn("a.txt", "A"))
     head = ws.head
-    ws.fs.write("in-flight.txt", b"...")
+    ws.files.fs.write("in-flight.txt", b"...")
     assert ws.dirty
 
     db.rename_session("chat-1", None, "Mid-turn")

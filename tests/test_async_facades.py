@@ -18,7 +18,7 @@ def kv_ws():
 async def test_aterminal_matches_terminal(kv_ws):
     r = await kv_ws.aterminal("echo hi > f.txt; cat f.txt")
     assert r.stdout.strip() == "hi"
-    assert r.checkpoint  # mutating call committed, same as sync
+    assert r.commit  # mutating call committed, same as sync
     # visible to a following sync call — one shared world
     assert kv_ws.terminal("cat f.txt").stdout.strip() == "hi"
 
@@ -30,7 +30,7 @@ async def test_arun_python_carries_inputs_and_cache(kv_ws):
     assert r, r.error
     assert r.stdout.strip() == "42"
     assert kv_ws.cache["n"] == 42
-    assert r.checkpoint
+    assert r.commit
 
 
 async def test_facades_interleave_across_workspaces(tmp_path):

@@ -124,10 +124,10 @@ def install(ws: "Workspace", source: Any) -> str:
     with ws.lock:
         for rel, data in files.items():
             path = f"{root}/{name}/{rel}"
-            ws.fs.makedirs(posixpath.dirname(path), exist_ok=True)
-            ws.fs.write(path, data)
+            ws.files.fs.makedirs(posixpath.dirname(path), exist_ok=True)
+            ws.files.fs.write(path, data)
         if ws.caps.versioned and ws.dirty:
-            ws.checkpoint(info={"tool": "skill", "skill": name})
+            ws.commit(info={"tool": "skill", "skill": name})
     return name
 
 
@@ -169,7 +169,7 @@ def install_from_modules(ws: "Workspace") -> list[str]:
 
     installed: list[str] = []
     seen: set[str] = set()
-    for entry in entries(ws.python_config.modules or ()):
+    for entry in entries(ws.runtime.python_config.modules or ()):
         mod = getattr(entry, "module", entry)
         name = mod if isinstance(mod, str) else getattr(mod, "__name__", "")
         top = name.split(".")[0]
@@ -188,13 +188,13 @@ def catalog(ws: "Workspace") -> str:
     root = skills_root(ws)
     try:
         with ws.lock:
-            if not ws.fs.isdir(root):
+            if not ws.files.fs.isdir(root):
                 return ""
-            for name in sorted(ws.fs.list(root)):
+            for name in sorted(ws.files.fs.list(root)):
                 path = f"{root}/{name}/SKILL.md"
-                if not ws.fs.exists(path):
+                if not ws.files.fs.exists(path):
                     continue
-                desc = frontmatter(ws.fs.read(path)).get("description", "")
+                desc = frontmatter(ws.files.fs.read(path)).get("description", "")
                 rows.append(f"- {name}: {desc}" if desc else f"- {name}")
     except Exception:
         return ""  # a broken skills dir must never block agent setup

@@ -20,7 +20,7 @@ def ws():
 
 def test_helpers_import_across_calls(ws):
     # write a helper module in one call, import it in a later call
-    ws.write_file("helpers/mathx.py", "def double(x):\n    return x * 2\n")
+    ws.files.write("helpers/mathx.py", "def double(x):\n    return x * 2\n")
     r = ws.run_python("from helpers.mathx import double\nprint(double(21))")
     assert r, r.error
     assert r.stdout.strip() == "42"

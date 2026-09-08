@@ -39,8 +39,8 @@ def resolve_tools_mode(ws: Workspace, mode: ToolsMode = "auto") -> str:
     → one terminal tool."""
     if mode != "auto":
         return mode
-    cfg = ws.python_config
-    augmented = ws.cache_enabled or bool(cfg.host_objects)
+    cfg = ws.runtime.python_config
+    augmented = ws.runtime.cache_enabled or bool(cfg.host_objects)
     return "split" if augmented else "terminal"
 
 
@@ -170,7 +170,7 @@ def terminal_description(
             # The portable verbs exist where injected commands reach
             # the shell OR ferry into a guest (the dud rung ferries
             # ws-curl over hostcall despite supports_commands False).
-            commands=ws.supports_commands or ws.supports_ws_verbs,
+            commands=ws.runtime.supports_commands or ws.runtime.supports_ws_verbs,
         )
     if primer:
         desc += "\n\n" + primer
@@ -450,7 +450,7 @@ def read_workspace_image(ws: Workspace, path: str) -> tuple[bytes, str]:
             f"{', '.join(sorted(_IMAGE_FORMATS))})"
         )
     try:
-        data = ws.fs.read(path)
+        data = ws.files.fs.read(path)
     except Exception as e:
         raise ValueError(f"cannot read {path!r}: {e}") from e
     if len(data) > _MAX_IMAGE_BYTES:
@@ -484,9 +484,9 @@ your fetch even reached the backend. Tail it to debug."""
 
 def _env_notes(ws: Workspace) -> str:
     lines: list[str] = []
-    if ws.cache_enabled:
+    if ws.runtime.cache_enabled:
         lines.append(_CACHE_NOTE)
-    cfg = ws.python_config
+    cfg = ws.runtime.python_config
     if cfg.host_objects:
         names = ", ".join(sorted(cfg.host_objects))
         lines.append(
@@ -584,7 +584,7 @@ _IMAGE_MAGIC = {
 def _ui_write(ws: Workspace, path: str, data: bytes) -> str:
     if len(data) > _MAX_ARTIFACT_BYTES:
         raise _ArtifactTooLarge(len(data))
-    ws.write_file(path, data)
+    ws.files.write(path, data)
     return path
 
 
@@ -712,7 +712,7 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     # instead of json-encoding the path string.
     if isinstance(value, str) and value.startswith("/"):
         try:
-            if ws.fs.exists(value) and not ws.fs.isdir(value):
+            if ws.files.fs.exists(value) and not ws.files.fs.isdir(value):
                 return value
         except Exception:
             pass  # unreadable path: fall through to the data tier
@@ -821,7 +821,7 @@ def materialize_ui(
     ws: Workspace, ui: object, *, claims: dict | None = None
 ) -> tuple[list[tuple[str, str]], list[str]]:
     """Turn the agent's ``ui = {name: value}`` namespace binding into
-    workspace artifacts under ``/ui/`` (checkpointed writes). Returns
+    workspace artifacts under ``/ui/`` (committed writes). Returns
     ``(artifacts, problems)``: ``[(name, path)]`` for the observation
     note, plus diagnosis strings for values that could not be rendered
     as intended (today: the size cap) — the adapter puts those in the

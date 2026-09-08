@@ -397,7 +397,7 @@ def test_plotting_preset_savefig_in_sandbox():
         "plt.close(fig)"
     )
     assert r, r.error
-    assert ws.fs.read("plot.png")[:8] == b"\x89PNG\r\n\x1a\n"
+    assert ws.files.fs.read("plot.png")[:8] == b"\x89PNG\r\n\x1a\n"
     # display/backend calls are excluded
     assert not ws.run_python("import matplotlib.pyplot as plt; plt.show()")
     ws.close()

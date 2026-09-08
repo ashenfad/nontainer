@@ -15,7 +15,7 @@ the workspace tree, runs real bash / real python against it, and hands
 back a diff of what changed. Because nontainer uses a script model —
 no resident interpreter state; persistence lives in cache + files —
 the machine is stateless between calls, so swapping it never touches
-the versioning semantics (checkpoint per call, fork, rollback), which
+the versioning semantics (commit per call, fork, rollback), which
 were always properties of the state layer.
 
 The split of responsibilities:
@@ -25,9 +25,9 @@ The split of responsibilities:
   shell interpretation, and observation rendering (budget-aware prints,
   truncation) — rendering sits executor-side because a remote executor
   must render where the printed objects live.
-- **Workspace-side**: the single-writer lock, the checkpoint flow, cwd
+- **Workspace-side**: the single-writer lock, the commit flow, cwd
   persistence, the cache layer's key rules, apps dispatch. Executors
-  never checkpoint; they produce results (and, remotely, diffs) for
+  never commit; they produce results (and, remotely, diffs) for
   the workspace to commit.
 
 Error taxonomy (stage-1 shape):
@@ -506,7 +506,7 @@ class LocalExecutor:
     Writes land directly in the provider (monkeyfs/termish write
     through), so :meth:`diff`/:meth:`sync` are no-ops — atomicity and
     versioning are entirely the provider's staging + the workspace's
-    checkpoint flow. Lifecycle: under process/kernel isolation the
+    commit flow. Lifecycle: under process/kernel isolation the
     sandbox forks a persistent worker at :meth:`open` and reaps it at
     :meth:`close`; view calls (apps' handler dispatch) draw resident
     workers from a :class:`_ViewWorkerPool` reaped at the same time,

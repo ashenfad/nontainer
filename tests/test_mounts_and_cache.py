@@ -117,9 +117,9 @@ def test_fork_inherits_mount_points(tmp_path):
     fork = ws.fork("child")
     try:
         # versioned state carries (it always did) ...
-        assert fork.fs.exists("/workspace/own.txt")
+        assert fork.files.fs.exists("/workspace/own.txt")
         # ... and so does the mount point (it did not)
-        assert fork.fs.exists("/data/a.csv")
+        assert fork.files.fs.exists("/data/a.csv")
         r = fork.terminal("cat /data/a.csv")
         assert r, r.stderr
         assert "x,y" in r.stdout
@@ -138,8 +138,8 @@ def test_forked_mount_is_a_live_view_not_a_copy(tmp_path):
     try:
         # The host directory is the single source of truth for both.
         (src / "a.csv").write_text("after\n")
-        assert fork.fs.read("/data/a.csv").decode() == "after\n"
-        assert ws.fs.read("/data/a.csv").decode() == "after\n"
+        assert fork.files.fs.read("/data/a.csv").decode() == "after\n"
+        assert ws.files.fs.read("/data/a.csv").decode() == "after\n"
     finally:
         fork.close()
         ws.close()
@@ -173,10 +173,10 @@ def test_fork_replays_every_pass_through_setting():
     # provider:  the fork gets its own -- that IS the fork.
     # executor:  a ready instance is bound to one session; forks fall
     #            back to executor_factory.
-    # commands / autocheckpoint: mutable after construction, so fork()
+    # commands / autocommit: mutable after construction, so fork()
     #            replays the live attribute (see the setter guard and
     #            the turn-granularity test below).
-    excluded = {"self", "provider", "executor", "commands", "autocheckpoint"}
+    excluded = {"self", "provider", "executor", "commands", "autocommit"}
     params = {
         name
         for name, p in inspect.signature(Workspace.__init__).parameters.items()
@@ -194,7 +194,7 @@ def test_settings_captures_nothing_that_can_change_after_construction():
     """Guard for the OTHER half of the replay contract: _Settings is a
     construction-time snapshot, so a field that can be mutated later
     would be replayed stale. Anything with a setter must be read live in
-    fork() instead — as `autocheckpoint` is."""
+    fork() instead — as `autocommit` is."""
     from nontainer.workspace import _Settings
 
     for name in _Settings.__dataclass_fields__:
@@ -206,22 +206,22 @@ def test_settings_captures_nothing_that_can_change_after_construction():
         )
 
 
-def test_fork_inherits_a_changed_autocheckpoint():
-    """`WorkspaceTools(ws, checkpoint="turn")` sets ws.autocheckpoint =
+def test_fork_inherits_a_changed_autocommit():
+    """`WorkspaceTools(ws, commit="turn")` sets ws.autocommit =
     False after construction. A fork of a turn-granularity session must
     stay in turn granularity, not silently return to per-call commits."""
     from nontainer.providers import KvgitProvider
 
     ws = Workspace(KvgitProvider.open(None, session="parent"))
-    assert ws.autocheckpoint
-    ws.autocheckpoint = False
+    assert ws.autocommit
+    ws.autocommit = False
 
     fork = ws.fork("child")
     try:
-        assert not fork.autocheckpoint
+        assert not fork.autocommit
         r = fork.terminal("echo hi > /workspace/a.txt")
         assert r, r.stderr
-        assert r.checkpoint is None  # turn granularity: no per-call commit
+        assert r.commit is None  # turn granularity: no per-call commit
     finally:
         fork.close()
         ws.close()
@@ -251,7 +251,7 @@ def test_fork_keeps_the_parents_resolved_mount_source(tmp_path, monkeypatch):
 
     fork = ws.fork("child")
     try:
-        assert fork.fs.read("/data/a.csv").decode() == "parent\n"
+        assert fork.files.fs.read("/data/a.csv").decode() == "parent\n"
     finally:
         fork.close()
         ws.close()

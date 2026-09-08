@@ -1,4 +1,4 @@
-"""agno Toolkit adapter: exposure modes, locking, checkpoint modes, schemas."""
+"""agno Toolkit adapter: exposure modes, locking, commit modes, schemas."""
 
 import pytest
 
@@ -116,37 +116,37 @@ def test_parallel_file_writes_are_safe():
         )
 
     for i in range(6):
-        assert ws.fs.read(f"src/mod_{i}.py").decode() == f"X = {i}\n"
-    assert len(list(ws.history())) >= 7  # each write checkpointed
+        assert ws.files.fs.read(f"src/mod_{i}.py").decode() == f"X = {i}\n"
+    assert len(list(ws.log())) >= 7  # each write committed
     ws.close()
 
 
-# -- checkpoint granularity ------------------------------------------------------
+# -- commit granularity ------------------------------------------------------
 
 
-def test_turn_checkpoint_mode():
+def test_turn_commit_mode():
     """agex-style granularity: one commit per turn via end_turn."""
     ws = make_ws()
-    tk = WorkspaceTools(ws, checkpoint="turn")
-    before = len(list(ws.history()))
+    tk = WorkspaceTools(ws, commit="turn")
+    before = len(list(ws.log()))
 
     # a "turn": several mutations, zero commits until end_turn
     tk.functions["file_write"].entrypoint(path="a.py", content="A = 1\n")
     tk.functions["file_write"].entrypoint(path="b.py", content="B = 2\n")
     tk.functions["terminal"].entrypoint("echo hi > c.txt")
-    assert len(list(ws.history())) == before
+    assert len(list(ws.log())) == before
 
     tk.end_turn()  # the post_hooks boundary
-    entries = list(ws.history())
+    entries = list(ws.log())
     assert len(entries) == before + 1
     assert entries[0].info == {"tool": "turn"}
 
     tk.end_turn()  # idle turn → no empty commit
-    assert len(list(ws.history())) == before + 1
+    assert len(list(ws.log())) == before + 1
 
     # rollback rewinds the WHOLE turn
     ws.rollback(1)
-    assert not ws.fs.exists("a.py") and not ws.fs.exists("c.txt")
+    assert not ws.files.fs.exists("a.py") and not ws.files.fs.exists("c.txt")
     ws.close()
 
 
@@ -195,7 +195,7 @@ def test_agno_view_image():
     )
 
     ws = make_ws()
-    ws.fs.write("/plot.png", png)
+    ws.files.fs.write("/plot.png", png)
     tk = WorkspaceTools(ws)
     result = tk.functions["view_image"].entrypoint(path="/plot.png")
     assert result.images and result.images[0].format == "png"

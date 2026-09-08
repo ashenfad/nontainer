@@ -85,8 +85,8 @@ def test_fork_runs_shared_rebind_factory_once():
 
     def init(ws):
         calls.append(1)
-        ws.register_command("alpha", both, rebind=init)
-        ws.register_command("beta", both, rebind=init)
+        ws.runtime.register_command("alpha", both, rebind=init)
+        ws.runtime.register_command("beta", both, rebind=init)
 
     provider = KvgitProvider.open(None, session="cmd-rebind-once")
     ws = Workspace(provider)
@@ -111,9 +111,9 @@ def test_ws_prefix_reserved_for_framework(tmp_path):
     ws = Workspace(p)
     try:
         with pytest.raises(ValueError, match="Reserved terminal command prefix"):
-            ws.register_command("ws-evil", lambda ctx: None)
+            ws.runtime.register_command("ws-evil", lambda ctx: None)
         # Framework registrations (rebind set) are exempt.
-        ws.register_command("ws-demo", lambda ctx: None, rebind=lambda w: None)
+        ws.runtime.register_command("ws-demo", lambda ctx: None, rebind=lambda w: None)
         assert "ws-demo" in ws.runtime.commands
     finally:
         ws.close()

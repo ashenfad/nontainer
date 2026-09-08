@@ -6,17 +6,18 @@ Public surface:
     store(...)          -- the store those sessions live in
     Store               -- open/list/delete sessions, store-scoped tags
     Ref                 -- "session@commit": one exact state, named
-    Workspace           -- files + shell + python + cache, versioned
+    Workspace           -- one session: files + shell + python + cache,
+                           versioned; ws.files / ws.index / ws.tags
     Runtime             -- ws.runtime: how code runs against that state
     PythonConfig        -- what sandboxed code may touch
     TerminalResult, PythonResult, WriteOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
     SessionRunner, HostObjectFactory -- the loop seam (declared; stage 3)
-    Capabilities, CheckpointInfo, TagInfo, WorkspaceDiff,
+    Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, StageResult, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
-            CheckpointNotFoundError
+            CommitNotFoundError
 
 Adapters (optional extras):
 
@@ -28,7 +29,7 @@ from .artifacts import ArtifactPath, artifact_kind
 from .cache import Cache, CacheError
 from .editing import EditOutcome
 from .errors import (
-    CheckpointNotFoundError,
+    CommitNotFoundError,
     NotSupportedError,
     SessionIdError,
     WorkspaceError,
@@ -36,7 +37,7 @@ from .errors import (
 from .protocol import (
     SESSION_ID_RE,
     Capabilities,
-    CheckpointInfo,
+    CommitInfo,
     Executor,
     HostObjectFactory,
     MergeOutcome,
@@ -82,7 +83,7 @@ __all__ = [
     "SessionRunner",
     "HostObjectFactory",
     "Capabilities",
-    "CheckpointInfo",
+    "CommitInfo",
     "MergeOutcome",
     "StageResult",
     "TagInfo",
@@ -95,5 +96,5 @@ __all__ = [
     "WorkspaceError",
     "NotSupportedError",
     "SessionIdError",
-    "CheckpointNotFoundError",
+    "CommitNotFoundError",
 ]

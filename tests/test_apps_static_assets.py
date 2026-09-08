@@ -62,8 +62,8 @@ def test_assets_are_not_in_the_workspace(assets):
     ws, rt = make_ws(assets)
     try:
         assert get(rt, "/vendor/lib.js").status == 200
-        assert not ws.fs.exists("/workspace/app/vendor")
-        assert not ws.fs.exists("/workspace/app/vendor/lib.js")
+        assert not ws.files.fs.exists("/workspace/app/vendor")
+        assert not ws.files.fs.exists("/workspace/app/vendor/lib.js")
         r = ws.terminal("ls /workspace/app")
         assert "vendor" not in r.stdout
     finally:
@@ -73,11 +73,11 @@ def test_assets_are_not_in_the_workspace(assets):
 def test_missing_asset_is_404_not_a_workspace_lookup(assets):
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app", exist_ok=True)
+        ws.files.fs.makedirs("/workspace/app", exist_ok=True)
         # A workspace file BELOW the prefix must not answer for a
         # missing asset -- the prefix is claimed wholesale.
-        ws.fs.write("/workspace/app/vendor/sneak.js", b"nope")
-        assert ws.fs.exists("/workspace/app/vendor/sneak.js")  # not vacuous
+        ws.files.fs.write("/workspace/app/vendor/sneak.js", b"nope")
+        assert ws.files.fs.exists("/workspace/app/vendor/sneak.js")  # not vacuous
         assert get(rt, "/vendor/sneak.js").status == 404
     finally:
         ws.close()
@@ -91,11 +91,11 @@ def test_asset_traversal_stays_confined(assets):
     not a jail, the app root is."""
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app", exist_ok=True)
-        ws.fs.write("/workspace/app/page.txt", b"an ordinary app file")
-        ws.fs.write("/workspace/outside.txt", b"OUTSIDE")
-        ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-        ws.fs.write("/workspace/app/api/h.py", b"def get(req): return 'x'")
+        ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+        ws.files.fs.write("/workspace/app/page.txt", b"an ordinary app file")
+        ws.files.fs.write("/workspace/outside.txt", b"OUTSIDE")
+        ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.files.fs.write("/workspace/app/api/h.py", b"def get(req): return 'x'")
 
         assert get(rt, "/vendor/../../outside.txt").status == 404
         assert get(rt, "/../outside.txt").status == 404
@@ -140,8 +140,8 @@ def test_assets_are_exempt_from_the_response_cap(tmp_path):
     ws2 = Workspace(KvgitProvider.open(None, session="s2"))
     rt2 = enable_apps(ws2)
     try:
-        ws2.fs.makedirs("/workspace/app/api", exist_ok=True)
-        ws2.fs.write(
+        ws2.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws2.files.fs.write(
             "/workspace/app/api/big.py", b"def get(req):\n    return 'x'*3_000_000\n"
         )
         assert get(rt2, "/api/big").status == 500
@@ -155,13 +155,13 @@ def test_asset_shadows_a_workspace_file_and_says_so(assets):
     mode: the agent would edit a file and debug an app that ignores it."""
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
-        ws.fs.write("/workspace/app/vendor/lib.js", b"MINE")
+        ws.files.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.files.fs.write("/workspace/app/vendor/lib.js", b"MINE")
         r = get(rt, "/vendor/lib.js")
         assert r.text == "export const x = 1;\n"  # the asset, not MINE
 
         rt.flush_log()
-        log = ws.fs.read("/workspace/app/logs/api.log").decode()
+        log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
         assert "shadowed" in log and "vendor/lib.js" in log
     finally:
         ws.close()
@@ -170,12 +170,12 @@ def test_asset_shadows_a_workspace_file_and_says_so(assets):
 def test_shadow_note_is_written_once(assets):
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
-        ws.fs.write("/workspace/app/vendor/lib.js", b"MINE")
+        ws.files.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.files.fs.write("/workspace/app/vendor/lib.js", b"MINE")
         for _ in range(3):
             get(rt, "/vendor/lib.js")
         rt.flush_log()
-        log = ws.fs.read("/workspace/app/logs/api.log").decode()
+        log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
         assert log.count("shadowed") == 1
     finally:
         ws.close()
@@ -245,8 +245,8 @@ def test_dot_segments_cannot_bypass_asset_precedence(assets):
     preserves dot segments, and the shadow note never fires either."""
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
-        ws.fs.write("/workspace/app/vendor/lib.js", b"WORKSPACE")
+        ws.files.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.files.fs.write("/workspace/app/vendor/lib.js", b"WORKSPACE")
         assert get(rt, "/x/../vendor/lib.js").text == "export const x = 1;\n"
         assert get(rt, "/./vendor/lib.js").text == "export const x = 1;\n"
     finally:
@@ -261,9 +261,9 @@ def test_shadow_note_does_not_dirty_a_clean_workspace(assets):
     its rollback."""
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
-        ws.fs.write("/workspace/app/vendor/lib.js", b"MINE")
-        ws.checkpoint()
+        ws.files.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.files.fs.write("/workspace/app/vendor/lib.js", b"MINE")
+        ws.commit()
         assert not ws.dirty
 
         assert get(rt, "/vendor/lib.js").text == "export const x = 1;\n"
@@ -271,7 +271,7 @@ def test_shadow_note_does_not_dirty_a_clean_workspace(assets):
 
         # ... and it still reaches the log where the agent reads it.
         rt.flush_log()
-        assert "shadowed" in ws.fs.read("/workspace/app/logs/api.log").decode()
+        assert "shadowed" in ws.files.fs.read("/workspace/app/logs/api.log").decode()
     finally:
         ws.close()
 
@@ -281,21 +281,21 @@ def test_a_get_leaves_a_later_handler_its_rollback(assets):
     then a POST that raises, whose staged writes must still roll back."""
     ws, rt = make_ws(assets)
     try:
-        ws.fs.makedirs("/workspace/app/vendor", exist_ok=True)
-        ws.fs.write("/workspace/app/vendor/lib.js", b"MINE")
-        ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-        ws.fs.write(
+        ws.files.fs.makedirs("/workspace/app/vendor", exist_ok=True)
+        ws.files.fs.write("/workspace/app/vendor/lib.js", b"MINE")
+        ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.files.fs.write(
             "/workspace/app/api/save.py",
             b"def post(req):\n"
             b"    open('/workspace/partial.txt', 'w').write('half')\n"
             b"    raise ValueError('boom')\n",
         )
-        ws.checkpoint()
+        ws.commit()
         assert not ws.dirty
 
         get(rt, "/vendor/lib.js")  # the shadowing page load
         assert rt.dispatch(request("POST", "/api/save")).status == 500
-        assert not ws.fs.exists("/workspace/partial.txt")
+        assert not ws.files.fs.exists("/workspace/partial.txt")
     finally:
         ws.close()
 

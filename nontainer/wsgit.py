@@ -9,8 +9,8 @@ wherever cheap; each deviation carries a recorded reason:
   useful).
 - ``reset`` is mixed-only; ``--soft``/``--hard`` get the usage error.
 - ``log`` shows the ``-m`` message when a commit has one, else the
-  checkpoint tool name.
-- ``commit`` takes ``-m/--message`` (stored in checkpoint info) but no
+  commit tool name.
+- ``commit`` takes ``-m/--message`` (stored in commit info) but no
   pathspec and no ``-a``: it commits the staged set only.
 - The index names keys, not snapshots, so ``--cached`` shows staged
   paths against HEAD *including* any later edits (git would show only
@@ -53,8 +53,8 @@ _EDGE = {
     ),
     "branch": ('no branches here — sessions are branches (try: ws.fork("name")).'),
     "checkout": (
-        'no checkout here — fork at a tag (ws.fork("name", at=...)) '
-        "or restore (ws.restore(...))."
+        "no checkout here — the host API has one (ws.checkout(commit)); "
+        'from the terminal, fork at a tag (ws.fork("name", at=...)).'
     ),
     "merge": (
         "merge lives in Python for now (provider.merge(source)) — "
@@ -65,10 +65,10 @@ _EDGE = {
 _HELP = """ws-git: git-shaped staging over workspace branches.
 
 usage: ws-git (stage|unstage|commit|reset|status|diff|log) [...]
-  stage <paths>     stage files (first stage suspends autocheckpoint)
-  unstage <paths>   unstage files (emptying resumes autocheckpoint)
+  stage <paths>     stage files (first stage suspends autocommit)
+  unstage <paths>   unstage files (emptying resumes autocommit)
   commit [-m MSG]   commit staged files; unstaged work stays dirty
-                    (-m stored in checkpoint info; no -a, no pathspec)
+                    (-m stored in commit info; no -a, no pathspec)
   reset             abandon the composition (mixed-only), resume
   status            staged vs unstaged (git-short XY columns)
   diff [--cached] [--check] [paths...]
@@ -76,14 +76,14 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log) [...]
                     --check finds leftover conflict markers
                     (unstaged, or staged with --cached;
                     unresolved merges always)
-  log [-n N]        newest-first checkpoint hashes and messages
+  log [-n N]        newest-first commit hashes and messages
   help              this text
 
 Subset, on purpose: no stash (a fork is a stash), no rebase (history
-is append-only), no checkout (fork at a tag, or restore). There is no
-.git — branches are sessions, history is checkpoints. Compose
-stage-first: stage paths (suspends autocheckpoint), then edit, then
-commit — writes before the first stage checkpoint immediately."""
+is append-only), no checkout (fork at a tag, or ws.checkout). There is no
+.git — branches are sessions, history is commits. Compose
+stage-first: stage paths (suspends autocommit), then edit, then
+commit — writes before the first stage commit immediately."""
 
 
 #: The dud host-object name fronting ws-git on guest rungs. A user
@@ -121,8 +121,8 @@ def register_wsgit(ws: Any) -> None:
     the guest-path mapping the handler needs, not by importing the
     executor (which would cycle).
     """
-    # getattr: supports_ws_verbs is new — duck-typed fakes predate it.
-    if not ws.supports_commands and not getattr(ws, "supports_ws_verbs", False):
+    rt = ws.runtime
+    if not rt.supports_commands and not rt.supports_ws_verbs:
         return
     fn = make_wsgit_command(ws)
     # Tags OUR registration: the dud handler must not front a user's
@@ -131,7 +131,7 @@ def register_wsgit(ws: Any) -> None:
     fn._nontainer_wsgit = True
     # Framework-owned: a fork/snapshot rebuilds this bound to itself
     # instead of inheriting the parent-bound closure (the fork-bleed).
-    ws.register_command("ws-git", fn, rebind=register_wsgit)
+    ws.runtime.register_command("ws-git", fn, rebind=register_wsgit)
 
 
 def _guest_ctx(args: list[str], cwd: str) -> Any:
@@ -376,9 +376,7 @@ def _stage(provider: Any, ctx: Any, rest: list[str]) -> Any:
         return _usage_error("stage needs at least one path.")
     out = provider.stage([_abspath(ctx, a) for a in rest])
     if out.suspended:
-        ctx.stdout.write(
-            "suspended autocheckpoint (resume: ws-git commit, ws-git reset)\n"
-        )
+        ctx.stdout.write("suspended autocommit (resume: ws-git commit, ws-git reset)\n")
     return None
 
 
@@ -388,7 +386,7 @@ def _unstage(provider: Any, ctx: Any, rest: list[str]) -> Any:
     was = provider.stage_suspended()
     provider.unstage([_abspath(ctx, a) for a in rest])
     if was and not provider.stage_suspended():
-        ctx.stdout.write("resumed autocheckpoint\n")
+        ctx.stdout.write("resumed autocommit\n")
     return None
 
 
@@ -409,7 +407,7 @@ def _commit(provider: Any, ctx: Any, rest: list[str]) -> Any:
             )
     before = provider.status()
     info = {"message": message} if message is not None else None
-    head = provider.commit(info)
+    head = provider.commit_index(info)
     n = len(before.staged)
     subject = message if message is not None else "ws-git.commit"
     ctx.stdout.write(
@@ -424,7 +422,7 @@ def _reset(provider: Any, ctx: Any, rest: list[str]) -> Any:
     was = provider.stage_suspended()
     provider.discard_staged()
     if was and not provider.stage_suspended():
-        ctx.stdout.write("resumed autocheckpoint\n")
+        ctx.stdout.write("resumed autocommit\n")
     return None
 
 
