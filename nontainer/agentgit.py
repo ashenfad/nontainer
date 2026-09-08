@@ -56,7 +56,12 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
+from .errors import (
+    BookkeepingLost,
+    CommitNotFoundError,
+    NotSupportedError,
+    WorkspaceError,
+)
 from .protocol import CommitInfo, WorkspaceStatus
 
 #: Reserved store key holding the agent's index and commit graph. Not a
@@ -433,9 +438,9 @@ class AgentGit:
 
         landed = dict(blob)
         landed["staged"] = []
-        if not [p for p in blob["unresolved"] if p not in files]:
+        landed["unresolved"] = self._still_marked(blob["unresolved"], files, live, base)
+        if not landed["unresolved"]:
             landed["merge_source"] = None
-            landed["unresolved"] = []
         # The commit cannot carry its own hash, so the blob rides along
         # with the composition closed and the head it had; the new head
         # is written straight after and lands with the restore.
@@ -470,15 +475,95 @@ class AgentGit:
 
         self._restore(pending)
         landed["head"] = commit
-        self._write(landed, force=True)
         # The restore is the agent's operation finishing, not the
         # workspace's policy: it commits itself, keyed to the paths it
         # touched, whatever ``autocommit`` says.
-        provider.commit_keys(
+        self._record(
             {"tool": RESTORE_TOOL, "restore_of": commit},
             keys=[*reverted, BLOB_KEY],
+            state=landed,
+            pending=pending,
+            landed_commit=commit,
         )
         return commit, tuple(files)
+
+    @staticmethod
+    def _still_marked(
+        unresolved: Iterable[str],
+        files: Iterable[str],
+        live: Mapping[str, Any],
+        base: Mapping[str, Any],
+    ) -> list[str]:
+        """Of a merge's marked paths, the ones this commit leaves marked.
+
+        A commit that INCLUDES a path resolves it only if the content
+        it commits has no markers left; a path it leaves out keeps
+        whatever the agent's head holds, markers and all. Membership in
+        the commit is not resolution — clearing the context on that
+        alone reports a clean tree over an unfinished merge.
+        """
+        taken = set(files)
+        return [
+            path
+            for path in unresolved
+            if _has_markers(live.get(path) if path in taken else base.get(path))
+        ]
+
+    def _record(
+        self,
+        info: dict[str, Any],
+        *,
+        keys: Iterable[str],
+        state: Mapping[str, Any],
+        pending: Mapping[str, Any],
+        landed_commit: str | None = None,
+    ) -> None:
+        """Commit the fiction's own bookkeeping, reconciling once.
+
+        The blob and the working tree the operation left behind, keyed
+        so nothing unrelated rides along. A concurrent writer on the
+        same session usually costs nothing — the store three-way merges
+        a commit whose keys are disjoint, and the blob is registered to
+        take ours — so the retry is for the case where it does raise:
+        re-read the head that won, re-apply this operation's tree and
+        blob against it, and commit again. Re-applying is necessary
+        because re-reading the head discards the staging buffer (which
+        costs any unrelated uncommitted work: a wanted trade, since the
+        alternative is an agent commit nothing points at).
+        """
+        keys = list(keys)
+        self._write(state, force=True)
+        try:
+            self._provider.commit_keys(info, keys=keys)
+            return
+        except Exception:
+            pass
+        try:
+            self._provider.refresh()
+            self._restore(pending)
+            self._write(state, force=True)
+            self._provider.commit_keys(info, keys=keys)
+        except Exception as e:
+            if landed_commit is None:
+                raise
+            # Say what is true afterwards: the blob in hand goes back to
+            # the one the store holds, so this session's ws-git head is
+            # the commit before the one that landed, in memory and on
+            # reopen alike, and running the verb again does the whole
+            # operation rather than half of it.
+            try:
+                head = self._provider.head
+                self._write(
+                    parse_blob(self._provider.key_at(head, BLOB_KEY)), force=True
+                )
+            except Exception:  # noqa: BLE001 - the first failure is the news
+                pass
+            raise BookkeepingLost(
+                f"commit {landed_commit} landed but its record did not "
+                f"({e}) — this session's ws-git head is still the commit "
+                "before it, and the working tree is what the store last "
+                "took. Run the verb again."
+            ) from e
 
     def _restore(self, pending: Mapping[str, Any]) -> None:
         """Put captured working-tree content back, path by path.
@@ -600,15 +685,18 @@ class AgentGit:
         blob = self._read()
         before = dict(blob)
         blob.update(head=commit, staged=[], merge_source=None, unresolved=[])
-        self._write(blob, force=True)
+        # The restored tree and the head that names it are one
+        # operation, so they are one commit — keyed to the paths the
+        # restore touched, and made here rather than left to the
+        # workspace's autocommit policy. Nothing of the agent's is at
+        # stake if it fails for good: the tree and the index go back.
+        target_state = {path: target.get(path) for path in pending}
         try:
-            # The restored tree and the head that names it are one
-            # operation, so they are one commit — keyed to the paths
-            # the restore touched, and made here rather than left to
-            # the workspace's autocommit policy.
-            provider.commit_keys(
+            self._record(
                 {"tool": CHECKOUT_TOOL, "restore_of": commit},
                 keys=[*pending, BLOB_KEY],
+                state=blob,
+                pending=target_state,
             )
         except BaseException:
             self._restore(pending)
@@ -622,7 +710,24 @@ class AgentGit:
 
     # -- merge ---------------------------------------------------------
 
-    def record_merge(self, source: str, commit: str) -> tuple[str, ...]:
+    def source_commit(self, source: str) -> str:
+        """The commit to merge for another session.
+
+        Its last AGENT commit, whose tree is exactly what that agent
+        committed — not its store head, which also holds whatever the
+        framework committed for it since (work its agent has not
+        committed, and may still be composing). A session that never
+        used ws-git has no such commit, and its store head is the
+        honest answer.
+        """
+        self._require("ws-git merge")
+        head = self._provider.branch_head(source)
+        blob = parse_blob(self._provider.key_at(head, BLOB_KEY))
+        return blob["head"] or head
+
+    def record_merge(
+        self, source: str, commit: str, conflicts: Iterable[str] = ()
+    ) -> tuple[str, ...]:
         """Take a merge into the fiction: the merge commit becomes the
         agent's head, and the paths it left marked become the merge
         context ``status`` reports. Returns those paths.
@@ -639,21 +744,22 @@ class AgentGit:
         the agent's log.
         """
         self._require("ws-git merge")
-        marked = sorted(
-            path
-            for path, value in self._provider.working_files().items()
-            if _has_markers(value)
-        )
+        # What the merge itself marked, as the merge reported it — not
+        # a scan of the tree, which cannot tell a conflict from a file
+        # that is ABOUT conflict markers and would put a clean merge
+        # into `## merging` over a doc.
+        marked = sorted(conflicts)
         blob = self._read()
         blob.update(
             head=commit,
             merge_source=source if marked else None,
             unresolved=marked,
         )
-        self._write(blob, force=True)
-        self._provider.commit_keys(
+        self._record(
             {"tool": MERGE_RECORD_TOOL, "source": source, "merge": commit},
             keys=[BLOB_KEY],
+            state=blob,
+            pending={},
         )
         return tuple(marked)
 

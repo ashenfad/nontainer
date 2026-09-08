@@ -27,3 +27,16 @@ class CommitNotFoundError(WorkspaceError):
     ``checkout()`` given an id that is not a commit on the session, or
     a tag verb given a name the store doesn't hold.
     """
+
+
+class BookkeepingLost(WorkspaceError):
+    """An agent commit landed and the bookkeeping that names it did not.
+
+    ``ws-git commit`` and ``ws-git checkout`` each make two commits: the
+    agent's, and the one that records the new head and puts the working
+    tree back. Only a concurrent writer on the same session can come
+    between them, and only after the retry that reconciles with it has
+    also failed. The agent's commit is in the store either way — the
+    message names it — but the session's ws-git head still points at
+    the commit before it, so the verb has to be run again.
+    """
