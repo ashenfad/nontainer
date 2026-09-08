@@ -49,11 +49,11 @@ def post(req):
 def app_ws(chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s1"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", APP_HTML.encode())
-    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", APP_HTML.encode())
+    ws.files.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
     ws.cache["scores"] = ["alice", "bob"]
-    ws.checkpoint()
+    ws.commit()
     yield ws, rt
     ws.close()
 
@@ -94,7 +94,7 @@ def test_run_flushes_the_request_log(app_ws):
     ws, rt = app_ws
     result = rt.test_app([{"read": "#status"}])
     assert result.ok, render_test_app(result)
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/scores -> 200" in log
 
 
@@ -110,7 +110,7 @@ def test_screenshot_written_to_workspace(app_ws):
     result = rt.test_app([{"screenshot": True}])
     assert result.ok, render_test_app(result)
     path = result.screenshots[0]
-    png = ws.fs.read(path)
+    png = ws.files.fs.read(path)
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     rendered = render_test_app(result)
     assert path in rendered  # paths in observations, never bytes
@@ -157,9 +157,9 @@ console.log('widget booted');
 def widget_ws(chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s2"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", WIDGET_HTML.encode())
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", WIDGET_HTML.encode())
+    ws.commit()
     yield ws, rt
     ws.close()
 
@@ -254,11 +254,11 @@ def test_read_settles_past_delayed_fetch(chromium_available):
     DOM (the false-green an agent can't catch)."""
     ws = Workspace(KvgitProvider.open(None, session="s-debounce"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", DEBOUNCED_HTML.encode())
-    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", DEBOUNCED_HTML.encode())
+    ws.files.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
     ws.cache["scores"] = ["alice", "bob"]
-    ws.checkpoint()
+    ws.commit()
     try:
         result = rt.test_app([{"click": "#go"}, {"read": "#out"}])
         assert result.ok, render_test_app(result)
@@ -280,10 +280,10 @@ def test_unsettled_cap_attaches_stale_note(chromium_available):
     passing (the run itself still passes — it's a note, not a verdict)."""
     ws = Workspace(KvgitProvider.open(None, session="s-churn"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", CHURN_HTML.encode())
-    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", CHURN_HTML.encode())
+    ws.files.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+    ws.commit()
     try:
         result = rt.test_app([{"read": "#x"}], settle_cap=1.0)
         assert result.ok, render_test_app(result)
@@ -299,8 +299,8 @@ def test_unsettled_cap_attaches_stale_note(chromium_available):
 def test_page_error_captured(app_ws, chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s2"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write(
         "/workspace/app/index.html",
         b"<html><body><script>throw new Error('kaboom')</script></body></html>",
     )
@@ -315,9 +315,11 @@ def test_absolute_urls_fail_verification(chromium_available):
     breaks under the synthetic prefix and the agent sees it here."""
     ws = Workspace(KvgitProvider.open(None, session="s3"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/api/data.py", b"def get(req):\n    return {'n': 1}\n")
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(
+        "/workspace/app/api/data.py", b"def get(req):\n    return {'n': 1}\n"
+    )
+    ws.files.fs.write(
         "/workspace/app/index.html",
         b"""<html><body><div id="out">pending</div><script>
         fetch('/api/data')
@@ -343,8 +345,8 @@ def test_page_errors_carry_locations(chromium_available):
     had no location."""
     ws = Workspace(KvgitProvider.open(None, session="s3c"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write(
         "/workspace/app/index.html",
         b"<html><body><div id='x'>hi</div>\n"
         b"<script>\nusePreactHooks();\n</script>\n"
@@ -368,8 +370,8 @@ def test_blocked_script_named_in_rejections(chromium_available):
     the console — the rejection report names the URL and the allowlist."""
     ws = Workspace(KvgitProvider.open(None, session="s3b"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write(
         "/workspace/app/index.html",
         b"""<html><body><div id="out">ok</div>
         <script src="https://evil.example.com/lib.js"></script>
@@ -385,8 +387,8 @@ def test_blocked_script_named_in_rejections(chromium_available):
 def test_external_hosts_denied(chromium_available):
     ws = Workspace(KvgitProvider.open(None, session="s4"))
     rt = enable_apps(ws)
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write(
         "/workspace/app/index.html",
         b"""<html><body><div id="out">pending</div><script>
         fetch('https://example.com/x')
@@ -438,7 +440,7 @@ def test_agno_test_app_tool_returns_images(app_ws):
     assert "PASS" in out.content
     assert out.images and out.images[0].content[:8] == b"\x89PNG\r\n\x1a\n"
     # and the file artifact persists in the workspace too
-    assert ws.fs.exists("/workspace/app/screenshots/shot-1.png")
+    assert ws.files.fs.exists("/workspace/app/screenshots/shot-1.png")
 
 
 def test_agno_vision_false_keeps_screenshots_path_only(app_ws):
@@ -457,7 +459,7 @@ def test_agno_vision_false_keeps_screenshots_path_only(app_ws):
     assert "PASS" in out.content
     assert not out.images
     assert "/workspace/app/screenshots/" in out.content  # the path still rides the text
-    assert ws.fs.exists("/workspace/app/screenshots/shot-1.png")
+    assert ws.files.fs.exists("/workspace/app/screenshots/shot-1.png")
 
 
 @pytest.mark.asyncio
@@ -491,9 +493,9 @@ def _csp_ws(session, body: bytes, **cfg):
 
     ws = Workspace(KvgitProvider.open(None, session=session))
     rt = enable_apps(ws, AppsConfig(**cfg))
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", body)
-    ws.checkpoint()
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", body)
+    ws.commit()
     return ws, rt
 
 
@@ -609,8 +611,8 @@ def test_verification_serves_the_configured_headers(chromium_available):
     policy = "default-src 'self'; script-src 'self' 'unsafe-inline'"
     ws, rt = _csp_ws("csp-headers", HEADER_PROBE_PAGE, csp=policy)
     try:
-        ws.fs.write("/workspace/app/api/page.py", HEADER_PROBE_HANDLER.encode())
-        ws.checkpoint()
+        ws.files.fs.write("/workspace/app/api/page.py", HEADER_PROBE_HANDLER.encode())
+        ws.commit()
         result = rt.test_app(
             [
                 {"assert": "document.getElementById('out').textContent !== 'init'"},
@@ -1015,11 +1017,11 @@ def test_goto_navigates_within_the_app(chromium_available):
     """A multi-page app could only ever be verified at its entry."""
     ws, rt = _csp_ws("audit5", b"<html><body><h1 id='home'>Home</h1></body></html>")
     try:
-        ws.fs.write(
+        ws.files.fs.write(
             "/workspace/app/about.html",
             b"<html><body><h1 id='ab'>About</h1></body></html>",
         )
-        ws.checkpoint()
+        ws.commit()
         result = rt.test_app(
             [
                 {"goto": "about.html"},

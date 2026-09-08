@@ -30,7 +30,7 @@ def test_caps(afs_ws):
 
 def test_versioning_raises(afs_ws):
     with pytest.raises(NotSupportedError):
-        afs_ws.checkpoint()
+        afs_ws.commit()
     with pytest.raises(NotSupportedError):
         afs_ws.fork("x")
 

@@ -14,8 +14,8 @@ def ws():
 
 
 def test_pipe_into_python_reads_stdin(ws):
-    ws.write_file("data.txt", "10\n20\n30\n")
-    ws.write_file("sum.py", "import sys\nprint(sum(int(x) for x in sys.stdin))\n")
+    ws.files.write("data.txt", "10\n20\n30\n")
+    ws.files.write("sum.py", "import sys\nprint(sum(int(x) for x in sys.stdin))\n")
     r = ws.terminal("cat data.txt | python sum.py")
     assert r, r.stderr
     assert r.stdout.strip() == "60"
@@ -30,7 +30,7 @@ def test_dash_c_reads_stdin(ws):
 
 
 def test_argv_for_file(ws):
-    ws.write_file("a.py", "import sys\nprint(sys.argv)\n")
+    ws.files.write("a.py", "import sys\nprint(sys.argv)\n")
     r = ws.terminal("python a.py foo bar")
     assert r, r.stderr
     assert r.stdout.strip() == "['a.py', 'foo', 'bar']"

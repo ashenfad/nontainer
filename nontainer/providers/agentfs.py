@@ -16,7 +16,7 @@ What this spike provides:
   inspectability tradeoff: plain values stay SQL-readable, exotic
   ones ride through opaquely).
 - capabilities: ``versioned=False`` for the spike (AgentFS snapshots
-  are whole-file copies; wiring them as checkpoint/restore is future
+  are whole-file copies; wiring them as commit/restore is future
   work), ``sql_audit=True`` (the substrate is a queryable SQLite db).
 
 Sync facade: the SDK is async-only, so each provider owns a
@@ -41,7 +41,7 @@ from typing import Any
 from ..errors import NotSupportedError
 from ..protocol import (
     Capabilities,
-    CheckpointInfo,
+    CommitInfo,
     TagInfo,
     WorkspaceDiff,
     validate_session_id,
@@ -491,7 +491,7 @@ class AgentFSProvider:
     def _unsupported(self, op: str) -> NotSupportedError:
         return NotSupportedError(
             f"AgentFSProvider does not support {op}() (spike scope: AgentFS "
-            "snapshots are whole-file copies; wiring them as checkpoints is "
+            "snapshots are whole-file copies; wiring them as commits is "
             "future work). Use the kvgit backend for versioning."
         )
 
@@ -499,13 +499,13 @@ class AgentFSProvider:
     def head(self) -> str:
         raise self._unsupported("head")
 
-    def checkpoint(self, info: dict[str, Any] | None = None) -> str:
-        raise self._unsupported("checkpoint")
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        raise self._unsupported("commit")
 
-    def restore(self, checkpoint_id: str) -> None:
+    def restore(self, commit_id: str) -> None:
         raise self._unsupported("restore")
 
-    def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
+    def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         raise self._unsupported("history")
 
     def fork(self, name: str, *, at: str | None = None) -> "AgentFSProvider":
@@ -520,8 +520,8 @@ class AgentFSProvider:
     def unstage(self, paths: Any) -> Any:
         raise self._unsupported("unstage")
 
-    def commit(self, info: Any = None) -> Any:
-        raise self._unsupported("commit")
+    def commit_index(self, info: Any = None) -> Any:
+        raise self._unsupported("commit_index")
 
     def discard_staged(self) -> Any:
         raise self._unsupported("discard_staged")

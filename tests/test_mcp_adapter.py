@@ -46,7 +46,7 @@ async def test_mcp_file_tools():
     await server.call_tool(
         "file_edit", {"path": "f.txt", "old_string": "abc", "new_string": "xyz"}
     )
-    assert ws.fs.read("f.txt") == b"xyz"
+    assert ws.files.fs.read("f.txt") == b"xyz"
     ws.close()
 
 
@@ -62,8 +62,8 @@ async def test_mcp_apps_exposure():
     tools = {t.name for t in await server.list_tools()}
     assert "test_app" in tools
 
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write(
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(
         "/workspace/app/api/ping.py", b"def get(req):\n    return {'pong': True}\n"
     )
     result = await server.call_tool(
@@ -99,7 +99,7 @@ PNG = bytes.fromhex(
 @pytest.mark.asyncio
 async def test_mcp_view_image():
     ws = make_ws()
-    ws.fs.write("/plot.png", PNG)
+    ws.files.fs.write("/plot.png", PNG)
     server = build_server(ws)
     result = await server.call_tool("view_image", {"path": "/plot.png"})
     blocks = result[0] if isinstance(result, tuple) else result
@@ -129,9 +129,9 @@ async def test_mcp_resources():
     str, binary as bytes — and workspace://-/tree lists them. Pins the
     multi-segment template registration against mcp internals."""
     ws = make_ws()
-    ws.fs.makedirs("/data/deep", exist_ok=True)
-    ws.fs.write("/data/deep/x.csv", b"a,b\n1,2\n")
-    ws.fs.write("/blob.bin", bytes([0, 255, 128]))
+    ws.files.fs.makedirs("/data/deep", exist_ok=True)
+    ws.files.fs.write("/data/deep/x.csv", b"a,b\n1,2\n")
+    ws.files.fs.write("/blob.bin", bytes([0, 255, 128]))
     server = build_server(ws)
 
     tree = list(await server.read_resource("workspace://-/tree"))[0]
@@ -150,9 +150,9 @@ async def test_mcp_resources():
 async def test_mcp_tree_elides_beyond_depth_cap():
     ws = make_ws()
     deep = "/" + "/".join(f"d{i}" for i in range(40))
-    ws.fs.makedirs(deep, exist_ok=True)
-    ws.fs.write(f"{deep}/leaf.txt", b"x")
-    ws.fs.write("/top.txt", b"y")
+    ws.files.fs.makedirs(deep, exist_ok=True)
+    ws.files.fs.write(f"{deep}/leaf.txt", b"x")
+    ws.files.fs.write("/top.txt", b"y")
     server = build_server(ws)
     tree = list(await server.read_resource("workspace://-/tree"))[0].content
     assert "/top.txt" in tree

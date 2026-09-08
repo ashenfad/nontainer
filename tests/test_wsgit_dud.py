@@ -58,19 +58,17 @@ def _subjects(w):
 
 
 def test_dud_stage_first_composition(ws):
-    ws.fs.write("/workspace/a.txt", b"one\n")
-    ws.fs.write("/workspace/b.txt", b"two\n")
-    before = len(list(ws.history()))
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
+    before = len(list(ws.log()))
 
     r = ws.terminal("ws-git stage a.txt b.txt")
     assert r.exit_code == 0
-    assert (
-        r.stdout == "suspended autocheckpoint (resume: ws-git commit, ws-git reset)\n"
-    )
+    assert r.stdout == "suspended autocommit (resume: ws-git commit, ws-git reset)\n"
 
     # The edit runs in the guest; suspension holds across the boundary.
     ws.terminal("echo second >> a.txt")
-    assert len(list(ws.history())) == before
+    assert len(list(ws.log())) == before
 
     assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""
@@ -92,7 +90,7 @@ def test_dud_stage_first_composition(ws):
     assert r.exit_code == 0
     assert re.fullmatch(rf"\[wsgit-dud {SHORT}\] compose a \(2 files\)\n", r.stdout)
 
-    assert len(list(ws.history())) == before + 1
+    assert len(list(ws.log())) == before + 1
     assert ws.terminal("ws-git status").stdout == ""
     assert _subjects(ws) == ["compose a", "init", "?"]
 
@@ -137,22 +135,22 @@ def test_dud_handler_fronts_framework_only(ws):
 
 
 def test_dud_cwd_relative_staging(ws):
-    ws.fs.write("/workspace/sub/f.txt", b"one\n")
+    ws.files.fs.write("/workspace/sub/f.txt", b"one\n")
     r = ws.terminal("cd sub; ws-git stage f.txt")
     assert r.exit_code == 0
-    assert "suspended autocheckpoint" in r.stdout
+    assert "suspended autocommit" in r.stdout
     assert ws.terminal("ws-git status").stdout == "M  sub/f.txt\n"
 
 
 def test_dud_merge_status_and_check(ws):
-    ws.fs.write("/workspace/doc.txt", b"a\nb\n")
-    ws.checkpoint()
+    ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    ws.commit()
     fork = ws.fork("worker")
     try:
-        fork.fs.write("/workspace/doc.txt", b"a\nFORK\n")
-        fork.checkpoint()
-        ws.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
-        ws.checkpoint()
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.commit()
+        ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+        ws.commit()
         out = ws._provider.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
     finally:
@@ -207,13 +205,13 @@ def test_dud_fork_wsgit_binds_fork():
     register_wsgit(w)
     try:
         w.terminal("printf 'one\\n' > a.txt")
-        w.checkpoint()
+        w.commit()
         fork = w.fork("wsgit-dud-forkbleed-kid")
         try:
             # Host-side write: a guest-side write in its own terminal
-            # call would autocheckpoint before the stage runs (standard
+            # call would autocommit before the stage runs (standard
             # per-call commit semantics on every rung).
-            fork.fs.write("/workspace/kid.txt", b"kid\n")
+            fork.files.fs.write("/workspace/kid.txt", b"kid\n")
             r = fork.terminal("ws-git stage kid.txt")
             assert r.exit_code == 0, r.stdout
             assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
@@ -225,7 +223,7 @@ def test_dud_fork_wsgit_binds_fork():
 
 
 def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypatch):
-    """A mid-call harvest the provider refuses must neither checkpoint
+    """A mid-call harvest the provider refuses must neither commit
     partials nor poison the guest: the verb reads errored, the call
     unwinds like a torn call, history holds, and the guest is flagged
     for rematerialization on the next call.
@@ -249,7 +247,7 @@ def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypat
     )
     register_wsgit(w)
     try:
-        before = len(list(w.history()))
+        before = len(list(w.log()))
         calls = []
 
         def fake_diff():
@@ -269,8 +267,8 @@ def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypat
         assert "mid-call sync failed" in r.stdout
         # ...while the outer unwind lands on the result like a torn call.
         assert "rolled back" in (r.stderr or "")
-        assert len(list(w.history())) == before
-        assert not w.fs.exists("/workspace/ok.txt")
+        assert len(list(w.log())) == before
+        assert not w.files.fs.exists("/workspace/ok.txt")
         assert not (src / "evil.txt").exists()
         # Guest flagged for rematerialization; the next call re-syncs.
         assert w.runtime.stale is True

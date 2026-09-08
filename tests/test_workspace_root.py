@@ -21,12 +21,12 @@ def test_default_root_is_workspace():
     ws = _kv_ws()
     try:
         assert ws.root == "/workspace"
-        assert ws.fs.isdir("/workspace")
-        assert ws.fs.getcwd() == "/workspace"
+        assert ws.files.fs.isdir("/workspace")
+        assert ws.files.fs.getcwd() == "/workspace"
         # relative writes land under the root
         r = ws.terminal("echo hi > f.txt")
         assert r
-        assert ws.fs.read("/workspace/f.txt").strip() == b"hi"
+        assert ws.files.fs.read("/workspace/f.txt").strip() == b"hi"
     finally:
         ws.close()
 
@@ -35,10 +35,10 @@ def test_root_slash_is_the_legacy_layout():
     ws = _kv_ws(root="/")
     try:
         assert ws.root == "/"
-        assert ws.fs.getcwd() == "/"
+        assert ws.files.fs.getcwd() == "/"
         r = ws.terminal("echo hi > f.txt")
         assert r
-        assert ws.fs.read("/f.txt").strip() == b"hi"
+        assert ws.files.fs.read("/f.txt").strip() == b"hi"
     finally:
         ws.close()
 
@@ -86,12 +86,12 @@ def test_custom_root_and_fork_inherits_it():
     ws = _kv_ws(root="/mnt/ws")
     try:
         assert ws.root == "/mnt/ws"
-        assert ws.fs.getcwd() == "/mnt/ws"
+        assert ws.files.fs.getcwd() == "/mnt/ws"
         ws.terminal("echo x > f.txt")
         child = ws.fork("s2")
         try:
             assert child.root == "/mnt/ws"
-            assert child.fs.read("/mnt/ws/f.txt").strip() == b"x"
+            assert child.files.fs.read("/mnt/ws/f.txt").strip() == b"x"
         finally:
             child.close()
     finally:
@@ -103,8 +103,8 @@ def test_vfs_imports_resolve_from_the_root():
     sandtrap module_root knob, threaded through ExecutionContext."""
     ws = _kv_ws()
     try:
-        ws.fs.makedirs("/workspace/helpers", exist_ok=True)
-        ws.fs.write("/workspace/helpers/util.py", b"def triple(x): return x * 3")
+        ws.files.fs.makedirs("/workspace/helpers", exist_ok=True)
+        ws.files.fs.write("/workspace/helpers/util.py", b"def triple(x): return x * 3")
         r = ws.run_python("from helpers import util\nout = util.triple(3)")
         assert r, r.error
         assert r.namespace["out"] == 9
@@ -115,8 +115,8 @@ def test_vfs_imports_resolve_from_the_root():
 def test_vfs_import_error_names_the_root():
     ws = _kv_ws()
     try:
-        ws.fs.makedirs("/workspace/helpers", exist_ok=True)
-        ws.fs.write("/workspace/helpers/util.py", b"x = 1")
+        ws.files.fs.makedirs("/workspace/helpers", exist_ok=True)
+        ws.files.fs.write("/workspace/helpers/util.py", b"x = 1")
         r = ws.run_python("import util")
         assert not r
         assert "resolve from '/workspace'" in r.error
@@ -135,7 +135,7 @@ def test_skills_ride_the_root():
     try:
         name = skills.install(ws, b"---\nname: probe\n---\nbody")
         assert name == "probe"
-        assert ws.fs.exists("/workspace/skills/probe/SKILL.md")
+        assert ws.files.fs.exists("/workspace/skills/probe/SKILL.md")
         assert "/workspace/skills" in skills.catalog(ws)
     finally:
         ws.close()
@@ -147,19 +147,19 @@ def test_apps_dispatch_serves_from_the_root():
     ws = _kv_ws()
     try:
         runtime = enable_apps(ws)
-        ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-        ws.fs.write(
+        ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.files.fs.write(
             "/workspace/app/api/ping.py",
             b"def get(req):\n    return {'pong': True}\n",
         )
         r = runtime.dispatch(request("GET", "/api/ping"))
         assert r.status == 200
         # handler log rides the root too
-        ws.fs.write(
+        ws.files.fs.write(
             "/workspace/app/api/boom.py", b"def get(req):\n    raise ValueError('x')\n"
         )
         assert runtime.dispatch(request("GET", "/api/boom")).status == 500
-        assert b"ValueError" in ws.fs.read("/workspace/app/logs/api.log")
+        assert b"ValueError" in ws.files.fs.read("/workspace/app/logs/api.log")
     finally:
         ws.close()
 

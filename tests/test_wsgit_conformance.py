@@ -47,11 +47,11 @@ def ws(request, tmp_path):
 
 def test_same_script_write_then_stage(ws):
     """Writes earlier in the SAME script are visible to the verb — the
-    heredoc pattern agents favor. Staged, not autocheckpointed away."""
-    before = len(list(ws.history()))
+    heredoc pattern agents favor. Staged, not autocommited away."""
+    before = len(list(ws.log()))
     r = ws.terminal("cat > same.txt <<'EOF'\nhello\nEOF\nws-git stage same.txt")
     assert r.exit_code == 0
-    assert "suspended autocheckpoint" in r.stdout
+    assert "suspended autocommit" in r.stdout
     assert ws.terminal("ws-git diff --cached same.txt").stdout == (
         "diff --git a/same.txt b/same.txt\n"
         "--- a/same.txt\n"
@@ -59,24 +59,24 @@ def test_same_script_write_then_stage(ws):
         "@@ -0,0 +1 @@\n"
         "+hello\n"
     )
-    assert len(list(ws.history())) == before
+    assert len(list(ws.log())) == before
 
 
 def test_same_script_write_stage_commit(ws):
     """A full write → stage → commit flow inside one script lands one
     commit, with nothing left staged or unstaged."""
-    before = len(list(ws.history()))
+    before = len(list(ws.log()))
     r = ws.terminal(
         "cat > flow.txt <<'EOF'\nflow\nEOF\nws-git stage flow.txt\nws-git commit -m flow"
     )
     assert r.exit_code == 0
     # One transcript: the stage line, then the commit line.
     assert re.fullmatch(
-        r"suspended autocheckpoint \(resume: ws-git commit, ws-git reset\)\n"
+        r"suspended autocommit \(resume: ws-git commit, ws-git reset\)\n"
         rf"\[wsgit-conf-[a-z]+-[a-z0-9_.-]+ {SHORT}\] flow \(1 file\)\n",
         r.stdout,
     )
-    assert len(list(ws.history())) == before + 1
+    assert len(list(ws.log())) == before + 1
     assert ws.terminal("ws-git status").stdout == ""
 
 
@@ -92,18 +92,16 @@ def test_stage_first_composition(ws):
     """Stage-first ordering composes across the boundary identically:
     staged content (including a later edit) diffs cached, and the
     commit snapshots exactly the staged set."""
-    ws.fs.write("/workspace/a.txt", b"one\n")
-    ws.fs.write("/workspace/b.txt", b"two\n")
-    before = len(list(ws.history()))
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
+    before = len(list(ws.log()))
 
     r = ws.terminal("ws-git stage a.txt b.txt")
     assert r.exit_code == 0
-    assert (
-        r.stdout == "suspended autocheckpoint (resume: ws-git commit, ws-git reset)\n"
-    )
+    assert r.stdout == "suspended autocommit (resume: ws-git commit, ws-git reset)\n"
 
     ws.terminal("echo second >> a.txt")
-    assert len(list(ws.history())) == before
+    assert len(list(ws.log())) == before
 
     assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""
@@ -125,5 +123,5 @@ def test_stage_first_composition(ws):
     assert r.exit_code == 0
     assert re.fullmatch(rf"\[.+ {SHORT}\] compose a \(2 files\)\n", r.stdout)
 
-    assert len(list(ws.history())) == before + 1
+    assert len(list(ws.log())) == before + 1
     assert ws.terminal("ws-git status").stdout == ""

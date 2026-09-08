@@ -254,7 +254,7 @@ def test_cache_persists_across_instances(tmp_path):
 
 def test_versioning_verbs_raise_on_dir(dir_ws):
     with pytest.raises(NotSupportedError):
-        dir_ws.checkpoint()
+        dir_ws.commit()
     with pytest.raises(NotSupportedError):
         dir_ws.fork("other")
 

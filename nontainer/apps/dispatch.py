@@ -175,7 +175,7 @@ def _is_csp_token(text: str) -> bool:
 class AppsConfig:
     request_timeout: float = 5.0
     # request_timeout is the real per-request guard (same sandbox
-    # checkpoint checks both); the tick limit only backstops it and
+    # commit checks both); the tick limit only backstops it and
     # must not fire on an honest handler looping over a big frame.
     request_tick_limit: int = 10_000_000
     max_response_bytes: int = 2_000_000
@@ -458,7 +458,7 @@ class AppRuntime:
         if not name or "/" in name or name.startswith("_"):
             raise HttpError(404, f"no such endpoint: {request.path}")
         handler_path = f"{self._api_root}/{name}.py"
-        fs = self._ws.fs
+        fs = self._ws.files.fs
         if not fs.exists(handler_path):
             # agents mirror the FILENAME into the url
             # (fetch('api/explorer.py')) and then debug the backend for
@@ -506,7 +506,7 @@ class AppRuntime:
             tick_limit=self._config.request_tick_limit,
             extra_classes=self._contract,
         )
-        result = ws.exec_python(
+        result = ws.runtime.exec_python(
             source + _TRAILER.format(verb=verb),
             inputs={"nt__req": request},
             view=view,
@@ -594,7 +594,7 @@ class AppRuntime:
         # serve raw handler source — the frontend/backend boundary.
         if path == self._api_root or path.startswith(self._api_root + "/"):
             raise HttpError(404, f"not found: {request.path}")
-        fs = self._ws.fs
+        fs = self._ws.files.fs
         if not fs.exists(path) or not fs.isfile(path):
             raise HttpError(404, f"not found: {request.path}")
         return WireResponse(200, fs.read(path), _content_type(path)), False
@@ -634,7 +634,7 @@ class AppRuntime:
         if rel in self._shadow_notes:
             return
         path = posixpath.normpath(f"{self._app_root}/{rel}")
-        if not self._ws.fs.exists(path):
+        if not self._ws.files.fs.exists(path):
             return
         self._shadow_notes.add(rel)
         self._pending.append(
@@ -726,7 +726,7 @@ class AppRuntime:
                 # frozen serving: VFS is read-only, so route off it
                 self._log_sink(message.rstrip())
                 return
-            fs = self._ws.fs
+            fs = self._ws.files.fs
             fs.makedirs(f"{self._app_root}/logs", exist_ok=True)
             if not self._log_started:
                 # Header on creation, not at enable_apps: pre-creating
@@ -767,13 +767,13 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     # to itself instead of inheriting the parent-bound closure.
     def _register(target: Workspace) -> AppRuntime:
         target_runtime = AppRuntime(target, config)
-        target.register_command(
+        target.runtime.register_command(
             "ws-curl", make_curl_command(target_runtime), rebind=_register
         )
         # The canonical origin form needs the value in the shell, on
         # every rung: termish expands it, dud guests get it exported.
         origin = config.origin if config is not None else AppsConfig.origin
-        target.set_shell_env("APP_ORIGIN", origin)
+        target.runtime.shell_env("APP_ORIGIN", origin)
         return target_runtime
 
     return _register(ws)

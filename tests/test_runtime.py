@@ -24,42 +24,54 @@ def test_workspace_builds_its_own_runtime(ws):
     assert isinstance(ws.runtime.executor, LocalExecutor)
 
 
-def test_workspace_delegates_the_execution_surface(ws):
-    """The four verbs the spec moves to ws.runtime keep working from
-    the workspace in this release, so nothing breaks mid-migration."""
-    assert ws.python_config is ws.runtime.python_config
-    assert ws.supports_commands is ws.runtime.supports_commands
-    assert ws.supports_ws_verbs is ws.runtime.supports_ws_verbs
+def test_the_execution_surface_lives_on_the_runtime(ws):
+    """Execution verbs are reached through ws.runtime and nowhere else:
+    the workspace grew delegates for them once and the namespaces
+    replaced those, so the seam is visible in the call site."""
+    for gone in (
+        "exec_python",
+        "register_command",
+        "set_shell_env",
+        "shell_env",
+        "python_config",
+        "supports_commands",
+        "supports_ws_verbs",
+        "cache_enabled",
+    ):
+        assert not hasattr(ws, gone), gone
 
-    ws.register_command("shout", lambda ctx: ctx.stdout.write("HI\n"))
+    ws.runtime.register_command("shout", lambda ctx: ctx.stdout.write("HI\n"))
     assert "shout" in ws.runtime.commands
     assert ws.terminal("shout").stdout.strip() == "HI"
 
-    ws.set_shell_env("GREETING", "hello")
-    assert ws.runtime.shell_env["GREETING"] == "hello"
+    ws.runtime.shell_env("GREETING", "hello")
+    assert ws.runtime.shell_env("GREETING") == "hello"
+    assert ws.runtime.shell_env()["GREETING"] == "hello"
     assert ws.terminal("echo $GREETING").stdout.strip() == "hello"
 
-    assert ws.exec_python("x = 6 * 7").namespace["x"] == 42
+    assert ws.runtime.exec_python("x = 6 * 7").namespace["x"] == 42
+    assert ws.runtime.python_config is ws.runtime.executor._ctx.python_config
+    assert ws.runtime.cache_enabled is True
 
 
 def test_the_headline_verbs_commit_and_the_raw_ones_do_not(ws):
     """Executors never commit: the runtime returns a result and the
-    workspace decides what becomes a checkpoint."""
+    workspace decides what becomes a commit."""
     before = ws.head
     r = ws.runtime.exec_shell("echo raw > /workspace/raw.txt")
     assert r.exit_code == 0
-    assert r.checkpoint is None
+    assert r.commit is None
     assert ws.head == before
     assert ws.dirty
 
     r = ws.terminal("echo committed > /workspace/done.txt")
-    assert r.checkpoint is not None
-    assert ws.head == r.checkpoint
+    assert r.commit is not None
+    assert ws.head == r.commit
 
 
 def test_shell_env_names_are_validated(ws):
     with pytest.raises(ValueError, match="Invalid shell variable name"):
-        ws.runtime.set_shell_env("not a name", "x")
+        ws.runtime.shell_env("not a name", "x")
 
 
 def test_reserved_command_names_are_refused(ws):
@@ -77,7 +89,7 @@ def test_runtime_over_a_live_workspace_is_a_second_environment(ws):
     rt = Runtime(ws)
     try:
         assert rt.executor is not ws.runtime.executor
-        ws.write_file("/workspace/shared.txt", "seen")
+        ws.files.write("/workspace/shared.txt", "seen")
         assert (
             rt.exec_python("text = open('/workspace/shared.txt').read()").namespace[
                 "text"
@@ -114,11 +126,11 @@ def test_runtime_over_a_frozen_workspace_serves_views(ws):
     """What serving a published snapshot needs: a Runtime built
     directly over a frozen Workspace, running the restricted,
     per-call ``view`` executions apps dispatch through."""
-    ws.write_file("/workspace/note.txt", "published\n")
-    ws.checkpoint()
-    ws.tag("v1")
+    ws.files.write("/workspace/note.txt", "published\n")
+    ws.commit()
+    ws.tags.add("v1")
 
-    snap = ws.at_tag("v1")
+    snap = ws.tags.at("v1")
     try:
         assert snap.frozen
         rt = Runtime(snap)
@@ -151,7 +163,7 @@ def test_runtime_close_is_idempotent(ws):
 
 
 def test_runtime_takes_mounts_of_its_own(ws, tmp_path):
-    """Mount composition is the workspace's — both ws.fs and execution
+    """Mount composition is the workspace's — both ws.files.fs and execution
     see its mounts — so a runtime-only mount is exactly that: visible
     to this runtime's executions and to nothing else."""
     from nontainer import Mount
@@ -164,18 +176,18 @@ def test_runtime_takes_mounts_of_its_own(ws, tmp_path):
         assert r.namespace["text"] == "mounted"
     finally:
         rt.close()
-    assert not ws.fs.exists("/extra/data.txt")
+    assert not ws.files.fs.exists("/extra/data.txt")
 
 
 def test_each_runtime_sees_only_its_own_shell_environment(ws):
     """Shell variables belong to the runtime that published them, not
     to the workspace. Reading them off ``ws.runtime`` gave a second
     runtime the primary's variables and dropped its own."""
-    ws.runtime.set_shell_env("WHO", "primary")
+    ws.runtime.shell_env("WHO", "primary")
     second = Runtime(ws)
     try:
-        second.set_shell_env("WHO", "second")
-        second.set_shell_env("ONLY_MINE", "yes")
+        second.shell_env("WHO", "second")
+        second.shell_env("ONLY_MINE", "yes")
 
         assert ws.runtime.exec_shell("echo $WHO").stdout.strip() == "primary"
         assert second.exec_shell("echo $WHO").stdout.strip() == "second"

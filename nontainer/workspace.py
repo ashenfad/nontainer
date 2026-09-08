@@ -10,7 +10,7 @@ Design notes (see README "Design decisions"):
   ``asyncio.to_thread`` (the adapters do this). A workspace is
   single-writer and enforces it: mutating calls hold an internal
   ``RLock``, so a harness that threads parallel tool calls onto one
-  session serializes safely (each call atomic + checkpointed) instead
+  session serializes safely (each call atomic + committed) instead
   of corrupting staged state. Read-only accessors don't take the
   lock. Open question for v1.x: an ``arun_python`` passing through to
   sandtrap ``aexec`` would let *agent code* use top-level ``await``
@@ -22,8 +22,9 @@ Design notes (see README "Design decisions"):
   agents handle "output was cut" far better than silent loss or a
   blown context window.
 - **cwd is stateful** across calls (like any other mutating terminal
-  command) and persists via the ``__cwd__`` framework key in kv, so
-  on versioned providers rollback also restores *where you were*.
+  command) and persists in the provider's kv under the filesystem's
+  own cwd key, so on versioned providers a rollback also restores
+  *where you were*.
 - **Execution is a seam.** How code runs — the python sandbox, the
   shell, worker lifecycle — lives behind :class:`Executor` (see
   protocol.py); the default :class:`LocalExecutor` is the in-process
@@ -31,12 +32,13 @@ Design notes (see README "Design decisions"):
   (``ws.runtime``) is the workspace-side half that owns it: the
   executor's lifecycle, the terminal command registry, the shell
   environment, the raw execution calls. The workspace keeps what
-  execution must not own: the lock, the checkpoint flow, cwd, the
+  execution must not own: the lock, the commit flow, cwd, the
   cache key rules.
 """
 
 from __future__ import annotations
 
+import posixpath
 import re
 import threading
 import traceback
@@ -48,10 +50,11 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 from .cache import Cache
-from .errors import CheckpointNotFoundError, NotSupportedError, WorkspaceError
+from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 from .protocol import (
     Capabilities,
-    CheckpointInfo,
+    CommitInfo,
+    MergeOutcome,
     StageResult,
     TagInfo,
     WorkspaceDiff,
@@ -61,12 +64,58 @@ from .protocol import (
 
 if TYPE_CHECKING:
     from .editing import EditOutcome
-    from .protocol import Executor, ViewSpec
+    from .protocol import Executor
     from .runtime import Runtime
 
 Isolation = Literal["none", "process", "kernel"]
 
-_CWD_KEY = "__cwd__"
+
+def _cwd_key() -> str:
+    """The one key the agent's working directory persists under.
+
+    monkeyfs's ``VirtualFS`` resolves every relative path against this
+    key, and writes it on ``chdir`` — so on the versioned backend the
+    filesystem already owns cwd, and a commit captures it because the
+    key is in the same mapping as the files. nontainer used to keep a
+    second key of its own beside it: two keys for one fact, two merge
+    functions, and nothing to say which won a disagreement.
+    """
+    from monkeyfs import VirtualFS
+
+    return VirtualFS.CWD_KEY
+
+
+def _owns_cwd(provider_fs: Any) -> bool:
+    """Whether the provider's filesystem owns the cwd key itself.
+
+    True for monkeyfs ``VirtualFS`` (the kvgit backend): cwd is a key
+    in the provider's kv, written on ``chdir``, so it commits, forks
+    and rolls back with the files — and nontainer must not write it a
+    second time. It must not write it at all there, in fact: with
+    mounts the workspace's cwd is the composed ``MountFS``'s, and that
+    composition REQUIRES the filesystem underneath to stay at the root
+    (it hands that one paths it has already resolved), so a composed
+    cwd stored under this key would break every relative path. Mounted
+    trees are unversioned live views by contract, and on that backend
+    their cwd is now equally transient: it starts at the workspace root
+    each time the session is opened.
+
+    False for the filesystems that hold cwd in memory (``IsolatedFS``
+    on the dir backend, the AgentFS adapter). There the workspace
+    writes the key itself — inert to the filesystem, read back when the
+    session is reopened, which is the persistence those backends would
+    otherwise have no way to get.
+    """
+    from monkeyfs import VirtualFS
+
+    return isinstance(provider_fs, VirtualFS)
+
+
+_LEGACY_CWD_KEY = "__cwd__"
+"""Where nontainer used to keep its own copy of the cwd. Stores written
+before the two keys were folded into one still carry it; a workspace
+opened over such a store adopts the value and drops the key, and the
+change rides the next commit."""
 
 
 @dataclass(frozen=True)
@@ -79,7 +128,7 @@ class Mount:
     (+ ``IsolatedFS``, + ``ReadOnlyFS`` when ``readonly``).
 
     Mounted paths are live views of the real directory: they are NOT
-    versioned and NOT captured by checkpoints, so a rollback or restore
+    versioned and NOT captured by commits, so a rollback or restore
     leaves them exactly as they are.
 
     A fork **inherits the mount point** and does NOT copy the data
@@ -152,10 +201,10 @@ class TerminalResult:
     stderr: str = ""
     truncated: bool = False
 
-    checkpoint: str | None = None
-    """Id of the commit this call's autocheckpoint created — pins the
-    workspace state after the call (``ws.restore(result.checkpoint)``).
-    ``None`` when nothing was committed: read-only call, autocheckpoint
+    commit: str | None = None
+    """Id of the commit this call's autocommit created — pins the
+    workspace state after the call (``ws.restore(result.commit)``).
+    ``None`` when nothing was committed: read-only call, autocommit
     off (turn mode), or an unversioned provider. HOST-facing, like
     ``PythonResult.namespace`` — adapters must not render it into the
     model's observation."""
@@ -197,9 +246,9 @@ class PythonResult:
     reads ``result.namespace.get("ui")`` — no bespoke emission channel,
     no schema imposed by core."""
 
-    checkpoint: str | None = None
-    """Id of the commit this call's autocheckpoint created (``None``
-    when nothing was committed) — see ``TerminalResult.checkpoint``."""
+    commit: str | None = None
+    """Id of the commit this call's autocommit created (``None``
+    when nothing was committed) — see ``TerminalResult.commit``."""
 
     ui_problems: tuple[str, ...] = ()
     """Why a ``ui`` value did not render as intended — today the 8 MB
@@ -226,9 +275,9 @@ class WriteOutcome:
     created: bool
     """True for a new file, False for an overwrite."""
 
-    checkpoint: str | None = None
-    """Commit created by this call's autocheckpoint (``None`` when
-    nothing was committed) — see ``TerminalResult.checkpoint``."""
+    commit: str | None = None
+    """Commit created by this call's autocommit (``None`` when
+    nothing was committed) — see ``TerminalResult.commit``."""
 
     def __str__(self) -> str:  # f"wrote {outcome}" reads as the path
         return self.path
@@ -296,7 +345,7 @@ class PythonConfig:
     audit."""
 
     timeout: float = 30.0
-    # The same sandbox checkpoint enforces timeout, cancel, and ticks,
+    # The same sandbox commit enforces timeout, cancel, and ticks,
     # so `timeout` is the real runaway guard; the tick limit is a
     # determinism backstop and must be sized to never fire on honest
     # work — a legitimate cleaning loop over a few-hundred-k-row CSV
@@ -653,9 +702,9 @@ class _Settings:
 
     - ``commands`` — ``register_command`` mutates the built set
       (``enable_apps`` injects ``ws-curl``/``curl`` that way).
-    - ``autocheckpoint`` — has a public setter, and the documented
+    - ``autocommit`` — has a public setter, and the documented
       turn-granularity path uses it (``WorkspaceTools(ws,
-      checkpoint="turn")`` sets ``ws.autocheckpoint = False``). Replaying
+      commit="turn")`` sets ``ws.autocommit = False``). Replaying
       the construction-time value would silently put a forked session
       back on per-call commits.
 
@@ -684,6 +733,350 @@ class _Settings:
         return dict(vars(self))
 
 
+class WorkspaceFiles:
+    """``ws.files``: the file surface of one session.
+
+    Writes here are the same operation the file tools perform: the
+    workspace's single-writer lock is held for the call, and the commit
+    flow runs when it lands — one commit per call under autocommit,
+    part of the composition while an index is staged. Reads take no
+    lock and never commit.
+
+    One instance per workspace, reached as ``ws.files``; it holds the
+    workspace and no state of its own.
+    """
+
+    __slots__ = ("_ws",)
+
+    def __init__(self, ws: "Workspace") -> None:
+        self._ws = ws
+
+    def __repr__(self) -> str:
+        return f"<files of session {self._ws.session!r}>"
+
+    # -- reads ---------------------------------------------------------
+
+    def read(self, path: str) -> bytes:
+        """The file's bytes. Raises for a missing path — use
+        :meth:`read_artifact` where absence is an answer rather than an
+        error."""
+        self._ws._check_open()
+        return self._ws._fs.read(path)
+
+    def exists(self, path: str) -> bool:
+        """Whether anything (file or directory) is at ``path``."""
+        self._ws._check_open()
+        return self._ws._fs.exists(path)
+
+    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
+        """Paths under ``path``, sorted.
+
+        Entries come back spelled the way ``path`` was — absolute for
+        an absolute directory, relative to the cwd otherwise — so a
+        result can be handed straight back to :meth:`read`. Flat by
+        default (files and directories one level down); ``recursive``
+        walks the tree and returns the FILES beneath it, since a
+        directory is not something a caller of a recursive listing
+        reads.
+        """
+        ws = self._ws
+        ws._check_open()
+        fs = ws._fs
+
+        def entries(directory: str) -> list[str]:
+            return sorted(
+                posixpath.normpath(posixpath.join(directory, name))
+                for name in fs.list(directory)
+            )
+
+        base = posixpath.normpath(path)
+        if not recursive:
+            return entries(base)
+        out: list[str] = []
+        stack = [base]
+        while stack:
+            for entry in entries(stack.pop()):
+                (stack if fs.isdir(entry) else out).append(entry)
+        return sorted(out)
+
+    def get(self, src: str, dest: str | Path | None = None) -> bytes:
+        """Copy a workspace file OUT ("download"). Returns the bytes;
+        also writes them to ``dest`` on the host when given.
+
+        Read-only against the workspace — never commits.
+        """
+        ws = self._ws
+        ws._check_open()
+        data = ws._fs.read(src)
+        if dest is not None:
+            out = Path(dest).expanduser()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(data)
+        return data
+
+    def read_artifact(self, path: str) -> bytes | None:
+        """An artifact's bytes, or ``None`` if it cannot be read.
+
+        Shaped to be handed straight to the a2ui envelope, whose
+        ``read_bytes`` parameter is exactly this signature::
+
+            turn_to_a2ui(prose, artifacts, ws.files.read_artifact, file_url, ...)
+
+        The ``None`` is the whole point. ``turn_to_a2ui`` owns no I/O
+        policy on purpose and documents ``None`` as "unreadable, degrade
+        gracefully" — but the obvious ``lambda p: ws.files.read(p)``
+        raises ``FileNotFoundError`` for a missing artifact and breaks
+        that never-raises guarantee mid-stream, in an egress path.
+        Holding that contract here means each consumer does not have to
+        restate it correctly.
+
+        Returns bytes rather than a parsed payload deliberately. Every
+        consumer in this stack parses for itself (a2ui degrades on
+        malformed JSON rather than raising), and a typed loader would
+        invite reading it as "give me my DataFrame back" — which a
+        ``head(200)`` artifact cannot honour. ``ArtifactPath.kind``
+        says how to interpret the bytes when you want to.
+
+        Read-only; never commits. Any path works, not only ``/ui`` —
+        artifact notes are the usual source, but nothing here needs to
+        police that.
+        """
+        try:
+            self._ws._check_open()
+            return self._ws._fs.read(path)
+        except Exception:  # noqa: BLE001 - unreadable IS the answer here
+            return None
+
+    # -- writes --------------------------------------------------------
+
+    def write(self, path: str, content: str | bytes) -> WriteOutcome:
+        """Write a file (parents created, overwrites). The quoting-free
+        alternative to shell redirects for multiline content; exposed
+        by adapters as the ``file_write`` tool. Committed."""
+        ws = self._ws
+        data = content.encode() if isinstance(content, str) else content
+        with ws._lock:
+            ws._check_open()
+            ws._check_writable("file_write")
+            created = not ws._fs.exists(path)
+            # PurePosixPath: workspace paths are POSIX regardless of host OS
+            parent = str(PurePosixPath(path).parent)
+            if parent not in (".", "/", ""):
+                ws._fs.makedirs(parent, exist_ok=True)
+            ws._fs.write(path, data)
+            # host-side write behind the executor's back: flag it, and
+            # the next execution syncs (no-op for LocalExecutor)
+            ws._mark_executor_stale()
+            return WriteOutcome(
+                path=path,
+                size=len(data),
+                created=created,
+                commit=ws._maybe_commit("file_write"),
+            )
+
+    def edit(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> "EditOutcome":
+        """Exact-string replacement with agent-tolerant fallbacks (the
+        agex strategy set — see ``nontainer.editing``): exact match,
+        then trailing-whitespace-flexible, then indent-flexible with a
+        re-indented replacement; a search that fails but whose
+        replacement is already present is an idempotent no-op
+        (``count == 0``). Raises ``WorkspaceError`` with an
+        agent-actionable message (including a "did you mean these
+        lines?" snippet) otherwise. Committed when it changes the
+        file."""
+        from .editing import EditError, apply_edit
+
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            ws._check_writable("file_edit")
+            try:
+                text = ws._fs.read(path).decode("utf-8")
+            except Exception as e:
+                raise WorkspaceError(f"cannot read {path!r}: {e}") from e
+            try:
+                outcome = apply_edit(
+                    text, old_string, new_string, replace_all=replace_all, path=path
+                )
+            except EditError as e:
+                raise WorkspaceError(str(e)) from e
+            if outcome.count:
+                ws._fs.write(path, outcome.content.encode())
+                ws._mark_executor_stale()  # see write()
+                cp = ws._maybe_commit("file_edit")
+                if cp:
+                    outcome = replace(outcome, commit=cp)
+            return outcome
+
+    def put(self, src: str | Path, dest: str | None = None) -> WriteOutcome:
+        """Copy a host file INTO the workspace ("upload").
+
+        Sugar over ``ws.files.fs.write`` — whole-bytes, so sized for
+        documents/datasets, not multi-GB blobs (use a :class:`Mount`
+        for those). ``dest`` defaults to the source's basename at the
+        workspace root; parent directories are created. Overwrites.
+        """
+        ws = self._ws
+        src_path = Path(src).expanduser()
+        data = src_path.read_bytes()
+        ws_path = dest or src_path.name
+        with ws._lock:
+            ws._check_open()
+            ws._check_writable("put")
+            created = not ws._fs.exists(ws_path)
+            parent = str(PurePosixPath(ws_path).parent)
+            if parent not in (".", "/", ""):
+                ws._fs.makedirs(parent, exist_ok=True)
+            ws._fs.write(ws_path, data)
+            ws._mark_executor_stale()  # see write()
+            return WriteOutcome(
+                path=ws_path,
+                size=len(data),
+                created=created,
+                commit=ws._maybe_commit("put"),
+            )
+
+    # -- the tree as a whole -------------------------------------------
+
+    def export(self) -> AbstractContextManager[Path]:
+        """Expose the workspace at a real path for the duration of the
+        block (FUSE providers only; others raise
+        ``NotSupportedError``). For the tools that must see real files
+        — a subprocess, a C extension — rather than the VFS."""
+        return self._ws._provider.mount()
+
+    @property
+    def fs(self) -> Any:
+        """EXTENSION SURFACE: the termish-protocol filesystem, for
+        host-side reads/writes (seeding inputs, harvesting artifacts)
+        without the sandbox and without the commit flow. Bypasses the
+        workspace's single-writer lock — a host thread writing here
+        while agent calls run holds ``ws.lock``.
+
+        Writes through this handle mark a remote executor's view stale;
+        the next execution re-syncs it, so a host-written file is
+        visible to the guest's very next ``cat`` (see
+        :class:`_SyncingFS`). Reads pass through untouched."""
+        return self._ws._public_fs
+
+
+class WorkspaceIndex:
+    """``ws.index``: the staged set — one commit composed across several
+    calls (requires ``caps.index``; other providers raise
+    ``NotSupportedError`` naming the verb).
+
+    The first :meth:`stage` suspends autocommit, so the calls that
+    follow accumulate instead of committing one by one; ``ws.commit()``
+    lands the staged set and resumes, :meth:`discard` abandons it. The
+    terminal's ``ws-git`` verbs drive this same index, so an agent and
+    its host see one composition, not two.
+    """
+
+    __slots__ = ("_ws",)
+
+    def __init__(self, ws: "Workspace") -> None:
+        self._ws = ws
+
+    def __repr__(self) -> str:
+        return f"<index of session {self._ws.session!r}>"
+
+    def stage(self, paths: Iterable[str]) -> StageResult:
+        """Stage workspace file paths; the first call suspends autocommit."""
+        ws = self._ws
+        with ws._lock:
+            ws._check_writable("ws-git stage")
+            return ws._provider.stage(paths)
+
+    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Remove paths from the index; emptying it resumes autocommit."""
+        ws = self._ws
+        with ws._lock:
+            ws._check_writable("ws-git unstage")
+            return ws._provider.unstage(paths)
+
+    def discard(self) -> None:
+        """Abandon the composition; working-tree writes stay dirty."""
+        ws = self._ws
+        with ws._lock:
+            ws._check_writable("ws-git discard")
+            return ws._provider.discard_staged()
+
+    def status(self) -> WorkspaceStatus:
+        """Staged vs unstaged paths plus live merge context. Pure read —
+        ungated like ``diff``/``log``: reads are the point of snapshots."""
+        return self._ws._provider.status()
+
+
+class WorkspaceTags:
+    """``ws.tags``: names this session gives its own commits.
+
+    Session-scoped, always. The name belongs to this session — another
+    session's ``v1`` is a different tag, and deleting the session
+    (``Store.delete``) deletes it — which is what makes it the right
+    place for "before the refactor". A name that must outlive the
+    session, or be read from another one, is store-scoped and lives on
+    ``store.tags``.
+
+    Tags never move: an existing name raises rather than being
+    repointed. A tag also anchors garbage collection — the named commit
+    and its ancestry stay reachable for as long as the name exists.
+    Requires ``caps.tags``.
+    """
+
+    __slots__ = ("_ws",)
+
+    def __init__(self, ws: "Workspace") -> None:
+        self._ws = ws
+
+    def __repr__(self) -> str:
+        return f"<tags of session {self._ws.session!r}>"
+
+    def add(
+        self,
+        name: str,
+        *,
+        at: str | None = None,
+        info: dict[str, Any] | None = None,
+    ) -> str:
+        """Name a commit, immutably; returns the commit id.
+
+        Names the current state by default, committing staged changes
+        first so the name means what the caller saw; ``at`` names an
+        earlier commit of this session instead. ``info`` is caller
+        metadata and must be JSON-serializable.
+        """
+        return self._ws._tag(name, at=at, info=info, scope="session")
+
+    def list(self) -> dict[str, str]:
+        """Tag name → commit id, for this session's tags."""
+        return self._ws._tags(scope="session")
+
+    def info(self, name: str) -> TagInfo | None:
+        """Describe one tag, or ``None`` if this session has no such tag."""
+        return self._ws._tag_info(name, scope="session")
+
+    def delete(self, name: str) -> None:
+        """Drop a tag. What it named survives only while something else
+        still reaches it — a branch, or another tag."""
+        self._ws._delete_tag(name, scope="session")
+
+    def at(self, name: str) -> "Workspace":
+        """A frozen workspace over the tagged state.
+
+        Reads see the tagged files, cache and cwd; nothing can be
+        written or committed (see :attr:`Workspace.frozen`). Close it
+        when done — it holds an executor of its own.
+        """
+        return self._ws._at_tag(name, scope="session")
+
+
 class Workspace:
     """A fake little computer: files + shell + python + cache, versioned.
 
@@ -700,7 +1093,7 @@ class Workspace:
         mounts: Mapping[str, Mount] | None = None,
         commands: Mapping[str, Callable[..., Any]] | None = None,
         cache: bool = True,
-        autocheckpoint: bool = True,
+        autocommit: bool = True,
         max_observation: int = 32_000,
         executor: "Executor | None" = None,
         executor_factory: "Callable[[], Executor] | None" = None,
@@ -743,10 +1136,10 @@ class Workspace:
 
         # Single-writer enforcement: mutating public methods hold this
         # lock, so concurrent calls from a threading harness serialize
-        # (each atomic + checkpointed) instead of interleaving writes
+        # (each atomic + committed) instead of interleaving writes
         # into the provider's staged buffer. Invariants: the lock is
         # taken ONLY in mutating public method bodies — never in
-        # exec_python / build_sandbox / _maybe_checkpoint (the
+        # exec_python / build_sandbox / _maybe_commit (the
         # extension paths the apps extra drives; extensions take
         # ws.lock themselves when their work mutates) — and read-only
         # accessors don't take it. RLock, not Lock: agent code can
@@ -768,20 +1161,18 @@ class Workspace:
             _FrozenKV(provider.kv, self._frozen_at) if self._frozen else provider.kv
         )
 
-        # autocheckpoint is meaningless (and forced off) when the
-        # provider can't checkpoint.
+        # autocommit is meaningless (and forced off) when the
+        # provider can't commit.
         # Set while an operation writes on a call's behalf, so nested
-        # write_file checkpoints fold into that call's single commit.
-        self._defer_checkpoints = False
-        self._autocheckpoint = (
-            autocheckpoint and provider.caps.versioned and not self._frozen
-        )
+        # write_file commits fold into that call's single commit.
+        self._defer_commits = False
+        self._autocommit = autocommit and provider.caps.versioned and not self._frozen
         # Construction owns the workspace root + initial cwd, but it
         # must never absorb caller-owned staged work into an automatic
         # init baseline. Embedders may deliberately seed provider.fs /
         # provider.kv before wrapping it, so remember rather than reject
         # that state: initialization joins their staged view and remains
-        # explicitly theirs to checkpoint or discard.
+        # explicitly theirs to commit or discard.
         was_dirty = provider.caps.staging and provider.dirty
 
         # -- filesystem: provider fs, optionally wrapped with mounts.
@@ -794,7 +1185,7 @@ class Workspace:
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
         # the partial staging like a torn call instead of
-        # checkpointing it. Transient per-call state, never replayed.
+        # committing it. Transient per-call state, never replayed.
         self._pending_sync_error: str | None = None
         # Host-side writes move provider state behind a remote
         # executor's back; the public ``fs`` hands out a wrapper that
@@ -840,7 +1231,7 @@ class Workspace:
         # workspace state, not to the first tool call. They must exist
         # before the executor opens (a remote executor materializes its
         # guest tree from them), and a fresh versioned workspace commits
-        # them under {"tool": "init"} regardless of autocheckpoint mode.
+        # them under {"tool": "init"} regardless of autocommit mode.
         # Reopening is read-only: the guards leave the provider clean,
         # so no second init commit is made.
         initialized = False
@@ -848,11 +1239,24 @@ class Workspace:
             self._fs.makedirs(self._root, exist_ok=True)
             initialized = True
 
-        # -- stateful cwd: restore from framework key if present, else
-        # start at the workspace root. Guarded so a no-op restore
+        # -- stateful cwd: where the filesystem left it, or the
+        # workspace root on a fresh session. Guarded so a no-op chdir
         # doesn't dirty staging providers (which would turn read-only
         # tool calls into commits).
-        stored_cwd = provider.kv.get(_CWD_KEY) or self._root
+        self._owns_cwd = _owns_cwd(provider.fs)
+        if normalized_mounts and self._owns_cwd:
+            # The composition resolves paths before handing them down,
+            # so the filesystem underneath has to sit at the root. Any
+            # cwd under the key belongs to un-mounted sessions of this
+            # store; honoring it here would break every relative path.
+            try:
+                if provider.fs.getcwd() != "/":
+                    provider.fs.chdir("/")
+            except Exception:  # noqa: BLE001 - a root that won't chdir is not ours to fix
+                pass
+            stored_cwd = self._root
+        else:
+            stored_cwd = provider.kv.get(_cwd_key()) or self._legacy_cwd() or self._root
         if stored_cwd != "/":
             try:
                 if self._fs.getcwd() != stored_cwd:
@@ -862,11 +1266,18 @@ class Workspace:
                 pass  # path may no longer exist; start at the fs root
         initialized = self._save_cwd() or initialized
         # A frozen workspace commits nothing, init baseline included: the
-        # tagged checkpoint already holds a root and a cwd, and a
+        # tagged commit already holds a root and a cwd, and a
         # snapshot that wrote a commit of its own would not be one.
         if provider.caps.versioned and initialized and not was_dirty:
             if not self._frozen:
-                provider.checkpoint(info={"tool": "init"})
+                provider.commit(info={"tool": "init"})
+
+        # The namespaces: plain views onto this workspace (they hold
+        # it and no state), built before the runtime so every path
+        # below can reach ws.files.
+        self._files = WorkspaceFiles(self)
+        self._index = WorkspaceIndex(self)
+        self._tags_ns = WorkspaceTags(self)
 
         # The runtime LAST: building it opens the executor, which may
         # fork a persistent isolation worker (see LocalExecutor.open),
@@ -943,40 +1354,49 @@ class Workspace:
         return self._root
 
     @property
-    def supports_commands(self) -> bool:
-        """Whether injected terminal commands reach the shell — an
-        executor capability (see :attr:`Runtime.supports_commands`)."""
-        return self._runtime.supports_commands
-
-    @property
-    def supports_ws_verbs(self) -> bool:
-        """Whether ``ws-*`` verbs ferry into the shell (see
-        :attr:`Runtime.supports_ws_verbs`)."""
-        return self._runtime.supports_ws_verbs
-
-    @property
     def caps(self) -> Capabilities:
+        """What the provider under this session can do — versioning,
+        staging, cheap forks, merge, tags, the index. Execution
+        capabilities are the runtime's (``ws.runtime.supports_commands``,
+        ``ws.runtime.supports_ws_verbs``, ``ws.runtime.cache_enabled``):
+        they belong to the executor, not the substrate."""
         return self._provider.caps
 
     @property
-    def autocheckpoint(self) -> bool:
+    def files(self) -> WorkspaceFiles:
+        """The file surface — see :class:`WorkspaceFiles`."""
+        return self._files
+
+    @property
+    def index(self) -> WorkspaceIndex:
+        """The staged set — see :class:`WorkspaceIndex`."""
+        return self._index
+
+    @property
+    def tags(self) -> WorkspaceTags:
+        """This session's tags — see :class:`WorkspaceTags`.
+        Store-scoped names live on ``store.tags``."""
+        return self._tags_ns
+
+    @property
+    def autocommit(self) -> bool:
         """Whether each successful mutating tool call commits. Settable:
         flip to False for turn-granularity commit policies (the agex
         model — one commit per agent turn), where the embedder or an
-        adapter hook calls :meth:`checkpoint` at turn boundaries.
+        adapter hook calls :meth:`commit` at turn boundaries.
         Tradeoff: kvgit's staged buffer is in-memory, so deferring
         commits means a crash can lose the current turn's work."""
-        return self._autocheckpoint
+        return self._autocommit
 
-    @autocheckpoint.setter
-    def autocheckpoint(self, value: bool) -> None:
-        self._autocheckpoint = (
+    @autocommit.setter
+    def autocommit(self, value: bool) -> None:
+        self._autocommit = (
             bool(value) and self._provider.caps.versioned and not self._frozen
         )
 
     @property
     def head(self) -> str | None:
-        """Id of the current (latest) checkpoint — pins the state a
+        """Id of the current (latest) commit — pins the state a
         read-only call observed, since reads never move it. ``None``
         for unversioned providers. Caveat: staged-but-uncommitted
         changes (turn mode, manual ``ws.fs`` writes) are NOT in the
@@ -996,31 +1416,11 @@ class Workspace:
         """This workspace is a snapshot at a tag (see :meth:`at_tag`).
 
         Reads work; nothing can be written or committed.
-        ``autocheckpoint`` is forced off, the write tools refuse, and
+        ``autocommit`` is forced off, the write tools refuse, and
         the executor sees a read-only filesystem — so a shell redirect
         or ``open(..., "w")`` from agent code fails where it happens
         instead of staging a change that could never land."""
         return self._frozen
-
-    @property
-    def head_tree(self) -> str | None:
-        """Content hash of the current head — the identity of *what the
-        files and cache are*, where :attr:`head` identifies the point in
-        history. Equal trees mean identical content; the converse does
-        not hold, since a rewrite is stamped with its own time (see
-        :class:`~nontainer.protocol.CheckpointInfo`). ``None`` for an
-        unversioned provider, an empty history, or a provider that keeps
-        no such hash. Staged changes are not in it: check
-        :attr:`dirty`."""
-        if not self._provider.caps.versioned:
-            return None
-        for entry in self.history(limit=1):
-            return entry.tree
-        return None
-
-    @property
-    def cache_enabled(self) -> bool:
-        return self._cache_enabled
 
     @property
     def runtime(self) -> "Runtime":
@@ -1028,10 +1428,6 @@ class Workspace:
         the terminal command registry, the shell environment, the raw
         execution calls. See :class:`~nontainer.runtime.Runtime`."""
         return self._runtime
-
-    @property
-    def python_config(self) -> PythonConfig:
-        return self._runtime.python_config
 
     @property
     def lock(self) -> threading.RLock:
@@ -1084,15 +1480,15 @@ class Workspace:
                 else:
                     pending += (
                         "; WARNING: this call's staged changes may remain "
-                        "and would ride the next checkpoint"
+                        "and would ride the next commit"
                     )
                 torn = pending if torn is None else f"{pending}\n{torn}"
             self._save_cwd()
             if torn is not None:
                 stderr = f"{result.stderr}\n{torn}" if result.stderr else torn
                 return replace(result, exit_code=result.exit_code or 1, stderr=stderr)
-            cp = self._maybe_checkpoint("terminal")
-        return replace(result, checkpoint=cp) if cp else result
+            cp = self._maybe_commit("terminal")
+        return replace(result, commit=cp) if cp else result
 
     def run_python(
         self, code: str, *, inputs: Mapping[str, Any] | None = None
@@ -1106,7 +1502,7 @@ class Workspace:
         carries the bindings left behind. Also in scope: whitelisted
         ``modules``, ``cache`` (the *versioned* persistent dict —
         unlike the namespace, cache contents are captured by
-        checkpoints), stdlib ``open()`` etc. routed to the workspace
+        commits), stdlib ``open()`` etc. routed to the workspace
         fs, and imports from ``helpers/`` on the fs. Never raises for
         sandboxed-code failure — check ``error`` / truthiness.
         """
@@ -1114,7 +1510,7 @@ class Workspace:
             self._check_open()
             was_dirty = self._provider.dirty
             try:
-                result = self.exec_python(code, inputs=inputs)
+                result = self._runtime.exec_python(code, inputs=inputs)
             except PermissionError as e:
                 return PythonResult(stdout="", error=self._refused_frozen(e))
             torn = self._absorb_or_unwind(was_dirty)
@@ -1123,8 +1519,8 @@ class Workspace:
                 error = f"{result.error}\n\n{torn}" if result.error else torn
                 return replace(result, error=error)
             result = self._materialize_ui(result)
-            cp = self._maybe_checkpoint("run_python")
-        return replace(result, checkpoint=cp) if cp else result
+            cp = self._maybe_commit("run_python")
+        return replace(result, commit=cp) if cp else result
 
     def _materialize_ui(self, result: PythonResult) -> PythonResult:
         """Turn live ``ui`` values into files, and the bindings into
@@ -1139,7 +1535,7 @@ class Workspace:
         adapter. Same code, different outcome, for no reason a caller
         could see.
 
-        Runs before the checkpoint so the artifacts belong to the call
+        Runs before the commit so the artifacts belong to the call
         that produced them, and after the unwind check so a torn call
         writes nothing.
 
@@ -1199,9 +1595,9 @@ class Workspace:
         problems: list[str] = []
         try:
             # Artifact writes go through the public write_file, which
-            # checkpoints for itself. Suppressed: they are part of THIS
+            # commits for itself. Suppressed: they are part of THIS
             # call and ride its commit.
-            with self._one_checkpoint():
+            with self._one_commit():
                 _, problems = materialize_ui(self, rich, claims=claims)
         except Exception:  # noqa: BLE001 - rendering agent data is never fatal
             return result
@@ -1249,61 +1645,9 @@ class Workspace:
             None, partial(self.run_python, code, inputs=inputs)
         )
 
-    def exec_python(
-        self,
-        code: str,
-        *,
-        inputs: Mapping[str, Any] | None = None,
-        stdin: str | None = None,
-        argv: list[str] | None = None,
-        echo: Literal["none", "last", "all"] | None = None,
-        view: "ViewSpec | None" = None,
-    ) -> PythonResult:
-        """EXTENSION SURFACE: the raw execution path — no checkpoint,
-        no lock. Delegates to :meth:`Runtime.exec_python`, where the
-        contract is documented; most callers want :meth:`run_python`."""
-        return self._runtime.exec_python(
-            code,
-            inputs=inputs,
-            stdin=stdin,
-            argv=argv,
-            echo=echo,
-            view=view,
-        )
-
-    def register_command(
-        self,
-        name: str,
-        fn: Callable[..., Any],
-        *,
-        rebind: Callable[[Workspace], None] | None = None,
-    ) -> None:
-        """Add a terminal command after construction. Delegates to
-        :meth:`Runtime.register_command`, where the naming rules and
-        the ``rebind`` contract are documented."""
-        self._runtime.register_command(name, fn, rebind=rebind)
-
-    def set_shell_env(self, name: str, value: str) -> None:
-        """Publish a variable to shell executions. Delegates to
-        :meth:`Runtime.set_shell_env`."""
-        self._runtime.set_shell_env(name, value)
-
     # ------------------------------------------------------------------
     # direct (host-side) access
     # ------------------------------------------------------------------
-
-    @property
-    def fs(self) -> Any:
-        """The termish-protocol filesystem, for host-side reads/writes
-        (seeding inputs, harvesting artifacts) without the sandbox.
-        Bypasses the workspace's single-writer lock — a host thread
-        writing here while agent calls run holds :attr:`lock`.
-
-        Writes through this handle mark a remote executor's view stale;
-        the next execution re-syncs it, so a host-written file is
-        visible to the guest's very next ``cat`` (see
-        :class:`_SyncingFS`). Reads pass through untouched."""
-        return self._public_fs
 
     def _mark_executor_stale(self) -> None:
         """Provider state moved without the executor seeing it; the
@@ -1311,144 +1655,6 @@ class Workspace:
         path that writes behind the executor's back goes through here
         (see :meth:`Runtime.mark_stale`)."""
         self._runtime.mark_stale()
-
-    def write_file(self, path: str, content: str | bytes) -> WriteOutcome:
-        """Write a file (parents created, overwrites). The quoting-free
-        alternative to shell redirects for multiline content; exposed
-        by adapters as the ``file_write`` tool. Checkpointed."""
-        data = content.encode() if isinstance(content, str) else content
-        with self._lock:
-            self._check_open()
-            self._check_writable("file_write")
-            created = not self._fs.exists(path)
-            # PurePosixPath: workspace paths are POSIX regardless of host OS
-            parent = str(PurePosixPath(path).parent)
-            if parent not in (".", "/", ""):
-                self._fs.makedirs(parent, exist_ok=True)
-            self._fs.write(path, data)
-            # host-side write behind the executor's back: flag it, and
-            # the next execution syncs (no-op for LocalExecutor)
-            self._mark_executor_stale()
-            return WriteOutcome(
-                path=path,
-                size=len(data),
-                created=created,
-                checkpoint=self._maybe_checkpoint("file_write"),
-            )
-
-    def edit_file(
-        self,
-        path: str,
-        old_string: str,
-        new_string: str,
-        *,
-        replace_all: bool = False,
-    ) -> "EditOutcome":
-        """Exact-string replacement with agent-tolerant fallbacks (the
-        agex strategy set — see ``nontainer.editing``): exact match,
-        then trailing-whitespace-flexible, then indent-flexible with a
-        re-indented replacement; a search that fails but whose
-        replacement is already present is an idempotent no-op
-        (``count == 0``). Raises ``WorkspaceError`` with an
-        agent-actionable message (including a "did you mean these
-        lines?" snippet) otherwise. Checkpointed when it changes the
-        file."""
-        from .editing import EditError, apply_edit
-
-        with self._lock:
-            self._check_open()
-            self._check_writable("file_edit")
-            try:
-                text = self._fs.read(path).decode("utf-8")
-            except Exception as e:
-                raise WorkspaceError(f"cannot read {path!r}: {e}") from e
-            try:
-                outcome = apply_edit(
-                    text, old_string, new_string, replace_all=replace_all, path=path
-                )
-            except EditError as e:
-                raise WorkspaceError(str(e)) from e
-            if outcome.count:
-                self._fs.write(path, outcome.content.encode())
-                self._mark_executor_stale()  # see write_file()
-                cp = self._maybe_checkpoint("file_edit")
-                if cp:
-                    outcome = replace(outcome, checkpoint=cp)
-            return outcome
-
-    def put(self, src: str | Path, dest: str | None = None) -> WriteOutcome:
-        """Copy a host file INTO the workspace ("upload").
-
-        Sugar over ``ws.fs.write`` — whole-bytes, so sized for
-        documents/datasets, not multi-GB blobs (use a :class:`Mount`
-        for those). ``dest`` defaults to the source's basename at the
-        workspace root; parent directories are created. Overwrites.
-        """
-        src_path = Path(src).expanduser()
-        data = src_path.read_bytes()
-        ws_path = dest or src_path.name
-        with self._lock:
-            self._check_open()
-            self._check_writable("put")
-            created = not self._fs.exists(ws_path)
-            parent = str(PurePosixPath(ws_path).parent)
-            if parent not in (".", "/", ""):
-                self._fs.makedirs(parent, exist_ok=True)
-            self._fs.write(ws_path, data)
-            self._mark_executor_stale()  # see write_file()
-            return WriteOutcome(
-                path=ws_path,
-                size=len(data),
-                created=created,
-                checkpoint=self._maybe_checkpoint("put"),
-            )
-
-    def get(self, src: str, dest: str | Path | None = None) -> bytes:
-        """Copy a workspace file OUT ("download"). Returns the bytes;
-        also writes them to ``dest`` on the host when given.
-
-        Read-only against the workspace — never checkpoints.
-        """
-        self._check_open()
-        data = self._fs.read(src)
-        if dest is not None:
-            out = Path(dest).expanduser()
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(data)
-        return data
-
-    def read_artifact(self, path: str) -> bytes | None:
-        """An artifact's bytes, or ``None`` if it cannot be read.
-
-        Shaped to be handed straight to the a2ui envelope, whose
-        ``read_bytes`` parameter is exactly this signature::
-
-            turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, ...)
-
-        The ``None`` is the whole point. ``turn_to_a2ui`` owns no I/O
-        policy on purpose and documents ``None`` as "unreadable, degrade
-        gracefully" — but the obvious ``lambda p: ws.fs.read(p)`` raises
-        ``FileNotFoundError`` for a missing artifact and breaks that
-        never-raises guarantee mid-stream, in an egress path. Holding
-        that contract here means each consumer does not have to restate
-        it correctly.
-
-        Returns bytes rather than a parsed payload deliberately. Every
-        consumer in this stack parses for itself (a2ui degrades on
-        malformed JSON rather than raising), and a typed loader would
-        invite reading it as "give me my DataFrame back" — which a
-        ``head(200)`` artifact cannot honour. ``ArtifactPath.kind``
-        says how to interpret the bytes when you want to.
-
-        Read-only; never checkpoints. Any path works, not only ``/ui``
-        — artifact notes are the usual source, but nothing here needs
-        to police that.
-        """
-        try:
-            self._check_open()
-            return self._fs.read(path)
-        except Exception:  # noqa: BLE001 - unreadable IS the answer here
-            return None
 
     @property
     def cache(self) -> MutableMapping[str, Any]:
@@ -1469,24 +1675,66 @@ class Workspace:
     # versioning (gated by caps; see protocol.py)
     # ------------------------------------------------------------------
 
-    def checkpoint(self, info: dict[str, Any] | None = None) -> str:
-        with self._lock:
-            self._check_writable("checkpoint")
-            return self._provider.checkpoint(info)
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        """Commit the session's state; returns the commit id.
 
-    def restore(self, checkpoint_id: str) -> None:
+        One verb, two scopes, and the index decides which: while a
+        composition is in flight (``ws.index.stage`` has suspended
+        autocommit) this commits the staged set and leaves unstaged
+        writes dirty; otherwise it commits everything uncommitted —
+        files, cache and cwd — as one atomic commit. That is the rule
+        the terminal follows too, so ``ws-git commit`` and
+        ``ws.commit()`` never mean different things at the same moment.
+
+        ``info`` is caller metadata recorded on the commit and must be
+        JSON-serializable.
+        """
         with self._lock:
-            self._provider.restore(checkpoint_id)
+            self._check_open()
+            self._check_writable("commit")
+            if self._staging():
+                return self._provider.commit_index(info)
+            return self._provider.commit(info)
+
+    def _staging(self) -> bool:
+        """Whether a composition is in flight — the index holds paths
+        and has suspended autocommit. False on providers without an
+        index, and on providers predating the query."""
+        suspended = getattr(self._provider, "stage_suspended", None)
+        return bool(callable(suspended) and suspended())
+
+    def checkout(self, commit: str) -> str:
+        """Move this session to one of its own commits; returns its id.
+
+        The whole tree: files, cache and cwd all become what they were
+        at that commit, and staged changes are dropped. Within this
+        session only — a session IS a branch, so switching to another
+        one is ``ws.fork(name)`` or ``store.open(name)``, never a
+        checkout, and a name that is not a commit here is refused
+        rather than guessed at.
+        """
+        with self._lock:
+            self._check_writable("checkout")
+            try:
+                self._provider.restore(commit)
+            except CommitNotFoundError as e:
+                raise CommitNotFoundError(
+                    f"{commit!r} is not a commit on session "
+                    f"{self.session!r} ({e}). checkout moves within one "
+                    "session's history; sessions are branches, so reaching "
+                    'another one is ws.fork("name") or store.open("name").'
+                ) from e
             # provider state moved under the executor: flag its view,
             # and the next execution refreshes it (no-op for
             # LocalExecutor, which holds no copy)
             self._mark_executor_stale()
+            return commit
 
     def rollback(self, steps: int = 1) -> str:
-        """Restore the Nth-previous checkpoint; returns its id.
+        """Restore the Nth-previous commit; returns its id.
 
         Sugar over ``history()`` + ``restore()``. The explicit
-        ``{"tool": "init"}`` lifecycle checkpoint is the floor:
+        ``{"tool": "init"}`` lifecycle commit is the floor:
         rollback may target it, but never cross it into a provider's
         pre-workspace seed. Legacy histories without that exact marker
         retain their existing provider-history behavior.
@@ -1496,12 +1744,12 @@ class Workspace:
         with self._lock:
             entries = list(self._provider.history(limit=steps + 1))
             if len(entries) <= steps:
-                raise CheckpointNotFoundError(
+                raise CommitNotFoundError(
                     f"Cannot roll back {steps} step(s): only "
-                    f"{len(entries)} checkpoint(s) in history"
+                    f"{len(entries)} commit(s) in history"
                 )
             # Exact metadata equality is deliberate: an unrelated
-            # checkpoint that merely includes tool="init" plus other
+            # commit that merely includes tool="init" plus other
             # caller metadata must not become a workspace lifecycle
             # boundary. Newest-first history means targets beyond the
             # marker have a larger index; targeting the marker itself
@@ -1515,21 +1763,21 @@ class Workspace:
                 None,
             )
             if init_index is not None and steps > init_index:
-                raise CheckpointNotFoundError(
+                raise CommitNotFoundError(
                     f"Cannot roll back {steps} step(s): the workspace "
-                    "initialization checkpoint is the rollback floor"
+                    "initialization commit is the rollback floor"
                 )
             target = entries[steps]
             self._provider.restore(target.id)
             self._mark_executor_stale()  # see restore()
             return target.id
 
-    def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
+    def log(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         return self._provider.history(limit=limit)
 
     def fork(self, name: str, *, at: str | None = None) -> "Workspace":
         """Independent session seeded from current state — or, with
-        ``at``, from an earlier checkpoint of this session, leaving this
+        ``at``, from an earlier commit of this session, leaving this
         session where it is. Inherits this workspace's construction
         settings (see :class:`_Settings`) — python config, mounts, root,
         executor factory — plus its terminal commands. Cost varies by
@@ -1538,7 +1786,7 @@ class Workspace:
         ``at`` is what "branch from where I published" wants: the
         child starts at that commit with everything the commit holds,
         and nothing here is rewound to get it there."""
-        # Mutating despite appearances: providers may checkpoint pending
+        # Mutating despite appearances: providers may commit pending
         # staged changes so the fork sees current state (kvgit does).
         with self._lock:
             # Providers written to the older fork(name) shape — a custom
@@ -1549,21 +1797,21 @@ class Workspace:
                 if at is None
                 else self._provider.fork(name, at=at)
             )
-        # Commands and autocheckpoint are replayed from the LIVE
+        # Commands and autocommit are replayed from the LIVE
         # attributes rather than from _settings, because both can change
         # after construction (see _Settings). register_command mutates
         # the command set; the reserved bridge names are stripped here
-        # because __init__ re-adds them. autocheckpoint has a public
+        # because __init__ re-adds them. autocommit has a public
         # setter, and a fork of a turn-granularity session must stay in
         # turn granularity.
         new_ws = Workspace(
             forked,
             commands=self._runtime.forkable_commands(),
-            autocheckpoint=self._autocheckpoint,
+            autocommit=self._autocommit,
             **self._settings.as_kwargs(),
         )
         new_ws._store = self._store
-        new_ws.runtime.shell_env.update(self._runtime.shell_env)
+        new_ws.runtime.shell_env().update(self._runtime.shell_env())
         self._adopt_commands(new_ws)
         return new_ws
 
@@ -1591,45 +1839,39 @@ class Workspace:
             new_ws.close()
             raise
 
+    def merge(self, source: str) -> MergeOutcome:
+        """Merge another session's committed state into this one.
+
+        ``source`` names the session; the merge reads its HEAD commit,
+        so anything uncommitted there is not included. File conflicts
+        land as conflict markers IN the merge commit and are reported
+        in the outcome rather than blocking it — resolve them with
+        ordinary edits and commit. Requires ``caps.merge``.
+        """
+        if not self._provider.caps.merge:
+            raise NotSupportedError(
+                f"{type(self._provider).__name__} cannot merge: merge() is "
+                "not supported. Use the kvgit backend for merges."
+            )
+        with self._lock:
+            self._check_open()
+            self._check_writable("merge")
+            if self._provider.dirty:
+                raise WorkspaceError(
+                    "uncommitted changes on this session; a merge needs a "
+                    "clean tree to land against — ws.commit() them, or "
+                    "ws.discard() them, then merge"
+                )
+            outcome = self._provider.merge(source)
+            # provider state moved under the executor: flag its view.
+            self._mark_executor_stale()
+            return outcome
+
     def discard(self) -> None:
-        """Drop writes since the last checkpoint (staging providers)."""
+        """Drop writes since the last commit (staging providers)."""
         with self._lock:
             self._provider.discard()
             self._mark_executor_stale()  # see restore()
-
-    # ------------------------------------------------------------------
-    # staged mode (requires caps.index; other providers raise
-    # NotSupportedError naming the verb — see protocol for semantics)
-    # ------------------------------------------------------------------
-
-    def stage(self, paths: Iterable[str]) -> StageResult:
-        """Stage workspace file paths; first call suspends autocheckpoint."""
-        with self._lock:
-            self._check_writable("ws-git stage")
-            return self._provider.stage(paths)
-
-    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Remove paths from the index; emptying it resumes autocheckpoint."""
-        with self._lock:
-            self._check_writable("ws-git unstage")
-            return self._provider.unstage(paths)
-
-    def commit(self, info: dict[str, Any] | None = None) -> str:
-        """Commit staged keys; unstaged writes stay dirty. Returns the hash."""
-        with self._lock:
-            self._check_writable("ws-git commit")
-            return self._provider.commit(info)
-
-    def discard_staged(self) -> None:
-        """Abandon the composition; working-tree writes stay dirty."""
-        with self._lock:
-            self._check_writable("ws-git discard_staged")
-            return self._provider.discard_staged()
-
-    def status(self) -> WorkspaceStatus:
-        """Staged vs unstaged paths plus live merge context. Pure read —
-        ungated like ``diff``/``history``: reads are the point of snapshots."""
-        return self._provider.status()
 
     # ------------------------------------------------------------------
     # tags (gated by caps.tags)
@@ -1639,17 +1881,18 @@ class Workspace:
         if not self._provider.caps.tags:
             raise NotSupportedError(
                 f"{type(self._provider).__name__} has no tags: {op}() is not "
-                "supported. Use the kvgit backend for named checkpoints."
+                "supported. Use the kvgit backend for named commits."
             )
 
-    def tag(
+    def _tag(
         self,
         name: str,
         *,
+        at: str | None = None,
         info: dict[str, Any] | None = None,
         scope: str = "session",
     ) -> str:
-        """Name the current state, immutably; returns the checkpoint id.
+        """Name a commit, immutably; returns the commit id.
 
         Two scopes, and nontainer decides what each means rather than
         handing embedders a flat namespace to partition themselves:
@@ -1657,7 +1900,7 @@ class Workspace:
         - ``scope="session"`` (default) — the name belongs to this
           session. :meth:`tags` lists only its own, another session's
           ``v1`` is a different tag, and deleting the session
-          (``Store.delete``) deletes it. This is the checkpoint
+          (``Store.delete``) deletes it. This is the commit
           you want to be able to name later: "before the refactor".
         - ``scope="store"`` — the name belongs to no session. Every
           workspace on the store can list and read it, and it survives
@@ -1668,12 +1911,13 @@ class Workspace:
         Tags never move: an existing name raises rather than being
         repointed (delete it and tag again, so the move is visible in
         the calling code). A tag also anchors garbage collection — the
-        named checkpoint and its ancestry stay reachable for as long as
+        named commit and its ancestry stay reachable for as long as
         the tag exists.
 
-        Staged changes are committed first (``info={"tool": "tag"}``),
-        the way :meth:`fork` does, so the name means what the caller saw
-        rather than the last commit before it. Everything that can be
+        ``at`` names an earlier commit instead of the current state;
+        without it, staged changes are committed first (``info={"tool":
+        "tag"}``), the way :meth:`fork` does, so the name means what the
+        caller saw rather than the last commit before it. Everything that can be
         checked is checked BEFORE that commit — the name and scope
         rules, and whether the name is taken — because a refusal after
         it would leave the history permanently advanced by a call that
@@ -1691,23 +1935,23 @@ class Workspace:
                     f"Tag already exists: {name!r} in scope {scope!r} — tags "
                     "never move; delete it first if you mean to repoint it"
                 )
-            if self._provider.dirty:
-                self._provider.checkpoint(info={"tool": "tag", "name": name})
-            return self._provider.tag(name, info=info, scope=scope)
+            if at is None and self._provider.dirty:
+                self._provider.commit(info={"tool": "tag", "name": name})
+            return self._provider.tag(name, at=at, info=info, scope=scope)
 
-    def tags(self, *, scope: str = "session") -> dict[str, str]:
-        """Tag name → checkpoint id, for one scope (see :meth:`tag`)."""
+    def _tags(self, *, scope: str = "session") -> dict[str, str]:
+        """Tag name → commit id, for one scope (see :meth:`tag`)."""
         with self._lock:
             self._require_tags("tags")
             return self._provider.tags(scope=scope)
 
-    def tag_info(self, name: str, *, scope: str = "session") -> TagInfo | None:
+    def _tag_info(self, name: str, *, scope: str = "session") -> TagInfo | None:
         """Describe one tag, or ``None`` if there is no such tag."""
         with self._lock:
             self._require_tags("tag_info")
             return self._provider.tag_info(name, scope=scope)
 
-    def delete_tag(self, name: str, *, scope: str = "session") -> None:
+    def _delete_tag(self, name: str, *, scope: str = "session") -> None:
         """Drop a tag. What it named survives only while something else
         still reaches it — a branch, or another tag."""
         with self._lock:
@@ -1716,7 +1960,7 @@ class Workspace:
             self._check_writable("delete_tag")
             self._provider.delete_tag(name, scope=scope)
 
-    def at_tag(self, name: str, *, scope: str = "session") -> "Workspace":
+    def _at_tag(self, name: str, *, scope: str = "session") -> "Workspace":
         """A frozen workspace over the tagged state.
 
         Reads see the tagged files, cache and cwd; nothing can be
@@ -1732,25 +1976,25 @@ class Workspace:
         with self._lock:
             self._require_tags("at_tag")
             frozen = self._provider.at_tag(name, scope=scope)
-        # Same replay as fork(): commands and autocheckpoint come from
+        # Same replay as fork(): commands and autocommit come from
         # the live attributes because both can change after construction
         # (see _Settings) — including the framework re-binding, so a
         # snapshot's verbs read the snapshot, not the live parent.
-        # autocheckpoint is forced off for a frozen provider regardless;
+        # autocommit is forced off for a frozen provider regardless;
         # passing it keeps the two paths identical.
         new_ws = Workspace(
             frozen,
             commands=self._runtime.forkable_commands(),
-            autocheckpoint=self._autocheckpoint,
+            autocommit=self._autocommit,
             **self._settings.as_kwargs(),
         )
         new_ws._store = self._store
-        new_ws.runtime.shell_env.update(self._runtime.shell_env)
+        new_ws.runtime.shell_env().update(self._runtime.shell_env())
         self._adopt_commands(new_ws)
         return new_ws
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
-        """File-level changes between two checkpoint ids: which
+        """File-level changes between two commit ids: which
         workspace paths were added, removed and modified. Framework
         state — cache, cwd, the stored conversation — is not a file and
         never appears, and ``modified`` holds the paths whose BYTES
@@ -1760,27 +2004,27 @@ class Workspace:
             self._require_tags("diff")
             return self._provider.diff(a, b)
 
-    def changed_since(self, ref: str, *, scope: str = "session") -> WorkspaceDiff:
+    def changed_since(self, ref: "str | Any") -> WorkspaceDiff:
         """What the files look like now versus at ``ref``.
 
-        ``ref`` is a tag name or a checkpoint id — the tag is tried
-        first, in ``scope``, so the everyday spelling is
-        ``ws.changed_since("v1")``. The comparison ends at the current
-        head, so staged-but-uncommitted work is not in it (check
-        :attr:`dirty`).
+        ``ref`` is a tag name — this session's own is tried first, then
+        the store's, so ``ws.changed_since("v1")`` is the everyday
+        spelling and a published store tag needs no extra argument — or
+        a commit id, or a :class:`~nontainer.store.Ref`, whose commit is
+        used. The comparison ends at the current head, so
+        staged-but-uncommitted work is not in it (check :attr:`dirty`).
         """
         with self._lock:
             self._require_tags("changed_since")
-            info = self._provider.tag_info(ref, scope=scope)
-            return self._provider.diff(info.id if info else ref, self._provider.head)
+            name = getattr(ref, "commit", ref)
+            info = self._provider.tag_info(name, scope="session") or (
+                self._provider.tag_info(name, scope="store")
+            )
+            return self._provider.diff(info.id if info else name, self._provider.head)
 
     # ------------------------------------------------------------------
     # power modes / lifecycle
     # ------------------------------------------------------------------
-
-    def mount(self) -> AbstractContextManager[Path]:
-        """Expose the workspace at a real path (FUSE providers only)."""
-        return self._provider.mount()
 
     def close(self) -> None:
         with self._lock:  # don't close the provider mid-call
@@ -1846,13 +2090,40 @@ class Workspace:
                 f"writes, so {op} is not supported"
             )
 
+    def _legacy_cwd(self) -> str | None:
+        """Adopt (and drop) a cwd left by the two-key layout.
+
+        A store written under that layout carries both keys, and the
+        filesystem's is the one that resolved paths, so it is read
+        first and this is only ever the fallback. The removal is staged
+        like any other write and rides the next commit.
+        """
+        kv = self._provider.kv
+        try:
+            legacy = kv.get(_LEGACY_CWD_KEY)
+            if legacy is None:
+                return None
+            del kv[_LEGACY_CWD_KEY]
+            return legacy if isinstance(legacy, str) else None
+        except Exception:  # noqa: BLE001 - a kv that refuses has nothing to migrate
+            return None
+
     def _save_cwd(self) -> bool:
-        # Guarded: an unconditional write would dirty staging providers
-        # on every call, turning read-only `ls` into a commit.
+        """Persist the cwd where the filesystem keeps it.
+
+        Nothing to do where the filesystem owns the key (see
+        :func:`_fs_owns_cwd`) — it has already written it. Elsewhere
+        this is what gives a session its cwd back on reopen, under the
+        same key. Guarded, because an unconditional write would dirty
+        staging providers on every call, turning a read-only ``ls``
+        into a commit.
+        """
+        if self._owns_cwd:
+            return False
         try:
             cwd = self._fs.getcwd()
-            if self._provider.kv.get(_CWD_KEY) != cwd:
-                self._provider.kv[_CWD_KEY] = cwd
+            if self._provider.kv.get(_cwd_key()) != cwd:
+                self._provider.kv[_cwd_key()] = cwd
                 return True
         except Exception:
             pass
@@ -1888,47 +2159,47 @@ class Workspace:
         return ArtifactPath(path)
 
     @contextmanager
-    def _one_checkpoint(self):
-        """Suppress nested checkpoints for the duration of an operation.
+    def _one_commit(self):
+        """Suppress nested commits for the duration of an operation.
 
-        ``write_file`` checkpoints, by design — it is a tool in its own
+        ``write_file`` commits, by design — it is a tool in its own
         right. But when the *workspace* writes on a call's behalf (``ui``
         artifacts), those writes belong to that call, not to a
         ``file_write`` of their own. Without this, materializing two
         rich values committed twice under the wrong tool and left
-        ``result.checkpoint`` None, which reads as "nothing was
+        ``result.commit`` None, which reads as "nothing was
         committed" while the head had in fact moved.
         """
-        outer = self._defer_checkpoints
-        self._defer_checkpoints = True
+        outer = self._defer_commits
+        self._defer_commits = True
         try:
             yield
         finally:
-            self._defer_checkpoints = outer
+            self._defer_commits = outer
 
-    def _maybe_checkpoint(self, tool: str) -> str | None:
+    def _maybe_commit(self, tool: str) -> str | None:
         """Commit this call's staged changes. Returns the created
         commit's id, or None when nothing was committed (no changes,
-        autocheckpoint off, unversioned provider, or a nested write
+        autocommit off, unversioned provider, or a nested write
         inside an operation that will commit for itself)."""
-        if self._defer_checkpoints:
+        if self._defer_commits:
             return None
         # getattr: stage_suspended is new in the protocol — providers
         # written against the old surface (in or out of this repo)
         # never suspend. Same tolerance as the `frozen` read.
         suspended = getattr(self._provider, "stage_suspended", None)
         if (
-            self._autocheckpoint
+            self._autocommit
             and not (callable(suspended) and suspended())
             and self._provider.dirty
         ):
-            return self._provider.checkpoint(info={"tool": tool})
+            return self._provider.commit(info={"tool": tool})
         return None
 
     def _absorb_executor_diff(self) -> str | None:
         """Land a remote executor's staged writes in the provider,
-        BEFORE the checkpoint flow — so the normal atomic commit and
-        ``result.checkpoint`` semantics apply unchanged whichever
+        BEFORE the commit flow — so the normal atomic commit and
+        ``result.commit`` semantics apply unchanged whichever
         executor produced the writes. ``None`` (LocalExecutor always;
         a remote executor after a read-only call) costs nothing and
         dirties nothing. Callers hold the lock.
@@ -1975,7 +2246,7 @@ class Workspace:
         be unwound: staging that was clean at call entry holds only
         this call's effects, so ``discard`` restores exact pre-call
         state (the call observably happened zero times). Dirty-at-entry
-        staging (autocheckpoint off, prior host writes) holds earlier
+        staging (autocommit off, prior host writes) holds earlier
         work that is not ours to drop — leave it, and say so."""
         from .executor import HarvestLost
 
@@ -1994,7 +2265,7 @@ class Workspace:
                     pass
             return (
                 f"{e}; WARNING: this call's cache write-backs may remain "
-                "staged and would ride the next checkpoint"
+                "staged and would ride the next commit"
             )
 
     def _absorb_before_verb(self, verb: str) -> dict | None:
@@ -2006,7 +2277,7 @@ class Workspace:
         Returns an error triple to dispatch instead, or ``None`` to
         proceed. A failure absorbs AFTER the guest baseline advanced
         (rebase rides the harvest), so the triple alone would let the
-        outer call checkpoint partials as a routine success: the guest
+        outer call commit partials as a routine success: the guest
         is flagged for rematerialization and the message is stashed
         for :meth:`terminal`, which unwinds like a torn call instead.
         """
@@ -2035,7 +2306,7 @@ def workspace(
     mounts: Mapping[str, Mount] | None = None,
     commands: Mapping[str, Callable[..., Any]] | None = None,
     cache: bool = True,
-    autocheckpoint: bool = True,
+    autocommit: bool = True,
     max_observation: int = 32_000,
     executor_factory: "Callable[[], Executor] | None" = None,
     root: str = "/workspace",
@@ -2081,7 +2352,7 @@ def workspace(
             mounts=mounts,
             commands=commands,
             cache=cache,
-            autocheckpoint=autocheckpoint,
+            autocommit=autocommit,
             max_observation=max_observation,
             executor_factory=executor_factory,
             root=root,
@@ -2097,7 +2368,7 @@ def workspace(
         mounts=mounts,
         commands=commands,
         cache=cache,
-        autocheckpoint=autocheckpoint,
+        autocommit=autocommit,
         max_observation=max_observation,
         executor_factory=executor_factory,
         root=root,

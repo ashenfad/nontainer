@@ -72,7 +72,7 @@ def validate_session_id(session: str) -> str:
 class Capabilities:
     """What a provider can actually do. Flags, not promises.
 
-    ``versioned`` is the master switch: when False, ``checkpoint`` /
+    ``versioned`` is the master switch: when False, ``commit`` /
     ``restore`` / ``history`` / ``fork`` all raise ``NotSupportedError``
     and the remaining flags are meaningless.
     """
@@ -80,7 +80,7 @@ class Capabilities:
     versioned: bool = True
     staging: bool = False
     """Writes accumulate invisibly-to-other-sessions until
-    ``checkpoint()``; ``discard()`` drops them. When False, writes are
+    ``commit()``; ``discard()`` drops them. When False, writes are
     durable immediately and ``discard()`` raises."""
 
     cheap_fork: bool = False
@@ -99,9 +99,9 @@ class Capabilities:
     subprocesses / C extensions."""
 
     tags: bool = False
-    """Checkpoints can be given names that outlive the call that made
+    """Commits can be given names that outlive the call that made
     them: immutable references that also anchor garbage collection, so
-    a named checkpoint (and everything it descends from) is kept for as
+    a named commit (and everything it descends from) is kept for as
     long as the name exists. When False, ``tag`` / ``tags`` /
     ``tag_info`` / ``delete_tag`` / ``at_tag`` / ``diff`` raise
     ``NotSupportedError``."""
@@ -109,13 +109,13 @@ class Capabilities:
     index: bool = False
     """A staged set (the index) with selective commit: ``stage`` /
     ``unstage`` compose a commit across calls while ``commit`` flushes
-    only staged keys. Staging suspends autocheckpoint until the
+    only staged keys. Staging suspends autocommit until the
     composition lands or is abandoned. Appended last so earlier
     positional ``Capabilities(...)`` constructions keep their meaning."""
 
 
 @dataclass(frozen=True)
-class CheckpointInfo:
+class CommitInfo:
     """One entry in ``history()``."""
 
     id: str
@@ -128,7 +128,7 @@ class CheckpointInfo:
     """Caller-supplied metadata (``{"tool": "run_python", ...}``)."""
 
     tree: str | None = None
-    """Hash of the checkpoint's content (kvgit: the keyset root) —
+    """Hash of the commit's content (kvgit: the keyset root) —
     the identity of *what the files and cache are*, as opposed to
     ``id``, the identity of *this point in history*. Equal trees mean
     identical content, whatever the metadata, ancestry or time around
@@ -149,11 +149,11 @@ class TagInfo:
     """``"session"`` or ``"store"`` (see ``WorkspaceProvider.tag``)."""
 
     id: str
-    """The checkpoint the tag names."""
+    """The commit the tag names."""
 
     tree: str | None
-    """The tagged checkpoint's content hash (see
-    ``CheckpointInfo.tree``)."""
+    """The tagged commit's content hash (see
+    ``CommitInfo.tree``)."""
 
     time: float | None
     """When the tag was made, unix epoch seconds. ``None`` when the
@@ -163,21 +163,21 @@ class TagInfo:
     """Caller metadata passed to ``tag()``, or ``None``."""
 
     dangling: bool
-    """The named checkpoint is not in the store — damage rather than an
+    """The named commit is not in the store — damage rather than an
     ordinary state, and such a tag keeps nothing alive."""
 
 
 @dataclass(frozen=True)
 class WorkspaceDiff:
-    """What changed between two checkpoints, as workspace file paths.
+    """What changed between two commits, as workspace file paths.
 
-    Absolute VFS paths, the way agent code and ``ws.fs`` name files
+    Absolute VFS paths, the way agent code and ``ws.files.fs`` name files
     (``/workspace/data/in.csv``). Framework keys — the cache, cwd, the
     stored conversation, the filesystem's own bookkeeping — are not
     files and never appear here.
 
     ``modified`` holds the paths whose BYTES differ between the two
-    checkpoints. A file re-saved with the content it already had is not
+    commits. A file re-saved with the content it already had is not
     a change here, even where the store's own key-level diff counts the
     write — the provider compares the content.
     """
@@ -193,7 +193,7 @@ class MergeOutcome:
 
     ``merged`` tells whether a merge commit was created. File conflicts
     materialize as conflict markers IN that commit (flagged here, never
-    blocking): resolve with ordinary edits and checkpoint. ``merged``
+    blocking): resolve with ordinary edits and commit. ``merged``
     False with ``commit`` None means nothing changed — non-file
     contested state, which no merge function can resolve, aborts
     untouched. ``conflicts`` names the paths needing resolution (raw
@@ -215,7 +215,7 @@ class StageResult:
     """Paths newly added to the index by this call."""
 
     suspended: bool
-    """True only when this call suspended autocheckpoint (the first
+    """True only when this call suspended autocommit (the first
     stage op of a composition)."""
 
 
@@ -284,13 +284,13 @@ class WorkspaceProvider(Protocol):
 
     @property
     def head(self) -> str:
-        """Id of the current (latest) checkpoint. Staged-but-uncommitted
+        """Id of the current (latest) commit. Staged-but-uncommitted
         changes are NOT captured by it — check ``dirty``. Raises
         ``NotSupportedError`` for unversioned providers."""
         ...
 
-    def checkpoint(self, info: dict[str, Any] | None = None) -> str:
-        """Atomically capture fs + kv as one checkpoint; return its id.
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        """Atomically capture fs + kv as one commit; return its id.
 
         With ``caps.staging``, this is the moment staged writes become
         visible/durable. Without staging, it's a marker over already-
@@ -298,12 +298,12 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
-    def restore(self, checkpoint_id: str) -> None:
-        """Reset fs + kv to a checkpoint. Staged changes are dropped."""
+    def restore(self, commit_id: str) -> None:
+        """Reset fs + kv to a commit. Staged changes are dropped."""
         ...
 
-    def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
-        """Checkpoints, newest first."""
+    def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
+        """Commits, newest first."""
         ...
 
     def fork(self, name: str, *, at: str | None = None) -> "WorkspaceProvider":
@@ -328,7 +328,7 @@ class WorkspaceProvider(Protocol):
         info: dict[str, Any] | None = None,
         scope: str = "session",
     ) -> str:
-        """Name a checkpoint immutably; return the checkpoint id.
+        """Name a commit immutably; return the commit id.
 
         Two scopes, and nontainer picks which one applies rather than
         leaving the namespace to embedders:
@@ -352,14 +352,14 @@ class WorkspaceProvider(Protocol):
 
         The rules ``tag`` would apply, available before the commit a
         caller may have to make first: a workspace with staged work
-        checkpoints before naming it, and a name rejected afterwards
+        commits before naming it, and a name rejected afterwards
         would leave that commit behind for nothing. Raises the same
         ``ValueError`` ``tag`` raises.
         """
         ...
 
     def tags(self, *, scope: str = "session") -> dict[str, str]:
-        """Tag name (no scope prefix) → checkpoint id, in one scope."""
+        """Tag name (no scope prefix) → commit id, in one scope."""
         ...
 
     def tag_info(self, name: str, *, scope: str = "session") -> TagInfo | None:
@@ -367,14 +367,14 @@ class WorkspaceProvider(Protocol):
         ...
 
     def delete_tag(self, name: str, *, scope: str = "session") -> None:
-        """Drop a tag. The checkpoint it named survives only if
+        """Drop a tag. The commit it named survives only if
         something else still reaches it."""
         ...
 
     def at_tag(self, name: str, *, scope: str = "session") -> "WorkspaceProvider":
-        """A FROZEN provider over the tagged checkpoint.
+        """A FROZEN provider over the tagged commit.
 
-        Reads see the tagged state. Nothing can commit: ``checkpoint``,
+        Reads see the tagged state. Nothing can commit: ``commit``,
         ``restore``, ``fork``, ``tag`` and ``delete_tag`` raise
         ``NotSupportedError``; writes may stage (so ``dirty`` can become
         True) but have nowhere to land, and ``discard`` drops them.
@@ -386,7 +386,7 @@ class WorkspaceProvider(Protocol):
         ...
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
-        """File-level changes between two checkpoint ids."""
+        """File-level changes between two commit ids."""
         ...
 
     def merge(self, source: str) -> MergeOutcome:
@@ -394,7 +394,7 @@ class WorkspaceProvider(Protocol):
 
         ``source`` names the branch; the merge reads its HEAD commit, so
         anything uncommitted on the source is not included. Refuses with
-        ``WorkspaceError`` on uncommitted changes here (checkpoint or
+        ``WorkspaceError`` on uncommitted changes here (commit or
         discard first) and with ``ValueError`` for unknown or self
         branches. Providers without the capability raise
         ``NotSupportedError``.
@@ -405,7 +405,7 @@ class WorkspaceProvider(Protocol):
         """Stage workspace file paths for the next selective ``commit``
         (requires ``caps.index``). Unknown paths raise ``ValueError``;
         valid-but-unstaged paths are silently ignored by ``unstage``.
-        The first call suspends autocheckpoint until the composition
+        The first call suspends autocommit until the composition
         lands (``commit``) or is abandoned (``discard_staged`` or
         unstaging everything) — reported in the result, since there is
         no terminal yet to say it aloud. Providers without the
@@ -416,11 +416,11 @@ class WorkspaceProvider(Protocol):
     def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
         """Remove workspace file paths from the index (requires
         ``caps.index``). Unstaging the last staged path resumes
-        autocheckpoint. Returns the paths actually removed.
+        autocommit. Returns the paths actually removed.
         """
         ...
 
-    def commit(self, info: dict[str, Any] | None = None) -> str:
+    def commit_index(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged keys plus index bookkeeping, leaving unstaged
         writes dirty (requires ``caps.index``). Tagged
         ``{"tool": "ws-git.commit"}`` unless ``info`` says otherwise.
@@ -431,7 +431,7 @@ class WorkspaceProvider(Protocol):
 
     def discard_staged(self) -> None:
         """Abandon the composition: clear the index and resume
-        autocheckpoint (requires ``caps.index``). Working-tree writes
+        autocommit (requires ``caps.index``). Working-tree writes
         stay dirty but unindexed.
         """
         ...
@@ -444,7 +444,7 @@ class WorkspaceProvider(Protocol):
         ...
 
     def stage_suspended(self) -> bool:
-        """Whether staging currently suspends autocheckpoint on this
+        """Whether staging currently suspends autocommit on this
         branch. Always ``False`` where ``caps.index`` is False.
         """
         return False
@@ -501,7 +501,7 @@ class StagedDiff:
     overlay upperdir, a scan-diff) rather than writing through to the
     provider; :meth:`Executor.diff` returns them as a ``StagedDiff``
     and the workspace stages them into the provider before its normal
-    checkpoint flow — so atomic commit + ``result.checkpoint``
+    commit flow — so atomic commit + ``result.commit``
     semantics are identical across executors. ``LocalExecutor`` never
     constructs one: its writes land in the provider as they happen.
     """
@@ -659,7 +659,7 @@ class Executor(Protocol):
     ``diff``/``sync`` exist for executors whose writes don't land in
     the provider directly. The workspace calls ``diff`` after every
     mutating exec (absorbing any harvest into the provider before the
-    checkpoint flow) and ``sync`` whenever it changes provider state
+    commit flow) and ``sync`` whenever it changes provider state
     behind the executor's back (restore/rollback/discard, host-side
     writes). Both are free no-ops for ``LocalExecutor``.
     """
@@ -725,8 +725,8 @@ class Executor(Protocol):
         sandbox object crosses the seam (see :class:`ViewSpec`). The
         default (``None``) is the executor's standard environment.
 
-        The result's ``checkpoint`` is ``None``: executors never
-        commit; the workspace stamps checkpoints."""
+        The result's ``commit`` is ``None``: executors never
+        commit; the workspace stamps commits."""
         ...
 
     # -- shell -----------------------------------------------------------
@@ -735,7 +735,7 @@ class Executor(Protocol):
         """One shell script (pipes, redirects, ``;``) against the
         workspace fs, with the context's injected commands available.
         Never raises for command failure — exit codes are results.
-        ``checkpoint`` is ``None`` here too (see ``exec_python``)."""
+        ``commit`` is ``None`` here too (see ``exec_python``)."""
         ...
 
     # -- staging (remote executors) ---------------------------------------
@@ -743,7 +743,7 @@ class Executor(Protocol):
     def diff(self) -> StagedDiff | None:
         """Harvest writes staged executor-side since the last harvest
         (or ``sync``). Called by the workspace after every mutating
-        exec, before its checkpoint flow.
+        exec, before its commit flow.
 
         ``LocalExecutor`` returns ``None`` — its writes land in the
         provider the moment they happen (monkeyfs/termish write
@@ -758,7 +758,7 @@ class Executor(Protocol):
         executor seeing it marks the workspace stale — restore /
         rollback / discard, the host-side write helpers
         (``write_file`` / ``edit_file`` / ``put``), and direct
-        ``ws.fs`` writes — and the workspace calls this once, lazily,
+        ``ws.files.fs`` writes — and the workspace calls this once, lazily,
         before the next execution. Lazy because a remote
         implementation may re-push the whole tree: N host writes cost
         one sync, not N. No-op for ``LocalExecutor``: there is no

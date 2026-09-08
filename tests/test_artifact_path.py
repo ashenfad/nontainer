@@ -116,10 +116,10 @@ def test_a_rerun_still_names_its_artifact():
 # -- what review caught ------------------------------------------------------
 
 
-def test_artifacts_ride_the_calls_own_checkpoint():
-    """Materialization writes through `write_file`, which checkpoints
+def test_artifacts_ride_the_calls_own_commit():
+    """Materialization writes through `write_file`, which commits
     for itself — so materializing inside `run_python` committed under
-    the wrong tool, once per rich value, and left `result.checkpoint`
+    the wrong tool, once per rich value, and left `result.commit`
     None while the head had in fact moved."""
     pytest.importorskip("pandas")
     from nontainer.presets import dataframes
@@ -129,16 +129,16 @@ def test_artifacts_ride_the_calls_own_checkpoint():
         python=PythonConfig(modules=[dataframes()]),
     )
     try:
-        before = len(list(ws.history()))
+        before = len(list(ws.log()))
         r = ws.run_python(
             "import pandas as pd\n"
             "ui = {'a': pd.DataFrame({'x': [1]}), 'b': pd.DataFrame({'y': [2]})}\n"
         )
         assert r.error is None, r.error
-        entries = list(ws.history())
+        entries = list(ws.log())
         assert len(entries) - before == 1, "two artifacts, one commit"
         assert entries[0].info == {"tool": "run_python"}
-        assert r.checkpoint == ws.head, "the call must report its own commit"
+        assert r.commit == ws.head, "the call must report its own commit"
     finally:
         ws.close()
 
@@ -241,7 +241,7 @@ def test_an_oversized_value_fails_identically_on_both_rungs():
 def test_read_artifact_fits_the_a2ui_contract():
     """`turn_to_a2ui` takes `read_bytes(path) -> bytes | None` and owns
     no I/O policy, documenting None as "unreadable, degrade". The
-    obvious `lambda p: ws.fs.read(p)` raises FileNotFoundError instead
+    obvious `lambda p: ws.files.fs.read(p)` raises FileNotFoundError instead
     and breaks that guarantee mid-stream — so the contract lives here.
     """
     pytest.importorskip("pandas")
@@ -261,15 +261,15 @@ def test_read_artifact_fits_the_a2ui_contract():
         assert r.error is None, r.error
         art = r.namespace["ui"]["chart"]
 
-        data = ws.read_artifact(art)
+        data = ws.files.read_artifact(art)
         assert isinstance(data, bytes)
         assert json.loads(data)["columns"] == ["a"]
 
         # Missing: None, not an exception — this is the half a hand-rolled
         # lambda gets wrong.
-        assert ws.read_artifact("/workspace/ui/nope.json") is None
+        assert ws.files.read_artifact("/workspace/ui/nope.json") is None
         with pytest.raises(Exception):
-            ws.fs.read("/workspace/ui/nope.json")
+            ws.files.fs.read("/workspace/ui/nope.json")
 
         # And it is signature-compatible with the parameter it exists for.
         params = inspect.signature(turn_to_a2ui).parameters
@@ -282,8 +282,8 @@ def test_read_artifact_never_raises_on_a_closed_workspace():
     """An egress path may outlive the workspace; an envelope being
     composed must degrade, not blow up."""
     ws = Workspace(KvgitProvider.open(None, session="ap-read-closed"))
-    ws.write_file("ui/x.txt", "hi")
+    ws.files.write("ui/x.txt", "hi")
     path = "/workspace/ui/x.txt"
-    assert ws.read_artifact(path) == b"hi"
+    assert ws.files.read_artifact(path) == b"hi"
     ws.close()
-    assert ws.read_artifact(path) is None
+    assert ws.files.read_artifact(path) is None

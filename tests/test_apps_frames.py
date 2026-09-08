@@ -167,8 +167,8 @@ def test_vendor_frames_are_skipped_end_to_end(chromium_available, tmp_path):
     ws = Workspace(KvgitProvider.open(None, session="frames-e2e"))
     rt = enable_apps(ws, AppsConfig(static_assets={"vendor": assets}))
     try:
-        ws.fs.makedirs("/workspace/app", exist_ok=True)
-        ws.fs.write(
+        ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+        ws.files.fs.write(
             "/workspace/app/index.html",
             b"<html><body><div id='x'>hi</div>\n"
             b"<script type='module'>\n"

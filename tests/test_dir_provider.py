@@ -26,7 +26,7 @@ def test_session_id_validated(tmp_path):
 def test_versioning_verbs_raise(tmp_path):
     p = DirProvider(tmp_path / "ws", session="s1")
     with pytest.raises(NotSupportedError):
-        p.checkpoint()
+        p.commit()
     with pytest.raises(NotSupportedError):
         p.restore("x")
     with pytest.raises(NotSupportedError):

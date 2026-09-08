@@ -94,11 +94,11 @@ def make_ws(session: str = "chat") -> Workspace:
     return Workspace(KvgitProvider.open(None, session=session))
 
 
-def build(tmp_path, *, checkpoint: str = "turn", session: str = "chat"):
+def build(tmp_path, *, commit: str = "turn", session: str = "chat"):
     """Workspace + session db + toolkit + agent, wired as documented."""
     ws = make_ws(session)
     db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))
-    tk = WorkspaceTools(ws, checkpoint=checkpoint, session_db=db)
+    tk = WorkspaceTools(ws, commit=commit, session_db=db)
     agent = Agent(
         model=ScriptedModel(),
         db=db,
@@ -131,15 +131,15 @@ def run_keys(ws) -> list:
 
 def test_a_turn_is_one_commit_holding_files_and_conversation(tmp_path):
     ws, db, tk, agent = build(tmp_path)
-    before = len(list(ws.history()))
+    before = len(list(ws.log()))
 
     run_turn(agent, write_turn("a.txt", "A"))
 
-    entries = list(ws.history())
+    entries = list(ws.log())
     assert len(entries) == before + 1
     assert entries[0].info == {"tool": "turn"}
     assert not ws.dirty  # the turn is fully committed, nothing left staged
-    assert ws.fs.read("a.txt") == b"A"
+    assert ws.files.fs.read("a.txt") == b"A"
     assert len(run_keys(ws)) == 1
 
     session = db.get_session(ws.session)
@@ -147,7 +147,7 @@ def test_a_turn_is_one_commit_holding_files_and_conversation(tmp_path):
 
     # second turn: one more commit, one more run key
     run_turn(agent, write_turn("b.txt", "B"))
-    assert len(list(ws.history())) == before + 2
+    assert len(list(ws.log())) == before + 2
     assert len(run_keys(ws)) == 2
     assert len(db.get_session(ws.session).runs) == 2
     ws.close()
@@ -163,8 +163,8 @@ def test_the_turn_commit_carries_the_run_key(tmp_path):
     run_turn(agent, write_turn("b.txt", "B"))
     assert len(run_keys(ws)) == 2
 
-    ws.restore(head)
-    assert not ws.fs.exists("b.txt")
+    ws.checkout(head)
+    assert not ws.files.fs.exists("b.txt")
     assert len(run_keys(ws)) == 1
     assert len(db.get_session(ws.session).runs) == 1
     ws.close()
@@ -173,7 +173,7 @@ def test_the_turn_commit_carries_the_run_key(tmp_path):
 def test_end_turn_stands_down_when_a_session_db_is_wired(tmp_path):
     ws = make_ws()
     db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))
-    tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+    tk = WorkspaceTools(ws, commit="turn", session_db=db)
 
     tk.functions["file_write"].entrypoint(path="a.txt", content="A")
     assert ws.dirty
@@ -187,7 +187,7 @@ def test_session_db_must_be_over_the_same_workspace(tmp_path):
     other = make_ws("other")
     db = KvgitSessionDb(other, db_path=str(tmp_path / "agno"))
     with pytest.raises(ValueError, match="same workspace"):
-        WorkspaceTools(ws, checkpoint="turn", session_db=db)
+        WorkspaceTools(ws, commit="turn", session_db=db)
     ws.close()
     other.close()
 
@@ -195,12 +195,12 @@ def test_session_db_must_be_over_the_same_workspace(tmp_path):
 def test_per_call_mode_commits_its_trailing_write(tmp_path):
     """Every mutating call commits; the db's own write closes the turn,
     so the head at the next user message includes the conversation."""
-    ws, db, tk, agent = build(tmp_path, checkpoint="call")
-    before = len(list(ws.history()))
+    ws, db, tk, agent = build(tmp_path, commit="call")
+    before = len(list(ws.log()))
 
     run_turn(agent, write_turn("a.txt", "A"))
 
-    entries = list(ws.history())
+    entries = list(ws.log())
     assert len(entries) == before + 2  # the file_write call, then the turn
     assert entries[0].info == {"tool": "turn"}
     assert not ws.dirty
@@ -213,11 +213,11 @@ def test_a_session_write_with_no_run_does_not_commit(tmp_path):
     commit; the write rides into the turn's commit."""
     ws = make_ws()
     db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))
-    before = len(list(ws.history()))
+    before = len(list(ws.log()))
 
     db.upsert_session(AgentSession(session_id=ws.session, agent_id="a"))
 
-    assert len(list(ws.history())) == before
+    assert len(list(ws.log())) == before
     assert ws.dirty
     assert db.get_session(ws.session) is not None
     ws.close()
@@ -234,7 +234,7 @@ def test_restore_rewinds_the_conversation_with_the_files(tmp_path):
     run_turn(agent, write_turn("b.txt", "B"), message="second")
     rewound = db.get_session(ws.session).runs[-1].run_id
 
-    ws.restore(head)
+    ws.checkout(head)
     run_turn(agent, write_turn("c.txt", "C"), message="third")
 
     run_ids = [r.run_id for r in db.get_session(ws.session).runs]
@@ -246,8 +246,8 @@ def test_restore_rewinds_the_conversation_with_the_files(tmp_path):
     said = [str(m.content) for m in agent.model.seen if m.role == "user"]
     assert "first" in said and "third" in said
     assert "second" not in said
-    assert ws.fs.exists("a.txt") and ws.fs.exists("c.txt")
-    assert not ws.fs.exists("b.txt")
+    assert ws.files.fs.exists("a.txt") and ws.files.fs.exists("c.txt")
+    assert not ws.files.fs.exists("b.txt")
     ws.close()
 
 
@@ -261,7 +261,7 @@ def test_a_stale_session_is_refused_and_writes_nothing(tmp_path):
 
     stale = db.get_session(ws.session, deserialize=False)
     assert len(stale["runs"]) == 2
-    ws.restore(head)
+    ws.checkout(head)
     before = dict(kv_of(ws).get(SESSION_KEY))
 
     # the stale object appends a third run to its two
@@ -311,7 +311,7 @@ def test_a_limited_stale_read_is_still_refused(tmp_path):
     head = ws.head
     run_turn(agent, write_turn("b.txt", "B"))
     stale = db.get_session(ws.session, deserialize=False, runs_limit=1)
-    ws.restore(head)
+    ws.checkout(head)
 
     third = dict(stale["runs"][-1])
     third["run_id"] = "run-from-the-future"
@@ -404,7 +404,7 @@ def test_fork_session_inherits_the_conversation(tmp_path):
         kv_of(child)[SESSION_KEY]["session_data"]["forked_from_session_id"]
         == ws.session
     )
-    assert child.fs.read("a.txt") == b"A" and child.fs.read("b.txt") == b"B"
+    assert child.files.fs.read("a.txt") == b"A" and child.files.fs.read("b.txt") == b"B"
     # the parent is untouched
     assert kv_of(ws)[SESSION_KEY]["session_id"] == ws.session
     child.close()
@@ -421,7 +421,7 @@ def test_fork_session_fresh_keeps_the_files_and_drops_the_chat(tmp_path):
     session = child_db.get_session("clean-slate")
     assert session.runs == []
     assert run_keys(child) == []
-    assert child.fs.read("a.txt") == b"A"
+    assert child.files.fs.read("a.txt") == b"A"
     assert len(db.get_session(ws.session).runs) == 1  # parent keeps its chat
     child.close()
     ws.close()
@@ -435,7 +435,7 @@ def test_the_fork_marker_survives_the_next_turn(tmp_path):
     child = fork_session(ws, "branch-b")
 
     child_db = KvgitSessionDb(child, db_path=str(tmp_path / "agno"))
-    child_tk = WorkspaceTools(child, checkpoint="turn", session_db=child_db)
+    child_tk = WorkspaceTools(child, commit="turn", session_db=child_db)
     child_agent = Agent(
         model=ScriptedModel(),
         db=child_db,
@@ -455,18 +455,18 @@ def test_the_fork_marker_survives_the_next_turn(tmp_path):
     ws.close()
 
 
-def test_rewind_then_fork_branches_from_the_checkpoint(tmp_path):
+def test_rewind_then_fork_branches_from_the_commit(tmp_path):
     ws, db, tk, agent = build(tmp_path)
     run_turn(agent, write_turn("a.txt", "A"))
     head = ws.head
     run_turn(agent, write_turn("b.txt", "B"))
 
-    ws.restore(head)
+    ws.checkout(head)
     child = fork_session(ws, "from-the-past")
     child_db = KvgitSessionDb(child, db_path=str(tmp_path / "agno"))
 
     assert len(child_db.get_session("from-the-past").runs) == 1
-    assert not child.fs.exists("b.txt")
+    assert not child.files.fs.exists("b.txt")
     child.close()
     ws.close()
 
@@ -575,13 +575,13 @@ def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
 
     fresh = make_ws("moved")
     fresh_db = KvgitSessionDb(fresh, db_path=str(tmp_path / "agno"))
-    before = len(list(fresh.history()))
+    before = len(list(fresh.log()))
     # the exported record still names its source session; seed binds it
     # to the branch it lands in
     seeded = fresh_db.seed(AgentSession.from_dict(exported))
 
     assert seeded.session_id == "moved"
-    assert len(list(fresh.history())) == before + 1
+    assert len(list(fresh.log())) == before + 1
     assert not fresh.dirty
     moved = fresh_db.get_session("moved")
     assert [r.run_id for r in moved.runs] == [r["run_id"] for r in exported["runs"]]
@@ -591,7 +591,7 @@ def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
         fresh_db.seed(AgentSession.from_dict(exported))
 
     # and the conversation continues as an ordinary session
-    tk2 = WorkspaceTools(fresh, checkpoint="turn", session_db=fresh_db)
+    tk2 = WorkspaceTools(fresh, commit="turn", session_db=fresh_db)
     moved_agent = Agent(
         model=ScriptedModel(),
         db=fresh_db,
@@ -605,7 +605,7 @@ def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
     fresh.close()
 
 
-def test_fork_session_at_a_checkpoint_carries_that_conversation(tmp_path):
+def test_fork_session_at_a_commit_carries_that_conversation(tmp_path):
     """Branch from where a publish happened: the child holds the files
     and the runs as they stood at that commit, under its own id, and the
     parent is not rewound to produce it."""
@@ -620,7 +620,7 @@ def test_fork_session_at_a_checkpoint_carries_that_conversation(tmp_path):
     session = child_db.get_session("from-a")
     assert session is not None and len(session.runs) == 1
     assert session.session_data["forked_from_session_id"] == ws.session
-    assert child.fs.read("a.txt") == b"A" and not child.fs.exists("b.txt")
+    assert child.files.fs.read("a.txt") == b"A" and not child.files.fs.exists("b.txt")
     assert ws.head == parent_head and len(db.get_session(ws.session).runs) == 2
     child.close()
     ws.close()

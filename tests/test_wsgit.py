@@ -5,7 +5,7 @@ output shapes that become the cross-rung conformance corpus in PR 4.
 Commit hashes are shape-pinned (``[0-9a-f]{7}``); everything else is
 byte-pinned. Flat trees only for exact log goldens: directory-row
 mtime drift can leave real table dirt that the terminal tail
-checkpoints, which is provider behavior (PR 2), not terminal shape.
+commits, which is provider behavior (PR 2), not terminal shape.
 """
 
 import io
@@ -54,20 +54,18 @@ def test_clean_status_silent(ws):
 
 
 def test_stage_first_composition(ws):
-    ws.fs.write("/workspace/a.txt", b"one\n")
-    ws.fs.write("/workspace/b.txt", b"two\n")
-    before = len(list(ws.history()))
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
+    before = len(list(ws.log()))
 
-    # First stage suspends autocheckpoint, stated aloud.
+    # First stage suspends autocommit, stated aloud.
     r = ws.terminal("ws-git stage a.txt b.txt")
     assert r.exit_code == 0
-    assert (
-        r.stdout == "suspended autocheckpoint (resume: ws-git commit, ws-git reset)\n"
-    )
+    assert r.stdout == "suspended autocommit (resume: ws-git commit, ws-git reset)\n"
 
-    # Composition mints zero commits: the edit checkpoints nothing.
+    # Composition mints zero commits: the edit commits nothing.
     ws.terminal("echo second >> a.txt")
-    assert len(list(ws.history())) == before
+    assert len(list(ws.log())) == before
 
     r = ws.terminal("ws-git status")
     assert r.stdout == "M  a.txt\nM  b.txt\n"
@@ -94,32 +92,32 @@ def test_stage_first_composition(ws):
     assert re.fullmatch(rf"\[wsgit {SHORT}\] compose a \(2 files\)\n", r.stdout)
 
     # One selective commit, nothing else: flat tree, no janitor.
-    assert len(list(ws.history())) == before + 1
+    assert len(list(ws.log())) == before + 1
     assert ws.terminal("ws-git status").stdout == ""
     assert _subjects(ws) == ["compose a", "init", "?"]
     assert re.fullmatch(rf"{SHORT} compose a\n", ws.terminal("ws-git log -n 1").stdout)
 
 
 def test_unstaged_diff_and_status_columns(ws):
-    # Each read-only call's own tail checkpoints unsuspended dirt, so
+    # Each read-only call's own tail commits unsuspended dirt, so
     # every golden re-dirties with a fresh file first.
-    ws.fs.write("/workspace/a.txt", b"one\n")
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
     assert ws.terminal("ws-git status").stdout == " M a.txt\n"
-    ws.fs.write("/workspace/b.txt", b"two\n")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
     assert ws.terminal("ws-git diff").stdout == (
         "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+two\n"
     )
-    ws.fs.write("/workspace/c.txt", b"three\n")
+    ws.files.fs.write("/workspace/c.txt", b"three\n")
     assert ws.terminal("ws-git diff --cached").stdout == ""
-    ws.fs.write("/workspace/d.txt", b"four\n")
+    ws.files.fs.write("/workspace/d.txt", b"four\n")
     assert ws.terminal("ws-git diff d.txt").stdout.startswith("diff --git a/d.txt")
     assert ws.terminal("ws-git diff b.txt").stdout == ""
 
 
 def test_diff_trailing_newline_change(ws):
-    ws.fs.write("/workspace/e.txt", b"a\n")
-    ws.checkpoint()
-    ws.fs.write("/workspace/e.txt", b"a")
+    ws.files.fs.write("/workspace/e.txt", b"a\n")
+    ws.commit()
+    ws.files.fs.write("/workspace/e.txt", b"a")
     assert ws.terminal("ws-git diff").stdout == (
         "diff --git a/e.txt b/e.txt\n"
         "--- a/e.txt\n"
@@ -132,9 +130,9 @@ def test_diff_trailing_newline_change(ws):
 
 
 def test_diff_check_honors_cached(ws):
-    ws.fs.write("/workspace/m.txt", b"<<<<<<< HEAD\nx\n")
+    ws.files.fs.write("/workspace/m.txt", b"<<<<<<< HEAD\nx\n")
     ws.terminal("ws-git stage m.txt")
-    ws.fs.write("/workspace/u.txt", b"y\n=======\n")
+    ws.files.fs.write("/workspace/u.txt", b"y\n=======\n")
     r = ws.terminal("ws-git diff --check")
     assert r.exit_code == 2
     assert r.stdout == "u.txt:2: leftover conflict marker\n"
@@ -144,24 +142,24 @@ def test_diff_check_honors_cached(ws):
 
 
 def test_unstage_last_resumes(ws):
-    ws.fs.write("/workspace/a.txt", b"one\n")
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.terminal("ws-git stage a.txt")
     r = ws.terminal("ws-git unstage a.txt")
     assert r.exit_code == 0
-    assert r.stdout == "resumed autocheckpoint\n"
-    # Emptying the index resumed autocheckpoint, so the unstage call's
-    # own tail checkpoint swept the file: clean again.
+    assert r.stdout == "resumed autocommit\n"
+    # Emptying the index resumed autocommit, so the unstage call's
+    # own tail commit swept the file: clean again.
     assert ws.terminal("ws-git status").stdout == ""
 
 
 def test_reset_abandons_index_not_tree(ws):
-    ws.fs.write("/workspace/a.txt", b"one\n")
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.terminal("ws-git stage a.txt")
     ws.terminal("echo second >> a.txt")
     r = ws.terminal("ws-git reset")
     assert r.exit_code == 0
-    assert r.stdout == "resumed autocheckpoint\n"
-    # Resuming re-arms the tail checkpoint, so the reset call itself
+    assert r.stdout == "resumed autocommit\n"
+    # Resuming re-arms the tail commit, so the reset call itself
     # sweeps the abandoned tree dirt: clean, one terminal commit.
     assert ws.terminal("ws-git status").stdout == ""
     assert _subjects(ws)[0] == "terminal"
@@ -186,22 +184,22 @@ def test_stage_needs_paths_and_known_files(ws):
 
 
 def test_relative_paths_resolve_against_cwd(ws):
-    ws.fs.write("/workspace/sub/f.txt", b"one\n")
+    ws.files.fs.write("/workspace/sub/f.txt", b"one\n")
     r = ws.terminal("cd sub; ws-git stage f.txt")
     assert r.exit_code == 0
-    assert "suspended autocheckpoint" in r.stdout
+    assert "suspended autocommit" in r.stdout
     assert ws.terminal("ws-git status").stdout == "M  sub/f.txt\n"
 
 
 def test_merge_status_and_diff_check(ws):
-    ws.fs.write("/workspace/doc.txt", b"a\nb\n")
-    ws.checkpoint()
+    ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    ws.commit()
     fork = ws.fork("worker")
     try:
-        fork.fs.write("/workspace/doc.txt", b"a\nFORK\n")
-        fork.checkpoint()
-        ws.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
-        ws.checkpoint()
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.commit()
+        ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+        ws.commit()
         out = ws._provider.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
     finally:
@@ -232,7 +230,7 @@ def test_edges_name_the_native_alternative(ws):
     cases = [
         ("ws-git stash", "ws-git: no stash here — a fork is a stash"),
         ("ws-git branch", "ws-git: no branches here — sessions are branches"),
-        ("ws-git checkout", "ws-git: no checkout here — fork at a tag"),
+        ("ws-git checkout", "ws-git: no checkout here — the host API has one"),
         ("ws-git rebase", "ws-git: no rebase here — history is append-only"),
         ("ws-git merge", "ws-git: merge lives in Python for now"),
     ]
@@ -281,21 +279,21 @@ def test_fork_wsgit_binds_fork():
     w = Workspace(provider)
     register_wsgit(w)
     try:
-        w.fs.write("/workspace/a.txt", b"one\n")
-        w.checkpoint()
+        w.files.fs.write("/workspace/a.txt", b"one\n")
+        w.commit()
         fork = w.fork("wsgit-forkbleed-kid")
         try:
             assert fork.runtime.commands["ws-git"] is not w.runtime.commands["ws-git"]
-            fork.fs.write("/workspace/kid.txt", b"kid\n")
+            fork.files.fs.write("/workspace/kid.txt", b"kid\n")
             r = fork.terminal("ws-git stage kid.txt")
             assert r.exit_code == 0, r.stderr
             assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
             assert w.terminal("ws-git status").stdout == ""
-            p0 = len(list(w.history()))
-            f0 = len(list(fork.history()))
+            p0 = len(list(w.log()))
+            f0 = len(list(fork.log()))
             assert fork.terminal('ws-git commit -m "kid work"').exit_code == 0
-            assert len(list(w.history())) == p0
-            assert len(list(fork.history())) == f0 + 1
+            assert len(list(w.log())) == p0
+            assert len(list(fork.log())) == f0 + 1
             assert fork.terminal("ws-git status").stdout == ""
         finally:
             fork.close()
@@ -310,14 +308,14 @@ def test_snapshot_wsgit_reads_snapshot():
     w = Workspace(provider)
     register_wsgit(w)
     try:
-        w.fs.write("/workspace/a.txt", b"one\n")
-        w.checkpoint()
-        w.tag("v1")
-        snap = w.at_tag("v1")
+        w.files.fs.write("/workspace/a.txt", b"one\n")
+        w.commit()
+        w.tags.add("v1")
+        snap = w.tags.at("v1")
         try:
             assert snap.runtime.commands["ws-git"] is not w.runtime.commands["ws-git"]
             # The parent moves on; the snapshot doesn't follow.
-            w.fs.write("/workspace/b.txt", b"two\n")
+            w.files.fs.write("/workspace/b.txt", b"two\n")
             w.terminal("ws-git stage b.txt")
             assert w.terminal("ws-git status").stdout == "M  b.txt\n"
             assert snap.terminal("ws-git status").stdout == ""
@@ -350,12 +348,18 @@ def test_no_index_provider_refused(tmp_path):
 def test_register_gated_on_supports_commands():
     seen = []
 
-    class FakeWs:
+    class FakeRuntime:
         supports_commands = True
-        _provider = object()
+        supports_ws_verbs = False
 
         def register_command(self, name, fn, *, rebind=None):
             seen.append((name, fn, rebind))
+
+    class FakeWs:
+        _provider = object()
+
+        def __init__(self):
+            self.runtime = FakeRuntime()
 
     register_wsgit(FakeWs())
     assert [name for name, _, _ in seen] == ["ws-git"]
@@ -363,7 +367,9 @@ def test_register_gated_on_supports_commands():
     assert [rebind for _, _, rebind in seen] == [register_wsgit]
 
     class DeafWs(FakeWs):
-        supports_commands = False
+        def __init__(self):
+            super().__init__()
+            self.runtime.supports_commands = False
 
     seen.clear()
     register_wsgit(DeafWs())
@@ -376,14 +382,14 @@ def test_command_closure_direct_status_shape():
     w = Workspace(provider)
     fn = make_wsgit_command(w)
     try:
-        w.fs.write("/workspace/a.txt", b"one\n")
+        w.files.fs.write("/workspace/a.txt", b"one\n")
         provider.stage(["/workspace/a.txt"])
 
         class Ctx:
             def __init__(self, args):
                 self.args = args
                 self.stdout = io.StringIO()
-                self.fs = w.fs
+                self.fs = w.files.fs
 
         ctx = Ctx(["status"])
         assert fn(ctx) is None

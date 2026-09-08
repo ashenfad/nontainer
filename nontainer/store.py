@@ -95,9 +95,9 @@ class StoreTags:
     the scope. A publication, the state an app serves, the snapshot a
     report links to.
 
-    Session-scoped tags stay on the workspace (``ws.tag``,
-    ``ws.tags``, ``ws.at_tag``): they belong to a session and go when
-    it does.
+    Session-scoped tags stay on the workspace (``ws.tags.add``,
+    ``ws.tags.list``, ``ws.tags.at``): they belong to a session and go
+    when it does.
 
     Reached as ``store.tags``; kvgit only, since it is the one backend
     with tags.
@@ -132,7 +132,7 @@ class StoreTags:
 
         if isinstance(source, Workspace):
             self._require_own(source)
-            return source.tag(name, info=info, scope="store")
+            return source._tag(name, info=info, scope="store")
         ref = Ref.parse(source)
         provider = self._store._session_provider(ref.session)
         try:
@@ -259,7 +259,7 @@ class Store:
         mounts: "Mapping[str, Mount] | None" = None,
         commands: Mapping[str, Callable[..., Any]] | None = None,
         cache: bool = True,
-        autocheckpoint: bool = True,
+        autocommit: bool = True,
         max_observation: int = 32_000,
         executor_factory: "Callable[[], Executor] | None" = None,
         root: str = "/workspace",
@@ -289,7 +289,7 @@ class Store:
             mounts=mounts,
             commands=commands,
             cache=cache,
-            autocheckpoint=autocheckpoint,
+            autocommit=autocommit,
             max_observation=max_observation,
             executor_factory=executor_factory,
             root=root,
@@ -348,7 +348,7 @@ class Store:
           at ``<path>/kvgit``, and with each branch the session-scoped
           tags it owns (everything under ``<session>/``). Store-scoped
           tags are left alone: that scope exists so a publication can
-          outlive the session that made it, and its checkpoints stay
+          outlive the session that made it, and its commits stay
           reachable through the tag even once every branch that reached
           them is gone.
         - ``"dir"``: removes the ``<path>/<session>/`` directory trees.
@@ -394,7 +394,7 @@ class Store:
         """Sweep storage nothing reaches any more; returns how many
         commits were removed.
 
-        A checkpoint stays alive while a branch head or a tag reaches
+        A commit stays alive while a branch head or a tag reaches
         it. Rolling back, restoring, or deleting a tag can leave
         commits behind that nothing reaches — deletion sweeps as it
         goes, but a long-lived store accumulates them anyway. This is
@@ -458,7 +458,7 @@ class Store:
         if self._backend != "kvgit":
             raise NotSupportedError(
                 f"The {self._backend!r} backend has no tags. Use the kvgit "
-                "backend for named checkpoints."
+                "backend for named commits."
             )
         return StoreTags(self)
 
@@ -625,7 +625,7 @@ class Store:
                 return None
             # The commit's keyset root hash, read off the store key that
             # holds it — the same raw read KvgitProvider makes for a
-            # checkpoint's tree, since kvgit has no public accessor.
+            # commit's tree, since kvgit has no public accessor.
             raw = backend.get(f"__commit_root__{info.commit}")
             root = safe_loads(raw) if raw is not None else None
             return TagInfo(
@@ -641,11 +641,11 @@ class Store:
             self._close_backend(backend)
 
     def _delete_store_tag(self, name: str) -> None:
-        from .errors import CheckpointNotFoundError
+        from .errors import CommitNotFoundError
 
         stored = self._scoped_store_tag(name)
         if self._raw_tag_info(name) is None:
-            raise CheckpointNotFoundError(f"No such tag: {name!r} in scope 'store'")
+            raise CommitNotFoundError(f"No such tag: {name!r} in scope 'store'")
         import kvgit
 
         kvgit.delete_tags([stored], kind="disk", path=str(self._kvgit_path()))
@@ -684,14 +684,14 @@ class Store:
         return names[0]
 
     def _provider_at_commit(self, session: str, commit: str) -> WorkspaceProvider:
-        from .errors import CheckpointNotFoundError
+        from .errors import CommitNotFoundError
         from .providers.kvgit import KvgitProvider
 
         provider = KvgitProvider.open(self._kvgit_path(), session=session)
         handle = provider._staged.checkout(commit)
         if handle is None:
             provider.close()
-            raise CheckpointNotFoundError(commit)
+            raise CommitNotFoundError(commit)
         # The frozen provider and the handle it came from share one
         # backend, so closing the workspace this ends up in closes the
         # store exactly once. The opening provider is not closed here:

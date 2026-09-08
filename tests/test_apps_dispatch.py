@@ -22,8 +22,8 @@ def make_ws(**kwargs):
 
 
 def write_handler(ws, name: str, source: str) -> None:
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write(f"/workspace/app/api/{name}.py", source.encode())
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(f"/workspace/app/api/{name}.py", source.encode())
 
 
 # -- contract ------------------------------------------------------------
@@ -188,7 +188,7 @@ def test_handler_bare_expressions_do_not_echo():
     )
     r = rt.dispatch(request("GET", "/api/quiet"))
     assert r.status == 200
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     # The request line is expected; an echoed `2` from `1 + 1` is not.
     assert "] stdout:" not in log
     assert log.endswith("GET /api/quiet -> 200\n")
@@ -208,7 +208,7 @@ def test_handler_error_logs_traceback_and_request():
     )
     r = rt.dispatch(request("GET", "/api/boom?source=filtered&makes=Tesla"))
     assert r.status == 500
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "[boom:get ?source=filtered&makes=Tesla] ERROR:" in log
     assert "Traceback (most recent call last)" in log
     assert "line 3" in log and "IndexError" in log
@@ -222,7 +222,7 @@ def test_blocked_import_in_handler_logs_hint():
     write_handler(ws, "probe", "import requests\ndef get(req): return {}")
     r = rt.dispatch(request("GET", "/api/probe"))
     assert r.status == 500
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "[hint: " in log and "curl" in log
     ws.close()
 
@@ -277,7 +277,7 @@ def test_crash_is_500_and_logged():
     write_handler(ws, "boom", "def get(req):\n    return 1 / 0\n")
     resp = rt.dispatch(request("GET", "/api/boom"))
     assert resp.status == 500
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "ZeroDivisionError" in log
     ws.close()
 
@@ -288,14 +288,14 @@ def test_handler_print_lands_in_log():
         ws, "chatty", "def get(req):\n    print('debugging')\n    return {}\n"
     )
     rt.dispatch(request("GET", "/api/chatty"))
-    assert "debugging" in ws.fs.read("/workspace/app/logs/api.log").decode()
+    assert "debugging" in ws.files.fs.read("/workspace/app/logs/api.log").decode()
     ws.close()
 
 
 def test_handler_sees_cache_and_files():
     ws, rt = make_ws()
     ws.cache["greeting"] = "hello"
-    ws.fs.write("/data.txt", b"file-data")
+    ws.files.fs.write("/data.txt", b"file-data")
     write_handler(
         ws,
         "combo",
@@ -319,7 +319,7 @@ def test_get_cannot_write_files():
     )
     resp = rt.dispatch(request("GET", "/api/sneaky"))
     assert resp.status == 500
-    assert not ws.fs.exists("/x.txt")
+    assert not ws.files.fs.exists("/x.txt")
     ws.close()
 
 
@@ -348,7 +348,7 @@ def test_post_can_write():
     )
     resp = rt.dispatch(request("POST", "/api/save", body=b'{"name": "amy"}'))
     assert resp.status == 201, resp.text
-    assert ws.fs.read("/saved.txt") == b"amy"
+    assert ws.files.fs.read("/saved.txt") == b"amy"
     assert ws.cache["last"] == "amy"
     ws.close()
 
@@ -358,7 +358,7 @@ def test_failed_post_discards_staged_writes():
     dispatch — otherwise discard would nuke unrelated pending work
     (the design's 'atomic when clean' rule)."""
     ws, rt = make_ws()
-    ws.terminal("echo keep > keep.txt")  # autocheckpointed → provider clean
+    ws.terminal("echo keep > keep.txt")  # autocommited → provider clean
     write_handler(
         ws,
         "partial",
@@ -368,11 +368,13 @@ def test_failed_post_discards_staged_writes():
         "    assert open('/half.txt').read()  # really staged before the crash\n"
         "    raise ValueError('midway')\n",
     )
-    ws.checkpoint()  # atomicity requires a clean provider at dispatch
+    ws.commit()  # atomicity requires a clean provider at dispatch
     resp = rt.dispatch(request("POST", "/api/partial", body=b"{}"))
     assert resp.status == 500
-    assert not ws.fs.exists("/half.txt")  # atomic: nothing left behind
-    assert ws.fs.exists("/workspace/app/api/partial.py")  # committed work untouched
+    assert not ws.files.fs.exists("/half.txt")  # atomic: nothing left behind
+    assert ws.files.fs.exists(
+        "/workspace/app/api/partial.py"
+    )  # committed work untouched
     assert ws.terminal("cat keep.txt").stdout.strip() == "keep"
     ws.close()
 
@@ -382,10 +384,10 @@ def test_failed_post_discards_staged_writes():
 
 def test_static_serving():
     ws, rt = make_ws()
-    ws.fs.makedirs("/workspace/app", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", b"<h1>app</h1>")
-    ws.fs.write("/workspace/app/app.js", b"export const x = 1")
-    ws.fs.write("/workspace/app/sub/page.html", b"<p>sub</p>")
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", b"<h1>app</h1>")
+    ws.files.fs.write("/workspace/app/app.js", b"export const x = 1")
+    ws.files.fs.write("/workspace/app/sub/page.html", b"<p>sub</p>")
     assert rt.dispatch(request("GET", "/")).content_type.startswith("text/html")
     assert rt.dispatch(request("GET", "/app.js")).ok
     # `.` segments and redundant slashes normalize, stay inside /app
@@ -402,12 +404,12 @@ def test_static_path_traversal_is_contained():
     """The static server must not escape /app/ nor serve backend source
     — normalized `.`/`..` segments were the hole."""
     ws, rt = make_ws()
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", b"<h1>app</h1>")
-    ws.fs.write("/workspace/app/api/scores.py", b"API_KEY = 'sk-secret'")
-    ws.fs.write("/workspace/app/api/_shared.py", b"DB_PASSWORD = 'hunter2'")
-    ws.fs.write("/private.md", b"workspace-root file")
-    ws.fs.write("/apple", b"sibling-prefix file")  # must not slip a prefix check
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", b"<h1>app</h1>")
+    ws.files.fs.write("/workspace/app/api/scores.py", b"API_KEY = 'sk-secret'")
+    ws.files.fs.write("/workspace/app/api/_shared.py", b"DB_PASSWORD = 'hunter2'")
+    ws.files.fs.write("/private.md", b"workspace-root file")
+    ws.files.fs.write("/apple", b"sibling-prefix file")  # must not slip a prefix check
 
     escapes = [
         "/../private.md",  # workspace-root escape
@@ -468,7 +470,7 @@ def test_nonverb_functions_noted_in_log_once():
     )
     rt.dispatch(request("GET", "/api/stats"))
     rt.dispatch(request("GET", "/api/stats"))  # same version: no repeat
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert log.count("query() defined but not an HTTP verb") == 1
     assert "_helper" not in log  # underscore-private: fine, unnoted
 
@@ -479,7 +481,7 @@ def test_nonverb_functions_noted_in_log_once():
         "def get(req):\n    return {'n': 1}\n\ndef search(req):\n    pass\n",
     )
     rt.dispatch(request("GET", "/api/stats"))
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "search() defined but not an HTTP verb" in log
     ws.close()
 
@@ -495,7 +497,7 @@ def test_log_opens_with_a_header():
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     rt.dispatch(request("GET", "/api/ok"))
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert log.startswith("# api.log")
     assert "NOT that logging is broken" in log
     ws.close()
@@ -508,7 +510,7 @@ def test_enable_apps_does_not_materialize_the_app_dir():
     header waits for the first log write instead of being pre-created.
     """
     ws, _ = make_ws()
-    assert not ws.fs.exists("/workspace/app")
+    assert not ws.files.fs.exists("/workspace/app")
     ws.close()
 
 
@@ -521,7 +523,7 @@ def test_header_written_once_across_many_requests():
     # a second runtime over the same workspace: appends, never truncates
     rt2 = AppRuntime(ws)
     rt2.dispatch(request("GET", "/api/ok"))
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert log.count("# api.log") == 1
     assert log.count("GET /api/ok -> 200") == 3
     ws.close()
@@ -535,7 +537,7 @@ def test_successful_requests_are_logged():
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     rt.dispatch(request("GET", "/api/ok?limit=5"))
     rt.flush_log()
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ok?limit=5 -> 200" in log
     ws.close()
 
@@ -546,7 +548,7 @@ def test_read_only_requests_leave_a_clean_workspace_clean():
     for the next mutating request. Read-only lines buffer instead."""
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
-    ws.checkpoint()
+    ws.commit()
     assert not ws.dirty
     assert rt.dispatch(request("GET", "/api/ok")).status == 200
     assert not ws.dirty
@@ -568,11 +570,11 @@ def test_a_prior_get_does_not_cost_the_next_post_its_rollback():
         ws, rt = make_ws()
         write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
         write_handler(ws, "half", partial)
-        ws.checkpoint()
+        ws.commit()
         if prior_get:
             assert rt.dispatch(request("GET", "/api/ok")).status == 200
         assert rt.dispatch(request("POST", "/api/half")).status == 500
-        assert not ws.fs.exists("/workspace/side_effect.txt"), f"{prior_get=}"
+        assert not ws.files.fs.exists("/workspace/side_effect.txt"), f"{prior_get=}"
         assert "written" not in ws.cache, f"{prior_get=}"
         ws.close()
 
@@ -583,11 +585,11 @@ def test_buffered_lines_flush_in_order_when_a_handler_errors():
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     write_handler(ws, "boom", "def get(req):\n    return [][0]\n")
-    ws.checkpoint()
+    ws.commit()
     rt.dispatch(request("GET", "/api/ok?a=1"))
     rt.dispatch(request("GET", "/api/ok?a=2"))
     rt.dispatch(request("GET", "/api/boom"))  # the error flushes the buffer
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     order = [
         log.index("GET /api/ok?a=1 -> 200"),
         log.index("GET /api/ok?a=2 -> 200"),
@@ -649,13 +651,13 @@ def test_bare_curl_is_gone():
 
 
 def test_curl_flushes_the_log_it_tells_the_agent_to_read():
-    """curl runs inside a tool call that checkpoints anyway, and the
+    """curl runs inside a tool call that commits anyway, and the
     agent's next move is to tail the log."""
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
-    ws.checkpoint()
+    ws.commit()
     assert ws.terminal("ws-curl $APP_ORIGIN/api/ok").exit_code == 0
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ok -> 200" in log
     ws.close()
 
@@ -669,7 +671,7 @@ def test_missing_endpoint_is_logged_with_its_status():
     # test_app normally flushes at the end of its run, the observation
     # boundary this unit test invokes explicitly.
     rt.flush_log()
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "GET /api/ghost -> 404" in log
     ws.close()
 
@@ -680,7 +682,7 @@ def test_error_traceback_precedes_its_request_line():
     ws, rt = make_ws()
     write_handler(ws, "boom", "def get(req):\n    return [][0]\n")
     rt.dispatch(request("GET", "/api/boom"))
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert log.index("[boom:get] ERROR:") < log.index("GET /api/boom -> 500")
     ws.close()
 
@@ -689,13 +691,13 @@ def test_static_requests_are_not_logged():
     """Static assets are high-volume and low-signal; logging them
     would bury the tracebacks the file exists for."""
     ws, rt = make_ws()
-    ws.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
+    ws.files.fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     assert rt.dispatch(request("GET", "/index.html")).status == 200
-    assert not ws.fs.exists("/workspace/app/logs/api.log")  # nothing to say
+    assert not ws.files.fs.exists("/workspace/app/logs/api.log")  # nothing to say
     rt.dispatch(request("GET", "/api/ok"))  # now the log exists
     assert rt.dispatch(request("GET", "/index.html")).status == 200
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "index.html" not in log
     ws.close()
 
@@ -761,7 +763,7 @@ def test_curl_absorbs_real_curl_reflexes():
         "cd /workspace/app && ws-curl -o out.json $APP_ORIGIN/api/nums && cat out.json"
     )
     assert r, r.stderr
-    assert json.loads(ws.fs.read("/workspace/app/out.json")) == {"nums": [1]}
+    assert json.loads(ws.files.fs.read("/workspace/app/out.json")) == {"nums": [1]}
 
     # repeated -d concatenates with '&', like real curl
     write_handler(
@@ -976,11 +978,11 @@ def test_get_cache_pop_is_permission_error_not_attribute_error():
     """PR#1 review: derived mutators must raise PermissionError."""
     ws, rt = make_ws()
     ws.cache["k"] = 1
-    ws.checkpoint()
+    ws.commit()
     write_handler(ws, "popper", "def get(req):\n    cache.pop('k')\n    return {}\n")
     resp = rt.dispatch(request("GET", "/api/popper"))
     assert resp.status == 500
-    log = ws.fs.read("/workspace/app/logs/api.log").decode()
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
     assert "PermissionError" in log and "AttributeError" not in log
     assert ws.cache["k"] == 1
     ws.close()

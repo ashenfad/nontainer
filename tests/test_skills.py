@@ -28,7 +28,7 @@ def ws(tmp_path):
 def test_install_bytes_names_from_frontmatter(ws):
     name = skills.install(ws, SKILL_MD)
     assert name == "ev-data-cleaning"  # slugified frontmatter name
-    assert ws.fs.read("/workspace/skills/ev-data-cleaning/SKILL.md") == SKILL_MD
+    assert ws.files.fs.read("/workspace/skills/ev-data-cleaning/SKILL.md") == SKILL_MD
     # idempotent overwrite
     assert skills.install(ws, SKILL_MD) == "ev-data-cleaning"
 
@@ -49,7 +49,7 @@ def test_install_skips_non_regular_files(ws, tmp_path):
     (d / "SKILL.md").write_bytes(b"---\nname: linky\n---\nbody")
     (d / "dangling").symlink_to(tmp_path / "does-not-exist")
     assert skills.install(ws, d) == "linky"
-    assert not ws.fs.exists("/workspace/skills/linky/dangling")
+    assert not ws.files.fs.exists("/workspace/skills/linky/dangling")
 
 
 def test_install_directory_with_references(ws, tmp_path):
@@ -59,7 +59,10 @@ def test_install_directory_with_references(ws, tmp_path):
     (d / "references" / "guide.md").write_bytes(b"deep dive")
     name = skills.install(ws, d)
     assert name == "my-skill"  # no frontmatter name: directory fallback
-    assert ws.fs.read("/workspace/skills/my-skill/references/guide.md") == b"deep dive"
+    assert (
+        ws.files.fs.read("/workspace/skills/my-skill/references/guide.md")
+        == b"deep dive"
+    )
 
     bare = tmp_path / "bare"
     bare.mkdir()
@@ -102,7 +105,7 @@ def test_install_from_granted_modules(ws, tmp_path, monkeypatch):
     try:
         installed = skills.install_from_modules(w)
         assert installed == ["using-demolib"]
-        assert w.fs.exists("/workspace/skills/using-demolib/SKILL.md")
+        assert w.files.fs.exists("/workspace/skills/using-demolib/SKILL.md")
     finally:
         w.close()
         sys.modules.pop("demolib", None)

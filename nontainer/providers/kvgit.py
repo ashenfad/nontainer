@@ -1,8 +1,8 @@
 """KvgitProvider: the versioned substrate (default backend).
 
 One shared kvgit store; each session is a branch. Files (via monkeyfs
-``VirtualFS``), the agent cache, and framework keys (``__cwd__``) all
-live in one flat ``Staged`` mapping — so one ``checkpoint()`` commits
+``VirtualFS``), the agent cache, and framework keys (the working
+directory, the ws-git index) all live in one flat ``Staged`` mapping — so one ``commit()`` commits
 the whole world atomically, and ``restore()`` rewinds all of it
 (including where the agent's cwd was).
 
@@ -10,14 +10,14 @@ Key coexistence in the flat mapping: ``VirtualFS`` encodes file paths
 under its own key prefix (plus ``__vfs_metadata__``), while cache keys
 live under ``__cache__/`` — no collisions by construction.
 
-Capabilities: ``staging`` (writes are invisible until checkpoint;
+Capabilities: ``staging`` (writes are invisible until commit;
 ``discard()`` drops them), ``cheap_fork`` (branches share storage via
 kvgit's content-addressed HAMT), ``merge`` (CAS + key-level three-way
 with conflict markers), ``index`` (a staged set with selective
-``commit``; staging suspends autocheckpoint until the composition
+``commit``; staging suspends autocommit until the composition
 lands or is abandoned).
 
-``info`` dicts attached to checkpoints must be JSON-serializable
+``info`` dicts attached to commits must be JSON-serializable
 (kvgit hashes them into the commit id).
 
 Tag storage: kvgit tags live in one flat namespace per store, so
@@ -42,10 +42,10 @@ from collections.abc import Iterable, Iterator, MutableMapping
 from pathlib import Path
 from typing import Any
 
-from ..errors import CheckpointNotFoundError, NotSupportedError, WorkspaceError
+from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 from ..protocol import (
     Capabilities,
-    CheckpointInfo,
+    CommitInfo,
     MergeOutcome,
     StageResult,
     TagInfo,
@@ -73,7 +73,7 @@ def _merge_ws_blob(old: Any, ours: Any, theirs: Any) -> bytes:
     """Union merge for the ws-git staging blob.
 
     Both sides' composition intent survives: the index unions, and a
-    suspended autocheckpoint on either side stays suspended. Unchanged
+    suspended autocommit on either side stays suspended. Unchanged
     on one side takes the other (so commit/unstage on one side win
     over a quiet other); unparseable raises ``CantMark`` like binary.
     """
@@ -395,24 +395,24 @@ class KvgitProvider:
     def head(self) -> str:
         return self._staged.current_commit
 
-    def checkpoint(self, info: dict[str, Any] | None = None) -> str:
+    def commit(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged fs + kv writes atomically; returns the commit
         hash. No staged changes → no new commit (returns current)."""
-        self._refuse_frozen("checkpoint")
+        self._refuse_frozen("commit")
         if not self._staged.has_changes:
             return self._staged.current_commit
         result = self._staged.commit(info=info)
         if not result.merged:
             raise WorkspaceError(
-                f"checkpoint failed: conflicting concurrent commit on branch "
+                f"commit failed: conflicting concurrent commit on branch "
                 f"{self._session!r} (CAS): {result}"
             )
         return self._staged.current_commit
 
-    def restore(self, checkpoint_id: str) -> None:
+    def restore(self, commit_id: str) -> None:
         self._refuse_frozen("restore")
-        if not self._staged.reset_to(checkpoint_id):
-            raise CheckpointNotFoundError(f"No such checkpoint: {checkpoint_id!r}")
+        if not self._staged.reset_to(commit_id):
+            raise CommitNotFoundError(f"No such commit: {commit_id!r}")
         self._invalidate_fs()
 
     def _invalidate_fs(self) -> None:
@@ -423,10 +423,10 @@ class KvgitProvider:
         if self._fs is not None:
             self._fs.invalidate()
 
-    def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
+    def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         return self._history_iter(limit)
 
-    def _history_iter(self, limit: int | None) -> Iterator[CheckpointInfo]:
+    def _history_iter(self, limit: int | None) -> Iterator[CommitInfo]:
         from kvgit.encoding import safe_loads
 
         store = self._staged.versioned.store
@@ -438,7 +438,7 @@ class KvgitProvider:
             raw_info = store.get(f"__info__{commit_hash}")
             time_val = safe_loads(raw_time) if raw_time is not None else None
             info_val = safe_loads(raw_info) if raw_info is not None else None
-            yield CheckpointInfo(
+            yield CommitInfo(
                 id=commit_hash,
                 time=float(time_val) if time_val is not None else 0.0,
                 info=info_val if isinstance(info_val, dict) else {},
@@ -465,9 +465,9 @@ class KvgitProvider:
     def fork(self, name: str, *, at: str | None = None) -> "KvgitProvider":
         """O(1) branch sharing storage.
 
-        Without ``at``, pending staged changes are checkpointed first so
+        Without ``at``, pending staged changes are committed first so
         the fork sees current state. With ``at`` the fork starts from
-        that earlier checkpoint instead, and the staged changes are left
+        that earlier commit instead, and the staged changes are left
         alone: they belong to this session's present, not to the past
         the fork is branching from.
         """
@@ -477,14 +477,14 @@ class KvgitProvider:
             raise WorkspaceError(f"Branch already exists: {name!r}")
         if at is None:
             if self._staged.has_changes:
-                self.checkpoint(info={"tool": "fork", "target": name})
+                self.commit(info={"tool": "fork", "target": name})
             forked = self._staged.create_branch(name)
         else:
             try:
                 forked = self._staged.create_branch(name, at=at)
             except ValueError as e:
                 if "does not exist" in str(e):
-                    raise CheckpointNotFoundError(at) from e
+                    raise CommitNotFoundError(at) from e
                 raise
         return KvgitProvider(forked, session=name)
 
@@ -531,7 +531,7 @@ class KvgitProvider:
         (see the contention spike in ``scratch/ws-git-impl.md`` gap 3).
         When the bytes equal HEAD, retract instead of writing: kvgit
         has no per-key unstage, so an identical write would linger as
-        phantom dirt (and a later read-only op would checkpoint it).
+        phantom dirt (and a later read-only op would commit it).
         The blob key is provider-owned — never user-addressed — so
         dropping its staged update is safe; staged removals are left
         alone (only direct handle use records those). Guarded: without
@@ -614,7 +614,7 @@ class KvgitProvider:
         return modified
 
     def stage(self, paths: Iterable[str]) -> StageResult:
-        """Stage workspace file paths; first call suspends autocheckpoint.
+        """Stage workspace file paths; first call suspends autocommit.
 
         The index names store keys, not snapshots: edits made after
         staging ride along into the selective ``commit``.
@@ -637,7 +637,7 @@ class KvgitProvider:
         return StageResult(staged=tuple(added), suspended=suspending)
 
     def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Remove paths from the index; emptying it resumes autocheckpoint."""
+        """Remove paths from the index; emptying it resumes autocommit."""
         self._refuse_frozen("unstage")
         if isinstance(paths, str):
             paths = [paths]
@@ -655,7 +655,7 @@ class KvgitProvider:
         self._write_blob(index, old_suspended and bool(index))
         return tuple(removed)
 
-    def commit(self, info: dict[str, Any] | None = None) -> str:
+    def commit_index(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged keys plus index bookkeeping; unstaged stays dirty.
 
         Framework keys (the VFS table, cwd, the blob itself) ride along
@@ -665,7 +665,7 @@ class KvgitProvider:
         """
         from monkeyfs import VirtualFS
 
-        self._refuse_frozen("commit")
+        self._refuse_frozen("commit_index")
         blob = self._read_blob()
         index = set(blob["index"])
         pending = {key for key in index if self._staged.is_staged(key)}
@@ -685,12 +685,12 @@ class KvgitProvider:
         # Snapshot live rows before the fixup: the subset commit below
         # clears the table key from the buffer, which would leave the
         # fixed-up table as live truth — unstaged additions rowless,
-        # unstaged edits HEAD-stale, and the next checkpoint persisting
+        # unstaged edits HEAD-stale, and the next commit persisting
         # the mismatch. Restoring afterwards keeps reads truthful.
         live_table = self._staged.get(VirtualFS.METADATA_KEY)
         self._commit_table(index)
         keys = set(pending) | {_WS_BLOB_KEY}
-        for extra in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY, "__cwd__"):
+        for extra in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY):
             if self._staged.is_staged(extra):
                 keys.add(extra)
         result = self._staged.commit(
@@ -795,7 +795,7 @@ class KvgitProvider:
         )
 
     def stage_suspended(self) -> bool:
-        """Whether staging currently suspends autocheckpoint here."""
+        """Whether staging currently suspends autocommit here."""
         return self._read_blob()["suspended"]
 
     def _merge_context(self) -> tuple[str | None, list[str]]:
@@ -866,7 +866,7 @@ class KvgitProvider:
         info: dict[str, Any] | None = None,
         scope: str = SESSION_SCOPE,
     ) -> str:
-        """Name a checkpoint immutably; returns the commit it names.
+        """Name a commit immutably; returns the commit it names.
 
         Tags the current commit unless ``at`` names another — staged
         changes are in no commit yet, so they are never what gets named.
@@ -910,7 +910,7 @@ class KvgitProvider:
         try:
             self._staged.delete_tag(stored)
         except ValueError as e:
-            raise CheckpointNotFoundError(
+            raise CommitNotFoundError(
                 f"No such tag: {name!r} in scope {scope!r}"
             ) from e
 
@@ -924,7 +924,7 @@ class KvgitProvider:
         stored = self._scoped(name, scope)
         handle = self._staged.checkout(tag=stored)
         if handle is None:
-            raise CheckpointNotFoundError(f"No such tag: {name!r} in scope {scope!r}")
+            raise CommitNotFoundError(f"No such tag: {name!r} in scope {scope!r}")
         return KvgitProvider(handle, session=self._session, frozen_at=name)
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
@@ -962,7 +962,7 @@ class KvgitProvider:
         Overlapping text lands with conflict markers in the working tree
         and the outcome reports it. Framework state merges by rule, not
         by text: the VFS metadata table merges field-aware (timestamps
-        are advisory), cwd keys keep ours, and anything else contested
+        are advisory), the cwd keeps ours, and anything else contested
         raises as a hard conflict rather than merging silently. After
         the merge, VFS sizes are corrected from the merged blobs
         (metadata-only commit, only when they differ) and the
@@ -977,7 +977,7 @@ class KvgitProvider:
         self._refuse_frozen("merge")
         if self.dirty:
             raise WorkspaceError(
-                "uncommitted changes on this branch; checkpoint or discard them first"
+                "uncommitted changes on this branch; commit or discard them first"
             )
         if source == self._staged.current_branch:
             raise ValueError("cannot merge a branch into itself")
@@ -996,12 +996,11 @@ class KvgitProvider:
         merge_fns = {key: text_merge for key in file_keys}
         merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
         merge_fns[_WS_BLOB_KEY] = _merge_ws_blob
-        for cwd_key in ("__cwd__", VirtualFS.CWD_KEY):
-            merge_fns[cwd_key] = _keep_ours
+        merge_fns[VirtualFS.CWD_KEY] = _keep_ours
 
         # Markers commit WITH the merge (flagged in the outcome), they
         # don't block it: the agent resolves with ordinary edit tools
-        # and checkpoints, so no merge-state machine is needed. Only
+        # and commits, so no merge-state machine is needed. Only
         # non-file hard conflicts abort untouched (no fn can resolve
         # them). Hence no post_check here — kvgit keeps the hook for
         # callers that genuinely want blocking; we want markers.
@@ -1133,9 +1132,7 @@ class KvgitProvider:
         self._staged[VirtualFS.METADATA_KEY] = json.dumps(
             table, sort_keys=True
         ).encode()
-        self.checkpoint(
-            {"tool": "ws-git.merge", "source": source, "sizes": "recomputed"}
-        )
+        self.commit({"tool": "ws-git.merge", "source": source, "sizes": "recomputed"})
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""
@@ -1167,7 +1164,7 @@ class KvgitProvider:
                 # only way to stay right if that encoding ever changes.
                 # It stores paths root-relative, so the leading slash
                 # goes back on: these are the absolute paths agent code
-                # and ``ws.fs`` use (``/workspace/data/in.csv``).
+                # and ``ws.files.fs`` use (``/workspace/data/in.csv``).
                 out[key] = "/" + vfs._decode_path(key).lstrip("/")
             except Exception:  # noqa: BLE001 - an undecodable key is not a file
                 continue

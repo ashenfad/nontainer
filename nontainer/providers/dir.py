@@ -35,7 +35,7 @@ from monkeyfs import IsolatedFS
 from ..errors import NotSupportedError
 from ..protocol import (
     Capabilities,
-    CheckpointInfo,
+    CommitInfo,
     TagInfo,
     WorkspaceDiff,
     validate_session_id,
@@ -169,20 +169,20 @@ class DirProvider:
     def _unsupported(self, op: str) -> NotSupportedError:
         return NotSupportedError(
             f"DirProvider is unversioned: {op}() is not supported. "
-            "Use the kvgit backend for checkpoints, history, tags, and forking."
+            "Use the kvgit backend for commits, history, tags, and forking."
         )
 
     @property
     def head(self) -> str:
         raise self._unsupported("head")
 
-    def checkpoint(self, info: dict[str, Any] | None = None) -> str:
-        raise self._unsupported("checkpoint")
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        raise self._unsupported("commit")
 
-    def restore(self, checkpoint_id: str) -> None:
+    def restore(self, commit_id: str) -> None:
         raise self._unsupported("restore")
 
-    def history(self, *, limit: int | None = None) -> Iterable[CheckpointInfo]:
+    def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         raise self._unsupported("history")
 
     def fork(self, name: str, *, at: str | None = None) -> "DirProvider":
@@ -207,8 +207,8 @@ class DirProvider:
     def unstage(self, paths: Any) -> Any:
         raise self._unsupported("unstage")
 
-    def commit(self, info: Any = None) -> Any:
-        raise self._unsupported("commit")
+    def commit_index(self, info: Any = None) -> Any:
+        raise self._unsupported("commit_index")
 
     def discard_staged(self) -> Any:
         raise self._unsupported("discard_staged")

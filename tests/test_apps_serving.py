@@ -71,14 +71,16 @@ def get(req):
 def make_served(*, python=None, on_log=None, **router_kwargs):
     ws = Workspace(KvgitProvider.open(None, session="s1"), python=python)
     enable_apps(ws)
-    ws.fs.makedirs("/workspace/app/api", exist_ok=True)
-    ws.fs.write("/workspace/app/index.html", b"<html><body><h1>hi</h1></body></html>")
-    ws.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
-    ws.fs.write("/workspace/app/api/writer.py", WRITER.encode())
-    ws.fs.write("/workspace/app/api/page.py", HTMLER.encode())
-    ws.fs.write("/workspace/app/api/headers.py", HEADERER.encode())
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(
+        "/workspace/app/index.html", b"<html><body><h1>hi</h1></body></html>"
+    )
+    ws.files.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+    ws.files.fs.write("/workspace/app/api/writer.py", WRITER.encode())
+    ws.files.fs.write("/workspace/app/api/page.py", HTMLER.encode())
+    ws.files.fs.write("/workspace/app/api/headers.py", HEADERER.encode())
     ws.cache["scores"] = ["alice", "amy", "bob"]
-    ws.checkpoint()
+    ws.commit()
 
     token = mint_token()
     tokens = {token: ws}
@@ -200,8 +202,8 @@ def test_mutation_is_rejected():
 def test_handler_error_is_500_and_logged_to_sink():
     logs: list[str] = []
     ws, token, client = make_served(on_log=logs.append)
-    ws.fs.write("/workspace/app/api/boom.py", b"def get(req):\n    return 1/0\n")
-    ws.checkpoint()
+    ws.files.fs.write("/workspace/app/api/boom.py", b"def get(req):\n    return 1/0\n")
+    ws.commit()
     r = client.get(f"/apps/{token}/api/boom")
     assert r.status_code == 500
     assert any("ZeroDivisionError" in m for m in logs)  # off-VFS log
@@ -235,11 +237,11 @@ def test_served_handler_can_call_host_objects():
     ws, token, client = make_served(
         python=PythonConfig(host_objects={"db": Telemetry()})
     )
-    ws.fs.write(
+    ws.files.fs.write(
         "/workspace/app/api/metric.py",
         b"def get(req):\n    return {'points': db.series(req.params['m'])}\n",
     )
-    ws.checkpoint()
+    ws.commit()
     r = client.get(f"/apps/{token}/api/metric?m=cpu")
     assert r.status_code == 200
     assert r.json() == {"points": [1, 2, 3]}
