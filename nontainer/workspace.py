@@ -972,7 +972,14 @@ class WorkspaceFiles:
 
     # -- the tree as a whole -------------------------------------------
 
-    def attach(self, ref: "str | Ref", at: str, *, readonly: bool = True) -> str:
+    def attach(
+        self,
+        ref: "str | Ref",
+        at: str,
+        *,
+        readonly: bool = True,
+        root: str | None = None,
+    ) -> str:
         """Mount another session's tree, frozen at a commit, inside
         this one at ``at``; returns the ref it was attached from.
 
@@ -992,6 +999,12 @@ class WorkspaceFiles:
         a session name, which means that session's current commit.
         What lands at ``at`` is the source's workspace ROOT, so a file
         the delegate calls ``auth.py`` reads as ``<at>/auth.py``.
+        A lineage shares one root, so that root is THIS session's;
+        ``root`` names a different one for a session from elsewhere.
+
+        What lands is the source's whole branch, not what its own
+        session can see: a delegate given a narrow view is exactly the
+        one a caller attaches in order to look at everything it did.
 
         ``at`` is workspace-absolute or relative to the root. INSIDE
         the root it reaches every rung, a guest included; outside it,
@@ -1008,7 +1021,7 @@ class WorkspaceFiles:
         ws = self._ws
         with ws._lock:
             ws._check_open()
-            return ws._attach(ref, at, readonly=readonly)
+            return ws._attach(ref, at, readonly=readonly, root=root)
 
     def detach(self, at: str) -> None:
         """Remove an attachment and release the state behind it."""
@@ -2239,7 +2252,14 @@ class Workspace:
             paths, parse_seed(self._provider.kv.get(VIEW_KEY))
         )
 
-    def _attach(self, ref: "str | Ref", at: str, *, readonly: bool = True) -> str:
+    def _attach(
+        self,
+        ref: "str | Ref",
+        at: str,
+        *,
+        readonly: bool = True,
+        root: str | None = None,
+    ) -> str:
         """``ws.files.attach``, under the lock. See it for the contract."""
         from monkeyfs import ReadOnlyFS
 
@@ -2257,9 +2277,17 @@ class Workspace:
                 f"cannot attach at {at!r}: "
                 + ("the root is the session's own" if point == "/" else "already taken")
             )
-        snapshot = self._resolve_snapshot(ref)
+        snapshot = self._resolve_snapshot(ref, root or self._root)
         try:
-            self._fs.attach(point, ReadOnlyFS(SubtreeFS(snapshot._fs, snapshot.root)))
+            # The PROVIDER's filesystem, not the snapshot workspace's:
+            # a session forked with a narrow view composes one over its
+            # provider, and attaching that would show the caller only
+            # what the delegate could see — while the whole reason to
+            # attach a delegate is to look at everything it did. The
+            # provider always holds the whole branch.
+            self._fs.attach(
+                point, ReadOnlyFS(SubtreeFS(snapshot._provider.fs, snapshot.root))
+            )
         except BaseException:
             snapshot.close()
             raise
@@ -2276,9 +2304,16 @@ class Workspace:
         snapshot.close()
         self._mark_executor_stale()
 
-    def _resolve_snapshot(self, ref: "str | Ref") -> "Workspace":
+    def _resolve_snapshot(self, ref: "str | Ref", root: str) -> "Workspace":
         """A frozen workspace at what ``ref`` names — a
-        ``session@commit``, or a session name meaning its head."""
+        ``session@commit``, or a session name meaning its head — read
+        under ``root``.
+
+        The root matters: a commit holds its files at whatever root the
+        session that made them used, so resolving at the wrong one
+        reads an empty tree. A lineage shares one, which is why the
+        caller's own is the default.
+        """
         from .store import Ref
 
         if self._store is None:
@@ -2289,9 +2324,9 @@ class Workspace:
             )
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
-            return self._store.resolve(Ref.parse(text))
+            return self._store.resolve(Ref.parse(text), root=root)
         head = self._provider.branch_head(text)
-        return self._store.resolve(Ref(session=text, commit=head))
+        return self._store.resolve(Ref(session=text, commit=head), root=root)
 
     def _adopt_commands(self, new_ws: Workspace) -> None:
         """Re-bind framework-owned commands onto a fork/snapshot.

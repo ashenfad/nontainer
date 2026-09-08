@@ -572,13 +572,19 @@ class Store:
         finally:
             self._close_backend(backend)
 
-    def resolve(self, ref: "str | Ref") -> "Workspace":
+    def resolve(self, ref: "str | Ref", *, root: str | None = None) -> "Workspace":
         """A frozen workspace at the exact commit a ref names.
 
         ``ref`` is ``session@commit`` (see :class:`Ref`). Reads see
         that commit's files, cache and cwd; nothing can be written or
         committed. Close it when done — it holds an executor and a
         store handle of its own.
+
+        ``root`` is the workspace root to read the commit under, for a
+        session that was not opened at the default one. A commit holds
+        files at whatever root the session that made them used, so
+        resolving at the wrong root reads an empty tree; the caller
+        that knows the lineage passes its own.
 
         The session must exist: resolving a ref into a session the
         store has never held raises rather than creating the branch.
@@ -603,7 +609,7 @@ class Store:
                 f"(resolving {str(parsed)!r})"
             )
         return self._frozen_workspace(
-            self._provider_at_commit(parsed.session, parsed.commit)
+            self._provider_at_commit(parsed.session, parsed.commit), root=root
         )
 
     # ------------------------------------------------------------------

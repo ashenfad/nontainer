@@ -281,12 +281,17 @@ is the migration.
     from an UNRELATED session is: two such sessions share only the
     store's empty commit, so a merge between them would conflict on
     everything.
-  - **`ws.files.attach(ref, at, *, readonly=True)` / `detach(at)` /
-    `attachments()`** mount another session's frozen tree inside this
-    one, for reading someone else's work in place. Explicit, never
-    automatic, and like a `Mount`: unversioned, uncommitted, not
-    carried by a fork, gone when the session closes. The terminal sees
-    it; a point inside the workspace root reaches a guest rung too.
+  - **`ws.files.attach(ref, at, *, readonly=True, root=None)` /
+    `detach(at)` / `attachments()`** mount another session's frozen
+    tree inside this one, for reading someone else's work in place.
+    Explicit, never automatic, and like a `Mount`: unversioned,
+    uncommitted, not carried by a fork, gone when the session closes.
+    The terminal sees it; a point inside the workspace root reaches a
+    guest rung too. What lands is the source's WHOLE branch, not what
+    its own session can see — a delegate given a narrow view is
+    exactly the one worth attaching. A lineage shares one workspace
+    root, so the source is read under this session's; `root=` names a
+    different one for a session from elsewhere.
     While anything is attached the working directory belongs to the
     composition, so a session committed in that state reopens at its
     root — a stored cwd of `/` is now read as "start at the root",
@@ -296,6 +301,10 @@ is the migration.
     verb for host code with no workspace open; `root=` opens the
     source at that root too, since a lineage shares one and a view
     normalized against another would name paths the child cannot see.
+  - **`Store.resolve(ref, *, root=None)`** reads a commit under a
+    given workspace root. A commit holds its files at whatever root
+    the session that made them used, so resolving at the wrong one
+    reads an empty tree.
   - **The plane policy, whole.** A merge is filesystem-only: files
     three-way (the VFS table field-aware), and `__cache__/*`,
     `__agno__/*`, cwd, the ws-git blob and the view record all take
