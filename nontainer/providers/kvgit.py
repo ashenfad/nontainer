@@ -66,6 +66,11 @@ _KVGIT_CAPS = Capabilities(
 )
 
 _WS_BLOB_KEY = "__ws_git__"
+
+_LEGACY_CWD_KEY = "__cwd__"
+"""The cwd key nontainer kept beside the filesystem's own, before the
+two were folded into one. Only ever swept now — a workspace drops it on
+open, and a merge hands it to whichever side is doing the merging."""
 _WS_BLOB_VERSION = 1
 
 
@@ -996,7 +1001,7 @@ class KvgitProvider:
         reported by provenance, so pre-existing marker-like bytes in a
         brought file don't count as conflicts.
         """
-        from kvgit import MergeConflict
+        from kvgit import MergeChoice, MergeConflict
         from kvgit.merges import text as text_merge
         from monkeyfs import VirtualFS
 
@@ -1023,6 +1028,13 @@ class KvgitProvider:
         merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
         merge_fns[_WS_BLOB_KEY] = _merge_ws_blob
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
+        # The key nontainer used to keep a cwd of its own under. It is
+        # dead: a workspace drops it on open. Branches written before
+        # that still carry it, and two of them can carry different
+        # values, which is a conflict over state neither side reads.
+        # OURS ends it every time — whichever side still has the key,
+        # the merge takes this side's answer, including its removal.
+        merge_fns[_LEGACY_CWD_KEY] = MergeChoice.OURS
 
         # Markers commit WITH the merge (flagged in the outcome), they
         # don't block it: the agent resolves with ordinary edit tools

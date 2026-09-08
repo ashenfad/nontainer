@@ -1249,6 +1249,12 @@ class Workspace:
         # doesn't dirty staging providers (which would turn read-only
         # tool calls into commits).
         self._owns_cwd = _owns_cwd(provider.fs)
+        # Unconditionally, before anything reads a cwd: the legacy key
+        # is dead state and every session that opens takes it out,
+        # mounted or not, whether or not its value is still wanted.
+        # Leaving it on a branch that has no use for it is what would
+        # keep it around to be merged.
+        legacy_cwd = self._legacy_cwd()
         if normalized_mounts and self._owns_cwd:
             # The composition resolves paths before handing them down,
             # so the filesystem underneath has to sit at the root. Any
@@ -1261,7 +1267,7 @@ class Workspace:
                 pass
             stored_cwd = self._root
         else:
-            stored_cwd = provider.kv.get(_cwd_key()) or self._legacy_cwd() or self._root
+            stored_cwd = provider.kv.get(_cwd_key()) or legacy_cwd or self._root
         if stored_cwd != "/":
             try:
                 if self._fs.getcwd() != stored_cwd:
@@ -2143,12 +2149,14 @@ class Workspace:
             )
 
     def _legacy_cwd(self) -> str | None:
-        """Adopt (and drop) a cwd left by the two-key layout.
+        """Drop the cwd key of the two-key layout, and return what it
+        held in case this session still needs it.
 
-        A store written under that layout carries both keys, and the
-        filesystem's is the one that resolved paths, so it is read
-        first and this is only ever the fallback. The removal is staged
-        like any other write and rides the next commit.
+        The removal is unconditional: a store written under that layout
+        carries both keys, the filesystem's is the one that resolves
+        paths (so this value is only ever the fallback), and a dead key
+        left on a branch is one more thing for a merge to contest. It
+        is staged like any other write and rides the next commit.
         """
         kv = self._provider.kv
         try:

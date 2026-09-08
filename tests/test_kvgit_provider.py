@@ -607,3 +607,72 @@ def test_a_legacy_cwd_key_is_adopted_and_dropped(tmp_path):
     with store.open("legacy") as ws:
         assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
         assert "__cwd__" not in ws._provider.kv
+
+
+def test_the_legacy_cwd_key_goes_even_when_the_new_one_is_there(tmp_path):
+    """A store written under the two-key layout carries both. The
+    filesystem's key is the one that resolves paths, so the old value
+    is not wanted — but the key still has to go, or it stays on the
+    branch to be contested by a merge that reads neither side."""
+    store = Store(tmp_path)
+    with store.open("both") as ws:
+        ws.terminal("mkdir -p here; cd here")
+    provider = KvgitProvider.open(tmp_path / "kvgit", session="both")
+    try:
+        provider.kv["__cwd__"] = "/workspace/stale"
+        provider.commit(info={"tool": "legacy"})
+    finally:
+        provider.close()
+
+    with store.open("both") as ws:
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/here"
+        assert "__cwd__" not in ws._provider.kv
+        ws.commit()
+    with store.open("both") as ws:
+        assert "__cwd__" not in ws._provider.kv
+
+
+def test_divergent_legacy_cwd_keys_do_not_block_a_merge(tmp_path):
+    """Two branches written before the fold hold different values under
+    the dead key. Contested state with no rule for it aborts the whole
+    merge — over a cwd neither side reads any more. The standing choice
+    hands the key to the merger's side, so the merge lands and the
+    branches converge on being rid of it."""
+    store = Store(tmp_path)
+    with store.open("main") as ws:
+        ws.terminal("mkdir -p a b; echo base > base.txt")
+        ws.fork("worker").close()
+
+    # Both branches as the old layout left them, written through the
+    # provider so that opening a workspace is not what put them there
+    # (an open drops the key, which is the other half of the fix).
+    for session, cwd in (("main", "/workspace/a"), ("worker", "/workspace/b")):
+        provider = KvgitProvider.open(tmp_path / "kvgit", session=session)
+        try:
+            provider.kv["__cwd__"] = cwd
+            provider.commit(info={"tool": "legacy"})
+        finally:
+            provider.close()
+
+    main = KvgitProvider.open(tmp_path / "kvgit", session="main")
+    worker = KvgitProvider.open(tmp_path / "kvgit", session="worker")
+    try:
+        worker.fs.write("/workspace/side.txt", b"worker\n")
+        worker.commit()
+
+        out = main.merge("worker")
+
+        assert out.merged
+        assert out.conflicts == ()
+        assert main.kv.get("__cwd__") == "/workspace/a"  # ours, unread
+        assert main.fs.read("/workspace/side.txt") == b"worker\n"
+    finally:
+        worker.close()
+        main.close()
+
+    # and the next open takes the key out for good
+    with store.open("main") as ws:
+        assert "__cwd__" not in ws._provider.kv
+        ws.commit()
+    with store.open("main") as ws:
+        assert "__cwd__" not in ws._provider.kv
