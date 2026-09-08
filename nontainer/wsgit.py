@@ -727,6 +727,42 @@ def _render_diff(paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any
     return out
 
 
+def _under_any(path: str, pathspec: list[str]) -> bool:
+    """Whether a path is named by a pathspec — itself, or a directory
+    above it, as git's pathspecs work."""
+    return any(path == p or path.startswith(p + "/") for p in pathspec)
+
+
+def _unknown_pathspec(
+    git: AgentGit, ws: Any, words: list[str], paths: list[str]
+) -> Any:
+    """Refuse a word that names neither a session nor anything in the
+    tree, instead of reading it as a pathspec that matches nothing.
+
+    Silence means "no differences" here, and a mistyped session name
+    would earn it — an agent asking about a delegate would read "no
+    differences" as an answer. git refuses the same case by name.
+    """
+    from termish import CommandResult
+
+    if not paths:
+        return None
+    known = set(git.working_files()) | set(git.head_files())
+    fs = ws._fs
+    for word, path in zip(words, paths):
+        if path in known or fs.isdir(path):
+            continue
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                f"ambiguous argument {word!r}: unknown session or path. "
+                "ws-git branch lists the sessions; a pathspec has to name "
+                "something in your tree."
+            ),
+        )
+    return None
+
+
 def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     cached = False
     check = False
@@ -752,12 +788,15 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             )
         return _diff_branch(git, ws, ctx, words[0])
     paths = [_abspath(ctx, word) for word in words]
+    unknown = _unknown_pathspec(git, ws, words, paths)
+    if unknown is not None:
+        return unknown
     st = git.status()
     if check:
         return _diff_check(git, ctx, st, paths, cached)
     want = set(st.staged) if cached else set(st.unstaged)
     if paths:
-        want &= set(paths)
+        want = {p for p in want if _under_any(p, paths)}
     if not want:
         return None
     out = _render_diff(sorted(want), git.head_files(), git.working_files())
@@ -812,7 +851,7 @@ def _diff_check(
     base = set(st.staged) if cached else set(st.unstaged)
     want = (base | set(st.merge_unresolved)) & set(live)
     if paths:
-        want &= set(paths)
+        want = {p for p in want if _under_any(p, paths)}
     hits: list[str] = []
     for path in sorted(want):
         value = _decode(live.get(path))

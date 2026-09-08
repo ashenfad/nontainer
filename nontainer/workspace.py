@@ -999,6 +999,11 @@ class WorkspaceFiles:
         contract a :class:`Mount` outside the root has, and for the
         same reason (a guest is given the root's subtree and nothing
         else).
+
+        One more thing it shares with a mount: while anything is
+        attached the working directory belongs to the composition, so
+        a session committed in that state reopens at its root rather
+        than where its agent was standing.
         """
         ws = self._ws
         with ws._lock:
@@ -1322,7 +1327,7 @@ class Workspace:
         # handed ONE filesystem object when it opens, so a tree
         # attached later has to reach it through that same object.
         self._attached: dict[str, Workspace] = {}
-        self._fs = AttachFS(self._build_fs(viewed, normalized_mounts))
+        self._fs = AttachFS(self._build_fs(viewed, normalized_mounts), self._root)
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
@@ -1404,7 +1409,17 @@ class Workspace:
                 pass
             stored_cwd = self._root
         else:
-            stored_cwd = provider.kv.get(_cwd_key()) or legacy_cwd or self._root
+            stored = provider.kv.get(_cwd_key())
+            if stored == "/" and self._root != "/":
+                # The filesystem root is not somewhere a session ever
+                # was: it is what a composition left behind. Mounts and
+                # attachments both park the filesystem underneath there
+                # (they hand it paths already resolved) and monkeyfs
+                # persists that park like any chdir, so a session that
+                # had a tree attached when it was last committed would
+                # otherwise reopen at "/" instead of its own root.
+                stored = None
+            stored_cwd = stored or legacy_cwd or self._root
         if stored_cwd != "/":
             try:
                 if self._fs.getcwd() != stored_cwd:
@@ -1964,6 +1979,7 @@ class Workspace:
                     "there, and that ref holds no such file or directory."
                 )
             taken.update(under)
+        self._refuse_hidden(sorted(taken))
         for path, value in sorted(taken.items()):
             data = value if isinstance(value, bytes) else bytes(value)
             parent = posixpath.dirname(path)
@@ -1982,6 +1998,22 @@ class Workspace:
                 "paths": sorted(taken),
             }
         )
+
+    def _refuse_hidden(self, paths: "Iterable[str]") -> None:
+        """The view's write rule over a whole set, before any of it is
+        written.
+
+        A take is one operation: refusing halfway through would leave
+        the tree holding part of a take the caller is being told did
+        not happen. Same pre-pass, for the same reason, as the one an
+        executor's write harvest gets (:meth:`_view_refusal`).
+        """
+        if self._view_fs is None:
+            return
+        for path in paths:
+            reason = self._view_fs.refuse_reason(path)
+            if reason is not None:
+                raise PermissionError(reason)
 
     def _take_source(self, ref: "str | Ref") -> "tuple[str, Mapping[str, Any]]":
         """``(ref as recorded, that state's files)`` for a take.

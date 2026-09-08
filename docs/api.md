@@ -543,7 +543,10 @@ refused, since a frozen state has nothing to offer it. What lands at
 `at` is the source's workspace ROOT, so a file the delegate calls
 `auth.py` reads as `<at>/auth.py`. A point inside this session's root
 reaches every rung; outside it, an executor running elsewhere never
-sees it — the contract a `Mount` outside the root already has.
+sees it — the contract a `Mount` outside the root already has. And as
+with a mount, while anything is attached the working directory belongs
+to the composition, so a session committed in that state reopens at its
+root rather than where its agent was standing.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s
