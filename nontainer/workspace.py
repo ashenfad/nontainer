@@ -467,6 +467,31 @@ _HOST_PREFIX_RE = re.compile(r'(File ")/[^"]*/(?:site-packages|python\d+\.\d+)/'
 _FRAME_RE = re.compile(r'\s+File "([^"]*)"')
 
 
+def _refuse_agent_tool(info: Mapping[str, Any] | None) -> None:
+    """Refuse a framework commit that would pass for one of the agent's.
+
+    ``info["tool"]`` is the one thing that says whose commit this is
+    (``agentgit.is_agent_commit``), and the host's durability verb is
+    not the agent's. A host commit labelled ``ws-git`` would appear in
+    ``ws-git log`` as something the agent wrote, and one labelled
+    ``ws-git.<anything>`` would be read as the fiction's own
+    bookkeeping and skipped. Both are forgeries, so the name is
+    reserved rather than merely discouraged.
+    """
+    from .agentgit import TOOL
+
+    tool = (info or {}).get("tool")
+    if not isinstance(tool, str):
+        return
+    if tool == TOOL or tool.startswith(TOOL + "."):
+        raise ValueError(
+            f"info['tool'] = {tool!r} is reserved: {TOOL!r} and {TOOL + '.*'!r} "
+            "name the agent's own commits and its bookkeeping, and a commit "
+            "made here is the host's. The agent's commit verb is "
+            "ws.index.commit(message)."
+        )
+
+
 def _render_error(exc: BaseException) -> str:
     """The full traceback, not just the message — line numbers are what
     an agent's repair loop aims at.
@@ -1476,9 +1501,17 @@ class Workspace:
         return Ref(session=self.session, commit=head)
 
     @property
-    def dirty(self) -> bool:
-        """Staged-but-uncommitted changes exist (always False without
-        ``caps.staging``)."""
+    def uncommitted(self) -> bool:
+        """The store's buffer holds writes no commit has taken yet
+        (always False without ``caps.staging``).
+
+        The FRAMEWORK's question, and only it: whether ``ws.commit()``
+        would land anything. It says nothing about what the agent has
+        in flight — autocommit keeps this False while an agent
+        composes, because every tool call commits. "Does the agent
+        have uncommitted work" is ``ws.index.status()``, which
+        measures against the agent's own last commit.
+        """
         return self._provider.dirty
 
     @property
@@ -1762,8 +1795,10 @@ class Workspace:
         a commit in the agent's own graph.
 
         ``info`` is caller metadata recorded on the commit and must be
-        JSON-serializable.
+        JSON-serializable. It may not claim one of the agent's own
+        ``tool`` names (see :func:`_refuse_agent_tool`).
         """
+        _refuse_agent_tool(info)
         with self._lock:
             self._check_open()
             self._check_writable("commit")
@@ -1900,7 +1935,7 @@ class Workspace:
             **self._settings.as_kwargs(),
         )
         new_ws._store = self._store
-        new_ws.runtime.shell_env().update(self._runtime.shell_env())
+        new_ws.runtime.env.update(self._runtime.env)
         self._adopt_commands(new_ws)
         return new_ws
 
@@ -1932,7 +1967,8 @@ class Workspace:
         """Merge another session's committed state into this one.
 
         A merge takes only what has been COMMITTED, on both sides, and
-        with ``caps.index`` that means committed by the agent:
+        refuses a source that has more. With ``caps.index``, committed
+        means committed by the agent:
 
         - This session must have nothing modified relative to its own
           last ws-git commit. Autocommit keeps the store's buffer clean
@@ -1940,8 +1976,11 @@ class Workspace:
           question; work in flight would otherwise be folded into the
           merge commit and attributed to the merge.
         - ``source`` is merged at ITS last agent commit, whose tree is
-          exactly what that agent committed. A session that never used
-          ws-git is merged at its store head, as before.
+          exactly what that agent committed — and it is refused while
+          that agent has anything newer, rather than merged at a state
+          the delegate has already moved past. A session that never
+          used ws-git has no agent commit to differ from and is merged
+          at its store head, as before.
 
         File conflicts land as conflict markers IN the merge commit and
         are reported in the outcome rather than blocking it — resolve
@@ -1972,6 +2011,7 @@ class Workspace:
                 # The merge commit joins the agent's graph, so its own
                 # log walks through it instead of stopping at it.
                 parents = [head] if head is not None else []
+                self._require_source_clean(git, source)
                 at = git.source_commit(source)
             outcome = self._provider.merge(
                 source, at=at, info={"virtual_parents": parents}
@@ -2010,6 +2050,28 @@ class Workspace:
             "your last ws-git commit, and a merge takes only what has been "
             f"committed. Land it (ws-git commit -m ...) or drop it ({drop}), "
             "then merge."
+        )
+
+    @staticmethod
+    def _require_source_clean(git: "AgentGit", source: str) -> None:
+        """Refuse a merge of work the SOURCE agent has not committed.
+
+        Symmetric with :meth:`_require_agent_clean`. The source is
+        merged at its last agent commit, so a delegate that wrote
+        after it would have that work silently left behind — the merge
+        would land, report success, and bring back a state the
+        delegate has moved past. Say so instead, and name the two
+        fixes in the source's own terms.
+        """
+        pending = git.source_uncommitted(source)
+        if not pending:
+            return
+        raise WorkspaceError(
+            f"uncommitted ws-git work on {source!r}: {len(pending)} path(s) "
+            "differ from that session's last ws-git commit, and a merge "
+            "takes only what has been committed. Land it there "
+            "(ws-git commit -m ... in that session) or drop it "
+            "(ws-git checkout <its last commit>), then merge."
         )
 
     def discard(self) -> None:
@@ -2137,7 +2199,7 @@ class Workspace:
             **self._settings.as_kwargs(),
         )
         new_ws._store = self._store
-        new_ws.runtime.shell_env().update(self._runtime.shell_env())
+        new_ws.runtime.env.update(self._runtime.env)
         self._adopt_commands(new_ws)
         return new_ws
 

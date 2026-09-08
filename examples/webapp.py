@@ -169,7 +169,9 @@ def main() -> None:
 
     # the VFS never mutated — the app is still a clean, frozen artifact
     print(
-        "workspace dirty after serving:", ws.dirty, "(state is in SQLite, not the VFS)"
+        "workspace uncommitted after serving:",
+        ws.uncommitted,
+        "(state is in SQLite, not the VFS)",
     )
     ws.close()
 

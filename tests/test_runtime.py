@@ -33,6 +33,7 @@ def test_the_execution_surface_lives_on_the_runtime(ws):
         "register_command",
         "set_shell_env",
         "shell_env",
+        "env",
         "python_config",
         "supports_commands",
         "supports_ws_verbs",
@@ -44,10 +45,14 @@ def test_the_execution_surface_lives_on_the_runtime(ws):
     assert "shout" in ws.runtime.commands
     assert ws.terminal("shout").stdout.strip() == "HI"
 
-    ws.runtime.shell_env("GREETING", "hello")
-    assert ws.runtime.shell_env("GREETING") == "hello"
-    assert ws.runtime.shell_env()["GREETING"] == "hello"
+    ws.runtime.env["GREETING"] = "hello"
+    assert ws.runtime.env["GREETING"] == "hello"
+    assert dict(ws.runtime.env) == {"GREETING": "hello"}
     assert ws.terminal("echo $GREETING").stdout.strip() == "hello"
+    del ws.runtime.env["GREETING"]
+    assert "GREETING" not in ws.runtime.env
+    assert ws.terminal("echo $GREETING").stdout.strip() == ""
+    ws.runtime.env["GREETING"] = "hello"
 
     assert ws.runtime.exec_python("x = 6 * 7").namespace["x"] == 42
     assert ws.runtime.python_config is ws.runtime.executor._ctx.python_config
@@ -62,7 +67,7 @@ def test_the_headline_verbs_commit_and_the_raw_ones_do_not(ws):
     assert r.exit_code == 0
     assert r.commit is None
     assert ws.head == before
-    assert ws.dirty
+    assert ws.uncommitted
 
     r = ws.terminal("echo committed > /workspace/done.txt")
     assert r.commit is not None
@@ -71,7 +76,7 @@ def test_the_headline_verbs_commit_and_the_raw_ones_do_not(ws):
 
 def test_shell_env_names_are_validated(ws):
     with pytest.raises(ValueError, match="Invalid shell variable name"):
-        ws.runtime.shell_env("not a name", "x")
+        ws.runtime.env["not a name"] = "x"
 
 
 def test_reserved_command_names_are_refused(ws):
@@ -183,11 +188,11 @@ def test_each_runtime_sees_only_its_own_shell_environment(ws):
     """Shell variables belong to the runtime that published them, not
     to the workspace. Reading them off ``ws.runtime`` gave a second
     runtime the primary's variables and dropped its own."""
-    ws.runtime.shell_env("WHO", "primary")
+    ws.runtime.env["WHO"] = "primary"
     second = Runtime(ws)
     try:
-        second.shell_env("WHO", "second")
-        second.shell_env("ONLY_MINE", "yes")
+        second.env["WHO"] = "second"
+        second.env["ONLY_MINE"] = "yes"
 
         assert ws.runtime.exec_shell("echo $WHO").stdout.strip() == "primary"
         assert second.exec_shell("echo $WHO").stdout.strip() == "second"

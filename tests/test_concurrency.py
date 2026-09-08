@@ -160,7 +160,7 @@ def test_reads_do_not_take_the_lock(kv_ws):
 
     def reader() -> None:
         assert kv_ws.head is not None
-        assert kv_ws.dirty is False
+        assert kv_ws.uncommitted is False
         assert kv_ws.files.get("/a.txt") == b"hi\n"
         list(kv_ws.log(limit=1))
         finished.set()

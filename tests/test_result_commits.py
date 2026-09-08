@@ -61,7 +61,7 @@ def test_unversioned_provider_yields_none(tmp_path):
     ws = Workspace(DirProvider(tmp_path / "ws", session="s1"))
     assert ws.terminal("echo x > f.txt").commit is None
     assert ws.files.write("g.txt", "y").commit is None
-    assert ws.head is None and not ws.dirty
+    assert ws.head is None and not ws.uncommitted
     ws.close()
 
 
@@ -74,7 +74,7 @@ def test_head_pins_readonly_observations(kv_ws):
     ls = kv_ws.terminal("ls")
     assert ls.commit is None  # read-only: no commit...
     assert kv_ws.head == r.commit  # ...and the head is its pin
-    assert not kv_ws.dirty  # exact pin: nothing staged
+    assert not kv_ws.uncommitted  # exact pin: nothing staged
 
 
 def test_head_with_staged_changes_is_flagged_dirty(kv_ws):
@@ -82,4 +82,4 @@ def test_head_with_staged_changes_is_flagged_dirty(kv_ws):
     pinned = kv_ws.head
     kv_ws.files.fs.write("staged.txt", b"pending")  # host write, no commit
     assert kv_ws.head == pinned  # head unchanged...
-    assert kv_ws.dirty  # ...but flagged: the pin is not exact
+    assert kv_ws.uncommitted  # ...but flagged: the pin is not exact

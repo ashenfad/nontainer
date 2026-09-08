@@ -73,7 +73,7 @@ def _commit_framework(ws: Workspace, info: dict) -> str | None:
     is disturbed by this. ``None`` when there was nothing to commit or
     the workspace cannot take one.
     """
-    if ws.frozen or not ws.caps.versioned or not ws.dirty:
+    if ws.frozen or not ws.caps.versioned or not ws.uncommitted:
         return None
     return ws.commit(info=info)
 
@@ -524,7 +524,7 @@ class KvgitSessionDb(JsonDb):
                 record, session_id=session_id, user_id=user_id
             ):
                 return False
-            was_clean = not self._ws.dirty
+            was_clean = not self._ws.uncommitted
             kv = _kv(self._ws)
             for key in _run_keys(kv):
                 del kv[key]
@@ -556,7 +556,7 @@ class KvgitSessionDb(JsonDb):
                 session_type=session_type,
             ):
                 return None
-            was_clean = not self._ws.dirty
+            was_clean = not self._ws.uncommitted
             session_data = dict(record.get("session_data") or {})
             session_data["session_name"] = session_name
             record["session_data"] = session_data

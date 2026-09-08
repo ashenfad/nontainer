@@ -133,7 +133,7 @@ def install(ws: "Workspace", source: Any) -> str:
         # which costs the agent nothing — ws-git measures against the
         # agent's own last commit, so a composition in flight reads
         # exactly as it did before this commit.
-        if ws.caps.versioned and not ws.frozen and ws.dirty:
+        if ws.caps.versioned and not ws.frozen and ws.uncommitted:
             ws.commit(info={"tool": "skill", "skill": name})
     return name
 

@@ -543,15 +543,15 @@ def test_successful_requests_are_logged():
 
 
 def test_read_only_requests_leave_a_clean_workspace_clean():
-    """Per-request atomicity is gated on `not ws.dirty`, so a request
+    """Per-request atomicity is gated on `not ws.uncommitted`, so a request
     line written during a GET would silently disable handler rollback
     for the next mutating request. Read-only lines buffer instead."""
     ws, rt = make_ws()
     write_handler(ws, "ok", "def get(req):\n    return {'ok': True}\n")
     ws.commit()
-    assert not ws.dirty
+    assert not ws.uncommitted
     assert rt.dispatch(request("GET", "/api/ok")).status == 200
-    assert not ws.dirty
+    assert not ws.uncommitted
     ws.close()
 
 

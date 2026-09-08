@@ -109,7 +109,7 @@ class WorkspaceTools(Toolkit):
             return None
         with self._lock:
             ws = self._ws
-            if ws.frozen or not ws.caps.versioned or not ws.dirty:
+            if ws.frozen or not ws.caps.versioned or not ws.uncommitted:
                 return None
             return ws.commit(info={"tool": "turn"})
 

@@ -138,7 +138,7 @@ def test_a_turn_is_one_commit_holding_files_and_conversation(tmp_path):
     entries = list(ws.log())
     assert len(entries) == before + 1
     assert entries[0].info == {"tool": "turn"}
-    assert not ws.dirty  # the turn is fully committed, nothing left staged
+    assert not ws.uncommitted  # the turn is fully committed, nothing left staged
     assert ws.files.fs.read("a.txt") == b"A"
     assert len(run_keys(ws)) == 1
 
@@ -197,7 +197,7 @@ def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     # the composition is untouched, and the agent's files are durable
     # rather than being withheld from the store
     assert ws.index.status() == before
-    assert not ws.dirty
+    assert not ws.uncommitted
     assert head.get(ws._provider.fs._encode_path("/workspace/staged.txt"))
     assert head.get(ws._provider.fs._encode_path("/workspace/loose.txt"))
 
@@ -217,9 +217,9 @@ def test_end_turn_stands_down_when_a_session_db_is_wired(tmp_path):
     tk = WorkspaceTools(ws, commit="turn", session_db=db)
 
     tk.functions["file_write"].entrypoint(path="a.txt", content="A")
-    assert ws.dirty
+    assert ws.uncommitted
     assert tk.end_turn() is None  # the db owns the commit
-    assert ws.dirty  # ... and it has not happened yet
+    assert ws.uncommitted  # ... and it has not happened yet
     ws.close()
 
 
@@ -244,7 +244,7 @@ def test_per_call_mode_commits_its_trailing_write(tmp_path):
     entries = list(ws.log())
     assert len(entries) == before + 2  # the file_write call, then the turn
     assert entries[0].info == {"tool": "turn"}
-    assert not ws.dirty
+    assert not ws.uncommitted
     assert len(db.get_session(ws.session).runs) == 1
     ws.close()
 
@@ -259,7 +259,7 @@ def test_a_session_write_with_no_run_does_not_commit(tmp_path):
     db.upsert_session(AgentSession(session_id=ws.session, agent_id="a"))
 
     assert len(list(ws.log())) == before
-    assert ws.dirty
+    assert ws.uncommitted
     assert db.get_session(ws.session) is not None
     ws.close()
 
@@ -340,7 +340,7 @@ def test_a_limited_read_written_back_keeps_the_full_history(tmp_path):
 
     assert kv_of(ws)[SESSION_KEY]["run_ids"] == [*full, "run-3"]
     assert len(db.get_session(ws.session).runs) == 3
-    assert ws.head != head and not ws.dirty  # the turn committed
+    assert ws.head != head and not ws.uncommitted  # the turn committed
     ws.close()
 
 
@@ -437,7 +437,7 @@ def test_fork_session_inherits_the_conversation(tmp_path):
     child = fork_session(ws, "what-if", conversation="inherit")
     child_db = KvgitSessionDb(child, db_path=str(tmp_path / "agno"))
 
-    assert not child.dirty  # the rewrite is committed: the head is consistent
+    assert not child.uncommitted  # the rewrite is committed: the head is consistent
     session = child_db.get_session("what-if")
     assert session is not None
     assert [r.run_id for r in session.runs] == parent_runs
@@ -623,7 +623,7 @@ def test_seed_imports_a_whole_conversation_into_an_empty_branch(tmp_path):
 
     assert seeded.session_id == "moved"
     assert len(list(fresh.log())) == before + 1
-    assert not fresh.dirty
+    assert not fresh.uncommitted
     moved = fresh_db.get_session("moved")
     assert [r.run_id for r in moved.runs] == [r["run_id"] for r in exported["runs"]]
     assert all(r.session_id == "moved" for r in moved.runs)

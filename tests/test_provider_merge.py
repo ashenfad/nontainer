@@ -286,7 +286,7 @@ def test_workspace_merge_brings_a_forks_work_home(kv_ws):
         # The outcome names the merge commit; the head is the
         # bookkeeping commit that records it as the agent's, and that
         # record is what leaves a clean workspace behind the merge.
-        assert not kv_ws.dirty
+        assert not kv_ws.uncommitted
         assert out.commit == kv_ws.index.head
         assert kv_ws.head != out.commit
         assert kv_ws.terminal("cat b.txt").stdout.strip() == "worker"
@@ -302,11 +302,11 @@ def test_workspace_merge_refuses_a_dirty_target(kv_ws):
     try:
         fork.terminal("echo worker > b.txt")
         kv_ws.files.fs.write("/workspace/pending.txt", b"uncommitted")
-        assert kv_ws.dirty
+        assert kv_ws.uncommitted
 
         with pytest.raises(WorkspaceError, match="ws.commit"):
             kv_ws.merge("worker")
-        assert kv_ws.dirty  # nothing was taken from under the caller
+        assert kv_ws.uncommitted  # nothing was taken from under the caller
         assert not kv_ws.files.fs.exists("/workspace/b.txt")
 
         kv_ws.commit()

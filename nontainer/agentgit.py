@@ -753,6 +753,31 @@ class AgentGit:
         blob = parse_blob(self._provider.key_at(head, BLOB_KEY))
         return blob["head"] or head
 
+    def source_uncommitted(self, source: str) -> tuple[str, ...]:
+        """Paths on ``source`` its agent has written and not committed.
+
+        The other side of :meth:`_modified`, read across the store
+        rather than out of a buffer: another session's work in progress
+        is not in this handle's staging area, it is in the commits the
+        framework made for that session after its agent's last ws-git
+        commit. So the comparison is between the source's store head
+        and the tree :meth:`source_commit` would merge.
+
+        Empty for a session that never used ws-git — it has no agent
+        commit to differ from, and its store head IS what it committed.
+        """
+        self._require("ws-git merge")
+        head = self._provider.branch_head(source)
+        virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"]
+        if virtual is None:
+            return ()
+        live = self._provider.files_at(head)
+        base = self._provider.files_at(virtual)
+        live_paths, base_paths = set(live), set(base)
+        modified = live_paths ^ base_paths
+        modified |= {p for p in live_paths & base_paths if live[p] != base[p]}
+        return tuple(sorted(modified))
+
     def record_merge(
         self, source: str, commit: str, conflicts: Iterable[str] = ()
     ) -> tuple[str, ...]:

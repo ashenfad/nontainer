@@ -661,7 +661,7 @@ class Store:
                 "rather than overridden, because a false provenance in an "
                 "immutable commit outlives every chance to notice it."
             )
-        if ws.dirty:
+        if ws.uncommitted:
             raise WorkspaceError(
                 f"Cannot publish {ws.session!r}: it has staged changes, and "
                 "publish names a commit. Land them with ws.commit() or drop "

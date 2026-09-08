@@ -55,9 +55,9 @@ is the migration.
   | `ws.changed_since(ref, scope=)` | `ws.changed_since(ref)` |
   | `ws.exec_python(...)` | `ws.runtime.exec_python(...)` |
   | `ws.register_command(name, fn)` | `ws.runtime.register_command(name, fn)` |
-  | `ws.set_shell_env(name, value)` | `ws.runtime.shell_env(name, value)` |
-  | `Runtime.set_shell_env(name, value)` | `Runtime.shell_env(name, value)` |
-  | `Runtime.shell_env` (the mapping) | `Runtime.shell_env()` |
+  | `ws.set_shell_env(name, value)` | `ws.runtime.env[name] = value` |
+  | `Runtime.set_shell_env(name, value)` / `Runtime.shell_env(...)` | `Runtime.env` (a `MutableMapping[str, str]`) |
+  | `ws.dirty` | `ws.uncommitted` |
   | `ws.python_config` | `ws.runtime.python_config` |
   | `ws.supports_commands` / `ws.supports_ws_verbs` | `ws.runtime.supports_commands` / `ws.runtime.supports_ws_verbs` |
   | `ws.cache_enabled` | `ws.runtime.cache_enabled` |
@@ -112,17 +112,21 @@ is the migration.
   optional. Refusals for `stash`, `rebase`, `branch`, `merge` name a
   terminal verb or say the host does it.
 
-- **A merge takes only what has been committed — by the agent.**
+- **A merge takes only what has been committed — by the agent — and
+  refuses a source that has more.**
   Autocommit keeps the store's buffer clean while an agent composes,
   so a buffer-clean check said nothing: `ws.merge` would fold work in
   flight into the merge commit and move the agent's head over it under
   the merge's name. It now refuses while this session has anything
   staged, or modified against its own last ws-git commit, naming the
   two fixes (`ws-git commit -m ...`, `ws-git checkout <your last
-  commit>`); and it merges the SOURCE at that session's last agent
+  commit>`); it merges the SOURCE at that session's last agent
   commit rather than its store head, so the source agent's work in
-  flight stays its own. A session that never used ws-git has no such
-  commit and merges at its store head, as before. The merge context
+  flight stays its own; and it refuses a source that has written since
+  that commit rather than quietly merging a state the delegate has
+  moved past — the same two fixes, in that session's terms. A session
+  that never used ws-git has no such commit and merges at its store
+  head, as before. The merge context
   `status` reports is seeded from `MergeOutcome.conflicts` — what the
   merge actually marked, so a file that is *about* conflict markers no
   longer reads as one — and a marked path stops being unresolved when
@@ -152,6 +156,25 @@ is the migration.
 - **`ws.caps`** is the provider's capabilities only; `supports_commands`,
   `supports_ws_verbs` and `cache_enabled` describe the executor and
   live on `Runtime`.
+
+- **`ws.uncommitted` replaces `ws.dirty`.** It answers the framework's
+  question and only it: whether the store's buffer holds writes no
+  commit has taken. It never answered "does the agent have uncommitted
+  work" — autocommit keeps it False while an agent composes — and the
+  name invited that reading. `ws.index.status()` is the agent's
+  question.
+
+- **`Runtime.env` replaces `Runtime.shell_env(...)`.** The shell
+  environment is a `MutableMapping[str, str]`, so it is read, written
+  and cleared like one (`rt.env["X"] = "1"`, `del rt.env["X"]`,
+  `dict(rt.env)`) instead of through one verb with three forms. Names
+  are still validated at write time. `ExecutionContext.shell_env`
+  keeps its name and holds this mapping.
+
+- **A host commit may not forge an agent commit.** `ws.commit(info=)`
+  raises `ValueError` for `info["tool"]` of `"ws-git"` or any
+  `"ws-git.*"`: those name the agent's own commits and the fiction's
+  bookkeeping, and `ws-git log` reads them as such.
 
 - **One key for the working directory.** The filesystem's cwd key is
   the only one; the legacy `__cwd__` is adopted and removed on open and

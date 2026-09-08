@@ -393,8 +393,10 @@ and sees the same live directories behind them.
 ```python
 ws.head: str | None      # current commit id; None if unversioned.
                          # Pins read-only observations (reads don't move
-                         # it) — exact iff not ws.dirty
-ws.dirty: bool           # staged-but-uncommitted changes exist
+                         # it) — exact iff not ws.uncommitted
+ws.uncommitted: bool     # the store's buffer holds writes no commit took
+                         # (the framework's question; "does the AGENT have
+                         # uncommitted work" is ws.index.status())
 ws.ref: Ref              # this session at its current commit
 ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
 ws.checkout(commit: str) -> str          # restore a commit of THIS session
@@ -476,7 +478,8 @@ than crossing into a provider's pre-workspace seed.
 
 **`ws.merge(source)`** merges another session into this one
 (`caps.merge`). **A merge takes only what has been committed, on both
-sides — and with `caps.index` that means committed by the agent:**
+sides, and refuses a source that has more — and with `caps.index`
+that means committed by the agent:**
 
 - This session must have nothing modified against its own last ws-git
   commit. Autocommit keeps the store's buffer clean while an agent is
@@ -487,8 +490,12 @@ sides — and with `caps.index` that means committed by the agent:**
   there.
 - The source is merged at ITS last agent commit, whose tree is exactly
   what that agent committed — not its store head, which also holds
-  whatever the framework committed for it since. A source that never
-  used ws-git is merged at its store head, as before.
+  whatever the framework committed for it since. Symmetrically, a
+  source with anything newer than that commit is REFUSED rather than
+  merged at a state its agent has moved past; the refusal names the
+  same two fixes, in that session's terms. A source that never used
+  ws-git has no such baseline and is merged at its store head, as
+  before.
 
 File conflicts land as conflict markers IN the merge commit and are
 reported in `MergeOutcome.conflicts` rather than blocking it: resolve
@@ -590,7 +597,7 @@ workspace paths — `/workspace/data/in.csv`, the way agent code and
 `ws.files.fs` name files. Framework keys (cache, cwd, the stored
 conversation, the filesystem's own bookkeeping) are not files and never
 appear, and staged-but-uncommitted work is not in the diff at all
-(check `ws.dirty`).
+(check `ws.uncommitted`).
 
 `modified` is the content question: a file re-saved with the bytes it
 already had is not a change, even though it is a new write. kvgit
@@ -683,9 +690,9 @@ rt.supports_commands / rt.supports_ws_verbs -> bool
 rt.exec_python(code, ...) -> PythonResult   # raw: no lock, no commit
 rt.exec_shell(script) -> TerminalResult     # raw: no lock, no commit
 rt.register_command(name, fn, *, rebind=None) -> None
-rt.shell_env(name, value) -> None     # publish a variable
-rt.shell_env(name) -> str | None      # read one back
-rt.shell_env() -> dict[str, str]      # the live mapping (a fork replays it)
+rt.env -> MutableMapping[str, str]  # the shell environment, live
+                                    # (rt.env["X"] = "1"; del rt.env["X"];
+                                    #  dict(rt.env); a fork replays it)
 rt.cache_enabled -> bool
 rt.commands / rt.framework_commands   # the live mappings
 rt.stale -> bool ; rt.mark_stale() ; rt.sync_if_stale()
@@ -698,7 +705,7 @@ decides what becomes a commit — which is why `ws.terminal` and
 `ws.run_python` (the committing verbs) stay on `Workspace` and the raw
 ones live here. There are no delegates on `Workspace` for the rest:
 `ws.runtime.exec_python`, `ws.runtime.register_command`,
-`ws.runtime.shell_env` and `ws.runtime.python_config` are where they
+`ws.runtime.env` and `ws.runtime.python_config` are where they
 are because the executor, not the substrate, is what answers.
 
 A `Runtime` is normally built by the workspace and reached as
@@ -1183,7 +1190,7 @@ Apps is an **extension**, not a workspace feature. `Workspace`,
 `Store.open` and `nontainer.workspace()` take no `AppsConfig` and know
 nothing about handlers; `enable_apps(ws, config)` wires everything in
 afterwards through the surface any extension may use —
-`ws.runtime.register_command` for `ws-curl`, `ws.runtime.shell_env` for
+`ws.runtime.register_command` for `ws-curl`, `ws.runtime.env` for
 `$APP_ORIGIN`, `ws.runtime.exec_python(view=...)` for handler dispatch,
 and `ws.lock` where its work mutates. `tests/test_apps_surface.py`
 enforces that mechanically: no private attribute of `Workspace` is
