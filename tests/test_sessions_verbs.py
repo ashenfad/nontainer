@@ -744,3 +744,25 @@ def test_attach_takes_an_explicit_root_for_a_session_from_elsewhere(store):
         assert ws.files.read("/workspace/right/note.md") == b"hello\n"
     finally:
         ws.close()
+
+
+# -- the path/session collision ------------------------------------------------
+
+
+def test_diff_reads_a_word_that_is_both_a_path_and_a_session_as_the_path(ws, store):
+    """The pathspec reading is the one that still works when the two
+    collide: name the file, not the branch."""
+    _seed(ws, **{"worker": "one\n"})
+    ws.terminal("ws-git branch worker")
+    assert "worker" in store.sessions()
+
+    ws.files.write("/workspace/worker", "edited\n")
+    out = ws.terminal("ws-git diff worker").stdout
+    assert out.startswith("diff --git a/worker b/worker")
+    assert "# " not in out  # not the grouped session diff
+
+    # with no such file here, the same word is the session
+    ws.index.commit("edited")
+    ws.terminal("rm worker")
+    ws.index.commit("gone")
+    assert ws.terminal("ws-git diff worker").stdout.startswith("diff --git a/worker")

@@ -733,6 +733,17 @@ def _under_any(path: str, pathspec: list[str]) -> bool:
     return any(path == p or path.startswith(p + "/") for p in pathspec)
 
 
+def _names_a_path(git: AgentGit, ws: Any, path: str) -> bool:
+    """Whether a resolved path names something in this session's tree —
+    a file it holds or held at the agent's head, or a directory."""
+    if path in set(git.working_files()) | set(git.head_files()):
+        return True
+    try:
+        return bool(ws._fs.isdir(path))
+    except Exception:  # noqa: BLE001 - a path the filesystem cannot judge is not one
+        return False
+
+
 def _unknown_pathspec(
     git: AgentGit, ws: Any, words: list[str], paths: list[str]
 ) -> Any:
@@ -745,12 +756,8 @@ def _unknown_pathspec(
     """
     from termish import CommandResult
 
-    if not paths:
-        return None
-    known = set(git.working_files()) | set(git.head_files())
-    fs = ws._fs
     for word, path in zip(words, paths):
-        if path in known or fs.isdir(path):
+        if _names_a_path(git, ws, path):
             continue
         return CommandResult(
             exit_code=1,
@@ -776,21 +783,23 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             return _usage_error(f"diff takes no {flag!r}.")
         else:
             words.append(flag)
-    # A first word that names a session is a session: a diff against
-    # another session and a pathspec cannot both be meant, and a path
-    # is the reading that still works when the two collide (name the
-    # file, not the branch).
-    if words and _is_session(ws, words[0]):
+    paths = [_abspath(ctx, word) for word in words]
+    # A word that is both a path here and a session elsewhere is the
+    # PATH: the pathspec reading is the one that still works when the
+    # two collide (name the file, not the branch), and the diff of
+    # another session is always reachable as `ws-git diff <name>` from
+    # a session that has no such file.
+    if words and not _names_a_path(git, ws, paths[0]) and _is_session(ws, words[0]):
         if len(words) > 1 or cached or check:
             return _usage_error(
                 "diff <session> takes no other argument (no pathspec, "
                 "--cached or --check against another session)."
             )
         return _diff_branch(git, ws, ctx, words[0])
-    paths = [_abspath(ctx, word) for word in words]
-    unknown = _unknown_pathspec(git, ws, words, paths)
-    if unknown is not None:
-        return unknown
+    if paths:
+        unknown = _unknown_pathspec(git, ws, words, paths)
+        if unknown is not None:
+            return unknown
     st = git.status()
     if check:
         return _diff_check(git, ctx, st, paths, cached)

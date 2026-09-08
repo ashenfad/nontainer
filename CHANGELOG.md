@@ -328,7 +328,10 @@ is the migration.
   <session>` (git's `Auto-merging` / `CONFLICT (content)` lines, exit 1
   when markers land), `checkout <ref> -- <paths>`, `log <session>` and
   `diff <session>` (grouped `# N path(s) in <session>'s seed` /
-  `# N path(s) elsewhere` when that session was narrowed). `stash` and
+  `# N path(s) elsewhere` when that session was narrowed; a word that
+  names both a path here and a session elsewhere is the PATH, and one
+  that names neither is refused rather than read as a pathspec
+  matching nothing). `stash` and
   `rebase` stay refusals and now name terminal verbs: a fork IS a
   stash (`ws-git branch <name>`), and branching from the commit you
   want is what rebase was for. Same implementation as the host verbs,
