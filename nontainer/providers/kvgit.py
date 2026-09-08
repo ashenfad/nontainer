@@ -660,27 +660,19 @@ class KvgitProvider:
         self._write_blob(index, old_suspended and bool(index))
         return tuple(removed)
 
-    def commit_index(
-        self, info: dict[str, Any] | None = None, *, include: Iterable[str] = ()
-    ) -> str:
+    def commit_index(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged keys plus index bookkeeping; unstaged stays dirty.
 
         Framework keys (the VFS table, cwd, the blob itself) ride along
         when staged — the table is fixed up first so the new commit's
         rows describe its own blobs exactly, not uncommitted work.
         Cache keys never ride: unrelated agent state stays dirty.
-
-        ``include`` adds state to the commit that the index does not
-        hold: store keys as given, absolute workspace paths resolved to
-        the keys the VFS wrote them under. Those keys commit exactly as
-        an indexed one would; everything else the agent has staged
-        outside the index stays dirty.
         """
         from monkeyfs import VirtualFS
 
         self._refuse_frozen("commit_index")
         blob = self._read_blob()
-        index = set(blob["index"]) | self._resolve_include(include)
+        index = set(blob["index"])
         pending = {key for key in index if self._staged.is_staged(key)}
         head_handle = self._staged.checkout(self._staged.current_commit)
         head_blob = (
@@ -689,8 +681,6 @@ class KvgitProvider:
             else self._parse_blob(None)
         )
         cleared = {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
-        # ``index`` above already folded ``include`` in, so a caller
-        # committing framework state on a clean index is not "nothing".
         if not pending and head_blob == cleared:
             # Nothing staged and the bookkeeping is already clean:
             # refuse instead of minting an empty commit (decided before
@@ -716,32 +706,88 @@ class KvgitProvider:
                 f"commit failed: conflicting concurrent commit on branch "
                 f"{self._session!r} (CAS): {result}"
             )
-        if live_table is not None:
-            # Normalize: the restore must stage bytes — a decoded value
-            # written back raw would break VFS table reads.
-            if not isinstance(live_table, bytes):
-                live_table = (
-                    live_table.encode()
-                    if isinstance(live_table, str)
-                    else json.dumps(live_table, sort_keys=True).encode()
-                )
-            if self._staged.get(VirtualFS.METADATA_KEY) != live_table:
-                self._staged[VirtualFS.METADATA_KEY] = live_table
+        self._restore_live_table(live_table)
         # Fixup and restore both wrote around the VFS: drop its caches
         # once, at the end, so post-commit reads see live state.
         self._invalidate_fs()
         return self._staged.current_commit
 
-    def _resolve_include(self, include: Iterable[str]) -> set[str]:
-        """``commit_index(include=...)`` entries as store keys.
+    def commit_keys(
+        self, info: dict[str, Any] | None = None, *, keys: Iterable[str]
+    ) -> str | None:
+        """Commit exactly these keys, leaving the index alone.
 
-        An absolute path is the workspace's spelling of a file and is
-        resolved the way ``stage`` resolves one (raising if it names
-        nothing); anything else is already a store key — the framework
+        The staged set is not touched and neither is the ws-git blob,
+        so a composition in flight is exactly as open afterwards as it
+        was before: still indexed, still suspending autocommit, its
+        working-tree writes still dirty. Returns the new commit hash,
+        or ``None`` when none of the named keys had anything pending.
+
+        ``keys`` are store keys as stored, or absolute workspace paths
+        resolved to the keys the VFS wrote them under — the framework
         planes (``__agno__/``, the cache) name themselves, and no store
         key starts with ``/``.
+
+        The VFS table rides along, fixed up the way a selective commit
+        fixes it up: rows for the committed files take their live
+        versions and every other row stays at HEAD, so the commit
+        describes its own blobs and says nothing about work in
+        progress. Without it a committed file would have no row, and a
+        reader of that commit would not see the file at all.
         """
-        entries = list(include)
+        from monkeyfs import VirtualFS
+
+        self._refuse_frozen("commit_keys")
+        pending = {
+            key for key in self._resolve_keys(keys) if self._staged.is_staged(key)
+        }
+        if not pending:
+            return None
+        live_table: Any = None
+        if self._file_keys(pending):
+            live_table = self._staged.get(VirtualFS.METADATA_KEY)
+            self._commit_table(pending)
+            if self._staged.is_staged(VirtualFS.METADATA_KEY):
+                pending.add(VirtualFS.METADATA_KEY)
+        result = self._staged.commit(keys=pending, info=info)
+        if not result.merged:
+            raise WorkspaceError(
+                f"commit failed: conflicting concurrent commit on branch "
+                f"{self._session!r} (CAS): {result}"
+            )
+        self._restore_live_table(live_table)
+        self._invalidate_fs()
+        return self._staged.current_commit
+
+    def _restore_live_table(self, live_table: Any) -> None:
+        """Put the pre-fixup VFS table back after a selective commit.
+
+        The fixup describes the commit's own blobs; live truth is what
+        every read afterwards needs — unstaged additions with rows,
+        unstaged edits at their live sizes. Nothing to restore when the
+        commit touched no files.
+        """
+        from monkeyfs import VirtualFS
+
+        if live_table is None:
+            return
+        # Normalize: the restore must stage bytes — a decoded value
+        # written back raw would break VFS table reads.
+        if not isinstance(live_table, bytes):
+            live_table = (
+                live_table.encode()
+                if isinstance(live_table, str)
+                else json.dumps(live_table, sort_keys=True).encode()
+            )
+        if self._staged.get(VirtualFS.METADATA_KEY) != live_table:
+            self._staged[VirtualFS.METADATA_KEY] = live_table
+
+    def _resolve_keys(self, keys: Iterable[str]) -> set[str]:
+        """Caller-named state as store keys: an absolute path is the
+        workspace's spelling of a file and resolves the way ``stage``
+        resolves one (raising if it names nothing); anything else is
+        already a store key."""
+        entries = list(keys)
         if not entries:
             return set()
         paths = [e for e in entries if e.startswith("/")]

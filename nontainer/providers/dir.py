@@ -207,8 +207,11 @@ class DirProvider:
     def unstage(self, paths: Any) -> Any:
         raise self._unsupported("unstage")
 
-    def commit_index(self, info: Any = None, *, include: Any = ()) -> Any:
+    def commit_index(self, info: Any = None) -> Any:
         raise self._unsupported("commit_index")
+
+    def commit_keys(self, info: Any = None, *, keys: Any = ()) -> Any:
+        raise self._unsupported("commit_keys")
 
     def discard_staged(self) -> Any:
         raise self._unsupported("discard_staged")

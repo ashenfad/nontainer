@@ -171,11 +171,13 @@ def test_the_turn_commit_carries_the_run_key(tmp_path):
 
 
 def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
-    """The turn commit is the framework's own durability point, so it
-    commits the conversation the db just wrote — plus whatever the
-    agent staged for it — and leaves the agent's unstaged edits dirty.
-    It used to take whichever of those the index happened to make it
-    take, which could leave the conversation itself uncommitted."""
+    """The turn commit is the framework's own durability point: it
+    commits the conversation the db just wrote and NOTHING else.
+    Staging suspends autocommit until the composition lands or is
+    abandoned, and the framework is never what lands it — so an agent
+    that composed across the turn boundary finds its index exactly as
+    it left it. It used to commit whatever the index made it commit,
+    which could leave the conversation itself uncommitted."""
     ws, db, tk, agent = build(tmp_path)
     ws.files.fs.write("/workspace/staged.txt", b"staged")
     ws.files.fs.write("/workspace/loose.txt", b"work in progress")
@@ -192,10 +194,20 @@ def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     assert len(db.get_session(ws.session).runs) == 1
     head = ws._provider._staged.checkout(ws.head)
     assert head.get(SESSION_KEY) is not None
-    # and so did what the agent had staged for the turn
-    assert ws.index.status().staged == ()
-    # but its work in progress is still its own
+
+    # the composition is untouched: still indexed, still suspending
+    # autocommit, and neither of the agent's files is in that commit
+    status = ws.index.status()
+    assert status.staged == ("/workspace/staged.txt",)
+    assert status.unstaged == ("/workspace/loose.txt",)
+    assert ws._provider.stage_suspended()
     assert ws.dirty
+    assert not head.get(ws._provider.fs._encode_path("/workspace/staged.txt"))
+    assert not head.get(ws._provider.fs._encode_path("/workspace/loose.txt"))
+
+    # and the agent's own commit still lands what it composed
+    ws.index.commit()
+    assert ws.index.status().staged == ()
     assert ws.index.status().unstaged == ("/workspace/loose.txt",)
     ws.close()
 

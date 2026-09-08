@@ -424,23 +424,34 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
-    def commit_index(
-        self, info: dict[str, Any] | None = None, *, include: Iterable[str] = ()
-    ) -> str:
+    def commit_index(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged keys plus index bookkeeping, leaving unstaged
         writes dirty (requires ``caps.index``). Tagged
         ``{"tool": "ws-git.commit"}`` unless ``info`` says otherwise.
         Raises ``WorkspaceError`` when nothing staged would change the
         tree. Returns the new commit hash.
+        """
+        ...
 
-        ``include`` names state to commit ALONGSIDE the staged set,
-        whether or not the index holds it: provider keys as they are
-        stored (``__agno__/session``), or absolute workspace paths,
-        which the provider resolves to its own keys. It is what lets
-        the framework make its own writes durable mid-composition —
-        the conversation a session db just stored — without waiting for
-        an agent to finish composing, and without taking the agent's
-        unstaged edits along.
+    def commit_keys(
+        self, info: dict[str, Any] | None = None, *, keys: Iterable[str]
+    ) -> str | None:
+        """Commit exactly these keys, leaving the index untouched
+        (requires ``caps.index``). Returns the new commit hash, or
+        ``None`` when none of them had anything pending.
+
+        ``keys`` are provider keys as stored (``__agno__/session``) or
+        absolute workspace paths, which the provider resolves to its
+        own keys. Whatever bookkeeping a commit of those keys needs to
+        be readable rides along; the index and its staged set do not.
+
+        This is how the framework makes its OWN writes durable while an
+        agent has a composition in flight: staging suspends autocommit
+        until the composition lands or is abandoned, and the framework
+        must never be what lands it. A conversation a session db just
+        stored, or a skill just installed, commits on its own; the
+        agent's staged set stays staged and its working-tree writes
+        stay dirty.
         """
         ...
 

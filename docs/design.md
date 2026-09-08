@@ -50,6 +50,13 @@ hooks run *before* that, and a hook-driven commit would hold the turn's
 files but leave its conversation for the next commit. See
 [agno-sessions.md](agno-sessions.md).
 
+Both of those are the *framework* committing, and a framework
+durability commit made while the agent has a ws-git composition open
+carries only the framework's own keys — the conversation, an installed
+skill — never the staged set: staging suspends autocommit until the
+composition lands or is abandoned, and the framework is never what
+lands it.
+
 Individual writes are deliberately *not* the unit: a handler that writes
 three files mid-request, then raises, should leave nothing behind. The
 staged buffer gives that atomicity for free, and high-tempo operational

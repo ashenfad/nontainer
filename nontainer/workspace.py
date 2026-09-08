@@ -1732,15 +1732,19 @@ class Workspace:
         just installed: state the framework wrote and must not lose,
         committed at a moment the framework chose rather than the agent
         did. With no composition open that is an ordinary
-        commit-everything. With one open it is the staged set plus
-        ``keys``, so the framework's writes land while the agent's
-        unstaged edits stay dirty and remain its own to commit.
+        commit-everything. With one open it is ``keys`` and nothing
+        else — staging suspends autocommit until the composition lands
+        or is abandoned, and the framework is never what lands it. The
+        agent's staged set stays staged, its working-tree writes stay
+        dirty, and autocommit stays suspended.
 
         ``keys`` names that state: provider keys (``__agno__/session``)
-        or absolute workspace paths, resolved by the provider. Returns
-        the commit id, or ``None`` when there was nothing to commit —
-        clean, unversioned, or frozen — so a caller can report what it
-        did without repeating those guards.
+        or absolute workspace paths, resolved by the provider. Naming
+        none of it mid-composition leaves nothing this can safely
+        commit, so it commits nothing. Returns the commit id, or
+        ``None`` when nothing was committed — clean, unversioned,
+        frozen, or that last case — so a caller can report what it did
+        without repeating those guards.
         """
         with self._lock:
             self._check_open()
@@ -1750,7 +1754,10 @@ class Workspace:
                 return None
             if not self._staging():
                 return self._provider.commit(info)
-            return self._provider.commit_index(info, include=keys)
+            named = list(keys)
+            if not named:
+                return None
+            return self._provider.commit_keys(info, keys=named)
 
     def checkout(self, commit: str) -> str:
         """Move this session to one of its own commits; returns its id.
