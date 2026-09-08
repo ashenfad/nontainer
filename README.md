@@ -293,6 +293,9 @@ environment layer alone, offered to someone else's loop.
   test_app, serving/threat model
 - [agno sessions](docs/agno-sessions.md) -- keeping the agent's
   conversation in the workspace, so rewind and fork cover memory too
+- [Tour](examples/tour.py) -- the whole surface end to end with no LLM:
+  terminal, `run_python`, an agent commit, a fork with a narrowed view,
+  a merge, a take, an attachment, a publish
 - [Examples](examples/) -- live agno agents: a data analyst
   (`analyst.py`) and a build-and-verify web app (`webapp.py`)
 
