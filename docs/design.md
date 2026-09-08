@@ -36,10 +36,10 @@ A mutating tool call stages its filesystem and cache writes and flushes
 them as **one atomic commit** carrying `info` metadata (`{"tool":
 "terminal"}`, etc.). Two knobs:
 
-- **Per-call** (default): every mutating call is its own checkpoint.
+- **Per-call** (default): every mutating call is its own commit.
   Maximum durability, chattier history — right when the loop is opaque
   to you (an MCP server can't see turn boundaries).
-- **Per-turn**: `WorkspaceTools(checkpoint="turn")` defers commits to a
+- **Per-turn**: `WorkspaceTools(commit="turn")` defers commits to a
   turn boundary hook, so a many-call turn is one commit (the agex
   model). Cleaner history; a crash mid-turn loses that turn's staged
   work (kvgit staging is in-memory).
@@ -56,14 +56,14 @@ staged buffer gives that atomicity for free, and high-tempo operational
 state (an app's per-request scratch) belongs in an unversioned sidecar,
 not in the commit history.
 
-Results pin the commit they produced — `result.checkpoint` is the id
-(or `None` for a read-only call), so `ws.restore(result.checkpoint)` is
+Results pin the commit they produced — `result.commit` is the id
+(or `None` for a read-only call), so `ws.checkout(result.commit)` is
 compensation by identity rather than counting steps. Read-only calls
 don't commit at all; `ws.head` pins the state they observed.
 
 ## Tags have two scopes, and nontainer picks them
 
-A checkpoint id is precise and unmemorable, so checkpoints get names.
+A commit id is precise and unmemorable, so commits get names.
 The question a naming feature has to answer is what a name *belongs
 to*, and leaving that to embedders is how one flat namespace becomes a
 convention nobody wrote down: session ids stuffed into tag strings, two
@@ -77,7 +77,7 @@ that is what makes tagging cheap, because naming a state costs nothing
 you have to clean up later. A **store** tag belongs to no session: it
 is visible from every workspace on the store and survives the deletion
 of the session that made it. That is the whole difference, and it is
-the difference an embedder actually has: a checkpoint worth naming
+the difference an embedder actually has: a commit worth naming
 inside a conversation, versus a publication that has to outlive the
 conversation — the snapshot an app serves, the state a link points at.
 
@@ -87,9 +87,10 @@ and a session id can never begin with `@` — so no session, however it
 is named, can write into the scope that outlives it.
 
 Both ride kvgit's tags, which are branch heads under a reserved name,
-so a tagged checkpoint anchors garbage collection with no rule of its
+so a tagged commit anchors garbage collection with no rule of its
 own: the state a publication names stays readable after everything else
-about its session is gone. `at_tag` opens it as a **frozen** workspace —
+about its session is gone. `store.tags.at` opens it as a **frozen**
+workspace —
 the files read-only down to the executor's filesystem, nothing able to
 commit — because a published snapshot that could be written to is not
 a snapshot.
@@ -116,7 +117,7 @@ to explain namespace behavior, you wanted the split. `tools="terminal"`
 sequential inside a script. Harnesses can't enforce per-tool
 singularity (agno has no such flag; model-level `parallel_tool_calls=
 False` is all-or-nothing), so a per-workspace lock is the backstop:
-parallel calls serialize safely — each atomic and checkpointed — rather
+parallel calls serialize safely — each atomic and committed — rather
 than corrupting each other. `Workspace.run_python()` is always the
 embedder surface; the terminal `python` builtin is a thin bridge over
 it, so the split is about framing, never behavior.
@@ -139,16 +140,16 @@ The split that matters at runtime is the second one, and it has a
 direction: executors never commit. A runtime produces results (and, on
 a remote executor, a diff of what changed); the workspace absorbs
 them, holds the single-writer lock, and decides what becomes a
-checkpoint. That is why swapping the executor for a real machine never
-touches the versioning semantics — checkpoint-per-call, fork,
+commit. That is why swapping the executor for a real machine never
+touches the versioning semantics — commit-per-call, fork,
 rollback were always properties of the state layer.
 
 The third object is `Store`, and it exists because a session is not
 the only unit. Deleting a session, listing what a user has, sweeping
-storage nothing reaches, and naming a checkpoint that must outlive the
+storage nothing reaches, and naming a commit that must outlive the
 conversation that made it are all operations on the *set* of sessions.
 Grafted onto a session handle they read as accidents of whichever
-workspace happened to be open — `ws.tag(name, scope="store")` says
+workspace happened to be open — `ws.tag(name, scope="store")` said
 almost the opposite of what it does, since the whole point of that
 scope is that the session is irrelevant. So store-level state lives on
 `Store`, session-level state on `Workspace`, and a caller can tell
@@ -173,8 +174,8 @@ pitch; the pitch is the *workspace*.
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,
   bridged over an RPC filesystem. The only piece that needs Node;
   deferred until something pulls for npm-ecosystem authoring.
-- **AgentFS checkpoint/restore** via whole-file snapshots. The provider
-  spike is unversioned today; wiring snapshots as checkpoints is future
+- **AgentFS commit/restore** via whole-file snapshots. The provider
+  spike is unversioned today; wiring snapshots as commits is future
   work.
 - **Merge-fn presets** for concurrent sessions over one branch. kvgit
   has the CAS + three-way-merge machinery; shipping opinionated

@@ -3,7 +3,7 @@
 The agent gets terminal + python tools against a kvgit-backed
 workspace, analyzes a CSV, writes a report, and stashes stats in the
 cache. Afterwards we print the workspace's commit history — every
-mutating tool call the agent made is a checkpoint you can roll back.
+mutating tool call the agent made is a commit you can roll back.
 
 Run:  ANTHROPIC_API_KEY=... uv run python examples/analyst.py
 Deps: pip install nontainer[agno] anthropic
@@ -37,13 +37,13 @@ Then show me the report."""
 def main() -> None:
     # csv/statistics need no config — the safe stdlib set is on by default
     with workspace("analyst-demo", store=tempfile.mkdtemp()) as ws:
-        ws.fs.makedirs("data", exist_ok=True)
-        ws.fs.write("data/sales.csv", SALES.encode())
-        ws.checkpoint(info={"seed": "sales.csv"})
+        ws.files.fs.makedirs("data", exist_ok=True)
+        ws.files.fs.write("data/sales.csv", SALES.encode())
+        ws.commit(info={"seed": "sales.csv"})
 
-        # checkpoint="turn": the whole run lands as ONE commit (the agex
+        # commit="turn": the whole run lands as ONE commit (the agex
         # model) — contrast with webapp.py's per-call default.
-        tk = WorkspaceTools(ws, checkpoint="turn")
+        tk = WorkspaceTools(ws, commit="turn")
         agent = Agent(
             model=pick_model(),
             tools=[tk],
@@ -55,13 +55,13 @@ def main() -> None:
         print("=== agent ===\n", run.content)
 
         print("\n=== report.md (from the workspace) ===")
-        print(ws.get("report.md").decode())
+        print(ws.files.get("report.md").decode())
 
         print("=== cache['totals'] ===")
         print(ws.cache["totals"])
 
         print("\n=== versioned history (newest first) ===")
-        for c in ws.history():
+        for c in ws.log():
             print(f"  {c.id[:10]}  {c.info}")
 
 

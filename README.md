@@ -3,7 +3,7 @@
 **Versioned, forkable workspaces for code-using agents.**
 
 Give any Python agent loop a stateful terminal and Python tool over a
-workspace that checkpoints files and cache together, forks in O(1), and
+workspace that commits files and cache together, forks in O(1), and
 rolls back as a unit. Run locally — where agent code can work through
 whitelisted live host objects — or on a microVM while the workspace history
 stays in the state layer.
@@ -21,7 +21,7 @@ Nontainer keeps three concerns separate:
 
 | | Responsibility |
 |---|---|
-| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap checkpoints, forks, rollback, and audit; other providers declare narrower capabilities rather than pretending equivalence. |
+| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap commits, forks, rollback, and audit; other providers declare narrower capabilities rather than pretending equivalence. |
 | **`Executor`** | Where terminal and Python code run and how they reach workspace state: locally through [sandtrap](https://github.com/ashenfad/sandtrap) and [monkeyfs](https://github.com/ashenfad/monkeyfs), or on a real machine through [dud](https://github.com/ashenfad/dud). |
 | **Adapters** | How the two tools enter an existing agent loop: the core Python API, an [agno](https://github.com/agno-agi/agno) toolkit, or an MCP server. |
 
@@ -31,7 +31,7 @@ the shell's `cd` sticks, files one call writes the next call reads, and a
 `cache` dict persists for the whole conversation.
 
 Because that state is a **versioned workspace**, each state-changing call can
-be checkpointed as one unit. The host can fork a session in O(1), roll back
+be committed as one unit. The host can fork a session in O(1), roll back
 to any commit, or audit its history without teaching the agent a version
 control protocol.
 
@@ -69,12 +69,19 @@ cache['n_rows'] = len(rows)                      # persists across the session
 print(rows)
 """)
 
-r.checkpoint                 # commit id this call produced; ws.restore(it) undoes it
+r.commit                 # commit id this call produced; ws.checkout(it) undoes it
+ws.files.write("notes.md", "# findings\n")   # host-side write, committed
 fork = ws.fork("what-if")    # O(1) branch; the original is untouched
+ws.merge("what-if")          # and bring its work back
 ws.rollback(steps=1)         # or time-travel by steps
-ws.tag("v1")                 # name this state; it outlives the call that made it
-snap = ws.at_tag("v1")       # a frozen workspace at that name: reads, never writes
+ws.tags.add("v1")            # name this state; it outlives the call that made it
+snap = ws.tags.at("v1")      # a frozen workspace at that name: reads, never writes
 ```
+
+The session's own verbs are on the object; the rest are grouped by the
+seam they belong to — `ws.files` (read/write/edit/put/get/export),
+`ws.index` (the staged set), `ws.tags` (this session's names), and
+`ws.runtime` (how code runs: the executor, commands, shell variables).
 
 A `Workspace` is one session. The `Store` is the place those sessions
 live in, and it owns what outlives one of them — `workspace(...)` is
@@ -96,8 +103,8 @@ A tag is session-scoped by default and dies with the session;
 `store.tags` is the store-scoped half — a publication that outlives it,
 readable from any session on the store.
 
-Checkpoints cover workspace-owned files and cache. Host-object calls
-and mounts are external effects: their data is not checkpointed,
+Commits cover workspace-owned files and cache. Host-object calls
+and mounts are external effects: their data is not committed,
 restored, or copied by a fork. A fork does inherit the mount *points*,
 and sees the same live directories behind them.
 
@@ -131,7 +138,7 @@ code that has never heard of it still gets a working absolute path.
 Code that cares asks `isinstance(v, ArtifactPath)` — which a bare
 string could not answer, since agents put ordinary strings in `ui` too.
 
-`ws.read_artifact(path)` returns the bytes, or `None` if it cannot be
+`ws.files.read_artifact(path)` returns the bytes, or `None` if it cannot be
 read — the shape the a2ui envelope wants, so wiring a surface is one
 argument rather than a hand-rolled wrapper:
 
@@ -190,7 +197,7 @@ The default `"vm"` picks the right hypervisor for the host; name
 for one the host can't provide fails closed (`IsolationUnavailable`)
 rather than quietly degrading.
 
-Same `terminal` / `run_python` tools, same checkpoints, same O(1)
+Same `terminal` / `run_python` tools, same commits, same O(1)
 forks -- [dud](https://github.com/ashenfad/dud) receives a tree,
 executes against a real filesystem, and returns a diff, which the
 provider commits exactly as it commits a local one. What you buy is
@@ -299,6 +306,20 @@ pip install nontainer[apps]     # + handlers/curl, Playwright test_app, serving 
 pip install nontainer[agentfs]  # + AgentFS substrate (agentfs-sdk)
 pip install nontainer[dud]      # + real-machine / microVM execution (needs 3.11+)
 ```
+
+## Development
+
+```bash
+uv sync --extra dev --extra apps --extra agno --extra mcp --extra dud
+uv run pytest -q
+uv run ruff check nontainer tests && uv run ruff format --check nontainer tests
+```
+
+Include `--extra dud` on 3.11+: the DudExecutor tests guard themselves
+with `importorskip`, so without it the whole real-machine suite skips
+silently and the run is green for the wrong reason. (On 3.10 the extra
+installs nothing — it carries a `python_version >= "3.11"` marker — and
+those tests skip by design.)
 
 ## License
 

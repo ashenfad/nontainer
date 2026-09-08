@@ -45,8 +45,8 @@ ws = workspace("user-42")               # ~/.nontainer, branch per session
 ws.terminal("echo v1 > report.md")
 ws.run_python("cache['step'] = 1")      # cache: the persistent dict
 
-# every mutating tool call is checkpointed (autocheckpoint=True)
-for c in ws.history(limit=3):
+# every mutating tool call is committed (autocommit=True)
+for c in ws.log(limit=3):
     print(c.id[:8], c.info)
 
 fork = ws.fork("what-if")               # O(1); shares storage
@@ -109,17 +109,17 @@ Notes:
 ## Moving files in and out
 
 ```python
-ws.put("~/Downloads/report.csv", "data/report.csv")   # host → workspace
-data = ws.get("out/summary.md", "~/Desktop/summary.md")  # workspace → host
+ws.files.put("~/Downloads/report.csv", "data/report.csv")   # host → workspace
+data = ws.files.get("out/summary.md", "~/Desktop/summary.md")  # workspace → host
 ```
 
-Or from the terminal: `tar -czf out.tgz out` then `ws.get("out.tgz", ...)`.
+Or from the terminal: `tar -czf out.tgz out` then `ws.files.get("out.tgz", ...)`.
 
 ## Backends
 
 | backend | what it is | versioning |
 |---|---|---|
-| `kvgit` (default) | one shared store, branch per session | ✅ checkpoints, O(1) forks, rollback |
+| `kvgit` (default) | one shared store, branch per session | ✅ commits, O(1) forks, rollback |
 | `dir` | a plain real directory per session | ❌ (but sqlite/mmap/C extensions work natively) |
 | `agentfs` | one SQLite file per session ([Turso AgentFS](https://github.com/tursodatabase/agentfs)) | ❌ (spike) — but SQL-inspectable |
 
@@ -151,8 +151,8 @@ Agents also get `file_write` / `file_edit` tools in every mode — the
 quoting-free path for multiline files and surgical exact-string edits
 (the Claude-Code Write/Edit contract models already know).
 
-Commit granularity is yours: the default checkpoints every mutating
-call (max durability); `WorkspaceTools(ws, checkpoint="turn")` plus
+Commit granularity is yours: the default commits every mutating
+call (max durability); `WorkspaceTools(ws, commit="turn")` plus
 `Agent(post_hooks=[tk.end_turn])` gives the agex model — one commit
 per agent turn, so `rollback(1)` undoes a whole turn.
 
@@ -164,14 +164,14 @@ from nontainer.adapters.agno_db import KvgitSessionDb, fork_session
 
 ws = workspace(session_id)
 db = KvgitSessionDb(ws, db_path="/var/agno")   # agno's other tables go here
-tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+tk = WorkspaceTools(ws, commit="turn", session_db=db)
 agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk])
 
 child = fork_session(ws, "what-if")            # files + chat, O(1)
 ```
 
 One commit per turn then holds files, `cache`, cwd and the run agno
-just persisted; `ws.restore()` rewinds all four and `fork_session()`
+just persisted; `ws.checkout()` rewinds all four and `fork_session()`
 branches all four. Drive the fork with the same three objects built
 over `child`. When agno's cross-session features matter — its
 past-sessions tool, AgentOS, its own `fork_session` — use
