@@ -54,6 +54,12 @@ from ..protocol import (
     validate_session_id,
 )
 
+#: How many commits ``checkout`` will make to land the target's exact
+#: state before it gives up. One is the quiet case; a second is one
+#: concurrent writer losing a race with it. Past that, something is
+#: committing to this session in a loop and the caller has to be told.
+_CHECKOUT_ATTEMPTS = 5
+
 _KVGIT_CAPS = Capabilities(
     versioned=True,
     staging=True,
@@ -448,11 +454,27 @@ class KvgitProvider:
         are keys like any other, and the host restored the whole world.
         The keys to touch come from kvgit's keyset diff between the
         head and the target, so the cost is the size of the change and
-        not the size of the tree. Values are compared before they are
-        written where both commits hold the key, since kvgit's pointer
-        diff flags one rewritten with the bytes it already had: a
-        checkout onto state the workspace already holds writes nothing
-        and returns the current head.
+        not the size of the tree.
+
+        IT CONVERGES ON THE TARGET. Another handle on this session can
+        commit between the diff and the commit; kvgit then three-way
+        merges that state into the restore, and a key it added — one
+        absent from both the head this started at and the target — is
+        in neither list, so it would ride into a commit claiming to be
+        the target's state. So the restore is re-diffed against the
+        head that actually landed and re-applied until nothing is left
+        to write, bounded by ``_CHECKOUT_ATTEMPTS``. Writes that land
+        in between are superseded, not lost: they are commits of this
+        session like any other, and ``history()`` holds them.
+
+        Convergence is judged by VALUE, not by kvgit's keyset
+        pointers: a key rewritten with the bytes it already had gets a
+        fresh pointer, so every key the restore wrote reads as
+        modified against the target however equal the two are. Which
+        is the same reason values are compared before they are written
+        where both commits hold a key — a checkout onto state the
+        workspace already holds writes nothing and returns the current
+        head.
 
         Uncommitted writes are replaced by the restored state (see the
         protocol; ``discard()`` is the explicit spelling for a caller
@@ -467,7 +489,38 @@ class KvgitProvider:
         # the target's state.
         if self._staged.has_changes:
             self._staged.reset()
-        head = self._staged.current_commit
+        landed = 0
+        while True:
+            head = self._staged.current_commit
+            self._stage_restore(target, head, commit_id)
+            # HEAD moved (or the buffer did) under the VirtualFS
+            # object: drop its caches the way discard() does.
+            self._invalidate_fs()
+            if not self._staged.has_changes:
+                # Nothing left to write: this head IS the target's
+                # state, whether it took one commit or several.
+                return head
+            if landed >= _CHECKOUT_ATTEMPTS:
+                self._staged.reset()
+                self._invalidate_fs()
+                raise WorkspaceError(
+                    f"checkout of {commit_id!r} on session {self._session!r} "
+                    f"could not converge in {_CHECKOUT_ATTEMPTS} commits: the "
+                    "branch head keeps moving under it. Another handle is "
+                    f"writing to this session; the session is left at "
+                    f"{head!r}, and checking out again once that writer is "
+                    "done lands the target."
+                )
+            self.commit(info={"tool": "checkout", "target": commit_id, **(info or {})})
+            landed += 1
+
+    def _stage_restore(self, target: Any, head: str, commit_id: str) -> None:
+        """Stage the difference between ``head`` and the target commit.
+
+        Leaves the buffer holding exactly what the head has to change
+        to become the target's state — nothing when it already is, so
+        an empty buffer afterwards is what says the restore is done.
+        """
         changed = self._staged.versioned.diff(head, commit_id)
         for key in changed.added:
             self._staged[key] = target.get(key)
@@ -478,14 +531,6 @@ class KvgitProvider:
         for key in changed.removed:
             if key in self._staged:
                 del self._staged[key]
-        # HEAD is about to move (or the buffer already changed) under
-        # the VirtualFS object: drop its caches the way discard() does.
-        self._invalidate_fs()
-        if not self._staged.has_changes:
-            return head
-        return self.commit(
-            info={"tool": "checkout", "target": commit_id, **(info or {})}
-        )
 
     def _invalidate_fs(self) -> None:
         """Drop VirtualFS's lazy caches after state changed underneath
