@@ -216,6 +216,16 @@ class ViewFS:
             raise PermissionError(self._hidden(path))
         self._widen(target)
 
+    def sees(self, path: str) -> bool:
+        """Whether this session's view shows ``path`` at all.
+
+        The visibility question on its own, for code that reaches the
+        tree through the provider rather than through this filesystem —
+        the agent's index, whose ``working_files`` is the whole branch
+        and would otherwise let an agent stage a file it cannot see.
+        """
+        return self._visible(path)
+
     def refuse_reason(self, path: str) -> str | None:
         """Why a write to ``path`` would be refused, or ``None``.
 
