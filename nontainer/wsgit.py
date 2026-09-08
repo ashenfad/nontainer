@@ -86,9 +86,9 @@ _SUPPORTED = (
 )
 _ROOT = "/workspace"
 
-# Movie-set edge: name the missing corner in git's own terms plus what
-# an agent can actually do about it — a terminal verb, or plainly that
-# this one is the host's to invoke. Exit 1: refusals, not usage errors.
+# Movie-set edge: name the missing corner in git's own terms plus the
+# terminal verb an agent can reach for instead — never host Python it
+# cannot run. Exit 1: refusals, not usage errors.
 _EDGE = {
     "stash": (
         "no stash here — a fork IS a stash: ws-git branch <name> takes your "
@@ -603,8 +603,12 @@ def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
         elif flag == "--fresh":
             fresh = True
         elif flag == "--paths":
-            paths = [a for a in args if not a.startswith("-")]
-            del args[: len(paths)]
+            # The leading run of non-flag words, so a flag after them
+            # is still a flag: "--paths a b --fresh" is two paths and
+            # a fresh conversation, not three paths.
+            paths = []
+            while args and not args[0].startswith("-"):
+                paths.append(args.pop(0))
             if not paths:
                 return _usage_error("--paths needs at least one path.")
         else:

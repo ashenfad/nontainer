@@ -360,13 +360,18 @@ def test_ws_git_branch_lists_and_forks(ws, store):
     assert ws.terminal("ws-git branch worker").stdout == ""  # silent, like git
     assert ws.terminal("ws-git branch").stdout == "* main\n  worker\n"
 
-    r = ws.terminal("ws-git branch narrow --fresh --paths a.py")
+    # --paths takes the run of paths that follows it; a flag after them
+    # is still a flag
+    r = ws.terminal("ws-git branch narrow --paths a.py --fresh")
     assert r.exit_code == 0
     narrow = store.open("narrow")
     try:
         assert narrow.files.list("/workspace") == ["/workspace/a.py"]
+        assert narrow._view == ("/workspace/a.py",)
     finally:
         narrow.close()
+
+    assert ws.terminal("ws-git branch nope --paths").exit_code == 2
 
     assert ws.terminal("ws-git branch worker").exit_code == 1  # already exists
     assert ws.terminal("ws-git branch x --nope").exit_code == 2
