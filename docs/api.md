@@ -35,8 +35,8 @@ substrate); the store-level verbs then refuse, because the layout is
 the factory's and guessing it would be worse than saying so.
 
 `sessions()` lists session ids only: kvgit's `refs/tags/` tag refs,
-the `@` store namespace, and the legacy `__void__` anchor branch are
-reserved names, not sessions.
+the `@` store namespace (where the publication branches live), and the
+legacy `__void__` anchor branch are reserved names, not sessions.
 
 **`store.delete(sessions, *, min_age=3600)`** drops a session's entire
 stored state, dispatching by backend to the layout `open` built —
@@ -81,11 +81,100 @@ one; a workspace from elsewhere is refused rather than silently tagging
 *its* store. Session-scoped tags stay on the workspace (`ws.tags`). Because a store-scoped tag belongs
 to no session, `store.tags.at(name).session` names whichever live
 branch the read was anchored on — the tag is the identity there, not
-the session — and the read needs at least one session on the store to
-anchor on.
+the session. kvgit has no handle without a branch, so the read borrows
+one: a session if the store has any, otherwise a publication's own
+`@store/pub/...` branch. That fallback is what makes a store of
+publications with no sessions left readable, which is exactly the case
+the store scope exists for.
 
-**Not yet:** `store.shared(name)` and `store.publish(...)` raise
-`NotImplementedError`; they are later stages of the API plan.
+**`store.publications`** — the app, published: an immutable version of
+part of a session's tree, with a name and a pointer saying which
+version is current.
+
+```python
+store.publish(ws, name, *, paths=("app/",), version=None, info=None) -> Publication
+store.publications() -> dict[str, Publication]         # by name
+store.publication(name) -> Publication | None
+store.set_current(name, version) -> Publication
+store.unpublish(name, version, *, min_age=3600) -> None
+
+Publication: .name, .versions -> tuple[Version, ...], .current
+             .version(name) -> Version | None
+             .current_version -> Version
+             .open(version=None) -> Workspace       # frozen, at that version
+
+Version:     .name, .version, .tag, .ref, .published_from, .created
+```
+
+What lands is **the subtree, not the session**. `publish` derives a new
+commit holding the files under `paths` and the filesystem rows that
+describe them — no cache, no working directory, no ws-git blob, no
+conversation record, no file from outside `paths`. Provenance is a soft
+reference in the commit's info (`published_from`, a `Ref`), not a parent
+pointer, so a version is self-contained: it reads alone, it exports
+alone, and it pins none of the session's history against `store.clean`.
+Deleting the session leaves every version of it exactly as it was.
+
+`paths` are workspace paths: relative entries are taken under `ws.root`
+(`"app/"` means `<root>/app`), absolute ones as given, trailing slash
+optional. Publishing paths that hold no files is refused rather than
+producing an empty version. `ws` must be one this store opened and must
+be clean — publish names a commit, so land staged changes with
+`ws.commit()` or drop them with `ws.discard()` first. `version` defaults
+to `v<N>`, one past the highest `v`-number the lineage holds; an
+explicit name must be unused, because versions never move.
+
+One publish writes three things:
+
+- a reserved branch `@store/pub/<name>/<version>` holding the derived
+  commit, started from the store's empty root. It is the **anchor**: it
+  is what lets a version be opened without borrowing a live session,
+  and it is why `store.tags.at(name)` works on a store whose sessions
+  are all gone. It is not a session — `store.sessions()` never lists it,
+  `@` being a character no session id may start with — but it is a
+  legal `Ref` target, so `store.resolve(str(version.ref))` opens it.
+- a store-scoped tag `<name>/<version>` naming that commit.
+- a record in the **publication registry**, `publications.json` under
+  the store path, written atomically (write-then-rename). A store with
+  no directory of its own (`provider_factory`) keeps it in memory for
+  the life of the `Store`. Its shape:
+
+  ```json
+  {
+    "scoreboard": {
+      "versions": {
+        "v1": {
+          "tag": "scoreboard/v1",
+          "ref": "@store/pub/scoreboard/v1@<commit>",
+          "published_from": "author@<commit>",
+          "created": 1788897774.69,
+          "root": "/workspace"
+        }
+      },
+      "current": "v1"
+    }
+  }
+  ```
+
+  The registry is **generic**: no token, no route, no database. An
+  embedder serving a publication keeps those in its own table keyed by
+  name — see `docs/apps.md`.
+
+Blobs are copied into the derived commit rather than pointed at. That
+is fine at app sizes, and content addressing under kvgit would make the
+copy free.
+
+`set_current` is the mutable half: it moves the pointer, and moves it
+back as easily. That is true for **code**. Data a version's handlers
+wrote lives outside the workspace and does not roll back with it.
+
+`unpublish` removes a version's tag, its branch and its record. The
+current version is refused while others remain (move the pointer
+first); the last version of a publication may go as it stands, and
+takes the publication's record with it.
+
+**Not yet:** `store.shared(name)` raises `NotImplementedError`; it is a
+later stage of the API plan.
 
 ## `nontainer.workspace(...)` — the factory
 
@@ -285,6 +374,7 @@ ws.head: str | None      # current commit id; None if unversioned.
                          # Pins read-only observations (reads don't move
                          # it) — exact iff not ws.dirty
 ws.dirty: bool           # staged-but-uncommitted changes exist
+ws.ref: Ref              # this session at its current commit
 ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
 ws.checkout(commit: str) -> str          # move to a commit of THIS session
 ws.rollback(steps: int = 1) -> str
@@ -1051,6 +1141,18 @@ network/host-fs, host objects, primers).
 ## Apps (`nontainer.apps`, serving/test_app need the `[apps]` extra)
 
 Design doc: [apps.md](apps.md).
+
+Apps is an **extension**, not a workspace feature. `Workspace`,
+`Store.open` and `nontainer.workspace()` take no `AppsConfig` and know
+nothing about handlers; `enable_apps(ws, config)` wires everything in
+afterwards through the surface any extension may use —
+`ws.runtime.register_command` for `ws-curl`, `ws.runtime.shell_env` for
+`$APP_ORIGIN`, `ws.runtime.exec_python(view=...)` for handler dispatch,
+and `ws.lock` where its work mutates. `tests/test_apps_surface.py`
+enforces that mechanically: no private attribute of `Workspace` is
+reachable from `nontainer/apps/`. The one deliberate exception is
+`nontainer/wscurl.py`, the dud-rung ferry, which lives in core beside
+`wsgit.py` precisely so `apps/` never has to reach for internals.
 
 ```python
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime

@@ -21,8 +21,12 @@ lives.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+import json
+import os
+import re
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -40,6 +44,14 @@ Backend = Literal["kvgit", "dir", "agentfs"]
 # session, so none of them belongs in a session listing.
 _RESERVED_BRANCHES = frozenset({"__void__"})
 _RESERVED_BRANCH_PREFIXES = ("refs/tags/", "@")
+
+# Where a publication's tree lives: one reserved branch per version,
+# under the store's own "@" namespace so no session can spell it.
+_PUB_BRANCH_PREFIX = "@store/pub/"
+# The publication registry: the mutable half (which versions exist,
+# which one is current) beside the immutable half (the tags).
+_REGISTRY_FILE = "publications.json"
+_VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
 
 
 @dataclass(frozen=True)
@@ -74,17 +86,91 @@ class Ref:
                 f"Not a ref: {text!r} — expected 'session@commit' "
                 "(optionally 'session@commit:/path')"
             )
-        session, rest = text.split("@", 1)
-        commit, _, path = rest.partition(":")
+        # Split at the LAST "@" of the pointer, not the first: a
+        # reserved branch leads with one (``@store/pub/app/v1@abc``),
+        # and a commit id never contains one. The path is cut first so
+        # an "@" inside it cannot be mistaken for the separator.
+        base, sep, path = text.partition(":")
+        session, _, commit = base.rpartition("@")
         if not session or not commit:
             raise ValueError(
                 f"Not a ref: {text!r} — both a session and a commit are required"
             )
-        return cls(session=session, commit=commit, path=path or None)
+        return cls(session=session, commit=commit, path=(path if sep else None) or None)
 
     def __str__(self) -> str:
         base = f"{self.session}@{self.commit}"
         return f"{base}:{self.path}" if self.path else base
+
+
+@dataclass(frozen=True)
+class Version:
+    """One published version: an immutable state with a name.
+
+    ``tag`` is the store-scoped tag naming the commit (``<name>/<version>``),
+    ``ref`` points at it on the publication's own branch, and
+    ``published_from`` is the session ref it was derived from — a soft
+    reference recorded in the commit's info, not a parent pointer, so
+    the version pins none of that session's history.
+    """
+
+    name: str
+    version: str
+    tag: str
+    ref: Ref
+    published_from: Ref | None
+    created: float
+
+
+@dataclass(frozen=True)
+class Publication:
+    """A named lineage of published versions, and which one is current.
+
+    Generic on purpose: it knows nothing about handlers, tokens, routes
+    or databases. An embedder that serves a publication keeps those in
+    its own table, keyed by name — see ``docs/apps.md``.
+    """
+
+    name: str
+    versions: tuple[Version, ...]
+    current: str
+    store: "Store" = field(repr=False, compare=False)
+
+    def version(self, name: str) -> Version | None:
+        """One version by name, or ``None``."""
+        for v in self.versions:
+            if v.version == name:
+                return v
+        return None
+
+    @property
+    def current_version(self) -> Version:
+        """The version :meth:`open` serves by default."""
+        found = self.version(self.current)
+        if found is None:  # pragma: no cover - registry invariant
+            raise WorkspaceError(
+                f"Publication {self.name!r} points at version "
+                f"{self.current!r}, which its registry does not hold"
+            )
+        return found
+
+    def open(self, version: str | None = None) -> "Workspace":
+        """A frozen workspace over a published version (default: the
+        current one).
+
+        Reads see the published files and nothing else; nothing can be
+        written or committed. Close it when done — it holds an executor
+        and a store handle of its own. ``ws.session`` names the
+        publication's own branch, because that is where the state
+        lives: a publication belongs to no session.
+        """
+        target = self.current_version if version is None else self.version(version)
+        if target is None:
+            raise WorkspaceError(
+                f"No such version of {self.name!r}: {version!r} — have "
+                f"{', '.join(v.version for v in self.versions)}"
+            )
+        return self.store._open_publication(target)
 
 
 class StoreTags:
@@ -148,20 +234,7 @@ class StoreTags:
 
     def _require_own(self, ws: "Workspace") -> None:
         """Refuse a workspace this store did not open."""
-        owner = getattr(ws, "_store", None)
-        if owner is self._store:
-            return
-        whose = (
-            "was built straight from a provider, so no store owns it"
-            if owner is None
-            else f"belongs to {owner!r}"
-        )
-        raise WorkspaceError(
-            f"Cannot tag through workspace {ws.session!r}: it {whose}, not to "
-            f"{self._store!r}. Tagging goes through the workspace's own "
-            "provider, so this would write to that store and leave this one "
-            "unchanged. Use that store's tags, or name the commit by ref."
-        )
+        self._store._require_own_workspace(ws, "tag")
 
     def list(self) -> dict[str, str]:
         """Tag name → commit id, for every store-scoped tag."""
@@ -228,6 +301,12 @@ class Store:
         self._path = Path(path).expanduser() if path else Path.home() / ".nontainer"
         self._backend = backend
         self._provider_factory = provider_factory
+        # The publication registry for a store that has no directory of
+        # its own: a provider_factory decides where state lives, so
+        # there is nowhere to put the file. It then lives for as long as
+        # this Store object does. Every other store keeps it in
+        # ``<path>/publications.json``.
+        self._memory_registry: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # identity
@@ -438,7 +517,11 @@ class Store:
                 f"The {self._backend!r} backend is not versioned, so it has no "
                 "commits to resolve a ref against. Use the kvgit backend."
             )
-        if not self.exists(parsed.session):
+        if parsed.session not in set(self._branches()):
+            # Branches, not sessions: a publication's ref names its own
+            # reserved branch (``@store/pub/<name>/<version>``), which
+            # is deliberately not a session and never appears in
+            # sessions(). Both are states this store holds.
             raise WorkspaceError(
                 f"No such session on this store: {parsed.session!r} "
                 f"(resolving {str(parsed)!r})"
@@ -463,7 +546,7 @@ class Store:
         return StoreTags(self)
 
     # ------------------------------------------------------------------
-    # not yet: the shared plane and publication (see scratch/api-v2.md)
+    # not yet: the shared plane (see scratch/api-v2.md)
     # ------------------------------------------------------------------
 
     def shared(self, name: str) -> "Workspace":
@@ -477,17 +560,216 @@ class Store:
             "the shared plane."
         )
 
-    def publish(self, ws: "Workspace", name: str, **kwargs: Any) -> Any:
-        """Derive a rootless, store-tagged commit holding a subset of a
-        session's files — what an app serves, independent of the
-        session that built it.
+    # ------------------------------------------------------------------
+    # publications
+    # ------------------------------------------------------------------
 
-        Planned; see the api-v2 spec. Not implemented.
+    def publish(
+        self,
+        ws: "Workspace",
+        name: str,
+        *,
+        paths: "Sequence[str]" = ("app/",),
+        version: str | None = None,
+        info: dict[str, Any] | None = None,
+    ) -> Publication:
+        """Publish part of a session's tree as an immutable version.
+
+        What lands is the **subtree**, not the session. The published
+        commit holds the files under ``paths`` and the filesystem rows
+        that describe them — no cache, no working directory, no ws-git
+        bookkeeping, no conversation record, nothing else the session
+        happens to carry. Provenance is a soft reference in the commit's
+        info (``published_from``), not a parent pointer, so the version
+        is self-contained: it reads alone, it exports alone, and it pins
+        none of the session's history against the orphan sweep.
+
+        Three things come out of one call: a reserved branch
+        ``@store/pub/<name>/<version>`` holding the derived commit (the
+        anchor that lets the version be opened without borrowing a live
+        session), a store-scoped tag ``<name>/<version>`` naming it, and
+        a record in the store's publication registry, which becomes the
+        current version of ``name``.
+
+        Args:
+            ws: The session to publish from. It must be one this store
+                opened, and it must be clean — publish names a commit,
+                and staged changes are in no commit yet. Commit them
+                (``ws.commit()``) or drop them (``ws.discard()``).
+            name: The publication's name — the lineage every version of
+                it belongs to. Session-id shaped (no ``/``, no ``%``).
+            paths: What to publish, as workspace paths. A relative path
+                is taken under ``ws.root``, an absolute one as given; a
+                trailing slash is optional. The default publishes the
+                app tree an ``[apps]`` handler serves.
+            version: The version name. Defaults to ``v<N>``, one past
+                the highest ``v``-number this lineage holds. An explicit
+                name must be unused: versions are immutable, so a name
+                is never repointed.
+            info: Extra keys merged into the commit's info, beside the
+                ``tool``/``name``/``version``/``published_from`` this
+                writes itself.
+
+        Returns:
+            The :class:`Publication`, with the new version current.
         """
-        raise NotImplementedError(
-            "Store.publish is not implemented yet — see the api-v2 spec for "
-            "publications."
+        self._require_own_layout("publish")
+        self._require_kvgit("publish")
+        self._require_own_workspace(ws, "publish")
+        _validate_publication_name(name)
+        if ws.dirty:
+            raise WorkspaceError(
+                f"Cannot publish {ws.session!r}: it has staged changes, and "
+                "publish names a commit. Land them with ws.commit() or drop "
+                "them with ws.discard(), then publish."
+            )
+        head = ws.head
+        if head is None:
+            raise NotSupportedError(
+                f"Cannot publish {ws.session!r}: its provider is not "
+                "versioned, so it has no commit to publish."
+            )
+
+        registry = self._registry_read()
+        record = registry.get(name) or {"versions": {}, "current": None}
+        versions = dict(record.get("versions") or {})
+        if version is None:
+            version = _next_version(versions)
+        else:
+            _validate_version_name(version)
+            if version in versions:
+                raise WorkspaceError(
+                    f"Version already published: {name}/{version} — versions "
+                    "are immutable. Publish a new one, or unpublish that one "
+                    "first."
+                )
+        tag = f"{name}/{version}"
+        branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
+        if self._scoped_store_tag(tag) in self._raw_tags():
+            raise WorkspaceError(
+                f"Tag already exists: {tag!r} in scope 'store' — a "
+                "publication cannot reuse it."
+            )
+        if branch in set(self._branches()):
+            raise WorkspaceError(
+                f"Publication branch already exists: {branch!r} — an earlier "
+                "publish left it behind. Remove it with "
+                f"store.unpublish({name!r}, {version!r})."
+            )
+
+        published_from = Ref(session=ws.session, commit=head)
+        commit_info: dict[str, Any] = {
+            "tool": "publish",
+            "name": name,
+            "version": version,
+            "published_from": str(published_from),
+            **(info or {}),
+        }
+        commit = self._write_publication(
+            ws, head, branch=branch, paths=paths, tag=tag, commit_info=commit_info
         )
+
+        versions[version] = {
+            "tag": tag,
+            "ref": str(Ref(session=branch, commit=commit)),
+            "published_from": str(published_from),
+            "created": time.time(),
+            "root": ws.root,
+        }
+        registry[name] = {"versions": versions, "current": version}
+        self._registry_write(registry)
+        found = self.publication(name)
+        assert found is not None  # just written
+        return found
+
+    def publications(self) -> dict[str, Publication]:
+        """Every publication on the store, by name."""
+        registry = self._registry_read()
+        return {name: self._publication(name, registry) for name in sorted(registry)}
+
+    def publication(self, name: str) -> Publication | None:
+        """One publication by name, or ``None`` if nothing of that name
+        was ever published."""
+        registry = self._registry_read()
+        if name not in registry:
+            return None
+        return self._publication(name, registry)
+
+    def set_current(self, name: str, version: str) -> Publication:
+        """Point a publication at one of its versions.
+
+        The registry is the mutable half of a publication: the versions
+        themselves never move (they are tags), and this is what says
+        which one is served. Rolling back moves as easily as rolling
+        forward — for **code**. Data a version's handlers wrote lives
+        outside the workspace and does not roll back with it.
+        """
+        registry = self._registry_read()
+        record = registry.get(name)
+        if record is None:
+            raise WorkspaceError(f"No such publication: {name!r}")
+        versions = record.get("versions") or {}
+        if version not in versions:
+            raise WorkspaceError(
+                f"No such version of {name!r}: {version!r} — have "
+                f"{', '.join(sorted(versions))}"
+            )
+        record["current"] = version
+        registry[name] = record
+        self._registry_write(registry)
+        found = self.publication(name)
+        assert found is not None  # just written
+        return found
+
+    def unpublish(self, name: str, version: str, *, min_age: float = 3600) -> None:
+        """Remove one published version: its tag, its branch, its record.
+
+        The current version is refused while others remain — something
+        is being served off it, and there is no obvious successor to
+        pick. Move the pointer with :meth:`set_current` first. The last
+        version of a publication may be removed as it stands, and takes
+        the publication's record with it.
+
+        ``min_age`` is the orphan sweep's grace period in seconds, as
+        for :meth:`delete`.
+        """
+        self._require_own_layout("unpublish")
+        self._require_kvgit("unpublish")
+        registry = self._registry_read()
+        record = registry.get(name)
+        if record is None:
+            raise WorkspaceError(f"No such publication: {name!r}")
+        versions = dict(record.get("versions") or {})
+        if version not in versions:
+            raise WorkspaceError(
+                f"No such version of {name!r}: {version!r} — have "
+                f"{', '.join(sorted(versions))}"
+            )
+        if record.get("current") == version and len(versions) > 1:
+            raise WorkspaceError(
+                f"{name}/{version} is the current version and is not the last "
+                f"one. Point {name!r} at another version with "
+                "store.set_current(name, version) first, or remove the others."
+            )
+        from .providers.kvgit import KvgitProvider
+
+        tag = versions[version].get("tag") or f"{name}/{version}"
+        if self._raw_tag_info(tag) is not None:
+            # The tag first: removing it is what makes the commit
+            # collectable, so the branch deletion's own sweep finishes
+            # the job in one pass.
+            self._delete_store_tag(tag)
+        branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
+        KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
+        versions.pop(version)
+        if not versions:
+            registry.pop(name)
+        else:
+            record["versions"] = versions
+            if record.get("current") == version:
+                record["current"] = sorted(versions)[0]
+            registry[name] = record
+        self._registry_write(registry)
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -512,6 +794,39 @@ class Store:
     # ------------------------------------------------------------------
     # internals
     # ------------------------------------------------------------------
+
+    def _require_kvgit(self, op: str) -> None:
+        """Refuse a verb that needs commits, branches and tags on a
+        backend that has none of them."""
+        if self._backend != "kvgit":
+            raise NotSupportedError(
+                f"{op}() needs a versioned store with branches and tags, and "
+                f"the {self._backend!r} backend has none. Use the kvgit "
+                "backend."
+            )
+
+    def _require_own_workspace(self, ws: "Workspace", op: str) -> None:
+        """Refuse a workspace this store did not open.
+
+        A store-level verb that writes does it through the workspace's
+        OWN provider, so a workspace from somewhere else would write to
+        that store and leave this one unchanged — which reads as a
+        silent no-op. Such a call is refused instead.
+        """
+        owner = getattr(ws, "_store", None)
+        if owner is self:
+            return
+        whose = (
+            "was built straight from a provider, so no store owns it"
+            if owner is None
+            else f"belongs to {owner!r}"
+        )
+        raise WorkspaceError(
+            f"Cannot {op} through workspace {ws.session!r}: it {whose}, not to "
+            f"{self!r}. The write goes through the workspace's own provider, "
+            "so this would write to that store and leave this one unchanged. "
+            "Use that store, or name the commit by ref."
+        )
 
     def _require_own_layout(self, op: str) -> None:
         """Refuse a store-level verb when a ``provider_factory`` owns
@@ -552,12 +867,161 @@ class Store:
             return AgentFSProvider(self._path / f"{session}.db", session=session)
         raise ValueError(f"Unknown backend: {self._backend!r}")
 
-    def _frozen_workspace(self, provider: WorkspaceProvider) -> "Workspace":
+    def _frozen_workspace(
+        self, provider: WorkspaceProvider, *, root: str | None = None
+    ) -> "Workspace":
         from .workspace import Workspace
 
-        ws = Workspace(provider)
+        ws = Workspace(provider) if root is None else Workspace(provider, root=root)
         ws._store = self
         return ws
+
+    # -- the publication registry ----------------------------------------
+    #
+    # The immutable half of a publication is a tag and a branch; this is
+    # the mutable half — which versions exist and which one is current.
+    # A plain JSON file beside the sessions, because it is small, it is
+    # read far more often than written, and an embedder inspecting a
+    # store by hand should be able to read it.
+
+    def _registry_path(self) -> Path | None:
+        """Where the registry file lives, or ``None`` for a store with
+        no layout of its own."""
+        if self._provider_factory is not None:
+            return None
+        return self._path / _REGISTRY_FILE
+
+    def _registry_read(self) -> dict[str, Any]:
+        path = self._registry_path()
+        if path is None:
+            return json.loads(json.dumps(self._memory_registry))
+        if not path.is_file():
+            return {}
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError) as e:
+            raise WorkspaceError(
+                f"Publication registry is unreadable: {path} ({e}). The "
+                "publications themselves are tags and branches on the store "
+                "and are still there; this file is the index over them."
+            ) from e
+        return data if isinstance(data, dict) else {}
+
+    def _registry_write(self, data: dict[str, Any]) -> None:
+        path = self._registry_path()
+        if path is None:
+            self._memory_registry = data
+            return
+        # Write-then-rename: a reader either sees the old registry or
+        # the new one, never half of either.
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def _publication(self, name: str, registry: dict[str, Any]) -> Publication:
+        record = registry[name]
+        rows = record.get("versions") or {}
+        versions = tuple(
+            Version(
+                name=name,
+                version=v,
+                tag=row.get("tag") or f"{name}/{v}",
+                ref=Ref.parse(row["ref"]),
+                published_from=(
+                    Ref.parse(row["published_from"])
+                    if row.get("published_from")
+                    else None
+                ),
+                created=float(row.get("created") or 0.0),
+            )
+            for v, row in sorted(rows.items(), key=lambda kv: _version_order(kv[0]))
+        )
+        current = record.get("current") or (versions[-1].version if versions else "")
+        return Publication(name=name, versions=versions, current=current, store=self)
+
+    def _open_publication(self, version: Version) -> "Workspace":
+        """The frozen workspace behind :meth:`Publication.open`."""
+        self._require_own_layout("Publication.open")
+        self._require_kvgit("Publication.open")
+        registry = self._registry_read()
+        row = (registry.get(version.name) or {}).get("versions", {}).get(
+            version.version
+        ) or {}
+        return self._frozen_workspace(
+            self._provider_at_commit(version.ref.session, version.ref.commit),
+            root=row.get("root"),
+        )
+
+    def _write_publication(
+        self,
+        ws: "Workspace",
+        head: str,
+        *,
+        branch: str,
+        paths: "Sequence[str]",
+        tag: str,
+        commit_info: dict[str, Any],
+    ) -> str:
+        """Build the derived commit on its own branch and tag it.
+
+        The branch starts at the store's empty root commit — opening a
+        kvgit branch by a name that does not exist creates it empty —
+        so the publication's only ancestor is nothing at all. Into it go
+        the selected file blobs and a filesystem table pruned to exactly
+        those files (plus the directory rows above them), which is what
+        makes a frozen open read the published tree and see nothing
+        else.
+
+        Blobs are copied rather than pointed at. That is fine at app
+        sizes, and content addressing in the store below would make the
+        copy free — the keys are identical, so the same bytes would land
+        under the same hash.
+        """
+        import kvgit
+        from monkeyfs import VirtualFS
+
+        from .errors import CommitNotFoundError
+        from .providers.kvgit import KvgitProvider
+
+        src = ws._provider
+        handle = src.staged.checkout(head)
+        if handle is None:
+            raise CommitNotFoundError(head)
+        wanted = {
+            key: path
+            for key, path in src._file_keys(handle.keys()).items()
+            if _under(path, paths, ws.root)
+        }
+        if not wanted:
+            raise WorkspaceError(
+                f"Nothing to publish from {ws.session!r} at {head}: no files "
+                f"under {', '.join(paths)!r}. Publish paths that exist, or "
+                "widen paths=."
+            )
+        rows = _pruned_rows(handle.get(VirtualFS.METADATA_KEY), set(wanted.values()))
+
+        pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
+        try:
+            for key in wanted:
+                pub[key] = handle.get(key)
+            pub[VirtualFS.METADATA_KEY] = json.dumps(rows, sort_keys=True).encode()
+            result = pub.commit(info=commit_info)
+            if not result.merged:
+                raise WorkspaceError(
+                    f"publish failed: could not commit the derived tree on "
+                    f"{branch!r}: {result}"
+                )
+            commit = pub.current_commit
+            KvgitProvider(pub, session=branch).tag(
+                tag, at=commit, info=commit_info, scope="store"
+            )
+            return commit
+        finally:
+            self._close_backend(getattr(pub.versioned, "store", None))
 
     # -- kvgit specifics -------------------------------------------------
     #
@@ -671,17 +1135,28 @@ class Store:
 
         kvgit has no handle without a branch, and opening one by a name
         that does not exist creates it — so a read at a commit or a
-        store tag borrows an existing session's branch. Which one does
-        not matter: a checkout is by commit or tag, both of which are
+        store tag borrows an existing branch. Which one does not
+        matter: a checkout is by commit or tag, both of which are
         store-wide.
+
+        Sessions first, then a publication's own branch. That fallback
+        is what makes a store of publications with no sessions left
+        readable: a publication is exactly the thing a store tag is
+        meant to outlive its session for, and it brings an anchor of
+        its own.
         """
         names = self.sessions()
-        if not names:
-            raise WorkspaceError(
-                f"{op} needs a session on the store to read through, and this "
-                "store has none. Open a session first."
-            )
-        return names[0]
+        if names:
+            return names[0]
+        reserved = sorted(
+            b for b in self._branches() if b.startswith(_PUB_BRANCH_PREFIX)
+        )
+        if reserved:
+            return reserved[0]
+        raise WorkspaceError(
+            f"{op} needs a branch on the store to read through, and this "
+            "store has none. Open a session first."
+        )
 
     def _provider_at_commit(self, session: str, commit: str) -> WorkspaceProvider:
         from .errors import CommitNotFoundError
@@ -711,6 +1186,99 @@ class Store:
         # Shares a backend with the provider it came from, which is
         # therefore not closed here (see _provider_at_commit).
         return frozen
+
+
+def _validate_publication_name(name: str) -> str:
+    """A publication name is session-id shaped.
+
+    It becomes a tag prefix (``<name>/<version>``) and a branch segment
+    (``@store/pub/<name>/<version>``), so the characters that would make
+    either ambiguous — a slash, a ``%``, a leading dot — are the ones a
+    session id already forbids.
+    """
+    if not isinstance(name, str) or not SESSION_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid publication name {name!r}: must match "
+            f"{SESSION_ID_RE.pattern} (no slashes, no leading dot)"
+        )
+    return name
+
+
+def _validate_version_name(version: str) -> str:
+    """Same rules as a publication name: it is the other half of the
+    tag and the branch."""
+    if not isinstance(version, str) or not SESSION_ID_RE.match(version):
+        raise ValueError(
+            f"Invalid version name {version!r}: must match "
+            f"{SESSION_ID_RE.pattern} (no slashes, no leading dot)"
+        )
+    return version
+
+
+def _next_version(versions: Mapping[str, Any]) -> str:
+    """``v<N>``, one past the highest v-number this lineage holds.
+
+    Versions a caller named itself are skipped rather than parsed: the
+    default sequence is nontainer's, and a lineage may hold both.
+    """
+    numbers = [
+        int(m.group(1))
+        for m in (_VERSION_NUMBER_RE.match(v) for v in versions)
+        if m is not None
+    ]
+    return f"v{max(numbers) + 1 if numbers else 1}"
+
+
+def _version_order(version: str) -> tuple[int, int, str]:
+    """Sort key: the v-numbered versions in numeric order, then anything
+    a caller named itself, alphabetically."""
+    m = _VERSION_NUMBER_RE.match(version)
+    return (0, int(m.group(1)), "") if m else (1, 0, version)
+
+
+def _under(path: str, paths: "Sequence[str]", root: str) -> bool:
+    """Whether one absolute workspace path falls under any of ``paths``.
+
+    A relative entry is taken under ``root`` (``"app/"`` means
+    ``<root>/app``), an absolute one as given, and a trailing slash is
+    optional either way: a directory and the file it holds are both
+    legitimate things to publish, and the caller should not have to
+    know which spelling this wants.
+    """
+    for entry in paths:
+        candidate = entry if entry.startswith("/") else f"{root.rstrip('/')}/{entry}"
+        prefix = "/" + candidate.strip("/")
+        if path == prefix or path.startswith(f"{prefix}/"):
+            return True
+    return False
+
+
+def _pruned_rows(raw: Any, published: set[str]) -> dict[str, Any]:
+    """The filesystem's metadata table, cut down to the published files.
+
+    A published tree that carried no rows would read as empty: the rows
+    are what a filesystem over the commit lists and stats. Rows are
+    stored root-relative, so the leading slash comes off; directory rows
+    above a published file come along, and every other row — every file
+    outside ``paths`` — is left behind with its blob.
+    """
+    table: Any = {}
+    if raw is not None:
+        try:
+            table = json.loads(raw)
+        except (ValueError, TypeError):
+            table = {}
+    if not isinstance(table, dict):
+        table = {}
+    rows = {p.lstrip("/") for p in published}
+    out: dict[str, Any] = {}
+    for row, entry in table.items():
+        if row in rows:
+            out[row] = entry
+        elif isinstance(entry, dict) and entry.get("is_dir"):
+            if any(f.startswith(f"{row}/") for f in rows):
+                out[row] = entry
+    return out
 
 
 def store(

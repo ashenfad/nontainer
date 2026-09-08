@@ -4,8 +4,10 @@ Public surface:
 
     workspace(...)      -- factory; the one-liner entry point
     store(...)          -- the store those sessions live in
-    Store               -- open/list/delete sessions, store-scoped tags
+    Store               -- open/list/delete sessions, store-scoped tags,
+                           publications
     Ref                 -- "session@commit": one exact state, named
+    Publication, Version -- a named lineage of published states
     Workspace           -- one session: files + shell + python + cache,
                            versioned; ws.files / ws.index / ws.tags
     Runtime             -- ws.runtime: how code runs against that state
@@ -50,7 +52,7 @@ from .protocol import (
     validate_session_id,
 )
 from .runtime import Runtime
-from .store import Ref, Store, store
+from .store import Publication, Ref, Store, Version, store
 from .workspace import (
     ModuleGrant,
     Mount,
@@ -69,6 +71,8 @@ __all__ = [
     "store",
     "Store",
     "Ref",
+    "Publication",
+    "Version",
     "Workspace",
     "Runtime",
     "PythonConfig",

@@ -455,3 +455,58 @@ def test_served_html_carries_the_extended_policy():
         "http://tiles.internal",
     ]
     ws.close()
+
+
+# -- serving a publication ---------------------------------------------------
+
+PUBLISHED = """
+import json
+
+def get(req):
+    with open("/workspace/app/api/scores.json") as f:
+        return {"scores": json.load(f)}
+"""
+
+
+def test_the_router_serves_a_publication(tmp_path):
+    """The studio-shaped embedder: token -> publication -> frozen
+    Workspace at the current version. The token and the version pointer
+    are the embedder's table; nontainer supplies the snapshot."""
+    from nontainer import Store
+
+    store = Store(tmp_path)
+    ws = store.open("author")
+    enable_apps(ws)
+    ws.files.write("app/index.html", "<html><body><h1>scores</h1></body></html>")
+    ws.files.write("app/api/scores.json", '["alice", "bob"]')
+    ws.files.write("app/api/board.py", PUBLISHED)
+    ws.files.write("notes/transcript.txt", "not for the internet")
+    ws.commit()
+    store.publish(ws, "scoreboard")
+    ws.close()
+
+    token = mint_token()
+    served = {token: "scoreboard"}
+    snapshots = {}
+
+    def resolve(t):
+        name = served.get(t)
+        if name is None:
+            return None
+        # Resolving is a store read per request; cache it, as the
+        # router's contract invites.
+        if name not in snapshots:
+            snapshots[name] = store.publication(name).open()
+        return snapshots[name]
+
+    app = Starlette()
+    app.mount("/apps", build_router(resolve))
+    client = TestClient(app)
+
+    assert "<h1>scores</h1>" in client.get(f"/apps/{token}/").text
+    assert client.get(f"/apps/{token}/api/board").json() == {"scores": ["alice", "bob"]}
+    # the session's own files never left the session
+    assert client.get(f"/apps/{token}/../notes/transcript.txt").status_code == 404
+    assert client.get(f"/apps/{token}/notes/transcript.txt").status_code == 404
+    for snap in snapshots.values():
+        snap.close()

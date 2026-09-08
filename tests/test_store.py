@@ -309,12 +309,12 @@ def test_provider_factory_refuses_the_store_level_verbs():
 # -- planned surface ---------------------------------------------------------
 
 
-def test_shared_and_publish_are_declared_not_half_built(tmp_path):
+def test_shared_is_declared_not_half_built(tmp_path):
+    """`publish` landed (tests/test_publish.py); the shared plane has
+    not."""
     st = Store(tmp_path)
     with pytest.raises(NotImplementedError):
         st.shared("notes")
-    with pytest.raises(NotImplementedError):
-        st.publish(None, "app")
 
 
 def test_store_is_a_context_manager(tmp_path):

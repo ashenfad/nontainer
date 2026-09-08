@@ -187,6 +187,21 @@ STORE_SCOPE = "store"
 _STORE_PREFIX = "@store/"
 
 
+def _validate_branch(name: str) -> str:
+    """A session id, or one of the store's own reserved branches.
+
+    A session id cannot begin with ``@`` (``SESSION_ID_RE``), which is
+    what makes ``@store/`` safe as the store's own branch namespace: a
+    publication lives on ``@store/pub/<name>/<version>``. Those
+    branches are not sessions — ``Store.sessions()`` never lists one —
+    but a provider still has to be constructible over one, since that
+    is how a publication's tree is written and read back.
+    """
+    if name.startswith(_STORE_PREFIX):
+        return name
+    return validate_session_id(name)
+
+
 class KvgitProvider:
     """``WorkspaceProvider`` over a kvgit ``Staged`` branch.
 
@@ -201,7 +216,7 @@ class KvgitProvider:
         """``frozen_at`` names the tag this handle was opened at, and
         makes it a snapshot: see :meth:`at_tag`. Only that method passes
         it — a handle on a branch head is never frozen."""
-        validate_session_id(session)
+        _validate_branch(session)
         self._session = session
         self._staged = staged
         self._frozen_at = frozen_at
@@ -244,7 +259,7 @@ class KvgitProvider:
         """
         import kvgit
 
-        validate_session_id(session)
+        _validate_branch(session)
         if path is None:
             staged = kvgit.store(kind="memory", branch=session, codecs=codecs)
         else:
