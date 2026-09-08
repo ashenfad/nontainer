@@ -1,7 +1,7 @@
 """DudExecutor delta suite: the dud-backed workspace.
 
 Two kinds of assertion live here: (1) the executor seam holds — the
-same Workspace contract (results, commits, history, restore,
+same Workspace contract (results, commits, history, checkout,
 fork) over a real machine; (2) the INTENDED divergences from
 LocalExecutor are pinned as facts, not left as surprises (merged
 stderr, codec-narrowed namespace, opaque-bytes cache host-side,
@@ -233,7 +233,11 @@ def test_commit_restore_history(ws):
     assert entries[0].id == r2.commit
     assert any(e.info.get("tool") == "terminal" for e in entries)
 
-    ws.checkout(cp1)
+    landed = ws.checkout(cp1)
+    # the checkout APPENDED: the head moved forward to reach the past,
+    # and the turn it stepped off is still in the log
+    assert landed == ws.head and landed != cp1
+    assert {cp1, r2.commit} <= {e.id for e in ws.log()}
     # provider is back...
     assert ws.files.fs.read("/workspace/f.txt").strip() == b"one"
     # ...and so is the GUEST's view (sync re-materialized it)

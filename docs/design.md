@@ -66,6 +66,33 @@ Results pin the commit they produced — `result.commit` is the id
 compensation by identity rather than counting steps. Read-only calls
 don't commit at all; `ws.head` pins the state they observed.
 
+## A session's history is append-only
+
+Within a session, a branch head only ever moves forward. `ws.checkout`
+does not rewind it: the target's state is *written* into the working
+tree and committed, so going back is a new commit whose keyset equals
+the target's — files, cache, cwd, the ws-git blob, the stored
+conversation, everything the session holds. `rollback(steps)` is the
+same verb counting back over `log()`.
+
+That gives three properties worth naming:
+
+- **Abandoned turns stay in the log.** The commits a checkout stepped
+  off are still reachable from the head, so garbage collection never
+  reclaims them and `store.clean()` finds nothing after a checkout.
+  Nothing has to be tagged or forked before stepping off it.
+- **Undo is redo-able.** The commit before a restore is the one the
+  restore stepped off, so `rollback(1)` straight after a checkout goes
+  back to where the checkout was invoked.
+- **One verb, one behaviour.** The agent's `ws-git checkout` restores a
+  tree and rewinds its own head while the store appends; the host's
+  `ws.checkout` restores the whole session and the store appends. Two
+  callers, one story about the store.
+
+The only thing that moves a head backward is store-level admin —
+`Store.delete` drops a branch, and its commits become collectable.
+A live session never loses history it wrote.
+
 ## ws-git is a fiction over the store's history
 
 An agent asks for git — an index it fills across several edits,
@@ -113,8 +140,10 @@ the whole model:
 - **Branches are real branches.** A session IS a branch, so `ws-git
   branch` and `ws-git merge` are refused with the host named as the
   one who invokes them, and `ws-git checkout <ref>` restores a tree
-  rather than switching: the fiction rewinds, the store appends the
-  restore as a new commit. A merge takes only what has been committed
+  rather than switching: the fiction rewinds its own head, the store
+  appends the restore as a new commit — which is exactly what the
+  host's `ws.checkout` does with the whole session, so a host checkout
+  rewinds the fiction too (its head is a key the restore carries). A merge takes only what has been committed
   on both sides, which under the fiction means *agent*-committed: the
   target refuses while it has work in flight, and the source is merged
   at its last agent commit rather than at its store head.

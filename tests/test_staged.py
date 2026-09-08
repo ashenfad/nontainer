@@ -253,6 +253,29 @@ def test_checkout_restores_the_tree_and_appends(kv_ws):
     assert kv_ws.head != first
 
 
+def test_a_host_checkout_rewinds_the_agents_git_with_the_tree(kv_ws):
+    """The fiction's head and graph live in a key, and a host checkout
+    restores the whole keyset — so ``ws.checkout`` puts the agent's
+    git back where it was at the target, and the store keeps both."""
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    first = kv_ws.index.commit("first")
+    at_first = kv_ws.head  # the store commit made while head was `first`
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    second = kv_ws.index.commit("second")
+    assert kv_ws.index.head == second
+
+    landed = kv_ws.checkout(at_first)
+
+    assert kv_ws.index.head == first
+    assert [e.info["message"] for e in kv_ws.index.log()] == ["first"]
+    assert kv_ws.index.status().staged == ()
+    assert kv_ws.index.status().unstaged == ()
+    assert not kv_ws.files.exists("/workspace/b.py")
+    # The fiction rewound; the store did not. Both agent commits are
+    # still in the session's history, so the second is reachable again.
+    assert {first, second, at_first, landed} <= {e.id for e in kv_ws.log()}
+
+
 def test_old_layout_blob_migrates(kv_ws):
     """A branch written before the fiction carried a key-level index
     and a suspension flag. Neither means anything now, so it reads as a

@@ -4,7 +4,8 @@ One shared kvgit store; each session is a branch. Files (via monkeyfs
 ``VirtualFS``), the agent cache, and framework keys (the working
 directory, the ws-git blob) all live in one flat ``Staged`` mapping —
 so one ``commit()`` commits the whole world atomically, and
-``restore()`` rewinds all of it (including where the agent's cwd was).
+``checkout()`` restores all of it (including where the agent's cwd
+was) as a new commit.
 
 Key coexistence in the flat mapping: ``VirtualFS`` encodes file paths
 under its own key prefix (plus ``__vfs_metadata__``), while cache keys
@@ -433,15 +434,62 @@ class KvgitProvider:
             )
         return self._staged.current_commit
 
-    def restore(self, commit_id: str) -> None:
-        self._refuse_frozen("restore")
-        if not self._staged.reset_to(commit_id):
+    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+        """Append a commit whose keyset equals that commit's; return it.
+
+        A restore, not a rewind: the target's state is WRITTEN into the
+        working buffer and committed, so the branch head only ever
+        moves forward and every commit made since the target stays in
+        ``history()`` — which is what makes an undo redo-able. kvgit's
+        ``reset_to`` is deliberately not used.
+
+        The whole keyset moves, not the files alone: the cache, the
+        cwd, the VFS table, the ws-git blob and the stored conversation
+        are keys like any other, and the host restored the whole world.
+        The keys to touch come from kvgit's keyset diff between the
+        head and the target, so the cost is the size of the change and
+        not the size of the tree. Values are compared before they are
+        written where both commits hold the key, since kvgit's pointer
+        diff flags one rewritten with the bytes it already had: a
+        checkout onto state the workspace already holds writes nothing
+        and returns the current head.
+
+        Uncommitted writes are replaced by the restored state (see the
+        protocol; ``discard()`` is the explicit spelling for a caller
+        who wants only that).
+        """
+        self._refuse_frozen("checkout")
+        target = self._staged.checkout(commit_id)
+        if target is None:
             raise CommitNotFoundError(f"No such commit: {commit_id!r}")
+        # The diff below is between two COMMITS: a buffer left in place
+        # would ride into the restore commit as though it were part of
+        # the target's state.
+        if self._staged.has_changes:
+            self._staged.reset()
+        head = self._staged.current_commit
+        changed = self._staged.versioned.diff(head, commit_id)
+        for key in changed.added:
+            self._staged[key] = target.get(key)
+        for key in changed.modified:
+            value = target.get(key)
+            if self._staged.get(key) != value:
+                self._staged[key] = value
+        for key in changed.removed:
+            if key in self._staged:
+                del self._staged[key]
+        # HEAD is about to move (or the buffer already changed) under
+        # the VirtualFS object: drop its caches the way discard() does.
         self._invalidate_fs()
+        if not self._staged.has_changes:
+            return head
+        return self.commit(
+            info={"tool": "checkout", "target": commit_id, **(info or {})}
+        )
 
     def _invalidate_fs(self) -> None:
         """Drop VirtualFS's lazy caches after state changed underneath
-        it (restore/discard). The SAME fs instance must survive —
+        it (checkout/discard). The SAME fs instance must survive —
         Workspace and the sandbox hold references to it.
         """
         if self._fs is not None:
@@ -957,7 +1005,7 @@ class KvgitProvider:
         # and status derives merge context from history.
         self._fix_merged_sizes(brought.added | brought.modified, rev, source, info)
         # HEAD moved underneath the VirtualFS object: drop its caches
-        # like restore()/discard() do, or listings and stat go stale.
+        # like checkout()/discard() do, or listings and stat go stale.
         self._invalidate_fs()
         return MergeOutcome(
             merged=True,

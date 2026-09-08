@@ -73,7 +73,7 @@ class Capabilities:
     """What a provider can actually do. Flags, not promises.
 
     ``versioned`` is the master switch: when False, ``commit`` /
-    ``restore`` / ``history`` / ``fork`` all raise ``NotSupportedError``
+    ``checkout`` / ``history`` / ``fork`` all raise ``NotSupportedError``
     and the remaining flags are meaningless.
     """
 
@@ -297,8 +297,23 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
-    def restore(self, commit_id: str) -> None:
-        """Reset fs + kv to a commit. Staged changes are dropped."""
+    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+        """Make fs + kv what they were at a commit; return the new id.
+
+        APPENDS: the state is restored by writing it, so the result is
+        a new commit whose keyset equals the target's — everything the
+        session holds, not only its files — and every commit made
+        since the target is still in ``history()``. Nothing here moves
+        a branch head backward; only store-level admin does.
+
+        Uncommitted writes are replaced by the restored state, since
+        that is what "make the workspace what it was" means; a caller
+        that wants them gone on their own terms calls ``discard()``
+        first. When the working state already equals the target,
+        nothing is committed and the current head comes back.
+
+        ``info`` is merged into the commit's own metadata.
+        """
         ...
 
     def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
@@ -374,7 +389,7 @@ class WorkspaceProvider(Protocol):
         """A FROZEN provider over the tagged commit.
 
         Reads see the tagged state. Nothing can commit: ``commit``,
-        ``restore``, ``fork``, ``tag`` and ``delete_tag`` raise
+        ``checkout``, ``fork``, ``tag`` and ``delete_tag`` raise
         ``NotSupportedError``; writes may stage (so ``dirty`` can become
         True) but have nowhere to land, and ``discard`` drops them.
 
@@ -665,7 +680,7 @@ class Executor(Protocol):
     the provider directly. The workspace calls ``diff`` after every
     mutating exec (absorbing any harvest into the provider before the
     commit flow) and ``sync`` whenever it changes provider state
-    behind the executor's back (restore/rollback/discard, host-side
+    behind the executor's back (checkout/rollback/discard, host-side
     writes). Both are free no-ops for ``LocalExecutor``.
     """
 
@@ -760,7 +775,7 @@ class Executor(Protocol):
     def sync(self) -> None:
         """Refresh the executor's view of workspace state from the
         provider. Every path where provider state moves without the
-        executor seeing it marks the workspace stale — restore /
+        executor seeing it marks the workspace stale — checkout /
         rollback / discard, the host-side write helpers
         (``files.write`` / ``files.edit`` / ``files.put``), and direct
         ``ws.files.fs`` writes — and the workspace calls this once, lazily,

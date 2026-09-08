@@ -1049,8 +1049,9 @@ class WorkspaceIndex:
 
         The fiction rewinds; the store appends. The restore lands as a
         new commit, so nothing already committed leaves the session's
-        history — ``ws.checkout`` is the verb that moves the store's
-        own head.
+        history. Only the AGENT's commits are reachable here;
+        ``ws.checkout`` is the host's verb, which takes any commit of
+        the session — and appends in the same way.
         """
         ws = self._ws
         with ws._lock:
@@ -1769,24 +1770,35 @@ class Workspace:
             return self._provider.commit(info)
 
     def checkout(self, commit: str) -> str:
-        """Move this session to one of its own commits; returns its id.
+        """Make this session what it was at one of its own commits;
+        returns the id of the commit that lands.
 
-        The whole tree: files, cache and cwd all become what they were
-        at that commit, and staged changes are dropped. Within this
-        session only — a session IS a branch, so switching to another
-        one is ``ws.fork(name)`` or ``store.open(name)``, never a
-        checkout, and a name that is not a commit here is refused
-        rather than guessed at.
+        The whole session, not the files alone: files, cache, cwd, the
+        ws-git blob and anything else stored here become what they
+        were at that commit, and uncommitted writes are replaced by
+        them (``ws.discard()`` is the explicit spelling for a caller
+        who wants only that). Within this session only — a session IS
+        a branch, so switching to another one is ``ws.fork(name)`` or
+        ``store.open(name)``, never a checkout, and a name that is not
+        a commit here is refused rather than guessed at.
 
-        The head MOVES: what came after the target leaves the branch,
-        and whatever no tag or fork still reaches is swept by the
-        store's next sweep. Name a state before stepping off it
-        (``ws.tags.add``), or fork it, if you mean to come back.
+        It APPENDS. The restored state is written and committed, so
+        the returned id is a NEW commit and everything committed since
+        the target is still in ``ws.log()`` — an undo is redo-able
+        (``ws.rollback(1)`` right after lands on the commit the
+        checkout stepped off), and nothing a tag or a fork was made to
+        protect is at risk. Nothing but store-level admin
+        (``Store.delete``) ever moves a head backward.
+
+        The agent's git rewinds with the tree, because its head and
+        graph live in a key the checkout restores like any other:
+        after a checkout to a commit made when ``ws.index.head`` was
+        X, it is X again, and ``ws.index.log()`` reads as it did then.
         """
         with self._lock:
             self._check_writable("checkout")
             try:
-                self._provider.restore(commit)
+                landed = self._provider.checkout(commit)
             except CommitNotFoundError as e:
                 raise CommitNotFoundError(
                     f"{commit!r} is not a commit on session "
@@ -1798,17 +1810,23 @@ class Workspace:
             # and the next execution refreshes it (no-op for
             # LocalExecutor, which holds no copy)
             self._mark_executor_stale()
-            return commit
+            return landed
 
     def rollback(self, steps: int = 1) -> str:
-        """Check out the Nth-previous commit; returns its id.
+        """Check out the Nth-previous commit; returns the id of the
+        commit that lands.
 
-        The relative spelling of :meth:`checkout`, since a commit id
-        has no "the one before this". The explicit
-        ``{"tool": "init"}`` lifecycle commit is the floor:
-        rollback may target it, but never cross it into a provider's
-        pre-workspace seed. Legacy histories without that exact marker
-        retain their existing provider-history behavior.
+        The relative spelling of :meth:`checkout`, and it appends the
+        same way: ``steps`` counts back over ``ws.log()`` as it stands
+        now, and the restore joins that log. So ``rollback(1)``
+        immediately after a checkout is the REDO — the commit before
+        the restore is the one the checkout stepped off — and counting
+        twice in a row is not the same as counting two at once.
+
+        The explicit ``{"tool": "init"}`` lifecycle commit is the
+        floor: rollback may target it, but never cross it into a
+        provider's pre-workspace seed. Legacy histories without that
+        exact marker retain their existing provider-history behavior.
         """
         if steps < 1:
             raise ValueError("steps must be >= 1")
@@ -1839,9 +1857,9 @@ class Workspace:
                     "initialization commit is the rollback floor"
                 )
             target = entries[steps]
-            self._provider.restore(target.id)
-            self._mark_executor_stale()  # see restore()
-            return target.id
+            landed = self._provider.checkout(target.id)
+            self._mark_executor_stale()  # see checkout()
+            return landed
 
     def log(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         return self._provider.history(limit=limit)
@@ -1998,7 +2016,7 @@ class Workspace:
         """Drop writes since the last commit (staging providers)."""
         with self._lock:
             self._provider.discard()
-            self._mark_executor_stale()  # see restore()
+            self._mark_executor_stale()  # see checkout()
 
     # ------------------------------------------------------------------
     # tags (gated by caps.tags)

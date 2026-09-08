@@ -397,8 +397,9 @@ ws.head: str | None      # current commit id; None if unversioned.
 ws.dirty: bool           # staged-but-uncommitted changes exist
 ws.ref: Ref              # this session at its current commit
 ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
-ws.checkout(commit: str) -> str          # move to a commit of THIS session
-ws.rollback(steps: int = 1) -> str
+ws.checkout(commit: str) -> str          # restore a commit of THIS session
+                                         # (appends; returns the new commit)
+ws.rollback(steps: int = 1) -> str       # the same, counted back over log()
 ws.log(limit: int | None = None) -> Iterable[CommitInfo]
 ws.fork(name: str, *, at=None) -> Workspace      # cost varies by backend
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
@@ -413,6 +414,7 @@ ws.index.discard() -> None                       # abandon the composition
 ws.index.log(limit=None) -> list[CommitInfo]     # the agent's own commits
 ws.index.head -> str | None                      # the agent's last commit
 ws.index.checkout(commit) -> str                 # restore the tree to one
+                                                 # of the AGENT's commits
 ```
 
 **`ws.index` is the agent's own git**, and a fiction over this
@@ -447,17 +449,30 @@ The content hash of the head — the identity of *what* the files and
 cache are, where `head` identifies the point in history — is
 `next(iter(ws.log(limit=1))).tree`.
 
-**`ws.checkout(commit)`** moves this session's files, cache and cwd to
-one of its own commits and returns its id; staged changes are dropped.
-It never switches sessions: a session IS a branch, so anything that is
-not a commit here is refused with a message naming `ws.fork(name)` and
-`store.open(name)` rather than guessed at. The head *moves* — what came
-after leaves the branch, and whatever no tag or fork still reaches is
-swept by `store.clean()` — so name a state (`ws.tags.add`) or fork it
-before stepping off it. `rollback(steps)` is the relative spelling,
-since a commit id has no "one before this"; it stops at the
-`{"tool": "init"}` lifecycle commit rather than crossing into a
-provider's pre-workspace seed.
+**`ws.checkout(commit)`** makes this session what it was at one of its
+own commits — files, cache, cwd, the ws-git blob, the stored
+conversation, everything it holds — and returns the id of the commit
+that lands. Uncommitted writes are replaced by the restored state
+(`ws.discard()` is the verb for dropping them on their own). It never
+switches sessions: a session IS a branch, so anything that is not a
+commit here is refused with a message naming `ws.fork(name)` and
+`store.open(name)` rather than guessed at.
+
+**It appends.** The restored state is written and committed, so the
+returned id is a *new* commit and everything committed since the target
+is still in `ws.log()`. Nothing leaves the branch, `store.clean()` has
+nothing to collect, and an undo is redo-able. A checkout onto state the
+workspace already holds writes nothing and returns the current head.
+The agent's git rewinds with the tree — its head and graph live in a
+key the checkout restores like any other — so after a checkout to a
+commit made when `ws.index.head` was X, it is X again.
+
+`rollback(steps)` is the relative spelling, since a commit id has no
+"one before this". It counts back over `ws.log()` *as it stands now*
+and appends the same way, so `rollback(1)` straight after a checkout is
+the redo — the commit before the restore is the one the checkout
+stepped off. It stops at the `{"tool": "init"}` lifecycle commit rather
+than crossing into a provider's pre-workspace seed.
 
 **`ws.merge(source)`** merges another session into this one
 (`caps.merge`). **A merge takes only what has been committed, on both
@@ -833,7 +848,7 @@ plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
 ## Providers (`nontainer.providers`)
 
 All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
-`session`, `caps`, `fs`, `kv`, `dirty`, `commit/restore/history/
+`session`, `caps`, `fs`, `kv`, `dirty`, `commit/checkout/history/
 fork/discard/merge`, `commit_keys/files_at/working_files`,
 `tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
 provider keeps two commit primitives — `commit` takes everything and
@@ -1054,7 +1069,8 @@ branch that already holds runs, which is what keeps the rewind guard
 meaningful everywhere else.
 
 **Rewind.** Leave `Agent.cache_session` at its default (`False`): agno
-then re-reads the session every run, so a restore needs no invalidation.
+then re-reads the session every run, so a checkout needs no
+invalidation.
 With it on, an upsert whose prior runs are not a tail of the branch's
 `run_ids` raises (naming `cache_session`) and writes nothing. A tail,
 not the whole list, because agno 3.x reads with a run limit and writes
