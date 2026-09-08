@@ -122,12 +122,17 @@ def install(ws: "Workspace", source: Any) -> str:
     name = _slug(frontmatter(files["SKILL.md"]).get("name") or fallback)
     root = skills_root(ws)
     with ws.lock:
+        written = []
         for rel, data in files.items():
             path = f"{root}/{name}/{rel}"
             ws.files.fs.makedirs(posixpath.dirname(path), exist_ok=True)
             ws.files.fs.write(path, data)
-        if ws.caps.versioned and ws.dirty:
-            ws.commit(info={"tool": "skill", "skill": name})
+            written.append(path)
+        # Durable now, and only this: installing a skill is the
+        # framework writing, at a moment it chose. An agent with a
+        # ws-git composition open keeps its unstaged edits — the skill
+        # lands beside them rather than committing work in progress.
+        ws._commit_durable(info={"tool": "skill", "skill": name}, keys=written)
     return name
 
 

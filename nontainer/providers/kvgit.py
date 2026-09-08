@@ -655,19 +655,27 @@ class KvgitProvider:
         self._write_blob(index, old_suspended and bool(index))
         return tuple(removed)
 
-    def commit_index(self, info: dict[str, Any] | None = None) -> str:
+    def commit_index(
+        self, info: dict[str, Any] | None = None, *, include: Iterable[str] = ()
+    ) -> str:
         """Commit staged keys plus index bookkeeping; unstaged stays dirty.
 
         Framework keys (the VFS table, cwd, the blob itself) ride along
         when staged — the table is fixed up first so the new commit's
         rows describe its own blobs exactly, not uncommitted work.
         Cache keys never ride: unrelated agent state stays dirty.
+
+        ``include`` adds state to the commit that the index does not
+        hold: store keys as given, absolute workspace paths resolved to
+        the keys the VFS wrote them under. Those keys commit exactly as
+        an indexed one would; everything else the agent has staged
+        outside the index stays dirty.
         """
         from monkeyfs import VirtualFS
 
         self._refuse_frozen("commit_index")
         blob = self._read_blob()
-        index = set(blob["index"])
+        index = set(blob["index"]) | self._resolve_include(include)
         pending = {key for key in index if self._staged.is_staged(key)}
         head_handle = self._staged.checkout(self._staged.current_commit)
         head_blob = (
@@ -676,6 +684,8 @@ class KvgitProvider:
             else self._parse_blob(None)
         )
         cleared = {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
+        # ``index`` above already folded ``include`` in, so a caller
+        # committing framework state on a clean index is not "nothing".
         if not pending and head_blob == cleared:
             # Nothing staged and the bookkeeping is already clean:
             # refuse instead of minting an empty commit (decided before
@@ -716,6 +726,22 @@ class KvgitProvider:
         # once, at the end, so post-commit reads see live state.
         self._invalidate_fs()
         return self._staged.current_commit
+
+    def _resolve_include(self, include: Iterable[str]) -> set[str]:
+        """``commit_index(include=...)`` entries as store keys.
+
+        An absolute path is the workspace's spelling of a file and is
+        resolved the way ``stage`` resolves one (raising if it names
+        nothing); anything else is already a store key — the framework
+        planes (``__agno__/``, the cache) name themselves, and no store
+        key starts with ``/``.
+        """
+        entries = list(include)
+        if not entries:
+            return set()
+        paths = [e for e in entries if e.startswith("/")]
+        resolved = self._resolve_stage_paths(paths) if paths else {}
+        return {resolved.get(e, e) for e in entries}
 
     def _commit_table(self, staged: set[str]) -> None:
         """Rewrite the VFS table to match the blobs selective commit takes.

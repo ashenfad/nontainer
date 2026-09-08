@@ -98,14 +98,16 @@ class WorkspaceTools(Toolkit):
         commits the turn itself, at the moment agno persists the run,
         so the conversation lands in the same commit as the files.
         Post hooks run BEFORE the session is persisted, so committing
-        here would leave the conversation for the next turn's commit."""
+        here would leave the conversation for the next turn's commit.
+
+        An agent that left a ws-git composition open across the turn
+        boundary keeps its unstaged edits: the staged set lands with
+        the turn and the rest stays dirty, rather than a turn hook
+        quietly committing work the agent was still composing."""
         if self._session_db is not None:
             return None
-        ws = self._ws
-        if ws.caps.versioned and ws.dirty:
-            with self._lock:
-                return ws.commit(info={"tool": "turn"})
-        return None
+        with self._lock:
+            return self._ws._commit_durable(info={"tool": "turn"})
 
     def __init__(
         self,

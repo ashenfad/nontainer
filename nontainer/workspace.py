@@ -973,7 +973,7 @@ class WorkspaceIndex:
     ``NotSupportedError`` naming the verb).
 
     The first :meth:`stage` suspends autocommit, so the calls that
-    follow accumulate instead of committing one by one; ``ws.commit()``
+    follow accumulate instead of committing one by one; :meth:`commit`
     lands the staged set and resumes, :meth:`discard` abandons it. The
     terminal's ``ws-git`` verbs drive this same index, so an agent and
     its host see one composition, not two.
@@ -1000,6 +1000,20 @@ class WorkspaceIndex:
         with ws._lock:
             ws._check_writable("ws-git unstage")
             return ws._provider.unstage(paths)
+
+    def commit(self, info: dict[str, Any] | None = None) -> str:
+        """Commit the staged set; unstaged writes stay dirty. Returns
+        the commit id.
+
+        The selective commit, and the end of the composition: the index
+        clears and autocommit resumes. ``ws.commit()`` is the other
+        one — everything, whether or not a composition is open.
+        """
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            ws._check_writable("ws-git commit")
+            return ws._provider.commit_index(info)
 
     def discard(self) -> None:
         """Abandon the composition; working-tree writes stay dirty."""
@@ -1676,15 +1690,17 @@ class Workspace:
     # ------------------------------------------------------------------
 
     def commit(self, info: dict[str, Any] | None = None) -> str:
-        """Commit the session's state; returns the commit id.
+        """Commit everything uncommitted — files, cache and cwd — as one
+        atomic commit; returns its id.
 
-        One verb, two scopes, and the index decides which: while a
-        composition is in flight (``ws.index.stage`` has suspended
-        autocommit) this commits the staged set and leaves unstaged
-        writes dirty; otherwise it commits everything uncommitted —
-        files, cache and cwd — as one atomic commit. That is the rule
-        the terminal follows too, so ``ws-git commit`` and
-        ``ws.commit()`` never mean different things at the same moment.
+        Everything, always: an open composition does not change what
+        this verb takes — the staged set rides the same commit as the
+        rest, and the composition ends, having nothing left to compose.
+        ``ws.index.commit()`` is the selective one. The split is
+        deliberate: a verb whose scope depended on whether the agent
+        happened to have ws-git staging open could not be used for
+        durability by the code around it, which is what the framework
+        needs it for (see :meth:`_commit_durable`).
 
         ``info`` is caller metadata recorded on the commit and must be
         JSON-serializable.
@@ -1693,7 +1709,13 @@ class Workspace:
             self._check_open()
             self._check_writable("commit")
             if self._staging():
-                return self._provider.commit_index(info)
+                # Clear the index BEFORE committing, so the commit
+                # carries a composition that is over rather than one
+                # whose every staged path has already landed —
+                # otherwise autocommit stays suspended for work that is
+                # committed and `ws-git status` shows a live index over
+                # an unchanged tree.
+                self._provider.discard_staged()
             return self._provider.commit(info)
 
     def _staging(self) -> bool:
@@ -1702,6 +1724,36 @@ class Workspace:
         index, and on providers predating the query."""
         suspended = getattr(self._provider, "stage_suspended", None)
         return bool(callable(suspended) and suspended())
+
+    def _commit_durable(
+        self, info: dict[str, Any] | None = None, *, keys: Iterable[str] = ()
+    ) -> str | None:
+        """FRAMEWORK SURFACE: make the framework's own writes durable
+        without taking the agent's composition with them.
+
+        The conversation a session db just stored, a skill that was
+        just installed: state the framework wrote and must not lose,
+        committed at a moment the framework chose rather than the agent
+        did. With no composition open that is an ordinary
+        commit-everything. With one open it is the staged set plus
+        ``keys``, so the framework's writes land while the agent's
+        unstaged edits stay dirty and remain its own to commit.
+
+        ``keys`` names that state: provider keys (``__agno__/session``)
+        or absolute workspace paths, resolved by the provider. Returns
+        the commit id, or ``None`` when there was nothing to commit —
+        clean, unversioned, or frozen — so a caller can report what it
+        did without repeating those guards.
+        """
+        with self._lock:
+            self._check_open()
+            if self._frozen or not self._provider.caps.versioned:
+                return None
+            if not self._provider.dirty:
+                return None
+            if not self._staging():
+                return self._provider.commit(info)
+            return self._provider.commit_index(info, include=keys)
 
     def checkout(self, commit: str) -> str:
         """Move this session to one of its own commits; returns its id.
@@ -1942,7 +1994,10 @@ class Workspace:
                     "never move; delete it first if you mean to repoint it"
                 )
             if at is None and self._provider.dirty:
-                self._provider.commit(info={"tool": "tag", "name": name})
+                # Through the public verb: naming the current state
+                # means naming all of it, index included, by the same
+                # rule ``commit`` applies.
+                self.commit(info={"tool": "tag", "name": name})
             return self._provider.tag(name, at=at, info=info, scope=scope)
 
     def _tags(self, *, scope: str = "session") -> dict[str, str]:

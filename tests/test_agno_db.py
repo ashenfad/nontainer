@@ -170,6 +170,36 @@ def test_the_turn_commit_carries_the_run_key(tmp_path):
     ws.close()
 
 
+def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
+    """The turn commit is the framework's own durability point, so it
+    commits the conversation the db just wrote — plus whatever the
+    agent staged for it — and leaves the agent's unstaged edits dirty.
+    It used to take whichever of those the index happened to make it
+    take, which could leave the conversation itself uncommitted."""
+    ws, db, tk, agent = build(tmp_path)
+    ws.files.fs.write("/workspace/staged.txt", b"staged")
+    ws.files.fs.write("/workspace/loose.txt", b"work in progress")
+    ws.index.stage(["/workspace/staged.txt"])
+    before = len(list(ws.log()))
+
+    run_turn(agent, ["thinking out loud"])
+
+    entries = list(ws.log())
+    assert len(entries) == before + 1
+    assert entries[0].info == {"tool": "turn"}
+    # the conversation landed — the bug was that it did not
+    assert len(run_keys(ws)) == 1
+    assert len(db.get_session(ws.session).runs) == 1
+    head = ws._provider._staged.checkout(ws.head)
+    assert head.get(SESSION_KEY) is not None
+    # and so did what the agent had staged for the turn
+    assert ws.index.status().staged == ()
+    # but its work in progress is still its own
+    assert ws.dirty
+    assert ws.index.status().unstaged == ("/workspace/loose.txt",)
+    ws.close()
+
+
 def test_end_turn_stands_down_when_a_session_db_is_wired(tmp_path):
     ws = make_ws()
     db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))

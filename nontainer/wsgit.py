@@ -11,7 +11,10 @@ wherever cheap; each deviation carries a recorded reason:
 - ``log`` shows the ``-m`` message when a commit has one, else the
   commit tool name.
 - ``commit`` takes ``-m/--message`` (stored in commit info) but no
-  pathspec and no ``-a``: it commits the staged set only.
+  pathspec and no ``-a``: with a composition open it commits the
+  staged set, and with none it commits everything. git would refuse
+  the second case ("no changes added to commit"), but git has ``-a``
+  and an agent here has no index open to have forgotten about.
 - The index names keys, not snapshots, so ``--cached`` shows staged
   paths against HEAD *including* any later edits (git would show only
   the staged snapshot).
@@ -67,8 +70,8 @@ _HELP = """ws-git: git-shaped staging over workspace branches.
 usage: ws-git (stage|unstage|commit|reset|status|diff|log) [...]
   stage <paths>     stage files (first stage suspends autocommit)
   unstage <paths>   unstage files (emptying resumes autocommit)
-  commit [-m MSG]   commit staged files; unstaged work stays dirty
-                    (-m stored in commit info; no -a, no pathspec)
+  commit [-m MSG]   commit the staged set (everything, when nothing is
+                    staged); -m stored in commit info; no -a, no pathspec
   reset             abandon the composition (mixed-only), resume
   status            staged vs unstaged (git-short XY columns)
   diff [--cached] [--check] [paths...]
@@ -391,6 +394,8 @@ def _unstage(provider: Any, ctx: Any, rest: list[str]) -> Any:
 
 
 def _commit(provider: Any, ctx: Any, rest: list[str]) -> Any:
+    from termish import CommandResult
+
     message: str | None = None
     args = list(rest)
     while args:
@@ -407,8 +412,21 @@ def _commit(provider: Any, ctx: Any, rest: list[str]) -> Any:
             )
     before = provider.status()
     info = {"message": message} if message is not None else None
-    head = provider.commit_index(info)
-    n = len(before.staged)
+    # The staged set when a composition is open, everything otherwise.
+    # A terminal verb reads its context — there is no index to speak of
+    # when nothing is staged, and no `-a` to ask with — where the host
+    # API deliberately splits the two (`ws.commit()` is always
+    # everything, `ws.index.commit()` always the staged set): scope
+    # that depends on hidden state is fine for a person who can see the
+    # status line and wrong for the framework, which cannot.
+    if provider.stage_suspended():
+        head = provider.commit_index(info)
+        n = len(before.staged)
+    else:
+        if not provider.dirty:
+            return CommandResult(exit_code=1, stderr="nothing to commit")
+        head = provider.commit(info)
+        n = len(before.unstaged)
     subject = message if message is not None else "ws-git.commit"
     ctx.stdout.write(
         f"[{before.branch} {head[:7]}] {subject} ({n} file{'s' if n != 1 else ''})\n"
