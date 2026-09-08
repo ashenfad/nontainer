@@ -138,7 +138,7 @@ says which seam it belongs to:
 | | holds | |
 |---|---|---|
 | `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / export / fs |
-| `ws.index` | the staged set | stage / unstage / status / discard |
+| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
 | `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
 | `store.tags` | names that outlive the session | add / list / info / delete / at |
@@ -294,24 +294,37 @@ ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.discard() -> None                             # drop staged writes
 ws.autocommit: bool                              # settable; see below
 
-ws.index.stage(paths) -> StageResult             # needs caps.index
+ws.index.stage(paths) -> tuple[str, ...]         # needs caps.index
 ws.index.unstage(paths) -> tuple[str, ...]
-ws.index.commit(info=None) -> str                # the staged set only
+ws.index.commit(message=None, *, info=None) -> str   # the staged set
 ws.index.status() -> WorkspaceStatus             # pure read
 ws.index.discard() -> None                       # abandon the composition
+ws.index.log(limit=None) -> list[CommitInfo]     # the agent's own commits
+ws.index.head -> str | None                      # the agent's last commit
+ws.index.checkout(commit) -> str                 # restore the tree to one
 ```
 
-**Two commit verbs, and the one you call is the whole answer.**
-`ws.commit()` takes everything uncommitted, whether or not a
-composition is open — the staged set rides along and the composition
-ends, having nothing left to compose. `ws.index.commit()` takes the
-staged set and leaves unstaged writes dirty. Neither depends on hidden
-state, which is what lets the code around a workspace — a turn hook, a
-session db, a skill installer — rely on what it commits. The
-terminal's `ws-git commit` is the verb that reads its context: the
-staged set when a composition is open, everything when none is,
-because a person at a terminal can see the status line and has no
-`-a` to ask with.
+**`ws.index` is the agent's own git**, and a fiction over this
+session's history: the index and the agent's commit graph are metadata
+in a reserved key, `status` measures against the agent's last commit
+rather than the store's head, and `log` walks the agent's commits and
+not the framework's. `ws-git` in the terminal is the same
+implementation with the agent's spelling, so host and agent see one
+index. See [design.md](design.md) for the model.
+
+**Two commit verbs, and they are for two different callers.**
+`ws.commit()` takes everything uncommitted, always — it is the
+framework's durability verb, and the code around a workspace (a turn
+hook, a session db, a skill installer) can only rely on it if its
+scope never depends on what the agent has staged. It is invisible to
+the agent: a framework commit leaves the staged set staged and the
+work in progress modified, because both are measured against the
+agent's own last commit. `ws.index.commit(message)` is the agent's
+verb: the staged set (everything modified when nothing is staged),
+committed as a point in the agent's graph, with the work in progress
+left in the tree and out of the commit. The terminal's `ws-git commit`
+is the same verb — it reads its context, because a person at a
+terminal can see the status line and has no `-a` to ask with.
 
 The content hash of the head — the identity of *what* the files and
 cache are, where `head` identifies the point in history — is
@@ -685,11 +698,12 @@ plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
 
 All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
 `session`, `caps`, `fs`, `kv`, `dirty`, `commit/restore/history/
-fork/discard/merge`, `stage/unstage/commit_index/discard_staged/status`,
+fork/discard/merge`, `commit_keys/files_at/working_files`,
 `tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
-provider keeps both commit primitives — `commit` takes everything,
-`commit_index` takes the staged set — and `Workspace.commit` is what
-chooses between them.
+provider keeps two commit primitives — `commit` takes everything and
+`commit_keys` takes exactly the keys it is given — plus two read views
+(`files_at`, `working_files`) over which the agent's git is built. It
+holds no index of its own: that is metadata, and `ws.index` owns it.
 
 ```python
 KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store

@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **ws-git is a fiction over the store's history, not a second name
+  for it.** The agent's index and its commit graph are now metadata in
+  a reserved key (`__ws_git__`): the agent's head (a store commit
+  hash), the staged paths, and the context of an outstanding merge.
+  `status` diffs the working tree against THAT head, so the
+  framework's own commits — a per-call autocommit, a turn hook, a
+  session db, a skill install — never disturb a composition, and
+  `ws-git log` walks the agent's own commits, not the tool calls
+  between them. Nothing is withheld from the store any more and
+  nothing suspends autocommit: an agent's work in progress is durable
+  from the moment it is written, and it still is not in the agent's
+  commit until the agent says so.
+
+  The shape is `@agex-ts/git`'s, with one correction. There, an agent
+  commit is parented on the store's head, so a partial commit silently
+  absorbs the unstaged edits into its own baseline. Here the tree is
+  materialized exactly: every modified path left out of the commit is
+  written back to its content at the agent's head, the keyed commit is
+  made, and the work in progress is written back into the tree
+  afterwards and lands with the next framework commit. Two store
+  commits per agent commit, inside one call, with nothing at risk in
+  between.
+
+  New verbs and surfaces: `ws-git checkout <ref>` (restore the tree to
+  one of your commits — the fiction rewinds, the store appends) and
+  `ws-git show <ref>`; `ws.index.commit(message)`, `ws.index.log()`,
+  `ws.index.head`, `ws.index.checkout(commit)`. `ws-git stage` is
+  silent now, like `git add`, and optional: `commit` with an empty
+  index takes everything modified. The refusals for `stash`, `rebase`,
+  `branch` and `merge` name a terminal verb or say plainly that the
+  operation is the host's to invoke, instead of naming host Python the
+  agent cannot reach.
+
 - **api-v2: the `Workspace` namespaces, and git's words for git's
   verbs** — stage 2 of the API plan, and the breaking half. Where
   stage 1 named the seams (`Store`, `Runtime`), this one moves the
@@ -19,7 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | old | new |
   |---|---|
   | `ws.checkpoint(info)` | `ws.commit(info)` |
-  | `ws.commit(info)` (the staged set) | `ws.index.commit(info)` |
+  | `ws.commit(info)` (the staged set) | `ws.index.commit(message)` |
   | `ws.autocheckpoint` | `ws.autocommit` |
   | `ws.history(limit=)` | `ws.log(limit=)` |
   | `ws.restore(commit)` | `ws.checkout(commit)` |
@@ -53,22 +86,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `CheckpointNotFoundError` | `CommitNotFoundError` |
   | `WorkspaceTools(ws, checkpoint="turn")` | `WorkspaceTools(ws, commit="turn")` |
   | `provider.checkpoint(info)` | `provider.commit(info)` |
-  | `provider.commit(info)` (the staged set) | `provider.commit_index(info)` |
+  | `provider.commit(info)` (the staged set) | `provider.commit_keys(info, keys=)` |
 
-- **Two commit verbs, neither of them context-sensitive.**
-  `ws.commit()` commits everything uncommitted, always: a composition
-  in flight rides along and ends, having nothing left to compose.
-  `ws.index.commit()` commits the staged set and leaves unstaged
-  writes dirty. Having `ws.commit` and `ws.checkpoint` mean different
-  things three lines apart was the confusion the rename is for, and a
-  single verb that read the index to decide would have been the same
-  confusion moved: the framework calls it at durability points
-  (a turn hook, a session db, a skill install) where it cannot know,
-  and must not depend on, whether the agent has ws-git staging open.
-  The terminal's `ws-git commit` is the one verb that reads its
-  context — the staged set when a composition is open, everything when
-  none is — because a person at a terminal can see the status line and
-  has no `-a` to ask with.
+- **Two commit verbs, and they are for two different callers.**
+  `ws.commit()` commits everything uncommitted, always: it is the
+  framework's durability verb, called at moments the agent did not
+  choose (a turn hook, a session db, a skill install), and code can
+  only rely on it if its scope never depends on what the agent has
+  staged. It is invisible to the agent: the composition is measured
+  against the agent's own last commit, so a framework commit leaves
+  the staged set staged and the work in progress modified.
+  `ws.index.commit(message)` is the agent's verb — the staged set, and
+  a commit in the agent's own graph. Having `ws.commit` and
+  `ws.checkpoint` mean different things three lines apart was the
+  confusion the rename is for, and a single verb that read the index
+  to decide would have been the same confusion moved. The terminal's
+  `ws-git commit` is the one verb that reads its context — the staged
+  set when something is staged, everything modified when nothing is —
+  because a person at a terminal can see the status line and has no
+  `-a` to ask with.
 
 - **`ws.checkout(commit)` refuses a session name.** It moves this
   session's files, cache and cwd to one of its own commits and returns
@@ -129,7 +165,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`KvgitProvider.delete` takes `min_age`**, the orphan sweep's grace
   period in seconds, so `Store.delete` can name it.
 
+### Removed
+
+- **The suspension machinery.** `provider.stage_suspended()`,
+  `provider.commit_index()`, `provider.discard_staged()`,
+  `provider.stage()` / `unstage()` / `status()`, the private
+  `Workspace._commit_durable()`, the `StageResult` dataclass, and the
+  union merge function for the staging blob. Staging no longer
+  suspends autocommit, so there is nothing to suspend, resume or work
+  around: the index is metadata the fiction owns
+  (`nontainer/agentgit.py`), and the provider keeps one index-shaped
+  primitive, `commit_keys`, plus two read views (`files_at`,
+  `working_files`) over which the fiction is built. `caps.index` now
+  means "keyed commits are available", which is what it always
+  gated. `ws.index.stage()` returns the paths it added, as
+  `unstage()` already did.
+
 ### Fixed
+
+- **A partial commit no longer absorbs the work it left out.** The
+  reference implementation parents an agent's keyed commit on the
+  store's head, which already holds every edit the framework
+  committed. A commit of one staged file therefore inherited the other
+  files' edits as its own baseline: `status` went clean over work the
+  agent had not committed, and a later checkout of that commit brought
+  those edits back as if it had. An agent commit's tree is now
+  materialized exactly — the paths left out are reverted to the
+  agent's head for the commit and restored to the working tree
+  straight after — so a commit holds what the agent said it holds.
 
 - **The framework's durability points no longer commit the agent's
   work and leave their own uncommitted.** The agno turn hook, the
@@ -138,13 +201,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commit, an agent with a ws-git composition open turned every one of
   those into a selective commit of the agent's staged files — the
   conversation, or the freshly installed skill, stayed dirty and could
-  be rolled back or lost. Those three call sites now go through a
-  framework-internal durable commit that names the keys it must land:
-  everything when no composition is open, and those keys and nothing
-  else when one is. Staging suspends autocommit until the composition
-  lands or is abandoned, and the framework is never what lands it — so
-  the agent's index, its staged set and its working-tree writes are
-  exactly as it left them.
+  be rolled back or lost. All three commit everything now, which is
+  safe because the agent's composition is measured against its own
+  last commit rather than the store's head: the index, the staged set
+  and the work in progress read exactly as the agent left them.
 
 - **`ws.files.list(recursive=True)` terminates on a symlink cycle.**
   It walked the tree itself with `isdir`, and a directory symlink
