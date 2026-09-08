@@ -38,7 +38,10 @@ So the agent's git is metadata instead:
   ``virtual_parents`` in commit info. The framework's per-call commits
   are plumbing the agent never sees.
 - **Branches are real branches** (sessions), not virtual ones: making
-  one, and merging, are the host's to invoke.
+  one forks a session, and merging is a three-way merge of two of
+  them. Both are ``Workspace`` verbs the terminal spells for the agent
+  (``ws-git branch`` / ``ws-git merge``); this module records what
+  they do in the agent's graph.
 
 The substrate surface this needs is small and provider-shaped:
 ``caps``, ``kv`` (the blob, by ordinary key access), ``fs`` (working

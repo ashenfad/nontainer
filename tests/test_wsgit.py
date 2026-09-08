@@ -324,13 +324,13 @@ def test_edges_name_what_the_agent_can_do(ws):
         r = ws.terminal(cmd)
         assert r.exit_code == 1, cmd
         assert r.stderr.startswith(prefix), (cmd, r.stderr)
-    # Every hint names a terminal verb or says plainly whose job it
-    # is — never host Python the agent cannot reach.
+    # Every hint names a terminal verb the agent can actually run —
+    # never host Python it cannot reach.
     from nontainer.wsgit import _EDGE
 
     for verb, text in _EDGE.items():
         assert "ws.fork(" not in text and "provider." not in text, verb
-        assert "ws-git" in text or "host's to invoke" in text, verb
+        assert "ws-git " in text, verb
     # branch and merge are the agent's now, not refusals
     assert ws.terminal("ws-git branch").exit_code == 0
     assert ws.terminal("ws-git merge").exit_code == 2
