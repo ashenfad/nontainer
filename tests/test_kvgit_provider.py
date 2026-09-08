@@ -6,6 +6,7 @@ from monkeyfs import VirtualFS
 from nontainer import (
     CommitNotFoundError,
     NotSupportedError,
+    Store,
     Workspace,
     WorkspaceError,
     workspace,
@@ -249,9 +250,36 @@ def test_commit_and_restore_files_and_cache(kv_ws):
     assert kv_ws.cache["gen"] == 1
 
 
-def test_restore_unknown_id(kv_ws):
+def test_checkout_unknown_id(kv_ws):
     with pytest.raises(CommitNotFoundError):
         kv_ws.checkout("0" * 40)
+
+
+def test_checkout_refuses_a_session_and_says_why(tmp_path):
+    """A session is a branch, and a branch is not something to check
+    out — the refusal names the two verbs that do reach one."""
+    store = Store(tmp_path)
+    with store.open("alice") as alice, store.open("bob") as bob:
+        alice.terminal("echo alice > who.txt")
+        bob.terminal("echo bob > who.txt")
+
+        with pytest.raises(WorkspaceError) as exc:
+            alice.checkout("bob")
+
+        message = str(exc.value)
+        assert "sessions are branches" in message
+        assert 'ws.fork("name")' in message and 'store.open("name")' in message
+        # and the session it refused to leave is where it was
+        assert alice.terminal("cat who.txt").stdout.strip() == "alice"
+
+
+def test_checkout_returns_where_it_landed(kv_ws):
+    kv_ws.terminal("echo one > a.txt")
+    first = kv_ws.head
+    kv_ws.terminal("echo two > a.txt")
+
+    assert kv_ws.checkout(first) == first
+    assert kv_ws.head == first
 
 
 # -- autocommit ---------------------------------------------------------
@@ -526,3 +554,56 @@ def test_fork_at_an_unknown_commit_raises(tmp_path):
             ws.fork("child", at="0" * 64)
     finally:
         ws.close()
+
+
+# -- cwd ---------------------------------------------------------------------
+
+
+def test_one_cwd_key_survives_fork_and_checkout(tmp_path):
+    """cwd lives under the filesystem's own key and nowhere else, so it
+    travels with the files: a fork starts where its parent stood, and a
+    checkout puts the agent back where it was."""
+    store = Store(tmp_path)
+    with store.open("walker") as ws:
+        ws.terminal("mkdir -p one two; cd one")
+        here = ws.commit()
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/one"
+
+        fork = ws.fork("follower")
+        try:
+            assert fork.terminal("pwd").stdout.strip() == "/workspace/one"
+        finally:
+            fork.close()
+
+        ws.terminal("cd ../two")
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/two"
+        ws.checkout(here)
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/one"
+
+        keys = {k for k in ws._provider.kv.keys() if "cwd" in k}
+        assert keys == {VirtualFS.CWD_KEY}
+
+
+def test_a_legacy_cwd_key_is_adopted_and_dropped(tmp_path):
+    """Stores written when nontainer kept a cwd of its own carry the
+    old key: the value still decides where the session opens, and the
+    key goes with the next commit."""
+    store = Store(tmp_path)
+    with store.open("legacy") as ws:
+        ws.terminal("mkdir -p deep")
+    # Rewrite the store the way the two-key layout left it.
+    provider = KvgitProvider.open(tmp_path / "kvgit", session="legacy")
+    try:
+        del provider.kv[VirtualFS.CWD_KEY]
+        provider.kv["__cwd__"] = "/workspace/deep"
+        provider.commit(info={"tool": "legacy"})
+    finally:
+        provider.close()
+
+    with store.open("legacy") as ws:
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
+        assert "__cwd__" not in ws._provider.kv
+        ws.commit()
+    with store.open("legacy") as ws:
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
+        assert "__cwd__" not in ws._provider.kv

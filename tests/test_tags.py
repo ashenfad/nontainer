@@ -514,3 +514,34 @@ def test_a_frozen_snapshot_refuses_a_handler_file_write_under_process_isolation(
     finally:
         snap.close()
         ws.close()
+
+
+def test_the_two_tag_namespaces_are_reached_through_their_owners(tmp_path):
+    """Which object holds the verb IS the scope: a session's tags are
+    invisible to every other session, a store's are visible from all of
+    them, and neither surface takes a scope argument any more."""
+    store = Store(tmp_path)
+    with store.open("alice") as alice, store.open("bob") as bob:
+        alice.terminal("echo alice > who.txt")
+        mine = alice.tags.add("v1")
+        ours = store.tags.add(alice, "release")
+
+        # the session scope: bob's own listing is empty, and a name
+        # alice holds means nothing to him
+        assert alice.tags.list() == {"v1": mine}
+        assert bob.tags.list() == {}
+        assert bob.tags.info("v1") is None
+        with pytest.raises(CommitNotFoundError):
+            bob.tags.delete("v1")
+
+        # the store scope: one listing, readable from either session
+        assert store.tags.list() == {"release": ours}
+        assert store.tags.info("release").id == ours
+
+        # bob may hold his own "v1" — different tag, same name
+        bob.terminal("echo bob > who.txt")
+        assert bob.tags.add("v1") != mine
+
+        # the scope argument is gone: the object is the scope
+        with pytest.raises(TypeError):
+            alice.tags.add("v2", scope="store")

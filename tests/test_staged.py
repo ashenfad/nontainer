@@ -399,3 +399,37 @@ def test_workspace_wrappers_smoke(tmp_path):
         assert ws.index.status().unstaged == ()
     finally:
         ws.close()
+
+
+def test_commit_takes_the_index_when_one_is_in_flight(kv_ws):
+    """One verb, two scopes. With a composition in flight ``ws.commit``
+    lands the staged set and leaves the rest dirty; with none, it lands
+    everything — the rule ws-git already followed, now the only rule."""
+    kv_ws.files.fs.write("/workspace/a.txt", b"one")
+    kv_ws.files.fs.write("/workspace/b.txt", b"two")
+    kv_ws.index.stage(["/workspace/a.txt"])
+
+    kv_ws.commit()
+    assert _provider(kv_ws).status().staged == ()
+    assert _provider(kv_ws).status().unstaged == ("/workspace/b.txt",)
+    assert kv_ws.dirty  # b.txt is still work in progress
+
+    # No index now: the same call takes everything left.
+    kv_ws.commit()
+    assert not kv_ws.dirty
+    assert _provider(kv_ws).status().unstaged == ()
+
+
+def test_commit_without_an_index_commits_everything(kv_ws):
+    kv_ws.files.fs.write("/workspace/a.txt", b"one")
+    kv_ws.files.fs.write("/workspace/b.txt", b"two")
+    n0 = len(_history(kv_ws))
+
+    head = kv_ws.commit()
+
+    assert len(_history(kv_ws)) == n0 + 1
+    assert head == kv_ws.head
+    assert not kv_ws.dirty
+    at_head = _provider(kv_ws)._staged.checkout(head)
+    files = {p for p in _provider(kv_ws)._file_keys(at_head.keys()).values()}
+    assert {"/workspace/a.txt", "/workspace/b.txt"} <= files
