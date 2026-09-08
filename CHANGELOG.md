@@ -28,9 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   materialized exactly: every modified path left out of the commit is
   written back to its content at the agent's head, the keyed commit is
   made, and the work in progress is written back into the tree
-  afterwards and lands with the next framework commit. Two store
-  commits per agent commit, inside one call, with nothing at risk in
-  between.
+  afterwards and committed keyed to exactly those paths. Two store
+  commits per agent commit, inside one call, both made by the
+  operation itself — a per-turn host with `autocommit=False` gets the
+  same durability and no unrelated dirty work landed early. If the
+  keyed commit is refused (a CAS conflict), the working tree and the
+  index are put back as they were.
 
   New verbs and surfaces: `ws-git checkout <ref>` (restore the tree to
   one of your commits — the fiction rewinds, the store appends) and
@@ -165,6 +168,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`KvgitProvider.delete` takes `min_age`**, the orphan sweep's grace
   period in seconds, so `Store.delete` can name it.
 
+- **The fiction's bookkeeping commits itself.** The restore that
+  follows an agent commit, the tree and head a `ws-git checkout`
+  writes, and the blob a merge records are each committed by the
+  operation that made them, keyed to the paths they touched, rather
+  than left to `ws.autocommit`. Which store commits belong to the
+  agent is one rule, in one place (`agentgit.is_agent_commit`):
+  `info["tool"]` is `"ws-git"` (the agent's own) or `"ws-git.merge"`
+  (a host merge that changed its tree). The bookkeeping is spelled
+  `ws-git.restore` / `ws-git.checkout` / `ws-git.merge-record` and is
+  never in `ws-git log`.
+
 ### Removed
 
 - **The suspension machinery.** `provider.stage_suspended()`,
@@ -273,6 +287,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory was reported as a session that `open()` could not then
   use. The `agentfs` backend gets the mirror rule: a session is one db
   file, not a directory named like one.
+
+- **The fiction's bookkeeping commits itself.** The restore that
+  follows an agent commit, the tree and head a `ws-git checkout`
+  writes, and the blob a merge records are each committed by the
+  operation that made them, keyed to the paths they touched, rather
+  than left to `ws.autocommit`. Which store commits belong to the
+  agent is one rule, in one place (`agentgit.is_agent_commit`):
+  `info["tool"]` is `"ws-git"` (the agent's own) or `"ws-git.merge"`
+  (a host merge that changed its tree). The bookkeeping is spelled
+  `ws-git.restore` / `ws-git.checkout` / `ws-git.merge-record` and is
+  never in `ws-git log`.
 
 ### Removed
 
@@ -1146,6 +1171,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masking: because parts are appended, a namespace line meant the success
   signal never showed. Consequences are still reported where they exist —
   `[ui artifacts: ...]` for `ui = {...}` bindings, unchanged.
+
+- **The fiction's bookkeeping commits itself.** The restore that
+  follows an agent commit, the tree and head a `ws-git checkout`
+  writes, and the blob a merge records are each committed by the
+  operation that made them, keyed to the paths they touched, rather
+  than left to `ws.autocommit`. Which store commits belong to the
+  agent is one rule, in one place (`agentgit.is_agent_commit`):
+  `info["tool"]` is `"ws-git"` (the agent's own) or `"ws-git.merge"`
+  (a host merge that changed its tree). The bookkeeping is spelled
+  `ws-git.restore` / `ws-git.checkout` / `ws-git.merge-record` and is
+  never in `ws-git log`.
 
 ### Removed
 
