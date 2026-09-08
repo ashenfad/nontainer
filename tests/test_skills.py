@@ -113,32 +113,32 @@ def test_install_from_granted_modules(ws, tmp_path, monkeypatch):
 
 def test_install_lands_the_skill_over_an_open_composition(ws):
     """Installing a skill is the framework writing, at a moment the
-    agent did not choose. It commits the skill and nothing else: the
-    agent's composition is left exactly as it was, because staging
-    suspends autocommit until that composition lands or is abandoned
-    and the framework is never what lands it. Before, it could commit
-    the agent's staged files and leave the skill itself uncommitted."""
+    agent did not choose. It commits everything, which costs the agent
+    nothing: ws-git measures against the agent's own last commit, so a
+    composition in flight reads exactly as it did before."""
     ws.files.fs.write("/workspace/staged.txt", b"staged")
     ws.files.fs.write("/workspace/loose.txt", b"work in progress")
     ws.index.stage(["/workspace/staged.txt"])
+    ws.index.commit("agent base")
+    ws.files.fs.write("/workspace/loose.txt", b"still going")
+    before = ws.index.status()
 
     name = skills.install(ws, SKILL_MD)
 
-    head = ws._provider._staged.checkout(ws.head)
-    encode = ws._provider.fs._encode_path
     installed = f"{skills.skills_root(ws)}/{name}/SKILL.md"
-    assert head.get(encode(installed)) is not None
     assert ws.files.exists(installed)
     assert list(ws.log(limit=1))[0].info == {"tool": "skill", "skill": name}
+    # the skill is durable, and so is the agent's work in progress
+    head = ws._provider.files_at(ws.head)
+    assert installed in head
+    assert head["/workspace/loose.txt"] == b"still going"
 
-    # the composition is intact and neither agent file rode along
-    status = ws.index.status()
-    assert status.staged == ("/workspace/staged.txt",)
-    assert status.unstaged == ("/workspace/loose.txt",)
-    assert ws._provider.stage_suspended()
-    assert ws.dirty
-    assert not head.get(encode("/workspace/staged.txt"))
-    assert not head.get(encode("/workspace/loose.txt"))
+    # the composition is exactly where the agent left it — plus the
+    # skill's own file, which is a new file in the tree like any other
+    after = ws.index.status()
+    assert after.staged == before.staged
+    assert set(after.unstaged) - set(before.unstaged) == {installed}
+    assert "/workspace/loose.txt" in after.unstaged
 
 
 def test_catalog_lists_frontmatter(ws):

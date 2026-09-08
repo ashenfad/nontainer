@@ -47,11 +47,10 @@ def ws(request, tmp_path):
 
 def test_same_script_write_then_stage(ws):
     """Writes earlier in the SAME script are visible to the verb — the
-    heredoc pattern agents favor. Staged, not autocommited away."""
-    before = len(list(ws.log()))
+    heredoc pattern agents favor."""
     r = ws.terminal("cat > same.txt <<'EOF'\nhello\nEOF\nws-git stage same.txt")
     assert r.exit_code == 0
-    assert "suspended autocommit" in r.stdout
+    assert r.stdout == ""
     assert ws.terminal("ws-git diff --cached same.txt").stdout == (
         "diff --git a/same.txt b/same.txt\n"
         "--- a/same.txt\n"
@@ -59,24 +58,21 @@ def test_same_script_write_then_stage(ws):
         "@@ -0,0 +1 @@\n"
         "+hello\n"
     )
-    assert len(list(ws.log())) == before
 
 
 def test_same_script_write_stage_commit(ws):
     """A full write → stage → commit flow inside one script lands one
-    commit, with nothing left staged or unstaged."""
-    before = len(list(ws.log()))
+    agent commit, with nothing left staged or unstaged."""
     r = ws.terminal(
         "cat > flow.txt <<'EOF'\nflow\nEOF\nws-git stage flow.txt\nws-git commit -m flow"
     )
     assert r.exit_code == 0
-    # One transcript: the stage line, then the commit line.
+    # One transcript: stage is silent, then the commit line.
     assert re.fullmatch(
-        r"suspended autocommit \(resume: ws-git commit, ws-git reset\)\n"
         rf"\[wsgit-conf-[a-z]+-[a-z0-9_.-]+ {SHORT}\] flow \(1 file\)\n",
         r.stdout,
     )
-    assert len(list(ws.log())) == before + 1
+    assert [e.info["message"] for e in ws.index.log()] == ["flow"]
     assert ws.terminal("ws-git status").stdout == ""
 
 
@@ -94,14 +90,15 @@ def test_stage_first_composition(ws):
     commit snapshots exactly the staged set."""
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.files.fs.write("/workspace/b.txt", b"two\n")
-    before = len(list(ws.log()))
 
     r = ws.terminal("ws-git stage a.txt b.txt")
     assert r.exit_code == 0
-    assert r.stdout == "suspended autocommit (resume: ws-git commit, ws-git reset)\n"
+    assert r.stdout == ""
 
+    # The framework commits the edit for durability; the composition
+    # is measured against the agent's own head, so it does not notice.
     ws.terminal("echo second >> a.txt")
-    assert len(list(ws.log())) == before
+    assert not ws.dirty
 
     assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""
@@ -123,5 +120,41 @@ def test_stage_first_composition(ws):
     assert r.exit_code == 0
     assert re.fullmatch(rf"\[.+ {SHORT}\] compose a \(2 files\)\n", r.stdout)
 
-    assert len(list(ws.log())) == before + 1
+    assert [e.info["message"] for e in ws.index.log()] == ["compose a"]
     assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_partial_commit_across_the_rungs(ws):
+    """The fiction's own property, on every rung: what the agent left
+    out of its commit is out of the commit and still in the tree."""
+    ws.terminal("cat > a.txt <<'EOF'\nbase\nEOF\ncat > b.txt <<'EOF'\nbase\nEOF")
+    ws.terminal("ws-git commit -m base")
+    ws.terminal("ws-git stage a.txt")
+    ws.terminal("cat > a.txt <<'EOF'\nedited\nEOF\ncat > b.txt <<'EOF'\nedited\nEOF")
+
+    r = ws.terminal("ws-git commit -m 'just a'")
+    assert r.exit_code == 0, r.stdout
+
+    assert ws.terminal("ws-git status").stdout == " M b.txt\n"
+    assert ws.terminal("cat b.txt").stdout == "edited\n"
+    tree = ws._provider.files_at(ws.index.head)
+    assert tree["/workspace/a.txt"] == b"edited\n"
+    assert tree["/workspace/b.txt"] == b"base\n"
+
+
+def test_checkout_restores_the_tree_across_the_rungs(ws):
+    """A verb that REWRITES worktree files has to reach the guest too:
+    the restore is pushed back on the next call, not harvested away."""
+    ws.terminal("cat > a.txt <<'EOF'\none\nEOF")
+    ws.terminal("ws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal("cat > a.txt <<'EOF'\ntwo\nEOF\ncat > b.txt <<'EOF'\nnew\nEOF")
+    ws.terminal("ws-git commit -m second")
+
+    r = ws.terminal(f"ws-git checkout {first}")
+    assert r.exit_code == 0, r.stdout
+
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    assert ws.terminal("ls b.txt").exit_code != 0
+    assert ws.terminal("ws-git status").stdout == ""
+    assert [e.info["message"] for e in ws.index.log()] == ["first"]
