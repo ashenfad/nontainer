@@ -71,15 +71,19 @@ BLOB_VERSION = 2
 #: framework commit, which carries a tool name of its own.
 TOOL = "ws-git"
 
-#: Framework commits this module makes on the agent's behalf: the
-#: working-tree restore after a partial commit, and the tree a checkout
-#: writes. Neither is an agent commit — they carry no message and are
-#: never shown in ``ws-git log``.
+#: ``info["tool"]`` on a merge commit, as the provider stamps it. The
+#: host invokes a merge, but it changes the agent's tree and joins the
+#: agent's graph, so the agent sees it.
+MERGE_TOOL = "ws-git.merge"
+
+#: The fiction's OWN bookkeeping commits: the working-tree restore
+#: after a partial commit, the tree a checkout writes, and the blob a
+#: merge records. Each is made by the operation that needs it — never
+#: left to the workspace's autocommit policy, which a per-turn host
+#: turns off — and none of them is an agent commit.
 RESTORE_TOOL = "ws-git.restore"
 CHECKOUT_TOOL = "ws-git.checkout"
-
-#: ``info["tool"]`` on a merge commit, as the provider stamps it.
-MERGE_TOOL = "ws-git.merge"
+MERGE_RECORD_TOOL = "ws-git.merge-record"
 
 _MARKER = b"<<<<<<< "
 
@@ -87,15 +91,21 @@ _HASH = re.compile(r"[0-9a-f]{7,}")
 
 
 def is_agent_commit(info: Mapping[str, Any]) -> bool:
-    """Whether a commit's ``info`` says an agent made it deliberately.
+    """Whether a store commit belongs to the agent's graph.
 
-    The tool name is the mark: every commit made here carries one, and
-    the framework's own (``terminal``, ``turn``, ``ws-git.restore``)
-    are not this. The reference implementation keys on the presence of
-    a message instead, because its framework commits carry no info at
-    all; here a message is optional, and a commit without one is still
-    a point in the agent's graph. Merge commits are the host's doing
-    but are part of that graph, so they count too.
+    THE RULE, in one place. A commit is the agent's when
+    ``info["tool"]`` is exactly ``"ws-git"`` (one the agent made) or
+    ``"ws-git.merge"`` (one the host made that changed the agent's
+    tree). Everything else is plumbing and never appears in ``log``:
+    the framework's commits (``terminal``, ``turn``, ``skill``, ...)
+    and the fiction's own bookkeeping (``ws-git.restore``,
+    ``ws-git.checkout``, ``ws-git.merge-record``), which is why those
+    three are spelled as ``ws-git.<something>`` and not as ``ws-git``.
+
+    The reference implementation keys on the presence of a message
+    instead, because its framework commits carry no info at all; here
+    a message is optional, and a commit without one is still a point
+    in the agent's graph.
     """
     return info.get("tool") in (TOOL, MERGE_TOOL)
 
@@ -372,12 +382,19 @@ class AgentGit:
         agent's head first, so the commit says what the agent said and
         nothing more.
 
-        Two store commits come of it. The first is the agent's, keyed
-        to the commit set plus the reverted paths plus the blob. The
-        second is the framework's: the reverted paths are written back
-        to the work in progress they held, and the workspace's ordinary
-        autocommit lands that restore. Nothing is at risk in between —
-        the work in progress is in the previous framework commit.
+        Two store commits come of it, both made here. The first is the
+        agent's, keyed to the commit set plus the reverted paths plus
+        the blob. The second is the fiction's own bookkeeping: the
+        reverted paths are written back to the work in progress they
+        held, and that restore plus the new head is committed keyed to
+        exactly those paths and the blob. Keyed, and not the
+        workspace's autocommit, for two reasons — a per-turn host has
+        autocommit off, and the bookkeeping must not drag unrelated
+        dirty work into a commit of its own.
+
+        If the agent's commit fails (a CAS conflict with a concurrent
+        writer), the working tree is put back exactly as it was and
+        the composition is left open, so the agent can try again.
         """
         self._writable("ws-git commit")
         blob = self._read()
@@ -434,22 +451,52 @@ class AgentGit:
             "files": list(files),
             "virtual_parents": [head] if head is not None else [],
         }
-        commit = provider.commit_keys(commit_info, keys=[*files, *reverted, BLOB_KEY])
-        if commit is None:  # pragma: no cover - the blob is always pending
-            raise WorkspaceError("nothing to commit")
+        try:
+            commit = provider.commit_keys(
+                commit_info, keys=[*files, *reverted, BLOB_KEY]
+            )
+            if commit is None:  # pragma: no cover - the blob is always pending
+                raise WorkspaceError("nothing to commit")
+        except BaseException:
+            # Nothing landed, so nothing may be left changed: put the
+            # work in progress back where it was and reopen the
+            # composition. The blob write that survives here holds the
+            # value the branch already has — dirt the next commit
+            # absorbs, and the price of not reaching into the store's
+            # staging buffer to retract a write.
+            self._restore(pending)
+            self._write(blob)
+            raise
 
-        # The buffer moved under the view: read the tree afresh.
-        after = provider.working_files()
+        self._restore(pending)
+        landed["head"] = commit
+        self._write(landed, force=True)
+        # The restore is the agent's operation finishing, not the
+        # workspace's policy: it commits itself, keyed to the paths it
+        # touched, whatever ``autocommit`` says.
+        provider.commit_keys(
+            {"tool": RESTORE_TOOL, "restore_of": commit},
+            keys=[*reverted, BLOB_KEY],
+        )
+        return commit, tuple(files)
+
+    def _restore(self, pending: Mapping[str, Any]) -> None:
+        """Put captured working-tree content back, path by path.
+
+        ``None`` means the path was not in the tree when it was
+        captured, so putting it back means removing it again. Reads the
+        tree afresh: the buffer moved under any view taken before.
+        """
+        if not pending:
+            return
+        fs = self._provider.fs
+        after = self._provider.working_files()
         for path, value in pending.items():
             if value is None:
                 if path in after:
                     fs.remove(path)
             else:
                 _put(fs, path, value)
-        landed["head"] = commit
-        self._write(landed, force=True)
-        self._ws._maybe_commit(RESTORE_TOOL)
-        return commit, tuple(files)
 
     # -- history -------------------------------------------------------
 
@@ -539,15 +586,34 @@ class AgentGit:
         target = provider.files_at(commit)
         live = provider.working_files()
         fs = provider.fs
-        for path in sorted(set(live) - set(target)):
+        gone = sorted(set(live) - set(target))
+        changed = sorted(
+            path for path in target if path not in live or live[path] != target[path]
+        )
+        # Captured before the rewrite: if the commit below fails, this
+        # is what the tree has to hold again.
+        pending = {path: live.get(path) for path in (*gone, *changed)}
+        for path in gone:
             fs.remove(path)
-        for path in sorted(target):
-            if path not in live or live[path] != target[path]:
-                _put(fs, path, target[path])
+        for path in changed:
+            _put(fs, path, target[path])
         blob = self._read()
+        before = dict(blob)
         blob.update(head=commit, staged=[], merge_source=None, unresolved=[])
         self._write(blob, force=True)
-        self._ws._maybe_commit(CHECKOUT_TOOL)
+        try:
+            # The restored tree and the head that names it are one
+            # operation, so they are one commit — keyed to the paths
+            # the restore touched, and made here rather than left to
+            # the workspace's autocommit policy.
+            provider.commit_keys(
+                {"tool": CHECKOUT_TOOL, "restore_of": commit},
+                keys=[*pending, BLOB_KEY],
+            )
+        except BaseException:
+            self._restore(pending)
+            self._write(before)
+            raise
         # The tree moved under an executor that keeps its own copy of
         # it (a guest rung does): flag its view so the next call
         # re-materializes rather than harvesting the old files back.
@@ -565,6 +631,12 @@ class AgentGit:
         against the new head — the ``UU`` entries and ``diff --check``
         are what say the merge is unfinished, and they end when the
         markers do.
+
+        The record commits itself, keyed to the blob. A merge that left
+        its own bookkeeping uncommitted would return a dirty workspace
+        (refusing the next merge, which requires a clean tree), lose
+        the head and the context on reopen, and leave the merge out of
+        the agent's log.
         """
         self._require("ws-git merge")
         marked = sorted(
@@ -578,7 +650,11 @@ class AgentGit:
             merge_source=source if marked else None,
             unresolved=marked,
         )
-        self._write(blob)
+        self._write(blob, force=True)
+        self._provider.commit_keys(
+            {"tool": MERGE_RECORD_TOOL, "source": source, "merge": commit},
+            keys=[BLOB_KEY],
+        )
         return tuple(marked)
 
     # -- content, for the verbs that render ----------------------------
