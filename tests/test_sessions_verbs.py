@@ -699,3 +699,48 @@ def test_store_fork_opens_the_source_at_the_childs_root(store):
         assert not child.files.exists("/data/b.py")
     finally:
         child.close()
+
+
+def test_attach_reads_the_lineages_root_and_the_whole_branch(store):
+    """Two things at once: a commit holds its files at the root the
+    session used, and what is attached is the source's whole branch —
+    a delegate with a narrow view is exactly the one worth attaching."""
+    ws = store.open("origin", root="/data")
+    ws.files.write("/data/a.py", "a\n")
+    ws.files.write("/data/b.py", "b\n")
+    ws.index.commit("seed")
+    child = ws.fork("child", paths=["a.py"])
+    child.files.write("/data/a.py", "refactored\n")
+    child.index.commit("work")
+    child.close()
+
+    try:
+        ws.files.attach("child", "reviews")
+        listed = ws.files.list("/data/reviews")
+        assert listed == ["/data/reviews/a.py", "/data/reviews/b.py"]
+        assert ws.files.read("/data/reviews/a.py") == b"refactored\n"
+        # outside the delegate's own view, and still readable here
+        assert ws.files.read("/data/reviews/b.py") == b"b\n"
+        ws.files.detach("reviews")
+    finally:
+        ws.close()
+
+
+def test_attach_takes_an_explicit_root_for_a_session_from_elsewhere(store):
+    """The default is this session's root, since a lineage shares one;
+    a session from somewhere else needs its own named."""
+    other = store.open("elsewhere", root="/srv")
+    other.files.write("/srv/note.md", "hello\n")
+    other.commit(info={"tool": "test"})
+    other.close()
+
+    ws = store.open("main")  # the default /workspace root
+    try:
+        ws.files.attach("elsewhere", "wrong")
+        assert ws.files.list("/workspace/wrong") == []  # nothing at /workspace there
+        ws.files.detach("wrong")
+
+        ws.files.attach("elsewhere", "right", root="/srv")
+        assert ws.files.read("/workspace/right/note.md") == b"hello\n"
+    finally:
+        ws.close()

@@ -535,16 +535,20 @@ as work in the tree, and the commit records
 reference, not ancestry. Only file keys move, so the merge-policy
 question never arises.
 
-**`ws.files.attach(ref, at, *, readonly=True)`** mounts another
-session's tree, frozen at a commit, inside this one at `at`; `detach(at)`
-removes it and `attachments()` lists `{point: ref}`. For reading
-someone else's work in place — a delegate's branch while deciding
-whether to merge it — without copying it in. Explicit and never
-automatic. Like a `Mount`: NOT versioned, not captured by commits, not
-carried by a fork, gone when the session closes; `readonly=False` is
-refused, since a frozen state has nothing to offer it. What lands at
-`at` is the source's workspace ROOT, so a file the delegate calls
-`auth.py` reads as `<at>/auth.py`. A point inside this session's root
+**`ws.files.attach(ref, at, *, readonly=True, root=None)`** mounts
+another session's tree, frozen at a commit, inside this one at `at`;
+`detach(at)` removes it and `attachments()` lists `{point: ref}`. For
+reading someone else's work in place — a delegate's branch while
+deciding whether to merge it — without copying it in. Explicit and
+never automatic. Like a `Mount`: NOT versioned, not captured by
+commits, not carried by a fork, gone when the session closes;
+`readonly=False` is refused, since a frozen state has nothing to offer
+it. What lands at `at` is the source's workspace ROOT, so a file the
+delegate calls `auth.py` reads as `<at>/auth.py` — a lineage shares one
+root, so that root is this session's, and `root=` names a different one
+for a session from elsewhere. What lands is the source's **whole
+branch**, not what its own session can see: a delegate given a narrow
+view is exactly the one worth attaching. A point inside this session's root
 reaches every rung; outside it, an executor running elsewhere never
 sees it — the contract a `Mount` outside the root already has. And as
 with a mount, while anything is attached the working directory belongs
@@ -556,6 +560,10 @@ verb for host code with no workspace open, and takes `store.open`'s
 keywords for the workspace it returns. `root=` opens the source at that
 root too: a lineage shares one, and a view normalized against a
 different root would name paths the child cannot see.
+
+**`store.resolve(ref, *, root=None)`** reads a commit under a given
+workspace root. A commit holds its files at whatever root the session
+that made them used, so resolving at the wrong one reads an empty tree.
 
 **`ws.merge(source)`** merges another session into this one
 (`caps.merge`). **A merge takes only what has been committed, on both
