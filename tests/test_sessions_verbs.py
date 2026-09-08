@@ -315,6 +315,29 @@ def test_attach_mounts_another_sessions_tree_read_only(ws, store):
     assert not ws.files.exists("/reviews/review.md")
 
 
+def test_attaching_does_not_move_the_session(ws, store):
+    """Composing an attachment moves the working directory into the
+    composition, which needs the filesystem beneath it at the root.
+    The session must not notice: same cwd, same relative paths."""
+    _seed(ws, **{"a.txt": "mine\n"})
+    other = store.open("reviewer")
+    other.files.write("/workspace/review.md", "ok\n")
+    other.commit(info={"tool": "test"})
+    other.close()
+
+    ws.terminal("mkdir -p deep; cd deep")
+    assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
+
+    ws.files.attach("reviewer", "reviews")
+    assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
+    assert ws.terminal("cat ../a.txt").stdout == "mine\n"
+    assert ws.terminal("cat ../reviews/review.md").stdout == "ok\n"
+
+    ws.files.detach("reviews")
+    assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
+    assert ws.terminal("cat ../a.txt").stdout == "mine\n"
+
+
 def test_attach_by_session_name_and_its_refusals(ws, store):
     _seed(ws, **{"a.txt": "mine\n"})
     other = store.open("reviewer")
