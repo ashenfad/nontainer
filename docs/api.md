@@ -311,8 +311,13 @@ where `head` identifies the point in history — is
 one of its own commits and returns its id; staged changes are dropped.
 It never switches sessions: a session IS a branch, so anything that is
 not a commit here is refused with a message naming `ws.fork(name)` and
-`store.open(name)` rather than guessed at. `rollback(steps)` is the
-relative spelling, since a commit id has no "one before this".
+`store.open(name)` rather than guessed at. The head *moves* — what came
+after leaves the branch, and whatever no tag or fork still reaches is
+swept by `store.clean()` — so name a state (`ws.tags.add`) or fork it
+before stepping off it. `rollback(steps)` is the relative spelling,
+since a commit id has no "one before this"; it stops at the
+`{"tool": "init"}` lifecycle commit rather than crossing into a
+provider's pre-workspace seed.
 
 **`ws.merge(source)`** merges another session's HEAD into this one
 (`caps.merge`). Anything uncommitted on the source is not included, and

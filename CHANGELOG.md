@@ -66,9 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`ws.checkout(commit)` refuses a session name.** It moves this
   session's files, cache and cwd to one of its own commits and returns
-  the id. A session IS a branch, so anything that is not a commit here
-  raises rather than being guessed at, with a message naming
-  `ws.fork("name")` and `store.open("name")`.
+  the id — the same head-moving reset `restore` performed, under the
+  name the terminal already uses. A session IS a branch, so anything
+  that is not a commit here raises rather than being guessed at, with a
+  message naming `ws.fork("name")` and `store.open("name")`.
 
 - **`ws.caps` is the provider's capabilities and nothing else.**
   Execution capabilities moved to the runtime that owns them
