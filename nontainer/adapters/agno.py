@@ -101,13 +101,17 @@ class WorkspaceTools(Toolkit):
         here would leave the conversation for the next turn's commit.
 
         An agent that left a ws-git composition open across the turn
-        boundary keeps its unstaged edits: the staged set lands with
-        the turn and the rest stays dirty, rather than a turn hook
-        quietly committing work the agent was still composing."""
+        boundary keeps it: the turn commit is the framework's, and
+        ws-git measures against the agent's own last commit, so its
+        staged set is still staged and its work in progress still
+        uncommitted afterwards."""
         if self._session_db is not None:
             return None
         with self._lock:
-            return self._ws._commit_durable(info={"tool": "turn"})
+            ws = self._ws
+            if ws.frozen or not ws.caps.versioned or not ws.dirty:
+                return None
+            return ws.commit(info={"tool": "turn"})
 
     def __init__(
         self,
