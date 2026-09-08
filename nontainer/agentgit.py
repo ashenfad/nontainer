@@ -373,12 +373,21 @@ class AgentGit:
         Known means: a file in the working tree, or one at the agent's
         head (so a deletion can be staged after the file is gone).
         Anything else is a directory (git stages files) or a typo.
+
+        A narrowed session's tree is the whole branch and its VIEW is a
+        subset of it, so the view has the last word: a path this
+        session cannot see is not indexable by it, and staging one
+        would put a file it can neither read nor change into a
+        composition where nothing would ever report it.
         """
         known = set(self._provider.working_files())
         head = blob["head"]
         if head is not None:
             known |= set(self._provider.files_at(head))
-        fs = self._provider.fs
+        view = getattr(self._ws, "_view_fs", None)
+        if view is not None:
+            known = {path for path in known if view.sees(path)}
+        fs = self._ws._fs
         for path in paths:
             if path in known:
                 continue

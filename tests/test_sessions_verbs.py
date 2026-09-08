@@ -154,6 +154,20 @@ def test_the_write_rule_new_anywhere_never_over_what_you_cannot_see(ws):
         child.close()
 
 
+def test_a_narrowed_session_cannot_stage_what_it_cannot_see(ws):
+    """The index reads the whole branch; the view has the last word, or
+    an agent could put a file it can neither read nor change into a
+    composition where nothing would report it."""
+    _seed(ws, **{"a.py": "a\n", "b.py": "b\n"})
+    child = ws.fork("child", paths=["a.py"])
+    try:
+        with pytest.raises(ValueError, match="unknown path"):
+            child.index.stage(["/workspace/b.py"])
+        assert child.index.stage(["/workspace/a.py"]) == ("/workspace/a.py",)
+    finally:
+        child.close()
+
+
 def test_a_fork_of_a_narrowed_session_is_not_narrowed_by_inheritance(ws):
     """A view describes the session it was given to. A child handed the
     whole tree must not inherit its parent's blinkers."""
