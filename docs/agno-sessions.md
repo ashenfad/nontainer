@@ -7,7 +7,7 @@ API reference has the usage shape.
 ## Goal
 
 One kvgit commit holds everything a turn touched: files, `cache`,
-cwd, **and the agent's conversation**. `ws.restore(commit)` rewinds
+cwd, **and the agent's conversation**. `ws.checkout(commit)` rewinds
 all four together; `ws.fork(name)` branches all four together.
 
 Today the conversation lives wherever the embedder points agno's
@@ -45,7 +45,7 @@ Per-run keys also make runs individually addressable, which is what
 a rewind, a transcript projection, or an a2ui egress wants anyway.
 
 The `__agno__/` prefix follows the existing convention: framework
-keys are `__`-prefixed (`__cwd__`, `__cache__/...`), and the agent's
+keys are `__`-prefixed (`__vfs_cwd__`, `__cache__/...`), and the agent's
 `cache` view rejects `__` keys at write time, so agent code cannot
 reach these by construction.
 
@@ -101,14 +101,14 @@ branch to plain files) stays trivial. `AgentSession.from_dict` /
 
 ## The commit trigger
 
-The two checkpoint modes stay as they are. What changes is what
+The two commit modes stay as they are. What changes is what
 fires the per-turn commit when a session db is wired in.
 
-`WorkspaceTools(checkpoint="turn")` means one commit per turn. Today
+`WorkspaceTools(commit="turn")` means one commit per turn. Today
 that commit comes from the `end_turn` post hook. With a
 `KvgitSessionDb` on the same workspace it comes from the db instead:
 `upsert_session` writes its keys and then, if the upsert added or
-changed a run, calls `ws.checkpoint(info={"tool": "turn"})`. The
+changed a run, calls `ws.commit(info={"tool": "turn"})`. The
 post hook becomes a no-op on such a workspace, so wiring it stays
 harmless and existing embedder code keeps working.
 
@@ -138,13 +138,13 @@ conversation as a second commit, with the first stamped
 skip it. That fallback is what the two-commit shape costs: step
 counts off by one unless callers skip partials.
 
-Under `checkpoint="call"` every mutating tool call still commits,
+Under `commit="call"` every mutating tool call still commits,
 and the db commits its own trailing write, so the head at the next
 user message includes the conversation.
 
 ## Rewind
 
-`ws.restore(commit)` rewinds the run keys with everything else.
+`ws.checkout(commit)` rewinds the run keys with everything else.
 agno reads the session from the db at the start of every run
 (`Agent.cache_session` defaults to `False`), so the next run sees
 the rewound conversation with no invalidation step.
@@ -202,8 +202,8 @@ guard above turns that into a `NotSupportedError` whose message
 names `fork_session(ws, ...)`. Over the store-level db below it
 works, because the store can create the branch.
 
-Rewind-then-fork branches from any checkpoint with the conversation
-as it was at that checkpoint.
+Rewind-then-fork branches from any commit with the conversation
+as it was at that commit.
 
 ## The store-level db
 
@@ -218,7 +218,7 @@ from nontainer.adapters.agno_db import KvgitStoreDb
 
 db = KvgitStoreDb(store, open=registry.open, db_path="/var/agno")
 ws = registry.open("chat-42")
-tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+tk = WorkspaceTools(ws, commit="turn", session_db=db)
 agent = Agent(model=..., db=db, session_id="chat-42", tools=[tk])
 ```
 
@@ -312,7 +312,7 @@ Against a real `Agent` with a scripted model (no LLM key):
 
 - a turn produces exactly one new commit, whose tree contains the
   turn's file writes and one new `__agno__/runs/<id>` key;
-- `ws.restore(previous_head)` followed by a run yields a
+- `ws.checkout(previous_head)` followed by a run yields a
   conversation that does not contain the rewound turn;
 - `fork_session(..., conversation="inherit")` produces a branch whose
   session id is the fork's and whose runs equal the parent's at that

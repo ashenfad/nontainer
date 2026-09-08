@@ -10,7 +10,7 @@ thread-safe SQLite) owns its own state and its own locking.
 Flow:
   1. Author: the agent builds the guestbook using the injected `db`
      (SQL), verifies it with curl + test_app.  (needs an API key)
-  2. Freeze: checkpoint the workspace — the app is now a published commit.
+  2. Freeze: commit the workspace — the app is now a published commit.
   3. Serve: build_router serves it read-only; POSTs still work because the
      mutation lands in SQLite, not the (frozen) VFS.  (runs without a key)
 
@@ -140,11 +140,11 @@ def main() -> None:
         print(agent.run(TASK).content)
     else:
         print("(no API key — seeding the app so the serving demo runs)")
-        ws.fs.makedirs("/app/api", exist_ok=True)
-        ws.fs.write("/app/api/entries.py", SEED_HANDLER.encode())
-        ws.fs.write("/app/index.html", SEED_HTML)
+        ws.files.fs.makedirs("/app/api", exist_ok=True)
+        ws.files.fs.write("/app/api/entries.py", SEED_HANDLER.encode())
+        ws.files.fs.write("/app/index.html", SEED_HTML)
 
-    ws.checkpoint(info={"published": True})  # the freeze point
+    ws.commit(info={"published": True})  # the freeze point
 
     # -- serve the FROZEN snapshot: read-only VFS, sqlite-backed state ----
     print("\n=== serving frozen (read-only VFS; state lives in SQLite) ===")

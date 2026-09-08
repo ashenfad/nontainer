@@ -78,8 +78,7 @@ are committed first, so the name means what the caller saw) or a ref
 naming an exact commit. A workspace tags through its own provider, so
 it must be one this store opened — `Store.open`, or a fork/snapshot of
 one; a workspace from elsewhere is refused rather than silently tagging
-*its* store. Session-scoped tags stay on the workspace
-(`ws.tag`, `ws.tags`, `ws.at_tag`). Because a store-scoped tag belongs
+*its* store. Session-scoped tags stay on the workspace (`ws.tags`). Because a store-scoped tag belongs
 to no session, `store.tags.at(name).session` names whichever live
 branch the read was anchored on — the tag is the identity there, not
 the session — and the read needs at least one session on the store to
@@ -101,7 +100,7 @@ workspace(
     mounts: dict[str, Mount] | None = None,
     commands: dict[str, CommandFunc] | None = None,
     cache: bool = True,
-    autocheckpoint: bool = True,
+    autocommit: bool = True,
     max_observation: int = 32_000,
     executor_factory: Callable[[], Executor] | None = None,
     root: str = "/workspace",
@@ -132,6 +131,22 @@ One instance == one session's world. Not thread-safe: one workspace,
 one thread at a time (adapters enforce this with a lock). Context
 manager (`with ... as ws:` closes on exit).
 
+The session's own state — the two tools, the commit flow, the lock —
+is on the object; everything else is reached through a namespace that
+says which seam it belongs to:
+
+| | holds | |
+|---|---|---|
+| `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / export / fs |
+| `ws.index` | the staged set | stage / unstage / status / discard |
+| `ws.tags` | this session's tags | add / list / info / delete / at |
+| `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
+| `store.tags` | names that outlive the session | add / list / info / delete / at |
+
+The namespaces are views: they hold the workspace and no state, so
+`ws.files` is the same object every time you ask and costs nothing to
+reach.
+
 ### The two tools
 
 ```python
@@ -153,9 +168,9 @@ Use the `a*` variants when embedding in an async server — they're
 just `run_in_executor` wrappers, so CPU-bound sandbox work never
 blocks your loop. A workspace is single-writer and enforces it:
 mutating calls hold an internal lock, so parallel calls to one
-workspace serialize safely (each atomic + checkpointed) instead of
+workspace serialize safely (each atomic + committed) instead of
 corrupting staged state. Read-only accessors don't take the lock —
-and neither do the host-side escape hatches (`ws.fs` writes, `ws.cache`
+and neither do the host-side escape hatches (`ws.files.fs` writes, `ws.cache`
 mutation), so a host thread using those while agent calls run holds
 `ws.lock` itself (see the extension surface below).
 `run_in_threadpool(ws.run_python, code)` from Starlette works too if
@@ -163,7 +178,7 @@ you'd rather not use the facade.
 
 `terminal` executes pipes, redirects (`> >> <`), `&&`/`||`/`;`,
 quoting, ~33 builtins (via termish) plus injected commands. `cd`
-persists across calls (and rolls back with checkpoints on kvgit).
+persists across calls (and rolls back with commits on kvgit).
 A reserved `python` builtin bridges into `run_python` with script
 semantics: `python -c 'code'`, `python file.py`, or piped stdin;
 stdout flows to the pipeline, errors → exit 1, the namespace is
@@ -181,7 +196,7 @@ via `result.namespace`.
 @dataclass(frozen=True)
 class TerminalResult:
     stdout: str; exit_code: int; stderr: str = ""; truncated: bool = False
-    checkpoint: str | None = None       # commit this call created
+    commit: str | None = None       # commit this call created
     # truthy iff exit_code == 0
 
 @dataclass(frozen=True)
@@ -191,7 +206,7 @@ class PythonResult:
     ticks: int = 0; duration: float = 0.0; truncated: bool = False
     namespace: Mapping[str, Any] = {}   # for the HOST; adapters never
                                         # inline it into observations
-    checkpoint: str | None = None       # commit this call created
+    commit: str | None = None       # commit this call created
     ui_problems: tuple[str, ...] = ()   # why a `ui` value did not render
                                         # as intended (the 8MB cap, with
                                         # the remediation) -- actionable
@@ -199,15 +214,15 @@ class PythonResult:
     # truthy iff error is None
 
 @dataclass(frozen=True)
-class WriteOutcome:                     # from write_file / put
+class WriteOutcome:                     # from files.write / files.put
     path: str; size: int; created: bool
-    checkpoint: str | None = None
+    commit: str | None = None
 ```
 
-Every mutating call's result pins the commit its autocheckpoint
-created — `ws.restore(result.checkpoint)` is compensation by identity,
-no step counting. `checkpoint` is `None` when nothing was committed:
-read-only call, no-op edit, turn-mode checkpointing (the id comes from
+Every mutating call's result pins the commit its autocommit
+created — `ws.checkout(result.commit)` is compensation by identity,
+no step counting. `commit` is `None` when nothing was committed:
+read-only call, no-op edit, turn-mode committing (the id comes from
 `end_turn()` instead), or an unversioned provider. Host-facing like
 `namespace` — adapters never render it into the model's observation.
 
@@ -216,24 +231,40 @@ Oversized stdout from `print()` is re-rendered **budget-aware** via
 (`[0, 1, 2, ...996 more]`) instead of a mid-token cut. Small output
 stays byte-exact; non-print writes fall back to a head-cut.
 
-### Host-side access
+### Files (`ws.files`)
 
 ```python
-ws.fs                 # termish-protocol filesystem (seed/harvest directly)
+ws.files.read(path) -> bytes                 # raises if absent
+ws.files.exists(path) -> bool
+ws.files.list(path=".", recursive=False) -> list[str]
+    # paths spelled the way `path` was, sorted — absolute in, absolute
+    # out, so an entry goes straight back into `read`. Flat by default;
+    # `recursive` walks and returns the files beneath.
+ws.files.fs                 # termish-protocol filesystem (seed/harvest directly)
 ws.cache              # MutableMapping; raises NotSupportedError if disabled
-ws.write_file(path, content) -> WriteOutcome   # parents created; checkpointed
-ws.edit_file(path, old, new, replace_all=False) -> EditOutcome
+ws.files.write(path, content) -> WriteOutcome   # parents created; committed
+ws.files.edit(path, old, new, replace_all=False) -> EditOutcome
     # exact-string replacement with agent-tolerant fallbacks (the agex
     # strategy set, ported): exact → trailing-ws-flexible →
     # indent-flexible (replacement re-indented to the file's baseline);
     # replacement-already-present → no-op (count=0, "already_applied").
     # Unique-match-or-replace_all; WorkspaceError with a "did you mean
-    # these lines?" snippet otherwise. Carries `checkpoint` when the
+    # these lines?" snippet otherwise. Carries `commit` when the
     # edit committed.
-ws.put(src, dest=None) -> WriteOutcome # host file → workspace (checkpointed)
-ws.get(src, dest=None) -> bytes        # workspace → host (never checkpoints)
-ws.register_command(name, fn)          # add a termish command post-construction
+ws.files.put(src, dest=None) -> WriteOutcome # host file → workspace (committed)
+ws.files.get(src, dest=None) -> bytes        # workspace → host (never commits)
+ws.files.read_artifact(path) -> bytes | None # unreadable IS the answer
+ws.files.export() -> ContextManager[Path]    # the workspace at a real
+                                             # path (FUSE providers only)
+ws.runtime.register_command(name, fn)          # add a termish command post-construction
 ```
+
+Writes through `ws.files` are the same operation the file tools
+perform: the single-writer lock is held for the call and the commit
+flow runs when it lands. Reads take no lock and never commit.
+`ws.files.fs` is the escape hatch below all of that — documented and
+supported, but it writes straight to the provider, so a host thread
+using it while agent calls run holds `ws.lock` itself.
 
 Cache key rules: str keys, no `__` prefix, no `/`; values validated
 picklable at write (`CacheError` otherwise). Cache holds **data**;
@@ -241,29 +272,59 @@ reusable code belongs in `helpers/` files.
 
 ### Versioning (gated by `ws.caps`)
 
-Checkpoints cover workspace-owned files and cache. Host-object calls
-and mounts are external effects: their data is not checkpointed,
+Commits cover workspace-owned files and cache. Host-object calls
+and mounts are external effects: their data is not committed,
 restored, or copied by a fork. A fork does inherit the mount *points*,
 and sees the same live directories behind them.
 
 ```python
-ws.head: str | None      # current checkpoint id; None if unversioned.
+ws.head: str | None      # current commit id; None if unversioned.
                          # Pins read-only observations (reads don't move
                          # it) — exact iff not ws.dirty
 ws.dirty: bool           # staged-but-uncommitted changes exist
-ws.checkpoint(info: dict | None = None) -> str   # atomic: files + cache + cwd
-ws.restore(checkpoint_id: str) -> None
+ws.commit(info: dict | None = None) -> str   # atomic: files + cache + cwd
+ws.checkout(commit: str) -> str          # move to a commit of THIS session
 ws.rollback(steps: int = 1) -> str
-ws.history(limit: int | None = None) -> Iterable[CheckpointInfo]
-ws.fork(name: str) -> Workspace                  # cost varies by backend
+ws.log(limit: int | None = None) -> Iterable[CommitInfo]
+ws.fork(name: str, *, at=None) -> Workspace      # cost varies by backend
+ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.discard() -> None                             # drop staged writes
-ws.head_tree: str | None # content hash of the head — the identity of
-                         # WHAT the files and cache are, where `head`
-                         # identifies the point in history
+ws.autocommit: bool                              # settable; see below
+
+ws.index.stage(paths) -> StageResult             # needs caps.index
+ws.index.unstage(paths) -> tuple[str, ...]
+ws.index.status() -> WorkspaceStatus             # pure read
+ws.index.discard() -> None                       # abandon the composition
 ```
 
-Unversioned providers raise `NotSupportedError`; `autocheckpoint` is
-forced off for them. With autocheckpoint on, each successful mutating
+**`ws.commit` is one verb with two scopes**, and the index decides
+which: with a composition in flight (the first `ws.index.stage`
+suspends autocommit) it commits the staged set and leaves unstaged
+writes dirty; with none, it commits everything uncommitted. That is
+the rule `ws-git commit` already followed, so the host API and the
+terminal never mean different things at the same moment. The content
+hash of the head — the identity of *what* the files and cache are,
+where `head` identifies the point in history — is
+`next(iter(ws.log(limit=1))).tree`.
+
+**`ws.checkout(commit)`** moves this session's files, cache and cwd to
+one of its own commits and returns its id; staged changes are dropped.
+It never switches sessions: a session IS a branch, so anything that is
+not a commit here is refused with a message naming `ws.fork(name)` and
+`store.open(name)` rather than guessed at. `rollback(steps)` is the
+relative spelling, since a commit id has no "one before this".
+
+**`ws.merge(source)`** merges another session's HEAD into this one
+(`caps.merge`). Anything uncommitted on the source is not included, and
+this session must be clean — commit or discard first, which the
+refusal says. File conflicts land as conflict markers IN the merge
+commit and are reported in `MergeOutcome.conflicts` rather than
+blocking it: resolve them with ordinary edits and commit. Non-file
+contested state, which no merge function can resolve, aborts the merge
+untouched (`merged=False`, `commit=None`).
+
+Unversioned providers raise `NotSupportedError`; `autocommit` is
+forced off for them. With autocommit on, each successful mutating
 tool call commits with `info={"tool": ...}`; read-only calls never
 commit. `info` dicts must be JSON-serializable.
 
@@ -271,53 +332,58 @@ Equal trees mean identical content, whatever the metadata or ancestry
 around it. The converse does not hold: kvgit stamps each write with
 when it happened, so rewriting a file with the same bytes still moves
 the tree — ask `changed_since` when the question is content.
-`CheckpointInfo.tree` carries the same hash per history entry (`None`
+`CommitInfo.tree` carries the same hash per history entry (`None`
 on a provider that keeps no such hash).
 
 #### Tags (`ws.caps.tags`)
 
-A tag is a name for a checkpoint that outlives the call that made it —
-immutable, and a garbage-collection root: the named checkpoint and its
+A tag is a name for a commit that outlives the call that made it —
+immutable, and a garbage-collection root: the named commit and its
 ancestry stay reachable for as long as the name does.
 
 ```python
-ws.tag(name, *, info=None, scope="session") -> str    # checkpoint id
-ws.tags(*, scope="session") -> dict[str, str]         # name -> checkpoint id
-ws.tag_info(name, *, scope="session") -> TagInfo | None
-ws.delete_tag(name, *, scope="session") -> None
-ws.at_tag(name, *, scope="session") -> Workspace      # frozen; see below
-ws.diff(a, b) -> WorkspaceDiff                        # two checkpoint ids
-ws.changed_since(ref, *, scope="session") -> WorkspaceDiff  # tag name or id
+ws.tags.add(name, *, at=None, info=None) -> str       # commit id
+ws.tags.list() -> dict[str, str]                      # name -> commit id
+ws.tags.info(name) -> TagInfo | None
+ws.tags.delete(name) -> None
+ws.tags.at(name) -> Workspace                         # frozen; see below
+ws.diff(a, b) -> WorkspaceDiff                        # two commit ids
+ws.changed_since(ref) -> WorkspaceDiff       # tag name, commit id or Ref
+
+store.tags.add(ws_or_ref, name, *, info=None) -> str  # the store scope
+store.tags.list() / .info(name) / .delete(name) / .at(name)
 ```
 
-**Two scopes, and nontainer decides what they mean** rather than
-handing embedders one flat namespace to partition themselves:
+**Two scopes, and the object you reach through is the scope** — no
+argument to pass, and no flat namespace for embedders to partition
+themselves:
 
 | scope | belongs to | survives `Store.delete` | for |
 |---|---|---|---|
-| `"session"` (default) | this session | ❌ — it goes with the branch | checkpoints worth naming: "before the refactor", "the state the report was built from" |
+| `"session"` (default) | this session | ❌ — it goes with the branch | commits worth naming: "before the refactor", "the state the report was built from" |
 | `"store"` | no session | ✅ | publications: the snapshot an app serves, the state a link points at |
 
-`ws.tags()` lists only the scope you ask for, so two sessions can each
-hold a `v1` and neither sees the other's. Names come back the way you
+`ws.tags.list()` lists this session's own, so two sessions can each
+hold a `v1` and neither sees the other's; `store.tags.list()` is the
+one listing every session can read. Names come back the way you
 passed them; the scope prefix kvgit stores them under (`<session>/`,
 `@store/`) never surfaces, and a name that starts with one is rejected
 so a scope can't be spoofed. The store prefix leads with `@`, which a
 session id can never start with, so the two scopes cannot collide
 however a session is named. Otherwise the rule is kvgit's: any
 non-empty name without `%`, `/` included. Tags never move — an existing
-name raises rather than being repointed. `ws.tag()` checkpoints staged
+name raises rather than being repointed. `ws.tags.add()` commits staged
 work first (`info={"tool": "tag", "name": ...}`, like `fork`), so the
 name means what the caller saw.
 
-`TagInfo` carries `name`, `scope`, `id` (the checkpoint), `tree`,
-`time`, the `info` dict, and `dangling` (the checkpoint is not in the
+`TagInfo` carries `name`, `scope`, `id` (the commit), `tree`,
+`time`, the `info` dict, and `dangling` (the commit is not in the
 store — damage, not an ordinary state).
 
-**Frozen workspaces.** `ws.at_tag(name)` returns a `Workspace` over the
+**Frozen workspaces.** `ws.tags.at(name)` returns a `Workspace` over the
 tagged state that can be read but never written: `ws.frozen` is True,
-`autocheckpoint` is forced off, `file_write` / `file_edit` / `put` /
-`checkpoint` / `fork` / `tag` / `rollback` raise `NotSupportedError`,
+`autocommit` is forced off, `file_write` / `file_edit` / `put` /
+`commit` / `fork` / `tag` / `rollback` raise `NotSupportedError`,
 and the executor holds a read-only filesystem **and a read-only
 cache**, so a shell redirect, `open(..., "w")` or `cache["x"] = 1` from
 agent code fails where it happens with a message naming the tag
@@ -335,11 +401,14 @@ its live host objects**, mounts, root, executor factory, commands — so
 an app served from a snapshot still talks to the session's live db.
 The files are frozen; the host's world is not.
 
-**`changed_since`** takes a tag name or a checkpoint id (the tag is
-tried first, in `scope`) and compares it with the current head.
+**`changed_since`** takes a tag name, a commit id or a `Ref`, and
+compares it with the current head. A name is looked up as this
+session's tag first and the store's second, so `ws.changed_since("v1")`
+is the everyday spelling and a published store tag needs no extra
+argument.
 `WorkspaceDiff` holds `added` / `removed` / `modified` as absolute
 workspace paths — `/workspace/data/in.csv`, the way agent code and
-`ws.fs` name files. Framework keys (cache, cwd, the stored
+`ws.files.fs` name files. Framework keys (cache, cwd, the stored
 conversation, the filesystem's own bookkeeping) are not files and never
 appear, and staged-but-uncommitted work is not in the diff at all
 (check `ws.dirty`).
@@ -357,17 +426,24 @@ each entry with when it happened. `tree` identifies this exact write;
 
 ```python
 ws.session: str
-ws.caps: Capabilities
-ws.cache_enabled: bool
-ws.python_config: PythonConfig
+ws.caps: Capabilities         # what the PROVIDER can do
 ws.root: str                  # the workspace root (see the factory)
-ws.frozen: bool               # a read-only snapshot at a tag (at_tag)
-ws.supports_commands: bool    # executor capability, below
+ws.frozen: bool               # a read-only snapshot at a tag (tags.at)
 ws.runtime: Runtime           # how code runs against this state (below)
+ws.runtime.supports_commands: bool    # executor capability, below
+ws.runtime.supports_ws_verbs: bool
+ws.runtime.cache_enabled: bool
+ws.runtime.python_config: PythonConfig
 ```
 
-**`ws.supports_commands`** — whether injected terminal commands
-(`commands=`, `ws.register_command`) actually reach the shell. It's an
+`ws.caps` describes the substrate: versioning, staging, cheap forks,
+merge, tags, the index. Execution capabilities are the runtime's,
+because they belong to the executor rather than to where state lives —
+the same workspace answers differently under a different
+`executor_factory`.
+
+**`ws.runtime.supports_commands`** — whether injected terminal commands
+(`commands=`, `ws.runtime.register_command`) actually reach the shell. It's an
 `Executor` capability, in the same declare-the-difference spirit as
 `ws.caps` for providers:
 
@@ -395,9 +471,9 @@ these; they are a documented, kept-stable contract so extensions don't
 reach into internals (and stay portable across providers):
 
 ```python
-ws.exec_python(code, *, inputs=None, stdin=None, argv=None,
+ws.runtime.exec_python(code, *, inputs=None, stdin=None, argv=None,
                echo=None, view=None) -> PythonResult
-    # the raw execution path: no checkpoint, no lock. `view` (a
+    # the raw execution path: no commit, no lock. `view` (a
     # ViewSpec) requests a restricted, budgeted execution — a
     # read-only fs/cache view, a tighter timeout/tick budget, contract
     # classes in scope — and is executor-neutral: no sandbox object
@@ -407,7 +483,7 @@ ws.exec_python(code, *, inputs=None, stdin=None, argv=None,
     # whose work mutates the workspace hold ws.lock.
 ws.lock: threading.RLock
     # the single-writer lock the mutating public methods hold. Hold it
-    # for host-side/extension work that mutates the workspace (ws.fs
+    # for host-side/extension work that mutates the workspace (ws.files.fs
     # writes, ws.cache mutation, read-modify-write) and must serialize
     # with tool calls. RLock: safe to hold around locked public calls.
 ```
@@ -428,18 +504,23 @@ rt.supports_commands / rt.supports_ws_verbs -> bool
 rt.exec_python(code, ...) -> PythonResult   # raw: no lock, no commit
 rt.exec_shell(script) -> TerminalResult     # raw: no lock, no commit
 rt.register_command(name, fn, *, rebind=None) -> None
-rt.set_shell_env(name, value) -> None
-rt.commands / rt.shell_env / rt.framework_commands   # the live mappings
+rt.shell_env(name, value) -> None     # publish a variable
+rt.shell_env(name) -> str | None      # read one back
+rt.shell_env() -> dict[str, str]      # the live mapping (a fork replays it)
+rt.cache_enabled -> bool
+rt.commands / rt.framework_commands   # the live mappings
 rt.stale -> bool ; rt.mark_stale() ; rt.sync_if_stale()
 rt.diff() -> StagedDiff | None
 rt.close() -> None
 ```
 
 Executors never commit. A runtime returns results and the workspace
-decides what becomes a checkpoint — which is why `ws.terminal` and
+decides what becomes a commit — which is why `ws.terminal` and
 `ws.run_python` (the committing verbs) stay on `Workspace` and the raw
-ones live here. `ws.exec_python`, `ws.register_command`,
-`ws.set_shell_env` and `ws.python_config` are thin delegates.
+ones live here. There are no delegates on `Workspace` for the rest:
+`ws.runtime.exec_python`, `ws.runtime.register_command`,
+`ws.runtime.shell_env` and `ws.runtime.python_config` are where they
+are because the executor, not the substrate, is what answers.
 
 A `Runtime` is normally built by the workspace and reached as
 `ws.runtime`. It is also constructible **directly over an existing
@@ -449,7 +530,7 @@ with its own executor and its own budget, while the session's own
 runtime keeps running. Closing it releases only its executor.
 
 `mounts=` here are this runtime's alone. Mount composition otherwise
-belongs to the workspace, so that `ws.fs` and execution see the same
+belongs to the workspace, so that `ws.files.fs` and execution see the same
 tree.
 
 ## `PythonConfig`
@@ -588,9 +669,12 @@ plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
 ## Providers (`nontainer.providers`)
 
 All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
-`session`, `caps`, `fs`, `kv`, `dirty`, `checkpoint/restore/history/
-fork/discard`, `tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`,
-`close`.
+`session`, `caps`, `fs`, `kv`, `dirty`, `commit/restore/history/
+fork/discard/merge`, `stage/unstage/commit_index/discard_staged/status`,
+`tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
+provider keeps both commit primitives — `commit` takes everything,
+`commit_index` takes the staged set — and `Workspace.commit` is what
+chooses between them.
 
 ```python
 KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store
@@ -610,10 +694,12 @@ AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
 Each `delete(path, sessions)` is the store-level teardown primitive
 `Store.delete` dispatches to — plural, idempotent, and validating
 session ids first where a bad name could escape the store root (dir,
-agentfs). Kvgit's runs deletions from a hidden `__void__` anchor branch
-(created on first delete, never listed): kvgit can't delete the branch
-a store handle is anchored on, so the sole-branch case has nothing else
-to sit on. `path` is the store directory — the same `store/kvgit` that
+agentfs). Kvgit's goes through `kvgit.delete_branches`, which is anchor-free:
+it works on the store rather than through a branch handle, so even the
+last session on a store deletes cleanly. Older nontainer versions minted
+a hidden `__void__` branch to sit on instead; that name is now only ever
+swept — folded into every delete, and excluded from `Store.sessions()` —
+so stores written back then end up clean. `path` is the store directory — the same `store/kvgit` that
 `open` takes for kvgit; the parent store base for dir/agentfs (they
 resolve `<session>/` and `<session>.db` under it).
 
@@ -631,7 +717,7 @@ Capabilities at a glance:
 ## Errors (`nontainer`)
 
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
-`SessionIdError` · `CheckpointNotFoundError` · `CacheError`.
+`SessionIdError` · `CommitNotFoundError` · `CacheError`.
 
 ## Adapters
 
@@ -643,16 +729,16 @@ WorkspaceTools(
     *,
     tools: "auto" | "terminal" | "split" = "auto",
     apps: AppRuntime | None = None,     # adds the test_app tool
-    checkpoint: "call" | "turn" = "call",
+    commit: "call" | "turn" = "call",
     session_db: KvgitSessionDb | KvgitStoreDb | None = None,  # conversation in the branch
     terminal_primer: str | None = None, # host guidance → terminal tool
     python_primer: str | None = None,   # host guidance → run_python tool
     **toolkit_kwargs,
 )
-# checkpoint="turn": one commit per agent turn (the agex model) — wire
+# commit="turn": one commit per agent turn (the agex model) — wire
 # tk.end_turn into Agent(post_hooks=[...]). Crash mid-turn can lose
 # the turn's staged work; "call" trades chattier history for max
-# durability. Workspace.autocheckpoint is also publicly settable.
+# durability. Workspace.autocommit is also publicly settable.
 # session_db: the db over this same workspace (see below). Naming it
 # makes end_turn a no-op — the db commits the turn instead.
 ```
@@ -724,10 +810,10 @@ answer — agents put ordinary strings in `ui` too. `.kind` is **derived**
 from the suffix via `artifact_kind`, never stored, so it cannot
 disagree with the path.
 
-`ws.read_artifact(path) -> bytes | None` fetches one. It returns
+`ws.files.read_artifact(path) -> bytes | None` fetches one. It returns
 `None` rather than raising when the file is unreadable, which is
 exactly the `read_bytes` contract `turn_to_a2ui` documents — the
-obvious `lambda p: ws.fs.read(p)` raises `FileNotFoundError` and breaks
+obvious `lambda p: ws.files.fs.read(p)` raises `FileNotFoundError` and breaks
 the envelope's never-raises guarantee mid-stream:
 
 ```python
@@ -749,7 +835,7 @@ both produce the same binding, the same file, and the same
 ### agno sessions (`nontainer.adapters.agno_db`, `[agno]` extra)
 
 The agent's conversation stored in the workspace branch, so one commit
-holds the turn's files, `cache`, cwd **and** memory — `ws.restore()`
+holds the turn's files, `cache`, cwd **and** memory — `ws.checkout()`
 rewinds all four, `fork_session()` branches all four.
 
 ```python
@@ -757,7 +843,7 @@ from nontainer.adapters.agno_db import KvgitSessionDb, fork_session
 
 ws = workspace("chat-42")
 db = KvgitSessionDb(ws, db_path="/var/agno")  # db_path: inherited tables
-tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+tk = WorkspaceTools(ws, commit="turn", session_db=db)
 agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk],
               post_hooks=[tk.end_turn])
 ```
@@ -777,7 +863,7 @@ knowledge) is inherited unchanged and writes to `db_path`: those are
 cross-session and must not version with one branch.
 
 **The commit trigger.** `upsert_session` writes its keys and then, when
-the upsert added or changed a run, checkpoints with `{"tool": "turn"}`
+the upsert added or changed a run, commits with `{"tool": "turn"}`
 — so the commit happens at the moment agno persists the run. This is
 why `session_db=` exists: agno runs post hooks *before* it persists the
 session, so `tk.end_turn` would commit the files without the
@@ -816,16 +902,16 @@ child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
 Returns the forked `Workspace`. The fork's session key is rewritten
 with `session_id = name` and `session_data["forked_from_session_id"]
 = <parent>` (where agno keeps fork lineage), and that rewrite is
-checkpointed, so the fork's head is consistent. Drive
+committed, so the fork's head is consistent. Drive
 it with an agent whose `session_id` is the fork name. `"fresh"` drops
 the run keys: a clean chat over the forked files. Rewind first to
-branch from any checkpoint with the conversation as it was there.
+branch from any commit with the conversation as it was there.
 
 Driving the fork is the same three constructions over the child:
 
 ```python
 db2 = KvgitSessionDb(child, db_path="/var/agno")
-tk2 = WorkspaceTools(child, checkpoint="turn", session_db=db2)
+tk2 = WorkspaceTools(child, commit="turn", session_db=db2)
 agent2 = Agent(model=..., db=db2, session_id=child.session, tools=[tk2])
 ```
 
@@ -843,7 +929,7 @@ db = KvgitStoreDb(
     db_path="/var/agno",        # inherited tables, shared by all sessions
 )
 ws = registry.open("chat-42")
-tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
+tk = WorkspaceTools(ws, commit="turn", session_db=db)
 agent = Agent(model=..., db=db, session_id="chat-42", tools=[tk])
 ```
 
@@ -887,8 +973,8 @@ transport). `--apps` enables the apps loop — a `test_app` tool
 (screenshots return as MCP image content; needs the `[apps]` extra +
 `playwright install chromium`, checked lazily at first `test_app`),
 plus the `ws-curl` terminal builtin on executors that support injected
-commands, or ferry `ws-*` verbs into guests (see `ws.supports_commands`
-and `ws.supports_ws_verbs` under Introspection). `--mount /data=~/datasets`
+commands, or ferry `ws-*` verbs into guests (see `ws.runtime.supports_commands`
+and `ws.runtime.supports_ws_verbs` under Introspection). `--mount /data=~/datasets`
 exposes a host directory inside the workspace (read-only unless
 `:rw`) — the inbound channel for real files, no base64 games.
 `build_server` for anything the flags don't cover (module grants with

@@ -89,7 +89,7 @@ dispatch(ws, Request) -> Response
 
 Dispatch resolves `/api/<name>` → `/workspace/app/api/<name>.py`, loads the file
 source from the workspace fs, and executes it via the workspace's
-extension surface (`Workspace.exec_python`, no checkpoint) with:
+extension surface (`Runtime.exec_python`, no commit) with:
 
 - the handler source prepended, the verb function invoked in a small
   trailer, `req` passed via the established `inputs=` channel
@@ -121,7 +121,7 @@ extension surface (`Workspace.exec_python`, no checkpoint) with:
   because `discard()` is all-or-nothing at the provider level and the
   protocol exposes only a boolean: "my log line" is indistinguishable
   from a screenshot written mid-run. `curl` and `test_app` flush when
-  they finish — both run inside a tool call that checkpoints anyway,
+  they finish — both run inside a tool call that commits anyway,
   and both are followed by the agent reading the log.
 
 Handler executions hold the same per-workspace lock as tool calls —
@@ -590,7 +590,7 @@ of those are not merely yours to choose but load-bearing for the
 guarantees above: **Hosting for real (the embedder's half)**, below,
 says which and why. Composable paths that already exist with no new API:
 
-- **Export**: `tar -czf app.tgz app` in the terminal + `ws.get(...)`
+- **Export**: `tar -czf app.tgz app` in the terminal + `ws.files.get(...)`
   — a frontend-only app is deliverable to any static host today.
   (No "freeze the API into static JSON" export: a degraded copy of
   an app masquerading as the app — rejected for the usual reason.)

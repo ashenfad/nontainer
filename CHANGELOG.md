@@ -9,6 +9,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **api-v2: the `Workspace` namespaces, and git's words for git's
+  verbs** — stage 2 of the API plan, and the breaking half. Where
+  stage 1 named the seams (`Store`, `Runtime`), this one moves the
+  verbs onto them and settles the vocabulary. Every consumer is
+  in-repo or the studio, so there is no compatibility layer and no
+  deprecation cycle: the table below IS the migration.
+
+  | old | new |
+  |---|---|
+  | `ws.checkpoint(info)` | `ws.commit(info)` |
+  | `ws.commit(info)` (the staged set) | `ws.commit(info)` — same verb, see below |
+  | `ws.autocheckpoint` | `ws.autocommit` |
+  | `ws.history(limit=)` | `ws.log(limit=)` |
+  | `ws.restore(commit)` | `ws.checkout(commit)` |
+  | `ws.write_file(path, content)` | `ws.files.write(path, content)` |
+  | `ws.edit_file(path, old, new)` | `ws.files.edit(path, old, new)` |
+  | `ws.put(src, dest)` / `ws.get(src, dest)` | `ws.files.put(...)` / `ws.files.get(...)` |
+  | `ws.read_artifact(path)` | `ws.files.read_artifact(path)` |
+  | `ws.fs` | `ws.files.fs` |
+  | `ws.mount()` | `ws.files.export()` |
+  | `ws.stage(paths)` / `ws.unstage(paths)` | `ws.index.stage(paths)` / `ws.index.unstage(paths)` |
+  | `ws.status()` | `ws.index.status()` |
+  | `ws.discard_staged()` | `ws.index.discard()` |
+  | `ws.tag(name, info=)` | `ws.tags.add(name, at=, info=)` |
+  | `ws.tags()` / `ws.tag_info(name)` | `ws.tags.list()` / `ws.tags.info(name)` |
+  | `ws.delete_tag(name)` / `ws.at_tag(name)` | `ws.tags.delete(name)` / `ws.tags.at(name)` |
+  | `..., scope="store")` on any of those | `store.tags.add/list/info/delete/at` |
+  | `ws.changed_since(ref, scope=)` | `ws.changed_since(ref)` |
+  | `ws.exec_python(...)` | `ws.runtime.exec_python(...)` |
+  | `ws.register_command(name, fn)` | `ws.runtime.register_command(name, fn)` |
+  | `ws.set_shell_env(name, value)` | `ws.runtime.shell_env(name, value)` |
+  | `Runtime.set_shell_env(name, value)` | `Runtime.shell_env(name, value)` |
+  | `Runtime.shell_env` (the mapping) | `Runtime.shell_env()` |
+  | `ws.python_config` | `ws.runtime.python_config` |
+  | `ws.supports_commands` / `ws.supports_ws_verbs` | `ws.runtime.supports_commands` / `ws.runtime.supports_ws_verbs` |
+  | `ws.cache_enabled` | `ws.runtime.cache_enabled` |
+  | `ws.head_tree` | `next(iter(ws.log(limit=1))).tree` |
+  | `Workspace(..., autocheckpoint=)`, `store.open(..., autocheckpoint=)`, `workspace(..., autocheckpoint=)` | `autocommit=` |
+  | `TerminalResult.checkpoint` / `PythonResult.checkpoint` | `.commit` |
+  | `WriteOutcome.checkpoint` / `EditOutcome.checkpoint` | `.commit` |
+  | `CheckpointInfo` | `CommitInfo` |
+  | `CheckpointNotFoundError` | `CommitNotFoundError` |
+  | `WorkspaceTools(ws, checkpoint="turn")` | `WorkspaceTools(ws, commit="turn")` |
+  | `provider.checkpoint(info)` | `provider.commit(info)` |
+  | `provider.commit(info)` (the staged set) | `provider.commit_index(info)` |
+
+- **`ws.commit()` is one verb with two scopes.** With a composition in
+  flight — the first `ws.index.stage` suspends autocommit — it commits
+  the staged set and leaves unstaged writes dirty; with none, it
+  commits everything uncommitted. That is the rule `ws-git commit`
+  already followed, and having `ws.commit` and `ws.checkpoint` mean
+  different things three lines apart was the confusion the whole
+  rename is for. The provider keeps both primitives, since a provider
+  is where the difference actually lives.
+
+- **`ws.checkout(commit)` refuses a session name.** It moves this
+  session's files, cache and cwd to one of its own commits and returns
+  the id. A session IS a branch, so anything that is not a commit here
+  raises rather than being guessed at, with a message naming
+  `ws.fork("name")` and `store.open("name")`.
+
+- **`ws.caps` is the provider's capabilities and nothing else.**
+  Execution capabilities moved to the runtime that owns them
+  (`supports_commands`, `supports_ws_verbs`, `cache_enabled`): they
+  describe the executor, so the same workspace answers differently
+  under a different `executor_factory`, and folding them into a
+  provider protocol would have made `Capabilities` a bag of unrelated
+  facts.
+
 - **`Store` and `Runtime`: the seams are objects now** — stage 1 of the
   API v2 plan. nontainer separates where state *lives*
   (`WorkspaceProvider`) from how code *runs* against it (`Executor`),
@@ -19,18 +88,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shell call, the terminal command registry, the shell environment, the
   python config, and the freshness of a remote executor's view.
   `Workspace` keeps what execution must not own: the provider, the
-  single-writer lock, the checkpoint flow, cwd persistence, the cache
+  single-writer lock, the commit flow, cwd persistence, the cache
   key rules, files, history, fork, tags and diffs. `Store` owns what
   outlives a session — opening and listing them, deletion, the orphan
   sweep, store-scoped tags, and resolving a `session@commit` ref.
 
   The two headline verbs stay one call away: `ws.terminal(...)` and
   `ws.run_python(...)` remain on `Workspace` and delegate, with the
-  commit-after-mutation flow staying on the workspace side. So do
-  `ws.exec_python`, `ws.register_command`, `ws.set_shell_env` and
-  `ws.python_config`, as thin delegates, so nothing has to migrate in
-  this release. This stage is code motion: no renames beyond
-  `delete_workspace`, and no behaviour change to the verbs themselves.
+  commit-after-mutation flow staying on the workspace side. This stage
+  was code motion — no renames beyond `delete_workspace`, no behaviour
+  change to the verbs — and the delegates it kept for the raw execution
+  surface are gone in stage 2 above, which ships in the same release.
 
 - **`nontainer.workspace(...)` is sugar for `Store(...).open(...)`.**
   Same signature, same behaviour, one resolution path instead of two —
@@ -56,6 +124,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **One key for the working directory.** monkeyfs's `VirtualFS`
+  resolves every relative path against the cwd key it keeps in the
+  provider's kv, and nontainer kept a second copy under `__cwd__`
+  beside it — two keys for one fact, two merge functions registered for
+  them, and nothing to say which won a disagreement. The filesystem's
+  key is now the only one: on the kvgit backend the filesystem owns it
+  (so cwd commits, forks and rolls back with the files, as before), and
+  the backends whose filesystems hold cwd in memory get the same key
+  written for them, which is the persistence-on-reopen they had. A
+  store carrying the legacy key adopts its value on open and drops the
+  key, and the removal rides the next commit. One consequence, on the
+  kvgit backend only: a workspace with `mounts` no longer persists its
+  cwd, because a `MountFS` requires the filesystem underneath it to sit
+  at the root — such a session opens at the workspace root, and mounted
+  trees were already unversioned live views by contract.
+
+- **The providers doc no longer claims kvgit deletes from a hidden
+  `__void__` anchor branch.** Deletion has been anchor-free since it
+  moved to `kvgit.delete_branches`; `__void__` is only swept now —
+  folded into every delete so stores written by older versions come out
+  clean — and excluded from `Store.sessions()`.
+
 - **The `ws-git` and `ws-curl` guest ferries dispatch again on
   `DudExecutor`.** Both hostcall handlers looked their verb up in
   `ws._commands`, which stopped existing when the registry moved to
@@ -68,7 +158,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A second `Runtime` over one workspace sees its own shell
   environment.** Both executors fetched `$VAR` expansions through
   `ctx.workspace.runtime` — the workspace's *primary* runtime — so a
-  runtime's own `set_shell_env` was ignored and the primary's
+  runtime's own shell variables were ignored and the primary's
   variables leaked into its executions. They read
   `ExecutionContext.shell_env` now.
 
@@ -87,6 +177,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- **The flat methods the namespaces replace**, and the execution
+  delegates `Workspace` grew in stage 1 (`exec_python`,
+  `register_command`, `set_shell_env`, `python_config`,
+  `supports_commands`, `supports_ws_verbs`) — see the table above.
+  Stage 1 kept them so nothing had to migrate mid-plan; both stages
+  ship in this release, so the migration is one step, not two.
+
+- **`scope=` on the session tag verbs.** The object you reach through
+  IS the scope now: `ws.tags` for this session, `store.tags` for names
+  that outlive it. `ws.changed_since(ref)` resolves a name as this
+  session's tag first and the store's second, so the store scope needs
+  no argument there either.
+
+- **`ws.head_tree`**, with no consumer outside its own tests. The hash
+  it returned is `CommitInfo.tree`, which is where the concept is
+  documented: `next(iter(ws.log(limit=1))).tree`.
+
 - **`nontainer.delete_workspace(...)`.** Use
   `Store(path, backend=...).delete(sessions, min_age=...)`, which
   dispatches to the same per-backend layout and is equally plural and
@@ -95,6 +202,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it belongs on the object that owns the store.
 
 ### Added
+
+- **`ws.files`, `ws.index`, `ws.tags`** — three namespaces on
+  `Workspace`, each a view holding the workspace and no state of its
+  own, so reaching one costs nothing and returns the same object every
+  time. Writes through `ws.files` behave exactly as the flat methods
+  did: the single-writer lock for the call, the commit flow when it
+  lands, the same `WriteOutcome`. `ws.files.fs` stays public as the
+  documented escape hatch.
+
+- **`ws.files.read(path)`, `ws.files.exists(path)`,
+  `ws.files.list(path=".", recursive=False)`** — the read side the flat
+  surface never had, so `ws.files.fs` is no longer the only way to look
+  at the tree from the host. Listings come back spelled the way the
+  directory was asked for, so an entry goes straight back into `read`.
+
+- **`ws.merge(source)`** on the facade, gated by `caps.merge`. The
+  provider has had it since ws-git; the workspace-level verb takes the
+  lock, refuses a dirty tree with the two verbs that fix it, and marks
+  the executor's view stale afterwards. Conflicts still land as markers
+  in the merge commit and are reported rather than blocking.
+
+- **`ws.tags.add(name, at=...)`** — name an earlier commit of this
+  session, not only the current state.
+
+- **`Runtime.shell_env(...)`** is one verb, three forms: a name and a
+  value publishes, a name alone reads one back, no arguments returns
+  the live mapping (which is how a fork replays a whole environment).
 
 - **`nontainer.Store`** / `nontainer.store(...)` — `open`, `sessions`,
   `exists`, `delete`, `resolve`, `clean`, `tags`, `close`. `sessions()`
@@ -128,8 +262,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state, with its own executor and its own budget, while the session's
   own runtime keeps running. That is what serving a published snapshot
   needs. Its `mounts=` are that runtime's alone; mount composition
-  otherwise stays with the workspace, so `ws.fs` and execution always
-  see the same tree.
+  otherwise stays with the workspace, so `ws.files.fs` and execution
+  always see the same tree.
 
 - **`ExecutionContext.shell_env`** — the executing runtime's shell
   variables, bound live the way `commands` already is. Both are the
@@ -142,6 +276,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nested agent turn is neither provider-shaped nor executor-shaped: it
   needs a model, a tool loop and a budget, none of which nontainer
   owns.
+
+### Dependencies
+
+- **Floors raised**: `kvgit>=0.3.8` (prefix merge policy and
+  `MergeChoice`, byte-equal values merging without a conflict, and a
+  lease that keeps a concurrent writer's commits out of the orphan
+  sweep), `monkeyfs>=0.1.9` (the 3.10 accessor rebinds, including the
+  `expanduser` leak that sent a `~` path to the real home, plus strict
+  realpath), `sandtrap>=0.3.5` (raw is the default sandbox mode; the
+  wrapped mode is deprecated). The `dud` extra keeps its
+  `python_version >= "3.11"` marker: nontainer still supports 3.10.
 
 ## 0.5.2 - 2026-09-04
 
