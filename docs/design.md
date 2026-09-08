@@ -97,6 +97,16 @@ the whole model:
   partial commit absorbs the unstaged edits into its own baseline —
   `status` goes clean over work the agent did not commit, and a later
   checkout brings it back as if it had.
+- **The fiction's bookkeeping is part of its operations.** That
+  restore, the tree a checkout writes, and the blob a merge records
+  are committed by the operation itself, keyed to the paths it
+  touched — not left to `autocommit`, which a per-turn host turns off,
+  and not allowed to sweep up unrelated dirty work. A refused commit
+  (a CAS conflict) puts the working tree and the index back. Which
+  commits are the agent's is one rule: `info["tool"]` is `ws-git` or
+  `ws-git.merge`; the bookkeeping's `ws-git.restore`,
+  `ws-git.checkout` and `ws-git.merge-record` are plumbing like the
+  framework's own.
 - **`log`, `show` and `diff` walk the agent's graph**, threaded
   through `virtual_parents` in commit info. The framework's per-call
   commits are never in it.
