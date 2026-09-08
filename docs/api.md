@@ -312,6 +312,12 @@ not the framework's. `ws-git` in the terminal is the same
 implementation with the agent's spelling, so host and agent see one
 index. See [design.md](design.md) for the model.
 
+`ws.index.checkout(commit)` takes one of the AGENT's commits — what
+`ws.index.log()` lists — and refuses any other commit in the session's
+history, because a commit with no place in the agent's graph would
+strand its whole log behind it. Moving the session to an arbitrary
+store commit is `ws.checkout(commit)`, the host's verb.
+
 **Two commit verbs, and they are for two different callers.**
 `ws.commit()` takes everything uncommitted, always — it is the
 framework's durability verb, and the code around a workspace (a turn

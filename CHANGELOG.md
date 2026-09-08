@@ -103,8 +103,10 @@ is the migration.
   agent's is one rule in one place (`agentgit.is_agent_commit`):
   `info["tool"]` is `"ws-git"` or `"ws-git.merge"`; the bookkeeping and
   the framework's own commits are never in `ws-git log`. New:
-  `ws-git checkout <ref>` (restore the tree to one of your commits; the
-  fiction rewinds, the store appends), `ws-git show <ref>`,
+  `ws-git checkout <ref>` (restore the tree to one of your commits —
+  and only one of yours, since a framework commit has no place in the
+  agent's graph; the fiction rewinds, the store appends),
+  `ws-git show <ref>`,
   `ws.index.commit/log/head/checkout`. `ws-git stage` is silent and
   optional. Refusals for `stash`, `rebase`, `branch`, `merge` name a
   terminal verb or say the host does it.
@@ -161,7 +163,10 @@ is the migration.
   read the mapping); `ExecutionContext.shell_env` beside `commands`.
 - Provider primitives the fiction is built on: `commit_keys(info,
   keys=)`, `files_at(commit)`, `working_files()`, `key_at(commit, key)`,
-  `branch_head(session)`, `refresh()`; `merge(source, at=, info=)`. The
+  `branch_head(session)`, `refresh()`. `merge` takes `at=` and `info=`
+  in the protocol, and `Workspace.merge` always passes both, so a
+  provider written to the documented signature works whether or not it
+  has an index. The
   kvgit provider registers the framework keys' merge policies (the file
   table, the cwd, the ws-git blob) for ordinary commits too, so a
   commit that loses its CAS to another handle three-way merges instead
