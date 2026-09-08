@@ -96,12 +96,34 @@ is the migration.
   commits its own bookkeeping, keyed to what it touched and spelled
   `ws-git.restore` / `ws-git.checkout` / `ws-git.merge-record`, so a
   host with `autocommit=False` gets the same durability; a refused
-  keyed commit puts the tree and the index back as they were. New:
+  keyed commit puts the tree and the index back as they were, and one
+  that loses its CAS to another handle on the session is re-applied
+  against the head that won (`BookkeepingLost` when even that fails,
+  naming the agent commit that did land). Which store commits are the
+  agent's is one rule in one place (`agentgit.is_agent_commit`):
+  `info["tool"]` is `"ws-git"` or `"ws-git.merge"`; the bookkeeping and
+  the framework's own commits are never in `ws-git log`. New:
   `ws-git checkout <ref>` (restore the tree to one of your commits; the
   fiction rewinds, the store appends), `ws-git show <ref>`,
   `ws.index.commit/log/head/checkout`. `ws-git stage` is silent and
   optional. Refusals for `stash`, `rebase`, `branch`, `merge` name a
   terminal verb or say the host does it.
+
+- **A merge takes only what has been committed — by the agent.**
+  Autocommit keeps the store's buffer clean while an agent composes,
+  so a buffer-clean check said nothing: `ws.merge` would fold work in
+  flight into the merge commit and move the agent's head over it under
+  the merge's name. It now refuses while this session has anything
+  staged, or modified against its own last ws-git commit, naming the
+  two fixes (`ws-git commit -m ...`, `ws-git checkout <your last
+  commit>`); and it merges the SOURCE at that session's last agent
+  commit rather than its store head, so the source agent's work in
+  flight stays its own. A session that never used ws-git has no such
+  commit and merges at its store head, as before. The merge context
+  `status` reports is seeded from `MergeOutcome.conflicts` — what the
+  merge actually marked, so a file that is *about* conflict markers no
+  longer reads as one — and a marked path stops being unresolved when
+  its markers are gone, not when it is committed.
 
 - **`ws.checkout(commit)`** moves this session to one of its own
   commits (the head-moving reset `restore` performed) and refuses a
@@ -130,7 +152,7 @@ is the migration.
 - `nontainer.Ref` (`session@commit[:/path]`; `Ref.parse`, `str`) and
   `Store.resolve(ref)`, a frozen `Workspace` at that commit.
 - `ws.merge(source)` on the facade, gated by `caps.merge`; refuses a
-  dirty tree with the two verbs that fix it.
+  dirty tree — or uncommitted ws-git work — with the verbs that fix it.
 - `ws.files.read`, `.exists`, `.list(path, recursive=)`; `ws.files.fs`
   stays public as the escape hatch.
 - `Runtime` is constructible over an existing (frozen) workspace with
@@ -138,8 +160,14 @@ is the migration.
   `Runtime.shell_env(...)` is one verb, three forms (set, read one,
   read the mapping); `ExecutionContext.shell_env` beside `commands`.
 - Provider primitives the fiction is built on: `commit_keys(info,
-  keys=)`, `files_at(commit)`, `working_files()`; `merge(source,
-  info=)`.
+  keys=)`, `files_at(commit)`, `working_files()`, `key_at(commit, key)`,
+  `branch_head(session)`, `refresh()`; `merge(source, at=, info=)`. The
+  kvgit provider registers the framework keys' merge policies (the file
+  table, the cwd, the ws-git blob) for ordinary commits too, so a
+  commit that loses its CAS to another handle three-way merges instead
+  of raising.
+- `nontainer.BookkeepingLost`, a `WorkspaceError`: an agent commit
+  landed and the record naming it did not.
 - `SessionRunner` and `HostObjectFactory` in `protocol.py`: the loop
   seam, declared and unused.
 
@@ -927,17 +955,6 @@ is the migration.
   masking: because parts are appended, a namespace line meant the success
   signal never showed. Consequences are still reported where they exist —
   `[ui artifacts: ...]` for `ui = {...}` bindings, unchanged.
-
-- **The fiction's bookkeeping commits itself.** The restore that
-  follows an agent commit, the tree and head a `ws-git checkout`
-  writes, and the blob a merge records are each committed by the
-  operation that made them, keyed to the paths they touched, rather
-  than left to `ws.autocommit`. Which store commits belong to the
-  agent is one rule, in one place (`agentgit.is_agent_commit`):
-  `info["tool"]` is `"ws-git"` (the agent's own) or `"ws-git.merge"`
-  (a host merge that changed its tree). The bookkeeping is spelled
-  `ws-git.restore` / `ws-git.checkout` / `ws-git.merge-record` and is
-  never in `ws-git log`.
 
 ### Removed
 

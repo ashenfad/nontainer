@@ -114,7 +114,10 @@ the whole model:
   branch` and `ws-git merge` are refused with the host named as the
   one who invokes them, and `ws-git checkout <ref>` restores a tree
   rather than switching: the fiction rewinds, the store appends the
-  restore as a new commit.
+  restore as a new commit. A merge takes only what has been committed
+  on both sides, which under the fiction means *agent*-committed: the
+  target refuses while it has work in flight, and the source is merged
+  at its last agent commit rather than at its store head.
 
 The one thing the substrate must provide is a keyed commit
 (`provider.commit_keys`, gated by `caps.index`). Everything else is
