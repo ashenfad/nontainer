@@ -1,6 +1,6 @@
 import pytest
 
-from nontainer import NotSupportedError, SessionIdError
+from nontainer import NotSupportedError, SessionIdError, workspace
 from nontainer.providers import DirProvider
 
 
@@ -140,3 +140,24 @@ def test_dir_fork_at_is_not_supported(dir_ws):
 
     with pytest.raises(NotSupportedError):
         dir_ws.fork("child", at="anything")
+
+
+def test_recursive_list_terminates_on_a_symlink_cycle(tmp_path):
+    """A directory symlink pointing at its own ancestor is an ordinary
+    thing to find in a real directory. The listing walks with the
+    filesystem's own recursion, which does not descend into symlinked
+    directories, so it terminates and names each real entry once."""
+    ws = workspace("cyclic", store=tmp_path, backend="dir")
+    try:
+        ws.files.write("/workspace/data/a.txt", "a")
+        (tmp_path / "cyclic" / "workspace" / "data" / "loop").symlink_to(
+            tmp_path / "cyclic" / "workspace", target_is_directory=True
+        )
+
+        entries = ws.files.list("/workspace", recursive=True)
+
+        assert entries.count("/workspace/data/a.txt") == 1
+        assert "/workspace/data/loop" in entries
+        assert not any(e.startswith("/workspace/data/loop/") for e in entries)
+    finally:
+        ws.close()
