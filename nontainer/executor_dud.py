@@ -1104,7 +1104,7 @@ class DudExecutor:
     def _mirror_cwd(self, guest_cwd: str) -> None:
         """The guest owns cwd within a session (real `cd`); mirror it
         onto the host fs after each shell call so Workspace._save_cwd
-        persists it (and restore/fork land where the agent was).
+        persists it (and checkout/fork land where the agent was).
         Best-effort: a directory born and entered in the same call
         isn't in the provider until its diff lands files there — the
         mirror catches up on the next shell call."""

@@ -124,7 +124,10 @@ class KvgitSessionDb(JsonDb):
     everything else, and agno re-reads the session from the db at the
     start of every run (``Agent.cache_session`` defaults to False), so
     the next run sees the rewound conversation with no invalidation
-    step. ``cache_session=True`` would break that — agno would append
+    step. The rewind is a restore COMMIT — the branch head moves
+    forward to hold the earlier conversation — so the turns it stepped
+    off are still in ``ws.log()`` and ``ws.rollback(1)`` puts them
+    back. ``cache_session=True`` would break that — agno would append
     to the stale in-memory run list and write the rewound turns back —
     so an upsert whose prior runs are not exactly the branch's
     ``run_ids`` is refused and writes nothing.
@@ -394,7 +397,7 @@ class KvgitSessionDb(JsonDb):
             # most recent runs: everything before the new run must be a
             # contiguous tail of what the branch holds. Runs the branch
             # does not hold mean the caller is writing from a session
-            # object that predates a restore. The branch keeps its full
+            # object that predates a checkout. The branch keeps its full
             # list either way; a limited read never shortens history.
             prior = (
                 incoming[:-1] if incoming and incoming[-1] not in known else incoming

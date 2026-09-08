@@ -15,7 +15,7 @@ Today the conversation lives wherever the embedder points agno's
 memory alongside files has to stamp the workspace head onto each
 turn, truncate agno's run list by hand, and hope the two writes
 never diverge. Putting the session in the workspace makes the join
-disappear: there is one store, one commit, one restore.
+disappear: there is one store, one commit, one checkout.
 
 This is the agex model, reached through agno's own storage
 extension point rather than through agex.
@@ -156,6 +156,13 @@ user message includes the conversation.
 agno reads the session from the db at the start of every run
 (`Agent.cache_session` defaults to `False`), so the next run sees
 the rewound conversation with no invalidation step.
+
+The rewind is a *restore commit*, not a rollback of the branch: the
+checkout writes the target's state — files, `cache`, cwd and the run
+keys together — and commits it, so the turns it stepped off are still
+in `ws.log()` and `ws.rollback(1)` right afterwards puts the
+conversation back. What the reader sees is rewound; what the store
+holds is everything that ever happened.
 
 `cache_session=True` would break this: agno keeps the loaded session
 object in memory across runs, so after a restore it would append to

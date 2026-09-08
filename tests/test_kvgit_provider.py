@@ -157,17 +157,23 @@ def test_rollback_can_target_init_but_not_cross_it():
     try:
         init_head = ws.head
         ws.terminal("mkdir -p deep; cd deep; echo changed > state.txt")
+        work = ws.head
 
-        assert ws.rollback(1) == init_head
-        assert ws.head == init_head
+        landed = ws.rollback(1)
+        assert ws.head == landed
+        assert landed not in (init_head, work)  # it appended
         assert not ws.files.fs.exists("/workspace/deep")
         assert ws.files.fs.isdir("/workspace")
         assert ws.files.fs.getcwd() == "/workspace"
+        # the turn it stepped off is still in the log, one back
+        assert [e.id for e in ws.log()][:3] == [landed, work, init_head]
 
+        # The floor counts over the log as it stands, and init sits two
+        # back now: reaching past it is what is refused, not going back.
         with pytest.raises(CommitNotFoundError, match="rollback floor"):
-            ws.rollback(1)
+            ws.rollback(3)
 
-        assert ws.head == init_head
+        assert ws.head == landed
         assert not ws.dirty
         assert ws.files.fs.isdir("/workspace")
         assert ws.files.fs.getcwd() == "/workspace"
@@ -182,10 +188,12 @@ def test_rollback_floor_survives_reopen(tmp_path):
         ws.terminal("echo changed > state.txt")
 
     with Workspace(KvgitProvider.open(path, session="floor-reopen")) as reopened:
-        assert reopened.rollback(1) == init_head
+        landed = reopened.rollback(1)
+        assert init_head in {e.id for e in reopened.log()}
+        assert not reopened.files.fs.exists("/workspace/state.txt")
         with pytest.raises(CommitNotFoundError, match="rollback floor"):
-            reopened.rollback(1)
-        assert reopened.head == init_head
+            reopened.rollback(3)
+        assert reopened.head == landed
         assert reopened.files.fs.isdir("/workspace")
         assert reopened.files.fs.getcwd() == "/workspace"
 
@@ -198,10 +206,12 @@ def test_fork_inherits_rollback_floor():
         parent.terminal("echo parent > state.txt")
         child = parent.fork("floor-child")
 
-        assert child.rollback(1) == init_head
+        landed = child.rollback(1)
+        assert init_head in {e.id for e in child.log()}
+        assert not child.files.fs.exists("/workspace/state.txt")
         with pytest.raises(CommitNotFoundError, match="rollback floor"):
-            child.rollback(1)
-        assert child.head == init_head
+            child.rollback(3)
+        assert child.head == landed
         assert child.files.fs.isdir("/workspace")
         assert child.files.fs.getcwd() == "/workspace"
     finally:
@@ -222,8 +232,9 @@ def test_legacy_history_without_init_keeps_provider_rollback_behavior():
     ws = Workspace(p)
     try:
         seed = list(ws.log())[2]
-        assert ws.rollback(2) == seed.id
-        assert ws.head == seed.id
+        landed = ws.rollback(2)
+        assert ws.head == landed
+        assert seed.id in {e.id for e in ws.log()}
         assert not ws.files.fs.exists("/workspace")
     finally:
         ws.close()
@@ -250,6 +261,103 @@ def test_commit_and_restore_files_and_cache(kv_ws):
     assert kv_ws.cache["gen"] == 1
 
 
+def test_checkout_appends_and_keeps_every_earlier_commit(kv_ws):
+    """The head only ever moves forward. Going back is a new commit
+    whose state equals the target's, so the turns it steps off are
+    still in the log — and still there to come back to."""
+    kv_ws.terminal("echo one > f.txt")
+    target = kv_ws.head
+    kv_ws.terminal("echo two > f.txt")
+    kv_ws.terminal("echo three > f.txt")
+    before = [e.id for e in kv_ws.log()]
+
+    landed = kv_ws.checkout(target)
+
+    assert [e.id for e in kv_ws.log()] == [landed] + before
+    assert landed not in before
+    assert next(iter(kv_ws.log())).info == {"tool": "checkout", "target": target}
+    assert kv_ws.terminal("cat f.txt").stdout.strip() == "one"
+
+
+def test_the_restore_commit_holds_the_targets_whole_world(kv_ws):
+    """Files, cache, cwd and the framework's own keys: the host
+    restored the whole session, so the appended commit's keyset is the
+    target's keyset — not its files alone."""
+    provider = kv_ws._provider
+    conversation = "__agno__/session"
+    kv_ws.terminal("mkdir -p one two; cd one; echo v1 > f.txt")
+    kv_ws.run_python("cache['gen'] = 1")
+    provider.kv[conversation] = {"run_ids": ["r1"]}
+    target = kv_ws.commit(info={"label": "v1"})
+
+    kv_ws.terminal("cd ../two; echo v2 > f.txt")
+    kv_ws.run_python("cache['gen'] = 2")
+    provider.kv[conversation] = {"run_ids": ["r1", "r2"]}
+    kv_ws.commit(info={"label": "v2"})
+
+    landed = kv_ws.checkout(target)
+
+    assert dict(provider.files_at(landed)) == dict(provider.files_at(target))
+    for key in (conversation, VirtualFS.CWD_KEY, "__cache__/gen"):
+        assert provider.key_at(landed, key) == provider.key_at(target, key)
+    # ...and the live workspace reads that way too
+    assert kv_ws.terminal("cat f.txt").stdout.strip() == "v1"
+    assert kv_ws.terminal("pwd").stdout.strip() == "/workspace/one"
+    assert kv_ws.cache["gen"] == 1
+    assert provider.kv[conversation] == {"run_ids": ["r1"]}
+
+
+def test_checkout_onto_state_the_workspace_already_holds_commits_nothing(kv_ws):
+    kv_ws.terminal("echo one > f.txt")
+    head = kv_ws.head
+    before = len(list(kv_ws.log()))
+
+    assert kv_ws.checkout(head) == head
+    assert len(list(kv_ws.log())) == before
+
+    # ...and a target the workspace holds the CONTENT of is the same
+    # no-op, however it got back there: the restore below lands one
+    # commit, and checking the same target out again lands none.
+    kv_ws.terminal("echo two > f.txt")
+    landed = kv_ws.checkout(head)
+    assert len(list(kv_ws.log())) == before + 2
+    assert kv_ws.checkout(head) == landed
+    assert len(list(kv_ws.log())) == before + 2
+
+
+def test_a_checkout_replaces_uncommitted_writes(kv_ws):
+    """A checkout says what the workspace IS afterwards, so writes that
+    never landed are replaced by the restored state. ``ws.discard()``
+    is the verb for dropping them on their own."""
+    kv_ws.terminal("echo one > f.txt")
+    target = kv_ws.head
+    kv_ws.terminal("echo two > f.txt")
+    kv_ws.autocommit = False
+    kv_ws.files.write("/workspace/f.txt", "three\n")
+    kv_ws.files.write("/workspace/scratch.txt", "wip\n")
+    assert kv_ws.dirty
+
+    kv_ws.checkout(target)
+
+    assert not kv_ws.dirty
+    assert kv_ws.files.read("/workspace/f.txt") == b"one\n"
+    assert not kv_ws.files.exists("/workspace/scratch.txt")
+
+
+def test_rollback_after_a_checkout_is_the_redo(kv_ws):
+    """Because the checkout appended, the commit before it is the one
+    it stepped off — so undo is redo-able with the relative verb."""
+    kv_ws.terminal("echo one > f.txt")
+    one = kv_ws.head
+    kv_ws.terminal("echo two > f.txt")
+
+    kv_ws.checkout(one)
+    assert kv_ws.terminal("cat f.txt").stdout.strip() == "one"
+
+    kv_ws.rollback(1)
+    assert kv_ws.terminal("cat f.txt").stdout.strip() == "two"
+
+
 def test_checkout_unknown_id(kv_ws):
     with pytest.raises(CommitNotFoundError):
         kv_ws.checkout("0" * 40)
@@ -273,13 +381,18 @@ def test_checkout_refuses_a_session_and_says_why(tmp_path):
         assert alice.terminal("cat who.txt").stdout.strip() == "alice"
 
 
-def test_checkout_returns_where_it_landed(kv_ws):
+def test_checkout_returns_the_commit_it_made(kv_ws):
+    """The id that comes back is the RESTORE, not the target: the
+    checkout appended, so the head moved forward to reach the past."""
     kv_ws.terminal("echo one > a.txt")
     first = kv_ws.head
     kv_ws.terminal("echo two > a.txt")
 
-    assert kv_ws.checkout(first) == first
-    assert kv_ws.head == first
+    landed = kv_ws.checkout(first)
+
+    assert landed == kv_ws.head
+    assert landed != first
+    assert kv_ws.terminal("cat a.txt").stdout.strip() == "one"
 
 
 # -- autocommit ---------------------------------------------------------

@@ -16,7 +16,7 @@ What this spike provides:
   inspectability tradeoff: plain values stay SQL-readable, exotic
   ones ride through opaquely).
 - capabilities: ``versioned=False`` for the spike (AgentFS snapshots
-  are whole-file copies; wiring them as commit/restore is future
+  are whole-file copies; wiring them as commit/checkout is future
   work), ``sql_audit=True`` (the substrate is a queryable SQLite db).
 
 Sync facade: the SDK is async-only, so each provider owns a
@@ -502,8 +502,8 @@ class AgentFSProvider:
     def commit(self, info: dict[str, Any] | None = None) -> str:
         raise self._unsupported("commit")
 
-    def restore(self, commit_id: str) -> None:
-        raise self._unsupported("restore")
+    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+        raise self._unsupported("checkout")
 
     def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         raise self._unsupported("history")

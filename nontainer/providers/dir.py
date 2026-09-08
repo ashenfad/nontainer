@@ -179,8 +179,8 @@ class DirProvider:
     def commit(self, info: dict[str, Any] | None = None) -> str:
         raise self._unsupported("commit")
 
-    def restore(self, commit_id: str) -> None:
-        raise self._unsupported("restore")
+    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+        raise self._unsupported("checkout")
 
     def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         raise self._unsupported("history")

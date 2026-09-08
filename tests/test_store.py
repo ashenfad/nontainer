@@ -120,21 +120,43 @@ def test_delete_is_idempotent_and_plural(tmp_path):
     st.delete("a", min_age=0)  # deleting nothing is not an error
 
 
-def test_clean_sweeps_unreachable_commits(tmp_path):
-    """Rolling back leaves commits nothing reaches; clean() removes
-    them, and only them."""
+def test_a_rollback_leaves_nothing_to_sweep(tmp_path):
+    """A session's history is append-only: going back is a new commit,
+    so the turns it stepped off are still reachable and clean() has
+    nothing to collect."""
     st = Store(tmp_path)
     with st.open("gc") as ws:
         ws.terminal("echo one > f.txt")
+        one = ws.head
         ws.terminal("echo two > f.txt")
         ws.terminal("echo three > f.txt")
+        three = ws.head
         ws.rollback(2)
         assert ws.terminal("cat f.txt").stdout.strip() == "one"
+        assert {one, three} <= {e.id for e in ws.log()}
 
-    assert st.clean(min_age=0) > 0
+    assert st.clean(min_age=0) == 0
     with st.open("gc") as ws:
         assert ws.terminal("cat f.txt").stdout.strip() == "one"
+
+
+def test_clean_sweeps_what_a_deletion_left_behind(tmp_path):
+    """What DOES strand commits is dropping a branch. Deletion sweeps
+    as it goes, but its grace period spares commits younger than the
+    period — clean() is the standalone sweep that collects them."""
+    st = Store(tmp_path)
+    with st.open("kept") as ws:
+        ws.terminal("echo kept > f.txt")
+    with st.open("gone") as ws:
+        ws.terminal("echo one > f.txt")
+        ws.terminal("echo two > f.txt")
+
+    st.delete("gone", min_age=3600)  # young commits left where they lie
+
+    assert st.clean(min_age=0) > 0
     assert st.clean(min_age=0) == 0  # nothing left to sweep
+    with st.open("kept") as ws:
+        assert ws.terminal("cat f.txt").stdout.strip() == "kept"
 
 
 # -- resolve -----------------------------------------------------------------

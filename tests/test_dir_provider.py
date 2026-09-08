@@ -28,7 +28,7 @@ def test_versioning_verbs_raise(tmp_path):
     with pytest.raises(NotSupportedError):
         p.commit()
     with pytest.raises(NotSupportedError):
-        p.restore("x")
+        p.checkout("x")
     with pytest.raises(NotSupportedError):
         p.history()
     with pytest.raises(NotSupportedError):

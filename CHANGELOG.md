@@ -70,6 +70,7 @@ is the migration.
   | `WorkspaceTools(ws, checkpoint="turn")` | `WorkspaceTools(ws, commit="turn")` |
   | `provider.checkpoint(info)` | `provider.commit(info)` |
   | `provider.commit(info)` (the staged set) | `provider.commit_keys(info, keys=)` |
+  | `provider.restore(commit)` | `provider.checkout(commit, info=)` (appends; returns the new id) |
 
 - **Two commit verbs, for two callers.** `ws.commit()` commits
   everything uncommitted, always: the framework's durability verb,
@@ -127,9 +128,25 @@ is the migration.
   longer reads as one — and a marked path stops being unresolved when
   its markers are gone, not when it is committed.
 
-- **`ws.checkout(commit)`** moves this session to one of its own
-  commits (the head-moving reset `restore` performed) and refuses a
-  session name: a session is a branch, reached by `ws.fork("name")` or
+- **`ws.checkout(commit)` appends, and a session's history is
+  append-only.** It makes this session what it was at one of its own
+  commits — files, `cache`, cwd, the ws-git blob, the stored
+  conversation, everything it holds — by *writing* that state and
+  committing it. So the id it returns is a new commit, everything
+  committed since the target is still in `ws.log()`, an undo is
+  redo-able (`ws.rollback(1)` straight after a checkout lands on the
+  commit it stepped off), and `store.clean()` has nothing to collect
+  after one. `restore`'s head-moving reset is gone: nothing but
+  store-level admin (`Store.delete`) moves a branch head backward.
+  Uncommitted writes are replaced by the restored state — `ws.discard()`
+  is the verb for dropping them on their own — and a checkout onto
+  state the workspace already holds writes nothing and returns the
+  current head. Because the agent's git is metadata in a restored key,
+  a host checkout rewinds the fiction with the tree: `ws.index.head`
+  and `ws-git log` read as they did at the target. `rollback(steps)`
+  counts back over `ws.log()` as it stands, so counting twice in a row
+  is not counting two at once. It still refuses a session name: a
+  session is a branch, reached by `ws.fork("name")` or
   `store.open("name")`.
 
 - **`ws.caps`** is the provider's capabilities only; `supports_commands`,

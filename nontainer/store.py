@@ -503,11 +503,13 @@ class Store:
         """Sweep storage nothing reaches any more; returns how many
         commits were removed.
 
-        A commit stays alive while a branch head or a tag reaches
-        it. Rolling back, restoring, or deleting a tag can leave
-        commits behind that nothing reaches — deletion sweeps as it
-        goes, but a long-lived store accumulates them anyway. This is
-        the standalone sweep.
+        A commit stays alive while a branch head or a tag reaches it,
+        and a session's own history is append-only — a checkout or a
+        rollback appends a restore rather than moving the head back,
+        so neither strands anything. What does: deleting a session or
+        a tag. Both sweep as they go, but their grace period spares
+        commits younger than it and a long-lived store accumulates
+        what they left. This is the standalone sweep.
 
         ``min_age`` (seconds) is a grace period: commits younger than
         it are left alone, so a concurrent writer mid-commit is never
