@@ -458,17 +458,25 @@ class AttachFS:
     unversioned, explicit, and gone when the session closes. Composing
     one moves the working directory into the composition, which needs
     the filesystem underneath at the root (it hands that one paths it
-    has already resolved), so an attached session's cwd stops
-    persisting for as long as anything is attached — the same trade a
-    configured mount already makes.
+    has already resolved), so an attached session's cwd lives in the
+    composition for as long as anything is attached — the same trade a
+    configured mount already makes. On a backend whose filesystem
+    persists its own cwd, that park is what the store then holds, and
+    the workspace reads a stored ``/`` back as "start at the root".
+
+    ``home`` is where the cwd lands when the one it should go back to
+    no longer resolves — detaching while standing inside the
+    attachment, which would otherwise leave the session at the
+    filesystem root.
     """
 
-    __slots__ = ("_base", "_attached", "_active")
+    __slots__ = ("_base", "_attached", "_active", "_home")
 
-    def __init__(self, base: Any) -> None:
+    def __init__(self, base: Any, home: str = "/") -> None:
         self._base = base
         self._attached: dict[str, Any] = {}
         self._active = base
+        self._home = home
 
     def __repr__(self) -> str:
         return f"<{type(self._base).__name__} + {sorted(self._attached)}>"
@@ -516,13 +524,14 @@ class AttachFS:
         except Exception:  # noqa: BLE001 - a filesystem with no cwd starts at /
             return "/"
 
-    @staticmethod
-    def _move(fs: Any, where: str) -> None:
-        try:
-            if fs.getcwd() != where:
-                fs.chdir(where)
-        except Exception:  # noqa: BLE001 - a cwd that will not move is not fatal
-            pass
+    def _move(self, fs: Any, where: str) -> None:
+        for target in (where, self._home):
+            try:
+                if fs.getcwd() != target:
+                    fs.chdir(target)
+                return
+            except Exception:  # noqa: BLE001 - try home, then give up
+                continue
 
 
 class SubtreeFS:

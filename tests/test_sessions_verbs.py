@@ -273,6 +273,26 @@ def test_take_reads_a_session_at_its_agents_head(ws):
         child.close()
 
 
+def test_a_take_the_view_refuses_writes_nothing_at_all(ws):
+    """A take is one operation: refusing halfway would leave the tree
+    holding part of a take the caller is told did not happen."""
+    _seed(ws, **{"seen.txt": "S1\n", "hidden.txt": "H1\n"})
+    src = ws.fork("src")
+    child = ws.fork("child", paths=["seen.txt"])
+    try:
+        src.files.write("/workspace/seen.txt", "S2\n")
+        src.files.write("/workspace/hidden.txt", "H2\n")
+        src.index.commit("theirs")
+
+        with pytest.raises(PermissionError, match="outside this session's view"):
+            child.checkout("src", paths=["seen.txt", "hidden.txt"])
+        assert child.files.read("/workspace/seen.txt") == b"S1\n"
+        assert not child.uncommitted
+    finally:
+        src.close()
+        child.close()
+
+
 def test_take_of_a_ref_and_of_nothing(ws):
     _seed(ws, **{"a.txt": "one\n"})
     first = ws.ref
@@ -336,6 +356,39 @@ def test_attaching_does_not_move_the_session(ws, store):
     ws.files.detach("reviews")
     assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
     assert ws.terminal("cat ../a.txt").stdout == "mine\n"
+
+
+def test_a_session_that_had_a_tree_attached_reopens_at_its_root(ws, store):
+    """Composing parks the filesystem underneath at the root, and on a
+    backend where that filesystem OWNS the cwd key the park is a write
+    that rides the next commit. The filesystem root is not somewhere a
+    session was, so reopening starts at the workspace root instead."""
+    from monkeyfs import VirtualFS
+
+    _seed(ws, **{"a.txt": "mine\n"})
+    other = store.open("reviewer")
+    other.files.write("/workspace/review.md", "ok\n")
+    other.commit(info={"tool": "test"})
+    other.close()
+
+    ws.terminal("mkdir -p deep; cd deep")
+    ws.files.attach("reviewer", "reviews")
+    assert ws._provider.kv.get(VirtualFS.CWD_KEY) == "/"  # the park
+    ws.commit(info={"tool": "test"})
+
+    # detaching from INSIDE the attachment has nowhere to go back to,
+    # so it lands on the workspace root rather than the filesystem's
+    ws.terminal("cd /workspace/reviews")
+    ws.files.detach("reviews")
+    assert ws.terminal("pwd").stdout.strip() == "/workspace"
+    ws.close()
+
+    reopened = store.open("main")
+    try:
+        assert reopened.terminal("pwd").stdout.strip() == "/workspace"
+        assert reopened.terminal("cat a.txt").stdout == "mine\n"
+    finally:
+        reopened.close()
 
 
 def test_attach_by_session_name_and_its_refusals(ws, store):
@@ -475,6 +528,23 @@ def test_ws_git_log_and_diff_read_another_session(ws, store):
 
     assert ws.terminal("ws-git diff worker --check").exit_code == 2
     assert ws.terminal("ws-git log nosuch").exit_code == 1
+
+    # a word that is neither a session nor anything in the tree is
+    # refused: silence here means "no differences", and a mistyped
+    # delegate name must not earn it
+    r = ws.terminal("ws-git diff wrker")
+    assert r.exit_code == 1
+    assert "ambiguous argument 'wrker'" in r.stderr
+
+
+def test_diff_takes_a_directory_pathspec(ws):
+    _seed(ws, **{"sub/a.py": "a\n", "b.py": "b\n"})
+    ws.files.write("/workspace/sub/a.py", "edited\n")
+    ws.files.write("/workspace/b.py", "edited\n")
+
+    out = ws.terminal("ws-git diff sub").stdout
+    assert "a/sub/a.py" in out and "b.py b/b.py" not in out
+    assert ws.terminal("ws-git diff sub/nope.py").exit_code == 1
 
 
 def test_ws_git_checkout_takes_paths_from_another_session(ws, store):

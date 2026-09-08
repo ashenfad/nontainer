@@ -284,6 +284,11 @@ is the migration.
     automatic, and like a `Mount`: unversioned, uncommitted, not
     carried by a fork, gone when the session closes. The terminal sees
     it; a point inside the workspace root reaches a guest rung too.
+    While anything is attached the working directory belongs to the
+    composition, so a session committed in that state reopens at its
+    root — a stored cwd of `/` is now read as "start at the root",
+    which also fixes the same reopen for a session with configured
+    mounts.
   - **`Store.fork(src, dst, *, at=, inherit=, paths=)`** is the same
     verb for host code with no workspace open.
   - **The plane policy, whole.** A merge is filesystem-only: files
