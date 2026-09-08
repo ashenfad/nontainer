@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping, MutableMapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from .protocol import ExecutionContext, StagedDiff, ViewSpec
@@ -54,6 +54,46 @@ them, and a fork does not inherit them (the new runtime re-adds its
 own, bound to itself)."""
 
 _SHELL_VAR_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+class _ShellEnv(MutableMapping[str, str]):
+    """The shell environment as an ordinary mutable mapping.
+
+    A dict with one rule: a name that a shell could not expand is
+    refused at write time, where the caller is, rather than becoming a
+    variable nothing can ever read. Values are coerced to ``str`` for
+    the same reason — the environment a shell receives is strings, and
+    an int stored here would only fail further away.
+
+    One instance per runtime, handed to the executor by reference
+    (``ExecutionContext.shell_env``), so a variable published after the
+    executor opened is visible to the next call.
+    """
+
+    __slots__ = ("_values",)
+
+    def __init__(self) -> None:
+        self._values: dict[str, str] = {}
+
+    def __getitem__(self, name: str) -> str:
+        return self._values[name]
+
+    def __setitem__(self, name: str, value: str) -> None:
+        if not isinstance(name, str) or not _SHELL_VAR_RE.fullmatch(name):
+            raise ValueError(f"Invalid shell variable name: {name!r}")
+        self._values[name] = value if isinstance(value, str) else str(value)
+
+    def __delitem__(self, name: str) -> None:
+        del self._values[name]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __repr__(self) -> str:
+        return f"<shell env: {sorted(self._values)}>"
 
 
 class Runtime:
@@ -156,7 +196,7 @@ class Runtime:
         # `$APP_ORIGIN` here. Executors snapshot it per call;
         # fork()/at_tag() replay it like commands. Embedders may add
         # their own; the shell never writes back.
-        self._shell_env: dict[str, str] = {}
+        self._shell_env = _ShellEnv()
 
         # Host-side writes move provider state behind a remote
         # executor's back; the workspace flags it and the next
@@ -423,32 +463,22 @@ class Runtime:
         if rebind is not None:
             self._framework_commands[name] = rebind
 
-    def shell_env(
-        self, name: str | None = None, value: str | None = None
-    ) -> "str | dict[str, str] | None":
+    @property
+    def env(self) -> MutableMapping[str, str]:
         """The shell environment for script executions (``$VAR``
         expansion on the termish rung, exported into the guest on dud
-        rungs).
+        rungs), as a live mutable mapping::
 
-        One verb, three forms: with a name and a value it publishes a
-        variable, with a name alone it returns that variable's value
-        (``None`` when unset), and with neither it returns the live
-        mapping — mutable, which is how a fork replays a whole
-        environment at once.
+            rt.env["APP_ORIGIN"] = "http://app.local"
+            del rt.env["APP_ORIGIN"]
+            dict(rt.env)
 
         Publishing is what post-construction features do
-        (``enable_apps`` publishes ``$APP_ORIGIN``), and embedders may
-        add their own. Forks and snapshots inherit a copy. The shell
-        never writes back: this is configuration, not state.
+        (``nontainer.apps`` publishes ``$APP_ORIGIN``), and embedders
+        may add their own. Forks and snapshots inherit a copy. The
+        shell never writes back: this is configuration, not state.
         """
-        if name is None:
-            return self._shell_env
-        if value is None:
-            return self._shell_env.get(name)
-        if not _SHELL_VAR_RE.fullmatch(name):
-            raise ValueError(f"Invalid shell variable name: {name!r}")
-        self._shell_env[name] = value
-        return None
+        return self._shell_env
 
     def forkable_commands(self) -> dict[str, Callable[..., Any]]:
         """User commands safe to inherit: everything except the

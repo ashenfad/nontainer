@@ -97,14 +97,14 @@ def test_a_refused_tag_commits_nothing(name):
         ws.tags.add("v1")
         ws.autocommit = False
         ws.terminal("echo two > a.txt")
-        head, dirty = ws.head, ws.dirty
+        head, dirty = ws.head, ws.uncommitted
         assert dirty
 
         with pytest.raises((WorkspaceError, ValueError)):
             ws.tags.add(name)
 
         assert ws.head == head
-        assert ws.dirty
+        assert ws.uncommitted
     finally:
         ws.close()
 
@@ -116,9 +116,9 @@ def test_delete_unknown_tag_raises(kv_ws):
 
 def test_tag_commits_pending_changes(kv_ws):
     kv_ws.files.fs.write("staged.txt", b"staged")  # host-side: staged, uncommitted
-    assert kv_ws.dirty
+    assert kv_ws.uncommitted
     named = kv_ws.tags.add("v1")
-    assert not kv_ws.dirty
+    assert not kv_ws.uncommitted
     assert named == kv_ws.head
     assert list(kv_ws.log())[0].info == {"tool": "tag", "name": "v1"}
 
@@ -320,7 +320,7 @@ def test_frozen_workspace_serves_a_get_handler(kv_ws):
 def test_frozen_workspace_refuses_a_cache_write(snapshot):
     result = snapshot.run_python("cache['x'] = 1")
     assert "frozen snapshot at tag 'v1'" in result.error
-    assert not snapshot.dirty
+    assert not snapshot.uncommitted
 
     with pytest.raises(PermissionError, match="frozen snapshot"):
         snapshot.cache["x"] = 1
@@ -359,7 +359,7 @@ def test_frozen_refusal_survives_a_remote_executor(tmp_path):
             write = snapshot.terminal("echo changed > a.txt; echo new > b.txt")
             assert write.exit_code != 0
             assert "frozen snapshot at tag 'v1'" in write.stderr
-            assert not snapshot.dirty
+            assert not snapshot.uncommitted
 
             assert snapshot.terminal("cat a.txt").stdout.strip() == "one"
             assert not snapshot.files.fs.exists("/workspace/b.txt")

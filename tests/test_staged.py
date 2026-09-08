@@ -133,7 +133,7 @@ def test_framework_commits_never_change_status(kv_ws):
     for _ in range(3):
         kv_ws.commit(info={"tool": "turn"})
         assert kv_ws.index.status() == before
-    assert not kv_ws.dirty  # everything IS in the store; nothing is withheld
+    assert not kv_ws.uncommitted  # everything IS in the store; nothing is withheld
     assert before.staged == ("/workspace/a.txt",)
     assert before.unstaged == ("/workspace/b.txt",)
 
@@ -230,6 +230,19 @@ def test_log_hides_framework_commits_and_walks_across_a_fork(kv_ws):
         assert fork.index.head == third
     finally:
         fork.close()
+
+
+def test_a_host_commit_cannot_forge_an_agent_commit(kv_ws):
+    """``info["tool"]`` is what says whose commit it is, so the host's
+    durability verb may not claim the agent's names — nor the
+    fiction's own bookkeeping, which ``log`` skips."""
+    kv_ws.files.fs.write("/workspace/a.txt", b"a\n")
+    for tool in ("ws-git", "ws-git.merge", "ws-git.restore", "ws-git.anything"):
+        with pytest.raises(ValueError, match="is reserved"):
+            kv_ws.commit(info={"tool": tool})
+    assert kv_ws.uncommitted  # refused before anything landed
+    assert kv_ws.commit(info={"tool": "ws-gitish"})  # not the reserved family
+    assert kv_ws.index.log() == []
 
 
 def test_checkout_restores_the_tree_and_appends(kv_ws):
@@ -481,7 +494,7 @@ def test_commit_takes_everything_the_index_does_not(kv_ws):
 
     head = kv_ws.commit()
 
-    assert not kv_ws.dirty
+    assert not kv_ws.uncommitted
     assert set(_at(kv_ws, head)) >= {"/workspace/a.txt", "/workspace/b.txt"}
     # ... and the agent's composition is exactly where it was
     st = kv_ws.index.status()
@@ -505,7 +518,7 @@ def test_agent_commit_persists_without_autocommit(tmp_path):
         ws.files.fs.write("/workspace/b.py", b"B = 1\n")
         ws.index.stage(["/workspace/a.py"])
         commit = ws.index.commit("just a")
-        assert not ws.dirty  # the bookkeeping committed itself
+        assert not ws.uncommitted  # the bookkeeping committed itself
     finally:
         ws.close()
 
@@ -518,7 +531,7 @@ def test_agent_commit_persists_without_autocommit(tmp_path):
         assert reopened.files.read("/workspace/b.py") == b"B = 1\n"
         assert reopened.index.status().unstaged == ("/workspace/b.py",)
         assert "/workspace/b.py" not in _at(reopened, commit)
-        assert not reopened.dirty
+        assert not reopened.uncommitted
     finally:
         reopened.close()
         store.close()
@@ -556,14 +569,14 @@ def test_merge_bookkeeping_commits_itself(kv_ws):
 
         out = kv_ws.merge("worker-one")
         assert out.merged
-        assert not kv_ws.dirty
+        assert not kv_ws.uncommitted
         assert kv_ws.index.head == out.commit
         assert out.commit in [e.id for e in kv_ws.index.log()]
 
         # a clean tree is what the next merge needs, and it is what
         # the first one left behind
         assert kv_ws.merge("worker-two").merged
-        assert not kv_ws.dirty
+        assert not kv_ws.uncommitted
     finally:
         first.close()
         second.close()
@@ -583,7 +596,7 @@ def test_merge_bookkeeping_survives_without_autocommit(tmp_path):
             fork.index.commit("kid")
             out = ws.merge("mergehost-kid")
             assert out.merged
-            assert not ws.dirty
+            assert not ws.uncommitted
         finally:
             fork.close()
     finally:
@@ -675,7 +688,7 @@ def test_merge_refuses_uncommitted_agent_work(kv_ws):
         fork.index.commit("worker work")
 
         kv_ws.terminal("echo mine > mine.txt")  # committed by the framework
-        assert not kv_ws.dirty  # ... so the buffer says nothing is pending
+        assert not kv_ws.uncommitted  # ... so the buffer says nothing is pending
         with pytest.raises(WorkspaceError) as excinfo:
             kv_ws.merge("worker")
         message = str(excinfo.value)
@@ -711,9 +724,10 @@ def test_merge_refuses_an_open_index_before_the_first_commit(kv_ws):
         fork.close()
 
 
-def test_merge_takes_the_sources_last_agent_commit(kv_ws):
-    """The source side of the same rule: what its agent committed, not
-    what the framework committed for it afterwards."""
+def test_merge_refuses_a_source_with_work_in_flight(kv_ws):
+    """The source side of the same rule, symmetric with the target: a
+    merge takes only what has been committed, and refuses a source
+    that has more rather than quietly leaving it behind."""
     kv_ws.terminal("echo base > a.txt")
     kv_ws.index.commit("base")
     fork = kv_ws.fork("worker")
@@ -723,12 +737,37 @@ def test_merge_takes_the_sources_last_agent_commit(kv_ws):
         # work in flight on the fork, durable in the store, not in its
         # agent's commit
         fork.terminal("echo wip > wip.txt")
-        assert not fork.dirty
+        assert not fork.uncommitted
 
+        with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
+            kv_ws.merge("worker")
+        assert not kv_ws.files.exists("/workspace/done.txt")
+
+        fork.index.commit("wip")
         out = kv_ws.merge("worker")
         assert out.merged
-        assert kv_ws.files.exists("/workspace/done.txt")
-        assert not kv_ws.files.exists("/workspace/wip.txt")
+        assert kv_ws.files.read("/workspace/wip.txt") == b"wip\n"
+    finally:
+        fork.close()
+
+
+def test_merge_takes_the_sources_last_agent_commit(kv_ws):
+    """A clean source still merges at its agent's head, not its store
+    head: the framework's commits after it hold the same files and
+    whatever else it committed for that session since."""
+    kv_ws.terminal("echo base > a.txt")
+    kv_ws.index.commit("base")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/done.txt", b"done\n")
+        fork.index.commit("done")
+        agent_head = fork.index.head
+        fork.cache["scratch"] = "the delegate's own"  # framework commit
+        assert fork.head != agent_head
+
+        assert kv_ws.merge("worker").merged
+        assert kv_ws.files.read("/workspace/done.txt") == b"done\n"
+        assert "scratch" not in kv_ws.cache
     finally:
         fork.close()
 
@@ -892,7 +931,7 @@ def test_bookkeeping_reconciles_when_its_commit_is_refused(kv_ws):
 
     assert refused  # the first attempt really was refused
     assert kv_ws.index.head == commit
-    assert not kv_ws.dirty  # the retry landed the record and the restore
+    assert not kv_ws.uncommitted  # the retry landed the record and the restore
     assert kv_ws.files.read("/workspace/b.py") == b"B = 1\n"
     assert _at(kv_ws, kv_ws.head)["/workspace/b.py"] == b"B = 1\n"
     assert kv_ws.index.status().unstaged == ("/workspace/b.py",)

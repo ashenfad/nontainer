@@ -98,7 +98,7 @@ def test_stage_first_composition(ws):
     # The framework commits the edit for durability; the composition
     # is measured against the agent's own head, so it does not notice.
     ws.terminal("echo second >> a.txt")
-    assert not ws.dirty
+    assert not ws.uncommitted
 
     assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""

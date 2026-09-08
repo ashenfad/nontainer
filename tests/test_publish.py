@@ -316,7 +316,7 @@ def test_a_dirty_workspace_is_refused(tmp_path):
     ws = seeded(store)
     ws.autocommit = False
     ws.files.write("/workspace/app/index.html", "<h1>uncommitted</h1>")
-    assert ws.dirty
+    assert ws.uncommitted
     with pytest.raises(WorkspaceError, match="ws.commit\\(\\) or drop"):
         store.publish(ws, "scoreboard")
     ws.discard()

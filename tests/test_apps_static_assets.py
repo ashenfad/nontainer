@@ -257,17 +257,17 @@ def test_shadow_note_does_not_dirty_a_clean_workspace(assets):
     """The note fires on a static GET, and a page load is the read-only
     request that most often precedes a POST. Writing it would dirty the
     workspace, and _dispatch_api gates per-request atomicity on
-    `not ws.dirty` — so the note would cost the next mutating handler
+    `not ws.uncommitted` — so the note would cost the next mutating handler
     its rollback."""
     ws, rt = make_ws(assets)
     try:
         ws.files.fs.makedirs("/workspace/app/vendor", exist_ok=True)
         ws.files.fs.write("/workspace/app/vendor/lib.js", b"MINE")
         ws.commit()
-        assert not ws.dirty
+        assert not ws.uncommitted
 
         assert get(rt, "/vendor/lib.js").text == "export const x = 1;\n"
-        assert not ws.dirty  # the note is buffered, not written
+        assert not ws.uncommitted  # the note is buffered, not written
 
         # ... and it still reaches the log where the agent reads it.
         rt.flush_log()
@@ -291,7 +291,7 @@ def test_a_get_leaves_a_later_handler_its_rollback(assets):
             b"    raise ValueError('boom')\n",
         )
         ws.commit()
-        assert not ws.dirty
+        assert not ws.uncommitted
 
         get(rt, "/vendor/lib.js")  # the shadowing page load
         assert rt.dispatch(request("POST", "/api/save")).status == 500

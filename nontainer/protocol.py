@@ -612,12 +612,13 @@ class ExecutionContext:
     """Shell variables for script executions: ``$VAR`` expansion on a
     termish rung, exported into the guest on a VM rung.
 
-    A LIVE reference, like ``commands``, and for the same reason: the
-    runtime publishes into it after construction (``enable_apps``
-    publishes ``$APP_ORIGIN``), so an executor that copied it at open
-    would run every later call without those variables. Executors
-    snapshot it PER CALL instead — a command mutating the mapping
-    termish is handed must not leak into the next call.
+    The same mapping ``Runtime.env`` hands out, held here by
+    reference for the reason ``commands`` is: the runtime publishes
+    into it after construction (``nontainer.apps`` publishes
+    ``$APP_ORIGIN``), so an executor that copied it at open would run
+    every later call without those variables. Executors snapshot it
+    PER CALL instead — a command mutating the mapping termish is
+    handed must not leak into the next call.
 
     It belongs to the runtime that bound this context, not to the
     workspace: one workspace can carry several runtimes (an app served

@@ -87,7 +87,7 @@ def test_turns_route_to_the_live_workspace_and_commit_once(registry, tmp_path):
     run_turn(agent, write_turn("a.txt", "A"))
 
     assert len(list(ws.log())) == before + 1
-    assert not ws.dirty
+    assert not ws.uncommitted
     assert ws.files.fs.read("a.txt") == b"A"
     assert len(db.get_session("chat-1").runs) == 1
 
@@ -199,7 +199,7 @@ def test_agno_fork_session_forks_the_files_and_copies_the_chat(registry, tmp_pat
     assert child_id in db._branches()
     child = registry.open(child_id)
     assert child.files.fs.read("a.txt") == b"A" and child.files.fs.read("b.txt") == b"B"
-    assert not child.dirty
+    assert not child.uncommitted
 
     session = db.get_session(child_id)
     assert session.session_data["forked_from_session_id"] == "chat-1"
@@ -258,7 +258,7 @@ def test_delete_clears_the_conversation_and_leaves_the_branch(registry, tmp_path
     assert db.delete_session("nope") is False
 
     # committed, so the listing (committed heads) and a reopen agree
-    assert not ws.dirty
+    assert not ws.uncommitted
     assert db.get_sessions() == []
     registry.close()
     assert db.get_session("chat-1") is None
@@ -269,7 +269,7 @@ def test_rename_between_turns_commits_and_shows_in_the_listing(registry, tmp_pat
     run_turn(agent, write_turn("a.txt", "A"))
 
     db.rename_session("chat-1", None, "The plan")
-    assert not ws.dirty
+    assert not ws.uncommitted
     rows, _ = db.get_sessions(deserialize=False)
     assert rows[0]["session_data"]["session_name"] == "The plan"
 
@@ -281,10 +281,10 @@ def test_rename_mid_turn_stays_staged(registry, tmp_path):
     run_turn(agent, write_turn("a.txt", "A"))
     head = ws.head
     ws.files.fs.write("in-flight.txt", b"...")
-    assert ws.dirty
+    assert ws.uncommitted
 
     db.rename_session("chat-1", None, "Mid-turn")
-    assert ws.dirty and ws.head == head
+    assert ws.uncommitted and ws.head == head
 
 
 def test_rename_routes_to_the_branch(registry, tmp_path):

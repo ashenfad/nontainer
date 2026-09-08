@@ -68,7 +68,7 @@ def test_dud_stage_first_composition(ws):
     # The edit runs in the guest and the framework commits it; the
     # composition is measured against the agent's own head, so it holds.
     ws.terminal("echo second >> a.txt")
-    assert not ws.dirty
+    assert not ws.uncommitted
 
     assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""

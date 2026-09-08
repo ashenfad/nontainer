@@ -144,9 +144,11 @@ the whole model:
   appends the restore as a new commit — which is exactly what the
   host's `ws.checkout` does with the whole session, so a host checkout
   rewinds the fiction too (its head is a key the restore carries). A merge takes only what has been committed
-  on both sides, which under the fiction means *agent*-committed: the
-  target refuses while it has work in flight, and the source is merged
-  at its last agent commit rather than at its store head.
+  on both sides, which under the fiction means *agent*-committed, and
+  refuses a source that has more: the target refuses while it has work
+  in flight, the source is merged at its last agent commit rather than
+  at its store head, and a source whose agent has written since is
+  refused rather than merged at a state it has moved past.
 
 The one thing the substrate must provide is a keyed commit
 (`provider.commit_keys`, gated by `caps.index`). Everything else is

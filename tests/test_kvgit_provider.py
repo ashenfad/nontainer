@@ -57,7 +57,7 @@ def test_fresh_workspace_commits_clean_init_baseline():
         assert entries[0].info == {"tool": "init"}
         assert entries[0].id == ws.head
         assert ws.head != empty_head
-        assert not ws.dirty
+        assert not ws.uncommitted
         assert ws.files.fs.isdir("/workspace")
         assert ws.files.fs.getcwd() == "/workspace"
     finally:
@@ -79,7 +79,7 @@ def test_first_readonly_calls_do_not_inherit_initialization(autocommit):
         assert python.commit is None
         assert ws.head == init_head
         assert list(ws.log()) == before
-        assert not ws.dirty
+        assert not ws.uncommitted
     finally:
         ws.close()
 
@@ -94,7 +94,7 @@ def test_reopen_does_not_create_another_init_commit(tmp_path):
         assert reopened.head == init_head
         assert list(reopened.log()) == init_history
         assert list(reopened.log())[0].info == {"tool": "init"}
-        assert not reopened.dirty
+        assert not reopened.uncommitted
 
 
 def test_predirty_provider_preserves_staging_without_init_commit():
@@ -107,7 +107,7 @@ def test_predirty_provider_preserves_staging_without_init_commit():
     try:
         assert ws.head == head
         assert list(ws.log()) == history
-        assert ws.dirty
+        assert ws.uncommitted
         assert p.kv["caller-pending"] == {"keep": True}
         assert ws.files.fs.isdir("/workspace")
         assert ws.files.fs.getcwd() == "/workspace"
@@ -145,7 +145,7 @@ def test_fresh_workspace_cannot_rollback_below_init():
             ws.rollback(1)
 
         assert ws.head == init_head
-        assert not ws.dirty
+        assert not ws.uncommitted
         assert ws.files.fs.isdir("/workspace")
         assert ws.files.fs.getcwd() == "/workspace"
     finally:
@@ -174,7 +174,7 @@ def test_rollback_can_target_init_but_not_cross_it():
             ws.rollback(3)
 
         assert ws.head == landed
-        assert not ws.dirty
+        assert not ws.uncommitted
         assert ws.files.fs.isdir("/workspace")
         assert ws.files.fs.getcwd() == "/workspace"
     finally:
@@ -336,11 +336,11 @@ def test_a_checkout_replaces_uncommitted_writes(kv_ws):
     kv_ws.autocommit = False
     kv_ws.files.write("/workspace/f.txt", "three\n")
     kv_ws.files.write("/workspace/scratch.txt", "wip\n")
-    assert kv_ws.dirty
+    assert kv_ws.uncommitted
 
     kv_ws.checkout(target)
 
-    assert not kv_ws.dirty
+    assert not kv_ws.uncommitted
     assert kv_ws.files.read("/workspace/f.txt") == b"one\n"
     assert not kv_ws.files.exists("/workspace/scratch.txt")
 
@@ -747,7 +747,7 @@ def test_fork_at_an_earlier_commit_leaves_the_parent_alone(tmp_path):
         assert not child.files.fs.exists("/workspace/staged.txt")
         assert child.head == first
         # the parent kept its head AND its staged work
-        assert ws.head == head and ws.dirty
+        assert ws.head == head and ws.uncommitted
         assert ws.files.fs.read("/workspace/staged.txt") == b"S"
     finally:
         child.close()

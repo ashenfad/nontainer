@@ -66,7 +66,7 @@ def test_stage_first_composition(ws):
 
     # The workspace goes on committing for durability underneath...
     ws.terminal("echo second >> a.txt")
-    assert not ws.dirty
+    assert not ws.uncommitted
     # ... and the composition does not notice.
     r = ws.terminal("ws-git status")
     assert r.stdout == "M  a.txt\nM  b.txt\n"

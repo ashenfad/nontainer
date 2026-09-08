@@ -114,7 +114,7 @@ extension surface (`Runtime.exec_python`, no commit) with:
   workspace is clean, and flush when writing is free (the workspace is
   dirty anyway), when a diagnostic is written, or on an explicit
   `AppRuntime.flush_log()`. This is not an optimization: per-request
-  atomicity below is gated on `not ws.dirty`, so a log line written
+  atomicity below is gated on `not ws.uncommitted`, so a log line written
   during a GET would silently disable handler rollback for the next
   mutating request — and page-GET-then-POST is the common order. The
   runtime cannot claim the dirt as its own and roll back anyway,

@@ -492,7 +492,7 @@ class AppRuntime:
         # verbs stage writes with per-request atomicity.
         readonly = self._frozen or verb == "get"
         ws = self._ws
-        atomic = not readonly and ws.caps.staging and not ws.dirty
+        atomic = not readonly and ws.caps.staging and not ws.uncommitted
 
         # The view declares the intent; the executor realizes it (a
         # restricted sandbox held exclusively for this call — so a
@@ -628,7 +628,7 @@ class AppRuntime:
         BUFFERED, not written: this fires on a static GET, and serving a
         page is the read-only request that most often precedes a POST.
         Writing here would dirty a clean workspace, and ``_dispatch_api``
-        gates per-request atomicity on ``not ws.dirty`` — so the note
+        gates per-request atomicity on ``not ws.uncommitted`` — so the note
         would silently cost the next mutating handler its rollback. Same
         reasoning as the request-line buffer; see ``_flush_if_free``."""
         if rel in self._shadow_notes:
@@ -692,7 +692,7 @@ class AppRuntime:
 
         A read-only request that found a clean workspace must LEAVE it
         clean. ``_dispatch_api`` gates per-request atomicity on
-        ``not ws.dirty``, so a diagnostic write here would silently
+        ``not ws.uncommitted``, so a diagnostic write here would silently
         disable handler rollback for the next mutating request — and
         the page-GET-then-POST order makes that the common flow, not a
         corner case. The runtime cannot simply claim the dirt as its
@@ -705,7 +705,7 @@ class AppRuntime:
         sink routes the log off the VFS entirely.
         """
         ws = self._ws
-        if self._log_sink is not None or not ws.caps.staging or ws.dirty:
+        if self._log_sink is not None or not ws.caps.staging or ws.uncommitted:
             self._flush()
 
     def _flush(self) -> None:
@@ -773,7 +773,7 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
         # The canonical origin form needs the value in the shell, on
         # every rung: termish expands it, dud guests get it exported.
         origin = config.origin if config is not None else AppsConfig.origin
-        target.runtime.shell_env("APP_ORIGIN", origin)
+        target.runtime.env["APP_ORIGIN"] = origin
         return target_runtime
 
     return _register(ws)
