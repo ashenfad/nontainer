@@ -769,35 +769,26 @@ class WorkspaceFiles:
         return self._ws._fs.exists(path)
 
     def list(self, path: str = ".", recursive: bool = False) -> list[str]:
-        """Paths under ``path``, sorted.
+        """Files and directories under ``path``, sorted.
 
         Entries come back spelled the way ``path`` was — absolute for
         an absolute directory, relative to the cwd otherwise — so a
-        result can be handed straight back to :meth:`read`. Flat by
-        default (files and directories one level down); ``recursive``
-        walks the tree and returns the FILES beneath it, since a
-        directory is not something a caller of a recursive listing
-        reads.
+        result can be handed straight back to :meth:`read`. One level
+        down by default; ``recursive`` takes everything beneath.
+
+        The walk is the filesystem's own (``fs.list(recursive=True)``),
+        not one composed here out of ``isdir``: on a real directory a
+        symlink to an ancestor is an ordinary thing to find, and a
+        hand-rolled descent follows it forever. monkeyfs walks with
+        ``rglob``, which does not descend into symlinked directories.
         """
         ws = self._ws
         ws._check_open()
-        fs = ws._fs
-
-        def entries(directory: str) -> list[str]:
-            return sorted(
-                posixpath.normpath(posixpath.join(directory, name))
-                for name in fs.list(directory)
-            )
-
         base = posixpath.normpath(path)
-        if not recursive:
-            return entries(base)
-        out: list[str] = []
-        stack = [base]
-        while stack:
-            for entry in entries(stack.pop()):
-                (stack if fs.isdir(entry) else out).append(entry)
-        return sorted(out)
+        return sorted(
+            posixpath.normpath(posixpath.join(base, entry))
+            for entry in ws._fs.list(base, recursive=recursive)
+        )
 
     def get(self, src: str, dest: str | Path | None = None) -> bytes:
         """Copy a workspace file OUT ("download"). Returns the bytes;

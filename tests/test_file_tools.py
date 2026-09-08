@@ -93,6 +93,7 @@ def test_files_read_list_and_exists():
         ]
         assert ws.files.list("/workspace/notes", recursive=True) == [
             "/workspace/notes/a.txt",
+            "/workspace/notes/deep",
             "/workspace/notes/deep/b.txt",
         ]
         assert ws.files.read(ws.files.list("/workspace/notes")[0]) == b"alpha"
