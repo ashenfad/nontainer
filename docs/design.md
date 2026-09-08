@@ -158,6 +158,43 @@ the files read-only down to the executor's filesystem, nothing able to
 commit — because a published snapshot that could be written to is not
 a snapshot.
 
+## Publications
+
+`store.publish(ws, name)` is the tag with the three things a served app
+needs added to it. It derives a **new commit** holding only the app
+subtree, on a reserved branch of its own, tagged store-scoped, recorded
+in a small registry.
+
+The derived commit is the whole idea. Tagging the session's own commit
+would have been one line, and it would have published the transcript,
+the uploads and the cache along with the app — a handler under a frozen
+workspace reads the entire tree, and an export hands over the entire
+tree. It would also have pinned the session's whole history alive,
+because a tag keeps its ancestry reachable, so publishing v1 would make
+the session immortal. And a fork from a version would inherit somebody
+else's conversation, which is not what "work on this app" means.
+Deriving fixes all three at once: privacy, garbage collection, and
+forkability are the same property seen from three sides. The cost is
+copying blobs, which is nothing at app sizes and would be nothing at
+all under content addressing.
+
+Provenance still matters, so it is kept as a **soft reference** in the
+commit's info rather than a parent pointer: `published_from` names the
+session and commit a version came from, and pins neither.
+
+The branch is not bookkeeping. kvgit reads through a branch handle, so
+without one a publication could only be opened by borrowing some live
+session — which fails on exactly the store the store scope exists for,
+the one whose sessions are all gone. The branch is the anchor that
+makes a publication readable on its own terms.
+
+The registry — which versions exist, which one is current — is the
+mutable half, and it is deliberately **generic**: no token, no route,
+no database. Those describe a deployment of an app, not the app, and
+they differ per embedder; a studio keeps them in its own table keyed by
+name. What nontainer owns is the part every consumer would otherwise
+reinvent identically.
+
 ## Tool exposure adapts to the environment
 
 `WorkspaceTools(tools="auto")` picks the surface from the config:

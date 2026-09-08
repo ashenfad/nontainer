@@ -146,13 +146,39 @@ is the migration.
 ### Added
 
 - `nontainer.Store` / `store(...)`: `open`, `sessions`, `exists`,
-  `delete`, `resolve`, `clean`, `tags`, `close`. `shared()` and
-  `publish()` raise `NotImplementedError` until their stage lands.
+  `delete`, `resolve`, `clean`, `tags`, `close`. `shared()` raises
+  `NotImplementedError` until its stage lands.
 - `Store.tags`: `add(ws_or_ref, name, info=)`, `list`, `info`,
-  `delete`, `at` (store-scoped; `at` anchors on a live session and says
-  so). `ws.tags.add(name, at=...)` names an earlier commit.
-- `nontainer.Ref` (`session@commit[:/path]`; `Ref.parse`, `str`) and
-  `Store.resolve(ref)`, a frozen `Workspace` at that commit.
+  `delete`, `at` (store-scoped). `ws.tags.add(name, at=...)` names an
+  earlier commit. `at` borrows a branch to read through — a session if
+  the store has one, otherwise a publication's own branch, so a store
+  whose sessions are all gone is still readable, which is the case the
+  store scope exists for.
+- `nontainer.Ref` (`session@commit[:/path]`; `Ref.parse`, `str`),
+  `ws.ref` (this session at its current commit), and
+  `Store.resolve(ref)`, a frozen `Workspace` at that commit. A ref
+  splits at its LAST `@`, so a reserved branch — which leads with one —
+  is a legal ref target.
+- **Publications: `store.publish(ws, name, *, paths=("app/",),
+  version=, info=)`,** with `store.publications()`,
+  `store.publication(name)`, `store.set_current(name, version)`,
+  `store.unpublish(name, version)`, and the frozen `Publication` /
+  `Version` records. What lands is the **subtree, not the session**: a
+  derived commit holding the files under `paths` plus the filesystem
+  rows describing them, and nothing else — no cache, no cwd, no ws-git
+  blob, no conversation record, no file from outside `paths`. The
+  session it came from is a soft `published_from` reference in the
+  commit's info, not a parent pointer, so a version pins none of that
+  session's history and survives the session's deletion intact. One
+  publish writes a reserved branch `@store/pub/<name>/<version>` (the
+  anchor `Publication.open()` reads through), a store-scoped tag
+  `<name>/<version>`, and a record in the publication registry.
+- The **publication registry**: `publications.json` under the store
+  path, written atomically, holding each name's versions and which one
+  is current (in memory for a store with no directory of its own). It
+  is generic — no token, no route, no database — because those describe
+  a deployment of an app rather than the app; an embedder keeps them in
+  its own table keyed by name (`docs/apps.md`).
 - `ws.merge(source)` on the facade, gated by `caps.merge`; refuses a
   dirty tree — or uncommitted ws-git work — with the verbs that fix it.
 - `ws.files.read`, `.exists`, `.list(path, recursive=)`; `ws.files.fs`
@@ -171,6 +197,16 @@ is the migration.
   table, the cwd, the ws-git blob) for ordinary commits too, so a
   commit that loses its CAS to another handle three-way merges instead
   of raising.
+- The apps seam, stated outright in `docs/api.md`: `Workspace`,
+  `Store.open` and `nontainer.workspace()` take no `AppsConfig`, and
+  `enable_apps(ws, config)` wires apps in afterwards through
+  `runtime.register_command`, `runtime.shell_env` and
+  `runtime.exec_python(view=)` — the surface any extension may use, and
+  the one `tests/test_apps_surface.py` already enforces. An audit for
+  this release found no apps-shaped parameter, attribute or import left
+  in core to remove; the coupling was already at the extension surface,
+  and `_absorb_before_verb` (the harvest before a hostcall-dispatched
+  verb) is a generic hook that ws-git and ws-curl share.
 - `nontainer.BookkeepingLost`, a `WorkspaceError`: an agent commit
   landed and the record naming it did not.
 - `SessionRunner` and `HostObjectFactory` in `protocol.py`: the loop

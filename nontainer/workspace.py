@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from .editing import EditOutcome
     from .protocol import Executor
     from .runtime import Runtime
+    from .store import Ref
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -1453,6 +1454,25 @@ class Workspace:
         if not self._provider.caps.versioned:
             return None
         return self._provider.head
+
+    @property
+    def ref(self) -> "Ref":
+        """This session at its current commit, as a :class:`~nontainer.Ref`.
+
+        A commit id alone says what the state is but not where it came
+        from; a session id alone names a moving head. The ref is the
+        pair, and it is what a snapshot, a publication or a
+        cross-session read quotes. Exact iff clean — staged changes are
+        in no commit, so check :attr:`dirty` first."""
+        from .store import Ref
+
+        head = self.head
+        if head is None:
+            raise NotSupportedError(
+                f"Session {self.session!r} has no ref: its provider is not "
+                "versioned, so there is no commit to name."
+            )
+        return Ref(session=self.session, commit=head)
 
     @property
     def dirty(self) -> bool:

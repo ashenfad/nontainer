@@ -584,8 +584,9 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 ## Delivery (where nontainer's concern ends)
 
 nontainer's delivery surface is exactly: the `/workspace/app` convention, the
-dispatch function, the mountable `APIRouter`, and the token shape.
-Hosting, TLS, domains, user auth, deploy targets — the harness's. Some
+dispatch function, `store.publish` and its registry, the mountable
+`APIRouter`, and the token shape. Hosting, TLS, domains, user auth,
+deploy targets — the harness's. Some
 of those are not merely yours to choose but load-bearing for the
 guarantees above: **Hosting for real (the embedder's half)**, below,
 says which and why. Composable paths that already exist with no new API:
@@ -594,7 +595,8 @@ says which and why. Composable paths that already exist with no new API:
   — a frontend-only app is deliverable to any static host today.
   (No "freeze the API into static JSON" export: a degraded copy of
   an app masquerading as the app — rejected for the usual reason.)
-- **Share-by-URL**: mount the router, hand out the capability URL.
+- **Share-by-URL**: publish the app, mount the router, hand out the
+  capability URL. See *Live serving*, below.
 
 `static_assets` adds one obligation to both paths, the same class as
 `host_objects` and CSP rather than a new one: the assets live on the
@@ -621,6 +623,72 @@ is a 500. Mutable app state belongs in an **external store** reached
 through `host_objects` (a sqlite/postgres client), not the served VFS —
 at which point you've graduated from "shared dashboard" to "small real
 app," and the store owns its own concurrency.
+
+### `store.publish` makes the snapshot
+
+The snapshot a router serves is a **publication**: a named, versioned
+state produced by `store.publish(ws, name)` (see `docs/api.md`).
+
+```python
+pub = store.publish(ws, "scoreboard")      # -> v1, and current
+ws.files.write("app/index.html", "...")    # the agent keeps working
+ws.commit()
+pub = store.publish(ws, "scoreboard")      # -> v2, now current
+store.set_current("scoreboard", "v1")      # roll the code back
+snapshot = store.publication("scoreboard").open()   # frozen Workspace
+```
+
+Two rules make that snapshot worth serving:
+
+- **The app, not the session.** The published commit holds the files
+  under `paths` (`("app/",)` by default) and the filesystem rows that
+  describe them, and nothing else — not the cache, not the working
+  directory, not the ws-git blob, not the conversation record, not the
+  uploads and scratch files sitting outside `app/`. A handler under a
+  frozen workspace can read the whole tree, and an export hands over
+  the whole tree, so "the whole tree" had better be the app. If your
+  handlers read data outside `app/`, name it: `paths=("app/",
+  "data/seed.csv")`.
+- **Provenance is a soft reference.** The session a version came from
+  is recorded in the commit's info as `published_from`, not as a parent
+  pointer. So a version pins none of that session's history alive, the
+  session can be deleted with every version of it still serving, and a
+  fork of a version starts as an app rather than as somebody's old
+  conversation.
+
+Rolling `current` back and forward is a **code** move. A version's data
+lives in the external store its handlers reach through `host_objects`,
+and does not roll back with it — v1's code against v3's schema is your
+problem, not the registry's.
+
+### Token, database, route: the embedder's table
+
+The publication registry is deliberately generic — versions, the tag
+and ref of each, and which one is current. It carries no token, no
+route and no database path, because those are not properties of a
+published app; they are properties of one deployment of it. An embedder
+that serves publications keeps its own table keyed by name, and
+`resolve` is where the two meet:
+
+```python
+# the embedder's row: {token, publication name, db path, owner, ...}
+def resolve(token):
+    row = deployments.get(token)                  # the embedder's table
+    if row is None:
+        return None
+    pub = store.publication(row["name"])          # nontainer's registry
+    if pub is None:
+        return None
+    return snapshots.setdefault(                  # cache: it is immutable
+        (row["name"], pub.current), pub.open()
+    )
+
+app.mount("/apps", build_router(resolve))
+```
+
+Pinning a deployment to one version is `pub.open(row["version"])`;
+following the pointer is `pub.open()`. Either way the router gets a
+frozen `Workspace` and nothing else has to change.
 
 Because a frozen snapshot is immutable, serving is **stateless** — the
 router keeps nothing:
