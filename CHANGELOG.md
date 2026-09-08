@@ -173,12 +173,25 @@ is the migration.
   publish writes a reserved branch `@store/pub/<name>/<version>` (the
   anchor `Publication.open()` reads through), a store-scoped tag
   `<name>/<version>`, and a record in the publication registry.
+  `info` may not set `tool`, `name`, `version` or `published_from`: a
+  clash raises rather than overriding what publish records, because a
+  false provenance in an immutable commit outlives every chance to
+  notice it. A `Publication` is a snapshot of the registry and not a
+  capability — `open()` and `store.resolve` re-read it and refuse a
+  version that has since been unpublished — and a reserved `@store/`
+  branch is never created by being opened, so a stale ref cannot
+  resurrect what an unpublish deleted.
 - The **publication registry**: `publications.json` under the store
-  path, written atomically, holding each name's versions and which one
-  is current (in memory for a store with no directory of its own). It
-  is generic — no token, no route, no database — because those describe
-  a deployment of an app rather than the app; an embedder keeps them in
-  its own table keyed by name (`docs/apps.md`).
+  path, holding each name's versions and which one is current (in
+  memory for a store with no directory of its own). It is generic — no
+  token, no route, no database — because those describe a deployment of
+  an app rather than the app; an embedder keeps them in its own table
+  keyed by name (`docs/apps.md`). Every mutation reads, decides and
+  writes under one lock — `flock` on `publications.lock` beside the
+  registry across processes, a per-path `threading.Lock` within one —
+  so two publishers cannot pick the same version number or drop each
+  other's record; without `fcntl` the in-process lock is the whole
+  guarantee and says so.
 - `ws.merge(source)` on the facade, gated by `caps.merge`; refuses a
   dirty tree — or uncommitted ws-git work — with the verbs that fix it.
 - `ws.files.read`, `.exists`, `.list(path, recursive=)`; `ws.files.fs`

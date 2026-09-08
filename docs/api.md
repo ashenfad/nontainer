@@ -124,6 +124,12 @@ be clean — publish names a commit, so land staged changes with
 to `v<N>`, one past the highest `v`-number the lineage holds; an
 explicit name must be unused, because versions never move.
 
+`info` may not set `tool`, `name`, `version` or `published_from`: those
+are what publish writes into the commit, and the commit is where a
+reader checks where a version came from. A clash raises `ValueError`
+naming the keys, rather than being silently overridden — a false
+provenance in an immutable commit outlives every chance to notice it.
+
 One publish writes three things:
 
 - a reserved branch `@store/pub/<name>/<version>` holding the derived
@@ -160,9 +166,24 @@ One publish writes three things:
   embedder serving a publication keeps those in its own table keyed by
   name — see `docs/apps.md`.
 
+  Every mutation reads, decides and writes under one lock — a
+  `flock` on `publications.lock` beside the registry for other
+  processes, and a per-path `threading.Lock` for this one's threads —
+  so two publishers cannot pick the same version number or drop each
+  other's record. On a platform without `fcntl` the in-process lock is
+  the whole guarantee, and two processes publishing to one store can
+  still lose a record.
+
 Blobs are copied into the derived commit rather than pointed at. That
 is fine at app sizes, and content addressing under kvgit would make the
 copy free.
+
+A `Publication` is a **snapshot of the registry**, not a capability:
+`open()` re-reads it and refuses a version that has since been
+unpublished, and so does `store.resolve` on a publication's ref. The
+same goes for the branch — a reserved `@store/` branch is never created
+by being opened, so a stale ref cannot resurrect what an unpublish
+deleted (which would then block republishing that version).
 
 `set_current` is the mutable half: it moves the pointer, and moves it
 back as easily. That is true for **code**. Data a version's handlers

@@ -24,8 +24,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import uuid
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -51,7 +54,31 @@ _PUB_BRANCH_PREFIX = "@store/pub/"
 # The publication registry: the mutable half (which versions exist,
 # which one is current) beside the immutable half (the tags).
 _REGISTRY_FILE = "publications.json"
+_REGISTRY_LOCK_FILE = "publications.lock"
 _VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
+# Keys publish() writes into the commit itself. A caller's ``info`` may
+# not spell them: the commit is immutable and is where provenance is
+# read from, so a false ``published_from`` would outlive every chance to
+# notice it.
+_RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from")
+
+# One lock per registry file per process. Two Store objects over the
+# same path are two handles on one file, so the lock cannot live on
+# either of them; the flock underneath covers other processes, and this
+# covers the threads inside this one (flock is per open file
+# description, so two threads flocking the same path do not exclude
+# each other).
+_REGISTRY_LOCKS: dict[str, threading.Lock] = {}
+_REGISTRY_LOCKS_GUARD = threading.Lock()
+
+
+def _registry_lock_for(path: Path) -> threading.Lock:
+    key = str(path)
+    with _REGISTRY_LOCKS_GUARD:
+        lock = _REGISTRY_LOCKS.get(key)
+        if lock is None:
+            lock = _REGISTRY_LOCKS[key] = threading.Lock()
+        return lock
 
 
 @dataclass(frozen=True)
@@ -307,6 +334,9 @@ class Store:
         # this Store object does. Every other store keeps it in
         # ``<path>/publications.json``.
         self._memory_registry: dict[str, Any] = {}
+        # ...and since nothing else can reach that dict, its
+        # read-modify-write serializes on a lock of this object's own.
+        self._memory_registry_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # identity
@@ -517,11 +547,14 @@ class Store:
                 f"The {self._backend!r} backend is not versioned, so it has no "
                 "commits to resolve a ref against. Use the kvgit backend."
             )
-        if parsed.session not in set(self._branches()):
-            # Branches, not sessions: a publication's ref names its own
-            # reserved branch (``@store/pub/<name>/<version>``), which
+        if parsed.session.startswith(_PUB_BRANCH_PREFIX):
+            # A publication's ref names its own reserved branch, which
             # is deliberately not a session and never appears in
-            # sessions(). Both are states this store holds.
+            # sessions(). The registry is what says whether that version
+            # is still published; the branch outliving it would not make
+            # it servable again.
+            self._require_registered(parsed)
+        elif parsed.session not in set(self._branches()):
             raise WorkspaceError(
                 f"No such session on this store: {parsed.session!r} "
                 f"(resolving {str(parsed)!r})"
@@ -617,6 +650,15 @@ class Store:
         self._require_kvgit("publish")
         self._require_own_workspace(ws, "publish")
         _validate_publication_name(name)
+        reserved = sorted(set(info or ()) & set(_RESERVED_INFO_KEYS))
+        if reserved:
+            raise ValueError(
+                f"info may not set {', '.join(repr(k) for k in reserved)}: "
+                "publish writes those into the commit itself, and the commit "
+                "is where a reader checks where a version came from. Refused "
+                "rather than overridden, because a false provenance in an "
+                "immutable commit outlives every chance to notice it."
+            )
         if ws.dirty:
             raise WorkspaceError(
                 f"Cannot publish {ws.session!r}: it has staged changes, and "
@@ -630,57 +672,58 @@ class Store:
                 "versioned, so it has no commit to publish."
             )
 
-        registry = self._registry_read()
-        record = registry.get(name) or {"versions": {}, "current": None}
-        versions = dict(record.get("versions") or {})
-        if version is None:
-            version = _next_version(versions)
-        else:
+        if version is not None:
             _validate_version_name(version)
-            if version in versions:
+
+        def land(registry: dict[str, Any]) -> Publication:
+            # Everything from "which version number is free" to the
+            # commit itself happens under the registry lock, so two
+            # publishers cannot pick the same number, and no version is
+            # written whose branch and tag did not land.
+            record = registry.get(name) or {"versions": {}, "current": None}
+            versions = dict(record.get("versions") or {})
+            chosen = _next_version(versions) if version is None else version
+            if chosen in versions:
                 raise WorkspaceError(
-                    f"Version already published: {name}/{version} — versions "
+                    f"Version already published: {name}/{chosen} — versions "
                     "are immutable. Publish a new one, or unpublish that one "
                     "first."
                 )
-        tag = f"{name}/{version}"
-        branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
-        if self._scoped_store_tag(tag) in self._raw_tags():
-            raise WorkspaceError(
-                f"Tag already exists: {tag!r} in scope 'store' — a "
-                "publication cannot reuse it."
+            tag = f"{name}/{chosen}"
+            branch = f"{_PUB_BRANCH_PREFIX}{name}/{chosen}"
+            if self._scoped_store_tag(tag) in self._raw_tags():
+                raise WorkspaceError(
+                    f"Tag already exists: {tag!r} in scope 'store' — a "
+                    "publication cannot reuse it."
+                )
+            if branch in set(self._branches()):
+                raise WorkspaceError(
+                    f"Publication branch already exists: {branch!r} — an "
+                    "earlier publish left it behind. Remove it with "
+                    f"store.unpublish({name!r}, {chosen!r})."
+                )
+            published_from = Ref(session=ws.session, commit=head)
+            commit_info: dict[str, Any] = {
+                "tool": "publish",
+                "name": name,
+                "version": chosen,
+                "published_from": str(published_from),
+                **(info or {}),
+            }
+            commit = self._write_publication(
+                ws, head, branch=branch, paths=paths, tag=tag, commit_info=commit_info
             )
-        if branch in set(self._branches()):
-            raise WorkspaceError(
-                f"Publication branch already exists: {branch!r} — an earlier "
-                "publish left it behind. Remove it with "
-                f"store.unpublish({name!r}, {version!r})."
-            )
+            versions[chosen] = {
+                "tag": tag,
+                "ref": str(Ref(session=branch, commit=commit)),
+                "published_from": str(published_from),
+                "created": time.time(),
+                "root": ws.root,
+            }
+            registry[name] = {"versions": versions, "current": chosen}
+            return self._publication(name, registry)
 
-        published_from = Ref(session=ws.session, commit=head)
-        commit_info: dict[str, Any] = {
-            "tool": "publish",
-            "name": name,
-            "version": version,
-            "published_from": str(published_from),
-            **(info or {}),
-        }
-        commit = self._write_publication(
-            ws, head, branch=branch, paths=paths, tag=tag, commit_info=commit_info
-        )
-
-        versions[version] = {
-            "tag": tag,
-            "ref": str(Ref(session=branch, commit=commit)),
-            "published_from": str(published_from),
-            "created": time.time(),
-            "root": ws.root,
-        }
-        registry[name] = {"versions": versions, "current": version}
-        self._registry_write(registry)
-        found = self.publication(name)
-        assert found is not None  # just written
-        return found
+        return self._update_registry(land)
 
     def publications(self) -> dict[str, Publication]:
         """Every publication on the store, by name."""
@@ -704,22 +747,22 @@ class Store:
         forward — for **code**. Data a version's handlers wrote lives
         outside the workspace and does not roll back with it.
         """
-        registry = self._registry_read()
-        record = registry.get(name)
-        if record is None:
-            raise WorkspaceError(f"No such publication: {name!r}")
-        versions = record.get("versions") or {}
-        if version not in versions:
-            raise WorkspaceError(
-                f"No such version of {name!r}: {version!r} — have "
-                f"{', '.join(sorted(versions))}"
-            )
-        record["current"] = version
-        registry[name] = record
-        self._registry_write(registry)
-        found = self.publication(name)
-        assert found is not None  # just written
-        return found
+
+        def point(registry: dict[str, Any]) -> Publication:
+            record = registry.get(name)
+            if record is None:
+                raise WorkspaceError(f"No such publication: {name!r}")
+            versions = record.get("versions") or {}
+            if version not in versions:
+                raise WorkspaceError(
+                    f"No such version of {name!r}: {version!r} — have "
+                    f"{', '.join(sorted(versions))}"
+                )
+            record["current"] = version
+            registry[name] = record
+            return self._publication(name, registry)
+
+        return self._update_registry(point)
 
     def unpublish(self, name: str, version: str, *, min_age: float = 3600) -> None:
         """Remove one published version: its tag, its branch, its record.
@@ -735,41 +778,44 @@ class Store:
         """
         self._require_own_layout("unpublish")
         self._require_kvgit("unpublish")
-        registry = self._registry_read()
-        record = registry.get(name)
-        if record is None:
-            raise WorkspaceError(f"No such publication: {name!r}")
-        versions = dict(record.get("versions") or {})
-        if version not in versions:
-            raise WorkspaceError(
-                f"No such version of {name!r}: {version!r} — have "
-                f"{', '.join(sorted(versions))}"
-            )
-        if record.get("current") == version and len(versions) > 1:
-            raise WorkspaceError(
-                f"{name}/{version} is the current version and is not the last "
-                f"one. Point {name!r} at another version with "
-                "store.set_current(name, version) first, or remove the others."
-            )
-        from .providers.kvgit import KvgitProvider
 
-        tag = versions[version].get("tag") or f"{name}/{version}"
-        if self._raw_tag_info(tag) is not None:
-            # The tag first: removing it is what makes the commit
-            # collectable, so the branch deletion's own sweep finishes
-            # the job in one pass.
-            self._delete_store_tag(tag)
-        branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
-        KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
-        versions.pop(version)
-        if not versions:
-            registry.pop(name)
-        else:
-            record["versions"] = versions
-            if record.get("current") == version:
-                record["current"] = sorted(versions)[0]
-            registry[name] = record
-        self._registry_write(registry)
+        def drop(registry: dict[str, Any]) -> None:
+            record = registry.get(name)
+            if record is None:
+                raise WorkspaceError(f"No such publication: {name!r}")
+            versions = dict(record.get("versions") or {})
+            if version not in versions:
+                raise WorkspaceError(
+                    f"No such version of {name!r}: {version!r} — have "
+                    f"{', '.join(sorted(versions))}"
+                )
+            if record.get("current") == version and len(versions) > 1:
+                raise WorkspaceError(
+                    f"{name}/{version} is the current version and is not the "
+                    f"last one. Point {name!r} at another version with "
+                    "store.set_current(name, version) first, or remove the "
+                    "others."
+                )
+            from .providers.kvgit import KvgitProvider
+
+            tag = versions[version].get("tag") or f"{name}/{version}"
+            if self._raw_tag_info(tag) is not None:
+                # The tag first: removing it is what makes the commit
+                # collectable, so the branch deletion's own sweep
+                # finishes the job in one pass.
+                self._delete_store_tag(tag)
+            branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
+            KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
+            versions.pop(version)
+            if not versions:
+                registry.pop(name)
+            else:
+                record["versions"] = versions
+                if record.get("current") == version:
+                    record["current"] = sorted(versions)[0]
+                registry[name] = record
+
+        self._update_registry(drop)
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -913,14 +959,71 @@ class Store:
             self._memory_registry = data
             return
         # Write-then-rename: a reader either sees the old registry or
-        # the new one, never half of either.
+        # the new one, never half of either. The temp name carries a
+        # uuid as well as the pid, so two threads writing at once cannot
+        # land on one another's file even if the lock above is somehow
+        # bypassed.
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
         try:
             tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
             os.replace(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)
+
+    @contextmanager
+    def _registry_locked(self) -> "Iterator[None]":
+        """Exclusive access to the registry for a read-modify-write.
+
+        Two writers that each read the same registry and then replace it
+        would silently drop one another's publication, though its branch
+        and tag exist — so a mutation reads, decides and writes inside
+        this, never around it.
+
+        Two locks, because one process's threads and two processes are
+        different problems: a ``threading.Lock`` keyed by the registry
+        path (``flock`` is per open file description, so it does not
+        exclude two threads of one process), and an ``flock`` on
+        ``publications.lock`` beside the registry for everyone else.
+        """
+        path = self._registry_path()
+        if path is None:
+            with self._memory_registry_lock:
+                yield
+            return
+        with _registry_lock_for(path):
+            try:
+                import fcntl
+            except ImportError:
+                # No flock here (Windows): the process-level lock above
+                # is the whole guarantee, so two processes publishing to
+                # one store can still lose a record. Best effort, said
+                # out loud rather than pretended away.
+                yield
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path.with_name(_REGISTRY_LOCK_FILE), "a+") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _update_registry(self, change: "Callable[[dict[str, Any]], Any]") -> Any:
+        """Read the registry, apply ``change`` to it, write it back.
+
+        The one path every mutation takes. ``change`` mutates the
+        registry it is handed and returns whatever the caller wants
+        back; the read happens INSIDE the lock, so a decision made from
+        it (which version number is next, whether a name is free) is
+        still true when the write lands. Nothing is written if
+        ``change`` raises.
+        """
+        with self._registry_locked():
+            registry = self._registry_read()
+            result = change(registry)
+            self._registry_write(registry)
+            return result
 
     def _publication(self, name: str, registry: dict[str, Any]) -> Publication:
         record = registry[name]
@@ -944,15 +1047,30 @@ class Store:
         return Publication(name=name, versions=versions, current=current, store=self)
 
     def _open_publication(self, version: Version) -> "Workspace":
-        """The frozen workspace behind :meth:`Publication.open`."""
+        """The frozen workspace behind :meth:`Publication.open`.
+
+        The registry is re-read here, not trusted from the
+        :class:`Publication` the caller is holding: that object is a
+        snapshot of the registry when it was fetched, and a version it
+        names may have been unpublished since. Opening one anyway would
+        serve unpublished content for as long as the orphan sweep's
+        grace period, which is the opposite of what unpublish means.
+        """
         self._require_own_layout("Publication.open")
         self._require_kvgit("Publication.open")
         registry = self._registry_read()
-        row = (registry.get(version.name) or {}).get("versions", {}).get(
+        row = ((registry.get(version.name) or {}).get("versions") or {}).get(
             version.version
-        ) or {}
+        )
+        if row is None:
+            raise WorkspaceError(
+                f"No longer published: {version.name}/{version.version} — it "
+                "was unpublished after this Publication was fetched. Re-read "
+                f"it with store.publication({version.name!r})."
+            )
+        ref = Ref.parse(row["ref"])
         return self._frozen_workspace(
-            self._provider_at_commit(version.ref.session, version.ref.commit),
+            self._provider_at_commit(ref.session, ref.commit),
             root=row.get("root"),
         )
 
@@ -1158,10 +1276,43 @@ class Store:
             "store has none. Open a session first."
         )
 
+    def _require_registered(self, ref: Ref) -> None:
+        """A publication ref names a version the registry still holds.
+
+        Parsed back out of the branch name, since that is what a ref
+        carries: ``@store/pub/<name>/<version>``.
+        """
+        name, _, version = ref.session[len(_PUB_BRANCH_PREFIX) :].partition("/")
+        row = ((self._registry_read().get(name) or {}).get("versions") or {}).get(
+            version
+        )
+        if row is None or Ref.parse(row["ref"]).commit != ref.commit:
+            raise WorkspaceError(
+                f"No longer published: {str(ref)!r} names version "
+                f"{version!r} of {name!r}, which this store's publication "
+                "registry does not hold."
+            )
+
+    def _require_branch(self, name: str, op: str) -> None:
+        """Refuse to open a branch that is not there.
+
+        kvgit CREATES a branch opened by a name it does not know, so
+        every read that opens one by name has to check first — otherwise
+        a stale ref resurrects the branch an unpublish deleted, and the
+        leftover then blocks republishing that version.
+        """
+        if name in set(self._branches()):
+            return
+        raise WorkspaceError(
+            f"{op}: no branch {name!r} on this store. Opening it would create "
+            "it, so the read is refused instead."
+        )
+
     def _provider_at_commit(self, session: str, commit: str) -> WorkspaceProvider:
         from .errors import CommitNotFoundError
         from .providers.kvgit import KvgitProvider
 
+        self._require_branch(session, f"read at {session}@{commit}")
         provider = KvgitProvider.open(self._kvgit_path(), session=session)
         handle = provider._staged.checkout(commit)
         if handle is None:
