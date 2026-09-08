@@ -1712,6 +1712,11 @@ class Workspace:
         one is ``ws.fork(name)`` or ``store.open(name)``, never a
         checkout, and a name that is not a commit here is refused
         rather than guessed at.
+
+        The head MOVES: what came after the target leaves the branch,
+        and whatever no tag or fork still reaches is swept by the
+        store's next sweep. Name a state before stepping off it
+        (``ws.tags.add``), or fork it, if you mean to come back.
         """
         with self._lock:
             self._check_writable("checkout")
@@ -1731,9 +1736,10 @@ class Workspace:
             return commit
 
     def rollback(self, steps: int = 1) -> str:
-        """Restore the Nth-previous commit; returns its id.
+        """Check out the Nth-previous commit; returns its id.
 
-        Sugar over ``history()`` + ``restore()``. The explicit
+        The relative spelling of :meth:`checkout`, since a commit id
+        has no "the one before this". The explicit
         ``{"tool": "init"}`` lifecycle commit is the floor:
         rollback may target it, but never cross it into a provider's
         pre-workspace seed. Legacy histories without that exact marker
