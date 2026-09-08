@@ -30,13 +30,15 @@ class CommitNotFoundError(WorkspaceError):
 
 
 class BookkeepingLost(WorkspaceError):
-    """An agent commit landed and the bookkeeping that names it did not.
+    """Something landed in the store and the record naming it did not.
 
-    ``ws-git commit`` and ``ws-git checkout`` each make two commits: the
-    agent's, and the one that records the new head and puts the working
-    tree back. Only a concurrent writer on the same session can come
-    between them, and only after the retry that reconciles with it has
-    also failed. The agent's commit is in the store either way — the
-    message names it — but the session's ws-git head still points at
-    the commit before it, so the verb has to be run again.
+    An agent commit, or a merge, is one store commit; the head that
+    names it as the session's is another. Only a concurrent writer on
+    the same session can come between the two, and only after the retry
+    that reconciles with it has also failed. What landed is in the
+    store either way — the message names it — but the session's ws-git
+    head still points at the commit before it, and the message says
+    what gets it back: running the verb again where the operation can
+    be repeated (a commit), or ``ws.index.checkout(<id>)`` where it
+    cannot (a merge, which is already in the store).
     """

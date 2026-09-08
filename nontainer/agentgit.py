@@ -94,6 +94,16 @@ _MARKER = b"<<<<<<< "
 
 _HASH = re.compile(r"[0-9a-f]{7,}")
 
+#: Refusing a store commit that is not one of the agent's. Taking one
+#: as the agent's head would strand its whole log behind a commit with
+#: no place in the graph, so the verb that moves a session to ANY
+#: commit is named instead — and it is the host's, not the agent's.
+_NOT_YOURS = (
+    "{commit} is a commit of this session but not one of yours "
+    "(ws-git log lists yours) — moving the whole session to any commit "
+    "in its history is the host's to invoke: ws.checkout(<id>)."
+)
+
 
 def is_agent_commit(info: Mapping[str, Any]) -> bool:
     """Whether a store commit belongs to the agent's graph.
@@ -517,6 +527,8 @@ class AgentGit:
         state: Mapping[str, Any],
         pending: Mapping[str, Any],
         landed_commit: str | None = None,
+        noun: str = "commit",
+        recovery: str = "Run the verb again.",
     ) -> None:
         """Commit the fiction's own bookkeeping, reconciling once.
 
@@ -559,10 +571,10 @@ class AgentGit:
             except Exception:  # noqa: BLE001 - the first failure is the news
                 pass
             raise BookkeepingLost(
-                f"commit {landed_commit} landed but its record did not "
+                f"{noun} {landed_commit} landed but its record did not "
                 f"({e}) — this session's ws-git head is still the commit "
-                "before it, and the working tree is what the store last "
-                "took. Run the verb again."
+                f"before it, and the working tree is what the store last "
+                f"took. {recovery}"
             ) from e
 
     def _restore(self, pending: Mapping[str, Any]) -> None:
@@ -627,13 +639,16 @@ class AgentGit:
         return None
 
     def resolve(self, ref: str) -> str:
-        """A ref an agent typed → a commit id on this session.
+        """A ref an agent typed → one of the agent's own commits.
 
         ``HEAD`` is the agent's head; a hash (7 chars or more) names a
-        commit, its own graph first and then the session's history, so
-        the ids ``ws-git log`` prints resolve without the agent needing
-        to know the framework's. Anything else is refused: a name is a
-        session, and sessions are branches that do not switch.
+        commit it made — its own graph first, then the rest of the
+        session's history, so a commit it stepped off with ``checkout``
+        can still be named. A framework commit is refused by name: it
+        is not a point in the agent's graph, and taking one as a head
+        would leave the agent's whole log behind it. Anything else is
+        refused too — a name is a session, and sessions are branches
+        that do not switch.
         """
         self._require("ws-git checkout")
         blob = self._read()
@@ -650,9 +665,15 @@ class AgentGit:
         for entry in self.log():
             if entry.id.startswith(ref):
                 return entry.id
+        theirs: str | None = None
         for entry in self._provider.history():
-            if entry.id.startswith(ref):
+            if not entry.id.startswith(ref):
+                continue
+            if is_agent_commit(entry.info):
                 return entry.id
+            theirs = entry.id
+        if theirs is not None:
+            raise ValueError(_NOT_YOURS.format(commit=theirs[:7]))
         raise CommitNotFoundError(f"no commit {ref!r} on session {self._ws.session!r}")
 
     # -- checkout ------------------------------------------------------
@@ -668,6 +689,13 @@ class AgentGit:
         """
         self._writable("ws-git checkout")
         provider = self._provider
+        entry = self.entry(commit)
+        if entry is None:
+            raise CommitNotFoundError(
+                f"no commit {commit!r} on session {self._ws.session!r}"
+            )
+        if not is_agent_commit(entry.info):
+            raise ValueError(_NOT_YOURS.format(commit=commit[:7]))
         target = provider.files_at(commit)
         live = provider.working_files()
         fs = provider.fs
@@ -760,6 +788,15 @@ class AgentGit:
             keys=[BLOB_KEY],
             state=blob,
             pending={},
+            landed_commit=commit,
+            noun="merge",
+            recovery=(
+                "The merge itself is in the store, markers and all: "
+                f"ws.index.checkout({commit!r}) makes it this session's "
+                "ws-git head again (a merge commit is one of yours). It "
+                "does not bring the merge context back, so check the "
+                "files it touched for conflict markers."
+            ),
         )
         return tuple(marked)
 
