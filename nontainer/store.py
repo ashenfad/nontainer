@@ -428,8 +428,15 @@ class Store:
         The source is opened only to fork it and is closed again, so
         nothing is left holding it. ``open_kwargs`` are
         :meth:`open`'s, applied to the workspace this returns.
+
+        A lineage shares one workspace root, so ``root`` (when given)
+        opens the SOURCE too: ``paths`` is normalized against the root
+        the child will use, and a view recorded against some other root
+        would name paths the child cannot see.
         """
-        source = self.open(src)
+        source = self.open(
+            src, **{k: open_kwargs[k] for k in ("root",) if k in open_kwargs}
+        )
         try:
             child = source.fork(dst, at=at, inherit=inherit, paths=paths)
             # Its provider shares the source's store handle, which goes
