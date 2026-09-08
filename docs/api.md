@@ -509,7 +509,10 @@ CREATE a new path anywhere (it merges as an addition, and notes and
 scratch are ordinary work); a created path joins its view, so it can
 read back what it made. Modifying or deleting a path that exists
 outside the view is refused with `PermissionError` naming the view: you
-cannot overwrite what you cannot see. Locally the rule is enforced in
+cannot overwrite what you cannot see. The view is drawn around the
+FILE, not the name — a link is a second name for one, so a link whose
+target the view hides cannot be made, and an existing link out of the
+view reads as absent rather than becoming a way through. Locally the rule is enforced in
 the filesystem the sandbox holds; on a guest rung only the seeded
 subtree is materialized and the same rule is applied to the write
 harvest, so a call that tried lands nothing and reads as errored.

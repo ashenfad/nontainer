@@ -611,3 +611,70 @@ def test_merge_refuses_where_the_substrate_cannot(store, tmp_path):
             w.fork("child")
     finally:
         w.close()
+
+
+# -- links cannot be drawn around the view -------------------------------------
+
+
+@pytest.fixture
+def linked(tmp_path):
+    """A ViewFS over a filesystem that has real symlinks.
+
+    monkeyfs's ``VirtualFS`` (the kvgit backend) refuses symlinks
+    outright, so the rule would go untested there — but ``ViewFS`` is
+    generic and the ``dir`` backend's ``IsolatedFS`` has them.
+    """
+    from monkeyfs import IsolatedFS
+
+    from nontainer.views import ViewFS
+
+    base = IsolatedFS(str(tmp_path / "tree"))
+    base.makedirs("seen", exist_ok=True)
+    base.makedirs("hidden", exist_ok=True)
+    base.write("seen/ok.txt", b"ok")
+    base.write("hidden/secret.txt", b"S3CR3T")
+    return base, ViewFS(base, ("/seen",))
+
+
+def test_an_existing_link_out_of_the_view_reads_as_absent(linked):
+    """The link was there before the view was drawn — following it is
+    how you read what the view was drawn to keep out."""
+    base, view = linked
+    base.symlink("/hidden/secret.txt", "/seen/alias.txt")
+
+    assert view.read("/seen/ok.txt") == b"ok"
+    assert not view.exists("/seen/alias.txt")
+    assert not view.isfile("/seen/alias.txt")
+    assert view.list("/seen") == ["ok.txt"]
+    assert view.glob("/seen/*.txt") == ["/seen/ok.txt"]
+    for call in (
+        lambda: view.read("/seen/alias.txt"),
+        lambda: view.open("/seen/alias.txt", "rb"),
+        lambda: view.stat("/seen/alias.txt"),
+        lambda: view.getsize("/seen/alias.txt"),
+        lambda: view.readlink("/seen/alias.txt"),
+        lambda: view.realpath("/seen/alias.txt"),
+    ):
+        with pytest.raises(FileNotFoundError):
+            call()
+    with pytest.raises(PermissionError, match="outside this session's view"):
+        view.write("/seen/alias.txt", b"through the alias")
+    assert base.read("/hidden/secret.txt") == b"S3CR3T"
+
+
+def test_a_link_to_a_hidden_file_cannot_be_made(linked):
+    base, view = linked
+    for call in (
+        lambda: view.symlink("/hidden/secret.txt", "/seen/abs.txt"),
+        lambda: view.symlink("../hidden/secret.txt", "/seen/rel.txt"),
+        lambda: view.link("/hidden/secret.txt", "/seen/hard.txt"),
+    ):
+        with pytest.raises(PermissionError, match="outside this session's view"):
+            call()
+    # refused on the way out, so the destination never joined the view
+    assert view.view == ("/seen",)
+    assert not base.exists("/seen/abs.txt")
+
+    # a link INSIDE the view is ordinary
+    view.symlink("/seen/ok.txt", "/seen/fine.txt")
+    assert view.read("/seen/fine.txt") == b"ok"
