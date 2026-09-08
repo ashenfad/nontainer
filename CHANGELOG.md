@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | old | new |
   |---|---|
   | `ws.checkpoint(info)` | `ws.commit(info)` |
-  | `ws.commit(info)` (the staged set) | `ws.commit(info)` — same verb, see below |
+  | `ws.commit(info)` (the staged set) | `ws.index.commit(info)` |
   | `ws.autocheckpoint` | `ws.autocommit` |
   | `ws.history(limit=)` | `ws.log(limit=)` |
   | `ws.restore(commit)` | `ws.checkout(commit)` |
@@ -55,14 +55,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `provider.checkpoint(info)` | `provider.commit(info)` |
   | `provider.commit(info)` (the staged set) | `provider.commit_index(info)` |
 
-- **`ws.commit()` is one verb with two scopes.** With a composition in
-  flight — the first `ws.index.stage` suspends autocommit — it commits
-  the staged set and leaves unstaged writes dirty; with none, it
-  commits everything uncommitted. That is the rule `ws-git commit`
-  already followed, and having `ws.commit` and `ws.checkpoint` mean
-  different things three lines apart was the confusion the whole
-  rename is for. The provider keeps both primitives, since a provider
-  is where the difference actually lives.
+- **Two commit verbs, neither of them context-sensitive.**
+  `ws.commit()` commits everything uncommitted, always: a composition
+  in flight rides along and ends, having nothing left to compose.
+  `ws.index.commit()` commits the staged set and leaves unstaged
+  writes dirty. Having `ws.commit` and `ws.checkpoint` mean different
+  things three lines apart was the confusion the rename is for, and a
+  single verb that read the index to decide would have been the same
+  confusion moved: the framework calls it at durability points
+  (a turn hook, a session db, a skill install) where it cannot know,
+  and must not depend on, whether the agent has ws-git staging open.
+  The terminal's `ws-git commit` is the one verb that reads its
+  context — the staged set when a composition is open, everything when
+  none is — because a person at a terminal can see the status line and
+  has no `-a` to ask with.
 
 - **`ws.checkout(commit)` refuses a session name.** It moves this
   session's files, cache and cwd to one of its own commits and returns
@@ -124,6 +130,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   period in seconds, so `Store.delete` can name it.
 
 ### Fixed
+
+- **The framework's durability points no longer commit the agent's
+  work and leave their own uncommitted.** The agno turn hook, the
+  session db's commit at the moment agno persists a run, and
+  `skills.install()` all called `ws.commit()`. Under a context-sensitive
+  commit, an agent with a ws-git composition open turned every one of
+  those into a selective commit of the agent's staged files — the
+  conversation, or the freshly installed skill, stayed dirty and could
+  be rolled back or lost. Those three call sites now go through a
+  framework-internal durable commit that names the keys it must land:
+  everything when no composition is open, and the staged set plus
+  those keys when one is, so the agent's unstaged edits stay dirty and
+  stay its own.
+
+- **`ws.files.list(recursive=True)` terminates on a symlink cycle.**
+  It walked the tree itself with `isdir`, and a directory symlink
+  pointing at its own ancestor — an ordinary thing to find on the dir
+  backend — sent it down `data/loop/data/loop/...` forever. It
+  delegates to the filesystem's own recursive listing now, which does
+  not descend into symlinked directories.
+
+- **The legacy cwd key leaves every branch that carries it, and never
+  blocks a merge.** The migration skipped the removal when the
+  filesystem's own key was already present, which is exactly the state
+  a store written under the two-key layout is in — so the dead key
+  stayed. Two such branches holding different values then aborted the
+  whole merge over state neither side reads, since the merge function
+  for it had been removed with the key. The removal is now
+  unconditional on open, and the kvgit provider registers
+  `MergeChoice.OURS` for the key so a merge that meets one lands.
 
 - **One key for the working directory.** monkeyfs's `VirtualFS`
   resolves every relative path against the cwd key it keeps in the
@@ -230,6 +266,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Runtime.shell_env(...)`** is one verb, three forms: a name and a
   value publishes, a name alone reads one back, no arguments returns
   the live mapping (which is how a fork replays a whole environment).
+
+- **`provider.commit_index(info, *, include=())`** — commit named
+  state alongside the staged set, whether or not the index holds it:
+  provider keys as stored, or absolute workspace paths the provider
+  resolves. It is what a framework durability point needs to land its
+  own writes mid-composition without waiting for the agent to finish
+  composing.
 
 - **`nontainer.Store`** / `nontainer.store(...)` — `open`, `sessions`,
   `exists`, `delete`, `resolve`, `clean`, `tags`, `close`. `sessions()`

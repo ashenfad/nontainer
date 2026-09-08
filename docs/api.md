@@ -237,9 +237,12 @@ stays byte-exact; non-print writes fall back to a head-cut.
 ws.files.read(path) -> bytes                 # raises if absent
 ws.files.exists(path) -> bool
 ws.files.list(path=".", recursive=False) -> list[str]
-    # paths spelled the way `path` was, sorted — absolute in, absolute
-    # out, so an entry goes straight back into `read`. Flat by default;
-    # `recursive` walks and returns the files beneath.
+    # files and directories, sorted, spelled the way `path` was —
+    # absolute in, absolute out, so an entry goes straight back into
+    # `read`. One level down by default; `recursive` takes everything
+    # beneath, walking with the filesystem's own recursion (which does
+    # not descend into symlinked directories, so a link to an ancestor
+    # is listed, not followed).
 ws.files.fs                 # termish-protocol filesystem (seed/harvest directly)
 ws.cache              # MutableMapping; raises NotSupportedError if disabled
 ws.files.write(path, content) -> WriteOutcome   # parents created; committed
@@ -282,7 +285,7 @@ ws.head: str | None      # current commit id; None if unversioned.
                          # Pins read-only observations (reads don't move
                          # it) — exact iff not ws.dirty
 ws.dirty: bool           # staged-but-uncommitted changes exist
-ws.commit(info: dict | None = None) -> str   # atomic: files + cache + cwd
+ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
 ws.checkout(commit: str) -> str          # move to a commit of THIS session
 ws.rollback(steps: int = 1) -> str
 ws.log(limit: int | None = None) -> Iterable[CommitInfo]
@@ -293,18 +296,25 @@ ws.autocommit: bool                              # settable; see below
 
 ws.index.stage(paths) -> StageResult             # needs caps.index
 ws.index.unstage(paths) -> tuple[str, ...]
+ws.index.commit(info=None) -> str                # the staged set only
 ws.index.status() -> WorkspaceStatus             # pure read
 ws.index.discard() -> None                       # abandon the composition
 ```
 
-**`ws.commit` is one verb with two scopes**, and the index decides
-which: with a composition in flight (the first `ws.index.stage`
-suspends autocommit) it commits the staged set and leaves unstaged
-writes dirty; with none, it commits everything uncommitted. That is
-the rule `ws-git commit` already followed, so the host API and the
-terminal never mean different things at the same moment. The content
-hash of the head — the identity of *what* the files and cache are,
-where `head` identifies the point in history — is
+**Two commit verbs, and the one you call is the whole answer.**
+`ws.commit()` takes everything uncommitted, whether or not a
+composition is open — the staged set rides along and the composition
+ends, having nothing left to compose. `ws.index.commit()` takes the
+staged set and leaves unstaged writes dirty. Neither depends on hidden
+state, which is what lets the code around a workspace — a turn hook, a
+session db, a skill installer — rely on what it commits. The
+terminal's `ws-git commit` is the verb that reads its context: the
+staged set when a composition is open, everything when none is,
+because a person at a terminal can see the status line and has no
+`-a` to ask with.
+
+The content hash of the head — the identity of *what* the files and
+cache are, where `head` identifies the point in history — is
 `next(iter(ws.log(limit=1))).tree`.
 
 **`ws.checkout(commit)`** moves this session's files, cache and cwd to
