@@ -19,7 +19,7 @@ import pickle
 from collections.abc import Iterator, MutableMapping
 from typing import Any
 
-PREFIX = "__cache__/"
+from .planes import CACHE_PREFIX as PREFIX
 
 
 class CacheError(ValueError):

@@ -406,6 +406,40 @@ class Store:
         ws._store = self
         return ws
 
+    def fork(
+        self,
+        src: str,
+        dst: str,
+        *,
+        at: str | None = None,
+        inherit: str = "full",
+        paths: "Iterable[str] | str | None" = None,
+        **open_kwargs: Any,
+    ) -> "Workspace":
+        """Branch ``src`` into a new session ``dst`` and open it.
+
+        :meth:`Workspace.fork` for host code that has no workspace open
+        — a scheduler seeding a delegate, a script branching a session
+        it never has to run. Same semantics, keyword for keyword (a
+        fork point is a commit; ``inherit`` decides the conversation;
+        ``paths`` narrows the view), and the same refusal on a
+        substrate that cannot fork cheaply.
+
+        The source is opened only to fork it and is closed again, so
+        nothing is left holding it. ``open_kwargs`` are
+        :meth:`open`'s, applied to the workspace this returns.
+        """
+        source = self.open(src)
+        try:
+            child = source.fork(dst, at=at, inherit=inherit, paths=paths)
+            # Its provider shares the source's store handle, which goes
+            # away with the source; the branch is what matters, and it
+            # is reopened below on a handle of its own.
+            child.close()
+        finally:
+            source.close()
+        return self.open(dst, **open_kwargs)
+
     def sessions(self) -> list[str]:
         """Every session id present on the store, sorted.
 

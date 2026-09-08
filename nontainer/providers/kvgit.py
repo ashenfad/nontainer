@@ -45,6 +45,7 @@ from typing import Any
 
 from ..agentgit import BLOB_KEY as _WS_BLOB_KEY
 from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
+from ..planes import CACHE_PREFIX, CONVERSATION_PREFIX
 from ..protocol import (
     Capabilities,
     CommitInfo,
@@ -53,6 +54,8 @@ from ..protocol import (
     WorkspaceDiff,
     validate_session_id,
 )
+from ..views import VIEW_KEY as _VIEW_KEY
+from ..views import parse_seed
 
 #: How many commits ``checkout`` will make to land the target's exact
 #: state before it gives up. One is the quiet case; a second is one
@@ -244,6 +247,7 @@ class KvgitProvider:
             register(VirtualFS.METADATA_KEY, _merge_vfs_metadata)
             register(VirtualFS.CWD_KEY, _keep_ours)
             register(_WS_BLOB_KEY, MergeChoice.OURS)
+            register(_VIEW_KEY, MergeChoice.OURS)
             register(_LEGACY_CWD_KEY, MergeChoice.OURS)
 
     @classmethod
@@ -933,6 +937,7 @@ class KvgitProvider:
             added=frozenset(self._file_keys(raw.added).values()),
             removed=frozenset(self._file_keys(raw.removed).values()),
             modified=self._changed_content(self._file_keys(raw.modified), a, b),
+            seed=parse_seed(self.key_at(b, _VIEW_KEY)),
         )
 
     def merge(
@@ -994,7 +999,26 @@ class KvgitProvider:
         merge_fns = {key: text_merge for key in file_keys}
         merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
         merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
+        merge_fns[_VIEW_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
+        # THE PLANE POLICY, whole: a merge is filesystem-only. The
+        # cache and the stored conversation are session-scoped by
+        # construction — a delegate's working memory and a chat that
+        # never happened here — so this side keeps every key under
+        # those prefixes, and that has to include keys the other side
+        # merely ADDED. A merge function would not do it: kvgit
+        # consults one only where both sides changed a key, so a new
+        # ``__agno__/runs/<id>`` would ride in untouched. A
+        # ``MergeChoice`` over the prefix is the whole-side policy that
+        # also drops their-only adds and ignores their-only removes.
+        # Registered for the merge verb ONLY, not on the handle: an
+        # ordinary commit that loses its CAS to a second handle on THIS
+        # session must still take that handle's conversation, which is
+        # this session's own.
+        merge_prefixes = {
+            CACHE_PREFIX: MergeChoice.OURS,
+            CONVERSATION_PREFIX: MergeChoice.OURS,
+        }
         # The key nontainer used to keep a cwd of its own under. It is
         # dead: a workspace drops it on open. Branches written before
         # that still carry it, and two of them can carry different
@@ -1013,6 +1037,7 @@ class KvgitProvider:
             self._staged.merge(
                 source_head,
                 merge_fns=merge_fns,
+                merge_prefixes=merge_prefixes,
                 info={"tool": "ws-git.merge", "source": source, **(info or {})},
             )
         except MergeConflict as e:

@@ -68,6 +68,48 @@ calls `import`, and data it carries forward lands in `cache` — rather
 than a REPL namespace surviving between calls. See the
 [design notes](design.md) for why that shape.
 
+## Fork, edit, merge
+
+Delegation is a branch operation, not a VM operation. A fork is O(1), a
+merge is three-way, and the whole thing is four verbs:
+
+```python
+from nontainer import store
+
+st = store()
+ws = st.open("user-42")
+ws.files.write("/workspace/auth.py", "def login(): ...\n")
+ws.files.write("/workspace/billing.py", "def charge(): ...\n")
+ws.index.commit("baseline")             # the agent's own commit
+
+# hand a delegate one file to work on: its BRANCH holds everything,
+# its filesystem shows only the seed
+child = ws.fork("refactor", inherit="fresh", paths=["auth.py"])
+child.files.list("/workspace")          # ['/workspace/auth.py']
+child.files.write("/workspace/auth.py", "def login(user): ...\n")
+child.files.write("/workspace/notes.md", "why I did it\n")   # new: allowed
+child.index.commit("refactored auth")
+
+# see what it did before deciding — grouped by what you sent it to do
+d = ws.diff(ws.head, child.index.head)
+d.in_seed, d.elsewhere                  # {auth.py}, {notes.md}
+
+ws.merge("refactor")                    # or take a subset instead:
+# ws.checkout("refactor", paths=["auth.py"])
+child.close()
+```
+
+A merge takes only what has been committed, on both sides. Overlapping
+edits come back as `<<<<<<<` markers *inside* the merge commit rather
+than blocking it: `ws-git status` shows them as `UU`, the agent fixes
+them with ordinary edits, and the next commit clears the merge context.
+The agent has the same verbs in the terminal — `ws-git branch
+<name> --paths auth.py`, `ws-git merge <name>`, `ws-git checkout <ref>
+-- <paths>`. To read another session's tree in place without copying
+it: `ws.files.attach("refactor", "reviews")`.
+
+[examples/tour.py](../examples/tour.py) runs all of it end to end.
+
 ## Configuring the python sandbox
 
 A safe stdlib set (math, json, csv, datetime, re, VFS-routed os/pathlib,

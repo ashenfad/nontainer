@@ -92,7 +92,10 @@ MERGE_RECORD_TOOL = "ws-git.merge-record"
 
 _MARKER = b"<<<<<<< "
 
-_HASH = re.compile(r"[0-9a-f]{7,}")
+#: What an agent typing a ref means by a commit: a hex prefix long
+#: enough to be one. Shared with the ``ws-git`` verbs, which have to
+#: tell a commit an agent typed from a session name.
+HASH_RE = re.compile(r"[0-9a-f]{7,}")
 
 #: Refusing a store commit that is not one of the agent's. Taking one
 #: as the agent's head would strand its whole log behind a commit with
@@ -657,7 +660,7 @@ class AgentGit:
             if head is None:
                 raise ValueError("HEAD is unborn: this session has no ws-git commits")
             return head
-        if not _HASH.fullmatch(ref):
+        if not HASH_RE.fullmatch(ref):
             raise ValueError(
                 f"{ref!r} is not a commit — sessions are branches, and a "
                 "branch does not switch here. Name a commit from ws-git log."

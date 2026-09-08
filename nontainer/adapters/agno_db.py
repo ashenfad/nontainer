@@ -48,10 +48,11 @@ from agno.db.json import JsonDb
 from agno.session import AgentSession, Session
 
 from ..errors import NotSupportedError, WorkspaceError
+from ..planes import CONVERSATION_PREFIX
 from ..workspace import Workspace
 
-SESSION_KEY = "__agno__/session"
-RUN_PREFIX = "__agno__/runs/"
+SESSION_KEY = CONVERSATION_PREFIX + "session"
+RUN_PREFIX = CONVERSATION_PREFIX + "runs/"
 
 
 def _kv(ws: Workspace) -> Any:
