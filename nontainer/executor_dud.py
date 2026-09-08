@@ -23,7 +23,14 @@ Intended deltas vs LocalExecutor (pinned by tests/test_dud_executor.py):
   guest has no network interface, so ``network=True`` (on the config
   or a ``ModuleGrant``) and ``stdlib=False`` raise at open; any
   ``isolation`` is exceeded by the VM. Module grants become the
-  guest image's package list, pinned to the host's versions. The
+  guest image's package list, pinned to the host's versions — the
+  package, whole: a ``ModuleGrant``'s ``include``/``exclude`` member
+  patterns are NOT enforced on a VM rung, because an installed
+  package has no member granularity to enforce them at. The grants
+  still decide WHICH packages exist, so a module left ungranted is
+  absent rather than narrowed; ``include``/``exclude`` are a
+  LocalExecutor refinement, and code relying on them to withhold part
+  of a package it otherwise grants sees the whole of it here. The
   subprocess rung enforces nothing (the rung-1 guest IS the host
   env) and only refuses an explicit ``isolation`` above ``"none"``.
   ``host_objects`` survive: live
