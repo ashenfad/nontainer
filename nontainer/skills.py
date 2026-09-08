@@ -128,11 +128,13 @@ def install(ws: "Workspace", source: Any) -> str:
             ws.files.fs.makedirs(posixpath.dirname(path), exist_ok=True)
             ws.files.fs.write(path, data)
             written.append(path)
-        # Durable now, and only this: installing a skill is the
-        # framework writing, at a moment it chose. An agent with a
-        # ws-git composition open keeps its unstaged edits — the skill
-        # lands beside them rather than committing work in progress.
-        ws._commit_durable(info={"tool": "skill", "skill": name}, keys=written)
+        # Durable now: installing a skill is the framework writing, at
+        # a moment it chose. It takes everything uncommitted with it,
+        # which costs the agent nothing — ws-git measures against the
+        # agent's own last commit, so a composition in flight reads
+        # exactly as it did before this commit.
+        if ws.caps.versioned and not ws.frozen and ws.dirty:
+            ws.commit(info={"tool": "skill", "skill": name})
     return name
 
 

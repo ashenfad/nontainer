@@ -63,15 +63,23 @@ def _kv(ws: Workspace) -> Any:
     return ws._provider.kv
 
 
+def _commit_framework(ws: Workspace, info: dict) -> str | None:
+    """Commit the framework's own write, tolerantly.
+
+    Everything uncommitted goes with it, which is the point: the code
+    around a workspace needs a commit whose scope does not depend on
+    what the agent has staged, and ws-git's own status is measured
+    against the agent's last commit, so nothing the agent is composing
+    is disturbed by this. ``None`` when there was nothing to commit or
+    the workspace cannot take one.
+    """
+    if ws.frozen or not ws.caps.versioned or not ws.dirty:
+        return None
+    return ws.commit(info=info)
+
+
 def _run_keys(kv: Any) -> list[str]:
     return [k for k in list(kv.keys()) if k.startswith(RUN_PREFIX)]
-
-
-def _session_keys(ws: Workspace) -> list[str]:
-    """Every key the conversation occupies on this branch: the session
-    record and its runs. What a durable commit of the conversation
-    names, so an agent's open ws-git composition is not swept into it."""
-    return [SESSION_KEY, *_run_keys(_kv(ws))]
 
 
 class KvgitSessionDb(JsonDb):
@@ -200,9 +208,8 @@ class KvgitSessionDb(JsonDb):
             stored["created_at"] = data.get("created_at") or now
             stored["updated_at"] = now
             kv[SESSION_KEY] = stored
-            self._ws._commit_durable(
-                info={"tool": "fork_session", "conversation": "copy"},
-                keys=_session_keys(self._ws),
+            _commit_framework(
+                self._ws, {"tool": "fork_session", "conversation": "copy"}
             )
         if not deserialize:
             out = dict(stored)
@@ -406,10 +413,8 @@ class KvgitSessionDb(JsonDb):
             run_ids = known[:kept] + incoming
 
             changed = False
-            written: list[str] = [SESSION_KEY]
             for run in runs:
                 key = RUN_PREFIX + str(run["run_id"])
-                written.append(key)
                 if kv.get(key) != run:
                     kv[key] = run
                     changed = True
@@ -430,10 +435,11 @@ class KvgitSessionDb(JsonDb):
                 # The conversation is the framework's own write, and it
                 # has to be durable at the moment agno persists the
                 # run. An agent that left a ws-git composition open
-                # over the turn boundary keeps it: only the run keys
-                # and the staged set land, and its unstaged edits stay
-                # dirty and stay its own.
-                self._ws._commit_durable(info={"tool": "turn"}, keys=written)
+                # over the turn boundary keeps it: ws-git measures
+                # against the agent's own last commit, so this one
+                # leaves its staged set staged and its work in progress
+                # uncommitted.
+                _commit_framework(self._ws, {"tool": "turn"})
 
         if not deserialize:
             out = dict(stored)
@@ -500,11 +506,11 @@ class KvgitSessionDb(JsonDb):
         admin action — and nothing else would commit them, so the
         store's listing (which reads committed heads) and a reopen of
         the branch would both still show the old conversation. When the
-        workspace already holds a turn's staged work, the write stays
-        staged with it: committing then would close the turn early
-        with the agent's half-finished files in it."""
+        workspace already held uncommitted work, the write stays with
+        it: committing then would close a turn in flight early, with
+        the agent's half-finished files in it."""
         if was_clean:
-            self._ws._commit_durable(info={"tool": tool}, keys=_session_keys(self._ws))
+            _commit_framework(self._ws, {"tool": tool})
 
     def delete_session(self, session_id: str, user_id: str | None = None) -> bool:
         """Clear the session and run keys, committed when the workspace
@@ -612,13 +618,7 @@ def fork_session(
                     del kv[key]
                 record["run_ids"] = []
             kv[SESSION_KEY] = record
-    # A fork inherits its parent's staged blob, so the child can be
-    # born mid-composition: commit the conversation it was seeded with,
-    # not whatever the parent had in flight.
-    child._commit_durable(
-        info={"tool": "fork_session", "conversation": conversation},
-        keys=_session_keys(child),
-    )
+    _commit_framework(child, {"tool": "fork_session", "conversation": conversation})
     return child
 
 
