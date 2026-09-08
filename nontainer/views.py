@@ -192,7 +192,52 @@ class ViewFS:
         return False
 
     def _visible(self, path: str) -> bool:
+        """Whether the view shows this NAME."""
         return self._visible_abs(self._abs(path))
+
+    def _reachable(self, path: str) -> bool:
+        """Whether the view shows this name AND what it really names.
+
+        A link is a second name for a file, so a visible link into the
+        hidden part of the tree would be a way to read and write
+        exactly what the view was drawn to keep out. Everything the
+        view answers goes through here, listings included: an entry
+        that is named but reads as absent is the kind of half-truth a
+        fence would be, and a sparse view is not a fence.
+        """
+        return self._visible(path) and not self._escapes(path)
+
+    def _reachable_abs(self, target: str) -> bool:
+        """:meth:`_reachable` for a path already made absolute."""
+        return self._visible_abs(target) and not self._escapes(target)
+
+    def _escapes(self, path: str) -> bool:
+        """Whether ``path`` is a link that leaves the view.
+
+        A backend with no links answers no for one metadata lookup
+        (monkeyfs's ``VirtualFS`` refuses symlinks outright), and one
+        that reports a link it cannot resolve answers YES: where a link
+        goes is the whole question, and guessing it stays inside is the
+        hole this closes.
+        """
+        islink = getattr(self._fs, "islink", None)
+        realpath = getattr(self._fs, "realpath", None)
+        if islink is None:
+            return False
+        try:
+            if not islink(path):
+                return False
+        except Exception:  # noqa: BLE001 - a backend that cannot say has no links
+            return False
+        if realpath is None:
+            return True
+        try:
+            resolved = realpath(path)
+        except Exception:  # noqa: BLE001 - unresolvable is a link out
+            return True
+        if not isinstance(resolved, str):
+            return True
+        return not self._visible_abs(self._abs(resolved))
 
     def _hidden(self, path: str) -> str:
         return (
@@ -209,6 +254,8 @@ class ViewFS:
     def _guard_write(self, path: str) -> None:
         """The write rule, in one place: a new path anywhere, never a
         change to one the view hides."""
+        if self._escapes(path):
+            raise PermissionError(self._hidden(path))
         target = self._abs(path)
         if self._visible_abs(target):
             return
@@ -252,46 +299,48 @@ class ViewFS:
     # silently drops an argument a backend grew.
 
     def read(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        if not self._visible(path):
+        if not self._reachable(path):
             self._refuse_missing(path, "read")
         return self._fs.read(path, *args, **kwargs)
 
     def exists(self, path: str) -> bool:
-        return self._visible(path) and self._fs.exists(path)
+        return self._reachable(path) and self._fs.exists(path)
 
     def lexists(self, path: str) -> bool:
         return self._visible(path) and self._fs.lexists(path)
 
     def isfile(self, path: str) -> bool:
-        return self._visible(path) and self._fs.isfile(path)
+        return self._reachable(path) and self._fs.isfile(path)
 
     def isdir(self, path: str) -> bool:
-        return self._visible(path) and self._fs.isdir(path)
+        return self._reachable(path) and self._fs.isdir(path)
 
     def islink(self, path: str) -> bool:
         return self._visible(path) and self._fs.islink(path)
 
     def stat(self, path: str, *args: Any, **kwargs: Any) -> Any:
-        if not self._visible(path):
+        if not self._reachable(path):
             self._refuse_missing(path, "stat")
         return self._fs.stat(path, *args, **kwargs)
 
     def getsize(self, path: str) -> int:
-        if not self._visible(path):
+        if not self._reachable(path):
             self._refuse_missing(path, "getsize")
         return self._fs.getsize(path)
 
     def readlink(self, path: str) -> str:
-        if not self._visible(path):
+        # Where a link goes is content, not a name: a link out of the
+        # view does not get to say where it went.
+        if not self._reachable(path):
             self._refuse_missing(path, "readlink")
         return self._fs.readlink(path)
 
     def access(self, path: str, mode: int) -> bool:
-        return self._visible(path) and self._fs.access(path, mode)
+        return self._reachable(path) and self._fs.access(path, mode)
 
     def samefile(self, path1: str, path2: str) -> bool:
         for path in (path1, path2):
-            if not self._visible(path):
+            if not self._reachable(path):
                 self._refuse_missing(path, "samefile")
         return self._fs.samefile(path1, path2)
 
@@ -302,7 +351,7 @@ class ViewFS:
         return [
             entry
             for entry in self._fs.list(path, recursive=recursive)
-            if self._visible_abs(posixpath.normpath(posixpath.join(base, entry)))
+            if self._reachable_abs(posixpath.normpath(posixpath.join(base, entry)))
         ]
 
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[Any]:
@@ -312,13 +361,13 @@ class ViewFS:
         return [
             info
             for info in self._fs.list_detailed(path, recursive=recursive)
-            if self._visible_abs(
+            if self._reachable_abs(
                 posixpath.normpath(posixpath.join(base, getattr(info, "name", "")))
             )
         ]
 
     def glob(self, pattern: str) -> list[str]:
-        return [hit for hit in self._fs.glob(pattern) if self._visible(hit)]
+        return [hit for hit in self._fs.glob(pattern) if self._reachable(hit)]
 
     def get_metadata_snapshot(self) -> dict[str, Any]:
         # Root-relative keys, so the leading slash goes back on before
@@ -326,7 +375,7 @@ class ViewFS:
         return {
             path: meta
             for path, meta in self._fs.get_metadata_snapshot().items()
-            if self._visible_abs(posixpath.normpath("/" + path.lstrip("/")))
+            if self._reachable_abs(posixpath.normpath("/" + path.lstrip("/")))
         }
 
     # -- writes ---------------------------------------------------------
@@ -343,7 +392,7 @@ class ViewFS:
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
         if any(c in mode for c in "wax+"):
             self._guard_write(path)
-        elif not self._visible(path):
+        elif not self._reachable(path):
             self._refuse_missing(path, "open")
         return self._fs.open(path, mode, **kwargs)
 
@@ -387,13 +436,32 @@ class ViewFS:
         self._fs.replace(src, dst, *args, **kwargs)
 
     def link(self, src: str, dst: str, *args: Any, **kwargs: Any) -> None:
-        self._guard_change(src, "link")
-        self._guard_write(dst)
+        self._guard_alias(src, dst)
         self._fs.link(src, dst, *args, **kwargs)
 
     def symlink(self, src: str, dst: str, *args: Any, **kwargs: Any) -> None:
-        self._guard_write(dst)
+        self._guard_alias(src, dst)
         self._fs.symlink(src, dst, *args, **kwargs)
+
+    def _guard_alias(self, target: str, dst: str) -> None:
+        """Making a second name for a file: the view has to be drawn
+        around the FILE, not around the name.
+
+        Otherwise a narrowed session links a visible name to a file the
+        view hides and then reads and writes it through the alias — the
+        one hole a name-only check cannot see. The target is resolved
+        the way the filesystem will resolve it (a relative one against
+        the directory the link lands in), and it is checked BEFORE the
+        destination, so a refused link does not widen the view on its
+        way out.
+        """
+        where = target
+        if not where.startswith("/"):
+            where = posixpath.join(posixpath.dirname(self._abs(dst)), where)
+        where = posixpath.normpath(where)
+        if not self._visible_abs(where) and self._fs.exists(where):
+            raise PermissionError(self._hidden(target))
+        self._guard_write(dst)
 
     def _guard_change(self, path: str, op: str) -> None:
         """Changing or dropping an EXISTING path: only inside the view.
@@ -402,6 +470,8 @@ class ViewFS:
         the view hides is refused by name, and one that is simply not
         there gets the filesystem's own ``FileNotFoundError``.
         """
+        if self._escapes(path):
+            raise PermissionError(self._hidden(path))
         if self._visible(path):
             return
         if self._fs.exists(path):
@@ -429,7 +499,10 @@ class ViewFS:
         return self._fs.getcwd()
 
     def realpath(self, path: str) -> str:
-        return self._fs.realpath(path)
+        resolved = self._fs.realpath(path)
+        if isinstance(resolved, str) and not self._visible_abs(self._abs(resolved)):
+            self._refuse_missing(path, "realpath")
+        return resolved
 
     def resolve_path(self, path: str) -> str:
         return self._fs.resolve_path(path)

@@ -200,7 +200,9 @@ create a new path anywhere (it merges as an addition, and a delegate
 needs somewhere to put notes), and a created path joins its view so it
 can read back what it made; modifying or deleting a path that exists
 outside the view is refused at write time, naming the view. You cannot
-overwrite what you cannot see. The provider knows the full keyset, so
+overwrite what you cannot see — and since a link is a second name for
+a file, the view is drawn around the file: a link whose target it
+hides cannot be made, and one that already exists reads as absent. The provider knows the full keyset, so
 the check is cheap, and a guest rung applies the same rule to the
 write harvest — the only way a guest can reach a hidden path is by
 recreating it by name.

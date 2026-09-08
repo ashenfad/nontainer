@@ -261,7 +261,10 @@ is the migration.
     a new path anywhere is allowed (and joins the view, so a delegate
     can read back its own note); modifying or deleting a path that
     exists outside the view is refused with `PermissionError` naming
-    the view. Locally the rule lives in the filesystem the sandbox
+    the view. The view is drawn around the FILE, not the name: a link
+    is a second name for one, so a link whose target the view hides
+    cannot be made, and a link out of the view that already exists
+    reads as absent rather than becoming a way through it. Locally the rule lives in the filesystem the sandbox
     holds; on a guest rung only the seeded subtree is materialized and
     the same rule is applied to the write harvest, so a call that tried
     lands nothing. The view is recorded on the branch under a reserved
