@@ -70,3 +70,55 @@ def test_edit_file_agent_tolerant_matching():
     assert out.count == 1
     assert r"\1 \g<0>" in ws.files.fs.read("d.txt").decode()
     ws.close()
+
+
+def test_files_read_list_and_exists():
+    """The read side of ``ws.files``: bytes, presence, and a listing
+    spelled the way the directory was asked for, so an entry can be
+    handed straight back to ``read``."""
+    ws = make_ws()
+    try:
+        ws.files.write("/workspace/notes/a.txt", "alpha")
+        ws.files.write("/workspace/notes/deep/b.txt", "beta")
+
+        assert ws.files.read("/workspace/notes/a.txt") == b"alpha"
+        assert ws.files.exists("/workspace/notes/deep") is True
+        assert ws.files.exists("/workspace/nope.txt") is False
+        with pytest.raises(Exception):
+            ws.files.read("/workspace/nope.txt")
+
+        assert ws.files.list("/workspace/notes") == [
+            "/workspace/notes/a.txt",
+            "/workspace/notes/deep",
+        ]
+        assert ws.files.list("/workspace/notes", recursive=True) == [
+            "/workspace/notes/a.txt",
+            "/workspace/notes/deep/b.txt",
+        ]
+        assert ws.files.read(ws.files.list("/workspace/notes")[0]) == b"alpha"
+    finally:
+        ws.close()
+
+
+def test_files_export_is_the_providers_mount(monkeypatch):
+    """``ws.files.export()`` is the old ``ws.mount()``: the provider's
+    context manager, unwrapped, refusal and all."""
+    from contextlib import contextmanager
+    from pathlib import Path
+
+    from nontainer.errors import NotSupportedError
+
+    ws = make_ws()
+    try:
+        with pytest.raises(NotSupportedError):
+            ws.files.export()
+
+        @contextmanager
+        def fake_mount():
+            yield Path("/tmp/exported")
+
+        monkeypatch.setattr(ws._provider, "mount", fake_mount)
+        with ws.files.export() as real:
+            assert real == Path("/tmp/exported")
+    finally:
+        ws.close()

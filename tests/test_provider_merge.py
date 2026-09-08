@@ -266,3 +266,53 @@ def test_preexisting_markers_not_flagged(kv_ws):
         assert "/workspace/notes.txt" in out.auto_merged
     finally:
         fork.close()
+
+
+# -- the facade ----------------------------------------------------------------
+
+
+def test_workspace_merge_brings_a_forks_work_home(kv_ws):
+    """``ws.merge`` is the provider verb under the workspace lock: the
+    fork's disjoint file arrives, and the outcome names it."""
+    kv_ws.terminal("echo base > a.txt")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+
+        out = kv_ws.merge("worker")
+        assert out.merged
+        assert out.commit == kv_ws.head
+        assert out.conflicts == ()
+        assert out.auto_merged == ("/workspace/b.txt",)
+        assert kv_ws.terminal("cat b.txt").stdout.strip() == "worker"
+    finally:
+        fork.close()
+
+
+def test_workspace_merge_refuses_a_dirty_target(kv_ws):
+    """A merge lands against a clean tree, and the refusal says which
+    two verbs get there."""
+    kv_ws.terminal("echo base > a.txt")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+        kv_ws.files.fs.write("/workspace/pending.txt", b"uncommitted")
+        assert kv_ws.dirty
+
+        with pytest.raises(WorkspaceError, match="ws.commit"):
+            kv_ws.merge("worker")
+        assert kv_ws.dirty  # nothing was taken from under the caller
+        assert not kv_ws.files.fs.exists("/workspace/b.txt")
+
+        kv_ws.commit()
+        assert kv_ws.merge("worker").merged
+    finally:
+        fork.close()
+
+
+def test_workspace_merge_needs_the_capability(tmp_path):
+    """Providers that cannot merge say so from the facade too."""
+    with workspace("s1", store=tmp_path, backend="dir") as ws:
+        assert ws.caps.merge is False
+        with pytest.raises(NotSupportedError, match="merge"):
+            ws.merge("other")
