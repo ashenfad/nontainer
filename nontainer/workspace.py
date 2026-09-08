@@ -1893,11 +1893,21 @@ class Workspace:
     def merge(self, source: str) -> MergeOutcome:
         """Merge another session's committed state into this one.
 
-        ``source`` names the session; the merge reads its HEAD commit,
-        so anything uncommitted there is not included. File conflicts
-        land as conflict markers IN the merge commit and are reported
-        in the outcome rather than blocking it — resolve them with
-        ordinary edits and commit. Requires ``caps.merge``.
+        A merge takes only what has been COMMITTED, on both sides, and
+        with ``caps.index`` that means committed by the agent:
+
+        - This session must have nothing modified relative to its own
+          last ws-git commit. Autocommit keeps the store's buffer clean
+          while an agent is composing, so the buffer is not the
+          question; work in flight would otherwise be folded into the
+          merge commit and attributed to the merge.
+        - ``source`` is merged at ITS last agent commit, whose tree is
+          exactly what that agent committed. A session that never used
+          ws-git is merged at its store head, as before.
+
+        File conflicts land as conflict markers IN the merge commit and
+        are reported in the outcome rather than blocking it — resolve
+        them with ordinary edits and commit. Requires ``caps.merge``.
         """
         if not self._provider.caps.merge:
             raise NotSupportedError(
@@ -1913,22 +1923,56 @@ class Workspace:
                     "clean tree to land against — ws.commit() them, or "
                     "ws.discard() them, then merge"
                 )
-            # The merge commit joins the agent's graph, so its own
-            # log walks through it instead of stopping at it.
-            parents = []
+            at = None
+            parents: list[str] = []
             if self._provider.caps.index:
                 from .agentgit import AgentGit
 
-                head = AgentGit(self).head
+                git = AgentGit(self)
+                self._require_agent_clean(git)
+                head = git.head
+                # The merge commit joins the agent's graph, so its own
+                # log walks through it instead of stopping at it.
                 parents = [head] if head is not None else []
-            outcome = self._provider.merge(source, info={"virtual_parents": parents})
+                at = git.source_commit(source)
+            outcome = self._provider.merge(
+                source, at=at, info={"virtual_parents": parents}
+            )
             if outcome.merged and self._provider.caps.index:
                 from .agentgit import AgentGit
 
-                AgentGit(self).record_merge(source, outcome.commit)
+                AgentGit(self).record_merge(source, outcome.commit, outcome.conflicts)
             # provider state moved under the executor: flag its view.
             self._mark_executor_stale()
             return outcome
+
+    @staticmethod
+    def _require_agent_clean(git: "AgentGit") -> None:
+        """Refuse a merge over work the agent has not committed.
+
+        The store's buffer is clean by then — autocommit saw to that —
+        so the only honest reading of "uncommitted" here is the agent's
+        own: anything modified against its last ws-git commit. Merging
+        over it would put work the agent never committed into the merge
+        commit and move its head past it, with the merge's name on it.
+
+        A session that has never made a ws-git commit has no such
+        commit to differ from — every file it holds reads as modified —
+        so only an open index refuses there. Same fallback as
+        :meth:`AgentGit.source_commit` makes from the other side.
+        """
+        status = git.status()
+        head = git.head
+        if not status.staged and (head is None or not status.unstaged):
+            return
+        drop = f"ws-git checkout {head[:7]}" if head else "ws-git reset"
+        raise WorkspaceError(
+            "uncommitted ws-git work on this session: "
+            f"{len(status.staged) + len(status.unstaged)} path(s) differ from "
+            "your last ws-git commit, and a merge takes only what has been "
+            f"committed. Land it (ws-git commit -m ...) or drop it ({drop}), "
+            "then merge."
+        )
 
     def discard(self) -> None:
         """Drop writes since the last commit (staging providers)."""

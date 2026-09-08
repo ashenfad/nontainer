@@ -207,6 +207,22 @@ class KvgitProvider:
         self._frozen_at = frozen_at
         self._fs: Any | None = None
         self._closed = False
+        # The framework's own keys, with the policy the merge verb
+        # already uses for them, registered for ORDINARY commits too.
+        # A commit whose CAS is lost to another handle on this session
+        # three-way merges by key, and these three are the keys any two
+        # writers are bound to contend on: the file table (every write
+        # touches it), the cwd, and the ws-git blob. Without a policy
+        # each of those turns a routine race into a raised conflict.
+        register = getattr(staged, "set_merge_fn", None)
+        if callable(register):
+            from kvgit import MergeChoice
+            from monkeyfs import VirtualFS
+
+            register(VirtualFS.METADATA_KEY, _merge_vfs_metadata)
+            register(VirtualFS.CWD_KEY, _keep_ours)
+            register(_WS_BLOB_KEY, MergeChoice.OURS)
+            register(_LEGACY_CWD_KEY, MergeChoice.OURS)
 
     @classmethod
     def open(
@@ -506,6 +522,33 @@ class KvgitProvider:
         yet."""
         return _FileView(self, self._staged)
 
+    def key_at(self, commit: str, key: str) -> Any:
+        """One store key's value at a commit, or ``None`` if absent.
+
+        The non-file half of :meth:`files_at`: what reads bookkeeping
+        (the ws-git blob) out of a commit without materializing a tree.
+        """
+        handle = self._staged.checkout(commit)
+        if handle is None:
+            raise CommitNotFoundError(f"No such commit: {commit!r}")
+        return handle.get(key)
+
+    def branch_head(self, session: str) -> str:
+        """Another session's current commit on this store. Unknown
+        names raise ``ValueError``."""
+        return self._open_branch(session).current_commit
+
+    def refresh(self) -> None:
+        """Re-read the branch head, DISCARDING uncommitted writes.
+
+        Recovery, not routine: what a caller reaches for when a commit
+        lost its CAS to another handle on the same session and the
+        work has to be re-applied against the head that won.
+        """
+        self._refuse_frozen("refresh")
+        self._staged.refresh()
+        self._invalidate_fs()
+
     def commit_keys(
         self, info: dict[str, Any] | None = None, *, keys: Iterable[str]
     ) -> str | None:
@@ -543,8 +586,20 @@ class KvgitProvider:
             self._commit_table(pending)
             if self._staged.is_staged(VirtualFS.METADATA_KEY):
                 pending.add(VirtualFS.METADATA_KEY)
+        from kvgit import MergeConflict
+
         try:
-            result = self._staged.commit(keys=pending, info=info)
+            try:
+                result = self._staged.commit(keys=pending, info=info)
+            except MergeConflict as e:
+                # kvgit three-way merges a concurrent write on other
+                # keys and raises only where both sides touched one.
+                # Either way this is the CAS story, in this layer's
+                # words: callers unwind on WorkspaceError.
+                raise WorkspaceError(
+                    f"commit failed: conflicting concurrent commit on branch "
+                    f"{self._session!r} (CAS): {e}"
+                ) from e
             if not result.merged:
                 raise WorkspaceError(
                     f"commit failed: conflicting concurrent commit on branch "
@@ -772,11 +827,19 @@ class KvgitProvider:
             modified=self._changed_content(self._file_keys(raw.modified), a, b),
         )
 
-    def merge(self, source: str, *, info: dict[str, Any] | None = None) -> MergeOutcome:
+    def merge(
+        self,
+        source: str,
+        *,
+        at: str | None = None,
+        info: dict[str, Any] | None = None,
+    ) -> MergeOutcome:
         """Merge another branch into this one.
 
-        Reads the source HEAD commit (anything uncommitted there is not
-        included), three-way merges file content with marker merge (see
+        Reads the source HEAD commit — or ``at``, a commit on that
+        branch, which is how the agent-facing git merges a source's
+        last AGENT commit rather than whatever the framework committed
+        after it — three-way merges file content with marker merge (see
         ``kvgit.merges``), and commits the result tagged as a merge.
         Overlapping text lands with conflict markers in the working tree
         and the outcome reports it. Framework state merges by rule, not
@@ -801,7 +864,15 @@ class KvgitProvider:
         if source == self._staged.current_branch:
             raise ValueError("cannot merge a branch into itself")
         other = self._open_branch(source)
-        source_head = other.current_commit
+        source_head = other.current_commit if at is None else at
+        if at is not None and at != other.current_commit:
+            # Merging an earlier commit on that branch: read its side
+            # from THERE, so the key enumeration and the marker
+            # provenance describe what is being merged.
+            probe = self._staged.checkout(at)
+            if probe is None:
+                raise CommitNotFoundError(f"No such commit: {at!r}")
+            other = probe
 
         # Text merge applies to file-content keys only: the merge fn
         # receives no key, so a blanket default would marker-merge cache

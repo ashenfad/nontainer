@@ -17,7 +17,7 @@ Public surface:
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
-            CommitNotFoundError
+            CommitNotFoundError, BookkeepingLost
 
 Adapters (optional extras):
 
@@ -29,6 +29,7 @@ from .artifacts import ArtifactPath, artifact_kind
 from .cache import Cache, CacheError
 from .editing import EditOutcome
 from .errors import (
+    BookkeepingLost,
     CommitNotFoundError,
     NotSupportedError,
     SessionIdError,
@@ -95,4 +96,5 @@ __all__ = [
     "NotSupportedError",
     "SessionIdError",
     "CommitNotFoundError",
+    "BookkeepingLost",
 ]
