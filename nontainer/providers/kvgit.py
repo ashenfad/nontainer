@@ -13,8 +13,8 @@ live under ``__cache__/`` — no collisions by construction.
 Capabilities: ``staging`` (writes are invisible until commit;
 ``discard()`` drops them), ``cheap_fork`` (branches share storage via
 kvgit's content-addressed HAMT), ``merge`` (CAS + key-level three-way
-with conflict markers), ``index`` (a staged set with selective
-``commit``; staging suspends autocommit until the composition
+with conflict markers), ``index`` (a staged set with a selective
+``commit_index``; staging suspends autocommit until the composition
 lands or is abandoned).
 
 ``info`` dicts attached to commits must be JSON-serializable
@@ -617,7 +617,7 @@ class KvgitProvider:
         """Stage workspace file paths; first call suspends autocommit.
 
         The index names store keys, not snapshots: edits made after
-        staging ride along into the selective ``commit``.
+        staging ride along into ``commit_index``.
         """
         self._refuse_frozen("stage")
         if isinstance(paths, str):

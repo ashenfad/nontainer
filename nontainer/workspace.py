@@ -128,7 +128,7 @@ class Mount:
     (+ ``IsolatedFS``, + ``ReadOnlyFS`` when ``readonly``).
 
     Mounted paths are live views of the real directory: they are NOT
-    versioned and NOT captured by commits, so a rollback or restore
+    versioned and NOT captured by commits, so a rollback or checkout
     leaves them exactly as they are.
 
     A fork **inherits the mount point** and does NOT copy the data
@@ -203,7 +203,7 @@ class TerminalResult:
 
     commit: str | None = None
     """Id of the commit this call's autocommit created — pins the
-    workspace state after the call (``ws.restore(result.commit)``).
+    workspace state after the call (``ws.checkout(result.commit)``).
     ``None`` when nothing was committed: read-only call, autocommit
     off (turn mode), or an unversioned provider. HOST-facing, like
     ``PythonResult.namespace`` — adapters must not render it into the
@@ -264,7 +264,7 @@ class PythonResult:
 
 @dataclass(frozen=True)
 class WriteOutcome:
-    """Outcome of ``write_file`` / ``put``."""
+    """Outcome of ``files.write`` / ``files.put``."""
 
     path: str
     """Workspace path written."""
@@ -554,11 +554,11 @@ _MUTATING_FS_METHODS = frozenset(
 
 
 class _SyncingFS:
-    """``ws.fs`` wrapper: host-side writes mark the executor stale.
+    """``ws.files.fs`` wrapper: host-side writes mark the executor stale.
 
-    ``ws.fs`` is the documented host-side escape hatch (seeding inputs,
-    harvesting artifacts) and it writes straight into the provider —
-    behind a remote executor's back. Without this, the guest tree never
+    ``ws.files.fs`` is the documented host-side escape hatch (seeding
+    inputs, harvesting artifacts) and it writes straight into the
+    provider — behind a remote executor's back. Without this, the guest tree never
     learned: a host write landed in the provider and the guest kept
     serving its stale baseline until some *other* path happened to call
     ``sync()``. That made the failure nondeterministic, which is the
@@ -1164,7 +1164,7 @@ class Workspace:
         # autocommit is meaningless (and forced off) when the
         # provider can't commit.
         # Set while an operation writes on a call's behalf, so nested
-        # write_file commits fold into that call's single commit.
+        # files.write commits fold into that call's single commit.
         self._defer_commits = False
         self._autocommit = autocommit and provider.caps.versioned and not self._frozen
         # Construction owns the workspace root + initial cwd, but it
@@ -1399,7 +1399,7 @@ class Workspace:
         """Id of the current (latest) commit — pins the state a
         read-only call observed, since reads never move it. ``None``
         for unversioned providers. Caveat: staged-but-uncommitted
-        changes (turn mode, manual ``ws.fs`` writes) are NOT in the
+        changes (turn mode, manual ``ws.files.fs`` writes) are NOT in the
         head — check :attr:`dirty`; the pin is exact iff clean."""
         if not self._provider.caps.versioned:
             return None
@@ -1413,7 +1413,7 @@ class Workspace:
 
     @property
     def frozen(self) -> bool:
-        """This workspace is a snapshot at a tag (see :meth:`at_tag`).
+        """This workspace is a snapshot at a tag (see ``ws.tags.at``).
 
         Reads work; nothing can be written or committed.
         ``autocommit`` is forced off, the write tools refuse, and
@@ -1434,7 +1434,7 @@ class Workspace:
         """EXTENSION SURFACE: the workspace's single-writer lock.
         Mutating public methods hold it; hold it yourself for
         host-side or extension work that mutates the workspace
-        (``ws.fs`` writes, ``ws.cache`` mutation, multi-step
+        (``ws.files.fs`` writes, ``ws.cache`` mutation, multi-step
         read-modify-write) and must serialize with tool calls. It is
         an ``RLock``, so taking it around a block that calls locked
         public methods is safe."""
@@ -1594,7 +1594,7 @@ class Workspace:
         claims: dict[Any, Any] = {}
         problems: list[str] = []
         try:
-            # Artifact writes go through the public write_file, which
+            # Artifact writes go through the public files.write, which
             # commits for itself. Suppressed: they are part of THIS
             # call and ride its commit.
             with self._one_commit():
@@ -1898,7 +1898,7 @@ class Workspace:
         handing embedders a flat namespace to partition themselves:
 
         - ``scope="session"`` (default) — the name belongs to this
-          session. :meth:`tags` lists only its own, another session's
+          session. ``ws.tags.list()`` lists only its own, another session's
           ``v1`` is a different tag, and deleting the session
           (``Store.delete``) deletes it. This is the commit
           you want to be able to name later: "before the refactor".
@@ -1940,7 +1940,7 @@ class Workspace:
             return self._provider.tag(name, at=at, info=info, scope=scope)
 
     def _tags(self, *, scope: str = "session") -> dict[str, str]:
-        """Tag name → commit id, for one scope (see :meth:`tag`)."""
+        """Tag name → commit id, for one scope (see :meth:`_tag`)."""
         with self._lock:
             self._require_tags("tags")
             return self._provider.tags(scope=scope)
@@ -2162,7 +2162,7 @@ class Workspace:
     def _one_commit(self):
         """Suppress nested commits for the duration of an operation.
 
-        ``write_file`` commits, by design — it is a tool in its own
+        ``files.write`` commits, by design — it is a tool in its own
         right. But when the *workspace* writes on a call's behalf (``ui``
         artifacts), those writes belong to that call, not to a
         ``file_write`` of their own. Without this, materializing two

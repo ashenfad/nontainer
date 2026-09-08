@@ -43,7 +43,7 @@ class EditOutcome:
     commit: str | None = None
     """Commit created when the workspace applied this edit (``None``
     when nothing was committed: no-op edit, turn mode, unversioned
-    provider). Attached by ``Workspace.edit_file``; ``apply_edit``
+    provider). Attached by ``ws.files.edit``; ``apply_edit``
     itself is a pure text transform and leaves it unset."""
 
 
