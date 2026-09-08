@@ -543,14 +543,19 @@ class KvgitProvider:
             self._commit_table(pending)
             if self._staged.is_staged(VirtualFS.METADATA_KEY):
                 pending.add(VirtualFS.METADATA_KEY)
-        result = self._staged.commit(keys=pending, info=info)
-        if not result.merged:
-            raise WorkspaceError(
-                f"commit failed: conflicting concurrent commit on branch "
-                f"{self._session!r} (CAS): {result}"
-            )
-        self._restore_live_table(live_table)
-        self._invalidate_fs()
+        try:
+            result = self._staged.commit(keys=pending, info=info)
+            if not result.merged:
+                raise WorkspaceError(
+                    f"commit failed: conflicting concurrent commit on branch "
+                    f"{self._session!r} (CAS): {result}"
+                )
+        finally:
+            # The fixup describes a commit; live truth is what every
+            # read afterwards needs — including the reads a caller
+            # makes while unwinding a commit that did not happen.
+            self._restore_live_table(live_table)
+            self._invalidate_fs()
         return self._staged.current_commit
 
     def _restore_live_table(self, live_table: Any) -> None:
