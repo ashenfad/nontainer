@@ -273,6 +273,7 @@ def test_checkout_appends_and_keeps_every_earlier_commit(kv_ws):
 
     landed = kv_ws.checkout(target)
 
+    # exactly one commit: nothing raced it, so it converged first try
     assert [e.id for e in kv_ws.log()] == [landed] + before
     assert landed not in before
     assert next(iter(kv_ws.log())).info == {"tool": "checkout", "target": target}
@@ -356,6 +357,104 @@ def test_rollback_after_a_checkout_is_the_redo(kv_ws):
 
     kv_ws.rollback(1)
     assert kv_ws.terminal("cat f.txt").stdout.strip() == "two"
+
+
+def _keyset(provider, commit):
+    """Every key a commit holds, with its value — the whole session."""
+    handle = provider._staged.checkout(commit)
+    return {key: handle.get(key) for key in handle.keys()}
+
+
+def _race_commit(ws, other, interfere):
+    """Make a second handle commit inside a checkout's window.
+
+    Wraps the provider's ``commit`` so ``interfere`` fires once, in the
+    gap between the keyset diff and the commit that follows it — where
+    kvgit three-way merges another handle's state into the restore.
+    Returns the unwrapped method, to put back afterwards.
+    """
+    real = ws._provider.commit
+    fired: list[bool] = []
+
+    def racing(info=None):
+        if not fired:
+            fired.append(True)
+            other.refresh()
+            interfere(other)
+            other.commit(info={"tool": "other"})
+        return real(info)
+
+    ws._provider.commit = racing
+    return real
+
+
+def test_checkout_converges_when_a_concurrent_commit_adds_a_key(tmp_path):
+    """A key another handle adds mid-checkout is in neither the diff's
+    added nor its removed list — it exists at neither the head the
+    checkout started from nor the target — so kvgit's merge would carry
+    it into a commit claiming to be the target's state. The checkout
+    re-diffs against the head that landed until it holds the target
+    exactly."""
+    path = tmp_path / "kvgit"
+    ws = Workspace(KvgitProvider.open(path, session="race-add"))
+    other = KvgitProvider.open(path, session="race-add")
+    try:
+        provider = ws._provider
+        ws.terminal("echo one > f.txt")
+        ws.run_python("cache['gen'] = 1")
+        target = ws.head
+        ws.terminal("echo two > f.txt")
+        before = len(list(ws.log()))
+
+        real = _race_commit(
+            ws, other, lambda o: o.kv.__setitem__("__cache__/sneak", "late")
+        )
+        try:
+            landed = ws.checkout(target)
+        finally:
+            provider.commit = real
+
+        assert _keyset(provider, landed) == _keyset(provider, target)
+        assert "__cache__/sneak" not in provider.kv
+        assert ws.cache["gen"] == 1
+        assert ws.terminal("cat f.txt").stdout.strip() == "one"
+        # The concurrent commit is not lost, it is superseded: it and
+        # both restore commits are in the log.
+        tools = [e.info.get("tool") for e in ws.log()]
+        assert tools[:3] == ["checkout", "checkout", "other"]
+        assert len(list(ws.log())) == before + 3
+    finally:
+        other.close()
+        ws.close()
+
+
+def test_checkout_converges_when_a_concurrent_commit_changes_a_file(tmp_path):
+    """Same window, a file the restore had no reason to touch: it is
+    identical at the head and the target, so the merge takes the other
+    handle's version and the first restore commit is not the target."""
+    path = tmp_path / "kvgit"
+    ws = Workspace(KvgitProvider.open(path, session="race-edit"))
+    other = KvgitProvider.open(path, session="race-edit")
+    try:
+        provider = ws._provider
+        ws.terminal("echo steady > kept.txt; echo one > f.txt")
+        target = ws.head
+        ws.terminal("echo two > f.txt")
+
+        real = _race_commit(
+            ws, other, lambda o: o.fs.write("/workspace/kept.txt", b"meddled\n")
+        )
+        try:
+            landed = ws.checkout(target)
+        finally:
+            provider.commit = real
+
+        assert _keyset(provider, landed) == _keyset(provider, target)
+        assert ws.terminal("cat kept.txt").stdout.strip() == "steady"
+        assert ws.terminal("cat f.txt").stdout.strip() == "one"
+    finally:
+        other.close()
+        ws.close()
 
 
 def test_checkout_unknown_id(kv_ws):

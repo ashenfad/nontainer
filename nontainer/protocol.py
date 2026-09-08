@@ -306,6 +306,11 @@ class WorkspaceProvider(Protocol):
         since the target is still in ``history()``. Nothing here moves
         a branch head backward; only store-level admin does.
 
+        It CONVERGES on the target: a write another handle lands on
+        the session while this is in flight is superseded rather than
+        carried into the result, and the caller finds it in
+        ``history()`` like any other commit.
+
         Uncommitted writes are replaced by the restored state, since
         that is what "make the workspace what it was" means; a caller
         that wants them gone on their own terms calls ``discard()``
