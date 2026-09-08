@@ -401,23 +401,41 @@ def test_workspace_wrappers_smoke(tmp_path):
         ws.close()
 
 
-def test_commit_takes_the_index_when_one_is_in_flight(kv_ws):
-    """One verb, two scopes. With a composition in flight ``ws.commit``
-    lands the staged set and leaves the rest dirty; with none, it lands
-    everything — the rule ws-git already followed, now the only rule."""
+def test_index_commit_takes_only_the_staged_set(kv_ws):
+    """The selective verb: the staged set lands, unstaged work stays
+    dirty, and the composition is over."""
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
     kv_ws.index.stage(["/workspace/a.txt"])
 
-    kv_ws.commit()
+    kv_ws.index.commit()
     assert _provider(kv_ws).status().staged == ()
     assert _provider(kv_ws).status().unstaged == ("/workspace/b.txt",)
     assert kv_ws.dirty  # b.txt is still work in progress
+    assert not _provider(kv_ws).stage_suspended()
 
-    # No index now: the same call takes everything left.
     kv_ws.commit()
     assert not kv_ws.dirty
     assert _provider(kv_ws).status().unstaged == ()
+
+
+def test_commit_takes_everything_even_mid_composition(kv_ws):
+    """The other verb, and the reason they are two: ``ws.commit`` means
+    everything whether or not the agent has ws-git staging open, so the
+    code around it can rely on what it commits. The composition ends —
+    every path it held is in the commit."""
+    kv_ws.files.fs.write("/workspace/a.txt", b"one")
+    kv_ws.files.fs.write("/workspace/b.txt", b"two")
+    kv_ws.index.stage(["/workspace/a.txt"])
+    assert _provider(kv_ws).stage_suspended()
+
+    kv_ws.commit()
+
+    assert not kv_ws.dirty
+    st = _provider(kv_ws).status()
+    assert st.staged == () and st.unstaged == ()
+    assert not _provider(kv_ws).stage_suspended()  # autocommit is live again
+    assert kv_ws.terminal("cat b.txt").stdout.strip() == "two"
 
 
 def test_commit_without_an_index_commits_everything(kv_ws):

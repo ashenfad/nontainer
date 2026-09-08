@@ -165,10 +165,25 @@ def test_reset_abandons_index_not_tree(ws):
     assert _subjects(ws)[0] == "terminal"
 
 
-def test_commit_nothing_staged(ws):
+def test_commit_with_nothing_to_commit(ws):
     r = ws.terminal("ws-git commit")
     assert r.exit_code == 1
-    assert r.stderr == "ws-git: nothing staged to commit"
+    assert r.stderr == "ws-git: nothing to commit"
+
+
+def test_commit_without_a_composition_takes_everything(ws):
+    """No composition open means no index to have forgotten about, so
+    the terminal verb commits the work in front of it (the host API
+    splits the two: ws.commit vs ws.index.commit)."""
+    ws.terminal("echo one > a.txt; echo two > b.txt")
+    ws.autocommit = False
+    ws.terminal("echo three > c.txt")
+    assert ws.dirty
+
+    r = ws.terminal("ws-git commit -m 'all of it'")
+    assert r.exit_code == 0, r.stderr
+    assert not ws.dirty
+    assert _subjects(ws)[0] == "all of it"
 
 
 def test_stage_needs_paths_and_known_files(ws):

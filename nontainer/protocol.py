@@ -424,12 +424,23 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
-    def commit_index(self, info: dict[str, Any] | None = None) -> str:
+    def commit_index(
+        self, info: dict[str, Any] | None = None, *, include: Iterable[str] = ()
+    ) -> str:
         """Commit staged keys plus index bookkeeping, leaving unstaged
         writes dirty (requires ``caps.index``). Tagged
         ``{"tool": "ws-git.commit"}`` unless ``info`` says otherwise.
         Raises ``WorkspaceError`` when nothing staged would change the
         tree. Returns the new commit hash.
+
+        ``include`` names state to commit ALONGSIDE the staged set,
+        whether or not the index holds it: provider keys as they are
+        stored (``__agno__/session``), or absolute workspace paths,
+        which the provider resolves to its own keys. It is what lets
+        the framework make its own writes durable mid-composition —
+        the conversation a session db just stored — without waiting for
+        an agent to finish composing, and without taking the agent's
+        unstaged edits along.
         """
         ...
 

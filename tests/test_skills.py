@@ -111,6 +111,28 @@ def test_install_from_granted_modules(ws, tmp_path, monkeypatch):
         sys.modules.pop("demolib", None)
 
 
+def test_install_lands_the_skill_over_an_open_composition(ws):
+    """Installing a skill is the framework writing, at a moment the
+    agent did not choose. It commits the skill and the staged set the
+    agent had composed for the turn, and leaves the agent's unstaged
+    edits dirty — where before it could commit the agent's staged files
+    and leave the skill itself uncommitted."""
+    ws.files.fs.write("/workspace/staged.txt", b"staged")
+    ws.files.fs.write("/workspace/loose.txt", b"work in progress")
+    ws.index.stage(["/workspace/staged.txt"])
+
+    name = skills.install(ws, SKILL_MD)
+
+    head = ws._provider._staged.checkout(ws.head)
+    installed = f"{skills.skills_root(ws)}/{name}/SKILL.md"
+    assert head.get(ws._provider.fs._encode_path(installed)) is not None
+    assert ws.files.exists(installed)
+    assert list(ws.log(limit=1))[0].info == {"tool": "skill", "skill": name}
+    # the agent's work in progress is untouched and still uncommitted
+    assert ws.dirty
+    assert ws.index.status().unstaged == ("/workspace/loose.txt",)
+
+
 def test_catalog_lists_frontmatter(ws):
     assert skills.catalog(ws) == ""  # no /skills: no primer text
     skills.install(ws, SKILL_MD)
