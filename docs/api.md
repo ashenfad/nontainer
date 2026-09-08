@@ -342,14 +342,33 @@ since a commit id has no "one before this"; it stops at the
 `{"tool": "init"}` lifecycle commit rather than crossing into a
 provider's pre-workspace seed.
 
-**`ws.merge(source)`** merges another session's HEAD into this one
-(`caps.merge`). Anything uncommitted on the source is not included, and
-this session must be clean — commit or discard first, which the
-refusal says. File conflicts land as conflict markers IN the merge
-commit and are reported in `MergeOutcome.conflicts` rather than
-blocking it: resolve them with ordinary edits and commit. Non-file
-contested state, which no merge function can resolve, aborts the merge
-untouched (`merged=False`, `commit=None`).
+**`ws.merge(source)`** merges another session into this one
+(`caps.merge`). **A merge takes only what has been committed, on both
+sides — and with `caps.index` that means committed by the agent:**
+
+- This session must have nothing modified against its own last ws-git
+  commit. Autocommit keeps the store's buffer clean while an agent is
+  composing, so the buffer is not the question; the refusal names the
+  two fixes (`ws-git commit -m ...` to land the work, `ws-git checkout
+  <your last commit>` to drop it). A session that has never made a
+  ws-git commit has no such baseline, so only an open index refuses
+  there.
+- The source is merged at ITS last agent commit, whose tree is exactly
+  what that agent committed — not its store head, which also holds
+  whatever the framework committed for it since. A source that never
+  used ws-git is merged at its store head, as before.
+
+File conflicts land as conflict markers IN the merge commit and are
+reported in `MergeOutcome.conflicts` rather than blocking it: resolve
+them with ordinary edits and commit — the paths the merge reports are
+exactly the ones `ws-git status` then shows as `UU`, and each stops
+being unresolved when its markers are gone, not when it is committed.
+Non-file contested state, which no merge function can resolve, aborts
+the merge untouched (`merged=False`, `commit=None`).
+
+`MergeOutcome.commit` is the merge commit; `ws.head` afterwards is the
+bookkeeping commit that records it as the agent's, which is what
+leaves a clean workspace behind a merge.
 
 Unversioned providers raise `NotSupportedError`; `autocommit` is
 forced off for them. With autocommit on, each successful mutating
