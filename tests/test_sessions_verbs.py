@@ -678,3 +678,24 @@ def test_a_link_to_a_hidden_file_cannot_be_made(linked):
     # a link INSIDE the view is ordinary
     view.symlink("/seen/ok.txt", "/seen/fine.txt")
     assert view.read("/seen/fine.txt") == b"ok"
+
+
+# -- one root for a lineage ----------------------------------------------------
+
+
+def test_store_fork_opens_the_source_at_the_childs_root(store):
+    """A lineage shares one root: a view normalized against some other
+    one would name paths the child cannot see."""
+    ws = store.open("origin", root="/data")
+    ws.files.write("/data/a.py", "a\n")
+    ws.files.write("/data/b.py", "b\n")
+    ws.index.commit("seed")
+    ws.close()
+
+    child = store.fork("origin", "child", root="/data", paths=["a.py"])
+    try:
+        assert child._view == ("/data/a.py",)
+        assert child.files.list("/data") == ["/data/a.py"]
+        assert not child.files.exists("/data/b.py")
+    finally:
+        child.close()

@@ -293,7 +293,9 @@ is the migration.
     which also fixes the same reopen for a session with configured
     mounts.
   - **`Store.fork(src, dst, *, at=, inherit=, paths=)`** is the same
-    verb for host code with no workspace open.
+    verb for host code with no workspace open; `root=` opens the
+    source at that root too, since a lineage shares one and a view
+    normalized against another would name paths the child cannot see.
   - **The plane policy, whole.** A merge is filesystem-only: files
     three-way (the VFS table field-aware), and `__cache__/*`,
     `__agno__/*`, cwd, the ws-git blob and the view record all take

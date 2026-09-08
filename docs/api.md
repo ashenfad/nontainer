@@ -553,7 +553,9 @@ root rather than where its agent was standing.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s
-keywords for the workspace it returns.
+keywords for the workspace it returns. `root=` opens the source at that
+root too: a lineage shares one, and a view normalized against a
+different root would name paths the child cannot see.
 
 **`ws.merge(source)`** merges another session into this one
 (`caps.merge`). **A merge takes only what has been committed, on both
