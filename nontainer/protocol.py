@@ -108,8 +108,8 @@ class Capabilities:
 
     index: bool = False
     """A staged set (the index) with selective commit: ``stage`` /
-    ``unstage`` compose a commit across calls while ``commit`` flushes
-    only staged keys. Staging suspends autocommit until the
+    ``unstage`` compose a commit across calls while ``commit_index``
+    flushes only staged keys, where ``commit`` takes everything. Staging suspends autocommit until the
     composition lands or is abandoned. Appended last so earlier
     positional ``Capabilities(...)`` constructions keep their meaning."""
 
@@ -292,6 +292,10 @@ class WorkspaceProvider(Protocol):
     def commit(self, info: dict[str, Any] | None = None) -> str:
         """Atomically capture fs + kv as one commit; return its id.
 
+        Everything uncommitted, which is what makes it the pair of
+        ``commit_index`` (the staged set only). ``Workspace.commit``
+        chooses between them by whether a composition is in flight.
+
         With ``caps.staging``, this is the moment staged writes become
         visible/durable. Without staging, it's a marker over already-
         durable state (AgentFS: snapshot).
@@ -402,11 +406,11 @@ class WorkspaceProvider(Protocol):
         ...
 
     def stage(self, paths: Iterable[str]) -> StageResult:
-        """Stage workspace file paths for the next selective ``commit``
+        """Stage workspace file paths for the next ``commit_index``
         (requires ``caps.index``). Unknown paths raise ``ValueError``;
         valid-but-unstaged paths are silently ignored by ``unstage``.
         The first call suspends autocommit until the composition
-        lands (``commit``) or is abandoned (``discard_staged`` or
+        lands (``commit_index``) or is abandoned (``discard_staged`` or
         unstaging everything) — reported in the result, since there is
         no terminal yet to say it aloud. Providers without the
         capability raise ``NotSupportedError``.
@@ -757,7 +761,7 @@ class Executor(Protocol):
         provider. Every path where provider state moves without the
         executor seeing it marks the workspace stale — restore /
         rollback / discard, the host-side write helpers
-        (``write_file`` / ``edit_file`` / ``put``), and direct
+        (``files.write`` / ``files.edit`` / ``files.put``), and direct
         ``ws.files.fs`` writes — and the workspace calls this once, lazily,
         before the next execution. Lazy because a remote
         implementation may re-push the whole tree: N host writes cost
