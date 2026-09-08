@@ -905,3 +905,172 @@ def test_bookkeeping_that_cannot_land_names_the_commit_that_did(kv_ws):
     # the commit is in the store, and the agent's head still is not it
     assert any(e.id == landed[0] for e in _history(kv_ws))
     assert kv_ws.index.head != landed[0]
+
+
+# -- what a checkout may target -------------------------------------------------
+
+
+def test_checkout_refuses_a_commit_that_is_not_the_agents(kv_ws):
+    """A framework commit has no place in the agent's graph: taking one
+    as the head would strand the agent's whole log behind it."""
+    kv_ws.terminal("echo one > a.txt")
+    first = kv_ws.index.commit("first")
+    kv_ws.terminal("echo two > b.txt")  # a framework commit
+    kv_ws.index.commit("second")
+
+    framework = next(e.id for e in _history(kv_ws) if e.info.get("tool") == "terminal")
+    with pytest.raises(ValueError, match="not one of yours"):
+        kv_ws.index.checkout(framework)
+    with pytest.raises(ValueError, match=r"ws\.checkout"):
+        kv_ws.index.checkout(framework)
+    # the agent's own still checks out, and the log lands with it
+    assert kv_ws.index.checkout(first) == first
+    assert [e.info["message"] for e in kv_ws.index.log()] == ["first"]
+    assert kv_ws.index.head == first
+
+
+def test_checkout_keeps_the_ancestry_it_lands_on(kv_ws):
+    kv_ws.terminal("echo one > a.txt")
+    kv_ws.index.commit("first")
+    kv_ws.terminal("echo two > b.txt")
+    second = kv_ws.index.commit("second")
+    kv_ws.terminal("echo three > c.txt")
+    kv_ws.index.commit("third")
+
+    kv_ws.index.checkout(second)
+    assert [e.info["message"] for e in kv_ws.index.log()] == ["second", "first"]
+    # and a commit on top extends that ancestry, not a broken root
+    kv_ws.terminal("echo four > d.txt")
+    kv_ws.index.commit("fourth")
+    assert [e.info["message"] for e in kv_ws.index.log()] == [
+        "fourth",
+        "second",
+        "first",
+    ]
+
+
+def test_the_terminal_refuses_a_framework_commit_too(kv_ws):
+    from nontainer.wsgit import register_wsgit
+
+    register_wsgit(kv_ws)
+    kv_ws.terminal("echo one > a.txt")
+    kv_ws.index.commit("first")
+    framework = next(e.id for e in _history(kv_ws) if e.info.get("tool") == "terminal")
+    r = kv_ws.terminal(f"ws-git checkout {framework[:10]}")
+    assert r.exit_code == 1
+    assert "not one of yours" in r.stderr
+    assert "ws.checkout" in r.stderr
+    # ... and the agent's own resolves from a prefix, as git does
+    mine = next(e.id for e in kv_ws.index.log())
+    assert kv_ws.terminal(f"ws-git checkout {mine[:7]}").exit_code == 0
+    assert kv_ws.index.head == mine
+
+
+# -- a merge whose record cannot land -------------------------------------------
+
+
+def test_a_merge_record_that_cannot_land_names_the_merge(kv_ws):
+    """The merge is in the store and cannot be redone, so the recovery
+    is not "run it again" — it is re-establishing the head."""
+    from nontainer.errors import BookkeepingLost
+
+    kv_ws.terminal("echo base > a.txt")
+    kv_ws.index.commit("base")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+        fork.index.commit("worker work")
+
+        provider = _provider(kv_ws)
+        real = provider.commit_keys
+
+        def refuse(info=None, *, keys):
+            if (info or {}).get("tool") == "ws-git.merge-record":
+                raise WorkspaceError("commit failed: conflicting concurrent (CAS)")
+            return real(info, keys=keys)
+
+        provider.commit_keys = refuse
+        with pytest.raises(BookkeepingLost) as excinfo:
+            kv_ws.merge("worker")
+        del provider.commit_keys
+
+        message = str(excinfo.value)
+        merge_commit = next(
+            e.id for e in _history(kv_ws) if e.info.get("tool") == "ws-git.merge"
+        )
+        assert f"merge {merge_commit}" in message
+        assert "ws.index.checkout" in message
+        # the blob in hand is the one the store holds, so the head did
+        # not silently advance to a merge nothing recorded
+        from nontainer.agentgit import BLOB_KEY, parse_blob
+
+        assert parse_blob(provider.kv.get(BLOB_KEY)) == parse_blob(
+            provider.key_at(provider.head, BLOB_KEY)
+        )
+        assert kv_ws.index.head != merge_commit
+        # and the recovery the message names does work: a merge commit
+        # is one of the agent's, so it can be checked out
+        assert kv_ws.index.checkout(merge_commit) == merge_commit
+        assert kv_ws.index.head == merge_commit
+        assert merge_commit in [e.id for e in kv_ws.index.log()]
+        assert kv_ws.files.read("/workspace/b.txt") == b"worker\n"
+    finally:
+        fork.close()
+
+
+# -- the provider contract ------------------------------------------------------
+
+
+def test_every_provider_takes_the_documented_merge_signature():
+    """``Workspace.merge`` passes ``at`` and ``info`` to whatever
+    provider it has, including a third-party one with ``caps.merge``
+    and no index. The signature is the contract, so it is checked
+    against the protocol rather than against one implementation."""
+    import inspect
+
+    from nontainer.protocol import WorkspaceProvider
+    from nontainer.providers.agentfs import AgentFSProvider
+    from nontainer.providers.dir import DirProvider
+
+    documented = set(inspect.signature(WorkspaceProvider.merge).parameters)
+    for cls in (KvgitProvider, DirProvider, AgentFSProvider):
+        taken = set(inspect.signature(cls.merge).parameters)
+        assert documented <= taken, cls.__name__
+
+
+def test_merge_passes_both_keywords_to_the_provider(tmp_path):
+    """The other half: what the facade actually calls with, on a
+    provider that has merge without an index — where a drift in the
+    call would land first."""
+    from nontainer.protocol import Capabilities, MergeOutcome
+    from nontainer.providers.dir import DirProvider
+
+    seen = {}
+
+    class MergingDirProvider(DirProvider):
+        """The documented contract and nothing else."""
+
+        @property
+        def caps(self):
+            return Capabilities(versioned=True, merge=True)
+
+        def commit(self, info=None):
+            return "c0ffee0"
+
+        def merge(self, source, **kwargs):
+            seen["source"] = source
+            seen["kwargs"] = kwargs
+            return MergeOutcome(
+                merged=True, commit="c0ffee", conflicts=(), auto_merged=()
+            )
+
+    ws = Workspace(MergingDirProvider(tmp_path / "ws", session="plain"))
+    try:
+        out = ws.merge("other")
+        assert out.merged
+        assert seen["source"] == "other"
+        assert set(seen["kwargs"]) == {"at", "info"}
+        assert seen["kwargs"]["at"] is None
+        assert seen["kwargs"]["info"] == {"virtual_parents": []}
+    finally:
+        ws.close()
