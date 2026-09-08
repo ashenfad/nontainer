@@ -50,12 +50,10 @@ hooks run *before* that, and a hook-driven commit would hold the turn's
 files but leave its conversation for the next commit. See
 [agno-sessions.md](agno-sessions.md).
 
-Both of those are the *framework* committing, and a framework
-durability commit made while the agent has a ws-git composition open
-carries only the framework's own keys — the conversation, an installed
-skill — never the staged set: staging suspends autocommit until the
-composition lands or is abandoned, and the framework is never what
-lands it.
+Both of those are the *framework* committing — everything uncommitted,
+at a moment the agent did not choose. That is safe to do at any moment
+because the agent's own git is measured against the agent's own last
+commit, not the store's head (next section).
 
 Individual writes are deliberately *not* the unit: a handler that writes
 three files mid-request, then raises, should leave nothing behind. The
@@ -67,6 +65,51 @@ Results pin the commit they produced — `result.commit` is the id
 (or `None` for a read-only call), so `ws.checkout(result.commit)` is
 compensation by identity rather than counting steps. Read-only calls
 don't commit at all; `ws.head` pins the state they observed.
+
+## ws-git is a fiction over the store's history
+
+An agent asks for git — an index it fills across several edits,
+commits it names, a log it can read back. The store underneath has its
+own history, made by the framework for durability at moments the agent
+never chose. Those are not the same history, and the first version of
+this tried to make them one: an agent commit WAS a framework commit,
+and staging suspended autocommit so unstaged work stayed out of the
+store until the agent landed it. That collided with the framework's
+own durability points and with the plain rule that nothing an agent
+writes should sit outside the store.
+
+So the agent's git is metadata instead — a blob at a reserved key
+holding the agent's head (a store commit hash), the staged paths, and
+the context of an outstanding merge. Four consequences, and they are
+the whole model:
+
+- **The framework's commits are plumbing.** `status` diffs the working
+  tree against the AGENT's head, so a turn hook, a session db or an
+  autocommit between two edits leaves a composition exactly as it was.
+  Nothing is withheld from the store and nothing suspends autocommit:
+  an agent's work in progress is durable from the moment it is
+  written, and still not in the agent's commit until the agent says
+  so.
+- **An agent commit's tree is exactly what the agent committed.** The
+  paths modified but left out are written back to their content at the
+  agent's head, the keyed commit is made, and the work in progress is
+  written back into the tree straight after. Without that step a
+  partial commit absorbs the unstaged edits into its own baseline —
+  `status` goes clean over work the agent did not commit, and a later
+  checkout brings it back as if it had.
+- **`log`, `show` and `diff` walk the agent's graph**, threaded
+  through `virtual_parents` in commit info. The framework's per-call
+  commits are never in it.
+- **Branches are real branches.** A session IS a branch, so `ws-git
+  branch` and `ws-git merge` are refused with the host named as the
+  one who invokes them, and `ws-git checkout <ref>` restores a tree
+  rather than switching: the fiction rewinds, the store appends the
+  restore as a new commit.
+
+The one thing the substrate must provide is a keyed commit
+(`provider.commit_keys`, gated by `caps.index`). Everything else is
+bookkeeping over ordinary reads and writes, which is why the fiction
+is provider-shaped rather than kvgit-shaped.
 
 ## Tags have two scopes, and nontainer picks them
 
