@@ -8,6 +8,7 @@ than a parent pointer.
 """
 
 import json
+import threading
 
 import pytest
 from monkeyfs import VirtualFS
@@ -271,7 +272,7 @@ def test_store_resolve_takes_a_version_ref(tmp_path):
     assert resolved.frozen
     assert resolved.files.read("app/index.html") == b"<h1>scores</h1>"
     resolved.close()
-    with pytest.raises(WorkspaceError, match="No such session"):
+    with pytest.raises(WorkspaceError, match="No longer published"):
         store.resolve("@store/pub/scoreboard/v9@" + version.ref.commit)
     ws.close()
 
@@ -442,3 +443,167 @@ def test_an_unreadable_registry_says_so(tmp_path):
     (tmp_path / "publications.json").write_text("{not json")
     with pytest.raises(WorkspaceError, match="unreadable"):
         Store(tmp_path).publications()
+
+
+# -- concurrent publishing ---------------------------------------------------
+
+
+def test_two_stores_publishing_different_names_both_land(tmp_path):
+    """Two Store objects over one path are two handles on one registry
+    file. Read-modify-write around the file rather than under a lock
+    would drop one record while its branch and tag stayed."""
+    stores = [Store(tmp_path), Store(tmp_path)]
+    sessions = [seeded(stores[0], "a"), seeded(stores[1], "b")]
+    done = []
+
+    def publish(store, ws, name):
+        done.append(store.publish(ws, name).name)
+
+    threads = [
+        threading.Thread(target=publish, args=(store, ws, name))
+        for store, ws, name in zip(stores, sessions, ("first", "second"))
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert sorted(done) == ["first", "second"]
+    registry = json.loads((tmp_path / "publications.json").read_text())
+    assert sorted(registry) == ["first", "second"]
+    for name in ("first", "second"):
+        assert Store(tmp_path).publication(name).open().files.exists("app/index.html")
+    for ws in sessions:
+        ws.close()
+
+
+def test_two_stores_publishing_one_name_get_two_versions(tmp_path):
+    """The harder race: both readers see the same version list, so both
+    would pick v1 — the version number has to be chosen inside the same
+    lock the write lands under."""
+    stores = [Store(tmp_path), Store(tmp_path)]
+    sessions = [seeded(stores[0], "a"), seeded(stores[1], "b")]
+    errors = []
+
+    def publish(store, ws):
+        try:
+            store.publish(ws, "scoreboard")
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    threads = [
+        threading.Thread(target=publish, args=(store, ws))
+        for store, ws in zip(stores, sessions)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    pub = Store(tmp_path).publication("scoreboard")
+    assert [v.version for v in pub.versions] == ["v1", "v2"]
+    assert {v.published_from.session for v in pub.versions} == {"a", "b"}
+    branches = set(Store(tmp_path)._branches())
+    for version in pub.versions:
+        assert version.ref.session in branches
+    for ws in sessions:
+        ws.close()
+
+
+# -- a retained Publication is not a licence ---------------------------------
+
+
+def test_a_retained_publication_will_not_open_an_unpublished_version(tmp_path):
+    """The Publication object is a snapshot of the registry, not a
+    capability: unpublish means unpublish, grace period or not."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard")
+    store.unpublish("scoreboard", "v1")  # default grace: commits linger
+
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        pub.open()
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        pub.open("v1")
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        store.resolve(str(pub.current_version.ref))
+    ws.close()
+
+
+def test_opening_an_unpublished_version_creates_no_branch(tmp_path):
+    """kvgit creates a branch opened by an unknown name, so a stale ref
+    could resurrect the branch unpublish deleted — and the leftover
+    would then block republishing that version."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard")
+    store.unpublish("scoreboard", "v1", min_age=0)
+    before = set(store._branches())
+    assert "@store/pub/scoreboard/v1" not in before
+
+    for attempt in (
+        lambda: pub.open(),
+        lambda: store.resolve(str(pub.current_version.ref)),
+    ):
+        with pytest.raises(WorkspaceError):
+            attempt()
+    assert set(store._branches()) == before
+
+    # ...so the name is free again
+    republished = store.publish(ws, "scoreboard", version="v1")
+    assert republished.current == "v1"
+    assert republished.open().files.read("app/index.html") == b"<h1>scores</h1>"
+    ws.close()
+
+
+def test_resolve_refuses_a_stale_commit_on_a_live_publication(tmp_path):
+    """Same version name, different commit: the registry's ref is the
+    only one that resolves."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    stale = store.publish(ws, "scoreboard", version="v1").current_version.ref
+    store.unpublish("scoreboard", "v1", min_age=0)
+    ws.files.write("/workspace/app/index.html", "<h1>different</h1>")
+    ws.commit()
+    fresh = store.publish(ws, "scoreboard", version="v1").current_version.ref
+
+    assert stale.commit != fresh.commit
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        store.resolve(str(stale))
+    assert store.resolve(str(fresh)).files.read("app/index.html") == (
+        b"<h1>different</h1>"
+    )
+    ws.close()
+
+
+# -- provenance is not the caller's to write --------------------------------
+
+
+def test_info_may_not_overwrite_the_provenance_keys(tmp_path):
+    """A false published_from in an immutable commit outlives every
+    chance to notice it, so it is refused rather than overridden."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    for bad in (
+        {"published_from": "someone-else@deadbeef"},
+        {"tool": "not-publish"},
+        {"name": "other"},
+        {"version": "v99"},
+    ):
+        with pytest.raises(ValueError, match="info may not set"):
+            store.publish(ws, "scoreboard", info=bad)
+    with pytest.raises(ValueError, match="'name', 'version'"):
+        store.publish(ws, "scoreboard", info={"version": "v9", "name": "x"})
+
+    # nothing was written by any of those
+    assert store.publication("scoreboard") is None
+    assert store.tags.list() == {}
+    assert store._branches() == ["author"]
+
+    # a key of the caller's own still rides along
+    pub = store.publish(ws, "scoreboard", info={"published_by": "the studio"})
+    entry = next(iter(pub.open().log()))
+    assert entry.info["published_by"] == "the studio"
+    assert entry.info["published_from"] == str(ws.ref)
+    ws.close()
