@@ -635,3 +635,273 @@ def test_a_failed_checkout_leaves_the_tree_untouched(kv_ws, monkeypatch):
     assert kv_ws.index.status() == before_status
     assert kv_ws.files.read("/workspace/a.py") == b"A = 2\n"
     assert kv_ws.files.read("/workspace/b.py") == b"B = 1\n"
+
+
+# -- what a merge takes ---------------------------------------------------------
+
+
+def test_merge_refuses_uncommitted_agent_work(kv_ws):
+    """Autocommit keeps the store's buffer clean while an agent
+    composes, so "clean" for a merge has to mean the agent's own
+    status — or the merge folds work in flight into itself."""
+    kv_ws.terminal("echo base > a.txt")
+    kv_ws.index.commit("base")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+        fork.index.commit("worker work")
+
+        kv_ws.terminal("echo mine > mine.txt")  # committed by the framework
+        assert not kv_ws.dirty  # ... so the buffer says nothing is pending
+        with pytest.raises(WorkspaceError) as excinfo:
+            kv_ws.merge("worker")
+        message = str(excinfo.value)
+        assert "ws-git commit" in message
+        assert "ws-git checkout" in message
+
+        # either fix unblocks it
+        kv_ws.index.commit("mine")
+        assert kv_ws.merge("worker").merged
+    finally:
+        fork.close()
+
+
+def test_merge_refuses_an_open_index_before_the_first_commit(kv_ws):
+    """No agent commit yet means no baseline to differ from, so only
+    an index in flight refuses."""
+    kv_ws.terminal("echo base > a.txt")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+        assert kv_ws.merge("worker").merged  # nothing staged: allowed
+
+        kv_ws.terminal("echo more > c.txt")
+        kv_ws.index.stage(["/workspace/c.txt"])
+        second = kv_ws.fork("worker-two")
+        try:
+            second.terminal("echo two > d.txt")
+            with pytest.raises(WorkspaceError, match="uncommitted ws-git work"):
+                kv_ws.merge("worker-two")
+        finally:
+            second.close()
+    finally:
+        fork.close()
+
+
+def test_merge_takes_the_sources_last_agent_commit(kv_ws):
+    """The source side of the same rule: what its agent committed, not
+    what the framework committed for it afterwards."""
+    kv_ws.terminal("echo base > a.txt")
+    kv_ws.index.commit("base")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/done.txt", b"done\n")
+        fork.index.commit("done")
+        # work in flight on the fork, durable in the store, not in its
+        # agent's commit
+        fork.terminal("echo wip > wip.txt")
+        assert not fork.dirty
+
+        out = kv_ws.merge("worker")
+        assert out.merged
+        assert kv_ws.files.exists("/workspace/done.txt")
+        assert not kv_ws.files.exists("/workspace/wip.txt")
+    finally:
+        fork.close()
+
+
+def test_merge_of_a_session_that_never_used_ws_git(kv_ws):
+    """No agent commit on the source: its store head is the honest
+    answer, and the merge is what it always was."""
+    kv_ws.terminal("echo base > a.txt")  # framework commits only, both sides
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+        assert fork.index.head is None
+        assert kv_ws.merge("worker").merged
+        assert kv_ws.files.read("/workspace/b.txt") == b"worker\n"
+    finally:
+        fork.close()
+
+
+# -- the merge context ----------------------------------------------------------
+
+
+def test_a_file_about_markers_is_not_a_conflict(kv_ws):
+    """The context records what the MERGE marked. A scan of the tree
+    cannot tell a conflict from a file that is about conflicts."""
+    kv_ws.files.fs.write(
+        "/workspace/notes.md", b"resolve it:\n<<<<<<< HEAD\nours\n=======\n"
+    )
+    kv_ws.index.commit("notes")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo worker > b.txt")
+        fork.index.commit("worker work")
+        out = kv_ws.merge("worker")
+        assert out.merged
+        assert out.conflicts == ()
+
+        st = kv_ws.index.status()
+        assert st.merge_source is None
+        assert st.merge_unresolved == ()
+    finally:
+        fork.close()
+
+
+def test_the_context_holds_until_the_markers_are_gone(kv_ws):
+    """Committing a conflicted file is not resolving it: what clears
+    the context is content without markers."""
+    kv_ws.files.fs.write("/workspace/one.txt", b"a\nb\n")
+    kv_ws.files.fs.write("/workspace/two.txt", b"a\nb\n")
+    kv_ws.index.commit("base")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/one.txt", b"a\nFORK\n")
+        fork.files.fs.write("/workspace/two.txt", b"a\nFORK\n")
+        fork.index.commit("fork work")
+        kv_ws.files.fs.write("/workspace/one.txt", b"a\nMAIN\n")
+        kv_ws.files.fs.write("/workspace/two.txt", b"a\nMAIN\n")
+        kv_ws.index.commit("main work")
+
+        out = kv_ws.merge("worker")
+        assert set(out.conflicts) == {"/workspace/one.txt", "/workspace/two.txt"}
+
+        # Resolve ONE and merely EDIT the other, then commit both.
+        # Both are in the commit; only one of them is resolved, and
+        # being committed is not what resolves a conflict.
+        kv_ws.files.fs.write("/workspace/one.txt", b"a\nBOTH\n")
+        marked = kv_ws.files.read("/workspace/two.txt")
+        assert b"<<<<<<< " in marked
+        kv_ws.files.fs.write("/workspace/two.txt", marked + b"still working\n")
+        commit = kv_ws.index.commit("half resolved")
+        assert set(list(kv_ws.index.log())[0].info["files"]) == {
+            "/workspace/one.txt",
+            "/workspace/two.txt",
+        }
+        assert b"<<<<<<< " in _at(kv_ws, commit)["/workspace/two.txt"]
+        st = kv_ws.index.status()
+        assert st.merge_source == "worker"
+        assert st.merge_unresolved == ("/workspace/two.txt",)
+
+        kv_ws.files.fs.write("/workspace/two.txt", b"a\nBOTH\n")
+        kv_ws.index.commit("resolved")
+        assert kv_ws.index.status().merge_source is None
+        assert kv_ws.index.status().merge_unresolved == ()
+    finally:
+        fork.close()
+
+
+# -- losing the CAS on the bookkeeping ------------------------------------------
+
+
+def test_a_concurrent_commit_between_the_two_keyed_commits(tmp_path):
+    """The agent's commit lands, another handle moves HEAD, and the
+    bookkeeping commits anyway — kvgit three-way merges a commit whose
+    keys are disjoint, and the keys two writers always contend on (the
+    file table, the cwd, the blob) have a policy registered for it."""
+    from nontainer import Store
+
+    store = Store(str(tmp_path / "store"))
+    ws = store.open("racy")
+    other = store.open("racy")
+    try:
+        ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+        ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+        ws.index.stage(["/workspace/a.py"])
+
+        real = ws._provider.commit_keys
+        seen = []
+
+        def racing(info=None, *, keys):
+            out = real(info, keys=keys)
+            if not seen:
+                seen.append(out)
+                other._provider._staged.refresh()
+                other.files.fs.write("/workspace/elsewhere.txt", b"theirs\n")
+                other.commit(info={"tool": "turn"})
+            return out
+
+        ws._provider.commit_keys = racing
+        commit = ws.index.commit("just a")
+        del ws._provider.commit_keys
+
+        assert ws.index.head == commit
+        assert ws.files.read("/workspace/b.py") == b"B = 1\n"
+    finally:
+        other.close()
+        ws.close()
+
+    reopened = store.open("racy")
+    try:
+        assert reopened.index.head == commit
+        assert reopened.files.read("/workspace/b.py") == b"B = 1\n"
+        assert reopened.files.read("/workspace/elsewhere.txt") == b"theirs\n"
+        # b.py is the agent's own work in progress; the other handle's
+        # file is work the agent has not committed either
+        assert "/workspace/b.py" in reopened.index.status().unstaged
+    finally:
+        reopened.close()
+        store.close()
+
+
+def test_bookkeeping_reconciles_when_its_commit_is_refused(kv_ws):
+    """The second line of defence: a bookkeeping commit that DOES
+    raise (both handles touched one file key, say) is re-applied
+    against the head that won and committed again."""
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.stage(["/workspace/a.py"])
+
+    provider = _provider(kv_ws)
+    real = provider.commit_keys
+    refused = []
+
+    def once(info=None, *, keys):
+        if (info or {}).get("tool") == "ws-git.restore" and not refused:
+            refused.append(True)
+            raise WorkspaceError("commit failed: conflicting concurrent commit (CAS)")
+        return real(info, keys=keys)
+
+    provider.commit_keys = once
+    commit = kv_ws.index.commit("just a")
+    del provider.commit_keys
+
+    assert refused  # the first attempt really was refused
+    assert kv_ws.index.head == commit
+    assert not kv_ws.dirty  # the retry landed the record and the restore
+    assert kv_ws.files.read("/workspace/b.py") == b"B = 1\n"
+    assert _at(kv_ws, kv_ws.head)["/workspace/b.py"] == b"B = 1\n"
+    assert kv_ws.index.status().unstaged == ("/workspace/b.py",)
+
+
+def test_bookkeeping_that_cannot_land_names_the_commit_that_did(kv_ws):
+    from nontainer.errors import BookkeepingLost
+
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.stage(["/workspace/a.py"])
+
+    provider = _provider(kv_ws)
+    real = provider.commit_keys
+    landed = []
+
+    def once(info=None, *, keys):
+        if (info or {}).get("tool") == "ws-git":
+            out = real(info, keys=keys)
+            landed.append(out)
+            return out
+        raise WorkspaceError("commit failed: conflicting concurrent commit (CAS)")
+
+    provider.commit_keys = once
+    with pytest.raises(BookkeepingLost) as excinfo:
+        kv_ws.index.commit("just a")
+    del provider.commit_keys
+
+    message = str(excinfo.value)
+    assert landed and landed[0] in message
+    assert "landed but its record did not" in message
+    assert "Run the verb again" in message
+    # the commit is in the store, and the agent's head still is not it
+    assert any(e.id == landed[0] for e in _history(kv_ws))
+    assert kv_ws.index.head != landed[0]
