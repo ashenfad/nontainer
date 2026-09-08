@@ -116,12 +116,13 @@ So the turn's files, cache, cwd, and conversation land in one
 commit, and the commit happens at the moment agno persists the run.
 
 Neither commit is `ws.commit()`, and that matters when the agent has
-a ws-git composition open across the turn boundary. Both name the
-keys they must land — the session record and its runs — so the
-conversation is durable, the staged set lands with it, and the
-agent's unstaged edits stay dirty and stay its own to commit. A
-commit that read the index to decide its scope would have committed
-the agent's staged files and left the conversation behind.
+a ws-git composition open across the turn boundary. Both name the keys
+they must land — the session record and its runs — and with a
+composition open those keys are all that lands: the conversation is
+durable, and the agent's index is exactly as it left it. A commit that
+read the index to decide its scope would have done the opposite,
+committing the agent's staged files and leaving the conversation
+behind.
 
 Why the db and not the hook: in agno's sync run loop, post hooks
 execute before the session is persisted. A hook-driven commit would

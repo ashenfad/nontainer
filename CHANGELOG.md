@@ -140,9 +140,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   conversation, or the freshly installed skill, stayed dirty and could
   be rolled back or lost. Those three call sites now go through a
   framework-internal durable commit that names the keys it must land:
-  everything when no composition is open, and the staged set plus
-  those keys when one is, so the agent's unstaged edits stay dirty and
-  stay its own.
+  everything when no composition is open, and those keys and nothing
+  else when one is. Staging suspends autocommit until the composition
+  lands or is abandoned, and the framework is never what lands it — so
+  the agent's index, its staged set and its working-tree writes are
+  exactly as it left them.
 
 - **`ws.files.list(recursive=True)` terminates on a symlink cycle.**
   It walked the tree itself with `isdir`, and a directory symlink
@@ -267,12 +269,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   value publishes, a name alone reads one back, no arguments returns
   the live mapping (which is how a fork replays a whole environment).
 
-- **`provider.commit_index(info, *, include=())`** — commit named
-  state alongside the staged set, whether or not the index holds it:
-  provider keys as stored, or absolute workspace paths the provider
-  resolves. It is what a framework durability point needs to land its
-  own writes mid-composition without waiting for the agent to finish
-  composing.
+- **`provider.commit_keys(info, *, keys)`** — commit exactly the named
+  keys (provider keys as stored, or absolute workspace paths the
+  provider resolves), leaving the index and its staged set untouched.
+  What a framework durability point needs to land its own writes
+  mid-composition without waiting for the agent to finish composing,
+  and without finishing it for them.
 
 - **`nontainer.Store`** / `nontainer.store(...)` — `open`, `sessions`,
   `exists`, `delete`, `resolve`, `clean`, `tags`, `close`. `sessions()`
