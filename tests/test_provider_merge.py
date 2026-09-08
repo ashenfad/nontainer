@@ -281,9 +281,14 @@ def test_workspace_merge_brings_a_forks_work_home(kv_ws):
 
         out = kv_ws.merge("worker")
         assert out.merged
-        assert out.commit == kv_ws.head
         assert out.conflicts == ()
         assert out.auto_merged == ("/workspace/b.txt",)
+        # The outcome names the merge commit; the head is the
+        # bookkeeping commit that records it as the agent's, and that
+        # record is what leaves a clean workspace behind the merge.
+        assert not kv_ws.dirty
+        assert out.commit == kv_ws.index.head
+        assert kv_ws.head != out.commit
         assert kv_ws.terminal("cat b.txt").stdout.strip() == "worker"
     finally:
         fork.close()

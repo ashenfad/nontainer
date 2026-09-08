@@ -111,7 +111,10 @@ def test_partial_commit_leaves_the_rest_in_the_tree(ws):
 
     assert ws.terminal("ws-git status").stdout == " M b.txt\n"
     assert ws.terminal("cat b.txt").stdout == "edited\n"
+    # The commit's own bookkeeping — the restore of b.txt, committed
+    # keyed to it — is plumbing: the agent sees its two commits.
     assert _subjects(ws) == ["just a", "base"]
+    assert any(e.info["tool"] == "ws-git.restore" for e in ws.log())
     body = ws.terminal("ws-git show HEAD").stdout
     assert "just a" in body
     assert "a/a.txt" in body and "b.txt" not in body
@@ -466,3 +469,31 @@ def test_command_closure_direct_status_shape():
         assert ctx.stdout.getvalue() == "M  a.txt\n"
     finally:
         w.close()
+
+
+def test_a_failed_commit_leaves_the_agent_where_it_was(ws, monkeypatch):
+    """A refused commit must cost the agent nothing: same tree, same
+    status, same composition — ready to try again."""
+    from nontainer import WorkspaceError
+
+    ws.terminal("echo base > a.txt; echo base > b.txt")
+    ws.terminal("ws-git commit -m base")
+    ws.terminal("ws-git stage a.txt")
+    ws.terminal("echo edited > a.txt; echo edited > b.txt")
+    before = ws.terminal("ws-git status").stdout
+    before_diff = ws.terminal("ws-git diff --cached").stdout
+
+    def boom(*args, **kwargs):
+        raise WorkspaceError("commit failed: conflicting concurrent commit (CAS)")
+
+    monkeypatch.setattr(ws._provider, "commit_keys", boom)
+    r = ws.terminal("ws-git commit -m doomed")
+    assert r.exit_code == 1
+    assert "CAS" in r.stderr
+    monkeypatch.undo()
+
+    assert ws.terminal("ws-git status").stdout == before
+    assert ws.terminal("ws-git diff --cached").stdout == before_diff
+    assert ws.terminal("cat a.txt").stdout == "edited\n"
+    assert ws.terminal("cat b.txt").stdout == "edited\n"
+    assert _subjects(ws) == ["base"]

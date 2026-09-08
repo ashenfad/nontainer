@@ -464,3 +464,174 @@ def test_commit_takes_everything_the_index_does_not(kv_ws):
     st = kv_ws.index.status()
     assert st.staged == ("/workspace/a.txt",)
     assert st.unstaged == ("/workspace/b.txt",)
+
+
+# -- the fiction's own bookkeeping ---------------------------------------------
+
+
+def test_agent_commit_persists_without_autocommit(tmp_path):
+    """The restore of what the commit left out, and the new head, are
+    the agent's operation finishing — not the workspace's autocommit
+    policy, which a per-turn host turns off."""
+    from nontainer import Store
+
+    store = Store(str(tmp_path / "store"))
+    ws = store.open("turnmode", autocommit=False)
+    try:
+        ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+        ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+        ws.index.stage(["/workspace/a.py"])
+        commit = ws.index.commit("just a")
+        assert not ws.dirty  # the bookkeeping committed itself
+    finally:
+        ws.close()
+
+    reopened = store.open("turnmode", autocommit=False)
+    try:
+        assert reopened.index.head == commit
+        assert [e.info["message"] for e in reopened.index.log()] == ["just a"]
+        # the work in progress survived the reopen, and is still work
+        # in progress: out of the agent's commit, in the tree
+        assert reopened.files.read("/workspace/b.py") == b"B = 1\n"
+        assert reopened.index.status().unstaged == ("/workspace/b.py",)
+        assert "/workspace/b.py" not in _at(reopened, commit)
+        assert not reopened.dirty
+    finally:
+        reopened.close()
+        store.close()
+
+
+def test_the_restore_commit_is_not_an_agent_commit(kv_ws):
+    """Bookkeeping is spelled ``ws-git.<something>``; only ``ws-git``
+    itself (and the merge) is the agent's."""
+    from nontainer.agentgit import CHECKOUT_TOOL, MERGE_RECORD_TOOL, RESTORE_TOOL
+
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.stage(["/workspace/a.py"])
+    commit = kv_ws.index.commit("just a")
+
+    restore = _history(kv_ws)[0]
+    assert restore.info == {"tool": RESTORE_TOOL, "restore_of": commit}
+    assert [e.id for e in kv_ws.index.log()] == [commit]
+    for tool in (RESTORE_TOOL, CHECKOUT_TOOL, MERGE_RECORD_TOOL):
+        assert tool.startswith("ws-git.")
+
+
+def test_merge_bookkeeping_commits_itself(kv_ws):
+    """A merge that left its own record uncommitted returned a dirty
+    workspace, lost the head on reopen, and refused the next merge."""
+    kv_ws.terminal("echo base > a.txt")
+    kv_ws.index.commit("base")
+    first = kv_ws.fork("worker-one")
+    second = kv_ws.fork("worker-two")
+    try:
+        first.terminal("echo one > one.txt")
+        first.index.commit("one")
+        second.terminal("echo two > two.txt")
+        second.index.commit("two")
+
+        out = kv_ws.merge("worker-one")
+        assert out.merged
+        assert not kv_ws.dirty
+        assert kv_ws.index.head == out.commit
+        assert out.commit in [e.id for e in kv_ws.index.log()]
+
+        # a clean tree is what the next merge needs, and it is what
+        # the first one left behind
+        assert kv_ws.merge("worker-two").merged
+        assert not kv_ws.dirty
+    finally:
+        first.close()
+        second.close()
+
+
+def test_merge_bookkeeping_survives_without_autocommit(tmp_path):
+    from nontainer import Store
+
+    store = Store(str(tmp_path / "store"))
+    ws = store.open("mergehost", autocommit=False)
+    try:
+        ws.terminal("echo base > a.txt")
+        ws.index.commit("base")
+        fork = ws.fork("mergehost-kid")
+        try:
+            fork.terminal("echo kid > kid.txt")
+            fork.index.commit("kid")
+            out = ws.merge("mergehost-kid")
+            assert out.merged
+            assert not ws.dirty
+        finally:
+            fork.close()
+    finally:
+        ws.close()
+
+    reopened = store.open("mergehost")
+    try:
+        assert reopened.index.head == out.commit
+        assert out.commit in [e.id for e in reopened.index.log()]
+    finally:
+        reopened.close()
+        store.close()
+
+
+def test_a_failed_agent_commit_leaves_the_tree_untouched(kv_ws, monkeypatch):
+    """A CAS conflict must not cost the agent its work: the revert this
+    commit made on the way in is undone, and the composition stays
+    open for another try."""
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.commit("base")
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 2\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 2\n")
+    kv_ws.files.fs.write("/workspace/c.py", b"C = 1\n")
+    kv_ws.index.stage(["/workspace/a.py"])
+    before_status = kv_ws.index.status()
+    before_tree = {
+        path: kv_ws.files.read(path)
+        for path in ("/workspace/a.py", "/workspace/b.py", "/workspace/c.py")
+    }
+    before_head = kv_ws.index.head
+
+    def boom(*args, **kwargs):
+        raise WorkspaceError("commit failed: conflicting concurrent commit (CAS)")
+
+    monkeypatch.setattr(_provider(kv_ws), "commit_keys", boom)
+    with pytest.raises(WorkspaceError, match="CAS"):
+        kv_ws.index.commit("doomed")
+    monkeypatch.undo()
+
+    assert kv_ws.index.status() == before_status
+    assert kv_ws.index.head == before_head
+    for path, content in before_tree.items():
+        assert kv_ws.files.read(path) == content
+    assert kv_ws.files.fs.getsize("/workspace/b.py") == len(
+        before_tree["/workspace/b.py"]
+    )
+    # and the composition can still land
+    commit = kv_ws.index.commit("second try")
+    assert _at(kv_ws, commit)["/workspace/a.py"] == b"A = 2\n"
+    assert _at(kv_ws, commit)["/workspace/b.py"] == b"B = 1\n"
+
+
+def test_a_failed_checkout_leaves_the_tree_untouched(kv_ws, monkeypatch):
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    first = kv_ws.index.commit("first")
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 2\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.commit("second")
+    before_status = kv_ws.index.status()
+    before_head = kv_ws.index.head
+
+    def boom(*args, **kwargs):
+        raise WorkspaceError("commit failed: conflicting concurrent commit (CAS)")
+
+    monkeypatch.setattr(_provider(kv_ws), "commit_keys", boom)
+    with pytest.raises(WorkspaceError, match="CAS"):
+        kv_ws.index.checkout(first)
+    monkeypatch.undo()
+
+    assert kv_ws.index.head == before_head
+    assert kv_ws.index.status() == before_status
+    assert kv_ws.files.read("/workspace/a.py") == b"A = 2\n"
+    assert kv_ws.files.read("/workspace/b.py") == b"B = 1\n"
