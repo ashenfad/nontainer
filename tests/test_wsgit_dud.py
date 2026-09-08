@@ -60,15 +60,15 @@ def _subjects(w):
 def test_dud_stage_first_composition(ws):
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.files.fs.write("/workspace/b.txt", b"two\n")
-    before = len(list(ws.log()))
 
     r = ws.terminal("ws-git stage a.txt b.txt")
     assert r.exit_code == 0
-    assert r.stdout == "suspended autocommit (resume: ws-git commit, ws-git reset)\n"
+    assert r.stdout == ""
 
-    # The edit runs in the guest; suspension holds across the boundary.
+    # The edit runs in the guest and the framework commits it; the
+    # composition is measured against the agent's own head, so it holds.
     ws.terminal("echo second >> a.txt")
-    assert len(list(ws.log())) == before
+    assert not ws.dirty
 
     assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""
@@ -90,9 +90,8 @@ def test_dud_stage_first_composition(ws):
     assert r.exit_code == 0
     assert re.fullmatch(rf"\[wsgit-dud {SHORT}\] compose a \(2 files\)\n", r.stdout)
 
-    assert len(list(ws.log())) == before + 1
     assert ws.terminal("ws-git status").stdout == ""
-    assert _subjects(ws) == ["compose a", "init", "?"]
+    assert _subjects(ws) == ["compose a"]
 
 
 def test_dud_unregistered_name_absent(bare_ws):
@@ -138,7 +137,7 @@ def test_dud_cwd_relative_staging(ws):
     ws.files.fs.write("/workspace/sub/f.txt", b"one\n")
     r = ws.terminal("cd sub; ws-git stage f.txt")
     assert r.exit_code == 0
-    assert "suspended autocommit" in r.stdout
+    assert r.stdout == ""
     assert ws.terminal("ws-git status").stdout == "M  sub/f.txt\n"
 
 
@@ -151,7 +150,7 @@ def test_dud_merge_status_and_check(ws):
         fork.commit()
         ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         ws.commit()
-        out = ws._provider.merge("worker")
+        out = ws.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
     finally:
         fork.close()
@@ -205,7 +204,7 @@ def test_dud_fork_wsgit_binds_fork():
     register_wsgit(w)
     try:
         w.terminal("printf 'one\\n' > a.txt")
-        w.commit()
+        w.terminal("ws-git commit -m base")
         fork = w.fork("wsgit-dud-forkbleed-kid")
         try:
             # Host-side write: a guest-side write in its own terminal

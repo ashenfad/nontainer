@@ -1,4 +1,4 @@
-"""ws-git terminal builtin: git-shaped staging over the index.
+"""ws-git terminal builtin: the agent's git, as verbs.
 
 End-to-end through ``ws.terminal`` (the agent's path), pinning the
 output shapes that become the cross-rung conformance corpus in PR 4.
@@ -47,6 +47,8 @@ def _subjects(w):
 
 
 def test_clean_status_silent(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m base")
     r = ws.terminal("ws-git status")
     assert r.exit_code == 0
     assert r.stdout == ""
@@ -56,17 +58,16 @@ def test_clean_status_silent(ws):
 def test_stage_first_composition(ws):
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.files.fs.write("/workspace/b.txt", b"two\n")
-    before = len(list(ws.log()))
 
-    # First stage suspends autocommit, stated aloud.
+    # Staging is silent (git's `add` is) and commits nothing.
     r = ws.terminal("ws-git stage a.txt b.txt")
     assert r.exit_code == 0
-    assert r.stdout == "suspended autocommit (resume: ws-git commit, ws-git reset)\n"
+    assert r.stdout == ""
 
-    # Composition mints zero commits: the edit commits nothing.
+    # The workspace goes on committing for durability underneath...
     ws.terminal("echo second >> a.txt")
-    assert len(list(ws.log())) == before
-
+    assert not ws.dirty
+    # ... and the composition does not notice.
     r = ws.terminal("ws-git status")
     assert r.stdout == "M  a.txt\nM  b.txt\n"
 
@@ -91,32 +92,44 @@ def test_stage_first_composition(ws):
     assert r.exit_code == 0
     assert re.fullmatch(rf"\[wsgit {SHORT}\] compose a \(2 files\)\n", r.stdout)
 
-    # One selective commit, nothing else: flat tree, no janitor.
-    assert len(list(ws.log())) == before + 1
     assert ws.terminal("ws-git status").stdout == ""
-    assert _subjects(ws) == ["compose a", "init", "?"]
+    # The agent's log holds the agent's commit and nothing else.
+    assert _subjects(ws) == ["compose a"]
     assert re.fullmatch(rf"{SHORT} compose a\n", ws.terminal("ws-git log -n 1").stdout)
 
 
+def test_partial_commit_leaves_the_rest_in_the_tree(ws):
+    """The agent stages one file and edits two; the commit holds one
+    and the working tree keeps the other."""
+    ws.terminal("echo base > a.txt; echo base > b.txt")
+    ws.terminal("ws-git commit -m base")
+
+    ws.terminal("ws-git stage a.txt")
+    ws.terminal("echo edited > a.txt; echo edited > b.txt")
+    r = ws.terminal('ws-git commit -m "just a"')
+    assert re.fullmatch(rf"\[wsgit {SHORT}\] just a \(1 file\)\n", r.stdout)
+
+    assert ws.terminal("ws-git status").stdout == " M b.txt\n"
+    assert ws.terminal("cat b.txt").stdout == "edited\n"
+    assert _subjects(ws) == ["just a", "base"]
+    body = ws.terminal("ws-git show HEAD").stdout
+    assert "just a" in body
+    assert "a/a.txt" in body and "b.txt" not in body
+
+
 def test_unstaged_diff_and_status_columns(ws):
-    # Each read-only call's own tail commits unsuspended dirt, so
-    # every golden re-dirties with a fresh file first.
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     assert ws.terminal("ws-git status").stdout == " M a.txt\n"
     ws.files.fs.write("/workspace/b.txt", b"two\n")
-    assert ws.terminal("ws-git diff").stdout == (
+    assert ws.terminal("ws-git diff b.txt").stdout == (
         "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+two\n"
     )
-    ws.files.fs.write("/workspace/c.txt", b"three\n")
     assert ws.terminal("ws-git diff --cached").stdout == ""
-    ws.files.fs.write("/workspace/d.txt", b"four\n")
-    assert ws.terminal("ws-git diff d.txt").stdout.startswith("diff --git a/d.txt")
-    assert ws.terminal("ws-git diff b.txt").stdout == ""
 
 
 def test_diff_trailing_newline_change(ws):
     ws.files.fs.write("/workspace/e.txt", b"a\n")
-    ws.commit()
+    ws.terminal("ws-git commit -m e")
     ws.files.fs.write("/workspace/e.txt", b"a")
     assert ws.terminal("ws-git diff").stdout == (
         "diff --git a/e.txt b/e.txt\n"
@@ -141,28 +154,58 @@ def test_diff_check_honors_cached(ws):
     assert r.stdout == "m.txt:1: leftover conflict marker\n"
 
 
-def test_unstage_last_resumes(ws):
+def test_unstage_leaves_the_work(ws):
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.terminal("ws-git stage a.txt")
     r = ws.terminal("ws-git unstage a.txt")
     assert r.exit_code == 0
-    assert r.stdout == "resumed autocommit\n"
-    # Emptying the index resumed autocommit, so the unstage call's
-    # own tail commit swept the file: clean again.
-    assert ws.terminal("ws-git status").stdout == ""
+    assert r.stdout == ""
+    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
 
 
-def test_reset_abandons_index_not_tree(ws):
+def test_reset_abandons_the_index_not_the_tree(ws):
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     ws.terminal("ws-git stage a.txt")
     ws.terminal("echo second >> a.txt")
     r = ws.terminal("ws-git reset")
     assert r.exit_code == 0
-    assert r.stdout == "resumed autocommit\n"
-    # Resuming re-arms the tail commit, so the reset call itself
-    # sweeps the abandoned tree dirt: clean, one terminal commit.
+    assert r.stdout == ""
+    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
+    assert ws.terminal("cat a.txt").stdout == "one\nsecond\n"
+
+
+def test_checkout_restores_a_commit(ws):
+    ws.terminal("echo one > a.txt")
+    ws.terminal("ws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal("echo two > a.txt; echo new > b.txt")
+    ws.terminal("ws-git commit -m second")
+
+    r = ws.terminal(f"ws-git checkout {first}")
+    assert r.exit_code == 0
+    assert r.stdout == f"[wsgit] restored to {first}\n"
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    assert ws.terminal("ls b.txt").exit_code != 0
     assert ws.terminal("ws-git status").stdout == ""
-    assert _subjects(ws)[0] == "terminal"
+    assert _subjects(ws) == ["first"]
+
+    # Paths are a later stage; a session name is not a ref at all.
+    r = ws.terminal(f"ws-git checkout {first} -- a.txt")
+    assert r.exit_code == 1
+    assert "not here yet" in r.stderr
+    r = ws.terminal("ws-git checkout worker")
+    assert r.exit_code == 1
+    assert "sessions are branches" in r.stderr
+
+
+def test_commit_without_a_message_is_still_in_the_log(ws):
+    """``-m`` is optional here (git insists): a message-less commit is
+    still a point in the agent's graph, listed by its tool name."""
+    ws.terminal("echo one > a.txt")
+    r = ws.terminal("ws-git commit")
+    assert r.exit_code == 0
+    assert re.fullmatch(rf"\[wsgit {SHORT}\] ws-git \(1 file\)\n", r.stdout)
+    assert _subjects(ws) == ["ws-git"]
 
 
 def test_commit_with_nothing_to_commit(ws):
@@ -171,18 +214,17 @@ def test_commit_with_nothing_to_commit(ws):
     assert r.stderr == "ws-git: nothing to commit"
 
 
-def test_commit_without_a_composition_takes_everything(ws):
-    """No composition open means no index to have forgotten about, so
-    the terminal verb commits the work in front of it (the host API
-    splits the two: ws.commit vs ws.index.commit)."""
+def test_commit_without_an_index_takes_everything(ws):
+    """No index means nothing to have forgotten about, so the verb
+    commits the work in front of it (git would need -a)."""
     ws.terminal("echo one > a.txt; echo two > b.txt")
     ws.autocommit = False
     ws.terminal("echo three > c.txt")
-    assert ws.dirty
 
     r = ws.terminal("ws-git commit -m 'all of it'")
     assert r.exit_code == 0, r.stderr
-    assert not ws.dirty
+    assert re.fullmatch(rf"\[wsgit {SHORT}\] all of it \(3 files\)\n", r.stdout)
+    assert ws.terminal("ws-git status").stdout == ""
     assert _subjects(ws)[0] == "all of it"
 
 
@@ -202,7 +244,6 @@ def test_relative_paths_resolve_against_cwd(ws):
     ws.files.fs.write("/workspace/sub/f.txt", b"one\n")
     r = ws.terminal("cd sub; ws-git stage f.txt")
     assert r.exit_code == 0
-    assert "suspended autocommit" in r.stdout
     assert ws.terminal("ws-git status").stdout == "M  sub/f.txt\n"
 
 
@@ -215,7 +256,7 @@ def test_merge_status_and_diff_check(ws):
         fork.commit()
         ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         ws.commit()
-        out = ws._provider.merge("worker")
+        out = ws.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
     finally:
         fork.close()
@@ -240,19 +281,33 @@ def test_merge_status_and_diff_check(ws):
         f"doc.txt:{lineno}: leftover conflict marker" for lineno, _ in marked
     ]
 
+    # Resolving it clears the context, and the agent's log holds the
+    # merge and the resolution.
+    ws.terminal("echo resolved > doc.txt")
+    ws.terminal("ws-git commit -m resolved")
+    assert ws.terminal("ws-git status").stdout == ""
+    assert _subjects(ws)[0] == "resolved"
+    assert "from worker" in _subjects(ws)[1]
 
-def test_edges_name_the_native_alternative(ws):
+
+def test_edges_name_what_the_agent_can_do(ws):
     cases = [
         ("ws-git stash", "ws-git: no stash here — a fork is a stash"),
         ("ws-git branch", "ws-git: no branches here — sessions are branches"),
-        ("ws-git checkout", "ws-git: no checkout here — the host API has one"),
         ("ws-git rebase", "ws-git: no rebase here — history is append-only"),
-        ("ws-git merge", "ws-git: merge lives in Python for now"),
+        ("ws-git merge", "ws-git: merge is the host's to invoke"),
     ]
     for cmd, prefix in cases:
         r = ws.terminal(cmd)
         assert r.exit_code == 1, cmd
         assert r.stderr.startswith(prefix), (cmd, r.stderr)
+    # Every hint names a terminal verb or says plainly whose job it
+    # is — never host Python the agent cannot reach.
+    from nontainer.wsgit import _EDGE
+
+    for verb, text in _EDGE.items():
+        assert "ws.fork(" not in text and "provider." not in text, verb
+        assert "ws-git" in text or "host's to invoke" in text, verb
 
     r = ws.terminal("ws-git frobnicate")
     assert r.exit_code == 2
@@ -269,6 +324,8 @@ def test_edges_name_the_native_alternative(ws):
         ("ws-git reset --hard", "ws-git: reset is mixed-only"),
         ("ws-git log --oneline", "ws-git: log takes no '--oneline'"),
         ("ws-git diff --stat", "ws-git: diff takes no '--stat'."),
+        ("ws-git checkout", "ws-git: checkout takes one ref"),
+        ("ws-git show", "ws-git: show takes one ref"),
     ]:
         r = ws.terminal(cmd)
         assert r.exit_code == 2, cmd
@@ -283,7 +340,7 @@ def test_bare_and_help(ws):
     r = ws.terminal("ws-git help")
     assert r.exit_code == 0
     assert r.stdout == _HELP + "\n"
-    assert "Compose\nstage-first" in r.stdout
+    assert "ws-git log shows only the commits you made" in r.stdout
 
 
 def test_fork_wsgit_binds_fork():
@@ -295,7 +352,7 @@ def test_fork_wsgit_binds_fork():
     register_wsgit(w)
     try:
         w.files.fs.write("/workspace/a.txt", b"one\n")
-        w.commit()
+        w.terminal("ws-git commit -m base")
         fork = w.fork("wsgit-forkbleed-kid")
         try:
             assert fork.runtime.commands["ws-git"] is not w.runtime.commands["ws-git"]
@@ -304,11 +361,9 @@ def test_fork_wsgit_binds_fork():
             assert r.exit_code == 0, r.stderr
             assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
             assert w.terminal("ws-git status").stdout == ""
-            p0 = len(list(w.log()))
-            f0 = len(list(fork.log()))
             assert fork.terminal('ws-git commit -m "kid work"').exit_code == 0
-            assert len(list(w.log())) == p0
-            assert len(list(fork.log())) == f0 + 1
+            assert _subjects(w) == ["base"]
+            assert _subjects(fork) == ["kid work", "base"]
             assert fork.terminal("ws-git status").stdout == ""
         finally:
             fork.close()
@@ -324,7 +379,7 @@ def test_snapshot_wsgit_reads_snapshot():
     register_wsgit(w)
     try:
         w.files.fs.write("/workspace/a.txt", b"one\n")
-        w.commit()
+        w.terminal("ws-git commit -m base")
         w.tags.add("v1")
         snap = w.tags.at("v1")
         try:
@@ -354,7 +409,7 @@ def test_no_index_provider_refused(tmp_path):
         assert r.exit_code == 1
         assert r.stderr == (
             "ws-git: this provider has no index (needs caps.index) — "
-            "use the kvgit backend for staged mode."
+            "use the kvgit backend for ws-git."
         )
     finally:
         w.close()
@@ -392,13 +447,13 @@ def test_register_gated_on_supports_commands():
 
 
 def test_command_closure_direct_status_shape():
-    """The closure renders provider status without a shell round-trip."""
+    """The closure renders status without a shell round-trip."""
     provider = KvgitProvider.open(None, session="direct")
     w = Workspace(provider)
     fn = make_wsgit_command(w)
     try:
         w.files.fs.write("/workspace/a.txt", b"one\n")
-        provider.stage(["/workspace/a.txt"])
+        w.index.stage(["/workspace/a.txt"])
 
         class Ctx:
             def __init__(self, args):

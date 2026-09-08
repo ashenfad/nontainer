@@ -1,5 +1,13 @@
-"""KvgitProvider staged mode: index, selective commit, suspension."""
+"""The agent's git over kvgit: index, agent commits, the graph.
 
+Host spelling (``ws.index``) of the fiction in ``nontainer/agentgit.py``.
+What these pin, beyond the verbs themselves, is the two properties the
+model exists for: a framework commit never disturbs what the agent is
+composing, and an agent commit's tree holds exactly what the agent
+committed — not the work in progress it left in the tree.
+"""
+
+import json
 import threading
 
 import pytest
@@ -10,6 +18,7 @@ from nontainer import (
     WorkspaceError,
     workspace,
 )
+from nontainer.agentgit import BLOB_KEY
 from nontainer.providers import KvgitProvider
 
 
@@ -30,34 +39,35 @@ def _history(ws):
     return list(ws.log())
 
 
+def _at(ws, commit):
+    """The files of one commit, by workspace path."""
+    return _provider(ws).files_at(commit)
+
+
 def test_stage_status_split(kv_ws):
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
 
-    out = _provider(kv_ws).stage(["/workspace/a.txt"])
-    assert out.staged == ("/workspace/a.txt",)
-    # First stage op suspends autocommit, stated aloud.
-    assert out.suspended is True
+    assert kv_ws.index.stage(["/workspace/a.txt"]) == ("/workspace/a.txt",)
 
-    st = _provider(kv_ws).status()
+    st = kv_ws.index.status()
     assert st.branch == "stage-session"
     assert st.staged == ("/workspace/a.txt",)
     assert st.unstaged == ("/workspace/b.txt",)
     assert st.merge_source is None
     assert st.merge_unresolved == ()
+    # Staging commits nothing and suspends nothing: the index is
+    # bookkeeping, and the workspace goes on committing as it always did.
+    assert kv_ws.index.head is None
 
 
-def test_second_stage_does_not_reannounce(kv_ws):
+def test_second_stage_reports_only_what_was_new(kv_ws):
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
 
-    first = _provider(kv_ws).stage(["/workspace/a.txt"])
-    second = _provider(kv_ws).stage(["/workspace/b.txt"])
-    assert first.suspended is True
-    assert second.suspended is False
-    assert second.staged == ("/workspace/b.txt",)
-    # Restaging is a no-op report, not a duplicate.
-    assert _provider(kv_ws).stage(["/workspace/a.txt"]).staged == ()
+    assert kv_ws.index.stage(["/workspace/a.txt"]) == ("/workspace/a.txt",)
+    assert kv_ws.index.stage(["/workspace/b.txt"]) == ("/workspace/b.txt",)
+    assert kv_ws.index.stage(["/workspace/a.txt"]) == ()
 
 
 def test_stage_unknown_and_directories_refused(kv_ws):
@@ -65,137 +75,211 @@ def test_stage_unknown_and_directories_refused(kv_ws):
     kv_ws.commit()
 
     with pytest.raises(ValueError, match="unknown path"):
-        _provider(kv_ws).stage(["/workspace/nope.txt"])
+        kv_ws.index.stage(["/workspace/nope.txt"])
     kv_ws.terminal("mkdir sub")
     with pytest.raises(ValueError, match="not directories"):
-        _provider(kv_ws).stage(["/workspace/sub"])
+        kv_ws.index.stage(["/workspace/sub"])
     # Valid-but-unstaged paths are silently ignored by unstage.
-    assert _provider(kv_ws).unstage(["/workspace/a.txt"]) == ()
+    assert kv_ws.index.unstage(["/workspace/a.txt"]) == ()
     with pytest.raises(ValueError, match="unknown path"):
-        _provider(kv_ws).unstage(["/workspace/nope.txt"])
+        kv_ws.index.unstage(["/workspace/nope.txt"])
 
 
-def test_selective_commit_leaves_unstaged(kv_ws):
+def test_partial_commit_materializes_the_exact_tree(kv_ws):
+    """The correction to the reference implementation.
+
+    An agent stages one file, edits two, and the framework commits in
+    between (a turn hook would). The agent's commit must hold its own
+    file and the OTHER file as it was at the agent's last commit — not
+    the edit in flight. Parenting the keyed commit on the store's head
+    without that revert is what silently absorbs the edit into the
+    baseline: status would go clean and a later checkout would bring
+    the absorbed edit back as if it had been committed.
+    """
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    base = kv_ws.index.commit("base")
+
+    kv_ws.index.stage(["/workspace/a.py"])
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 2\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 2\n")
+    kv_ws.commit(info={"tool": "turn"})  # the framework, mid-composition
+
+    commit = kv_ws.index.commit("just a")
+
+    # b.py is still work in progress, and still says so
+    assert kv_ws.index.status().staged == ()
+    assert kv_ws.index.status().unstaged == ("/workspace/b.py",)
+    # the agent's commit holds a.py's edit and b.py's BASE content
+    tree = _at(kv_ws, commit)
+    assert tree["/workspace/a.py"] == b"A = 2\n"
+    assert tree["/workspace/b.py"] == b"B = 1\n"
+    assert _at(kv_ws, base)["/workspace/b.py"] == b"B = 1\n"
+    # the working tree kept the edit, and the restore commit landed it
+    assert kv_ws.files.read("/workspace/b.py") == b"B = 2\n"
+    assert _at(kv_ws, kv_ws.head)["/workspace/b.py"] == b"B = 2\n"
+    # ... and the agent sees one commit, not the framework's two
+    assert [e.info["message"] for e in kv_ws.index.log()] == ["just a", "base"]
+    assert kv_ws.index.head == commit
+
+
+def test_framework_commits_never_change_status(kv_ws):
+    """The property the whole model exists for."""
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
-    before = _provider(kv_ws).head
-    _provider(kv_ws).stage(["/workspace/a.txt"])
+    kv_ws.index.stage(["/workspace/a.txt"])
+    before = kv_ws.index.status()
 
-    commit = _provider(kv_ws).commit_index()
-    assert commit != before
-    assert _provider(kv_ws).head == commit
-    entries = _history(kv_ws)
-    assert entries[0].id == commit
-    assert entries[0].info.get("tool") == "ws-git.commit"
-
-    # a.txt landed, b.txt is still dirty work in progress.
-    st = _provider(kv_ws).status()
-    assert st.staged == ()
-    assert st.unstaged == ("/workspace/b.txt",)
-    assert kv_ws.terminal("cat a.txt").stdout.strip() == "one"
-    assert kv_ws.terminal("cat b.txt").stdout.strip() == "two"
-    # The commit's table describes its own blobs: a's row landed, b's
-    # uncommitted row did not ride along.
-    import json
-
-    from monkeyfs import VirtualFS
-
-    committed_table = json.loads(
-        _provider(kv_ws)._staged.checkout(commit).get(VirtualFS.METADATA_KEY)
-    )
-    assert committed_table["workspace/a.txt"]["size"] == 3
-    assert "workspace/b.txt" not in committed_table
-    # Suspension cleared by the landing commit: autocommit works.
-    kv_ws.terminal("echo three > c.txt")
-    assert _provider(kv_ws).head != commit
+    for _ in range(3):
+        kv_ws.commit(info={"tool": "turn"})
+        assert kv_ws.index.status() == before
+    assert not kv_ws.dirty  # everything IS in the store; nothing is withheld
+    assert before.staged == ("/workspace/a.txt",)
+    assert before.unstaged == ("/workspace/b.txt",)
 
 
-def test_commit_nothing_staged_refused(kv_ws):
+def test_commit_without_an_index_takes_everything_modified(kv_ws):
+    kv_ws.files.fs.write("/workspace/a.txt", b"one")
+    kv_ws.files.fs.write("/workspace/b.txt", b"two")
+
+    commit = kv_ws.index.commit("all of it")
+
+    assert set(_at(kv_ws, commit)) == {"/workspace/a.txt", "/workspace/b.txt"}
+    assert kv_ws.index.status().unstaged == ()
+
+
+def test_commit_with_nothing_to_commit_refused(kv_ws):
+    with pytest.raises(WorkspaceError, match="nothing to commit"):
+        kv_ws.index.commit()
     kv_ws.terminal("echo one > a.txt")
-    with pytest.raises(WorkspaceError, match="nothing staged"):
-        _provider(kv_ws).commit_index()
-    # Staging an unmodified file stages nothing committable either.
-    _provider(kv_ws).stage(["/workspace/a.txt"])
-    with pytest.raises(WorkspaceError, match="nothing staged"):
-        _provider(kv_ws).commit_index()
-
-
-def test_composition_mints_zero_commits(kv_ws):
-    kv_ws.files.fs.write("/workspace/a.txt", b"one")
-    kv_ws.files.fs.write("/workspace/b.txt", b"two")
-    n0 = len(_history(kv_ws))
-
-    _provider(kv_ws).stage(["/workspace/a.txt"])
-    kv_ws.terminal("echo three > c.txt")
-    kv_ws.run_python("open('/workspace/d.txt', 'w').write('four')")
-    assert len(_history(kv_ws)) == n0
-
-    _provider(kv_ws).commit_index()
-    assert len(_history(kv_ws)) == n0 + 1
-
-
-def test_unstage_last_resumes(kv_ws):
-    kv_ws.files.fs.write("/workspace/a.txt", b"one")
-    _provider(kv_ws).stage(["/workspace/a.txt"])
-
-    assert _provider(kv_ws).unstage(["/workspace/a.txt"]) == ("/workspace/a.txt",)
-    assert _provider(kv_ws).status().staged == ()
-    # Composition abandoned: the next write autocommits again.
+    kv_ws.index.commit("one")
+    # An index over unchanged paths is nothing to commit either, even
+    # with other work modified around it.
     kv_ws.terminal("echo two > b.txt")
-    assert _provider(kv_ws).status().unstaged == ()
+    kv_ws.index.stage(["/workspace/a.txt"])
+    with pytest.raises(WorkspaceError, match="staged paths match"):
+        kv_ws.index.commit()
 
 
-def test_discard_staged_abandons_index_not_tree(kv_ws):
+def test_unstage_and_discard_leave_the_tree_alone(kv_ws):
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
-    _provider(kv_ws).stage(["/workspace/a.txt", "/workspace/b.txt"])
+    kv_ws.index.stage(["/workspace/a.txt", "/workspace/b.txt"])
 
-    _provider(kv_ws).discard_staged()
-    st = _provider(kv_ws).status()
+    assert kv_ws.index.unstage(["/workspace/a.txt"]) == ("/workspace/a.txt",)
+    assert kv_ws.index.status().staged == ("/workspace/b.txt",)
+
+    kv_ws.index.discard()
+    st = kv_ws.index.status()
     assert st.staged == ()
     assert st.unstaged == ("/workspace/a.txt", "/workspace/b.txt")
     assert kv_ws.terminal("cat a.txt").stdout.strip() == "one"
-    # Suspended bit went with the index: autocommit resumes and
-    # commits the whole dirty tree (commit commits everything).
-    kv_ws.terminal("echo three > c.txt")
-    assert _provider(kv_ws).status().unstaged == ()
 
 
 def test_stage_deleted_file_commits_deletion(kv_ws):
     kv_ws.terminal("echo one > a.txt")
-    # Uncommitted deletion: terminal would autocommit the rm.
+    kv_ws.terminal("echo two > b.txt")
+    kv_ws.index.commit("both")
     kv_ws.files.fs.remove("/workspace/a.txt")
 
-    _provider(kv_ws).stage(["/workspace/a.txt"])
-    assert _provider(kv_ws).status().staged == ("/workspace/a.txt",)
-    _provider(kv_ws).commit_index()
+    kv_ws.index.stage(["/workspace/a.txt"])
+    assert kv_ws.index.status().staged == ("/workspace/a.txt",)
+    commit = kv_ws.index.commit("drop a")
+    assert set(_at(kv_ws, commit)) == {"/workspace/b.txt"}
     assert "a.txt" not in kv_ws.files.fs.list("/workspace")
-    assert _provider(kv_ws).status().unstaged == ()
+    assert kv_ws.index.status().unstaged == ()
 
 
-def test_fork_copies_index_then_diverges(kv_ws):
+def test_fork_copies_the_index_then_diverges(kv_ws):
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
-    kv_ws.commit()
+    kv_ws.index.commit("base")
     kv_ws.files.fs.write("/workspace/a.txt", b"one-main")
-    _provider(kv_ws).stage(["/workspace/a.txt"])
+    kv_ws.index.stage(["/workspace/a.txt"])
 
     fork = kv_ws.fork("worker")
     try:
-        # Forking commits, so the fork inherits the staged set —
-        # visible once the fork dirties the file again.
-        fork.files.fs.write("/workspace/a.txt", b"one-fork")
         assert fork.index.status().staged == ("/workspace/a.txt",)
-        # The parent landing its commit is invisible to the fork:
-        # separate blob copies after the branch point.
-        _provider(kv_ws).commit_index()
-        assert _provider(kv_ws).status().staged == ()
+        kv_ws.index.commit("main")
+        assert kv_ws.index.status().staged == ()
         assert fork.index.status().staged == ("/workspace/a.txt",)
     finally:
         fork.close()
 
 
+def test_log_hides_framework_commits_and_walks_across_a_fork(kv_ws):
+    kv_ws.terminal("echo one > a.txt")
+    first = kv_ws.index.commit("first")
+    kv_ws.terminal("echo two > b.txt")  # a framework commit, unmessaged
+    second = kv_ws.index.commit("second")
+
+    entries = kv_ws.index.log()
+    assert [e.id for e in entries] == [second, first]
+    assert [e.info["message"] for e in entries] == ["second", "first"]
+    assert len(_history(kv_ws)) > len(entries) + 1  # the framework's are there
+    assert [e.id for e in kv_ws.index.log(limit=1)] == [second]
+
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo three > c.txt")
+        third = fork.index.commit("third")
+        assert [e.info["message"] for e in fork.index.log()] == [
+            "third",
+            "second",
+            "first",
+        ]
+        assert fork.index.head == third
+    finally:
+        fork.close()
+
+
+def test_checkout_restores_the_tree_and_appends(kv_ws):
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    first = kv_ws.index.commit("first")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 2\n")
+    kv_ws.files.fs.write("/workspace/c.py", b"C = 1\n")
+    kv_ws.index.commit("second")
+    before = len(_history(kv_ws))
+
+    assert kv_ws.index.checkout(first) == first
+
+    assert kv_ws.files.read("/workspace/b.py") == b"B = 1\n"
+    assert not kv_ws.files.exists("/workspace/c.py")
+    assert kv_ws.index.head == first
+    assert kv_ws.index.status().staged == ()
+    assert kv_ws.index.status().unstaged == ()
+    # The fiction rewound; the store appended. Nothing left history.
+    assert len(_history(kv_ws)) == before + 1
+    assert kv_ws.head != first
+
+
+def test_old_layout_blob_migrates(kv_ws):
+    """A branch written before the fiction carried a key-level index
+    and a suspension flag. Neither means anything now, so it reads as a
+    fresh state rather than being reinterpreted."""
+    kv = _provider(kv_ws).kv
+    kv[BLOB_KEY] = json.dumps(
+        {"version": 1, "index": ["f:/workspace/a.txt"], "suspended": True}
+    ).encode()
+    kv_ws.files.fs.write("/workspace/a.txt", b"one")
+    kv_ws.commit()
+
+    st = kv_ws.index.status()
+    assert kv_ws.index.head is None
+    assert st.staged == ()
+    assert st.unstaged == ("/workspace/a.txt",)
+
+    # and the next write records the new layout
+    kv_ws.index.stage(["/workspace/a.txt"])
+    blob = json.loads(_provider(kv_ws).kv.get(BLOB_KEY))
+    assert blob["version"] == 2
+    assert blob["staged"] == ["/workspace/a.txt"]
+    assert blob["head"] is None
+
+
 def test_frozen_verbs_refused_status_open(kv_ws):
     kv_ws.terminal("echo one > a.txt")
+    kv_ws.index.commit("one")
     kv_ws.tags.add("v1")
     snap = kv_ws.tags.at("v1")
     try:
@@ -213,22 +297,23 @@ def test_frozen_verbs_refused_status_open(kv_ws):
         snap.close()
 
 
-def test_dir_provider_staged_unsupported(tmp_path):
+def test_dir_provider_has_no_index(tmp_path):
     from nontainer.providers.dir import DirProvider
 
-    p = DirProvider(tmp_path / "ws", session="dir")
-    with pytest.raises(NotSupportedError, match="stage"):
-        p.stage([])
-    with pytest.raises(NotSupportedError, match="unstage"):
-        p.unstage([])
-    with pytest.raises(NotSupportedError, match="commit"):
-        p.commit_index()
-    with pytest.raises(NotSupportedError, match="discard_staged"):
-        p.discard_staged()
-    with pytest.raises(NotSupportedError, match="status"):
-        p.status()
-    assert p.stage_suspended() is False
-    p.close()
+    ws = Workspace(DirProvider(tmp_path / "ws", session="dir"))
+    try:
+        for call in (
+            lambda: ws.index.stage(["/workspace/a.txt"]),
+            lambda: ws.index.unstage(["/workspace/a.txt"]),
+            lambda: ws.index.commit(),
+            lambda: ws.index.discard(),
+            lambda: ws.index.status(),
+            lambda: ws.index.log(),
+        ):
+            with pytest.raises(NotSupportedError, match="no index"):
+                call()
+    finally:
+        ws.close()
 
 
 def test_concurrent_stage_no_lost_update(kv_ws):
@@ -258,103 +343,46 @@ def test_concurrent_stage_no_lost_update(kv_ws):
     assert kv_ws.index.status().staged == ("/workspace/a.txt", "/workspace/b.txt")
 
 
-def test_merge_unions_staging_blobs(kv_ws):
-    import json
-
-    from nontainer.providers.kvgit import _WS_BLOB_KEY, _merge_ws_blob
-
-    # Unit shape: union on both-changed, quiet side wins otherwise.
-    def blob(index, suspended=False):
-        return json.dumps(
-            {"version": 1, "index": sorted(index), "suspended": suspended}
-        )
-
-    assert json.loads(_merge_ws_blob(None, blob(["a"]), blob(["b"])))["index"] == [
-        "a",
-        "b",
-    ]
-    assert json.loads(_merge_ws_blob(blob(["a"]), blob(["a"]), blob(["a", "b"])))[
-        "index"
-    ] == [
-        "a",
-        "b",
-    ]
-
-    # Registration: compositions in flight on both sides must not abort
-    # the merge. Live verbs always clear on commit, so the contested
-    # blobs are hand-staged (white-box, but through the real merge).
+def test_merge_takes_our_blob(kv_ws):
+    """The blob is this session's bookkeeping: a merge never brings
+    another session's index or head into it."""
     kv_ws.files.fs.write("/workspace/a.txt", b"base")
     kv_ws.commit()
     fork = kv_ws.fork("worker")
     try:
-        p, fp = _provider(kv_ws), fork._provider
-        p._write_blob({"k1"}, True)
-        p.commit()
-        fp._write_blob({"k2"}, False)
-        fork.commit()
+        fork.terminal("echo worker > b.txt")
+        fork.index.commit("worker work")
+        kv_ws.files.fs.write("/workspace/a.txt", b"main")
+        ours = kv_ws.index.commit("main work")
 
-        out = p.merge("worker")
+        out = kv_ws.merge("worker")
         assert out.merged
-        merged_blob = json.loads(p._staged.get(_WS_BLOB_KEY))
-        assert merged_blob["index"] == ["k1", "k2"]
-        assert merged_blob["suspended"] is True
+        assert kv_ws.index.head == out.commit
+        # the merge joined the agent's graph rather than ending it
+        assert [e.info.get("message") for e in kv_ws.index.log()] == [
+            None,
+            "main work",
+        ]
+        assert _at(kv_ws, ours)["/workspace/a.txt"] == b"main"
     finally:
         fork.close()
 
 
-def test_selective_commit_preserves_live_table(kv_ws):
-    import json
-
+def test_partial_commit_preserves_the_live_table(kv_ws):
     from monkeyfs import VirtualFS
 
     p = _provider(kv_ws)
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
-    p.stage(["/workspace/a.txt"])
-    p.commit_index()
+    kv_ws.index.stage(["/workspace/a.txt"])
+    kv_ws.index.commit("a only")
 
-    # Live reads still see the uncommitted file: its row survives as
-    # unstaged state, not as the fixed-up commit table.
-    live = json.loads(p._staged.get(VirtualFS.METADATA_KEY))
+    # Live reads still see the uncommitted file at its live size.
+    live = json.loads(p._staged.get(VirtualFS.METADATA_KEY) or b"{}") or json.loads(
+        p._staged.checkout(p.head).get(VirtualFS.METADATA_KEY)
+    )
     assert live["workspace/b.txt"]["size"] == 3
-    # And the next commit persists that truth, not HEAD staleness.
-    n0 = len(_history(kv_ws))
-    kv_ws.terminal("echo three > c.txt")
-    assert len(_history(kv_ws)) == n0 + 1
-    committed = json.loads(p._staged.checkout(p.head).get(VirtualFS.METADATA_KEY))
-    assert committed["workspace/b.txt"]["size"] == 3
-
-
-def test_abandoned_clean_index_leaves_no_dirt(kv_ws):
-    kv_ws.terminal("echo one > a.txt")
-    p = _provider(kv_ws)
-    p.stage(["/workspace/a.txt"])  # clean file: index moves, tree doesn't
-    assert p.dirty
-    p.discard_staged()
-    assert not p.dirty
-    # A read-only op mints nothing.
-    n0 = len(_history(kv_ws))
-    kv_ws.terminal("ls a.txt")
-    assert len(_history(kv_ws)) == n0
-
-
-def test_merge_after_selective_commit(kv_ws):
-    # Selective commit must leave the tree mergeable: framework keys
-    # ride along with the table fixed up, so no metadata staleness
-    # blocks the merge.
-    kv_ws.files.fs.write("/workspace/a.txt", b"base")
-    kv_ws.commit()
-    fork = kv_ws.fork("worker")
-    try:
-        kv_ws.files.fs.write("/workspace/c.txt", b"main")
-        kv_ws.index.stage(["/workspace/c.txt"])
-        kv_ws.commit()
-        fork.terminal("echo worker > b.txt")
-        out = _provider(kv_ws).merge("worker")
-        assert out.merged
-        assert out.auto_merged == ("/workspace/b.txt",)
-    finally:
-        fork.close()
+    assert kv_ws.files.read("/workspace/b.txt") == b"two"
 
 
 def test_status_reports_merge_context(kv_ws):
@@ -367,20 +395,43 @@ def test_status_reports_merge_context(kv_ws):
         kv_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         kv_ws.commit()
 
-        out = _provider(kv_ws).merge("worker")
+        out = kv_ws.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
-        st = _provider(kv_ws).status()
+        st = kv_ws.index.status()
         assert st.merge_source == "worker"
         assert st.merge_unresolved == ("/workspace/doc.txt",)
+        # The markers are IN the merge commit, which is now the agent's
+        # head: the tree reads clean and the merge is what is unfinished.
+        assert st.staged == () and st.unstaged == ()
 
-        # Resolve like an agent would: edit, stage, selective-commit.
+        # Resolve like an agent would: edit, then commit.
         kv_ws.files.fs.write("/workspace/doc.txt", b"a\nBOTH\n")
-        kv_ws.index.stage(["/workspace/doc.txt"])
-        kv_ws.commit()
-        st = _provider(kv_ws).status()
+        kv_ws.index.commit("resolved")
+        st = kv_ws.index.status()
         assert st.merge_source is None
         assert st.merge_unresolved == ()
         assert st.unstaged == ()
+    finally:
+        fork.close()
+
+
+def test_merge_context_clears_on_a_framework_commit_too(kv_ws):
+    """Resolution is measured by the markers, not by who committed:
+    the context ends when the last marked path stops being marked."""
+    kv_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    kv_ws.commit()
+    fork = kv_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.commit()
+        kv_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+        kv_ws.commit()
+        kv_ws.merge("worker")
+        assert kv_ws.index.status().merge_source == "worker"
+
+        kv_ws.files.fs.write("/workspace/doc.txt", b"a\nBOTH\n")
+        kv_ws.commit(info={"tool": "turn"})
+        assert kv_ws.index.status().merge_source is None
     finally:
         fork.close()
 
@@ -389,65 +440,27 @@ def test_workspace_wrappers_smoke(tmp_path):
     ws = workspace("stage-smoke", store=str(tmp_path / "store"))
     try:
         ws.terminal("echo one > a.txt")
-        out = ws.index.stage(["/workspace/a.txt"])
-        # a.txt already autocommited, but staging records the key
-        # regardless (status intersects with modified).
-        assert out.staged == ("/workspace/a.txt",)
-        assert out.suspended is True
-        assert ws.index.status().unstaged == ()
+        assert ws.index.stage(["/workspace/a.txt"]) == ("/workspace/a.txt",)
+        assert ws.index.status().staged == ("/workspace/a.txt",)
         ws.index.discard()
-        assert ws.index.status().unstaged == ()
+        assert ws.index.status().staged == ()
+        assert ws.index.status().unstaged == ("/workspace/a.txt",)
     finally:
         ws.close()
 
 
-def test_index_commit_takes_only_the_staged_set(kv_ws):
-    """The selective verb: the staged set lands, unstaged work stays
-    dirty, and the composition is over."""
+def test_commit_takes_everything_the_index_does_not(kv_ws):
+    """``ws.commit`` is the framework's verb and ``ws.index.commit``
+    the agent's; the difference is what each one is for."""
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.files.fs.write("/workspace/b.txt", b"two")
     kv_ws.index.stage(["/workspace/a.txt"])
-
-    kv_ws.index.commit()
-    assert _provider(kv_ws).status().staged == ()
-    assert _provider(kv_ws).status().unstaged == ("/workspace/b.txt",)
-    assert kv_ws.dirty  # b.txt is still work in progress
-    assert not _provider(kv_ws).stage_suspended()
-
-    kv_ws.commit()
-    assert not kv_ws.dirty
-    assert _provider(kv_ws).status().unstaged == ()
-
-
-def test_commit_takes_everything_even_mid_composition(kv_ws):
-    """The other verb, and the reason they are two: ``ws.commit`` means
-    everything whether or not the agent has ws-git staging open, so the
-    code around it can rely on what it commits. The composition ends —
-    every path it held is in the commit."""
-    kv_ws.files.fs.write("/workspace/a.txt", b"one")
-    kv_ws.files.fs.write("/workspace/b.txt", b"two")
-    kv_ws.index.stage(["/workspace/a.txt"])
-    assert _provider(kv_ws).stage_suspended()
-
-    kv_ws.commit()
-
-    assert not kv_ws.dirty
-    st = _provider(kv_ws).status()
-    assert st.staged == () and st.unstaged == ()
-    assert not _provider(kv_ws).stage_suspended()  # autocommit is live again
-    assert kv_ws.terminal("cat b.txt").stdout.strip() == "two"
-
-
-def test_commit_without_an_index_commits_everything(kv_ws):
-    kv_ws.files.fs.write("/workspace/a.txt", b"one")
-    kv_ws.files.fs.write("/workspace/b.txt", b"two")
-    n0 = len(_history(kv_ws))
 
     head = kv_ws.commit()
 
-    assert len(_history(kv_ws)) == n0 + 1
-    assert head == kv_ws.head
     assert not kv_ws.dirty
-    at_head = _provider(kv_ws)._staged.checkout(head)
-    files = {p for p in _provider(kv_ws)._file_keys(at_head.keys()).values()}
-    assert {"/workspace/a.txt", "/workspace/b.txt"} <= files
+    assert set(_at(kv_ws, head)) >= {"/workspace/a.txt", "/workspace/b.txt"}
+    # ... and the agent's composition is exactly where it was
+    st = kv_ws.index.status()
+    assert st.staged == ("/workspace/a.txt",)
+    assert st.unstaged == ("/workspace/b.txt",)

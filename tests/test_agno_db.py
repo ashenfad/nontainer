@@ -172,22 +172,21 @@ def test_the_turn_commit_carries_the_run_key(tmp_path):
 
 def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     """The turn commit is the framework's own durability point: it
-    commits the conversation the db just wrote and NOTHING else.
-    Staging suspends autocommit until the composition lands or is
-    abandoned, and the framework is never what lands it — so an agent
-    that composed across the turn boundary finds its index exactly as
-    it left it. It used to commit whatever the index made it commit,
-    which could leave the conversation itself uncommitted."""
+    commits the conversation the db just wrote, and everything else
+    uncommitted with it. That costs the agent nothing — ws-git measures
+    against the agent's own last commit — so an agent that composed
+    across the turn boundary finds its index exactly as it left it."""
     ws, db, tk, agent = build(tmp_path)
     ws.files.fs.write("/workspace/staged.txt", b"staged")
     ws.files.fs.write("/workspace/loose.txt", b"work in progress")
     ws.index.stage(["/workspace/staged.txt"])
-    before = len(list(ws.log()))
+    before = ws.index.status()
+    marks = len(list(ws.log()))
 
     run_turn(agent, ["thinking out loud"])
 
     entries = list(ws.log())
-    assert len(entries) == before + 1
+    assert len(entries) == marks + 1
     assert entries[0].info == {"tool": "turn"}
     # the conversation landed — the bug was that it did not
     assert len(run_keys(ws)) == 1
@@ -195,18 +194,18 @@ def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     head = ws._provider._staged.checkout(ws.head)
     assert head.get(SESSION_KEY) is not None
 
-    # the composition is untouched: still indexed, still suspending
-    # autocommit, and neither of the agent's files is in that commit
-    status = ws.index.status()
-    assert status.staged == ("/workspace/staged.txt",)
-    assert status.unstaged == ("/workspace/loose.txt",)
-    assert ws._provider.stage_suspended()
-    assert ws.dirty
-    assert not head.get(ws._provider.fs._encode_path("/workspace/staged.txt"))
-    assert not head.get(ws._provider.fs._encode_path("/workspace/loose.txt"))
+    # the composition is untouched, and the agent's files are durable
+    # rather than being withheld from the store
+    assert ws.index.status() == before
+    assert not ws.dirty
+    assert head.get(ws._provider.fs._encode_path("/workspace/staged.txt"))
+    assert head.get(ws._provider.fs._encode_path("/workspace/loose.txt"))
 
-    # and the agent's own commit still lands what it composed
-    ws.index.commit()
+    # and the agent's own commit still lands what it composed, and only that
+    commit = ws.index.commit("mine")
+    tree = ws._provider.files_at(commit)
+    assert tree["/workspace/staged.txt"] == b"staged"
+    assert "/workspace/loose.txt" not in tree
     assert ws.index.status().staged == ()
     assert ws.index.status().unstaged == ("/workspace/loose.txt",)
     ws.close()
