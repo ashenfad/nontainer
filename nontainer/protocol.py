@@ -107,11 +107,12 @@ class Capabilities:
     ``NotSupportedError``."""
 
     index: bool = False
-    """A staged set (the index) with selective commit: ``stage`` /
-    ``unstage`` compose a commit across calls while ``commit_index``
-    flushes only staged keys, where ``commit`` takes everything. Staging suspends autocommit until the
-    composition lands or is abandoned. Appended last so earlier
-    positional ``Capabilities(...)`` constructions keep their meaning."""
+    """Keyed commits are available, so the agent-facing git fiction is:
+    ``commit_keys`` can commit a subset of the tree, which is what lets
+    an agent's own commit hold exactly what the agent staged while the
+    framework goes on committing everything for durability (see
+    ``nontainer/agentgit.py``). Appended last so earlier positional
+    ``Capabilities(...)`` constructions keep their meaning."""
 
 
 @dataclass(frozen=True)
@@ -208,34 +209,27 @@ class MergeOutcome:
 
 
 @dataclass(frozen=True)
-class StageResult:
-    """What staging a batch of paths did, as workspace file paths."""
-
-    staged: tuple[str, ...]
-    """Paths newly added to the index by this call."""
-
-    suspended: bool
-    """True only when this call suspended autocommit (the first
-    stage op of a composition)."""
-
-
-@dataclass(frozen=True)
 class WorkspaceStatus:
-    """Staged vs unstaged file paths plus live merge context."""
+    """Staged vs unstaged file paths plus live merge context.
+
+    Everything here is relative to the AGENT's last commit, not the
+    store's head: the framework's own commits (a turn, a session db, a
+    skill install) move the store and leave this untouched.
+    """
 
     branch: str
     staged: tuple[str, ...]
-    """Indexed paths that differ from HEAD — the next ``commit``."""
+    """Indexed paths that differ from the agent's last commit — what
+    ``ws.index.commit()`` would take."""
     unstaged: tuple[str, ...]
     """Modified paths outside the index."""
     merge_source: str | None
-    """Source of the most recent merge whose markers are still in HEAD,
-    or ``None``. Derived live from history, never stored."""
+    """Session the outstanding merge came from, or ``None``. Recorded
+    by the merge and dropped once its markers are gone."""
     merge_unresolved: tuple[str, ...]
-    """HEAD-tree paths still carrying conflict markers (empty unless a
-    merge is outstanding). A marker scan at read time, so
-    pre-existing marker-like bytes committed long ago can appear
-    here — resolve them like any other marker."""
+    """Paths the merge left marked that still carry markers (empty
+    unless a merge is outstanding), so resolving them one at a time
+    shows progress."""
 
 
 @runtime_checkable
@@ -292,9 +286,10 @@ class WorkspaceProvider(Protocol):
     def commit(self, info: dict[str, Any] | None = None) -> str:
         """Atomically capture fs + kv as one commit; return its id.
 
-        Everything uncommitted, which is what makes it the pair of
-        ``commit_index`` (the staged set only). ``Workspace.commit``
-        chooses between them by whether a composition is in flight.
+        Everything uncommitted, always: this is the framework's
+        durability verb, and code around a workspace can only rely on
+        it if its scope never depends on what the agent has staged.
+        ``commit_keys`` is the subset one.
 
         With ``caps.staging``, this is the moment staged writes become
         visible/durable. Without staging, it's a marker over already-
@@ -393,7 +388,7 @@ class WorkspaceProvider(Protocol):
         """File-level changes between two commit ids."""
         ...
 
-    def merge(self, source: str) -> MergeOutcome:
+    def merge(self, source: str, *, info: dict[str, Any] | None = None) -> MergeOutcome:
         """Merge another branch into this one (requires ``caps.merge``).
 
         ``source`` names the branch; the merge reads its HEAD commit, so
@@ -401,79 +396,49 @@ class WorkspaceProvider(Protocol):
         ``WorkspaceError`` on uncommitted changes here (commit or
         discard first) and with ``ValueError`` for unknown or self
         branches. Providers without the capability raise
-        ``NotSupportedError``.
+        ``NotSupportedError``. ``info`` is caller metadata recorded on
+        the merge commit (and on any follow-up the merge needs), which
+        is how the agent-facing git threads a merge into its own graph.
         """
         ...
 
-    def stage(self, paths: Iterable[str]) -> StageResult:
-        """Stage workspace file paths for the next ``commit_index``
-        (requires ``caps.index``). Unknown paths raise ``ValueError``;
-        valid-but-unstaged paths are silently ignored by ``unstage``.
-        The first call suspends autocommit until the composition
-        lands (``commit_index``) or is abandoned (``discard_staged`` or
-        unstaging everything) — reported in the result, since there is
-        no terminal yet to say it aloud. Providers without the
-        capability raise ``NotSupportedError``.
-        """
-        ...
-
-    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Remove workspace file paths from the index (requires
-        ``caps.index``). Unstaging the last staged path resumes
-        autocommit. Returns the paths actually removed.
-        """
-        ...
-
-    def commit_index(self, info: dict[str, Any] | None = None) -> str:
-        """Commit staged keys plus index bookkeeping, leaving unstaged
-        writes dirty (requires ``caps.index``). Tagged
-        ``{"tool": "ws-git.commit"}`` unless ``info`` says otherwise.
-        Raises ``WorkspaceError`` when nothing staged would change the
-        tree. Returns the new commit hash.
-        """
-        ...
+    # -- keyed commits and read views (gated by caps.index) ------------
 
     def commit_keys(
         self, info: dict[str, Any] | None = None, *, keys: Iterable[str]
     ) -> str | None:
-        """Commit exactly these keys, leaving the index untouched
-        (requires ``caps.index``). Returns the new commit hash, or
-        ``None`` when none of them had anything pending.
+        """Commit exactly these keys (requires ``caps.index``). Returns
+        the new commit hash, or ``None`` when none of them had anything
+        pending.
 
         ``keys`` are provider keys as stored (``__agno__/session``) or
         absolute workspace paths, which the provider resolves to its
         own keys. Whatever bookkeeping a commit of those keys needs to
-        be readable rides along; the index and its staged set do not.
+        be readable rides along.
 
-        This is how the framework makes its OWN writes durable while an
-        agent has a composition in flight: staging suspends autocommit
-        until the composition lands or is abandoned, and the framework
-        must never be what lands it. A conversation a session db just
-        stored, or a skill just installed, commits on its own; the
-        agent's staged set stays staged and its working-tree writes
-        stay dirty.
+        This is the one index-shaped primitive a substrate has to
+        offer. The agent-facing git (``nontainer/agentgit.py``) is
+        metadata over it: an agent commit is a keyed commit of exactly
+        the tree the agent composed, made while the framework keeps
+        committing everything for durability.
         """
         ...
 
-    def discard_staged(self) -> None:
-        """Abandon the composition: clear the index and resume
-        autocommit (requires ``caps.index``). Working-tree writes
-        stay dirty but unindexed.
+    def files_at(self, commit: str) -> Mapping[str, Any]:
+        """This session's files at one commit, by workspace path
+        (requires ``caps.index``).
+
+        A read view, not a copy: values are read on demand, so
+        comparing two trees costs the blobs it actually reads. Unknown
+        commits raise ``CommitNotFoundError``.
         """
         ...
 
-    def status(self) -> WorkspaceStatus:
-        """Staged vs unstaged file paths plus live merge context
-        (requires ``caps.index``). Pure read: never writes, commits, or
-        mutates the index on any path.
-        """
+    def working_files(self) -> Mapping[str, Any]:
+        """The live working tree's files, by workspace path (requires
+        ``caps.index``) — uncommitted writes included, uncommitted
+        deletions excluded."""
         ...
-
-    def stage_suspended(self) -> bool:
-        """Whether staging currently suspends autocommit on this
-        branch. Always ``False`` where ``caps.index`` is False.
-        """
-        return False
 
     # -- power modes / lifecycle ---------------------------------------
 

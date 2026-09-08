@@ -1,4 +1,9 @@
-"""The ``ws-git`` terminal builtin: git-shaped staging over the index.
+"""The ``ws-git`` terminal builtin: the agent's git, as verbs.
+
+The model lives in ``nontainer/agentgit.py`` — an index and a commit
+graph kept as metadata over the store's own history, so the framework
+can go on committing for durability without ever disturbing what the
+agent is composing. This module is the parser and the formatter.
 
 Movie-set rule (see ``scratch/ws-git-impl.md`` PR 3): follow git
 wherever cheap; each deviation carries a recorded reason:
@@ -8,21 +13,29 @@ wherever cheap; each deviation carries a recorded reason:
   already returns the source — dropping it would be purer but less
   useful).
 - ``reset`` is mixed-only; ``--soft``/``--hard`` get the usage error.
-- ``log`` shows the ``-m`` message when a commit has one, else the
-  commit tool name.
+  Going back to a commit is ``checkout``, which says so.
 - ``commit`` takes ``-m/--message`` (stored in commit info) but no
-  pathspec and no ``-a``: with a composition open it commits the
-  staged set, and with none it commits everything. git would refuse
-  the second case ("no changes added to commit"), but git has ``-a``
-  and an agent here has no index open to have forgotten about.
-- The index names keys, not snapshots, so ``--cached`` shows staged
-  paths against HEAD *including* any later edits (git would show only
-  the staged snapshot).
+  pathspec and no ``-a``: with something staged it commits the staged
+  set, and with nothing staged it commits everything modified. git
+  would refuse the second case ("no changes added to commit"), but git
+  has ``-a`` and an agent here has no index open to have forgotten
+  about. ``-m`` is optional where git insists, since a message-less
+  agent commit is still a point in the graph.
+- ``checkout <ref>`` restores the tree and rewinds the agent's head;
+  the store APPENDS the restore, so nothing already committed leaves
+  the session. ``checkout <name>`` is refused: sessions are branches
+  and branches do not switch here.
+- The index names paths, not snapshots, so ``--cached`` shows staged
+  paths against the last commit *including* any later edits (git would
+  show only the staged snapshot).
+- ``log`` shows only the agent's own commits; the framework's per-call
+  commits are plumbing, and showing them would bury the agent's
+  history in its own tool calls.
 
-Everything else is git-exact: silent clean status, unified ``diff``
-with ``a/``/``b/`` headers, ``diff --check`` marker lines, ``UU``
-unmerged entries, ``--porcelain`` accepted as the stable-contract
-alias it is in git.
+Everything else is git-exact: silent clean status, silent ``stage``,
+unified ``diff`` with ``a/``/``b/`` headers, ``diff --check`` marker
+lines, ``UU`` unmerged entries, ``--porcelain`` accepted as the
+stable-contract alias it is in git.
 """
 
 from __future__ import annotations
@@ -32,61 +45,82 @@ import posixpath
 from collections.abc import Mapping
 from typing import Any
 
-from .errors import NotSupportedError, WorkspaceError
+from .agentgit import MERGE_TOOL, AgentGit
+from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 
-_VERBS = ("stage", "unstage", "commit", "reset", "status", "diff", "log", "help")
-_USAGE = "usage: ws-git (stage|unstage|commit|reset|status|diff|log) [...]"
+_VERBS = (
+    "stage",
+    "unstage",
+    "commit",
+    "reset",
+    "status",
+    "diff",
+    "log",
+    "show",
+    "checkout",
+    "help",
+)
+_USAGE = (
+    "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]"
+)
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
     "status [--porcelain] | diff [--cached] [--check] [paths...] | "
-    "log [-n N] | help"
+    "log [-n N] | show <ref> | checkout <ref> | help"
 )
 _ROOT = "/workspace"
 
-# Movie-set edge: name the missing corner in git's own terms plus the
-# native alternative. Exit 1: refusals, not usage errors.
+# Movie-set edge: name the missing corner in git's own terms plus what
+# an agent can actually do about it — a terminal verb, or plainly that
+# this one is the host's to invoke. Exit 1: refusals, not usage errors.
 _EDGE = {
     "stash": (
-        'no stash here — a fork is a stash (try: ws.fork("experiment")). '
-        "Snapshots are cheap; nothing needs shelving."
+        "no stash here — a fork is a stash, and forking is the host's to "
+        "invoke. Snapshots are cheap: commit what you have "
+        "(ws-git commit -m ...) and keep going."
     ),
     "rebase": (
-        "no rebase here — history is append-only. Fork from the commit "
-        "you want and merge forward."
+        "no rebase here — history is append-only. Nothing is lost by "
+        "committing forward, and ws-git checkout <ref> goes back."
     ),
-    "branch": ('no branches here — sessions are branches (try: ws.fork("name")).'),
-    "checkout": (
-        "no checkout here — the host API has one (ws.checkout(commit)); "
-        'from the terminal, fork at a tag (ws.fork("name", at=...)).'
+    "branch": (
+        "no branches here — sessions are branches, and making one is the "
+        "host's to invoke. ws-git log shows this session's history."
     ),
     "merge": (
-        "merge lives in Python for now (provider.merge(source)) — "
-        "terminal merge arrives with the consult flows."
+        "merge is the host's to invoke — it lands as a commit you will see "
+        "in ws-git log, markers and all. Terminal merge arrives with the "
+        "consult flows."
     ),
 }
 
-_HELP = """ws-git: git-shaped staging over workspace branches.
+_HELP = """ws-git: the agent's git over this session.
 
-usage: ws-git (stage|unstage|commit|reset|status|diff|log) [...]
-  stage <paths>     stage files (first stage suspends autocommit)
-  unstage <paths>   unstage files (emptying resumes autocommit)
-  commit [-m MSG]   commit the staged set (everything, when nothing is
-                    staged); -m stored in commit info; no -a, no pathspec
-  reset             abandon the composition (mixed-only), resume
+usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]
+  stage <paths>     add paths to the index (optional: commit with an
+                    empty index takes everything modified)
+  unstage <paths>   drop paths from the index
+  commit [-m MSG]   commit the staged set (everything modified, when
+                    nothing is staged); no -a, no pathspec. What you
+                    left out stays in the working tree, uncommitted
+  reset             abandon the composition (mixed-only)
   status            staged vs unstaged (git-short XY columns)
   diff [--cached] [--check] [paths...]
-                    unified worktree diff; --cached for staged
+                    unified diff against your last commit; --cached for
+                    the staged set
                     --check finds leftover conflict markers
                     (unstaged, or staged with --cached;
                     unresolved merges always)
-  log [-n N]        newest-first commit hashes and messages
+  log [-n N]        your own commits, newest first
+  show <ref>        one commit: its message and its diff
+  checkout <ref>    restore the tree to a commit of yours (history is
+                    append-only: the restore is a new commit)
   help              this text
 
-Subset, on purpose: no stash (a fork is a stash), no rebase (history
-is append-only), no checkout (fork at a tag, or ws.checkout). There is no
-.git — branches are sessions, history is commits. Compose
-stage-first: stage paths (suspends autocommit), then edit, then
-commit — writes before the first stage commit immediately."""
+Subset, on purpose: no stash (a fork is a stash), no rebase (history is
+append-only), no branch or merge (the host invokes those). There is no
+.git — branches are sessions, history is commits. The workspace commits
+on its own as you work; ws-git log shows only the commits you made."""
 
 
 #: The dud host-object name fronting ws-git on guest rungs. A user
@@ -212,13 +246,13 @@ class DudHostHandler:
             # Sync-on-verb: absorb first so every verb dispatches
             # against fresh state — ``printf x > new.txt; ws-git stage
             # new.txt`` stages instead of rejecting an unknown path.
-            # Reads (status/diff) need it just as much as mutations. No
-            # push-back is needed: no verb rewrites worktree files
-            # (reset is mixed-only), so the guest stays in agreement
-            # and the post-call harvest picks up whatever the script
-            # writes afterwards. A nested harvest is safe here: the
-            # guest shell is blocked on this hostcall (its tree is
-            # quiescent), and both locks are re-entrant on this thread.
+            # Reads (status/diff) need it just as much as mutations.
+            # The verbs that DO rewrite worktree files (commit's
+            # revert-and-restore, checkout) push back the other way:
+            # the guest shell is blocked on this hostcall, so its tree
+            # is quiescent, and the executor is marked stale so the
+            # next call re-materializes it. A nested harvest is safe
+            # here: both locks are re-entrant on this thread.
             err = ws._absorb_before_verb("ws-git")
             if err is not None:
                 return err
@@ -288,42 +322,49 @@ def make_wsgit_command(ws: Any) -> Any:
             return CommandResult(
                 exit_code=1,
                 stderr="this provider has no index (needs caps.index) — "
-                "use the kvgit backend for staged mode.",
+                "use the kvgit backend for ws-git.",
             )
+        git = AgentGit(ws)
         try:
             if verb == "status":
-                return _status(provider, ctx, rest)
+                return _status(git, ctx, rest)
             if verb == "stage":
-                return _stage(provider, ctx, rest)
+                return _stage(git, ctx, rest)
             if verb == "unstage":
-                return _unstage(provider, ctx, rest)
+                return _unstage(git, ctx, rest)
             if verb == "commit":
-                return _commit(provider, ctx, rest)
+                return _commit(git, ctx, rest)
             if verb == "reset":
-                return _reset(provider, ctx, rest)
+                return _reset(git, ctx, rest)
             if verb == "diff":
-                return _diff(provider, ctx, rest)
+                return _diff(git, ctx, rest)
             if verb == "log":
-                return _log(provider, ctx, rest)
-        except (ValueError, WorkspaceError, NotSupportedError) as e:
+                return _log(git, ctx, rest)
+            if verb == "show":
+                return _show_verb(git, ctx, rest)
+            if verb == "checkout":
+                return _checkout(git, ctx, rest)
+        except (
+            ValueError,
+            WorkspaceError,
+            NotSupportedError,
+            CommitNotFoundError,
+        ) as e:
             # Domain errors render as messages, never "Unexpected error".
             return CommandResult(exit_code=1, stderr=f"{e}")
         raise AssertionError(f"unreachable verb {verb!r}")
 
     wsgit.__doc__ = (
-        "Git-shaped staging over workspace branches: "
-        "ws-git (stage|unstage|commit|reset|status|diff|log) [...]"
+        "The agent's git over this session: "
+        "ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]"
     )
     return wsgit
 
 
-def _merge_hash(provider: Any, source: str) -> str | None:
+def _merge_hash(git: AgentGit, source: str) -> str | None:
     """Short hash of the newest merge commit from ``source``, if any."""
-    for entry in provider.history():
-        if (
-            entry.info.get("tool") == "ws-git.merge"
-            and entry.info.get("source") == source
-        ):
+    for entry in git.history():
+        if entry.info.get("tool") == MERGE_TOOL and entry.info.get("source") == source:
             return entry.id[:7]
     return None
 
@@ -348,14 +389,14 @@ def _usage_error(detail: str) -> Any:
     return CommandResult(exit_code=2, stderr=f"{detail}\n{_USAGE}\n{_SUPPORTED}")
 
 
-def _status(provider: Any, ctx: Any, rest: list[str]) -> Any:
+def _status(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     for flag in rest:
         if flag != "--porcelain":
             return _usage_error(f"status takes no {flag!r} (porcelain is the default).")
-    st = provider.status()
+    st = git.status()
     lines: list[str] = []
     if st.merge_source is not None:
-        short = _merge_hash(provider, st.merge_source)
+        short = _merge_hash(git, st.merge_source)
         at = f"@{short}" if short else ""
         lines.append(
             f"## merging {st.merge_source}{at} ({len(st.merge_unresolved)} unresolved)"
@@ -374,28 +415,21 @@ def _status(provider: Any, ctx: Any, rest: list[str]) -> Any:
     return None
 
 
-def _stage(provider: Any, ctx: Any, rest: list[str]) -> Any:
+def _stage(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     if not rest or any(a.startswith("-") for a in rest):
         return _usage_error("stage needs at least one path.")
-    out = provider.stage([_abspath(ctx, a) for a in rest])
-    if out.suspended:
-        ctx.stdout.write("suspended autocommit (resume: ws-git commit, ws-git reset)\n")
-    return None
+    git.stage([_abspath(ctx, a) for a in rest])
+    return None  # silent, like git add
 
 
-def _unstage(provider: Any, ctx: Any, rest: list[str]) -> Any:
+def _unstage(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     if not rest or any(a.startswith("-") for a in rest):
         return _usage_error("unstage needs at least one path.")
-    was = provider.stage_suspended()
-    provider.unstage([_abspath(ctx, a) for a in rest])
-    if was and not provider.stage_suspended():
-        ctx.stdout.write("resumed autocommit\n")
+    git.unstage([_abspath(ctx, a) for a in rest])
     return None
 
 
-def _commit(provider: Any, ctx: Any, rest: list[str]) -> Any:
-    from termish import CommandResult
-
+def _commit(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     message: str | None = None
     args = list(rest)
     while args:
@@ -410,56 +444,72 @@ def _commit(provider: Any, ctx: Any, rest: list[str]) -> Any:
             return _usage_error(
                 "commit takes the staged set only (no pathspec; try: -m MSG)."
             )
-    before = provider.status()
-    info = {"message": message} if message is not None else None
-    # The staged set when a composition is open, everything otherwise.
-    # A terminal verb reads its context — there is no index to speak of
-    # when nothing is staged, and no `-a` to ask with — where the host
-    # API deliberately splits the two (`ws.commit()` is always
-    # everything, `ws.index.commit()` always the staged set): scope
-    # that depends on hidden state is fine for a person who can see the
-    # status line and wrong for the framework, which cannot.
-    if provider.stage_suspended():
-        head = provider.commit_index(info)
-        n = len(before.staged)
-    else:
-        if not provider.dirty:
-            return CommandResult(exit_code=1, stderr="nothing to commit")
-        head = provider.commit(info)
-        n = len(before.unstaged)
-    subject = message if message is not None else "ws-git.commit"
+    branch = git.status().branch
+    commit, files = git.commit(message)
+    subject = message if message is not None else "ws-git"
+    n = len(files)
     ctx.stdout.write(
-        f"[{before.branch} {head[:7]}] {subject} ({n} file{'s' if n != 1 else ''})\n"
+        f"[{branch} {commit[:7]}] {subject} ({n} file{'s' if n != 1 else ''})\n"
     )
     return None
 
 
-def _reset(provider: Any, ctx: Any, rest: list[str]) -> Any:
+def _reset(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     if rest:
-        return _usage_error("reset is mixed-only (no --soft/--hard).")
-    was = provider.stage_suspended()
-    provider.discard_staged()
-    if was and not provider.stage_suspended():
-        ctx.stdout.write("resumed autocommit\n")
+        return _usage_error(
+            "reset is mixed-only (no --soft/--hard) — "
+            "going back to a commit is: ws-git checkout <ref>."
+        )
+    git.discard()
     return None
 
 
-def _content_maps(provider: Any) -> tuple[dict[str, str], dict[str, str], Any]:
-    """(live display→key, HEAD display→key, HEAD handle) for diffing.
+def _checkout(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+    from termish import CommandResult
 
-    Reads kvgit internals behind the ``caps.index`` gate above — today
-    only kvgit sets it, and the key↔path codec is the same one status
-    already relies on.
-    """
-    staged = provider._staged
-    live = {d: k for k, d in provider._file_keys(staged.keys()).items()}
-    head_handle = staged.checkout(staged.current_commit)
-    head = (
-        {d: k for k, d in provider._file_keys(head_handle.keys()).items()}
-        if head_handle is not None
-        else {}
-    )
-    return live, head, head_handle
+    if "--" in rest:
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                "checkout of individual paths is not here yet — "
+                "ws-git checkout <ref> restores the whole tree."
+            ),
+        )
+    if len(rest) != 1 or rest[0].startswith("-"):
+        return _usage_error("checkout takes one ref (a commit from ws-git log).")
+    commit = git.resolve(rest[0])
+    git.checkout(commit)
+    st = git.status()
+    ctx.stdout.write(f"[{st.branch}] restored to {commit[:7]}\n")
+    return None
+
+
+def _show_verb(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+    from termish import CommandResult
+
+    if len(rest) != 1 or rest[0].startswith("-"):
+        return _usage_error("show takes one ref (a commit from ws-git log).")
+    commit = git.resolve(rest[0])
+    entry = git.entry(commit)
+    if entry is None:
+        return CommandResult(exit_code=1, stderr=f"no commit {rest[0]!r} here")
+    parents = entry.info.get("virtual_parents") or []
+    parent = parents[0] if parents else None
+    files = entry.info.get("files")
+    new = git.files_at(commit)
+    old = git.files_at(parent) if parent else {}
+    want = set(files) if isinstance(files, list) else (set(new) | set(old))
+    lines = [f"commit {entry.id}"]
+    message = entry.info.get("message")
+    if message:
+        lines.append("")
+        lines.append(f"    {message}")
+    lines.append("")
+    ctx.stdout.write("\n".join(lines) + "\n")
+    body = _render_diff(sorted(want), old, new)
+    if body:
+        ctx.stdout.write("\n".join(body) + "\n")
+    return None
 
 
 def _decode(value: Any) -> bytes | None:
@@ -470,7 +520,34 @@ def _decode(value: Any) -> bytes | None:
     return None
 
 
-def _diff(provider: Any, ctx: Any, rest: list[str]) -> Any:
+def _render_diff(paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any]):
+    """Unified diff lines for these paths between two trees."""
+    out: list[str] = []
+    for path in paths:
+        show = _show(path)
+        before = _decode(old.get(path)) if path in old else b""
+        after = _decode(new.get(path)) if path in new else b""
+        if (
+            before is None
+            or after is None
+            or b"\x00" in (before or b"") + (after or b"")
+        ):
+            out.append(f"Binary files a/{show} and b/{show} differ")
+            continue
+        if before == after:
+            continue
+        out.append(f"diff --git a/{show} b/{show}")
+        out.extend(
+            _unified_with_newline_markers(
+                before.decode("utf-8", errors="replace"),
+                after.decode("utf-8", errors="replace"),
+                show,
+            )
+        )
+    return out
+
+
+def _diff(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     cached = False
     check = False
     paths: list[str] = []
@@ -483,33 +560,15 @@ def _diff(provider: Any, ctx: Any, rest: list[str]) -> Any:
             return _usage_error(f"diff takes no {flag!r}.")
         else:
             paths.append(_abspath(ctx, flag))
-    st = provider.status()
+    st = git.status()
     if check:
-        return _diff_check(provider, ctx, st, paths, cached)
+        return _diff_check(git, ctx, st, paths, cached)
     want = set(st.staged) if cached else set(st.unstaged)
     if paths:
         want &= set(paths)
     if not want:
         return None
-    live, head, head_handle = _content_maps(provider)
-    out: list[str] = []
-    for path in sorted(want):
-        show = _show(path)
-        old = _decode(head_handle.get(head[path])) if path in head else b""
-        new = _decode(provider._staged.get(live[path])) if path in live else b""
-        if old is None or new is None or b"\x00" in (old or b"") + (new or b""):
-            out.append(f"Binary files a/{show} and b/{show} differ")
-            continue
-        if old == new:
-            continue
-        out.append(f"diff --git a/{show} b/{show}")
-        out.extend(
-            _unified_with_newline_markers(
-                old.decode("utf-8", errors="replace"),
-                new.decode("utf-8", errors="replace"),
-                show,
-            )
-        )
+    out = _render_diff(sorted(want), git.head_files(), git.working_files())
     if out:
         ctx.stdout.write("\n".join(out) + "\n")
     return None
@@ -549,11 +608,11 @@ _MARKERS = (b"<<<<<<< ", b"=======", b">>>>>>> ")
 
 
 def _diff_check(
-    provider: Any, ctx: Any, st: Any, paths: list[str], cached: bool
+    git: AgentGit, ctx: Any, st: Any, paths: list[str], cached: bool
 ) -> Any:
     from termish import CommandResult
 
-    live, _, _ = _content_maps(provider)
+    live = git.working_files()
     # Like git: bare --check scans the unstaged worktree, --cached scans
     # the staged set. Unresolved merge paths always count: their markers
     # committed WITH the merge (PR 1), so a clean tree can still be
@@ -564,7 +623,7 @@ def _diff_check(
         want &= set(paths)
     hits: list[str] = []
     for path in sorted(want):
-        value = _decode(provider._staged.get(live[path]))
+        value = _decode(live.get(path))
         if value is None:
             continue
         for lineno, line in enumerate(value.split(b"\n"), start=1):
@@ -577,7 +636,7 @@ def _diff_check(
     return None
 
 
-def _log(provider: Any, ctx: Any, rest: list[str]) -> Any:
+def _log(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     limit: int | None = None
     args = list(rest)
     while args:
@@ -587,13 +646,11 @@ def _log(provider: Any, ctx: Any, rest: list[str]) -> Any:
         else:
             return _usage_error(f"log takes no {flag!r} (try: -n N).")
     lines: list[str] = []
-    for entry in provider.history():
-        if limit is not None and len(lines) >= limit:
-            break
+    for entry in git.log(limit):
         tool = entry.info.get("tool", "?")
         subject = entry.info.get("message") or tool
         line = f"{entry.id[:7]} {subject}"
-        if tool == "ws-git.merge" and entry.info.get("source"):
+        if tool == MERGE_TOOL and entry.info.get("source"):
             line += f" from {entry.info['source']}"
             if entry.info.get("sizes"):
                 line += " (sizes)"
