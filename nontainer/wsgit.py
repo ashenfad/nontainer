@@ -24,7 +24,18 @@ wherever cheap; each deviation carries a recorded reason:
 - ``checkout <ref>`` restores the tree and rewinds the agent's head;
   the store APPENDS the restore, so nothing already committed leaves
   the session. ``checkout <name>`` is refused: sessions are branches
-  and branches do not switch here.
+  and branches do not switch here. ``checkout <ref> -- <paths>`` is
+  git-exact (take those paths from that ref), and ``<ref>`` may name
+  another session, which means its last commit.
+- ``branch <name>`` forks a SESSION rather than making a pointer, and
+  ``merge`` lands even when it conflicts (the markers commit, and
+  ``status`` carries the merge context) — both because a session is a
+  branch and there is no working tree to leave things in.
+- ``diff <name>`` and ``log <name>`` read another session, and where
+  that session has a narrowed view ``diff`` groups its changes under
+  ``# ... in <name>'s view`` / ``# ... elsewhere``. git has no such
+  headers; the collateral a delegate touched outside what it was sent
+  to do is the thing a caller must not miss.
 - The index names paths, not snapshots, so ``--cached`` shows staged
   paths against the last commit *including* any later edits (git would
   show only the staged snapshot).
@@ -45,7 +56,7 @@ import posixpath
 from collections.abc import Mapping
 from typing import Any
 
-from .agentgit import MERGE_TOOL, AgentGit
+from .agentgit import HASH_RE, MERGE_TOOL, AgentGit
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 
 _VERBS = (
@@ -58,15 +69,20 @@ _VERBS = (
     "log",
     "show",
     "checkout",
+    "branch",
+    "merge",
     "help",
 )
 _USAGE = (
-    "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]"
+    "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
+    "checkout|branch|merge) [...]"
 )
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
-    "status [--porcelain] | diff [--cached] [--check] [paths...] | "
-    "log [-n N] | show <ref> | checkout <ref> | help"
+    "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
+    "log [<session>] [-n N] | show <ref> | checkout <ref> [-- <paths>] | "
+    "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
+    "merge <session> | help"
 )
 _ROOT = "/workspace"
 
@@ -75,28 +91,22 @@ _ROOT = "/workspace"
 # this one is the host's to invoke. Exit 1: refusals, not usage errors.
 _EDGE = {
     "stash": (
-        "no stash here — a fork is a stash, and forking is the host's to "
-        "invoke. Snapshots are cheap: commit what you have "
-        "(ws-git commit -m ...) and keep going."
+        "no stash here — a fork IS a stash: ws-git branch <name> takes your "
+        "state to a session of its own and leaves this one where it is. "
+        "Or commit what you have (ws-git commit -m ...) and keep going; "
+        "snapshots are cheap."
     ),
     "rebase": (
-        "no rebase here — history is append-only. Nothing is lost by "
-        "committing forward, and ws-git checkout <ref> goes back."
-    ),
-    "branch": (
-        "no branches here — sessions are branches, and making one is the "
-        "host's to invoke. ws-git log shows this session's history."
-    ),
-    "merge": (
-        "merge is the host's to invoke — it lands as a commit you will see "
-        "in ws-git log, markers and all. Terminal merge arrives with the "
-        "consult flows."
+        "no rebase here — history is append-only. Branch from the commit "
+        "you want (ws-git branch <name> --at <ref>) and merge forward; "
+        "ws-git checkout <ref> goes back."
     ),
 }
 
 _HELP = """ws-git: the agent's git over this session.
 
-usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]
+usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
+               branch|merge) [...]
   stage <paths>     add paths to the index (optional: commit with an
                     empty index takes everything modified)
   unstage <paths>   drop paths from the index
@@ -105,22 +115,36 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]
                     left out stays in the working tree, uncommitted
   reset             abandon the composition (mixed-only)
   status            staged vs unstaged (git-short XY columns)
-  diff [--cached] [--check] [paths...]
+  diff [<session>] [--cached] [--check] [paths...]
                     unified diff against your last commit; --cached for
-                    the staged set
+                    the staged set; a session name diffs against that
+                    session instead
                     --check finds leftover conflict markers
                     (unstaged, or staged with --cached;
                     unresolved merges always)
-  log [-n N]        your own commits, newest first
+  log [<session>] [-n N]
+                    your own commits, newest first; a session name
+                    shows that session's
   show <ref>        one commit: its message and its diff
   checkout <ref>    restore the tree to a commit of yours (history is
                     append-only: the restore is a new commit)
+  checkout <ref> -- <paths>
+                    take just those paths from that ref (another
+                    session, or a commit of yours) into your tree
+  branch            sessions on this store, yours marked *
+  branch <name> [--at <ref>] [--fresh] [--paths <paths>]
+                    fork a session (does not switch, as in git).
+                    --fresh starts it with no conversation; --paths
+                    narrows what it can SEE, not what its branch holds
+  merge <session>   merge that session's last commit into yours.
+                    Conflicts land as markers in the merge commit and
+                    show as UU in status; fix them and commit
   help              this text
 
-Subset, on purpose: no stash (a fork is a stash), no rebase (history is
-append-only), no branch or merge (the host invokes those). There is no
-.git — branches are sessions, history is commits. The workspace commits
-on its own as you work; ws-git log shows only the commits you made."""
+Subset, on purpose: no stash (a fork is a stash: ws-git branch <name>),
+no rebase (history is append-only). There is no .git — branches are
+sessions, history is commits. The workspace commits on its own as you
+work; ws-git log shows only the commits you made."""
 
 
 #: The dud host-object name fronting ws-git on guest rungs. A user
@@ -337,26 +361,32 @@ def make_wsgit_command(ws: Any) -> Any:
             if verb == "reset":
                 return _reset(git, ctx, rest)
             if verb == "diff":
-                return _diff(git, ctx, rest)
+                return _diff(git, ws, ctx, rest)
             if verb == "log":
-                return _log(git, ctx, rest)
+                return _log(git, ws, ctx, rest)
             if verb == "show":
                 return _show_verb(git, ctx, rest)
             if verb == "checkout":
-                return _checkout(git, ctx, rest)
+                return _checkout(git, ws, ctx, rest)
+            if verb == "branch":
+                return _branch(ws, ctx, rest)
+            if verb == "merge":
+                return _merge(git, ws, ctx, rest)
         except (
             ValueError,
             WorkspaceError,
             NotSupportedError,
             CommitNotFoundError,
+            PermissionError,
         ) as e:
             # Domain errors render as messages, never "Unexpected error".
             return CommandResult(exit_code=1, stderr=f"{e}")
         raise AssertionError(f"unreachable verb {verb!r}")
 
     wsgit.__doc__ = (
-        "The agent's git over this session: "
-        "ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout) [...]"
+        "The agent's git over this session and its neighbours: ws-git "
+        "(stage|unstage|commit|reset|status|diff|log|show|checkout|"
+        "branch|merge) [...]"
     )
     return wsgit
 
@@ -464,23 +494,169 @@ def _reset(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     return None
 
 
-def _checkout(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
-    from termish import CommandResult
+def _sessions(ws: Any) -> list[str]:
+    """Sessions on this store, or just this one when no store opened it.
 
-    if "--" in rest:
-        return CommandResult(
-            exit_code=1,
-            stderr=(
-                "checkout of individual paths is not here yet — "
-                "ws-git checkout <ref> restores the whole tree."
-            ),
+    The permission question — which of them an agent may SEE — belongs
+    to the embedder's registry and is not answered here; today every
+    session on the store is listed.
+    """
+    store = getattr(ws, "_store", None)
+    if store is None:
+        return [ws.session]
+    return list(store.sessions())
+
+
+def _is_session(ws: Any, name: str) -> bool:
+    """Whether a word an agent typed names another session.
+
+    Asked of the store where one opened this workspace, and of the
+    substrate otherwise: a workspace built straight from a provider
+    still has neighbours on the same store, and a verb that could not
+    see them there would behave differently for no reason the agent
+    can observe.
+    """
+    if name == ws.session:
+        return False
+    store = getattr(ws, "_store", None)
+    if store is not None:
+        return name in set(store.sessions())
+    try:
+        ws._provider.branch_head(name)
+    except Exception:  # noqa: BLE001 - not a branch is the answer
+        return False
+    return True
+
+
+def _other_session(ws: Any, name: str) -> Any:
+    """A read handle on another session, opened for one verb.
+
+    Opened through the store rather than reached through this
+    session's provider: a session is a workspace, and the verbs that
+    read one (``log``) want the whole fiction over it, not a branch
+    handle. The caller closes it.
+    """
+    store = getattr(ws, "_store", None)
+    if store is None:
+        raise ValueError(
+            f"cannot reach {name!r}: this session was not opened from a store"
         )
+    if name not in set(store.sessions()):
+        raise ValueError(f"unknown session {name!r} (ws-git branch lists them)")
+    return store.open(name)
+
+
+def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if "--" in rest:
+        cut = rest.index("--")
+        head, paths = rest[:cut], rest[cut + 1 :]
+        if len(head) > 1 or any(a.startswith("-") for a in head):
+            return _usage_error("checkout takes one ref before --.")
+        if not paths:
+            return _usage_error("checkout -- needs at least one path.")
+        ref = _take_ref(git, head[0] if head else "HEAD")
+        ws.checkout(ref, paths=[_abspath(ctx, a) for a in paths])
+        n = len(paths)
+        plural = "" if n == 1 else "s"
+        ctx.stdout.write(f"Updated {n} path{plural} from {ref}\n")
+        return None
     if len(rest) != 1 or rest[0].startswith("-"):
         return _usage_error("checkout takes one ref (a commit from ws-git log).")
     commit = git.resolve(rest[0])
     git.checkout(commit)
     st = git.status()
     ctx.stdout.write(f"[{st.branch}] restored to {commit[:7]}\n")
+    return None
+
+
+def _take_ref(git: AgentGit, ref: str) -> str:
+    """A ref an agent typed, for the take form.
+
+    ``HEAD`` and a bare hash are this session's and go through the
+    agent's own resolution, so a framework commit is refused by name
+    the way the whole-tree form refuses it. Everything else — a
+    session name, a ``session@commit`` — is passed on for the
+    workspace to resolve, because a take may reach anywhere.
+    """
+    if ref == "HEAD" or HASH_RE.fullmatch(ref):
+        return git.resolve(ref)
+    return ref
+
+
+def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if not rest:
+        mine = ws.session
+        lines = [
+            f"{'*' if name == mine else ' '} {name}" for name in sorted(_sessions(ws))
+        ]
+        if lines:
+            ctx.stdout.write("\n".join(lines) + "\n")
+        return None
+    name, at, fresh, paths = rest[0], None, False, None
+    if name.startswith("-"):
+        return _usage_error("branch takes a name first.")
+    args = rest[1:]
+    while args:
+        flag = args.pop(0)
+        if flag == "--at" and args:
+            at = args.pop(0)
+        elif flag == "--fresh":
+            fresh = True
+        elif flag == "--paths":
+            paths = [a for a in args if not a.startswith("-")]
+            del args[: len(paths)]
+            if not paths:
+                return _usage_error("--paths needs at least one path.")
+        else:
+            return _usage_error(
+                f"branch takes no {flag!r} (try: --at <ref>, --fresh, --paths <paths>)."
+            )
+    child = ws.fork(
+        name,
+        at=at,
+        inherit="fresh" if fresh else "full",
+        paths=[_abspath(ctx, a) for a in paths] if paths else None,
+    )
+    # The branch is what the verb makes; the handle it came back on is
+    # this call's and holds an executor of its own.
+    child.close()
+    return None  # silent, like git branch
+
+
+def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
+    from termish import CommandResult
+
+    if len(rest) != 1 or rest[0].startswith("-"):
+        return _usage_error("merge takes one session name (ws-git branch lists them).")
+    source = rest[0]
+    out = ws.merge(source)
+    if not out.merged:
+        lines = [f"CONFLICT: {_show(path)}" for path in out.conflicts]
+        lines.append(
+            f"Merge of {source} refused: contested state no rule resolves. "
+            "Nothing changed."
+        )
+        return CommandResult(exit_code=1, stderr="\n".join(lines))
+    for path in out.auto_merged:
+        ctx.stdout.write(f"Auto-merging {_show(path)}\n")
+    for path in out.conflicts:
+        ctx.stdout.write(f"CONFLICT (content): Merge conflict in {_show(path)}\n")
+    n = len(out.auto_merged) + len(out.conflicts)
+    ctx.stdout.write(
+        f"[{git.status().branch} {out.commit[:7]}] merge {source} "
+        f"({n} file{'' if n == 1 else 's'})\n"
+    )
+    if out.conflicts:
+        # git leaves conflicts uncommitted; here the merge always
+        # lands, markers and all, so the news is what to do next.
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                "Merge landed with conflict markers in "
+                f"{len(out.conflicts)} file(s): fix them and commit "
+                "(ws-git status shows them as UU)."
+            ),
+        )
     return None
 
 
@@ -547,10 +723,10 @@ def _render_diff(paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any
     return out
 
 
-def _diff(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     cached = False
     check = False
-    paths: list[str] = []
+    words: list[str] = []
     for flag in rest:
         if flag == "--cached":
             cached = True
@@ -559,7 +735,19 @@ def _diff(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
         elif flag.startswith("-"):
             return _usage_error(f"diff takes no {flag!r}.")
         else:
-            paths.append(_abspath(ctx, flag))
+            words.append(flag)
+    # A first word that names a session is a session: a diff against
+    # another session and a pathspec cannot both be meant, and a path
+    # is the reading that still works when the two collide (name the
+    # file, not the branch).
+    if words and _is_session(ws, words[0]):
+        if len(words) > 1 or cached or check:
+            return _usage_error(
+                "diff <session> takes no other argument (no pathspec, "
+                "--cached or --check against another session)."
+            )
+        return _diff_branch(git, ws, ctx, words[0])
+    paths = [_abspath(ctx, word) for word in words]
     st = git.status()
     if check:
         return _diff_check(git, ctx, st, paths, cached)
@@ -636,17 +824,73 @@ def _diff_check(
     return None
 
 
-def _log(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+def _diff_branch(git: AgentGit, ws: Any, ctx: Any, name: str) -> Any:
+    """This session against another session's last commit.
+
+    Grouped by the OTHER session's view when it has one: what a
+    delegate was sent to do, then what else it touched. The merge takes
+    both — the grouping is what keeps the second from going unnoticed.
+    """
+    from .views import VIEW_KEY, parse_seed
+
+    provider = ws._provider
+    theirs = git.source_commit(name)
+    ours = git.head or provider.head
+    old = provider.files_at(ours)
+    new = provider.files_at(theirs)
+    changed = sorted(
+        path for path in set(old) | set(new) if old.get(path) != new.get(path)
+    )
+    if not changed:
+        return None
+    seed = parse_seed(provider.key_at(theirs, VIEW_KEY))
+    if not seed:
+        body = _render_diff(changed, old, new)
+        if body:
+            ctx.stdout.write("\n".join(body) + "\n")
+        return None
+
+    def seeded(path: str) -> bool:
+        return any(path == e or path.startswith(e + "/") for e in seed)
+
+    lines: list[str] = []
+    for label, group in (
+        (f"in {name}'s seed", [p for p in changed if seeded(p)]),
+        ("elsewhere", [p for p in changed if not seeded(p)]),
+    ):
+        if not group:
+            continue
+        lines.append(f"# {len(group)} path(s) {label}")
+        lines.extend(_render_diff(group, old, new))
+    if lines:
+        ctx.stdout.write("\n".join(lines) + "\n")
+    return None
+
+
+def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     limit: int | None = None
+    session: str | None = None
     args = list(rest)
     while args:
         flag = args.pop(0)
         if flag in ("-n", "--max-count") and args and args[0].isdigit():
             limit = int(args.pop(0))
+        elif not flag.startswith("-") and session is None:
+            session = flag
         else:
             return _usage_error(f"log takes no {flag!r} (try: -n N).")
+    if session is not None and session != ws.session:
+        other = _other_session(ws, session)
+        try:
+            return _log_lines(AgentGit(other).log(limit), ctx)
+        finally:
+            other.close()
+    return _log_lines(git.log(limit), ctx)
+
+
+def _log_lines(entries: Any, ctx: Any) -> Any:
     lines: list[str] = []
-    for entry in git.log(limit):
+    for entry in entries:
         tool = entry.info.get("tool", "?")
         subject = entry.info.get("message") or tool
         line = f"{entry.id[:7]} {subject}"

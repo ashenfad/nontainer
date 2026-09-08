@@ -139,21 +139,45 @@ def test_frozen_refused(kv_ws):
 
 
 def test_non_file_contested_is_hard_conflict(kv_ws):
+    """State in no plane the policy names, contested: no merge function
+    can resolve it, so the merge aborts untouched."""
     # Both sides must differ from the base to contest: main writes after
     # forking, so LCA holds neither value.
-    kv_ws.run_python("cache['k'] = 'base'")
+    kv_ws._provider.kv["embedder_state"] = b"base"
+    kv_ws.commit(info={"tool": "test"})
     fork = kv_ws.fork("worker")
     try:
-        kv_ws.run_python("cache['k'] = 'main'")
-        fork.run_python("cache['k'] = 'worker'")
+        kv_ws._provider.kv["embedder_state"] = b"main"
+        kv_ws.commit(info={"tool": "test"})
+        fork._provider.kv["embedder_state"] = b"worker"
+        fork.commit(info={"tool": "test"})
 
         before = _provider(kv_ws).head
         out = _provider(kv_ws).merge("worker")
         assert not out.merged
         assert out.commit is None
         assert _provider(kv_ws).head == before
-        # Raw store key: the cache is not a file and has no display path.
-        assert any("cache" in c for c in out.conflicts)
+        # Raw store key: it is not a file and has no display path.
+        assert out.conflicts == ("embedder_state",)
+    finally:
+        fork.close()
+
+
+def test_the_cache_plane_takes_ours_whole(kv_ws):
+    """The cache is session-scoped by construction, so the whole prefix
+    is ours: a contested key keeps our value, and one only the other
+    side wrote does not travel."""
+    kv_ws.run_python("cache['k'] = 'base'")
+    fork = kv_ws.fork("worker")
+    try:
+        kv_ws.run_python("cache['k'] = 'main'")
+        fork.run_python("cache['k'] = 'worker'; cache['theirs'] = 'only'")
+        fork.terminal("echo two > b.txt")
+
+        out = _provider(kv_ws).merge("worker")
+        assert out.merged and out.conflicts == ()
+        assert kv_ws.cache["k"] == "main"
+        assert "theirs" not in kv_ws.cache
     finally:
         fork.close()
 

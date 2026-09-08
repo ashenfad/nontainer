@@ -399,11 +399,12 @@ ws.uncommitted: bool     # the store's buffer holds writes no commit took
                          # uncommitted work" is ws.index.status())
 ws.ref: Ref              # this session at its current commit
 ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
-ws.checkout(commit: str) -> str          # restore a commit of THIS session
+ws.checkout(ref) -> str                  # restore a commit of THIS session
                                          # (appends; returns the new commit)
+ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
 ws.rollback(steps: int = 1) -> str       # the same, counted back over log()
 ws.log(limit: int | None = None) -> Iterable[CommitInfo]
-ws.fork(name: str, *, at=None) -> Workspace      # cost varies by backend
+ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.discard() -> None                             # drop staged writes
 ws.autocommit: bool                              # settable; see below
@@ -475,6 +476,78 @@ and appends the same way, so `rollback(1)` straight after a checkout is
 the redo — the commit before the restore is the one the checkout
 stepped off. It stops at the `{"tool": "init"}` lifecycle commit rather
 than crossing into a provider's pre-workspace seed.
+
+**`ws.fork(name, *, at=None, inherit="full", paths=None)`** branches
+this session into a new one and opens it.
+
+**A fork point is always a commit.** Uncommitted writes here are landed
+first, under `{"tool": "fork", "child": name}`, and that commit is the
+child's base and the merge base for the way back. Forking a copy of the
+staging buffer would give the child a state that never existed in
+history and a merge base predating this session's own edits. With `at`
+nothing is committed: the buffer belongs to this session's present, not
+to the past the fork branches from.
+
+`inherit` decides whether the stored conversation comes along, and
+nothing else. `"full"` (default) keeps it — the continue-where-I-am
+fork. `"fresh"` drops every `__agno__/*` key on the child's first
+commit, for a delegate that starts a chat of its own over these files;
+it touches no file. A brief, a summary, a distilled context is content
+the caller supplies with the child's task — nothing here can write one,
+since nontainer stores the conversation and does not interpret it.
+
+`paths` narrows the child's **view**, not its tree. Its branch holds
+everything this one had; its filesystem lists and reads only the seeded
+paths (directories or files, absolute or relative to the root). So
+"push this content to the delegate" costs no prune commit and the merge
+back stays an ordinary three-way with no rule to special-case. This
+session sees the child's whole branch regardless — `ws.diff`,
+`ws.checkout(ref, paths=)`, `ws.files.attach`.
+
+**One write rule, better than git's sparse checkout.** The child may
+CREATE a new path anywhere (it merges as an addition, and notes and
+scratch are ordinary work); a created path joins its view, so it can
+read back what it made. Modifying or deleting a path that exists
+outside the view is refused with `PermissionError` naming the view: you
+cannot overwrite what you cannot see. Locally the rule is enforced in
+the filesystem the sandbox holds; on a guest rung only the seeded
+subtree is materialized and the same rule is applied to the write
+harvest, so a call that tried lands nothing and reads as errored.
+
+The view is recorded on the child's branch under a reserved key, so a
+reopened delegate is narrowed exactly as it was, and it merges
+`MergeChoice.OURS` — merging a narrowed delegate never narrows the
+caller. A fork given the whole tree records nothing, so a child of a
+narrowed session does not inherit its blinkers.
+
+**`ws.checkout(ref, paths=[...])`** is the second form of one verb, and
+git's `restore --source=<ref> -- <paths>`: it copies those paths from
+any ref into the working tree and leaves everything else alone. `ref`
+is a `session@commit`, a session name (that session's last *agent*
+commit — the same reading `merge` takes, so the two cannot disagree
+about what a delegate said), or a commit of this session. They land as
+ordinary writes, so the view rule and the agent's own status see them
+as work in the tree, and the commit records
+`{"tool": "checkout", "taken_from": "<ref>", "paths": [...]}` — a soft
+reference, not ancestry. Only file keys move, so the merge-policy
+question never arises.
+
+**`ws.files.attach(ref, at, *, readonly=True)`** mounts another
+session's tree, frozen at a commit, inside this one at `at`; `detach(at)`
+removes it and `attachments()` lists `{point: ref}`. For reading
+someone else's work in place — a delegate's branch while deciding
+whether to merge it — without copying it in. Explicit and never
+automatic. Like a `Mount`: NOT versioned, not captured by commits, not
+carried by a fork, gone when the session closes; `readonly=False` is
+refused, since a frozen state has nothing to offer it. What lands at
+`at` is the source's workspace ROOT, so a file the delegate calls
+`auth.py` reads as `<at>/auth.py`. A point inside this session's root
+reaches every rung; outside it, an executor running elsewhere never
+sees it — the contract a `Mount` outside the root already has.
+
+**`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
+verb for host code with no workspace open, and takes `store.open`'s
+keywords for the workspace it returns.
 
 **`ws.merge(source)`** merges another session into this one
 (`caps.merge`). **A merge takes only what has been committed, on both
@@ -598,6 +671,18 @@ workspace paths — `/workspace/data/in.csv`, the way agent code and
 conversation, the filesystem's own bookkeeping) are not files and never
 appear, and staged-but-uncommitted work is not in the diff at all
 (check `ws.uncommitted`).
+
+It also carries `seed`: the paths the session the diff *ends at* was
+seeded with, when it was narrowed by `fork(paths=)`, and empty
+otherwise. `diff.in_seed` and `diff.elsewhere` split `diff.paths` by
+it, which is how a caller reading a delegate's diff tells the work it
+sent the delegate to do from everything else it touched. The merge
+takes both — the grouping is what stops the second from going
+unnoticed. It groups by the *seed*, not the delegate's current view: a
+file the delegate created is in its view because it made it, and that
+is exactly a change the caller has not seen before. `ws-git diff
+<session>` prints the same split under `# N path(s) in <session>'s
+seed` / `# N path(s) elsewhere`.
 
 `modified` is the content question: a file re-saved with the bytes it
 already had is not a change, even though it is a new write. kvgit

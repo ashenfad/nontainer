@@ -159,7 +159,6 @@ def test_a_deletion_against_an_edit_conflicts(parent):
 def test_a_cache_key_written_on_both_sides_keeps_ours(parent):
     """The cache is a plane, not a file: the delegate's cache never
     comes back, and a key both sides wrote is not a conflict."""
-    pytest.skip("needs the plane policy: the sessions verbs")
     _seed(parent, base="base\n")
     parent.cache["shared"] = "before the fork"
     parent.commit(info={"tool": "test"})
@@ -191,7 +190,6 @@ def test_the_delegates_conversation_never_comes_back(parent, tmp_path):
     """A delegate returns files. Its conversation folds into whatever
     the runner reports; merging it into the caller's would interleave
     two chats that never happened together."""
-    pytest.skip("needs the plane policy: the sessions verbs")
     pytest.importorskip("agno")
     from agno.session import AgentSession
 
@@ -229,7 +227,6 @@ def test_a_narrowed_view_merges_back_only_its_own_changes(parent):
     """A fresh spawn is a fork with a narrowed view: its branch holds
     everything, its filesystem shows the seed, and the merge is
     ordinary three-way over what it actually changed."""
-    pytest.skip("needs fork(inherit=, paths=): the sessions verbs")
     _seed(parent, **{"auth.py": "auth\n", "billing.py": "billing\n"})
     child = _fork(parent, "child", inherit="fresh", paths=["/workspace/auth.py"])
     try:

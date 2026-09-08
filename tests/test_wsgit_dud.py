@@ -309,3 +309,28 @@ def test_map_argv_leaves_message_text_alone():
         "stage",
         "/workspace/a.txt",
     ]
+
+
+def test_dud_attachment_is_visible_to_the_guest(tmp_path):
+    """An attachment has to reach the executor's own tree: the guest
+    reads a mounted session's files like any other."""
+    from nontainer import Store
+
+    store = Store(tmp_path / "store")
+    other = store.open("reviewer")
+    other.files.write("/workspace/review.md", "looks fine\n")
+    other.commit(info={"tool": "test"})
+    other.close()
+
+    w = store.open("reader", executor_factory=lambda: DudExecutor(backend="subprocess"))
+    try:
+        # Under the workspace root, so it reaches a guest rung: a tree
+        # parked outside the root is host-only by the executor's
+        # contract, exactly as a Mount there is.
+        w.files.attach("reviewer", "reviews")
+        assert w.terminal("cat reviews/review.md").stdout == "looks fine\n"
+        w.files.detach("reviews")
+        assert w.terminal("cat reviews/review.md").exit_code != 0
+    finally:
+        w.close()
+        store.close()

@@ -138,22 +138,123 @@ the whole model:
   through `virtual_parents` in commit info. The framework's per-call
   commits are never in it.
 - **Branches are real branches.** A session IS a branch, so `ws-git
-  branch` and `ws-git merge` are refused with the host named as the
-  one who invokes them, and `ws-git checkout <ref>` restores a tree
-  rather than switching: the fiction rewinds its own head, the store
-  appends the restore as a new commit — which is exactly what the
-  host's `ws.checkout` does with the whole session, so a host checkout
-  rewinds the fiction too (its head is a key the restore carries). A merge takes only what has been committed
-  on both sides, which under the fiction means *agent*-committed, and
-  refuses a source that has more: the target refuses while it has work
-  in flight, the source is merged at its last agent commit rather than
-  at its store head, and a source whose agent has written since is
-  refused rather than merged at a state it has moved past.
+  branch <name>` forks a session rather than making a pointer, and
+  `ws-git checkout <ref>` restores a tree rather than switching: the
+  fiction rewinds its own head, the store appends the restore as a new
+  commit — which is exactly what the host's `ws.checkout` does with the
+  whole session, so a host checkout rewinds the fiction too (its head
+  is a key the restore carries). A merge takes only what has been
+  committed on both sides, which under the fiction means
+  *agent*-committed, and refuses a source that has more: the target
+  refuses while it has work in flight, the source is merged at its last
+  agent commit rather than at its store head, and a source whose agent
+  has written since is refused rather than merged at a state it has
+  moved past.
 
 The one thing the substrate must provide is a keyed commit
 (`provider.commit_keys`, gated by `caps.index`). Everything else is
 bookkeeping over ordinary reads and writes, which is why the fiction
 is provider-shaped rather than kvgit-shaped.
+
+## Delegation: forks, views and merges
+
+A session is a kvgit branch carrying the whole world — files, cache,
+cwd, the conversation. Forking one is O(1) and kvgit already three-way
+merges branches, so delegating to a subagent, spawning a fresh worker
+and consulting another session need no new primitives. They need a
+calling convention over the ones that exist, plus a sparse view.
+
+**Three scenarios, two mechanisms.**
+
+| scenario | ancestry | result path |
+|---|---|---|
+| fork yourself | the fork point is the common ancestor | `merge` |
+| fork an external session | the child shares ancestry with *them* | merge back into them is real; into you it is `checkout(ref, paths=)` |
+| spawn fresh | a fork with a narrowed view and no conversation; ancestry intact | `merge` |
+
+**Consult is not a merge.** Two unrelated sessions share only the
+store's initial empty commit, so a three-way merge from there sees
+every shared path as added on both sides and conflicts, and the
+conversation record has no merge rule at all. Getting files from an
+unrelated session is a take — `ws.checkout(ref, paths=[...])` — with
+provenance in the commit's info, never a merge.
+
+**A fork point is always a commit.** If the parent has uncommitted
+writes, the fork lands them first and branches from *that* commit.
+Forking a copy of the staging buffer would give the child a base that
+never existed in history, no commit to point at as "delegated here",
+and a merge base predating the parent's own uncommitted edits — which
+would then come back looking like the child's work.
+
+**The view is sparse, not a fence and not a prune.** `fork(paths=)`
+narrows what the child's filesystem shows; its branch still holds
+everything the parent had. A prune commit would make the merge back a
+special case (every pruned path reads as a deletion on the child's
+side), and a fence — refusing reads outside a set while the tree still
+lists them — is a lie the agent trips over. A sparse checkout is the
+shape git already has for "I only need this part", and the merge stays
+ordinary three-way with no rule to special-case.
+
+It comes with **one write rule, better than git's**: the child may
+create a new path anywhere (it merges as an addition, and a delegate
+needs somewhere to put notes), and a created path joins its view so it
+can read back what it made; modifying or deleting a path that exists
+outside the view is refused at write time, naming the view. You cannot
+overwrite what you cannot see. The provider knows the full keyset, so
+the check is cheap, and a guest rung applies the same rule to the
+write harvest — the only way a guest can reach a hidden path is by
+recreating it by name.
+
+**The merge unit is the child's whole diff**, not the paths the caller
+remembers pushing. Collateral edits are the common case — the delegate
+touched a caller in `main.py` — and taking only what was seeded yields
+a tree that does not run. `diff` groups changed paths as *in the
+child's seed* vs *elsewhere* so collateral cannot be missed;
+`checkout <ref> -- <paths>` is the deliberate narrowing.
+
+**Merge is filesystem-only.** Files merge three-way; every other plane
+takes ours:
+
+| keys | rule |
+|---|---|
+| file keys (the VFS blobs + its metadata table) | three-way, marker merge; the table field-aware |
+| `__cache__/*` | ours — a delegate's working memory does not come back |
+| `__agno__/*` | ours — a delegate's conversation does not come back; what it has to say arrives as its answer |
+| cwd, the ws-git blob, the view record | ours |
+
+"Ours" has to own the *whole* prefix, not only contested keys: a merge
+function runs only where both sides changed a key, so a run the
+delegate added under `__agno__/runs/<id>` would ride in untouched. So
+those two are registered as a `MergeChoice` over the prefix — a
+whole-side policy that also drops their-only adds — and only for the
+merge verb. An ordinary commit that loses its CAS to a second handle on
+the SAME session must still take that handle's conversation, which is
+this session's own.
+
+**Judgment to the LLM, bytes to the machine.** The merge is
+mechanical: child-only changes apply, disjoint two-sided changes union,
+identical bytes on both sides are not a conflict, and overlapping edits
+come back with `<<<<<<<` markers. It never guesses. And it always
+commits or changes nothing: a conflicted merge lands *with* the markers
+and the provider tracks an outstanding merge context — `ws-git status`
+shows `## merging` and `UU`, `diff --check` finds the markers, and the
+next commit that removes them clears it. A deliberate deviation from
+git, which leaves conflicts uncommitted: here the conflicted state is
+itself a checkpoint you can restore to, and there is no working tree to
+leave things in.
+
+**Merge takes only what is agent-committed, on both sides.** The
+target refuses while it has anything modified against its own last
+ws-git commit; the source is merged at *its* last agent commit and is
+refused when it has written since. A delegate's result is what it
+committed, so a runner should make the child commit at the end of its
+task (a session that never used ws-git merges at its store head, which
+is the honest answer for it).
+
+**Providers degrade honestly.** kvgit does all of it. AgentFS refuses
+`fork` and `merge` by name until it has a merge engine — a fork you
+cannot merge back is a trap, not a rung — while `diff` and take still
+work. The `dir` backend refuses both.
 
 ## Tags have two scopes, and nontainer picks them
 

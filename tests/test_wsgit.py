@@ -192,13 +192,35 @@ def test_checkout_restores_a_commit(ws):
     assert ws.terminal("ws-git status").stdout == ""
     assert _subjects(ws) == ["first"]
 
-    # Paths are a later stage; a session name is not a ref at all.
-    r = ws.terminal(f"ws-git checkout {first} -- a.txt")
-    assert r.exit_code == 1
-    assert "not here yet" in r.stderr
+    # The whole-tree form still refuses a session name.
     r = ws.terminal("ws-git checkout worker")
     assert r.exit_code == 1
     assert "sessions are branches" in r.stderr
+
+
+def test_checkout_takes_paths_from_a_ref(ws):
+    """git's ``checkout <ref> -- <paths>``: those paths, nothing else."""
+    ws.terminal("echo one > a.txt; echo keep > b.txt")
+    ws.terminal("ws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal("echo two > a.txt; echo moved > b.txt")
+    ws.terminal("ws-git commit -m second")
+
+    r = ws.terminal(f"ws-git checkout {first} -- a.txt")
+    assert r.exit_code == 0
+    assert r.stdout.startswith("Updated 1 path from ")
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    # untouched: a take copies what it is told to and nothing else
+    assert ws.terminal("cat b.txt").stdout == "moved\n"
+    # ordinary work in the tree, not a commit of the agent's
+    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
+    assert _subjects(ws) == ["second", "first"]
+
+    r = ws.terminal(f"ws-git checkout {first} -- nope.txt")
+    assert r.exit_code == 1
+    assert "nothing at" in r.stderr
+    r = ws.terminal("ws-git checkout -- ")
+    assert r.exit_code == 2
 
 
 def test_commit_without_a_message_is_still_in_the_log(ws):
@@ -295,10 +317,8 @@ def test_merge_status_and_diff_check(ws):
 
 def test_edges_name_what_the_agent_can_do(ws):
     cases = [
-        ("ws-git stash", "ws-git: no stash here — a fork is a stash"),
-        ("ws-git branch", "ws-git: no branches here — sessions are branches"),
+        ("ws-git stash", "ws-git: no stash here — a fork IS a stash"),
         ("ws-git rebase", "ws-git: no rebase here — history is append-only"),
-        ("ws-git merge", "ws-git: merge is the host's to invoke"),
     ]
     for cmd, prefix in cases:
         r = ws.terminal(cmd)
@@ -311,6 +331,9 @@ def test_edges_name_what_the_agent_can_do(ws):
     for verb, text in _EDGE.items():
         assert "ws.fork(" not in text and "provider." not in text, verb
         assert "ws-git" in text or "host's to invoke" in text, verb
+    # branch and merge are the agent's now, not refusals
+    assert ws.terminal("ws-git branch").exit_code == 0
+    assert ws.terminal("ws-git merge").exit_code == 2
 
     r = ws.terminal("ws-git frobnicate")
     assert r.exit_code == 2

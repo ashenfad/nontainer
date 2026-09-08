@@ -58,6 +58,10 @@ is the migration.
   | `ws.set_shell_env(name, value)` | `ws.runtime.env[name] = value` |
   | `Runtime.set_shell_env(name, value)` / `Runtime.shell_env(...)` | `Runtime.env` (a `MutableMapping[str, str]`) |
   | `ws.dirty` | `ws.uncommitted` |
+  | `ws.checkout(commit)` only | `ws.checkout(ref, paths=None)` (the second form takes paths from any ref) |
+  | `ws.fork(name, at=)` only | `ws.fork(name, at=, inherit=, paths=)` |
+  | `WorkspaceDiff(added, removed, modified)` | ...plus `seed`, with `paths` / `in_seed` / `elsewhere` |
+  | ws-git `branch` / `merge` refusals | the verbs themselves |
   | `ws.python_config` | `ws.runtime.python_config` |
   | `ws.supports_commands` / `ws.supports_ws_verbs` | `ws.runtime.supports_commands` / `ws.runtime.supports_ws_verbs` |
   | `ws.cache_enabled` | `ws.runtime.cache_enabled` |
@@ -109,8 +113,8 @@ is the migration.
   agent's graph; the fiction rewinds, the store appends),
   `ws-git show <ref>`,
   `ws.index.commit/log/head/checkout`. `ws-git stage` is silent and
-  optional. Refusals for `stash`, `rebase`, `branch`, `merge` name a
-  terminal verb or say the host does it.
+  optional. What is still refused — `stash`, `rebase` — names a
+  terminal verb the agent can actually run.
 
 - **A merge takes only what has been committed — by the agent — and
   refuses a source that has more.**
@@ -234,6 +238,91 @@ is the migration.
   guarantee and says so.
 - `ws.merge(source)` on the facade, gated by `caps.merge`; refuses a
   dirty tree — or uncommitted ws-git work — with the verbs that fix it.
+- **Delegation: forks with a view, take, attachments.** A session is a
+  branch, so delegating to one needs a calling convention rather than
+  new primitives (`docs/design.md`, "Delegation: forks, views and
+  merges").
+  - **A fork point is always a commit.** `ws.fork` lands uncommitted
+    writes first under `{"tool": "fork", "child": name}` and branches
+    from that commit, so the child's base is a state that existed and
+    the merge base does not predate the parent's own edits. With `at`
+    the buffer is left alone.
+  - **`ws.fork(name, *, at=, inherit="full"|"fresh", paths=None)`.**
+    `inherit` decides whether the stored conversation comes along and
+    nothing else — `"fresh"` drops every `__agno__/*` key on the
+    child's first commit and touches no file. A brief or a summary is
+    content the caller supplies with the task; nontainer stores the
+    conversation and does not interpret it, so it cannot write one.
+  - **`paths` narrows the child's VIEW, not its tree** — a sparse
+    checkout. Its branch holds everything the parent had; its
+    filesystem lists and reads only the seeded paths, so pushing
+    content to a delegate costs no prune commit and the merge back
+    stays ordinary three-way. **One write rule, better than git's**:
+    a new path anywhere is allowed (and joins the view, so a delegate
+    can read back its own note); modifying or deleting a path that
+    exists outside the view is refused with `PermissionError` naming
+    the view. Locally the rule lives in the filesystem the sandbox
+    holds; on a guest rung only the seeded subtree is materialized and
+    the same rule is applied to the write harvest, so a call that tried
+    lands nothing. The view is recorded on the branch under a reserved
+    key (so a reopened delegate is narrowed as it was) and merges
+    `MergeChoice.OURS`; a fork given the whole tree records nothing.
+  - **`ws.checkout(ref, paths=[...])`** — git's `restore
+    --source=<ref> -- <paths>`, one verb with two forms. Copies those
+    paths from any ref (a `session@commit`, a session name meaning its
+    last AGENT commit, or a commit of this session) into the working
+    tree as ordinary writes, committed per `autocommit` with
+    `{"tool": "checkout", "taken_from": ..., "paths": [...]}` — a soft
+    reference, not ancestry. File keys only, so the merge-policy
+    question never arises. This is "take", and it is what getting files
+    from an UNRELATED session is: two such sessions share only the
+    store's empty commit, so a merge between them would conflict on
+    everything.
+  - **`ws.files.attach(ref, at, *, readonly=True)` / `detach(at)` /
+    `attachments()`** mount another session's frozen tree inside this
+    one, for reading someone else's work in place. Explicit, never
+    automatic, and like a `Mount`: unversioned, uncommitted, not
+    carried by a fork, gone when the session closes. The terminal sees
+    it; a point inside the workspace root reaches a guest rung too.
+  - **`Store.fork(src, dst, *, at=, inherit=, paths=)`** is the same
+    verb for host code with no workspace open.
+  - **The plane policy, whole.** A merge is filesystem-only: files
+    three-way (the VFS table field-aware), and `__cache__/*`,
+    `__agno__/*`, cwd, the ws-git blob and the view record all take
+    ours. The two prefixes are registered as a kvgit `MergeChoice`
+    rather than a merge function, because a function runs only where
+    both sides changed a key and a run the delegate added under
+    `__agno__/runs/<id>` would otherwise ride in. Registered for the
+    merge verb only: an ordinary commit that loses its CAS to a second
+    handle on the SAME session must still take that handle's
+    conversation.
+  - **`WorkspaceDiff.seed`, `.in_seed`, `.elsewhere`, `.paths`.** A
+    diff ending at a narrowed session carries the paths that session
+    was seeded with and groups by them, so the collateral a delegate
+    touched outside what it was sent to do cannot go unnoticed. The
+    merge takes both. Grouping is by the SEED, not the delegate's
+    current view: a file it created is in its view because it made it,
+    and that is exactly a change the caller has not seen.
+- **ws-git grows the verbs that were refusals.** `branch` (no args:
+  the sessions on this store, yours marked `*`; with a name: a fork,
+  taking `--at <ref>`, `--fresh` and `--paths <paths>`), `merge
+  <session>` (git's `Auto-merging` / `CONFLICT (content)` lines, exit 1
+  when markers land), `checkout <ref> -- <paths>`, `log <session>` and
+  `diff <session>` (grouped `# N path(s) in <session>'s seed` /
+  `# N path(s) elsewhere` when that session was narrowed). `stash` and
+  `rebase` stay refusals and now name terminal verbs: a fork IS a
+  stash (`ws-git branch <name>`), and branching from the commit you
+  want is what rebase was for. Same implementation as the host verbs,
+  and the dud ferry needed no new wire verbs — `tests/test_wsgit_conformance.py`
+  asserts the new verbs match output shape on both rungs.
+- `nontainer/planes.py` names the reserved key prefixes once
+  (`CACHE_PREFIX`, `CONVERSATION_PREFIX`), so the merge policy can
+  state the plane table without importing an optional extra.
+- `examples/tour.py`: the whole surface end to end, no LLM — terminal,
+  `run_python`, stage and commit through `ws.index`, a fork with a
+  narrowed view, an edit, a merge, a take, an attachment, a publish, a
+  ref resolved to a frozen workspace. `tests/test_tour_example.py` runs
+  it so it cannot rot.
 - `ws.files.read`, `.exists`, `.list(path, recursive=)`; `ws.files.fs`
   stays public as the escape hatch.
 - `Runtime` is constructible over an existing (frozen) workspace with

@@ -51,6 +51,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .cache import Cache
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
+from .planes import CONVERSATION_PREFIX
 from .protocol import (
     Capabilities,
     CommitInfo,
@@ -59,6 +60,15 @@ from .protocol import (
     WorkspaceDiff,
     WorkspaceProvider,
     WorkspaceStatus,
+)
+from .views import (
+    VIEW_KEY,
+    AttachFS,
+    ViewFS,
+    encode_view,
+    normalize_view,
+    parse_seed,
+    parse_view,
 )
 
 if TYPE_CHECKING:
@@ -962,6 +972,50 @@ class WorkspaceFiles:
 
     # -- the tree as a whole -------------------------------------------
 
+    def attach(self, ref: "str | Ref", at: str, *, readonly: bool = True) -> str:
+        """Mount another session's tree, frozen at a commit, inside
+        this one at ``at``; returns the ref it was attached from.
+
+        For reading someone else's work in place — a delegate's branch
+        while deciding whether to merge it, an expert's files while
+        answering a question — without copying it in. Explicit and
+        never automatic: nothing appears in a session's tree that the
+        host did not put there.
+
+        Like a :class:`Mount`, and for the same reasons: NOT versioned,
+        not captured by commits, not carried by a fork, and gone when
+        the session closes. Unlike a mount it is a state in the store
+        rather than a directory on the host, and it is frozen, so
+        ``readonly=False`` has nothing to offer and is refused.
+
+        ``ref`` is ``session@commit`` (see :class:`~nontainer.Ref`) or
+        a session name, which means that session's current commit.
+        What lands at ``at`` is the source's workspace ROOT, so a file
+        the delegate calls ``auth.py`` reads as ``<at>/auth.py``.
+
+        ``at`` is workspace-absolute or relative to the root. INSIDE
+        the root it reaches every rung, a guest included; outside it,
+        an executor that runs somewhere else never sees it — the same
+        contract a :class:`Mount` outside the root has, and for the
+        same reason (a guest is given the root's subtree and nothing
+        else).
+        """
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            return ws._attach(ref, at, readonly=readonly)
+
+    def detach(self, at: str) -> None:
+        """Remove an attachment and release the state behind it."""
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            ws._detach(at)
+
+    def attachments(self) -> dict[str, str]:
+        """What is attached, as ``{mount point: ref}``."""
+        return {at: str(snap.ref) for at, snap in self._ws._attached.items()}
+
     def export(self) -> AbstractContextManager[Path]:
         """Expose the workspace at a real path for the duration of the
         block (FUSE providers only; others raise
@@ -1250,7 +1304,25 @@ class Workspace:
         # replays, so parent and fork can't resolve to different
         # directories (see _Settings).
         normalized_mounts = self._normalize_mounts(mounts)
-        self._fs = self._build_fs(provider.fs, normalized_mounts)
+        # The view this session was seeded with, if it was narrowed: a
+        # sparse checkout recorded on the branch (see
+        # ``nontainer/views.py``), so a delegate reopened later is
+        # narrowed exactly as it was. It wraps the PROVIDER's
+        # filesystem — which always holds the whole tree, which is what
+        # keeps the merge back an ordinary three-way — and sits under
+        # the mounts, which are unversioned live views and were never
+        # the delegate's to be given.
+        self._view = parse_view(provider.kv.get(VIEW_KEY))
+        viewed = provider.fs
+        self._view_fs: ViewFS | None = None
+        if self._view is not None:
+            self._view_fs = ViewFS(provider.fs, self._view, extend=self._record_view)
+            viewed = self._view_fs
+        # The attachment layer is always in the chain: the executor is
+        # handed ONE filesystem object when it opens, so a tree
+        # attached later has to reach it through that same object.
+        self._attached: dict[str, Workspace] = {}
+        self._fs = AttachFS(self._build_fs(viewed, normalized_mounts))
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
@@ -1804,8 +1876,19 @@ class Workspace:
             self._check_writable("commit")
             return self._provider.commit(info)
 
-    def checkout(self, commit: str) -> str:
-        """Make this session what it was at one of its own commits;
+    def checkout(
+        self, ref: "str | Ref", paths: "Iterable[str] | str | None" = None
+    ) -> str:
+        """Two forms, as ``git checkout <ref> [-- <paths>]`` has two.
+
+        With ``paths``, TAKE: copy those paths from any ref into the
+        working tree and leave everything else alone — git's ``restore
+        --source=<ref> -- <paths>``. See :meth:`_take`.
+
+        Without them, RESTORE the whole session. The rest of this
+        docstring is that form.
+
+        Make this session what it was at one of its own commits;
         returns the id of the commit that lands.
 
         The whole session, not the files alone: files, cache, cwd, the
@@ -1832,6 +1915,9 @@ class Workspace:
         """
         with self._lock:
             self._check_writable("checkout")
+            if paths is not None:
+                return self._take(ref, paths)
+            commit = str(ref)
             try:
                 landed = self._provider.checkout(commit)
             except CommitNotFoundError as e:
@@ -1839,13 +1925,89 @@ class Workspace:
                     f"{commit!r} is not a commit on session "
                     f"{self.session!r} ({e}). checkout moves within one "
                     "session's history; sessions are branches, so reaching "
-                    'another one is ws.fork("name") or store.open("name").'
+                    'another one is ws.fork("name") or store.open("name"). '
+                    "To bring only some of its files here, name them: "
+                    "ws.checkout(ref, paths=[...])."
                 ) from e
             # provider state moved under the executor: flag its view,
             # and the next execution refreshes it (no-op for
             # LocalExecutor, which holds no copy)
             self._mark_executor_stale()
             return landed
+
+    def _take(self, ref: "str | Ref", paths: "Iterable[str] | str") -> str:
+        """``ws.checkout(ref, paths=[...])``: copy paths from any ref
+        into the working tree; returns the commit that lands (or the
+        current head when nothing was written or autocommit is off).
+
+        Ordinary writes, so the file tools, the view rule and the
+        agent's own status all see them as work in the tree — and only
+        file keys move, so the merge-policy question never arises. The
+        provenance is a soft reference in the commit's info
+        (``taken_from``), not a parent: taking three files from a
+        delegate does not make its history yours.
+
+        ``ref`` may be a ``session@commit``, a session name (that
+        session's last agent commit, as a merge would read it), or a
+        commit of this session.
+        """
+        wanted = normalize_view(paths, self._root)
+        source, files = self._take_source(ref)
+        taken: dict[str, Any] = {}
+        for path in wanted:
+            under = {
+                p: v for p, v in files.items() if p == path or p.startswith(path + "/")
+            }
+            if not under:
+                raise CommitNotFoundError(
+                    f"nothing at {path!r} in {source} — a take copies what is "
+                    "there, and that ref holds no such file or directory."
+                )
+            taken.update(under)
+        for path, value in sorted(taken.items()):
+            data = value if isinstance(value, bytes) else bytes(value)
+            parent = posixpath.dirname(path)
+            if parent not in ("", "/"):
+                self._fs.makedirs(parent, exist_ok=True)
+            self._fs.write(path, data)
+        self._mark_executor_stale()
+        if not (self._autocommit and self._provider.caps.versioned):
+            return self.head or ""
+        if self._provider.caps.staging and not self._provider.dirty:
+            return self.head or ""
+        return self._provider.commit(
+            {
+                "tool": "checkout",
+                "taken_from": source,
+                "paths": sorted(taken),
+            }
+        )
+
+    def _take_source(self, ref: "str | Ref") -> "tuple[str, Mapping[str, Any]]":
+        """``(ref as recorded, that state's files)`` for a take.
+
+        A ``session@commit`` names its own state. A bare name is a
+        session, and what a session means is its last AGENT commit —
+        the same reading :meth:`merge` takes, so "take one file from
+        the delegate" and "merge the delegate" cannot disagree about
+        what the delegate said. Anything else is a commit of this
+        session.
+        """
+        from .agentgit import BLOB_KEY, parse_blob
+        from .store import Ref
+
+        text = str(ref)
+        if isinstance(ref, Ref) or "@" in text:
+            parsed = Ref.parse(text)
+            return str(Ref(parsed.session, parsed.commit)), self._provider.files_at(
+                parsed.commit
+            )
+        try:
+            head = self._provider.branch_head(text)
+        except (ValueError, NotSupportedError, AttributeError):
+            return f"{self.session}@{text}", self._provider.files_at(text)
+        virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
+        return f"{text}@{virtual}", self._provider.files_at(virtual)
 
     def rollback(self, steps: int = 1) -> str:
         """Check out the Nth-previous commit; returns the id of the
@@ -1899,7 +2061,14 @@ class Workspace:
     def log(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         return self._provider.history(limit=limit)
 
-    def fork(self, name: str, *, at: str | None = None) -> "Workspace":
+    def fork(
+        self,
+        name: str,
+        *,
+        at: str | None = None,
+        inherit: str = "full",
+        paths: "Iterable[str] | str | None" = None,
+    ) -> "Workspace":
         """Independent session seeded from current state — or, with
         ``at``, from an earlier commit of this session, leaving this
         session where it is. Inherits this workspace's construction
@@ -1907,12 +2076,56 @@ class Workspace:
         executor factory — plus its terminal commands. Cost varies by
         backend (see ``caps.cheap_fork`` and the README tradeoffs).
 
+        **A fork point is always a commit.** Uncommitted writes here
+        are landed first, under ``{"tool": "fork", "child": name}``,
+        and THAT commit is the child's base and the merge base for the
+        way back. Forking a copy of the staging buffer would give the
+        child a state that never existed in history and a merge base
+        that predates this session's own uncommitted edits.
+
         ``at`` is what "branch from where I published" wants: the
         child starts at that commit with everything the commit holds,
-        and nothing here is rewound to get it there."""
-        # Mutating despite appearances: providers may commit pending
-        # staged changes so the fork sees current state (kvgit does).
+        and nothing here is rewound to get it there. Nothing is
+        committed for it either — the buffer belongs to this session's
+        present, not to the past the fork branches from.
+
+        ``inherit`` decides whether the stored conversation comes
+        along, and nothing else: ``"full"`` (default) keeps it — the
+        continue-where-I-am fork — and ``"fresh"`` drops it, for a
+        delegate that starts a chat of its own over these files. It
+        never touches a file. A brief, a summary, a distilled context
+        is content the caller supplies when it seeds the child's first
+        turn; nothing here can write one, since the conversation is
+        stored and not interpreted.
+
+        ``paths`` narrows the child's VIEW, not its tree: its branch
+        holds everything this one had, and its filesystem lists and
+        reads only what is named (directories or files, absolute or
+        relative to the root). So the merge back stays an ordinary
+        three-way with no rule to special-case, and this session sees
+        the child's whole branch regardless — ``diff``,
+        ``checkout(ref, paths=)``, ``files.attach``. The child may
+        CREATE new paths anywhere; changing or deleting one it cannot
+        see is refused (see ``nontainer/views.py``). ``None`` is the
+        whole tree.
+        """
+        if inherit not in ("full", "fresh"):
+            raise ValueError(
+                f"inherit must be 'full' or 'fresh': {inherit!r}. A summary "
+                "or a brief is content the caller supplies with the child's "
+                "task, not a third inheritance mode."
+            )
+        seed = None if paths is None else normalize_view(paths, self._root)
+        # Mutating despite appearances: a fork point is a commit, and
+        # the child is seeded before its workspace is built.
         with self._lock:
+            self._check_open()
+            if at is None and self._provider.caps.versioned and self._provider.dirty:
+                self._check_writable("fork")
+                self._provider.commit(
+                    {"tool": "fork", "child": name, "inherit": inherit}
+                    | ({"paths": list(seed)} if seed else {})
+                )
             # Providers written to the older fork(name) shape — a custom
             # one, say — must keep working for the call that has no
             # ``at``; only a fork from the past asks them for more.
@@ -1921,6 +2134,7 @@ class Workspace:
                 if at is None
                 else self._provider.fork(name, at=at)
             )
+            self._seed_fork(forked, inherit=inherit, seed=seed)
         # Commands and autocommit are replayed from the LIVE
         # attributes rather than from _settings, because both can change
         # after construction (see _Settings). register_command mutates
@@ -1938,6 +2152,114 @@ class Workspace:
         new_ws.runtime.env.update(self._runtime.env)
         self._adopt_commands(new_ws)
         return new_ws
+
+    def _seed_fork(
+        self,
+        forked: WorkspaceProvider,
+        *,
+        inherit: str,
+        seed: "tuple[str, ...] | None",
+    ) -> None:
+        """Write the child's own state onto its fresh branch, before a
+        workspace is built over it.
+
+        Two keys and nothing else: the view record (written when the
+        child is narrowed, REMOVED when it is not — a fork of a
+        narrowed session that is given the whole tree must not inherit
+        its parent's blinkers), and the conversation, dropped whole for
+        ``inherit="fresh"``. Landed as one commit of the child's own,
+        so its head is consistent from the start and a reopen finds it.
+        """
+        kv = forked.kv
+        changed = False
+        if seed is not None:
+            kv[VIEW_KEY] = encode_view(seed)
+            changed = True
+        elif parse_view(kv.get(VIEW_KEY)) is not None:
+            del kv[VIEW_KEY]
+            changed = True
+        if inherit == "fresh":
+            for key in [
+                k
+                for k in list(kv.keys())
+                if isinstance(k, str) and k.startswith(CONVERSATION_PREFIX)
+            ]:
+                del kv[key]
+                changed = True
+        if changed and forked.caps.versioned:
+            forked.commit(
+                {"tool": "fork", "parent": self.session, "inherit": inherit}
+                | ({"paths": list(seed)} if seed else {})
+            )
+
+    def _record_view(self, paths: tuple[str, ...]) -> None:
+        """Keep the branch's view record in step with what this session
+        can see.
+
+        A path this session CREATED joins its view: a delegate that
+        could not read back its own note would be a worse deal than
+        git's sparse checkout rather than a better one. The record is
+        an ordinary key, so it rides the next commit and is there on
+        reopen.
+        """
+        self._view = paths
+        self._provider.kv[VIEW_KEY] = encode_view(
+            paths, parse_seed(self._provider.kv.get(VIEW_KEY))
+        )
+
+    def _attach(self, ref: "str | Ref", at: str, *, readonly: bool = True) -> str:
+        """``ws.files.attach``, under the lock. See it for the contract."""
+        from monkeyfs import ReadOnlyFS
+
+        from .views import SubtreeFS
+
+        if not readonly:
+            raise NotSupportedError(
+                "an attachment is a frozen state and accepts no writes: "
+                "attach(..., readonly=True), and take what you want to "
+                "change with ws.checkout(ref, paths=[...])."
+            )
+        point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
+        if point == "/" or point in self._attached:
+            raise ValueError(
+                f"cannot attach at {at!r}: "
+                + ("the root is the session's own" if point == "/" else "already taken")
+            )
+        snapshot = self._resolve_snapshot(ref)
+        try:
+            self._fs.attach(point, ReadOnlyFS(SubtreeFS(snapshot._fs, snapshot.root)))
+        except BaseException:
+            snapshot.close()
+            raise
+        self._attached[point] = snapshot
+        self._mark_executor_stale()
+        return str(snapshot.ref)
+
+    def _detach(self, at: str) -> None:
+        point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
+        snapshot = self._attached.pop(point, None)
+        if snapshot is None:
+            raise ValueError(f"nothing attached at {at!r}")
+        self._fs.detach(point)
+        snapshot.close()
+        self._mark_executor_stale()
+
+    def _resolve_snapshot(self, ref: "str | Ref") -> "Workspace":
+        """A frozen workspace at what ``ref`` names — a
+        ``session@commit``, or a session name meaning its head."""
+        from .store import Ref
+
+        if self._store is None:
+            raise WorkspaceError(
+                "this workspace was built straight from a provider, so no "
+                "store can resolve a ref for it; open it through "
+                "Store.open(...) to attach another session's tree."
+            )
+        text = str(ref)
+        if isinstance(ref, Ref) or "@" in text:
+            return self._store.resolve(Ref.parse(text))
+        head = self._provider.branch_head(text)
+        return self._store.resolve(Ref(session=text, commit=head))
 
     def _adopt_commands(self, new_ws: Workspace) -> None:
         """Re-bind framework-owned commands onto a fork/snapshot.
@@ -2245,6 +2567,14 @@ class Workspace:
                 # raise however badly a third-party executor behaves —
                 # so the provider (a held kvgit store) always closes.
                 self._runtime.close()
+                # The attached states are workspaces of their own, held
+                # only by this one: nothing else will close them.
+                for snapshot in self._attached.values():
+                    try:
+                        snapshot.close()
+                    except Exception:  # noqa: BLE001 - closing the session wins
+                        pass
+                self._attached.clear()
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
@@ -2430,9 +2760,37 @@ class Workspace:
                 f"{_frozen_message(self._frozen_at)}; this call's writes were "
                 "made in the executor's own tree and have been discarded"
             )
+        refused = self._view_refusal(d)
+        if refused is not None:
+            # Decided before anything is applied: a guest harvests a
+            # whole call at once, and half-applying it would leave work
+            # behind from a call that is about to read as refused.
+            self._mark_executor_stale()
+            return refused
         from .executor import _apply_diff
 
         _apply_diff(self._fs, d.writes, d.deletes)
+        return None
+
+    def _view_refusal(self, d: Any) -> str | None:
+        """The view's write rule against an executor's harvest.
+
+        The local rung enforces it where the write happens, in the
+        filesystem the sandbox holds. A guest rung writes into a tree
+        of its own and reports afterwards, so the same rule is applied
+        here to the same effect — including the case a guest can even
+        reach it in, which is recreating by name a path its narrowed
+        tree was never given.
+        """
+        if self._view_fs is None:
+            return None
+        for rel in (*d.writes, *d.deletes):
+            reason = self._view_fs.refuse_reason("/" + rel.lstrip("/"))
+            if reason is not None:
+                return (
+                    f"{reason} This call's writes were made in the "
+                    "executor's own tree and have been discarded"
+                )
         return None
 
     def _absorb_or_unwind(self, was_dirty: bool) -> str | None:

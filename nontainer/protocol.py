@@ -187,6 +187,40 @@ class WorkspaceDiff:
     removed: frozenset[str]
     modified: frozenset[str]
 
+    seed: tuple[str, ...] = ()
+    """The paths the session this diff ENDS at was SEEDED with, when it
+    was narrowed (see ``Workspace.fork(paths=)``); empty when it sees
+    the whole tree. What :attr:`in_seed` and :attr:`elsewhere` group
+    by, so a caller reading a delegate's diff can tell the work it sent
+    the delegate to do from everything else it touched — the merge
+    takes both, and the grouping is what stops the second from going
+    unnoticed. The seed, not the delegate's current view: a file the
+    delegate created is in its view because it made it, and that is
+    precisely a change the caller has not seen before."""
+
+    @property
+    def paths(self) -> frozenset[str]:
+        """Every path this diff names, however it changed."""
+        return self.added | self.removed | self.modified
+
+    @property
+    def in_seed(self) -> frozenset[str]:
+        """Changed paths under the seed. Everything, with no seed."""
+        if not self.seed:
+            return self.paths
+        return frozenset(p for p in self.paths if self._seeded(p))
+
+    @property
+    def elsewhere(self) -> frozenset[str]:
+        """Changed paths outside it — collateral, and usually the point
+        of looking. Empty with no seed."""
+        if not self.seed:
+            return frozenset()
+        return frozenset(p for p in self.paths if not self._seeded(p))
+
+    def _seeded(self, path: str) -> bool:
+        return any(path == e or path.startswith(e + "/") for e in self.seed)
+
 
 @dataclass(frozen=True)
 class MergeOutcome:

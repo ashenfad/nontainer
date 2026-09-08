@@ -16,28 +16,44 @@ import re
 
 import pytest
 
-from nontainer import Workspace
-from nontainer.providers import KvgitProvider
+from nontainer import Store
 from nontainer.wsgit import register_wsgit
 
 SHORT = r"[0-9a-f]{7}"
 
 
 @pytest.fixture(params=["local", "dud"])
-def ws(request, tmp_path):
-    """One fresh ws-git workspace per rung per test."""
+def store(request, tmp_path):
+    """One store per rung per test, with the rung bound as a FACTORY so
+    a session forked by a verb runs where its parent does."""
     param = request.param
+    factory = None
     if param == "dud":
         pytest.importorskip("dud")
         from nontainer.executor_dud import DudExecutor
 
-        executor = DudExecutor(backend="subprocess")
-    else:
-        executor = None
+        def factory():  # noqa: ANN202 - a fixture-local builder
+            return DudExecutor(backend="subprocess")
+
+    s = Store(tmp_path / "store")
+    s.executor_factory = factory  # read by the ws fixture below
+    s.rung = param
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+@pytest.fixture
+def ws(request, store):
+    """One fresh ws-git workspace per rung per test."""
     name = re.sub(r"[^A-Za-z0-9_.-]", "-", request.node.name)
-    provider = KvgitProvider.open(None, session=f"wsgit-conf-{param}-{name}")
-    kw = {"executor": executor} if executor is not None else {}
-    w = Workspace(provider, **kw)
+    kw = (
+        {"executor_factory": store.executor_factory}
+        if store.executor_factory is not None
+        else {}
+    )
+    w = store.open(f"wsgit-conf-{store.rung}-{name}", **kw)
     register_wsgit(w)
     try:
         yield w
@@ -158,3 +174,99 @@ def test_checkout_restores_the_tree_across_the_rungs(ws):
     assert ws.terminal("ls b.txt").exit_code != 0
     assert ws.terminal("ws-git status").stdout == ""
     assert [e.info["message"] for e in ws.index.log()] == ["first"]
+
+
+# -- the sessions verbs, on both rungs -----------------------------------------
+
+
+def test_branch_merge_and_log_across_the_rungs(ws, store):
+    """Fork, work in the child on the same rung, merge back: the whole
+    delegation round trip reads identically wherever code runs."""
+    ws.terminal("cat > a.txt <<'EOF'\nbase\nEOF\nws-git commit -m base")
+
+    assert ws.terminal(f"ws-git branch {ws.session}-w").stdout == ""
+    listed = ws.terminal("ws-git branch").stdout.splitlines()
+    assert f"* {ws.session}" in listed
+    assert f"  {ws.session}-w" in listed
+
+    worker = store.open(
+        f"{ws.session}-w",
+        **(
+            {"executor_factory": store.executor_factory}
+            if store.executor_factory is not None
+            else {}
+        ),
+    )
+    register_wsgit(worker)
+    try:
+        r = worker.terminal("cat > b.txt <<'EOF'\nworker\nEOF\nws-git commit -m work")
+        assert r.exit_code == 0, r.stdout
+    finally:
+        worker.close()
+
+    assert [
+        line.split(" ", 1)[1]
+        for line in ws.terminal(f"ws-git log {ws.session}-w").stdout.splitlines()
+    ] == [
+        "work",
+        "base",
+    ]
+
+    r = ws.terminal(f"ws-git merge {ws.session}-w")
+    assert r.exit_code == 0, (r.stdout, r.stderr)
+    assert "Auto-merging b.txt" in r.stdout
+    assert re.search(rf"\] merge {re.escape(ws.session)}-w \(1 file\)", r.stdout)
+    assert ws.terminal("cat b.txt").stdout == "worker\n"
+    assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_take_paths_from_a_ref_across_the_rungs(ws):
+    """The take rewrites worktree files, so it has to reach the guest
+    the way the whole-tree restore does."""
+    ws.terminal("cat > a.txt <<'EOF'\none\nEOF\nws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal("cat > a.txt <<'EOF'\ntwo\nEOF\nws-git commit -m second")
+
+    r = ws.terminal(f"ws-git checkout {first} -- a.txt")
+    assert r.exit_code == 0, r.stdout
+    assert r.stdout.startswith("Updated 1 path from ")
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
+
+
+def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
+    """The guest is given only the seeded subtree, and the write rule
+    holds there too — a path the view hides cannot be recreated by
+    name, however the writing was done."""
+    ws.terminal(
+        "cat > seen.txt <<'EOF'\nseen\nEOF\ncat > hidden.txt <<'EOF'\nhidden\nEOF\n"
+        "ws-git commit -m base"
+    )
+    ws.terminal(f"ws-git branch {ws.session}-n --paths seen.txt")
+
+    child = store.open(
+        f"{ws.session}-n",
+        **(
+            {"executor_factory": store.executor_factory}
+            if store.executor_factory is not None
+            else {}
+        ),
+    )
+    register_wsgit(child)
+    try:
+        assert child.terminal("ls").stdout == "seen.txt\n"
+        assert child.terminal("cat hidden.txt").exit_code != 0
+
+        # a new path anywhere is ordinary work
+        r = child.terminal("cat > note.md <<'EOF'\nnote\nEOF\nws-git status")
+        assert r.exit_code == 0, r.stdout
+        assert r.stdout == " M note.md\n"
+
+        # the hidden one is refused, and the call does not land
+        before = child.terminal("ws-git status").stdout
+        r = child.terminal("cat > hidden.txt <<'EOF'\nsneaky\nEOF")
+        assert r.exit_code != 0
+        assert child.terminal("ws-git status").stdout == before
+        assert ws._provider.files_at(child.head)["/workspace/hidden.txt"] == b"hidden\n"
+    finally:
+        child.close()
