@@ -15,7 +15,7 @@ Public surface:
     Executor            -- the execution protocol (bring your own)
     SessionRunner, HostObjectFactory -- the loop seam (declared; stage 3)
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
-    MergeOutcome, StageResult, WorkspaceStatus
+    MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CommitNotFoundError
 
@@ -42,7 +42,6 @@ from .protocol import (
     HostObjectFactory,
     MergeOutcome,
     SessionRunner,
-    StageResult,
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
@@ -85,7 +84,6 @@ __all__ = [
     "Capabilities",
     "CommitInfo",
     "MergeOutcome",
-    "StageResult",
     "TagInfo",
     "WorkspaceDiff",
     "WorkspaceStatus",

@@ -55,7 +55,6 @@ from .protocol import (
     Capabilities,
     CommitInfo,
     MergeOutcome,
-    StageResult,
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
@@ -63,6 +62,7 @@ from .protocol import (
 )
 
 if TYPE_CHECKING:
+    from .agentgit import AgentGit
     from .editing import EditOutcome
     from .protocol import Executor
     from .runtime import Runtime
@@ -739,8 +739,8 @@ class WorkspaceFiles:
     Writes here are the same operation the file tools perform: the
     workspace's single-writer lock is held for the call, and the commit
     flow runs when it lands — one commit per call under autocommit,
-    part of the composition while an index is staged. Reads take no
-    lock and never commit.
+    whatever the agent has staged. Reads take no lock and never
+    commit.
 
     One instance per workspace, reached as ``ws.files``; it holds the
     workspace and no state of its own.
@@ -959,15 +959,19 @@ class WorkspaceFiles:
 
 
 class WorkspaceIndex:
-    """``ws.index``: the staged set — one commit composed across several
-    calls (requires ``caps.index``; other providers raise
-    ``NotSupportedError`` naming the verb).
+    """``ws.index``: the agent's own git over this session.
 
-    The first :meth:`stage` suspends autocommit, so the calls that
-    follow accumulate instead of committing one by one; :meth:`commit`
-    lands the staged set and resumes, :meth:`discard` abandons it. The
-    terminal's ``ws-git`` verbs drive this same index, so an agent and
-    its host see one composition, not two.
+    An index the agent fills across several edits, commits it names,
+    and a log of just those commits (requires ``caps.index``; other
+    providers raise ``NotSupportedError`` naming the verb). It is a
+    fiction over the store's history — see ``nontainer/agentgit.py``
+    for the model — and the terminal's ``ws-git`` verbs are the same
+    implementation, so an agent and its host see one index and one
+    graph, not two.
+
+    The framework's own commits (``ws.commit()``, a turn hook, a
+    session db, a skill install) never disturb it: everything here is
+    measured against the agent's last commit, not the store's head.
     """
 
     __slots__ = ("_ws",)
@@ -978,45 +982,79 @@ class WorkspaceIndex:
     def __repr__(self) -> str:
         return f"<index of session {self._ws.session!r}>"
 
-    def stage(self, paths: Iterable[str]) -> StageResult:
-        """Stage workspace file paths; the first call suspends autocommit."""
+    @property
+    def _git(self) -> "AgentGit":
+        from .agentgit import AgentGit
+
+        return AgentGit(self._ws)
+
+    @property
+    def head(self) -> str | None:
+        """The commit the agent's last :meth:`commit` made, or ``None``
+        before the first one."""
+        return self._git.head
+
+    def stage(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Add workspace file paths to the index; returns what was new.
+
+        Bookkeeping only: nothing commits, and nothing changes about
+        what autocommit does. Staging is optional — :meth:`commit`
+        with an empty index takes everything modified, the way
+        ``git commit -a`` does.
+        """
         ws = self._ws
         with ws._lock:
-            ws._check_writable("ws-git stage")
-            return ws._provider.stage(paths)
+            return self._git.stage(paths)
 
     def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Remove paths from the index; emptying it resumes autocommit."""
+        """Remove paths from the index; returns what was removed."""
         ws = self._ws
         with ws._lock:
-            ws._check_writable("ws-git unstage")
-            return ws._provider.unstage(paths)
+            return self._git.unstage(paths)
 
-    def commit(self, info: dict[str, Any] | None = None) -> str:
-        """Commit the staged set; unstaged writes stay dirty. Returns
-        the commit id.
+    def commit(self, message: str | None = None, *, info: dict | None = None) -> str:
+        """Record an agent commit; returns its id.
 
-        The selective commit, and the end of the composition: the index
-        clears and autocommit resumes. ``ws.commit()`` is the other
-        one — everything, whether or not a composition is open.
+        Takes the staged paths that differ from the agent's last
+        commit, or everything modified when nothing is staged. The
+        commit's tree is exactly that: work in progress the agent left
+        out stays in the working tree and out of the commit, rather
+        than being absorbed into its baseline.
         """
         ws = self._ws
         with ws._lock:
             ws._check_open()
-            ws._check_writable("ws-git commit")
-            return ws._provider.commit_index(info)
+            return self._git.commit(message, info)[0]
 
     def discard(self) -> None:
-        """Abandon the composition; working-tree writes stay dirty."""
+        """Abandon the composition; the working tree keeps its writes."""
         ws = self._ws
         with ws._lock:
-            ws._check_writable("ws-git discard")
-            return ws._provider.discard_staged()
+            self._git.discard()
 
     def status(self) -> WorkspaceStatus:
         """Staged vs unstaged paths plus live merge context. Pure read —
         ungated like ``diff``/``log``: reads are the point of snapshots."""
-        return self._ws._provider.status()
+        return self._git.status()
+
+    def log(self, limit: int | None = None) -> list[CommitInfo]:
+        """The agent's own commits, newest first — the framework's are
+        not in it."""
+        return self._git.log(limit)
+
+    def checkout(self, commit: str) -> str:
+        """Restore the working tree to one of the agent's commits and
+        move its head there; returns the commit id.
+
+        The fiction rewinds; the store appends. The restore lands as a
+        new commit, so nothing already committed leaves the session's
+        history — ``ws.checkout`` is the verb that moves the store's
+        own head.
+        """
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            return self._git.checkout(commit)
 
 
 class WorkspaceTags:
@@ -1380,7 +1418,7 @@ class Workspace:
 
     @property
     def index(self) -> WorkspaceIndex:
-        """The staged set — see :class:`WorkspaceIndex`."""
+        """The agent's own git — see :class:`WorkspaceIndex`."""
         return self._index
 
     @property
@@ -1690,14 +1728,17 @@ class Workspace:
         """Commit everything uncommitted — files, cache and cwd — as one
         atomic commit; returns its id.
 
-        Everything, always: an open composition does not change what
-        this verb takes — the staged set rides the same commit as the
-        rest, and the composition ends, having nothing left to compose.
-        ``ws.index.commit()`` is the selective one. The split is
-        deliberate: a verb whose scope depended on whether the agent
-        happened to have ws-git staging open could not be used for
-        durability by the code around it, which is what the framework
-        needs it for (see :meth:`_commit_durable`).
+        Everything, always — this is the framework's durability verb,
+        and the code around a workspace (a turn hook, a session db, a
+        skill installer) can only rely on it if its scope never depends
+        on what the agent happens to have staged. It is also invisible
+        to the agent's own git: ``ws.index`` measures against the
+        agent's last commit, so a commit made here leaves the staged
+        set staged, the work in progress modified, and ``ws-git status``
+        reading exactly as it did before.
+
+        ``ws.index.commit()`` is the agent's verb: the staged set, and
+        a commit in the agent's own graph.
 
         ``info`` is caller metadata recorded on the commit and must be
         JSON-serializable.
@@ -1705,59 +1746,7 @@ class Workspace:
         with self._lock:
             self._check_open()
             self._check_writable("commit")
-            if self._staging():
-                # Clear the index BEFORE committing, so the commit
-                # carries a composition that is over rather than one
-                # whose every staged path has already landed —
-                # otherwise autocommit stays suspended for work that is
-                # committed and `ws-git status` shows a live index over
-                # an unchanged tree.
-                self._provider.discard_staged()
             return self._provider.commit(info)
-
-    def _staging(self) -> bool:
-        """Whether a composition is in flight — the index holds paths
-        and has suspended autocommit. False on providers without an
-        index, and on providers predating the query."""
-        suspended = getattr(self._provider, "stage_suspended", None)
-        return bool(callable(suspended) and suspended())
-
-    def _commit_durable(
-        self, info: dict[str, Any] | None = None, *, keys: Iterable[str] = ()
-    ) -> str | None:
-        """FRAMEWORK SURFACE: make the framework's own writes durable
-        without taking the agent's composition with them.
-
-        The conversation a session db just stored, a skill that was
-        just installed: state the framework wrote and must not lose,
-        committed at a moment the framework chose rather than the agent
-        did. With no composition open that is an ordinary
-        commit-everything. With one open it is ``keys`` and nothing
-        else — staging suspends autocommit until the composition lands
-        or is abandoned, and the framework is never what lands it. The
-        agent's staged set stays staged, its working-tree writes stay
-        dirty, and autocommit stays suspended.
-
-        ``keys`` names that state: provider keys (``__agno__/session``)
-        or absolute workspace paths, resolved by the provider. Naming
-        none of it mid-composition leaves nothing this can safely
-        commit, so it commits nothing. Returns the commit id, or
-        ``None`` when nothing was committed — clean, unversioned,
-        frozen, or that last case — so a caller can report what it did
-        without repeating those guards.
-        """
-        with self._lock:
-            self._check_open()
-            if self._frozen or not self._provider.caps.versioned:
-                return None
-            if not self._provider.dirty:
-                return None
-            if not self._staging():
-                return self._provider.commit(info)
-            named = list(keys)
-            if not named:
-                return None
-            return self._provider.commit_keys(info, keys=named)
 
     def checkout(self, commit: str) -> str:
         """Move this session to one of its own commits; returns its id.
@@ -1924,7 +1913,19 @@ class Workspace:
                     "clean tree to land against — ws.commit() them, or "
                     "ws.discard() them, then merge"
                 )
-            outcome = self._provider.merge(source)
+            # The merge commit joins the agent's graph, so its own
+            # log walks through it instead of stopping at it.
+            parents = []
+            if self._provider.caps.index:
+                from .agentgit import AgentGit
+
+                head = AgentGit(self).head
+                parents = [head] if head is not None else []
+            outcome = self._provider.merge(source, info={"virtual_parents": parents})
+            if outcome.merged and self._provider.caps.index:
+                from .agentgit import AgentGit
+
+                AgentGit(self).record_merge(source, outcome.commit)
             # provider state moved under the executor: flag its view.
             self._mark_executor_stale()
             return outcome
@@ -2251,15 +2252,7 @@ class Workspace:
         inside an operation that will commit for itself)."""
         if self._defer_commits:
             return None
-        # getattr: stage_suspended is new in the protocol — providers
-        # written against the old surface (in or out of this repo)
-        # never suspend. Same tolerance as the `frozen` read.
-        suspended = getattr(self._provider, "stage_suspended", None)
-        if (
-            self._autocommit
-            and not (callable(suspended) and suspended())
-            and self._provider.dirty
-        ):
+        if self._autocommit and self._provider.dirty:
             return self._provider.commit(info={"tool": tool})
         return None
 

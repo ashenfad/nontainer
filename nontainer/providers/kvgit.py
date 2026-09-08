@@ -2,9 +2,9 @@
 
 One shared kvgit store; each session is a branch. Files (via monkeyfs
 ``VirtualFS``), the agent cache, and framework keys (the working
-directory, the ws-git index) all live in one flat ``Staged`` mapping — so one ``commit()`` commits
-the whole world atomically, and ``restore()`` rewinds all of it
-(including where the agent's cwd was).
+directory, the ws-git blob) all live in one flat ``Staged`` mapping —
+so one ``commit()`` commits the whole world atomically, and
+``restore()`` rewinds all of it (including where the agent's cwd was).
 
 Key coexistence in the flat mapping: ``VirtualFS`` encodes file paths
 under its own key prefix (plus ``__vfs_metadata__``), while cache keys
@@ -13,9 +13,9 @@ live under ``__cache__/`` — no collisions by construction.
 Capabilities: ``staging`` (writes are invisible until commit;
 ``discard()`` drops them), ``cheap_fork`` (branches share storage via
 kvgit's content-addressed HAMT), ``merge`` (CAS + key-level three-way
-with conflict markers), ``index`` (a staged set with a selective
-``commit_index``; staging suspends autocommit until the composition
-lands or is abandoned).
+with conflict markers), ``index`` (keyed commits — ``commit_keys``
+takes a subset of the tree, which is what lets the agent-facing git
+fiction hold an index of its own; see ``nontainer/agentgit.py``).
 
 ``info`` dicts attached to commits must be JSON-serializable
 (kvgit hashes them into the commit id).
@@ -38,19 +38,18 @@ cannot collide however a session is named.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator, MutableMapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
+from ..agentgit import BLOB_KEY as _WS_BLOB_KEY
 from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 from ..protocol import (
     Capabilities,
     CommitInfo,
     MergeOutcome,
-    StageResult,
     TagInfo,
     WorkspaceDiff,
-    WorkspaceStatus,
     validate_session_id,
 )
 
@@ -65,60 +64,10 @@ _KVGIT_CAPS = Capabilities(
     tags=True,
 )
 
-_WS_BLOB_KEY = "__ws_git__"
-
 _LEGACY_CWD_KEY = "__cwd__"
 """The cwd key nontainer kept beside the filesystem's own, before the
 two were folded into one. Only ever swept now — a workspace drops it on
 open, and a merge hands it to whichever side is doing the merging."""
-_WS_BLOB_VERSION = 1
-
-
-def _merge_ws_blob(old: Any, ours: Any, theirs: Any) -> bytes:
-    """Union merge for the ws-git staging blob.
-
-    Both sides' composition intent survives: the index unions, and a
-    suspended autocommit on either side stays suspended. Unchanged
-    on one side takes the other (so commit/unstage on one side win
-    over a quiet other); unparseable raises ``CantMark`` like binary.
-    """
-    from kvgit.merges import CantMark
-
-    def blob(value: Any) -> dict:
-        if value is None:
-            return {"index": [], "suspended": False}
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError) as e:
-            raise CantMark(f"staging blob not JSON: {e}") from e
-        if not isinstance(parsed, dict):
-            raise CantMark("staging blob not a table")
-        index = parsed.get("index") or []
-        return {
-            "index": sorted(k for k in index if isinstance(k, str)),
-            "suspended": bool(parsed.get("suspended")),
-        }
-
-    o, u, t = blob(old), blob(ours), blob(theirs)
-    if u == t:
-        result = u
-    elif o == u:
-        result = t
-    elif o == t:
-        result = u
-    else:
-        result = {
-            "index": sorted(set(u["index"]) | set(t["index"])),
-            "suspended": u["suspended"] or t["suspended"],
-        }
-    return json.dumps(
-        {
-            "version": _WS_BLOB_VERSION,
-            "index": result["index"],
-            "suspended": result["suspended"],
-        },
-        sort_keys=True,
-    ).encode()
 
 
 def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
@@ -190,6 +139,45 @@ def _merge_vfs_metadata(old: Any, ours: Any, theirs: Any) -> bytes:
                     "is_dir": winner.get("is_dir", False),
                 }
     return json.dumps(merged, sort_keys=True).encode()
+
+
+class _FileView(Mapping):
+    """One tree's files as ``path -> stored value``, read on demand.
+
+    Backs :meth:`KvgitProvider.files_at` and
+    :meth:`KvgitProvider.working_files`. The path index is built once
+    per view (a key listing plus the VFS decode); values are read from
+    the handle as they are asked for, so comparing two trees costs the
+    blobs it actually reads.
+    """
+
+    __slots__ = ("_provider", "_handle", "_paths")
+
+    def __init__(self, provider: "KvgitProvider", handle: Any) -> None:
+        self._provider = provider
+        self._handle = handle
+        self._paths: dict[str, str] | None = None
+
+    @property
+    def _index(self) -> dict[str, str]:
+        if self._paths is None:
+            self._paths = {
+                path: key
+                for key, path in self._provider._file_keys(self._handle.keys()).items()
+            }
+        return self._paths
+
+    def __getitem__(self, path: str) -> Any:
+        return self._handle.get(self._index[path])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._index)
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def __repr__(self) -> str:
+        return f"<files: {len(self)} paths>"
 
 
 SESSION_SCOPE = "session"
@@ -497,238 +485,44 @@ class KvgitProvider:
         self._staged.reset()
         self._invalidate_fs()
 
-    # -- staged mode (the index) -----------------------------------------
+    # -- read views ------------------------------------------------------
 
-    @staticmethod
-    def _parse_blob(raw: Any) -> dict[str, Any]:
-        """Blob value → normalized dict (tolerant of absence and shapes).
+    def files_at(self, commit: str) -> Mapping[str, Any]:
+        """This session's files at one commit, by workspace path.
 
-        Accepts whatever a handle ``get`` returns — bytes, str, or an
-        already-decoded dict — so staged and HEAD reads compare equal.
+        A frozen read view: a mapping whose keys are the paths and
+        whose values are the stored file values, read on demand. What
+        the agent-facing git needs to compare a tree against another
+        one without materializing either.
         """
-        if raw is None:
-            return {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
-        if isinstance(raw, dict):
-            parsed = raw
-        else:
-            try:
-                parsed = json.loads(raw)
-            except (ValueError, TypeError):
-                return {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
-        if not isinstance(parsed, dict):
-            return {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
-        index = parsed.get("index") or []
-        return {
-            "version": _WS_BLOB_VERSION,
-            "index": sorted(k for k in index if isinstance(k, str)),
-            "suspended": bool(parsed.get("suspended")),
-        }
+        handle = self._staged.checkout(commit)
+        if handle is None:
+            raise CommitNotFoundError(f"No such commit: {commit!r}")
+        return _FileView(self, handle)
 
-    def _read_blob(self) -> dict[str, Any]:
-        """The staging blob (tolerant of absence and older shapes)."""
-        return self._parse_blob(self._staged.get(_WS_BLOB_KEY))
-
-    def _write_blob(self, index: Iterable[str], suspended: bool) -> None:
-        """Stage (not commit) index bookkeeping.
-
-        The write sits in the staging buffer next to file writes; it
-        lands through the CAS-guarded commit path like everything else
-        (see the contention spike in ``scratch/ws-git-impl.md`` gap 3).
-        When the bytes equal HEAD, retract instead of writing: kvgit
-        has no per-key unstage, so an identical write would linger as
-        phantom dirt (and a later read-only op would commit it).
-        The blob key is provider-owned — never user-addressed — so
-        dropping its staged update is safe; staged removals are left
-        alone (only direct handle use records those). Guarded: without
-        these internals, fall back to the plain staged write.
-        """
-        value = json.dumps(
-            {
-                "version": _WS_BLOB_VERSION,
-                "index": sorted(set(index)),
-                "suspended": suspended,
-            },
-            sort_keys=True,
-        ).encode()
-        head_handle = self._staged.checkout(self._staged.current_commit)
-        head_raw = head_handle.get(_WS_BLOB_KEY) if head_handle is not None else None
-        if self._parse_blob(head_raw) == self._parse_blob(value):
-            updates = getattr(self._staged, "_updates", None)
-            cache = getattr(self._staged, "_cache", None)
-            if updates is not None and cache is not None:
-                updates.pop(_WS_BLOB_KEY, None)
-                cache.pop(_WS_BLOB_KEY, None)
-                return
-        self._staged[_WS_BLOB_KEY] = value
-
-    def _resolve_stage_paths(self, paths: Iterable[str]) -> dict[str, str]:
-        """Display path → store key, for stageable paths.
-
-        Encoding is pure, so a path deleted from the live tree still
-        resolves (verified against HEAD); a path that names nothing —
-        live, at HEAD, or a directory — raises ``ValueError``.
-        """
-        live = {
-            display: key
-            for key, display in self._file_keys(self._staged.keys()).items()
-        }
-        head_handle = self._staged.checkout(self._staged.current_commit)
-        head_displays = (
-            set(self._file_keys(head_handle.keys()).values())
-            if head_handle is not None
-            else set()
-        )
-        vfs = self.fs
-        out: dict[str, str] = {}
-        for path in paths:
-            if path in live:
-                out[path] = live[path]
-                continue
-            if path in head_displays:
-                # Encoding is pure (no tree lookup), so a deleted file
-                # re-derives the key VFS wrote — same private-access
-                # justification as ``_file_keys``' decode.
-                out[path] = vfs._encode_path(path)
-                continue
-            if vfs.isdir(path):
-                raise ValueError(f"cannot stage {path!r}: stage files, not directories")
-            raise ValueError(
-                f"unknown path {path!r}: no such file at HEAD or in the working tree"
-            )
-        return out
-
-    def _modified_displays(self) -> set[str]:
-        """Live-tree display paths differing from HEAD (add/rm/edit)."""
-        live = {
-            display: key
-            for key, display in self._file_keys(self._staged.keys()).items()
-        }
-        head_handle = self._staged.checkout(self._staged.current_commit)
-        if head_handle is None:
-            return set(live)
-        head = self._file_keys(head_handle.keys())
-        head_displays = set(head.values())
-        live_displays = set(live)
-        modified = (live_displays - head_displays) | (head_displays - live_displays)
-        head_by_display = {display: key for key, display in head.items()}
-        for display in live_displays & head_displays:
-            if self._staged.get(live[display]) != head_handle.get(
-                head_by_display[display]
-            ):
-                modified.add(display)
-        return modified
-
-    def stage(self, paths: Iterable[str]) -> StageResult:
-        """Stage workspace file paths; first call suspends autocommit.
-
-        The index names store keys, not snapshots: edits made after
-        staging ride along into ``commit_index``.
-        """
-        self._refuse_frozen("stage")
-        if isinstance(paths, str):
-            paths = [paths]
-        paths = list(dict.fromkeys(paths))
-        if not paths:
-            return StageResult(staged=(), suspended=False)
-        resolved = self._resolve_stage_paths(paths)
-        blob = self._read_blob()
-        index = set(blob["index"])
-        added = [p for p in paths if resolved[p] not in index]
-        new_index = index | set(resolved.values())
-        suspending = not blob["suspended"]
-        if not added and not suspending:
-            return StageResult(staged=(), suspended=False)
-        self._write_blob(new_index, True)
-        return StageResult(staged=tuple(added), suspended=suspending)
-
-    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Remove paths from the index; emptying it resumes autocommit."""
-        self._refuse_frozen("unstage")
-        if isinstance(paths, str):
-            paths = [paths]
-        paths = list(dict.fromkeys(paths))
-        if not paths:
-            return ()
-        resolved = self._resolve_stage_paths(paths)
-        blob = self._read_blob()
-        index = set(blob["index"])
-        removed = [p for p in paths if resolved[p] in index]
-        if not removed:
-            return ()
-        index -= {resolved[p] for p in removed}
-        old_suspended = blob["suspended"]
-        self._write_blob(index, old_suspended and bool(index))
-        return tuple(removed)
-
-    def commit_index(self, info: dict[str, Any] | None = None) -> str:
-        """Commit staged keys plus index bookkeeping; unstaged stays dirty.
-
-        Framework keys (the VFS table, cwd, the blob itself) ride along
-        when staged — the table is fixed up first so the new commit's
-        rows describe its own blobs exactly, not uncommitted work.
-        Cache keys never ride: unrelated agent state stays dirty.
-        """
-        from monkeyfs import VirtualFS
-
-        self._refuse_frozen("commit_index")
-        blob = self._read_blob()
-        index = set(blob["index"])
-        pending = {key for key in index if self._staged.is_staged(key)}
-        head_handle = self._staged.checkout(self._staged.current_commit)
-        head_blob = (
-            self._parse_blob(head_handle.get(_WS_BLOB_KEY))
-            if head_handle is not None
-            else self._parse_blob(None)
-        )
-        cleared = {"version": _WS_BLOB_VERSION, "index": [], "suspended": False}
-        if not pending and head_blob == cleared:
-            # Nothing staged and the bookkeeping is already clean:
-            # refuse instead of minting an empty commit (decided before
-            # writing anything, so there is nothing to unwind).
-            raise WorkspaceError("nothing staged to commit")
-        self._write_blob(set(), False)
-        # Snapshot live rows before the fixup: the subset commit below
-        # clears the table key from the buffer, which would leave the
-        # fixed-up table as live truth — unstaged additions rowless,
-        # unstaged edits HEAD-stale, and the next commit persisting
-        # the mismatch. Restoring afterwards keeps reads truthful.
-        live_table = self._staged.get(VirtualFS.METADATA_KEY)
-        self._commit_table(index)
-        keys = set(pending) | {_WS_BLOB_KEY}
-        for extra in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY):
-            if self._staged.is_staged(extra):
-                keys.add(extra)
-        result = self._staged.commit(
-            keys=keys, info={"tool": "ws-git.commit", **(info or {})}
-        )
-        if not result.merged:
-            raise WorkspaceError(
-                f"commit failed: conflicting concurrent commit on branch "
-                f"{self._session!r} (CAS): {result}"
-            )
-        self._restore_live_table(live_table)
-        # Fixup and restore both wrote around the VFS: drop its caches
-        # once, at the end, so post-commit reads see live state.
-        self._invalidate_fs()
-        return self._staged.current_commit
+    def working_files(self) -> Mapping[str, Any]:
+        """The live working tree's files, by workspace path — including
+        writes not committed yet, and excluding deletions not committed
+        yet."""
+        return _FileView(self, self._staged)
 
     def commit_keys(
         self, info: dict[str, Any] | None = None, *, keys: Iterable[str]
     ) -> str | None:
-        """Commit exactly these keys, leaving the index alone.
+        """Commit exactly these keys; returns the new commit hash.
 
-        The staged set is not touched and neither is the ws-git blob,
-        so a composition in flight is exactly as open afterwards as it
-        was before: still indexed, still suspending autocommit, its
-        working-tree writes still dirty. Returns the new commit hash,
-        or ``None`` when none of the named keys had anything pending.
+        The one keyed-commit primitive, and the only index-shaped thing
+        the substrate has to offer: everything else about the agent's
+        git is metadata over it (see ``nontainer/agentgit.py``). Keys
+        with nothing pending are ignored, and ``None`` comes back when
+        that leaves nothing at all.
 
         ``keys`` are store keys as stored, or absolute workspace paths
         resolved to the keys the VFS wrote them under — the framework
         planes (``__agno__/``, the cache) name themselves, and no store
         key starts with ``/``.
 
-        The VFS table rides along, fixed up the way a selective commit
+        The VFS table rides along, fixed up the way a partial commit
         fixes it up: rows for the committed files take their live
         versions and every other row stays at HEAD, so the commit
         describes its own blobs and says nothing about work in
@@ -783,16 +577,19 @@ class KvgitProvider:
             self._staged[VirtualFS.METADATA_KEY] = live_table
 
     def _resolve_keys(self, keys: Iterable[str]) -> set[str]:
-        """Caller-named state as store keys: an absolute path is the
-        workspace's spelling of a file and resolves the way ``stage``
-        resolves one (raising if it names nothing); anything else is
-        already a store key."""
+        """Caller-named state as store keys.
+
+        An absolute path is the workspace's spelling of a file and
+        encodes to the key the VFS writes it under; anything else is
+        already a store key. Pure encoding, no existence check: a
+        caller naming a path that is being deleted means exactly that,
+        and a key with nothing pending is ignored by the commit anyway.
+        """
         entries = list(keys)
         if not entries:
             return set()
-        paths = [e for e in entries if e.startswith("/")]
-        resolved = self._resolve_stage_paths(paths) if paths else {}
-        return {resolved.get(e, e) for e in entries}
+        vfs = self.fs
+        return {e if not e.startswith("/") else vfs._encode_path(e) for e in entries}
 
     def _commit_table(self, staged: set[str]) -> None:
         """Rewrite the VFS table to match the blobs selective commit takes.
@@ -838,66 +635,6 @@ class KvgitProvider:
             self._staged[VirtualFS.METADATA_KEY] = json.dumps(
                 committed, sort_keys=True
             ).encode()
-
-    def discard_staged(self) -> None:
-        """Abandon the composition; working-tree writes stay dirty."""
-        self._refuse_frozen("discard_staged")
-        blob = self._read_blob()
-        if not blob["index"] and not blob["suspended"]:
-            return
-        self._write_blob(set(), False)
-
-    def status(self) -> WorkspaceStatus:
-        """Staged vs unstaged paths plus live merge context. Pure read."""
-        modified = self._modified_displays() if self.dirty else set()
-        index = set(self._read_blob()["index"])
-        # Decode index keys directly: a staged deletion has no live
-        # display, so mapping through the live tree would drop it.
-        vfs = self.fs
-        indexed = set()
-        for key in index:
-            try:
-                indexed.add("/" + vfs._decode_path(key).lstrip("/"))
-            except Exception:  # noqa: BLE001 - undecodable key is not a file
-                continue
-        staged = sorted(modified & indexed)
-        unstaged = sorted(modified - indexed)
-        merge_source, merge_unresolved = self._merge_context()
-        return WorkspaceStatus(
-            branch=self._staged.current_branch,
-            staged=tuple(staged),
-            unstaged=tuple(unstaged),
-            merge_source=merge_source,
-            merge_unresolved=tuple(merge_unresolved),
-        )
-
-    def stage_suspended(self) -> bool:
-        """Whether staging currently suspends autocommit here."""
-        return self._read_blob()["suspended"]
-
-    def _merge_context(self) -> tuple[str | None, list[str]]:
-        """Newest merge source with markers still in HEAD, if any.
-
-        Markers are scanned at read time (committed ones count — an
-        agent mid-resolution shows clean-tree progress in ``unstaged``
-        while the merge stays outstanding until the clearing commit).
-        History is consulted only when markers exist.
-        """
-        head_handle = self._staged.checkout(self._staged.current_commit)
-        if head_handle is None:
-            return None, []
-        marked = sorted(
-            display
-            for key, display in self._file_keys(head_handle.keys()).items()
-            for value in (head_handle.get(key),)
-            if isinstance(value, bytes) and b"<<<<<<< " in value
-        )
-        if not marked:
-            return None, []
-        for entry in self.history():
-            if entry.info.get("tool") == "ws-git.merge":
-                return entry.info.get("source"), marked
-        return None, marked
 
     # -- tags ------------------------------------------------------------
 
@@ -1030,7 +767,7 @@ class KvgitProvider:
             modified=self._changed_content(self._file_keys(raw.modified), a, b),
         )
 
-    def merge(self, source: str) -> MergeOutcome:
+    def merge(self, source: str, *, info: dict[str, Any] | None = None) -> MergeOutcome:
         """Merge another branch into this one.
 
         Reads the source HEAD commit (anything uncommitted there is not
@@ -1072,7 +809,7 @@ class KvgitProvider:
             file_keys.update(self._file_keys(handle.keys()).keys())
         merge_fns = {key: text_merge for key in file_keys}
         merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
-        merge_fns[_WS_BLOB_KEY] = _merge_ws_blob
+        merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
         # The key nontainer used to keep a cwd of its own under. It is
         # dead: a workspace drops it on open. Branches written before
@@ -1092,7 +829,7 @@ class KvgitProvider:
             self._staged.merge(
                 source_head,
                 merge_fns=merge_fns,
-                info={"tool": "ws-git.merge", "source": source},
+                info={"tool": "ws-git.merge", "source": source, **(info or {})},
             )
         except MergeConflict as e:
             return MergeOutcome(
@@ -1127,7 +864,7 @@ class KvgitProvider:
         # reporting. Metadata-only, so ``brought`` still describes this.
         # The follow-up carries the source tag: it is part of the merge,
         # and status derives merge context from history.
-        self._fix_merged_sizes(brought.added | brought.modified, rev, source)
+        self._fix_merged_sizes(brought.added | brought.modified, rev, source, info)
         # HEAD moved underneath the VirtualFS object: drop its caches
         # like restore()/discard() do, or listings and stat go stale.
         self._invalidate_fs()
@@ -1180,7 +917,11 @@ class KvgitProvider:
         return True
 
     def _fix_merged_sizes(
-        self, paths: set[str], rev: dict[str, str], source: str
+        self,
+        paths: set[str],
+        rev: dict[str, str],
+        source: str,
+        info: dict[str, Any] | None = None,
     ) -> None:
         """Correct VFS metadata sizes from the merged blobs.
 
@@ -1216,7 +957,14 @@ class KvgitProvider:
         self._staged[VirtualFS.METADATA_KEY] = json.dumps(
             table, sort_keys=True
         ).encode()
-        self.commit({"tool": "ws-git.merge", "source": source, "sizes": "recomputed"})
+        self.commit(
+            {
+                "tool": "ws-git.merge",
+                "source": source,
+                "sizes": "recomputed",
+                **(info or {}),
+            }
+        )
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""

@@ -198,30 +198,17 @@ class DirProvider:
     def discard(self) -> None:
         raise self._unsupported("discard")
 
-    def merge(self, source: str) -> Any:
+    def merge(self, source: str, *, info: Any = None) -> Any:
         raise self._unsupported("merge")
-
-    def stage(self, paths: Any) -> Any:
-        raise self._unsupported("stage")
-
-    def unstage(self, paths: Any) -> Any:
-        raise self._unsupported("unstage")
-
-    def commit_index(self, info: Any = None) -> Any:
-        raise self._unsupported("commit_index")
 
     def commit_keys(self, info: Any = None, *, keys: Any = ()) -> Any:
         raise self._unsupported("commit_keys")
 
-    def discard_staged(self) -> Any:
-        raise self._unsupported("discard_staged")
+    def files_at(self, commit: str) -> Any:
+        raise self._unsupported("files_at")
 
-    def status(self) -> Any:
-        raise self._unsupported("status")
-
-    def stage_suspended(self) -> bool:
-        # Not a capability verb but a query: no index, never suspended.
-        return False
+    def working_files(self) -> Any:
+        raise self._unsupported("working_files")
 
     # -- tags: unsupported ---------------------------------------------
 
