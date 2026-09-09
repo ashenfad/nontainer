@@ -43,6 +43,24 @@ def commit_keys(store, ref):
         provider.close()
 
 
+def to_legacy_table(ws):
+    """Rewrite this session's metadata as the single pre-row table.
+
+    What a state written by an older monkeyfs looks like: no rows, one
+    ``__vfs_metadata__`` blob describing every path. Publishing from one
+    is the migration case, and the fixture has to be built by hand
+    because nothing writes the table any more.
+    """
+    kv = ws._provider.kv
+    table = {}
+    for key in list(kv.keys()):
+        if VirtualFS.is_metadata_key(key):
+            table[VirtualFS.path_for_metadata_key(key)] = json.loads(kv[key])
+            del kv[key]
+    kv[VirtualFS.METADATA_KEY] = json.dumps(table).encode()
+    ws.commit(info={"tool": "legacy"})
+
+
 # -- what a publish produces -------------------------------------------------
 
 
@@ -96,11 +114,20 @@ def test_the_published_commit_holds_the_subtree_and_nothing_else(tmp_path):
     pub = store.publish(ws, "scoreboard")
     keys = commit_keys(store, pub.current_version.ref)
 
-    assert VirtualFS.METADATA_KEY in keys
-    files = [k for k in keys if k != VirtualFS.METADATA_KEY]
+    # A row per published file (plus the directories above them), and
+    # never the legacy table, which describes files this tree lacks.
+    assert VirtualFS.METADATA_KEY not in keys
+    rows = [k for k in keys if VirtualFS.is_metadata_key(k)]
+    files = [k for k in keys if k not in rows]
     # exactly the two app files, and they are file keys
     assert len(files) == 2
     assert all(k.startswith(VirtualFS.PREFIX) for k in files)
+    assert {VirtualFS.path_for_metadata_key(k) for k in rows} >= {
+        VirtualFS.path_for_metadata_key(
+            VirtualFS.META_PREFIX + f[len(VirtualFS.PREFIX) :]
+        )
+        for f in files
+    }
     assert not [k for k in keys if k.startswith("__cache__/")]
     assert VirtualFS.CWD_KEY not in keys
     assert "__agno__/session" not in keys
@@ -606,4 +633,39 @@ def test_info_may_not_overwrite_the_provenance_keys(tmp_path):
     entry = next(iter(pub.open().log()))
     assert entry.info["published_by"] == "the studio"
     assert entry.info["published_from"] == str(ws.ref)
+    ws.close()
+
+
+def test_publishing_an_old_format_state_writes_rows_and_leaves_the_table(tmp_path):
+    """A session whose metadata is still the one legacy table publishes
+    a row per file like any other: the rows are asked of a filesystem
+    over the source commit, and the table — which describes files this
+    publication does not hold — never travels."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    to_legacy_table(ws)
+    assert VirtualFS.METADATA_KEY in commit_keys(store, ws.ref)
+    assert not [k for k in commit_keys(store, ws.ref) if VirtualFS.is_metadata_key(k)]
+
+    pub = store.publish(ws, "scoreboard")
+    keys = commit_keys(store, pub.current_version.ref)
+
+    assert VirtualFS.METADATA_KEY not in keys
+    rows = {
+        VirtualFS.path_for_metadata_key(k) for k in keys if VirtualFS.is_metadata_key(k)
+    }
+    assert {"workspace/app/index.html", "workspace/app/api/scores.py"} <= rows
+    assert "workspace/notes/private.txt" not in rows
+
+    snapshot = pub.open()
+    try:
+        assert sorted(snapshot.files.list("app", recursive=True)) == [
+            "app/api",
+            "app/api/scores.py",
+            "app/index.html",
+        ]
+        body = snapshot.files.read("/workspace/app/index.html")
+        assert snapshot.files.fs.stat("/workspace/app/index.html").size == len(body)
+    finally:
+        snapshot.close()
     ws.close()

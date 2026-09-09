@@ -596,8 +596,12 @@ reported in `MergeOutcome.conflicts` rather than blocking it: resolve
 them with ordinary edits and commit — the paths the merge reports are
 exactly the ones `ws-git status` then shows as `UU`, and each stops
 being unresolved when its markers are gone, not when it is committed.
+A file is reported once, by path, however many keys it occupies: its
+bytes and the metadata beside them are two keys describing one file.
 Non-file contested state, which no merge function can resolve, aborts
-the merge untouched (`merged=False`, `commit=None`).
+the merge untouched (`merged=False`, `commit=None`); so does a path
+that is a file on one side and a directory on the other, which is
+reported by path like any other file conflict.
 
 `MergeOutcome.commit` is the merge commit; `ws.head` afterwards is the
 bookkeeping commit that records it as the agent's, which is what

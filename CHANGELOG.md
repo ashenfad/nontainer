@@ -187,6 +187,30 @@ is the migration.
   cwd across reopen (a `MountFS` requires the filesystem beneath it to
   sit at the root); mounted trees were already unversioned live views.
 
+- **A file's metadata rides beside its bytes.** monkeyfs keeps one
+  metadata row per path instead of one table every write rewrote, and
+  the kvgit provider now treats a row as part of the file it describes.
+  A selective commit (`ws.index.commit`, the framework's own durability
+  points) takes each committed file's row with its blob, and a staged
+  deletion takes the row's deletion; it never carries the legacy
+  `__vfs_metadata__` table, which moves only with a full commit — a
+  stale entry beside a committed row is harmless because a row wins
+  over the table, whereas committing a drained table would strip the
+  entries of files whose rows are still unstaged. A merge settles rows
+  key by key beside their blobs, field-aware, and the merged row
+  carries the size of the merged bytes, so a clean union of two edits
+  no longer needs a size-fixing commit after the merge: one merge is
+  one commit. Two branches that each wrote a different file no longer
+  contest anything. A file is reported as a conflict once, by path,
+  however many of its keys contested, and a path that is a file on one
+  side and a directory on the other is a hard conflict named by path
+  rather than by the metadata key. A publication writes a row beside
+  each blob it holds, derived from a filesystem over the source commit,
+  so a session whose metadata is still the old table publishes rows
+  like any other and the table itself never travels. A state written
+  before rows keeps working: it reads through the table and drains one
+  write at a time.
+
 ### Added
 
 - `nontainer.Store` / `store(...)`: `open`, `sessions`, `exists`,

@@ -8,8 +8,11 @@ so one ``commit()`` commits the whole world atomically, and
 was) as a new commit.
 
 Key coexistence in the flat mapping: ``VirtualFS`` encodes file paths
-under its own key prefix (plus ``__vfs_metadata__``), while cache keys
-live under ``__cache__/`` — no collisions by construction.
+under its own key prefix — one key per file, plus a metadata row beside
+it under the same encoding — while cache keys live under ``__cache__/``:
+no collisions by construction. A row is written whenever, and only when,
+its blob is written or its metadata changes, so a row travels with the
+bytes it describes through every commit and merge in this file.
 
 Capabilities: ``staging`` (writes are invisible until commit;
 ``discard()`` drops them), ``cheap_fork`` (branches share storage via
@@ -85,70 +88,69 @@ def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
     return ours if ours is not None else theirs
 
 
-def _merge_vfs_metadata(old: Any, ours: Any, theirs: Any) -> bytes:
-    """Field-aware merge for the monkeyfs file table.
+def _row(value: Any) -> dict | None:
+    """One metadata row as a dict, or ``None`` where there is no row.
 
-    The table (``{path: {size, created_at, modified_at, is_dir}}``)
-    contests on every two-sided change through timestamp noise alone,
-    so line-merge is the wrong tool: merge per path instead. Unchanged
-    on one side takes the other; changed on both takes the latest
-    ``modified_at`` with the earliest ``created_at`` (timestamps are
-    advisory — content truth lives in the file blobs this table
-    describes); deleted on one side and unmodified on the other drops;
-    deleted-against-modified keeps the modified record (the content
-    markers flag the path anyway); ``is_dir`` disagreement and
-    unparseable tables raise ``CantMark``: filed as a hard conflict
-    (the merge aborts untouched) like binary.
+    Raises ``CantMark`` on a body that is not a JSON object: the merge
+    machinery files that as a conflict rather than inventing metadata
+    for a file it cannot describe.
     """
     from kvgit.merges import CantMark
 
-    def table(value: Any) -> dict:
-        if value is None:
-            return {}
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError) as e:
-            raise CantMark(f"VFS metadata not JSON: {e}") from e
-        if not isinstance(parsed, dict):
-            raise CantMark("VFS metadata not a table")
-        return parsed
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError) as e:
+        raise CantMark(f"metadata row not JSON: {e}") from e
+    if not isinstance(parsed, dict):
+        raise CantMark("metadata row not an object")
+    return parsed
 
-    old_t, ours_t, theirs_t = table(old), table(ours), table(theirs)
-    merged: dict[str, Any] = {}
-    for path in old_t.keys() | ours_t.keys() | theirs_t.keys():
-        o, u, t = old_t.get(path), ours_t.get(path), theirs_t.get(path)
-        if u == t:
-            if u is not None:
-                merged[path] = u
-        elif o == u:
-            if t is not None:
-                merged[path] = t
-        elif o == t:
-            if u is not None:
-                merged[path] = u
-        else:
-            if u is None:
-                merged[path] = t
-            elif t is None:
-                merged[path] = u
-            else:
-                if u.get("is_dir", False) != t.get("is_dir", False):
-                    raise CantMark(f"is_dir disagreement on {path!r}: not mergeable")
-                winner = (
-                    u if u.get("modified_at", "") >= t.get("modified_at", "") else t
-                )
-                created = [
-                    r.get("created_at", "")
-                    for r in (o, u, t)
-                    if isinstance(r, dict) and r.get("created_at")
-                ]
-                merged[path] = {
-                    "size": winner.get("size", 0),
-                    "created_at": min(created) if created else "",
-                    "modified_at": winner.get("modified_at", ""),
-                    "is_dir": winner.get("is_dir", False),
-                }
-    return json.dumps(merged, sort_keys=True).encode()
+
+def _merge_metadata_row(
+    old: Any, ours: Any, theirs: Any, size: int | None = None
+) -> bytes:
+    """Field-aware merge for one file's metadata row.
+
+    Rows contest on timestamp noise alone, so line-merge is the wrong
+    tool: merge the fields instead. A row present on one side only is
+    that side's (a file deleted here and kept there keeps the surviving
+    record — the content merge is what decides the bytes). Both present
+    takes the later ``modified_at`` with the earliest ``created_at``,
+    since timestamps are advisory next to the blob they describe.
+    ``is_dir`` disagreement — a file on one side, a directory on the
+    other — raises ``CantMark``: no field merge can resolve that, so it
+    is filed as a hard conflict and the merge aborts untouched.
+
+    ``size`` describes the merged bytes when the caller knows them; a
+    size copied from one side would be wrong wherever the content merge
+    produced bytes that match neither.
+    """
+    from kvgit.merges import CantMark
+
+    o, u, t = _row(old), _row(ours), _row(theirs)
+    if u is None and t is None:
+        raise CantMark("no metadata row on either side")
+    if u is None or t is None:
+        return json.dumps(u if t is None else t, sort_keys=True).encode()
+    if u.get("is_dir", False) != t.get("is_dir", False):
+        raise CantMark("a file on one side and a directory on the other")
+    winner = u if u.get("modified_at", "") >= t.get("modified_at", "") else t
+    created = [
+        r.get("created_at", "")
+        for r in (o, u, t)
+        if isinstance(r, dict) and r.get("created_at")
+    ]
+    return json.dumps(
+        {
+            "size": winner.get("size", 0) if size is None else size,
+            "created_at": min(created) if created else "",
+            "modified_at": winner.get("modified_at", ""),
+            "is_dir": winner.get("is_dir", False),
+        },
+        sort_keys=True,
+    ).encode()
 
 
 class _FileView(Mapping):
@@ -235,20 +237,26 @@ class KvgitProvider:
         # The framework's own keys, with the policy the merge verb
         # already uses for them, registered for ORDINARY commits too.
         # A commit whose CAS is lost to another handle on this session
-        # three-way merges by key, and these three are the keys any two
-        # writers are bound to contend on: the file table (every write
-        # touches it), the cwd, and the ws-git blob. Without a policy
-        # each of those turns a routine race into a raised conflict.
+        # three-way merges by key, and these are the keys two writers
+        # are bound to contend on: the cwd and the ws-git blob, plus
+        # the metadata row of any file both of them wrote. Without a
+        # policy each of those turns a routine race into a raised
+        # conflict. Rows are registered by prefix because their names
+        # are the encoded paths, unknown until a file is written; a
+        # merge function under a prefix is consulted only where both
+        # sides changed a key, so registering it disturbs nothing else.
         register = getattr(staged, "set_merge_fn", None)
+        register_prefix = getattr(staged, "set_merge_prefix", None)
         if callable(register):
             from kvgit import MergeChoice
             from monkeyfs import VirtualFS
 
-            register(VirtualFS.METADATA_KEY, _merge_vfs_metadata)
             register(VirtualFS.CWD_KEY, _keep_ours)
             register(_WS_BLOB_KEY, MergeChoice.OURS)
             register(_VIEW_KEY, MergeChoice.OURS)
             register(_LEGACY_CWD_KEY, MergeChoice.OURS)
+            if callable(register_prefix):
+                register_prefix(VirtualFS.META_PREFIX, _merge_metadata_row)
 
     @classmethod
     def open(
@@ -677,12 +685,15 @@ class KvgitProvider:
         planes (``__agno__/``, the cache) name themselves, and no store
         key starts with ``/``.
 
-        The VFS table rides along, fixed up the way a partial commit
-        fixes it up: rows for the committed files take their live
-        versions and every other row stays at HEAD, so the commit
-        describes its own blobs and says nothing about work in
-        progress. Without it a committed file would have no row, and a
-        reader of that commit would not see the file at all.
+        A file's metadata row rides along with its blob, and only with
+        its blob: a committed file whose row stayed behind would have no
+        size and no timestamps, and a reader of that commit would not
+        see the file at all. A staged deletion carries its row's
+        deletion the same way. The legacy ``__vfs_metadata__`` table is
+        never part of a selective commit — it moves only with a full
+        one. A stale entry beside a committed row is harmless, since a
+        row wins over the table, whereas committing a drained table
+        would strip the entries of files whose rows are still unstaged.
         """
         from monkeyfs import VirtualFS
 
@@ -692,12 +703,12 @@ class KvgitProvider:
         }
         if not pending:
             return None
-        live_table: Any = None
-        if self._file_keys(pending):
-            live_table = self._staged.get(VirtualFS.METADATA_KEY)
-            self._commit_table(pending)
-            if self._staged.is_staged(VirtualFS.METADATA_KEY):
-                pending.add(VirtualFS.METADATA_KEY)
+        vfs = self.fs
+        for path in list(self._file_keys(pending).values()):
+            row = vfs.metadata_key(path)
+            if self._staged.is_staged(row):
+                pending.add(row)
+        pending.discard(VirtualFS.METADATA_KEY)
         from kvgit import MergeConflict
 
         try:
@@ -718,35 +729,8 @@ class KvgitProvider:
                     f"{self._session!r} (CAS): {result}"
                 )
         finally:
-            # The fixup describes a commit; live truth is what every
-            # read afterwards needs — including the reads a caller
-            # makes while unwinding a commit that did not happen.
-            self._restore_live_table(live_table)
             self._invalidate_fs()
         return self._staged.current_commit
-
-    def _restore_live_table(self, live_table: Any) -> None:
-        """Put the pre-fixup VFS table back after a selective commit.
-
-        The fixup describes the commit's own blobs; live truth is what
-        every read afterwards needs — unstaged additions with rows,
-        unstaged edits at their live sizes. Nothing to restore when the
-        commit touched no files.
-        """
-        from monkeyfs import VirtualFS
-
-        if live_table is None:
-            return
-        # Normalize: the restore must stage bytes — a decoded value
-        # written back raw would break VFS table reads.
-        if not isinstance(live_table, bytes):
-            live_table = (
-                live_table.encode()
-                if isinstance(live_table, str)
-                else json.dumps(live_table, sort_keys=True).encode()
-            )
-        if self._staged.get(VirtualFS.METADATA_KEY) != live_table:
-            self._staged[VirtualFS.METADATA_KEY] = live_table
 
     def _resolve_keys(self, keys: Iterable[str]) -> set[str]:
         """Caller-named state as store keys.
@@ -762,51 +746,6 @@ class KvgitProvider:
             return set()
         vfs = self.fs
         return {e if not e.startswith("/") else vfs._encode_path(e) for e in entries}
-
-    def _commit_table(self, staged: set[str]) -> None:
-        """Rewrite the VFS table to match the blobs selective commit takes.
-
-        The table is monolithic but the commit is partial: rows for
-        files outside the commit keep their HEAD versions, rows for
-        staged files take their live versions (staged deletions drop
-        their rows). Directory rows stay at HEAD versions — the VFS
-        detects implicit dirs from blob keys. Skips the write when the
-        table already matches.
-        """
-        from monkeyfs import VirtualFS
-
-        def table(raw: Any) -> dict:
-            if raw is None:
-                return {}
-            try:
-                parsed = json.loads(raw)
-            except (ValueError, TypeError):
-                return {}
-            return parsed if isinstance(parsed, dict) else {}
-
-        vfs = self.fs
-        live_table = table(self._staged.get(VirtualFS.METADATA_KEY))
-        head_handle = self._staged.checkout(self._staged.current_commit)
-        head_table = (
-            table(head_handle.get(VirtualFS.METADATA_KEY))
-            if head_handle is not None
-            else {}
-        )
-        live_keys = set(self._file_keys(self._staged.keys()))
-        committed = dict(head_table)
-        for key in staged:
-            try:
-                row = vfs._decode_path(key).lstrip("/")
-            except Exception:  # noqa: BLE001 - undecodable key is not a file
-                continue
-            if key in live_keys and row in live_table:
-                committed[row] = live_table[row]
-            else:
-                committed.pop(row, None)
-        if committed != live_table:
-            self._staged[VirtualFS.METADATA_KEY] = json.dumps(
-                committed, sort_keys=True
-            ).encode()
 
     # -- tags ------------------------------------------------------------
 
@@ -956,14 +895,14 @@ class KvgitProvider:
         ``kvgit.merges``), and commits the result tagged as a merge.
         Overlapping text lands with conflict markers in the working tree
         and the outcome reports it. Framework state merges by rule, not
-        by text: the VFS metadata table merges field-aware (timestamps
-        are advisory), the cwd keeps ours, and anything else contested
-        raises as a hard conflict rather than merging silently. After
-        the merge, VFS sizes are corrected from the merged blobs
-        (metadata-only commit, only when they differ) and the
-        filesystem caches are invalidated; marker conflicts are
-        reported by provenance, so pre-existing marker-like bytes in a
-        brought file don't count as conflicts.
+        by text: a file's metadata row merges field-aware beside its
+        blob (timestamps are advisory) and carries the size of the
+        merged bytes, the cwd keeps ours, and anything else contested
+        raises as a hard conflict rather than merging silently. A file
+        is reported once, by path, however many of its keys were
+        contested. The filesystem caches are invalidated afterwards;
+        marker conflicts are reported by provenance, so pre-existing
+        marker-like bytes in a brought file don't count as conflicts.
         """
         from kvgit import MergeChoice, MergeConflict
         from kvgit.merges import text as text_merge
@@ -994,10 +933,21 @@ class KvgitProvider:
         # enumeration failing means store trouble, and that must
         # surface, not silently narrow the merge.
         file_keys: set[str] = set()
+        row_keys: set[str] = set()
         for handle in (self._staged, other):
-            file_keys.update(self._file_keys(handle.keys()).keys())
-        merge_fns = {key: text_merge for key in file_keys}
-        merge_fns[VirtualFS.METADATA_KEY] = _merge_vfs_metadata
+            keys = list(handle.keys())
+            file_keys.update(self._file_keys(keys).keys())
+            row_keys.update(k for k in keys if VirtualFS.is_metadata_key(k))
+        merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
+        # Each row merges under the policy its own blob merges under:
+        # field-aware, with the size taken from the merged bytes rather
+        # than from a side. Bound per key because a merge function is
+        # handed values, not the key it was registered for, and the row
+        # needs to know which file it describes.
+        base = self._merge_base(self._staged.current_commit, source_head)
+        at_lca = self._staged.checkout(base) if base is not None else None
+        for key in row_keys:
+            merge_fns[key] = self._row_merge_fn(key, other, at_lca)
         merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
         merge_fns[_VIEW_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
@@ -1068,12 +1018,6 @@ class KvgitProvider:
                 if self._markers_introduced(rev.get(path), at_base, other)
             )
         )
-        # Merged bytes match neither branch, but the metadata merge
-        # copied one branch's size: correct sizes from the blobs before
-        # reporting. Metadata-only, so ``brought`` still describes this.
-        # The follow-up carries the source tag: it is part of the merge,
-        # and status derives merge context from history.
-        self._fix_merged_sizes(brought.added | brought.modified, rev, source, info)
         # HEAD moved underneath the VirtualFS object: drop its caches
         # like checkout()/discard() do, or listings and stat go stale.
         self._invalidate_fs()
@@ -1098,11 +1042,114 @@ class KvgitProvider:
             raise ValueError(f"unknown branch {source!r}") from None
         return probe
 
-    def _display_conflicts(self, exc: Exception) -> list[str]:
-        """Conflicting keys as display paths (raw keys for non-files)."""
+    def _display_conflicts(self, exc: Exception) -> set[str]:
+        """Conflicting keys as display paths (raw keys for non-files).
+
+        A file is one conflict however many of its keys contested: its
+        blob and its metadata row are two keys describing one path, and
+        an agent asked to resolve the same file twice has been told
+        something untrue. Both fold onto the path, and the set does the
+        rest.
+        """
+        from monkeyfs import VirtualFS
+
         keys: set[str] = set(getattr(exc, "conflicting_keys", ()))
         paths = self._file_keys(keys)
-        return [paths.get(key, key) for key in keys]
+        out: set[str] = set()
+        for key in keys:
+            if VirtualFS.is_metadata_key(key):
+                try:
+                    out.add("/" + VirtualFS.path_for_metadata_key(key).lstrip("/"))
+                    continue
+                except (ValueError, UnicodeDecodeError):
+                    pass
+            out.add(paths.get(key, key))
+        return out
+
+    def _merge_base(self, ours: str, theirs: str) -> str | None:
+        """The commit a three-way merge of these two heads resolves against.
+
+        It must be the base kvgit's own merge uses: the merged bytes of
+        a contested file are a function of that base, and a row whose
+        size was computed against a different one would describe bytes
+        nothing holds. kvgit has no public accessor for it, so this
+        reads its finder the way the commit root and time are read —
+        directly, in the one place that knows the name. ``None`` when
+        there is none to be had, and the sizes then fall back to a
+        side's own.
+        """
+        find = getattr(self._staged.versioned, "_find_lca", None)
+        if not callable(find):
+            return None
+        try:
+            return find(ours, theirs)
+        except Exception:  # noqa: BLE001 - no base is an answer, not a failure
+            return None
+
+    def _row_merge_fn(self, row_key: str, other: Any, at_lca: Any):
+        """The merge function for one file's metadata row.
+
+        Fields merge by rule; ``size`` is recomputed from the bytes the
+        content merge produces for this same path, so the row that lands
+        in the merge commit describes the blob that lands with it. A
+        size copied from a side would be wrong for every file whose
+        merged bytes match neither — a clean union of two edits is the
+        common case — and correcting it afterwards would put a second
+        commit inside one merge.
+        """
+        from monkeyfs import VirtualFS
+
+        def merge_row(old: Any, ours: Any, theirs: Any) -> bytes:
+            return _merge_metadata_row(
+                old, ours, theirs, size=self._merged_size(row_key, other, at_lca)
+            )
+
+        try:
+            VirtualFS.path_for_metadata_key(row_key)
+        except (ValueError, UnicodeDecodeError):
+            # A row key whose path will not decode describes no file
+            # this provider can find bytes for; merge the fields alone.
+            return _merge_metadata_row
+        return merge_row
+
+    def _merged_size(self, row_key: str, other: Any, at_lca: Any) -> int | None:
+        """Length of the bytes a content merge produces for this row's file.
+
+        Resolves the file's three sides exactly as the content merge
+        does — identical sides stand, a side that did not change takes
+        the other, and anything else is the marker merge — so the size
+        is the merged blob's, whether the merge was clean or marked.
+        ``None`` where that cannot be answered (a directory row, an
+        unreadable side, bytes no marker merge can mark): the row then
+        keeps a side's own size, which is the best that is known.
+        """
+        from kvgit.merges import CantMark
+        from kvgit.merges import text as text_merge
+        from monkeyfs import VirtualFS
+
+        try:
+            path = VirtualFS.path_for_metadata_key(row_key)
+            blob_key = self.fs._encode_path("/" + path.lstrip("/"))
+        except (ValueError, UnicodeDecodeError):
+            return None
+        base = at_lca.get(blob_key) if at_lca is not None else None
+        ours = self._staged.get(blob_key)
+        theirs = other.get(blob_key)
+        for side in (base, ours, theirs):
+            if side is not None and not isinstance(side, bytes):
+                return None
+        if ours == theirs:
+            merged = ours
+        elif ours == base:
+            merged = theirs
+        elif theirs == base:
+            merged = ours
+        else:
+            try:
+                merged = text_merge(base, ours, theirs)
+            except CantMark:
+                return None
+        return len(merged) if merged is not None else None
 
     def _markers_introduced(self, key: str | None, at_base: Any, other: Any) -> bool:
         """Whether this merge introduced conflict markers into a key.
@@ -1124,56 +1171,6 @@ class KvgitProvider:
             if isinstance(parent, bytes) and b"<<<<<<< " in parent:
                 return False
         return True
-
-    def _fix_merged_sizes(
-        self,
-        paths: set[str],
-        rev: dict[str, str],
-        source: str,
-        info: dict[str, Any] | None = None,
-    ) -> None:
-        """Correct VFS metadata sizes from the merged blobs.
-
-        The metadata merge copies ``size`` from one branch, but merged
-        file bytes (clean unions, marker content) match neither side.
-        Sizes are advisory next to content truth, so rewrite them here
-        and commit metadata-only. Commits only when a size actually
-        differs, so clean merges stay a single commit. Tagged with the
-        merge source: the follow-up is part of the merge.
-        """
-        from monkeyfs import VirtualFS
-
-        raw = self._staged.get(VirtualFS.METADATA_KEY)
-        if raw is None:
-            return
-        table = json.loads(raw)
-        fixed = False
-        for path in paths:
-            key = rev.get(path)
-            if key is None:
-                continue
-            blob = self._staged.get(key)
-            if not isinstance(blob, bytes):
-                continue
-            entry = table.get(self.fs._decode_path(key))
-            if not isinstance(entry, dict):
-                continue
-            if entry.get("size") != len(blob):
-                entry["size"] = len(blob)
-                fixed = True
-        if not fixed:
-            return
-        self._staged[VirtualFS.METADATA_KEY] = json.dumps(
-            table, sort_keys=True
-        ).encode()
-        self.commit(
-            {
-                "tool": "ws-git.merge",
-                "source": source,
-                "sizes": "recomputed",
-                **(info or {}),
-            }
-        )
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""
@@ -1197,6 +1194,12 @@ class KvgitProvider:
         out: dict[str, str] = {}
         for key in keys:
             if not isinstance(key, str) or not key.startswith(VirtualFS.PREFIX):
+                continue
+            # A metadata row starts with the file prefix too, so the
+            # scan has to say so: it describes a file, it is not one.
+            # The cwd slot and the legacy metadata table are the other
+            # two keys under the prefix that hold no file content.
+            if VirtualFS.is_metadata_key(key):
                 continue
             if key in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY):
                 continue

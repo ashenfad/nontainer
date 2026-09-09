@@ -219,7 +219,7 @@ takes ours:
 
 | keys | rule |
 |---|---|
-| file keys (the VFS blobs + its metadata table) | three-way, marker merge; the table field-aware |
+| file keys (a VFS blob and the metadata row beside it) | three-way, marker merge; the row field-aware, its size taken from the merged bytes |
 | `__cache__/*` | ours — a delegate's working memory does not come back |
 | `__agno__/*` | ours — a delegate's conversation does not come back; what it has to say arrives as its answer |
 | cwd, the ws-git blob, the view record | ours |
