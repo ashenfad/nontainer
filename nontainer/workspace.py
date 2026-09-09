@@ -2111,9 +2111,11 @@ class Workspace:
 
         ``limit`` counts what comes back, not what was read: five
         entries of the kind asked for, however many commits stand
-        between them. A provider with no index makes no bookkeeping
-        commits, so ``"work"`` and ``"all"`` are the same history
-        there.
+        between them. A limit that asks for nothing gets nothing,
+        whatever the kind — ``limit=0`` is an empty log, and so is a
+        negative one, which is what the provider's own history answers.
+        A provider with no index makes no bookkeeping commits, so
+        ``"work"`` and ``"all"`` are the same history there.
         """
         if kind not in ("work", "agent", "all"):
             raise ValueError(
@@ -2131,10 +2133,14 @@ class Workspace:
         Reads the provider's history unbounded and stops as soon as
         ``limit`` entries of the wanted kind have been yielded, so a
         run of bookkeeping commits costs reads but never eats into
-        what the caller asked for.
+        what the caller asked for. The count is checked before each
+        entry goes out, so a limit of nothing yields nothing — the
+        answer the provider gives for the same limit.
         """
         from .agentgit import is_agent_commit, is_bookkeeping_commit
 
+        if limit is not None and limit <= 0:
+            return
         keep = (
             is_agent_commit
             if kind == "agent"
@@ -2144,10 +2150,10 @@ class Workspace:
         for entry in self._provider.history(limit=None):
             if not keep(entry.info):
                 continue
-            yield entry
-            seen += 1
             if limit is not None and seen >= limit:
                 return
+            yield entry
+            seen += 1
 
     def fork(
         self,

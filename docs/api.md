@@ -627,9 +627,12 @@ nobody performed:
 
 `limit` counts what comes back, not what was read: `log(limit=5)` is
 five commits of the kind asked for, however many stand between them. A
-provider with no index makes no bookkeeping commits, so `"work"` and
-`"all"` are the same history there. An unknown kind raises `ValueError`.
-`ws.index.log()` is the agent's own fiction and takes no `kind`.
+limit that asks for nothing gets nothing, whatever the kind —
+`limit=0` is an empty log, and so is a negative one, matching the
+provider's own history. A provider with no index makes no bookkeeping
+commits, so `"work"` and `"all"` are the same history there. An unknown
+kind raises `ValueError`. `ws.index.log()` is the agent's own fiction
+and takes no `kind`.
 
 `CommitInfo.parents` carries the ids a commit descends from: one for an
 ordinary commit, two for a merge, empty for a root commit and for a
