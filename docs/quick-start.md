@@ -103,10 +103,27 @@ A merge takes only what has been committed, on both sides. Overlapping
 edits come back as `<<<<<<<` markers *inside* the merge commit rather
 than blocking it: `ws-git status` shows them as `UU`, the agent fixes
 them with ordinary edits, and the next commit clears the merge context.
-The agent has the same verbs in the terminal — `ws-git branch
-<name> --paths auth.py`, `ws-git merge <name>`, `ws-git checkout <ref>
--- <paths>`. To read another session's tree in place without copying
-it: `ws.files.attach("refactor", "reviews")`.
+To read another session's tree in place without copying it:
+`ws.files.attach("refactor", "reviews")`.
+
+### Giving the agent the versioning verbs
+
+The agent's half of this is `ws-git`, a terminal builtin the embedder
+registers — like apps, it is opt-in, and no adapter turns it on for you:
+
+```python
+from nontainer.wsgit import register_wsgit
+
+register_wsgit(ws)                      # now the shell answers `ws-git`
+ws.terminal("ws-git branch polish --paths auth.py")
+ws.terminal("ws-git merge polish")      # also: status, commit, log, checkout
+```
+
+The rule: `ws.index` is the host's half and needs no switch — every
+workspace whose backend has `caps.index` (kvgit does) has it. The
+terminal `ws-git` exists only where `register_wsgit(ws)` has been
+called; until then the agent gets `ws-git: command not found`. Both
+drive the same index, so host and agent see one composition.
 
 [examples/tour.py](../examples/tour.py) runs all of it end to end.
 
@@ -215,8 +232,8 @@ child = fork_session(ws, "what-if")            # files + chat, O(1)
 
 One commit per turn then holds files, `cache`, cwd and the run agno
 just persisted; `ws.checkout(commit)` restores all four and
-`fork_session()` branches all four. Drive the fork with the same three objects built
-over `child`. When agno's cross-session features matter — its
+`fork_session()` branches all four. Drive the fork with the same three
+objects built over `child`. When agno's cross-session features matter — its
 past-sessions tool, AgentOS, its own `fork_session` — use
 `KvgitStoreDb` over the whole store instead of a db per workspace.
 The reasoning is in [agno-sessions.md](agno-sessions.md); the shapes
@@ -230,12 +247,13 @@ explains the magic. Override with `tools="terminal"` / `"split"`.
 ## Apps: the agent builds and verifies a web app
 
 ```python
-from nontainer import workspace
+from nontainer import store
 from nontainer.adapters.agno import WorkspaceTools
 from nontainer.apps import AppsConfig, enable_apps
 
 APPS = AppsConfig()                       # build ONE; see serving below
-ws = workspace(session_id)
+st = store()
+ws = st.open(session_id)
 runtime = enable_apps(ws, APPS)           # registers the `ws-curl` builtin
 agent = Agent(model=..., tools=[WorkspaceTools(ws, apps=runtime)])
 ```
@@ -269,8 +287,11 @@ To share an app, publish a **frozen snapshot** and mount the router:
 ```python
 from nontainer.apps import build_router, mint_token
 
-# resolve returns a read-only Workspace pinned to the published commit
-router = build_router(lambda token: my_snapshots.get(token), config=APPS)
+pub = st.publish(ws, "scoreboard")     # v1: a commit of app/ and nothing else
+snapshot = pub.open()                  # frozen Workspace; immutable, so reuse it
+token = mint_token()                   # the embedder's table maps token -> app
+
+router = build_router(lambda t: snapshot if t == token else None, config=APPS)
 app.mount("/apps", router)     # FastAPI or Starlette
 # hand out: https://your.host/apps/{token}/
 ```
@@ -284,29 +305,20 @@ breaks published, and verification cannot catch it: the workspace
 test_app runs against is not the one the router serves. Both default when
 omitted, so a mismatch stays invisible until you customize one.
 
-Three fields make the app the embedder's rather than the library's:
-
-- `frontend_notes` — which frontend approach to reach for and which
-  libraries exist. Unset, agents are told plain DOM first with Preact and
-  plotly from the CDN allowlist; set it and that is replaced wholesale,
-  which is how a house design system gets a consistent look.
-- `static_assets={"vendor": "/srv/assets"}` — the bytes those libraries
-  live in, served at `vendor/…` and never entering the workspace. This is
-  what makes an air-gapped deployment work without a CDN.
-- `csp` — the policy served HTML carries **and** the one `test_app`
-  enforces while verifying. Declare it here rather than on
-  `build_router`, or verification runs under a policy you do not serve.
-  To widen one directive instead of restating the whole policy — an
-  intranet tile server on plain `http://`, say — use
-  `csp_extend={"img-src": ("http://tiles.internal",)}`, which keeps the
-  rest of the policy derived from `script_hosts`.
-
-See [apps.md](apps.md).
+`AppsConfig()` is where the app becomes the embedder's rather than the
+library's — which frontend the agent reaches for, which asset bytes are
+served beside the app without entering the workspace, and the CSP both
+walls enforce. Every field is in [api.md](api.md); why each one exists
+is in [apps.md](apps.md).
 
 Serving is read-only and concurrent. Mutable app state does **not** go
 in the workspace — it goes to an external store (a sqlite/postgres
 client) injected via `host_objects`, and you tell the agent about it
-with a `python_primer`. See the `webapp` example for the full pattern.
+with a `python_primer`. A publication is opened by the store rather
+than by the session, so it carries none of those host objects: serve an
+app whose handlers need one from `ws.tags.at(name)` instead, a frozen
+workspace that keeps the session's live objects. See the `webapp`
+example for the full pattern.
 
 See [apps.md](apps.md) for the full design (handler contract, frozen
 serving, threat model) and [api.md](api.md) for every signature.

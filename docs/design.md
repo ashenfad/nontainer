@@ -157,6 +157,12 @@ The one thing the substrate must provide is a keyed commit
 bookkeeping over ordinary reads and writes, which is why the fiction
 is provider-shaped rather than kvgit-shaped.
 
+Whether the agent gets the verbs at all is the embedder's call: `ws-git`
+is a terminal builtin registered by `register_wsgit(ws)`, the way
+`enable_apps` registers `ws-curl`, and a session where nobody called it
+answers `ws-git: command not found`. The host's `ws.index` needs no such
+switch — a workspace whose provider has `caps.index` always has it.
+
 ## Delegation: forks, views and merges
 
 A session is a kvgit branch carrying the whole world — files, cache,
