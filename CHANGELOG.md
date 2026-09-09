@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documented
+- **The default version is the next in the v-series.** `publish`
+  counts only `v<N>` names when it picks a default, so a lineage
+  holding `v1`, `v2` and `release-1` gets `v3`. The default is a
+  series of its own and a version the caller named stands outside it;
+  an embedder that wants every version numbered passes `version=`
+  itself.
+
 ### Changed
 - **A caller's mistake on publish is a `ValueError`.** Reusing a
   version name, publishing `paths` that match no file, and naming a
