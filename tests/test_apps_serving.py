@@ -512,6 +512,67 @@ def test_the_router_serves_a_publication(tmp_path):
         snap.close()
 
 
+SHARED_MODULE = """
+def total(scores):
+    return sum(scores)
+"""
+
+SHARED_IMPORTER = """
+from app.api._scoring import total
+
+def get(req):
+    return {"total": total([1, 2, 3])}
+"""
+
+STRAY_IMPORTER = """
+from helpers import scoring
+
+def get(req):
+    return {"total": scoring.total([1, 2, 3])}
+"""
+
+
+def test_a_published_handler_imports_a_module_beside_it(tmp_path):
+    """Shared backend code belongs under app/, because app/ is what a
+    publication carries. An _-prefixed module beside the handlers
+    imports as `from app.api._<name> import fn` through a publication,
+    is never routed as an endpoint, and is never served as static — so
+    the source is not fetchable by any spelling of its path."""
+    from nontainer import Store
+
+    store = Store(tmp_path)
+    ws = store.open("author")
+    enable_apps(ws)
+    ws.files.write("app/api/_scoring.py", SHARED_MODULE)
+    ws.files.write("app/api/board.py", SHARED_IMPORTER)
+    ws.files.write("helpers/scoring.py", SHARED_MODULE)
+    ws.files.write("app/api/stray.py", STRAY_IMPORTER)
+    ws.commit()
+    pub = store.publish(ws, "scoreboard")
+    ws.close()
+
+    snapshot = pub.open()
+    token = mint_token()
+    app = Starlette()
+    app.mount("/apps", build_router(lambda t: snapshot if t == token else None))
+    client = TestClient(app)
+
+    assert client.get(f"/apps/{token}/api/board").json() == {"total": 6}
+    for path in (
+        "api/_scoring",
+        "api/_scoring.py",
+        "./api/_scoring.py",
+        "x/../api/_scoring.py",
+    ):
+        assert client.get(f"/apps/{token}/{path}").status_code == 404
+    # ...and the same module in helpers/ is outside the published
+    # paths, so the handler that imports it works in preview and
+    # fails once served
+    assert not snapshot.files.exists("helpers/scoring.py")
+    assert client.get(f"/apps/{token}/api/stray").status_code == 500
+    snapshot.close()
+
+
 GUESTBOOK = """
 def get(req):
     return {"entries": db.entries()}

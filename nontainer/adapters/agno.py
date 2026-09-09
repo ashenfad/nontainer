@@ -308,7 +308,9 @@ class WorkspaceTools(Toolkit):
                     return text
 
             run_python.__doc__ = python_description(
-                workspace, primer=python_primer
+                workspace,
+                apps=apps.config if apps is not None else None,
+                primer=python_primer,
             ) + PYTHON_UI_NOTE.replace(
                 "__WS__", "" if workspace.root == "/" else workspace.root
             )

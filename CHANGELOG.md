@@ -16,19 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the pointer whatever the flag says, because a publication must point
   somewhere.
 
-### Documented
-- **The cache does not travel with a publication.** A publication
-  carries file blobs and the filesystem rows describing them; a
-  `cache` entry is neither, so a frozen open starts with an empty
-  cache. Data an app needs precomputed belongs in a file under the
-  published paths.
-- **The default version is the next in the v-series.** `publish`
-  counts only `v<N>` names when it picks a default, so a lineage
-  holding `v1`, `v2` and `release-1` gets `v3`. The default is a
-  series of its own and a version the caller named stands outside it;
-  an embedder that wants every version numbered passes `version=`
-  itself.
-
 ### Fixed
 - **A publish that died mid-way can be resumed or cleared.** `publish`
   writes the branch and the tag before the registry record, so a crash
@@ -50,6 +37,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message text. `WorkspaceError` stays for the store's own state — a
   session with staged changes, a leftover tag or branch, a version
   unpublished since the `Publication` was fetched.
+- **Shared backend code lives under `app/`.** The python tool
+  description and the apps notes sent shared handler code to
+  `/workspace/helpers`, which a publication of `app/` does not carry,
+  so a published app's imports failed while preview worked. Both now
+  point at `app/api/_<name>.py`, imported `from app.api._<name>
+  import fn`: a module the publication carries, never routed as an
+  endpoint and never served as static. The apps notes no longer claim
+  imports between `app/api` files do not work. `python_description`
+  takes `apps=`, so a workspace with no app still hears `helpers/`.
+- **The cache does not travel with a publication**, and `docs/apps.md`
+  and `publish`'s docstring now say so. A publication carries file
+  blobs and the rows describing them; a `cache` entry is neither, so a
+  frozen open starts with an empty cache. Data an app needs
+  precomputed belongs in a file under the published paths.
+- **The default version is the next in the v-series**, stated in
+  `publish`'s docstring and `docs/api.md`. Only `v<N>` names are
+  counted, so a lineage holding `v1`, `v2` and `release-1` gets `v3`:
+  the default is a series of its own and a version the caller named
+  stands outside it. An embedder that wants every version numbered
+  passes `version=` itself.
 
 ## 0.6.2 - 2026-09-09
 
