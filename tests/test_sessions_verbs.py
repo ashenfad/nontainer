@@ -198,6 +198,43 @@ def test_the_view_record_merges_as_ours(ws):
         child.close()
 
 
+def test_the_filesystem_root_is_not_a_view(ws):
+    """A view of everything is not a view, and it is spelled
+    paths=None. Taken as a seed, ``/`` would hide every path below it
+    instead of showing the tree, which is the opposite of what a
+    caller asking for the root means."""
+    _seed(ws, **{"a.py": "a\n"})
+    for spelling in ("/", "//", "/."):
+        with pytest.raises(ValueError, match="not a view"):
+            ws.fork("kid", paths=[spelling])
+    assert "kid" not in set(ws._store.sessions())
+
+    r = ws.terminal("ws-git branch kid --paths /")
+    assert r.exit_code == 1
+    assert "not a view" in r.stderr
+    assert "kid" not in set(ws._store.sessions())
+
+
+def test_the_workspace_root_as_a_seed_shows_the_whole_tree(ws):
+    """The seed a caller reaches for instead: an ordinary path that
+    happens to hold everything this session has."""
+    _seed(ws, **{"a.py": "a\n", "deep/b.py": "b\n"})
+    child = ws.fork("child", paths=["/workspace"])
+    try:
+        assert child._view == ("/workspace",)
+        assert child.files.read("/workspace/a.py") == b"a\n"
+        assert child.files.read("/workspace/deep/b.py") == b"b\n"
+        assert sorted(child.files.list("/workspace", recursive=True)) == [
+            "/workspace/a.py",
+            "/workspace/deep",
+            "/workspace/deep/b.py",
+        ]
+        child.files.write("/workspace/a.py", "changed\n")
+        assert child.files.read("/workspace/a.py") == b"changed\n"
+    finally:
+        child.close()
+
+
 # -- diff grouping -------------------------------------------------------------
 
 
