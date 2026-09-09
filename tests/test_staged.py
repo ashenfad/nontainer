@@ -1197,6 +1197,20 @@ def test_log_limit_counts_what_comes_back(kv_ws):
     assert len(list(kv_ws.log(kind="all", limit=3))) == 3
 
 
+def test_log_of_no_commits_is_empty_for_every_kind(kv_ws):
+    """A limit that asks for nothing gets nothing, whatever the kind:
+    the count is checked before an entry goes out, not after — and a
+    negative limit answers as the provider's own history does."""
+    kv_ws.terminal("echo one > a.txt")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.commit("agent work")
+
+    for kind in ("work", "agent", "all"):
+        assert list(kv_ws.log(kind=kind, limit=0)) == []
+        assert list(kv_ws.log(kind=kind, limit=-1)) == []
+        assert len(list(kv_ws.log(kind=kind, limit=1))) == 1
+
+
 def test_log_refuses_a_kind_it_does_not_have(kv_ws):
     with pytest.raises(ValueError, match="Unknown log kind"):
         kv_ws.log(kind="plumbing")
