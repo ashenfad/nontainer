@@ -404,7 +404,10 @@ def test_merge_takes_our_blob(kv_ws):
         fork.close()
 
 
-def test_partial_commit_preserves_the_live_table(kv_ws):
+def test_partial_commit_takes_each_files_row_with_its_blob(kv_ws):
+    """A row rides with its blob and only with its blob: the committed
+    file describes itself in the commit, and the uncommitted one is
+    still live at its live size, with neither in the other's tree."""
     from monkeyfs import VirtualFS
 
     p = _provider(kv_ws)
@@ -413,11 +416,18 @@ def test_partial_commit_preserves_the_live_table(kv_ws):
     kv_ws.index.stage(["/workspace/a.txt"])
     kv_ws.index.commit("a only")
 
+    committed = p._staged.checkout(kv_ws.index.head)
+    rows = {
+        VirtualFS.path_for_metadata_key(k)
+        for k in committed.keys()
+        if VirtualFS.is_metadata_key(k)
+    }
+    assert "workspace/a.txt" in rows
+    assert "workspace/b.txt" not in rows
+    assert json.loads(committed.get(p.fs.metadata_key("/workspace/a.txt")))["size"] == 3
+
     # Live reads still see the uncommitted file at its live size.
-    live = json.loads(p._staged.get(VirtualFS.METADATA_KEY) or b"{}") or json.loads(
-        p._staged.checkout(p.head).get(VirtualFS.METADATA_KEY)
-    )
-    assert live["workspace/b.txt"]["size"] == 3
+    assert kv_ws.files.fs.stat("/workspace/b.txt").size == 3
     assert kv_ws.files.read("/workspace/b.txt") == b"two"
 
 

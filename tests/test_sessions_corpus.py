@@ -23,6 +23,8 @@ h. the merge joins the ancestry: merging the same source again brings
    only what is new, and the merge is in the agent's log
 i. a source with work its agent has not committed is refused
 j. a provider without a merge engine refuses fork and merge by name
+k. a file is one conflict however many keys it occupies, and files
+   edited on both sides come back with their sizes and timestamps
 """
 
 import pytest
@@ -364,3 +366,39 @@ def test_agentfs_refuses_fork_and_merge_by_name(tmp_path):
             ws.merge("child")
     finally:
         ws.close()
+
+
+# -- k. one file, one conflict -------------------------------------------------
+
+
+def test_one_file_is_one_conflict_and_two_files_merge_with_their_metadata(parent):
+    """A file's bytes and its metadata are two keys describing one path.
+    Contesting both is still one conflict, named by path; and two files
+    edited on either side merge clean, each landing with a size that
+    describes the bytes beside it."""
+    _seed(parent, shared="one\ntwo\nthree\n", mine="mine\n", yours="yours\n")
+    child = _fork(parent, "child")
+    try:
+        child.files.write("/workspace/shared", "one\nCHILD\nthree\n")
+        child.files.write("/workspace/yours", "yours\nchild added a line\n")
+        child.index.commit("child edits")
+
+        parent.files.write("/workspace/shared", "one\nPARENT\nthree\n")
+        parent.files.write("/workspace/mine", "parent added a line\nmine\n")
+        parent.index.commit("parent edits")
+
+        out = parent.merge("child")
+        assert out.merged
+        # Once, by path: never a second entry for the metadata row.
+        assert out.conflicts == ("/workspace/shared",)
+
+        for name in ("shared", "mine", "yours"):
+            body = parent.files.read(f"/workspace/{name}")
+            assert parent.files.fs.stat(f"/workspace/{name}").size == len(body)
+        # The two disjoint edits both arrived, whole.
+        assert parent.files.read("/workspace/mine") == b"parent added a line\nmine\n"
+        assert parent.files.read("/workspace/yours") == b"yours\nchild added a line\n"
+        assert b"<<<<<<<" in parent.files.read("/workspace/shared")
+        assert "UU shared" in parent.terminal("ws-git status").stdout
+    finally:
+        child.close()

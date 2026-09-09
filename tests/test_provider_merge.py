@@ -247,23 +247,25 @@ def test_merged_sizes_recomputed(kv_ws):
         kv_ws.files.fs.write("/workspace/doc.txt", b"main\na\nb\n")
         kv_ws.commit()
 
+        before = _provider(kv_ws).head
         out = _provider(kv_ws).merge("worker")
         assert out.merged
         assert out.conflicts == ()
         body = kv_ws.terminal("cat doc.txt").stdout.encode()
         assert kv_ws.files.fs.stat("/workspace/doc.txt").size == len(body)
+        # One commit: the size rides in the merge, not in a follow-up.
+        assert out.commit == _provider(kv_ws).head
+        assert [e.id for e in kv_ws.log()][:2] == [out.commit, before]
     finally:
         fork.close()
 
 
 def test_file_vs_dir_is_hard_conflict(kv_ws):
-    from monkeyfs import VirtualFS
-
     kv_ws.terminal("echo file > x")
     fork = kv_ws.fork("worker")
     try:
-        # Both sides touch the same table row (single-row keys since
-        # monkeyfs 0.1.8); the fork then swaps the file for a dir.
+        # Both sides write the same path's metadata row; the fork then
+        # swaps the file for a directory, which no field merge resolves.
         kv_ws.terminal("echo more >> x")
         fork.terminal("rm x && mkdir x && echo hi > x/inner.txt")
 
@@ -272,7 +274,8 @@ def test_file_vs_dir_is_hard_conflict(kv_ws):
         assert not out.merged
         assert out.commit is None
         assert _provider(kv_ws).head == before
-        assert out.conflicts == (VirtualFS.METADATA_KEY,)
+        # Reported as the path, once: the row is not a second file.
+        assert out.conflicts == ("/workspace/x",)
     finally:
         fork.close()
 

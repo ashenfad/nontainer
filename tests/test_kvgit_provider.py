@@ -888,3 +888,88 @@ def test_divergent_legacy_cwd_keys_do_not_block_a_merge(tmp_path):
         ws.commit()
     with store.open("main") as ws:
         assert "__cwd__" not in ws._provider.kv
+
+
+# -- a state written before per-file metadata rows -----------------------------
+
+
+def _to_legacy_table(provider):
+    """Rewrite this session's metadata as the single pre-row table.
+
+    What a state written by an older monkeyfs looks like: no rows, one
+    ``__vfs_metadata__`` blob describing every path. Built by hand
+    because nothing writes the table any more.
+    """
+    import json
+
+    kv = provider.kv
+    table = {}
+    for key in list(kv.keys()):
+        if VirtualFS.is_metadata_key(key):
+            table[VirtualFS.path_for_metadata_key(key)] = json.loads(kv[key])
+            del kv[key]
+    kv[VirtualFS.METADATA_KEY] = json.dumps(table).encode()
+    provider.commit(info={"tool": "legacy"})
+    provider.fs.invalidate()
+
+
+def test_a_legacy_table_reads_and_drains_one_write_at_a_time(tmp_path):
+    """A session whose metadata is still the one table reads normally,
+    and a write to one path moves that path to a row without disturbing
+    the paths still described by the table."""
+    import json
+
+    provider = KvgitProvider.open(tmp_path / "kvgit", session="legacy")
+    try:
+        for name in ("a.txt", "b.txt"):
+            provider.fs.write(f"/workspace/{name}", name.encode())
+        provider.commit()
+        _to_legacy_table(provider)
+
+        assert provider.fs.read("/workspace/a.txt") == b"a.txt"
+        assert provider.fs.stat("/workspace/b.txt").size == 5
+
+        provider.fs.write("/workspace/a.txt", b"rewritten")
+        assert json.loads(provider.kv[VirtualFS.METADATA_KEY]).keys() == {
+            "workspace",
+            "workspace/b.txt",
+        }
+        assert provider.kv.get(provider.fs.metadata_key("/workspace/a.txt"))
+        # the untouched path still answers, out of the table
+        assert provider.fs.stat("/workspace/b.txt").size == 5
+        assert provider.fs.read("/workspace/b.txt") == b"b.txt"
+    finally:
+        provider.close()
+
+
+def test_a_selective_commit_takes_a_row_and_never_the_legacy_table(tmp_path):
+    """The row rides with the blob; the table stays behind. Committing a
+    drained table would strip the entries of files whose rows are still
+    unstaged, and a stale entry beside a committed row is harmless —
+    a row wins over the table."""
+    import json
+
+    provider = KvgitProvider.open(tmp_path / "kvgit", session="legacy")
+    try:
+        for name in ("a.txt", "b.txt"):
+            provider.fs.write(f"/workspace/{name}", name.encode())
+        provider.commit()
+        _to_legacy_table(provider)
+
+        provider.fs.write("/workspace/a.txt", b"rewritten")
+        commit = provider.commit_keys({"tool": "test"}, keys=["/workspace/a.txt"])
+        at = provider.staged.checkout(commit)
+
+        row = at.get(provider.fs.metadata_key("/workspace/a.txt"))
+        assert json.loads(row)["size"] == len(b"rewritten")
+        # the table in the commit is the one from before the write
+        assert json.loads(at.get(VirtualFS.METADATA_KEY)).keys() == {
+            "workspace",
+            "workspace/a.txt",
+            "workspace/b.txt",
+        }
+        # and a filesystem over that commit believes the row, not the table
+        assert VirtualFS(at).stat("/workspace/a.txt").size == len(b"rewritten")
+        assert VirtualFS(at).stat("/workspace/b.txt").size == 5
+    finally:
+        provider.close()

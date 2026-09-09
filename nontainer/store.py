@@ -1138,10 +1138,14 @@ class Store:
         The branch starts at the store's empty root commit — opening a
         kvgit branch by a name that does not exist creates it empty —
         so the publication's only ancestor is nothing at all. Into it go
-        the selected file blobs and a filesystem table pruned to exactly
-        those files (plus the directory rows above them), which is what
-        makes a frozen open read the published tree and see nothing
-        else.
+        the selected file blobs and, beside each one, the metadata row
+        the source filesystem holds for that path (plus the rows of the
+        directories above them), which is what makes a frozen open read
+        the published tree and see nothing else. The rows are asked of a
+        filesystem over the source commit rather than copied key by key,
+        so a source still carrying the legacy ``__vfs_metadata__`` table
+        publishes rows like any other — and the table itself, which
+        describes files this publication does not hold, never travels.
 
         Blobs are copied rather than pointed at. That is fine at app
         sizes, and content addressing in the store below would make the
@@ -1169,13 +1173,19 @@ class Store:
                 f"under {', '.join(paths)!r}. Publish paths that exist, or "
                 "widen paths=."
             )
-        rows = _pruned_rows(handle.get(VirtualFS.METADATA_KEY), set(wanted.values()))
+        rows = _published_rows(
+            VirtualFS(handle).get_metadata_snapshot(), set(wanted.values())
+        )
 
         pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
         try:
+            pub_fs = VirtualFS(pub)
             for key in wanted:
                 pub[key] = handle.get(key)
-            pub[VirtualFS.METADATA_KEY] = json.dumps(rows, sort_keys=True).encode()
+            for row_path, fields in rows.items():
+                pub[pub_fs.metadata_key("/" + row_path)] = json.dumps(
+                    fields, sort_keys=True
+                ).encode()
             result = pub.commit(info=commit_info)
             if not result.merged:
                 raise WorkspaceError(
@@ -1453,31 +1463,31 @@ def _under(path: str, paths: "Sequence[str]", root: str) -> bool:
     return False
 
 
-def _pruned_rows(raw: Any, published: set[str]) -> dict[str, Any]:
-    """The filesystem's metadata table, cut down to the published files.
+def _published_rows(
+    snapshot: Mapping[str, Any], published: set[str]
+) -> dict[str, dict[str, Any]]:
+    """The metadata rows a publication carries, by root-relative path.
 
-    A published tree that carried no rows would read as empty: the rows
-    are what a filesystem over the commit lists and stats. Rows are
-    stored root-relative, so the leading slash comes off; directory rows
-    above a published file come along, and every other row — every file
-    outside ``paths`` — is left behind with its blob.
+    A published tree whose blobs had no rows would read as empty: a row
+    is what a filesystem over the commit lists and stats. Paths are
+    stored root-relative, so the leading slash comes off; the row of a
+    directory above a published file comes along, and every other row —
+    every file outside the published paths — is left behind with its
+    blob.
     """
-    table: Any = {}
-    if raw is not None:
-        try:
-            table = json.loads(raw)
-        except (ValueError, TypeError):
-            table = {}
-    if not isinstance(table, dict):
-        table = {}
     rows = {p.lstrip("/") for p in published}
-    out: dict[str, Any] = {}
-    for row, entry in table.items():
-        if row in rows:
-            out[row] = entry
-        elif isinstance(entry, dict) and entry.get("is_dir"):
-            if any(f.startswith(f"{row}/") for f in rows):
-                out[row] = entry
+    out: dict[str, dict[str, Any]] = {}
+    for path, meta in snapshot.items():
+        fields = {
+            "size": getattr(meta, "size", 0),
+            "created_at": getattr(meta, "created_at", ""),
+            "modified_at": getattr(meta, "modified_at", ""),
+            "is_dir": getattr(meta, "is_dir", False),
+        }
+        if path in rows:
+            out[path] = fields
+        elif fields["is_dir"] and any(f.startswith(f"{path}/") for f in rows):
+            out[path] = fields
     return out
 
 
