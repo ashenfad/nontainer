@@ -10,9 +10,11 @@ thread-safe SQLite) owns its own state and its own locking.
 Flow:
   1. Author: the agent builds the guestbook using the injected `db`
      (SQL), verifies it with curl + test_app.  (needs an API key)
-  2. Freeze: commit the workspace — the app is now a published commit.
-  3. Serve: build_router serves it read-only; POSTs still work because the
-     mutation lands in SQLite, not the (frozen) VFS.  (runs without a key)
+  2. Freeze: tag the commit and open the tag — a frozen workspace, one
+     immutable state that nothing can write to.
+  3. Serve: build_router serves that frozen workspace read-only; POSTs
+     still work because the mutation lands in SQLite, not the VFS.
+     (runs without a key)
 
 Run:  ANTHROPIC_API_KEY=... uv run python examples/webapp.py
       (without a key, the app is seeded and only the serving demo runs)
@@ -64,14 +66,14 @@ DB_PRIMER = (
 TASK = """\
 Build a guestbook web app in this workspace, backed by the `db` SQLite store:
 
-1. Backend /app/api/entries.py:
+1. Backend app/api/entries.py:
    - Ensure the table: db.execute("CREATE TABLE IF NOT EXISTS entries (name TEXT)")
      at the top of each handler (idempotent).
    - get(req)  -> {"entries": [row[0] for row in db.query("SELECT name FROM entries")]}
    - post(req) -> name = req.require("name"); db.execute(
        "INSERT INTO entries (name) VALUES (?)", (name,)); return {"ok": True}
 2. Test with curl: GET (empty), POST a couple of names, GET again.
-3. Frontend /app/index.html — plain JS, RELATIVE urls — list + input + add button.
+3. Frontend app/index.html — plain JS, RELATIVE urls — list + input + add button.
 4. Verify with test_app: add an entry through the UI, assert the list grew,
    take a screenshot.
 
@@ -140,18 +142,28 @@ def main() -> None:
         print(agent.run(TASK).content)
     else:
         print("(no API key — seeding the app so the serving demo runs)")
-        ws.files.fs.makedirs("/app/api", exist_ok=True)
-        ws.files.fs.write("/app/api/entries.py", SEED_HANDLER.encode())
-        ws.files.fs.write("/app/index.html", SEED_HTML)
+        # The app tree is <ws.root>/app — /workspace/app by default,
+        # the same path `$APP_ORIGIN` dispatches against.
+        ws.files.write(f"{ws.root}/app/api/entries.py", SEED_HANDLER)
+        ws.files.write(f"{ws.root}/app/index.html", SEED_HTML)
 
-    ws.commit(info={"published": True})  # the freeze point
+    # -- the freeze point: name the commit, then open the name ----------
+    # `ws.tags.at` hands back a frozen workspace — same state, nothing
+    # can write to it — and it keeps this session's `host_objects`, so
+    # the served handlers still reach `db`. `store.publish(ws, name)` +
+    # `pub.open()` is the other frozen shape (docs/apps.md): it derives
+    # a rootless commit holding only `app/`, and the workspace it opens
+    # comes from the store rather than from this session, so it carries
+    # no host objects — the right choice for an app whose state is not
+    # injected.
+    ws.tags.add("published", info={"published": True})
+    snapshot = ws.tags.at("published")
 
-    # -- serve the FROZEN snapshot: read-only VFS, sqlite-backed state ----
     print("\n=== serving frozen (read-only VFS; state lives in SQLite) ===")
     from starlette.applications import Starlette
     from starlette.testclient import TestClient
 
-    router = build_router(lambda t: ws if t == "demo" else None)
+    router = build_router(lambda t: snapshot if t == "demo" else None)
     app = Starlette()
     app.mount("/apps", router)
     client = TestClient(app)
@@ -173,6 +185,7 @@ def main() -> None:
         ws.uncommitted,
         "(state is in SQLite, not the VFS)",
     )
+    snapshot.close()
     ws.close()
 
 

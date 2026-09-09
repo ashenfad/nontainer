@@ -3,7 +3,7 @@
 The agent gets terminal + python tools against a kvgit-backed
 workspace, analyzes a CSV, writes a report, and stashes stats in the
 cache. Afterwards we print the workspace's commit history — every
-mutating tool call the agent made is a commit you can roll back.
+mutating tool call the agent made is a commit you can check out.
 
 Run:  ANTHROPIC_API_KEY=... uv run python examples/analyst.py
 Deps: pip install nontainer[agno] anthropic
