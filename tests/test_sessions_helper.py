@@ -15,7 +15,7 @@ import time
 import pytest
 
 from nontainer import Answer, Job, JobRunning, SessionsError, Store
-from nontainer.sessions import SEPARATOR, Sessions, pet_name
+from nontainer.sessions import SEPARATOR, Sessions, pet_name, run_action
 from nontainer.wsgit import register_wsgit
 
 
@@ -490,3 +490,66 @@ def test_a_delegate_that_deleted_a_file_lands_the_deletion(parent, store):
     assert "/workspace/main.py" not in committed
     parent.merge(answer.branch)
     assert not parent.files.exists("/workspace/main.py")
+
+
+def test_cancel_before_landing_leaves_the_branch_untouched(parent, store):
+    """Cancel and the landing are one state transition: after a cancel
+    succeeds, no commit of ours can start."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class Slow:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/half.md", "half done\n")
+            finally:
+                child.close()
+            started.set()
+            release.wait(5)
+            return "too late"
+
+    with Sessions(parent, Slow()) as sessions:
+        job = sessions.ask("go")
+        started.wait(5)
+        assert sessions.cancel(job.name).status == "cancelled"
+        release.set()
+        sessions.close()
+
+    child = store.open(job.name)
+    try:
+        # nothing of ours went onto the branch: its agent head is still
+        # the fork point, and the delegate's work is uncommitted there
+        assert child.index.head == parent.index.head
+        assert "/workspace/half.md" in child.index.status().unstaged
+    finally:
+        child.close()
+
+
+def test_cancel_after_landing_begins_leaves_the_answer_standing(parent, store):
+    """Once the landing has started the answer stands; cancel says so
+    rather than reporting a cancellation it cannot deliver."""
+    landing = threading.Event()
+    release = threading.Event()
+
+    class Gated(Sessions):
+        def _commit_child(self, child, answer, task):
+            landing.set()
+            release.wait(5)
+            return super()._commit_child(child, answer, task)
+
+    runner = Scripted(store, {"/workspace/report.md": "polished\n"}, text="landed")
+    with Gated(parent, runner) as sessions:
+        job = sessions.ask("polish")
+        landing.wait(5)
+        too_late = sessions.cancel(job.name)
+        assert too_late.status != "cancelled"
+        assert "is already landing" in run_action(sessions, "cancel", name=job.name)
+        release.set()
+        sessions.close()
+
+        answer = sessions.result(job.name)
+        assert answer.text == "landed"
+        assert sessions.list()[0].status == "answered"
+
+    assert parent.merge(answer.branch).merged
