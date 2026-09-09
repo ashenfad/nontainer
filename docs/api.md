@@ -40,7 +40,11 @@ own read anchor live), and the legacy `__void__` branch are reserved
 names, not sessions.
 
 **`store.delete(sessions, *, min_age=3600)`** drops a session's entire
-stored state, dispatching by backend to the layout `open` built —
+stored state — sessions only: every name must be a session id, checked
+before any of them reaches the backend, so the `@store/` branches (a
+publication's, the read anchor) cannot be named for teardown; a
+publication goes with `unpublish`. It dispatches by backend to the
+layout `open` built —
 `kvgit` deletes the named branches from `<path>/kvgit`, and with each
 branch the session-scoped tags it owns, leaving store-scoped ones
 alone, since that scope exists so a publication outlives its session;
@@ -88,9 +92,10 @@ otherwise a publication's own `@store/pub/...` branch, otherwise the
 store's own `@store/anchor`, created on that first read and holding a
 single empty commit. **A store-scoped tag therefore opens for as long
 as it exists**, with every session deleted and nothing published. The
-anchor is not a session, `sessions()` never lists it, `delete` takes
-session names and so cannot reach it, and `clean()` keeps it: a branch
-head is a GC root, and the commit it holds owns nothing to sweep.
+anchor is not a session, `sessions()` never lists it, `delete` refuses
+a name that is not a session id and so cannot reach it, and `clean()`
+keeps it: a branch head is a GC root, and the commit it holds owns
+nothing to sweep.
 
 **Frozen opens take execution settings.** `store.tags.at(name,
 **settings)`, `store.resolve(ref, *, root=None, **settings)` and

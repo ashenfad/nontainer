@@ -628,6 +628,14 @@ class Store:
         deleting from a store that was never created — teardown is
         idempotent.
 
+        **Sessions only.** Every name must be a session id, checked
+        before any of them reaches the backend, so one rule covers
+        every branch the store keeps for itself: no session id may
+        begin with ``@``, so nothing under ``@store/`` — a
+        publication's branch, the read anchor — can be named here. A
+        publication is removed with :meth:`unpublish`, which drops its
+        tag and its branch together and keeps the registry in step.
+
         ``min_age`` is the orphan sweep's grace period in seconds
         (kvgit only): commits younger than this are left alone, so a
         concurrent writer mid-commit is never swept out from under.
@@ -642,6 +650,7 @@ class Store:
         """
         self._require_own_layout("delete")
         names = {sessions} if isinstance(sessions, str) else set(sessions)
+        self._require_session_names(names)
         if self._backend == "dir":
             from .providers.dir import DirProvider
 
@@ -1050,6 +1059,31 @@ class Store:
             f"{self!r}. The write goes through the workspace's own provider, "
             "so this would write to that store and leave this one unchanged. "
             "Use that store, or name the commit by ref."
+        )
+
+    @staticmethod
+    def _require_session_names(names: Iterable[str]) -> None:
+        """Refuse a teardown of anything but sessions.
+
+        Names are checked as a set before any of them reaches a
+        backend, so a batch either deletes or does nothing — and the
+        one rule covers every branch the store keeps for itself,
+        because no session id may begin with ``@`` and the store's own
+        branches all live under ``@store/``.
+        """
+        bad = sorted(
+            n for n in names if not isinstance(n, str) or not SESSION_ID_RE.match(n)
+        )
+        if not bad:
+            return
+        named = ", ".join(repr(n) for n in bad)
+        raise ValueError(
+            f"Store.delete deletes sessions, and {named} is not a session id "
+            f"(must match {SESSION_ID_RE.pattern}). The store's own branches "
+            "live under '@store/', which no session id can reach: remove a "
+            "publication with store.unpublish(name, version), and leave the "
+            "read anchor where it is — it holds an empty commit and costs "
+            "the store nothing."
         )
 
     def _require_own_layout(self, op: str) -> None:
@@ -1497,11 +1531,11 @@ class Store:
         :meth:`sessions`, and holding a single commit with nothing in
         it — the same empty root a publication's branch starts from.
 
-        It is permanent by construction rather than by a guard. Nothing
-        deletes it, because ``delete`` takes session names and no
-        session name reaches the ``@`` namespace; nothing sweeps it,
-        because a branch head is a GC root; and sparing it costs the
-        store nothing, because the commit it holds owns no blobs.
+        It is permanent. ``delete`` refuses a name that is not a session
+        id, and no session id begins with ``@``, so nothing can name it
+        for teardown; nothing sweeps it, because a branch head is a GC
+        root; and sparing it costs the store nothing, because the
+        commit it holds owns no blobs.
 
         A store built with a ``provider_factory`` never gets here: the
         factory owns where state lives, so the store-level verbs refuse
