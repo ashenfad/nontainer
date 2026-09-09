@@ -608,6 +608,45 @@ def test_publishing_other_paths_is_a_different_attempt(tmp_path, monkeypatch):
     ws.close()
 
 
+def test_unpublish_leaves_a_store_tag_it_did_not_publish_alone(tmp_path):
+    """A store tag may hold a slash, so 'release/prod' is a version of
+    'release' by name alone. Only what carries publish's own provenance
+    is cleared; anything else is left where it is."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    tagged = store.tags.add(ws, "release/prod")
+
+    with pytest.raises(ValueError, match="release/prod"):
+        store.unpublish("release", "prod", min_age=0)
+
+    assert store.tags.list() == {"release/prod": tagged}
+    at = store.tags.at("release/prod")
+    assert at.files.read("/workspace/app/index.html") == b"<h1>scores</h1>"
+    at.close()
+    ws.close()
+
+
+def test_unpublish_clears_a_stranded_branch_whose_tag_never_landed(
+    tmp_path, monkeypatch
+):
+    """The commit lands before the tag, so an attempt can die with a
+    branch and no tag at all. The branch's own info is what proves it
+    came from a publish."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard")
+    monkeypatch.undo()
+    store.tags.delete("scoreboard/v1")
+
+    assert store.tags.list() == {}
+    assert "@store/pub/scoreboard/v1" in store._branches()
+    store.unpublish("scoreboard", "v1", min_age=0)
+    assert "@store/pub/scoreboard/v1" not in store._branches()
+    ws.close()
+
+
 def test_unpublish_refuses_what_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)
