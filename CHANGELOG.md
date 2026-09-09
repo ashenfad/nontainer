@@ -409,10 +409,10 @@ is the migration.
 ### Dependencies
 
 - Floors: `kvgit>=0.3.8` (prefix merge policy, `MergeChoice`,
-  byte-equal merges, the GC lease), `monkeyfs>=0.1.9` (the 3.10
-  accessor rebinds incl. the `expanduser` home leak, strict realpath),
-  `sandtrap>=0.3.5` (raw is the default mode). The `dud` extra keeps
-  its `python_version >= "3.11"` marker.
+  byte-equal merges, the GC lease), `monkeyfs>=0.1.10` (per-file
+  metadata rows, plus the 3.10 accessor rebinds incl. the `expanduser`
+  home leak and strict realpath), `sandtrap>=0.3.5` (raw is the default
+  mode). The `dud` extra keeps its `python_version >= "3.11"` marker.
 
 ## 0.5.2 - 2026-09-04
 
