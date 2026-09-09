@@ -21,7 +21,7 @@ store.open(session, **workspace kwargs) -> Workspace
 store.sessions() -> list[str]             # session ids on the store
 store.exists(session) -> bool
 store.delete(sessions, *, min_age=3600) -> None
-store.resolve(ref) -> Workspace           # frozen, at session@commit
+store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at session@commit
 store.clean(*, min_age=3600) -> int       # sweep unreachable commits
 store.tags -> StoreTags                   # store-scoped tags (below)
 store.close() -> None                     # also a context manager
@@ -70,7 +70,7 @@ store.tags.add(ws_or_ref, name, *, info=None) -> str   # commit id
 store.tags.list() -> dict[str, str]                    # name -> commit id
 store.tags.info(name) -> TagInfo | None
 store.tags.delete(name) -> None
-store.tags.at(name) -> Workspace                       # frozen snapshot
+store.tags.at(name, **settings) -> Workspace           # frozen snapshot
 ```
 
 `add` takes the workspace whose current state to name (staged changes
@@ -87,6 +87,29 @@ one: a session if the store has any, otherwise a publication's own
 publications with no sessions left readable, which is exactly the case
 the store scope exists for.
 
+**Frozen opens take execution settings.** `store.tags.at(name,
+**settings)`, `store.resolve(ref, *, root=None, **settings)` and
+`Publication.open(version=None, **settings)` accept `Store.open`'s
+construction keywords — `python`, `mounts`, `commands`, `cache`,
+`max_observation`, `executor_factory`, `root` — applied to the frozen
+workspace they return. `autocommit` is not among them: a frozen
+provider commits nothing, so the flag has nothing to switch. Nor are
+`provider` and `executor`, for the reason `Store.open` refuses them —
+the store builds the provider, and an executor instance is bound to
+one session, so a caller hands over the `executor_factory` instead. An
+unrecognized keyword raises `TypeError` naming the set.
+
+The rule is that a commit holds the tree and nothing else: a live
+sqlite handle is not a file, which is why `host_objects` are injected
+rather than committed. So the store, which opens a tree rather than a
+session, has no settings to inherit, and the embedder supplies them at
+the call — `pub.open(python=PythonConfig(host_objects={"db": db}))` is
+how a published handler reaches a live database. `Publication.open`
+takes no `root`: a version records the workspace root its files were
+published under, and reading them at another one finds an empty tree.
+A session's own `ws.tags.at(name)` is the other shape — it inherits
+the settings of the session it came from.
+
 **`store.publications`** — the app, published: an immutable version of
 part of a session's tree, with a name and a pointer saying which
 version is current.
@@ -101,7 +124,7 @@ store.unpublish(name, version, *, min_age=3600) -> None
 Publication: .name, .versions -> tuple[Version, ...], .current
              .version(name) -> Version | None
              .current_version -> Version
-             .open(version=None) -> Workspace       # frozen, at that version
+             .open(version=None, **settings) -> Workspace   # frozen, at that version
 
 Version:     .name, .version, .tag, .ref, .published_from, .created
 ```
@@ -574,9 +597,12 @@ keywords for the workspace it returns. `root=` opens the source at that
 root too: a lineage shares one, and a view normalized against a
 different root would name paths the child cannot see.
 
-**`store.resolve(ref, *, root=None)`** reads a commit under a given
-workspace root. A commit holds its files at whatever root the session
-that made them used, so resolving at the wrong one reads an empty tree.
+**`store.resolve(ref, *, root=None, **settings)`** reads a commit under
+a given workspace root. A commit holds its files at whatever root the
+session that made them used, so resolving at the wrong one reads an
+empty tree. `settings` are the rest of `Store.open`'s construction
+keywords, applied to the frozen workspace it returns (see *Frozen opens
+take execution settings* under `store.tags`).
 
 **`ws.merge(source)`** merges another session into this one
 (`caps.merge`). **A merge takes only what has been committed, on both
@@ -717,7 +743,10 @@ and apps dispatch all work; `discard()` and `close()` work. It inherits the pare
 construction settings the way `fork` does — python config **including
 its live host objects**, mounts, root, executor factory, commands — so
 an app served from a snapshot still talks to the session's live db.
-The files are frozen; the host's world is not.
+The files are frozen; the host's world is not. A store-level frozen
+open (`store.tags.at`, `store.resolve`, `Publication.open`) opens a
+tree rather than a session, so it has no settings to inherit and takes
+them as keywords at the call instead.
 
 **`changed_since`** takes a tag name, a commit id or a `Ref`, and
 compares it with the current head. A name is looked up as this

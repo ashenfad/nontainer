@@ -288,7 +288,9 @@ To share an app, publish a **frozen snapshot** and mount the router:
 from nontainer.apps import build_router, mint_token
 
 pub = st.publish(ws, "scoreboard")     # v1: a commit of app/ and nothing else
-snapshot = pub.open()                  # frozen Workspace; immutable, so reuse it
+snapshot = pub.open(                   # frozen Workspace; immutable, so reuse it
+    python=PythonConfig(host_objects={"db": db})   # the handlers' live store
+)
 token = mint_token()                   # the embedder's table maps token -> app
 
 router = build_router(lambda t: snapshot if t == token else None, config=APPS)
@@ -314,11 +316,11 @@ is in [apps.md](apps.md).
 Serving is read-only and concurrent. Mutable app state does **not** go
 in the workspace — it goes to an external store (a sqlite/postgres
 client) injected via `host_objects`, and you tell the agent about it
-with a `python_primer`. A publication is opened by the store rather
-than by the session, so it carries none of those host objects: serve an
-app whose handlers need one from `ws.tags.at(name)` instead, a frozen
-workspace that keeps the session's live objects. See the `webapp`
-example for the full pattern.
+with a `python_primer`. A publication carries the tree and nothing
+else — a live sqlite handle is not a file — so you hand the objects
+over when you open it: `pub.open(python=PythonConfig(host_objects={"db":
+db}))`, and the same keywords on `store.tags.at` and `store.resolve`.
+See the `webapp` example for the full pattern.
 
 See [apps.md](apps.md) for the full design (handler contract, frozen
 serving, threat model) and [api.md](api.md) for every signature.
