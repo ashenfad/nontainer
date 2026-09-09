@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session (`sessions()` never lists it), `delete` takes session names
   and cannot reach it, and `clean()` keeps it: a branch head is a GC
   root and its commit owns nothing to sweep.
+- **The runner is told the fork point.** `SessionRunner.run` takes
+  `forked_at` — the parent's commit the child was forked from, `None`
+  where the provider keeps no commits — so the provenance header a
+  delegate arrives with ("asked by session X at commit Y") can be
+  written before its first turn instead of read off the answer
+  afterwards. The helper reads `run`'s signature once per runner and
+  passes it only where it is accepted, so a runner written without the
+  parameter keeps working. `Sessions.base(name)` returns the same
+  commit for a caller holding only the job name.
 
 ## 0.6.1 - 2026-09-09
 

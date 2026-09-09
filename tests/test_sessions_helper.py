@@ -283,6 +283,45 @@ def test_provenance_names_the_chain_not_the_last_hop(parent, store):
     assert answer.provenance["finished"] >= answer.provenance["started"]
 
 
+def test_the_runner_is_told_the_fork_point(parent, store):
+    """A provenance header ("asked by session X at commit Y") is written
+    before the child's first turn, so the fork point is a parameter of
+    the run, not something read off the answer afterwards."""
+    seen = {}
+
+    class Aware(Scripted):
+        def run(self, session, task, *, budget=None, forked_at=None):
+            seen["forked_at"] = forked_at
+            return super().run(session, task, budget=budget)
+
+    runner = Aware(store, {"/workspace/notes.md": "n\n"})
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("go", wait=True)
+
+    # ``fork`` lands the parent's uncommitted writes first, so the fork
+    # point is the parent's head once the child exists.
+    assert seen["forked_at"] == parent.head
+    assert answer.provenance["chain"][0] == f"analyst@{seen['forked_at']}"
+
+
+def test_a_runner_with_the_old_signature_still_runs(parent, store):
+    """Only a runner whose signature accepts the fork point is handed
+    it; one written before the parameter existed keeps working."""
+    runner = Scripted(store, {"/workspace/notes.md": "n\n"}, text="ran")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("go", wait=True)
+    assert (answer.text, answer.status) == ("ran", "answered")
+
+
+def test_base_names_the_fork_point_by_job(parent, store):
+    runner = Scripted(store, {"/workspace/notes.md": "n\n"})
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("go", wait=True)
+        assert sessions.base(answer.branch) == parent.head
+        with pytest.raises(SessionsError, match="no job named"):
+            sessions.base("nobody")
+
+
 # -- statuses ------------------------------------------------------------------
 
 

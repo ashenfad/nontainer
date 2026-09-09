@@ -1125,6 +1125,7 @@ sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
 sessions.cancel(name) -> Job
 sessions.keep(name) -> Job
+sessions.base(name) -> str | None    # the commit it was forked from
 sessions.close()                     # joins the workers; the branches stay
 ```
 
@@ -1172,7 +1173,9 @@ flag on the job for a retention sweep to honor; nothing sweeps yet.
 
 ```python
 class MyRunner:                       # the embedder's
-    def run(self, session: str, task: str, *, budget=None) -> Answer | str:
+    def run(
+        self, session: str, task: str, *, budget=None, forked_at: str | None = None
+    ) -> Answer | str:
         ...
 ```
 
@@ -1183,6 +1186,17 @@ helper calls it on a worker thread of its own, so a runner with an
 async loop blocks on its own future inside it. A runner that raises
 does not lose the job — it resolves as `failed` with the exception's
 text as the answer.
+
+`forked_at` is the parent's commit the child was forked from (`None`
+when the parent's provider keeps no commits). It is a parameter rather
+than only a line of the answer's provenance because a runner needs it
+*before* the child's first turn: the child arrives as a peer, and the
+provenance header that says so ("asked by session X at commit Y") goes
+at the top of the turn. It is optional in the signature too — the
+helper reads `run`'s signature once per runner and passes the fork
+point only where it is accepted (by name or through `**kwargs`), so a
+runner written without the parameter keeps working. `sessions.base(name)`
+returns the same commit for a caller holding only the job name.
 
 ### The records (`nontainer.Job`, `nontainer.Answer`)
 
