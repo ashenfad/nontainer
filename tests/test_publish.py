@@ -207,7 +207,7 @@ def test_paths_select_what_lands(tmp_path):
 def test_publishing_nothing_is_refused(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)
-    with pytest.raises(WorkspaceError, match="Nothing to publish"):
+    with pytest.raises(ValueError, match="Nothing to publish"):
         store.publish(ws, "scoreboard", paths=("nowhere/",))
     ws.close()
 
@@ -240,7 +240,7 @@ def test_an_explicit_version_must_be_unused(tmp_path):
     ws = seeded(store)
     pub = store.publish(ws, "scoreboard", version="beta")
     assert pub.current == "beta"
-    with pytest.raises(WorkspaceError, match="Version already published"):
+    with pytest.raises(ValueError, match="Version already published"):
         store.publish(ws, "scoreboard", version="beta")
     # the default sequence ignores names it did not mint
     assert store.publish(ws, "scoreboard").current == "v1"
@@ -251,11 +251,11 @@ def test_set_current_refuses_a_version_that_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)
     store.publish(ws, "scoreboard")
-    with pytest.raises(WorkspaceError, match="No such version"):
+    with pytest.raises(ValueError, match="No such version"):
         store.set_current("scoreboard", "v9")
-    with pytest.raises(WorkspaceError, match="No such publication"):
+    with pytest.raises(ValueError, match="No such publication"):
         store.set_current("nope", "v1")
-    with pytest.raises(WorkspaceError, match="No such version"):
+    with pytest.raises(ValueError, match="No such version"):
         store.publication("scoreboard").open("v9")
     ws.close()
 
@@ -468,9 +468,9 @@ def test_unpublish_refuses_what_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)
     store.publish(ws, "scoreboard")
-    with pytest.raises(WorkspaceError, match="No such version"):
+    with pytest.raises(ValueError, match="No such version"):
         store.unpublish("scoreboard", "v9")
-    with pytest.raises(WorkspaceError, match="No such publication"):
+    with pytest.raises(ValueError, match="No such publication"):
         store.unpublish("nothing", "v1")
     ws.close()
 

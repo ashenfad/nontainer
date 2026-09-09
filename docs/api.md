@@ -174,6 +174,18 @@ reader checks where a version came from. A clash raises `ValueError`
 naming the keys, rather than being silently overridden — a false
 provenance in an immutable commit outlives every chance to notice it.
 
+The publication verbs split their refusals by whose mistake it is. A
+**`ValueError`** is the call's: a name that is not session-id shaped, an
+`info` key publish writes itself, a version name the lineage already
+holds, `paths` matching no file, and a version name `set_current`,
+`unpublish` or `Publication.open` cannot find. An embedder mapping
+errors to HTTP answers 400 to all of them. A **`WorkspaceError`** is the
+store's state: a session with staged changes, a leftover tag or branch,
+a version unpublished since the `Publication` was fetched. A
+**`NotSupportedError`** (a `WorkspaceError`) says this store cannot
+publish at all — no branches and tags under it, or a `provider_factory`
+layout it does not own.
+
 One publish writes three things:
 
 - a reserved branch `@store/pub/<name>/<version>` holding the derived
