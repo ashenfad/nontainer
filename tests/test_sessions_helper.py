@@ -351,7 +351,7 @@ def test_cancel_discards_the_answer_and_leaves_the_branch(parent, store):
     child = store.open(job.name)
     try:
         assert child.files.read("/workspace/half.md") == b"half done\n"
-        assert child.index.head == parent.index.head  # nothing committed for it
+        assert child.index.head is None  # nothing committed for it
     finally:
         child.close()
 
@@ -518,9 +518,9 @@ def test_cancel_before_landing_leaves_the_branch_untouched(parent, store):
 
     child = store.open(job.name)
     try:
-        # nothing of ours went onto the branch: its agent head is still
-        # the fork point, and the delegate's work is uncommitted there
-        assert child.index.head == parent.index.head
+        # nothing of ours went onto the branch: it made no commit of
+        # its own, and its work is still there in the tree
+        assert child.index.head is None
         assert "/workspace/half.md" in child.index.status().unstaged
     finally:
         child.close()

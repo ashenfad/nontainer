@@ -204,13 +204,12 @@ def test_branch_merge_and_log_across_the_rungs(ws, store):
     finally:
         worker.close()
 
+    # the worker's log is the worker's: a branch carries the workspace,
+    # not the parent's commit graph
     assert [
         line.split(" ", 1)[1]
         for line in ws.terminal(f"ws-git log {ws.session}-w").stdout.splitlines()
-    ] == [
-        "work",
-        "base",
-    ]
+    ] == ["work"]
 
     r = ws.terminal(f"ws-git merge {ws.session}-w")
     assert r.exit_code == 0, (r.stdout, r.stderr)
@@ -257,10 +256,12 @@ def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
         assert child.terminal("ls").stdout == "seen.txt\n"
         assert child.terminal("cat hidden.txt").exit_code != 0
 
-        # a new path anywhere is ordinary work
+        # a new path anywhere is ordinary work. The child starts at no
+        # commit of its own, so what it can SEE reads as modified —
+        # and what its view hides is absent here as everywhere else
         r = child.terminal("cat > note.md <<'EOF'\nnote\nEOF\nws-git status")
         assert r.exit_code == 0, r.stdout
-        assert r.stdout == " M note.md\n"
+        assert r.stdout == " M note.md\n M seen.txt\n"
 
         # the hidden one is refused, and the call does not land
         before = child.terminal("ws-git status").stdout

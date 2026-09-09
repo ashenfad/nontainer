@@ -98,6 +98,101 @@ def test_inherit_takes_only_its_two_words(ws):
         ws.fork("child", inherit="chapter")
 
 
+# -- a fresh ws-git state ------------------------------------------------------
+
+
+def _blob(w):
+    from nontainer.agentgit import BLOB_KEY, parse_blob
+
+    return parse_blob(w._provider.kv.get(BLOB_KEY))
+
+
+def test_a_fork_starts_with_a_fresh_ws_git_state(ws):
+    """A branch carries the workspace; it does not carry the agent's
+    composition in progress. A delegate starts at no commit of its
+    own, with nothing staged — which is also what lets the fiction's
+    escape apply to it: a session that never made an agent commit
+    merges at its store head."""
+    _seed(ws, **{"a.txt": "one\n", "b.txt": "two\n"})
+    ws.files.write("/workspace/a.txt", "edited\n")
+    ws.index.stage(["/workspace/a.txt"])
+    assert ws.index.head is not None and ws.index.status().staged
+
+    for inherit in ("full", "fresh"):
+        child = ws.fork(f"child-{inherit}", inherit=inherit)
+        try:
+            assert child.index.head is None
+            assert child.index.status().staged == ()
+            assert child.index.log() == []
+            assert _blob(child) == {
+                "head": None,
+                "staged": [],
+                "merge_source": None,
+                "unresolved": [],
+            }
+        finally:
+            child.close()
+
+
+def test_the_reset_is_at_the_childs_store_head(ws, store):
+    """Visible to any reader of the branch, not only through the handle
+    the fork came back on."""
+    _seed(ws, **{"a.txt": "one\n"})
+    ws.index.stage(["/workspace/a.txt"])
+    ws.fork("child").close()
+
+    reopened = store.open("child")
+    try:
+        assert reopened.index.head is None
+        assert reopened.index.status().staged == ()
+    finally:
+        reopened.close()
+
+
+def test_the_reset_commit_is_bookkeeping(ws):
+    """Nobody performed it, so ``log()`` hides it and ``kind='all'``
+    shows it — the same rule the fiction's other records follow."""
+    from nontainer.agentgit import FORK_TOOL
+
+    _seed(ws, **{"a.txt": "one\n"})
+    child = ws.fork("child")
+    try:
+        tools = [c.info.get("tool") for c in child.log(kind="all")]
+        assert FORK_TOOL in tools
+        assert FORK_TOOL not in [c.info.get("tool") for c in child.log()]
+        assert FORK_TOOL.startswith("ws-git.")  # never an agent commit
+    finally:
+        child.close()
+
+
+def test_a_fork_of_a_session_that_never_used_ws_git_makes_no_record(ws):
+    """Nothing to reset is nothing to record: the fork of a session
+    with no ws-git state costs no commit."""
+    ws.files.write("/workspace/a.txt", "one\n")
+    child = ws.fork("child")
+    try:
+        tools = [c.info.get("tool") for c in child.log(kind="all")]
+        assert "ws-git.fork" not in tools
+        assert child.index.head is None
+    finally:
+        child.close()
+
+
+def test_ws_git_log_in_a_fresh_child_is_empty_but_reaches_the_parents(ws, store):
+    _seed(ws, **{"a.txt": "one\n"})
+    child = ws.fork("child")
+    try:
+        assert child.terminal("ws-git log").stdout.strip() == ""
+        assert "seed" in child.terminal("ws-git log main").stdout
+        # nothing STAGED, whatever the parent had staged. Everything
+        # reads as modified instead, the way it does in a repo before
+        # its first commit.
+        porcelain = child.terminal("ws-git status --porcelain").stdout.splitlines()
+        assert porcelain and all(line.startswith(" ") for line in porcelain)
+    finally:
+        child.close()
+
+
 # -- the view ------------------------------------------------------------------
 
 
@@ -634,8 +729,14 @@ def test_ws_git_log_and_diff_read_another_session(ws, store):
     finally:
         worker.close()
 
+    # the delegate's log is its OWN: a branch carries the workspace,
+    # not the parent's commit graph, and the parent's is still where it
+    # was
     log = ws.terminal("ws-git log worker").stdout.splitlines()
-    assert [line.split(" ", 1)[1] for line in log] == ["their work", "seed"]
+    assert [line.split(" ", 1)[1] for line in log] == ["their work"]
+    assert [
+        line.split(" ", 1)[1] for line in ws.terminal("ws-git log").stdout.splitlines()
+    ] == ["seed"]
 
     out = ws.terminal("ws-git diff worker").stdout
     assert "# 1 path(s) in worker's seed" in out

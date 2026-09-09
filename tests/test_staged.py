@@ -193,7 +193,10 @@ def test_stage_deleted_file_commits_deletion(kv_ws):
     assert kv_ws.index.status().unstaged == ()
 
 
-def test_fork_copies_the_index_then_diverges(kv_ws):
+def test_a_fork_does_not_inherit_the_index(kv_ws):
+    """A branch carries the workspace; an index is a composition in
+    progress, and a delegate does not start halfway through somebody
+    else's. The parent's own is untouched by the fork."""
     kv_ws.files.fs.write("/workspace/a.txt", b"one")
     kv_ws.index.commit("base")
     kv_ws.files.fs.write("/workspace/a.txt", b"one-main")
@@ -201,15 +204,16 @@ def test_fork_copies_the_index_then_diverges(kv_ws):
 
     fork = kv_ws.fork("worker")
     try:
-        assert fork.index.status().staged == ("/workspace/a.txt",)
+        assert fork.index.status().staged == ()
+        assert fork.index.head is None
+        assert kv_ws.index.status().staged == ("/workspace/a.txt",)
         kv_ws.index.commit("main")
         assert kv_ws.index.status().staged == ()
-        assert fork.index.status().staged == ("/workspace/a.txt",)
     finally:
         fork.close()
 
 
-def test_log_hides_framework_commits_and_walks_across_a_fork(kv_ws):
+def test_log_hides_framework_commits_and_stops_at_a_fork(kv_ws):
     kv_ws.terminal("echo one > a.txt")
     first = kv_ws.index.commit("first")
     kv_ws.terminal("echo two > b.txt")  # a framework commit, unmessaged
@@ -221,15 +225,14 @@ def test_log_hides_framework_commits_and_walks_across_a_fork(kv_ws):
     assert len(_history(kv_ws)) > len(entries) + 1  # the framework's are there
     assert [e.id for e in kv_ws.index.log(limit=1)] == [second]
 
+    # a fork starts its own graph: the parent's commits are the
+    # parent's, and `ws-git log <parent>` is how the child reads them
     fork = kv_ws.fork("worker")
     try:
+        assert fork.index.log() == []
         fork.terminal("echo three > c.txt")
         third = fork.index.commit("third")
-        assert [e.info["message"] for e in fork.index.log()] == [
-            "third",
-            "second",
-            "first",
-        ]
+        assert [e.info["message"] for e in fork.index.log()] == ["third"]
         assert fork.index.head == third
     finally:
         fork.close()

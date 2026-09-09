@@ -213,7 +213,9 @@ def test_dud_fork_wsgit_binds_fork():
             fork.files.fs.write("/workspace/kid.txt", b"kid\n")
             r = fork.terminal("ws-git stage kid.txt")
             assert r.exit_code == 0, r.stdout
-            assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
+            # a fork starts at no commit of its own, so everything it
+            # holds reads as modified until its first one
+            assert fork.terminal("ws-git status").stdout == " M a.txt\nM  kid.txt\n"
             assert w.terminal("ws-git status").stdout == ""
         finally:
             fork.close()
