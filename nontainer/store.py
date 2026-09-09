@@ -4,9 +4,11 @@ A :class:`Workspace` is one session's world. A :class:`Store` is the
 place those sessions live in — the kvgit store, the directory of
 per-session trees, the folder of AgentFS db files — and it owns the
 verbs that are about the *set* of sessions rather than about any one
-of them: opening and listing them, deleting one, sweeping storage
-nothing reaches any more, and the store-scoped tags that deliberately
-survive the session that made them.
+of them: opening and listing them, forking one into another,
+resolving a ref to a frozen state, deleting one, sweeping storage
+nothing reaches any more, the store-scoped tags that deliberately
+survive the session that made them, and the publications
+(``publish``/``unpublish``) an app is served from.
 
 Those verbs used to be module functions (``nontainer.workspace``,
 ``nontainer.delete_workspace``) or methods grafted onto a session

@@ -1,6 +1,6 @@
 """Workspace: the top-level API. One instance == one session's world.
 
-Design notes (see README "Design decisions"):
+Design notes (see ``docs/design.md``):
 
 - **Script model.** ``run_python`` is a fresh sandboxed execution per
   call; persistence lives in ``cache`` (data), ``helpers/`` (code, via
