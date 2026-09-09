@@ -424,3 +424,69 @@ def test_a_job_never_dies_with_its_thread(parent, store):
     assert answer.status == "failed"
     assert "not even an Exception" in answer.text
     assert time.time() >= sessions.list()[0].started
+
+
+def test_a_partial_commit_by_the_delegate_still_lands_everything(parent, store):
+    """The answer lands everything the delegate did. A delegate that
+    staged half its work would otherwise leave the other half as
+    uncommitted agent work — which merge refuses and a take from the
+    answer's ref silently omits, while the job reads as answered."""
+
+    class Partial:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "polished\n")
+                child.files.write("/workspace/notes.md", "why I did it\n")
+                child.index.stage(["/workspace/report.md"])
+                # the index is a key like any other, and a delegate's
+                # staged set reaches the branch on the next durability
+                # point — a turn hook here, a tool call in a real loop
+                child.commit(info={"tool": "turn"})
+            finally:
+                child.close()
+            return "polished, with a note"
+
+    with Sessions(parent, Partial()) as sessions:
+        answer = sessions.ask("polish the report", wait=True)
+
+    assert answer.changed["seed"] == ("/workspace/notes.md", "/workspace/report.md")
+    child = store.open(answer.branch)
+    try:
+        committed = child._provider.files_at(child.index.head)
+    finally:
+        child.close()
+    assert "/workspace/report.md" in committed
+    assert "/workspace/notes.md" in committed
+
+    out = parent.merge(answer.branch)
+    assert out.merged and not out.conflicts
+    assert parent.files.read("/workspace/notes.md") == b"why I did it\n"
+
+
+def test_a_delegate_that_deleted_a_file_lands_the_deletion(parent, store):
+    """Deletions are part of the working set the answer lands, whether
+    or not the delegate staged them."""
+
+    class Remover:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "kept\n")
+                child.index.stage(["/workspace/report.md"])
+                child.terminal("rm main.py")  # commits the delete and the index
+            finally:
+                child.close()
+            return "dropped main.py"
+
+    with Sessions(parent, Remover()) as sessions:
+        answer = sessions.ask("drop main.py", wait=True)
+
+    child = store.open(answer.branch)
+    try:
+        committed = child._provider.files_at(child.index.head)
+    finally:
+        child.close()
+    assert "/workspace/main.py" not in committed
+    parent.merge(answer.branch)
+    assert not parent.files.exists("/workspace/main.py")

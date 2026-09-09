@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`analyst.sleepy-otter`), hands the child to the runner on a worker
   thread and returns a `Job`; `list` / `result` / `cancel` / `keep`
   collect it, and `wait=True` blocks for the `Answer`. It commits the
-  child's work host-side when the answer arrives — a fork inherits the
-  parent's ws-git blob, so without that commit `merge` and
-  `checkout(ref, paths=)` refuse the delegate — and reports what it
-  changed by diffing the fork point against the child's head.
+  child's whole working set host-side when the answer arrives — a fork
+  inherits the parent's ws-git blob, so without that commit `merge` and
+  `checkout(ref, paths=)` refuse the delegate, and a delegate that
+  staged only part of what it did would answer with the rest left
+  behind — and reports what it changed by diffing the fork point
+  against the child's head.
 - **`Job` and `Answer` records** in `protocol.py`, pure data:
   `str(answer)` is the reply, `repr` is one line and never the body,
   and declining or running out of budget resolve as a status rather
