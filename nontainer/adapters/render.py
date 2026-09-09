@@ -497,9 +497,15 @@ blocks instead — worth it only for short work.
 paths narrows what the delegate SEES (["report.md", "src/"]) without
 narrowing its branch: it still holds everything, and it may create new
 files anywhere. inherit="fresh" (default) gives it a fresh conversation
-over these files; "full" continues yours. A brief, a summary, the
-context it needs — that goes IN the task, which is the only thing it is
-told.
+over these files; "full" continues yours — your conversation, never
+your staged work, since a delegate starts its own commits and not
+halfway through yours. A brief, a summary, the context it needs — that
+goes IN the task, which is the only thing it is told.
+
+An answer names what the delegate LANDED: its branch head if it never
+used ws-git, its last ws-git commit if it did. If it committed and then
+went on writing, the answer says so and a merge of it is refused — take
+paths instead, or ask again.
 
 Nothing it does touches your files. It works on a branch of its own,
 and you bring the work back yourself in the terminal: `ws-git diff
