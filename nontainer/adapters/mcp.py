@@ -44,6 +44,7 @@ def build_server(
     *,
     tools: ToolsMode = "auto",
     apps: Any = None,
+    sessions: Any = None,
     name: str = "nontainer",
     terminal_primer: str | None = None,
     python_primer: str | None = None,
@@ -52,8 +53,17 @@ def build_server(
 
     ``apps``: an ``AppRuntime`` — when given, a ``test_app`` tool is
     registered; screenshots return as MCP ImageContent AND persist
-    under /app/screenshots/. ``terminal_primer``/``python_primer``
-    append host guidance to the respective tool descriptions."""
+    under /app/screenshots/.
+
+    ``sessions``: a ``SessionRunner`` or an already-built
+    ``nontainer.sessions.Sessions`` — when given, a ``sessions`` tool is
+    registered and the agent can delegate to forks of this session. No
+    runner, no tool. A runner passed here builds a helper this server
+    holds for its lifetime; pass a ``Sessions`` when you need to close
+    it yourself.
+
+    ``terminal_primer``/``python_primer`` append host guidance to the
+    respective tool descriptions."""
     server = FastMCP(name)
     lock = threading.Lock()
     mode = resolve_tools_mode(workspace, tools)
@@ -223,6 +233,42 @@ def build_server(
         def run_python(code: str) -> str:
             with lock:
                 return render_python(workspace.run_python(code))
+
+    if sessions is not None:
+        from ..sessions import Sessions, run_action
+        from .render import SESSIONS_DESCRIPTION
+
+        helper = (
+            sessions
+            if isinstance(sessions, Sessions)
+            else Sessions(workspace, sessions)
+        )
+
+        # One tool with an action argument, the shape test_app has, and
+        # the same dispatch the agno adapter calls — so the two surfaces
+        # cannot drift into saying different things about one job.
+        @server.tool(name="sessions", description=SESSIONS_DESCRIPTION)
+        def sessions_tool(
+            action: str,
+            task: str = "",
+            name: str = "",
+            paths: "list[str] | str | None" = None,
+            inherit: str = "fresh",
+            wait: bool = False,
+        ) -> str:
+            # No adapter fence: the helper serializes its own job table
+            # and takes the workspace's lock where it touches the
+            # workspace, and holding one across a wait=true ask would
+            # stall every other tool for as long as the delegate runs.
+            return run_action(
+                helper,
+                action,
+                task=task,
+                name=name,
+                paths=paths,
+                inherit=inherit,
+                wait=wait,
+            )
 
     if apps is not None:
         from mcp.server.fastmcp import Image

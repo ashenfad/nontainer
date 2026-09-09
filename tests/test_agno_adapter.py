@@ -272,3 +272,85 @@ def test_the_documented_integration_shapes_construct():
     Agent(model=None, tools=[toolkit], tool_call_limit=30)
     # nontainer-studio's shape, so a floor bump there is caught here too
     Agent(model=None, tools=[toolkit], pre_hooks=[lambda **kw: None])
+
+
+# -- the sessions tool ---------------------------------------------------------
+
+
+def test_agno_no_sessions_tool_without_a_runner():
+    """No runner, no tool: an agent that cannot delegate is never told
+    about delegation."""
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    assert "sessions" not in tk.functions
+    assert tk.sessions is None
+    ws.close()
+
+
+def test_agno_sessions_tool_round_trips_a_delegate(tmp_path):
+    from nontainer import Store
+
+    store = Store(tmp_path / "store")
+    ws = store.open("analyst")
+    ws.files.write("/workspace/report.md", "draft\n")
+    ws.index.commit("seed")
+
+    class Scripted:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "polished\n")
+            finally:
+                child.close()
+            return "polished the report"
+
+    tk = WorkspaceTools(ws, sessions=Scripted())
+    try:
+        assert "sessions" in tk.functions
+        call = tk.functions["sessions"].entrypoint
+
+        out = call(action="ask", task="polish the report", wait=True)
+        assert "polished the report" in out
+        assert "/workspace/report.md" in out
+        # the next step is spelled for the terminal, not for host python
+        assert "ws-git merge analyst." in out
+        assert "ws-git checkout analyst." in out
+        assert "ws-git diff analyst." in out
+
+        listed = call(action="list")
+        assert "answered" in listed and "polish the report" in listed
+
+        name = [j.name for j in tk.sessions.list()][0]
+        assert call(action="result", name=name).startswith("polished the report")
+        assert "kept" in call(action="keep", name=name)
+        assert "unknown action" in call(action="nope")
+        assert "needs a task" in call(action="ask")
+        assert "no job named" in call(action="result", name="nobody")
+    finally:
+        tk.sessions.close()
+        ws.close()
+        store.close()
+
+
+def test_agno_sessions_tool_takes_a_prebuilt_helper(tmp_path):
+    from nontainer import Store
+    from nontainer.sessions import Sessions
+
+    store = Store(tmp_path / "store")
+    ws = store.open("analyst")
+
+    class Scripted:
+        def run(self, session, task, *, budget=None):
+            return "did it"
+
+    helper = Sessions(ws, Scripted())
+    tk = WorkspaceTools(ws, sessions=helper)
+    try:
+        assert tk.sessions is helper
+        assert "delegated to analyst." in tk.functions["sessions"].entrypoint(
+            action="ask", task="go"
+        )
+    finally:
+        helper.close()
+        ws.close()
+        store.close()

@@ -528,3 +528,164 @@ class Sessions:
                 finished=time.time(),
                 changed=dict(answer.changed),
             )
+
+
+# ======================================================================
+# The tool half: what a model sends, and what it reads back
+# ======================================================================
+#
+# The adapters register ONE tool named ``sessions`` with an ``action``
+# argument (the shape ``test_app`` has), so a model learns one spelling
+# for delegation and one — ws-git, in the terminal — for versioning.
+# Both adapters call the dispatch below, so the two surfaces cannot
+# drift into saying different things about the same job.
+
+
+def coerce_paths(paths: Any) -> "list[str] | None":
+    """Normalize a loosely-typed ``paths`` argument.
+
+    Models routinely send a list as a JSON string, and a single path as
+    a bare string. Both mean what they look like; anything else raises
+    ``ValueError`` with a message the model can act on.
+    """
+    import json
+
+    if paths is None or paths == "":
+        return None
+    if isinstance(paths, str):
+        text = paths.strip()
+        if text.startswith("["):
+            try:
+                paths = json.loads(text)
+            except ValueError as e:
+                raise ValueError(f"paths must be a JSON list of paths ({e})") from e
+        else:
+            return [text]
+    if isinstance(paths, (list, tuple)) and all(isinstance(p, str) for p in paths):
+        return [p for p in paths if p]
+    raise ValueError(
+        'paths must be a list of workspace paths like ["report.md", "src/"] '
+        f"— got {type(paths).__name__}"
+    )
+
+
+def _summary(task: str) -> str:
+    """A task on one line, for a listing."""
+    return _first_line(task)
+
+
+def render_job(job: Job) -> str:
+    """The line a caller reads when a delegate is sent off."""
+    return (
+        f"delegated to {job.name}: {_summary(job.task)}\n"
+        "the answer arrives on a later turn; `sessions list` shows progress "
+        f"and `sessions result {job.name}` collects it."
+    )
+
+
+def render_jobs(jobs: "list[Job]") -> str:
+    """Every job this session has, one per line."""
+    if not jobs:
+        return (
+            "no delegated jobs yet. `sessions ask` with a task forks this "
+            "session and puts an agent on it."
+        )
+    lines = [f"{len(jobs)} job(s):"]
+    for job in jobs:
+        line = f"  {job.name}  {job.status}  {_summary(job.task)}"
+        if job.status == "running":
+            line += "  (no answer yet)"
+        else:
+            paths = sum(len(v) for v in job.changed.values())
+            line += f"  ({paths} path(s); sessions result {job.name})"
+        if job.kept:
+            line += " [kept]"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def render_answer(answer: Answer) -> str:
+    """The delegate's reply, then what it changed, then the terminal
+    verb that brings the work back.
+
+    The changed paths come after the prose and before the next step
+    because that is the order the decision is made in: what it says,
+    what it touched, what to do about it. Nothing is merged here — the
+    parent decides, in the terminal.
+    """
+    name = answer.branch or "the delegate"
+    seed = answer.changed.get("seed", ())
+    elsewhere = answer.changed.get("elsewhere", ())
+    lines = [answer.text.rstrip(), "", f"-- {name} {answer.status} at {answer.ref}"]
+    if not seed and not elsewhere:
+        lines.append("it changed no files; its answer is the whole result.")
+        return "\n".join(lines)
+    if seed:
+        lines.append(f"changed, in what you sent it to do: {', '.join(seed)}")
+    if elsewhere:
+        lines.append(f"changed, elsewhere: {', '.join(elsewhere)}")
+    lines.append(
+        f"next, in the terminal: ws-git diff {name} (read it) | "
+        f"ws-git merge {name} (take all of it) | "
+        f"ws-git checkout {name} -- <paths> (take some)"
+    )
+    return "\n".join(lines)
+
+
+def run_action(
+    sessions: Sessions,
+    action: str,
+    *,
+    task: str = "",
+    name: str = "",
+    paths: Any = None,
+    inherit: str = "fresh",
+    wait: bool = False,
+) -> str:
+    """Dispatch one ``sessions`` tool call and render its result.
+
+    Every refusal comes back as text rather than an exception: a tool
+    result is what the model reads, and "no job named x" is something
+    it can act on where a traceback is not. The one refusal that is not
+    a failure — the delegate has not answered yet — says so in those
+    words.
+    """
+    try:
+        if action == "ask":
+            if not task.strip():
+                return "sessions ask needs a task: what should the delegate do?"
+            out = sessions.ask(
+                task,
+                name=name or None,
+                paths=coerce_paths(paths),
+                inherit=inherit,
+                wait=wait,
+            )
+            return render_answer(out) if isinstance(out, Answer) else render_job(out)
+        if action == "list":
+            return render_jobs(sessions.list())
+        if action in ("result", "cancel", "keep"):
+            if not name.strip():
+                return f"sessions {action} needs a name (`sessions list` has them)."
+            if action == "result":
+                return render_answer(sessions.result(name))
+            if action == "cancel":
+                job = sessions.cancel(name)
+                if job.status != "cancelled":
+                    return (
+                        f"{name} had already finished ({job.status}); nothing to stop."
+                    )
+                return (
+                    f"{name} cancelled: its answer will be discarded. A delegate "
+                    "already working cannot be interrupted, and its branch is "
+                    f"left as it is (ws-git diff {name})."
+                )
+            return f"{name} kept: it will not be swept away while it is unread."
+        return (
+            f"unknown action {action!r} — sessions takes ask, list, result, "
+            "cancel or keep."
+        )
+    except JobRunning as e:
+        return str(e)
+    except (SessionsError, ValueError, WorkspaceError) as e:
+        return f"sessions {action} failed: {e}"

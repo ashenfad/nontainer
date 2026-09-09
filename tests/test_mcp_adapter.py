@@ -211,3 +211,57 @@ async def test_mcp_descriptions_coach_resource_uris():
     for name in ("terminal", "run_python", "file_write"):
         assert "workspace://" in descs[name], name
     ws.close()
+
+
+# -- the sessions tool ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mcp_no_sessions_tool_without_a_runner():
+    ws = make_ws()
+    server = build_server(ws)
+    assert "sessions" not in {t.name for t in await server.list_tools()}
+    ws.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_sessions_tool_round_trips_a_delegate(tmp_path):
+    from nontainer import Store
+    from nontainer.sessions import Sessions
+
+    store = Store(tmp_path / "store")
+    ws = store.open("analyst")
+    ws.files.write("/workspace/report.md", "draft\n")
+    ws.index.commit("seed")
+
+    class Scripted:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "polished\n")
+            finally:
+                child.close()
+            return "polished the report"
+
+    helper = Sessions(ws, Scripted())
+    server = build_server(ws, sessions=helper)
+    try:
+        assert "sessions" in {t.name for t in await server.list_tools()}
+
+        async def call(**args) -> str:
+            out = await server.call_tool("sessions", args)
+            blocks = out[0] if isinstance(out, tuple) else out
+            return blocks[0].text
+
+        text = await call(action="ask", task="polish the report", wait=True)
+        assert "polished the report" in text
+        assert "ws-git merge analyst." in text
+
+        assert "answered" in await call(action="list")
+        name = helper.list()[0].name
+        assert (await call(action="result", name=name)).startswith("polished")
+        assert "cancelled" not in await call(action="cancel", name=name)
+    finally:
+        helper.close()
+        ws.close()
+        store.close()
