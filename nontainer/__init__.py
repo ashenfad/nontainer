@@ -23,6 +23,11 @@ Public surface:
             CommitNotFoundError, BookkeepingLost, SessionsError,
             JobRunning
 
+Extension surfaces (built by the embedder, never assumed present):
+
+    nontainer.sessions.Sessions  -- delegation over one workspace
+    nontainer.apps.enable_apps   -- the apps loop
+
 Adapters (optional extras):
 
     nontainer.adapters.agno  -- WorkspaceTools (agno Toolkit)
