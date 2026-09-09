@@ -119,6 +119,7 @@ class WorkspaceTools(Toolkit):
         *,
         tools: ToolsMode = "auto",
         apps: Any = None,
+        sessions: Any = None,
         commit: str = "call",
         session_db: Any = None,
         terminal_primer: str | None = None,
@@ -130,6 +131,16 @@ class WorkspaceTools(Toolkit):
         enable_apps``) — when given, a ``test_app`` tool is registered
         whose screenshots come back as real images (agno ``ToolResult``
         media) in addition to being saved under /app/screenshots/.
+
+        ``sessions``: a ``SessionRunner`` (the embedder's loop) or an
+        already-built ``nontainer.sessions.Sessions`` — when given, a
+        ``sessions`` tool is registered, and the agent can delegate to
+        forks of this session. No runner, no tool: an agent that cannot
+        delegate is never told about delegation. Which ACTIONS a
+        deployment allows is the embedder's policy on top of this.
+        The built helper is on the toolkit as ``tk.sessions``; pass a
+        ``Sessions`` yourself when you need to close it (closing joins
+        the delegate workers and leaves their branches).
 
         ``vision``: whether the driving model accepts image input.
         With ``False``, ``view_image`` isn't registered and ``test_app``
@@ -337,6 +348,52 @@ class WorkspaceTools(Toolkit):
 
             test_app.__doc__ = TEST_APP_DESCRIPTION
             registered.append(test_app)
+
+        self.sessions = None
+        if sessions is not None:
+            from ..sessions import Sessions, run_action
+            from .render import SESSIONS_DESCRIPTION
+
+            helper = (
+                sessions
+                if isinstance(sessions, Sessions)
+                else Sessions(workspace, sessions)
+            )
+            self.sessions = helper
+
+            # One tool with an action argument, as test_app has: the
+            # model learns one spelling for delegation, and ws-git keeps
+            # the versioning verbs. paths is annotated loose for the
+            # same reason test_app's actions are — models send lists as
+            # JSON strings, and pydantic would reject one on the
+            # annotation before coerce_paths got its chance.
+            def sessions_tool(
+                action: str,
+                task: str = "",
+                name: str = "",
+                paths: "list[str] | str | None" = None,
+                inherit: str = "fresh",
+                wait: bool = False,
+            ) -> str:
+                """Delegate to a fork of this session, and read it back."""
+                # No toolkit fence here: the helper serializes its own
+                # job table and takes the workspace's lock where it
+                # touches the workspace, and holding the fence across a
+                # wait=true ask would stall every other tool for as long
+                # as the delegate runs.
+                return run_action(
+                    helper,
+                    action,
+                    task=task,
+                    name=name,
+                    paths=paths,
+                    inherit=inherit,
+                    wait=wait,
+                )
+
+            sessions_tool.__name__ = "sessions"
+            sessions_tool.__doc__ = SESSIONS_DESCRIPTION
+            registered.append(sessions_tool)
 
         instructions = _INSTRUCTIONS.format(
             and_python=", and sandboxed python" if split else "",
