@@ -114,7 +114,9 @@ def test_partial_commit_leaves_the_rest_in_the_tree(ws):
     # The commit's own bookkeeping — the restore of b.txt, committed
     # keyed to it — is plumbing: the agent sees its two commits.
     assert _subjects(ws) == ["just a", "base"]
-    assert any(e.info["tool"] == "ws-git.restore" for e in ws.log())
+    assert any(e.info.get("tool") == "ws-git.restore" for e in ws.log(kind="all"))
+    # and it is plumbing to the host's reader too: not in the default log
+    assert not any(e.info.get("tool") == "ws-git.restore" for e in ws.log())
     body = ws.terminal("ws-git show HEAD").stdout
     assert "just a" in body
     assert "a/a.txt" in body and "b.txt" not in body

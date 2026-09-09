@@ -403,7 +403,7 @@ ws.checkout(ref) -> str                  # restore a commit of THIS session
                                          # (appends; returns the new commit)
 ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
                                          # (a named directory is mirrored)
-ws.log(limit: int | None = None) -> Iterable[CommitInfo]
+ws.log(limit=None, kind="work"|"agent"|"all") -> Iterable[CommitInfo]
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.discard() -> None                             # drop staged writes
@@ -615,6 +615,21 @@ when it happened, so rewriting a file with the same bytes still moves
 the tree — ask `changed_since` when the question is content.
 `CommitInfo.tree` carries the same hash per history entry (`None`
 on a provider that keeps no such hash).
+
+**`ws.log(kind=)`** says whose commits, and the default hides the ones
+nobody performed:
+
+| kind | what it yields |
+|---|---|
+| `"work"` (default) | every commit except the ws-git fiction's bookkeeping (the working-tree restore after a partial commit, the tree a checkout writes, the blob a merge records) — the framework's commits and the agent's |
+| `"agent"` | the agent's own commits alone: the same set `ws.index.log()` walks, read off the store's history rather than the agent's graph |
+| `"all"` | the store's history exactly as the provider keeps it, bookkeeping included |
+
+`limit` counts what comes back, not what was read: `log(limit=5)` is
+five commits of the kind asked for, however many stand between them. A
+provider with no index makes no bookkeeping commits, so `"work"` and
+`"all"` are the same history there. An unknown kind raises `ValueError`.
+`ws.index.log()` is the agent's own fiction and takes no `kind`.
 
 `CommitInfo.parents` carries the ids a commit descends from: one for an
 ordinary commit, two for a merge, empty for a root commit and for a

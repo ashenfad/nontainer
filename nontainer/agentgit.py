@@ -131,6 +131,24 @@ def is_agent_commit(info: Mapping[str, Any]) -> bool:
     return info.get("tool") in (TOOL, MERGE_TOOL)
 
 
+#: The tool values of the fiction's bookkeeping commits, as one set:
+#: what a reader of the session's history filters out to be left with
+#: the commits somebody meant to make.
+BOOKKEEPING_TOOLS = frozenset({RESTORE_TOOL, CHECKOUT_TOOL, MERGE_RECORD_TOOL})
+
+
+def is_bookkeeping_commit(info: Mapping[str, Any]) -> bool:
+    """Whether a store commit is the fiction's own housekeeping.
+
+    True for the working-tree restore after a partial commit, the tree
+    a checkout writes, and the blob a merge records. Each exists so the
+    store's tree matches what the agent sees; none of them is work
+    anybody performed, so a reader of the session's history is better
+    off without them.
+    """
+    return info.get("tool") in BOOKKEEPING_TOOLS
+
+
 def virtual_parents(info: Mapping[str, Any]) -> list[str]:
     """The agent-graph parents recorded on a commit (may be empty)."""
     parents = info.get("virtual_parents")
