@@ -305,6 +305,85 @@ def test_take_of_a_ref_and_of_nothing(ws):
         ws.checkout(first, paths=["ghost.txt"])
 
 
+def test_taking_a_directory_mirrors_that_subtree(ws):
+    """A take of a directory is about the subtree, not about the files
+    that happen to be in the ref: a file the ref does not hold is
+    removed here, so what the delegate deleted is deleted."""
+    ws.files.write("/workspace/pkg/keep.py", "keep\n")
+    ws.files.write("/workspace/pkg/deleted.py", "doomed\n")
+    ws.files.write("/workspace/outside.py", "mine\n")
+    ws.index.commit("seed")
+    child = ws.fork("child")
+    try:
+        child.files.fs.remove("/workspace/pkg/deleted.py")
+        child.files.write("/workspace/pkg/new.py", "new\n")
+        child.index.commit("work")
+
+        landed = ws.checkout("child", paths=["pkg"])
+        assert landed == ws.head
+        assert not ws.files.exists("/workspace/pkg/deleted.py")
+        assert ws.files.read("/workspace/pkg/new.py") == b"new\n"
+        # only the named subtree: everything else is left alone
+        assert ws.files.read("/workspace/outside.py") == b"mine\n"
+
+        info = next(iter(ws.log(limit=1))).info
+        assert info["paths"] == [
+            "/workspace/pkg/keep.py",
+            "/workspace/pkg/new.py",
+        ]
+        assert info["removed"] == ["/workspace/pkg/deleted.py"]
+    finally:
+        child.close()
+
+
+def test_taking_one_file_removes_nothing(ws):
+    """The mirror is the DIRECTORY's rule. A file names itself, and a
+    take of it says nothing about what sits beside it."""
+    ws.files.write("/workspace/pkg/a.py", "mine\n")
+    ws.files.write("/workspace/pkg/beside.py", "mine\n")
+    ws.index.commit("seed")
+    child = ws.fork("child")
+    try:
+        child.files.fs.remove("/workspace/pkg/beside.py")
+        child.files.write("/workspace/pkg/a.py", "theirs\n")
+        child.index.commit("work")
+
+        ws.checkout("child", paths=["pkg/a.py"])
+        assert ws.files.read("/workspace/pkg/a.py") == b"theirs\n"
+        assert ws.files.read("/workspace/pkg/beside.py") == b"mine\n"
+
+        info = next(iter(ws.log(limit=1))).info
+        assert info["paths"] == ["/workspace/pkg/a.py"]
+        assert "removed" not in info
+    finally:
+        child.close()
+
+
+def test_a_take_that_would_drop_a_hidden_file_writes_nothing_at_all(ws):
+    """The view's write rule covers the mirror's removals: a file this
+    session cannot see is one it may not delete, and the take is one
+    operation, so the whole thing is refused before anything lands."""
+    ws.files.write("/workspace/pkg/seen.py", "S1\n")
+    ws.files.write("/workspace/pkg/hidden.py", "H1\n")
+    ws.index.commit("seed")
+    src = ws.fork("src")
+    child = ws.fork("child", paths=["pkg/seen.py"])
+    try:
+        src.files.fs.remove("/workspace/pkg/hidden.py")
+        src.files.write("/workspace/pkg/seen.py", "S2\n")
+        src.index.commit("theirs")
+
+        with pytest.raises(PermissionError, match="outside this session's view"):
+            child.checkout("src", paths=["pkg"])
+        assert child.files.read("/workspace/pkg/seen.py") == b"S1\n"
+        assert not child.uncommitted
+        # and the hidden file is still there for whoever can see it
+        assert ws.files.read("/workspace/pkg/hidden.py") == b"H1\n"
+    finally:
+        src.close()
+        child.close()
+
+
 # -- attachments ---------------------------------------------------------------
 
 

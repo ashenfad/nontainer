@@ -402,6 +402,7 @@ ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
 ws.checkout(ref) -> str                  # restore a commit of THIS session
                                          # (appends; returns the new commit)
 ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
+                                         # (a named directory is mirrored)
 ws.rollback(steps: int = 1) -> str       # the same, counted back over log()
 ws.log(limit: int | None = None) -> Iterable[CommitInfo]
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
@@ -524,16 +525,20 @@ caller. A fork given the whole tree records nothing, so a child of a
 narrowed session does not inherit its blinkers.
 
 **`ws.checkout(ref, paths=[...])`** is the second form of one verb, and
-git's `restore --source=<ref> -- <paths>`: it copies those paths from
-any ref into the working tree and leaves everything else alone. `ref`
-is a `session@commit`, a session name (that session's last *agent*
-commit — the same reading `merge` takes, so the two cannot disagree
-about what a delegate said), or a commit of this session. They land as
-ordinary writes, so the view rule and the agent's own status see them
-as work in the tree, and the commit records
-`{"tool": "checkout", "taken_from": "<ref>", "paths": [...]}` — a soft
-reference, not ancestry. Only file keys move, so the merge-policy
-question never arises.
+git's `restore --source=<ref> -- <paths>`: it makes those paths match
+any ref and leaves everything else alone. `ref` is a `session@commit`,
+a session name (that session's last *agent* commit — the same reading
+`merge` takes, so the two cannot disagree about what a delegate said),
+or a commit of this session. A path that names a *directory* mirrors
+that subtree — a file it holds here and the ref does not is removed,
+so taking a delegate's `pkg/` cannot leave behind the `pkg/old.py` the
+delegate deleted — while a path that names a file moves that file and
+removes nothing. They land as ordinary writes and removals, so the
+view rule and the agent's own status see them as work in the tree, and
+the commit records `{"tool": "checkout", "taken_from": "<ref>",
+"paths": [...], "removed": [...]}` (`removed` only where the mirror
+dropped something) — a soft reference, not ancestry. Only file keys
+move, so the merge-policy question never arises.
 
 **`ws.files.attach(ref, at, *, readonly=True, root=None)`** mounts
 another session's tree, frozen at a commit, inside this one at `at`;

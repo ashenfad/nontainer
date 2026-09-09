@@ -271,16 +271,22 @@ is the migration.
     key (so a reopened delegate is narrowed as it was) and merges
     `MergeChoice.OURS`; a fork given the whole tree records nothing.
   - **`ws.checkout(ref, paths=[...])`** — git's `restore
-    --source=<ref> -- <paths>`, one verb with two forms. Copies those
-    paths from any ref (a `session@commit`, a session name meaning its
-    last AGENT commit, or a commit of this session) into the working
-    tree as ordinary writes, committed per `autocommit` with
-    `{"tool": "checkout", "taken_from": ..., "paths": [...]}` — a soft
-    reference, not ancestry. File keys only, so the merge-policy
-    question never arises. This is "take", and it is what getting files
-    from an UNRELATED session is: two such sessions share only the
-    store's empty commit, so a merge between them would conflict on
-    everything.
+    --source=<ref> -- <paths>`, one verb with two forms. Makes those
+    paths match any ref (a `session@commit`, a session name meaning
+    its last AGENT commit, or a commit of this session) as ordinary
+    writes and removals, committed per `autocommit` with
+    `{"tool": "checkout", "taken_from": ..., "paths": [...],
+    "removed": [...]}` — a soft reference, not ancestry. A path that
+    names a DIRECTORY mirrors that subtree: a file it holds here and
+    the ref does not is removed, so taking a delegate's `pkg/` cannot
+    leave behind the `pkg/old.py` the delegate deleted; a path naming
+    a file moves that file and removes nothing. The view's write rule
+    covers the removals too — a take that would drop a file the view
+    hides is refused whole, before anything is written. File keys
+    only, so the merge-policy question never arises. This is "take",
+    and it is what getting files from an UNRELATED session is: two
+    such sessions share only the store's empty commit, so a merge
+    between them would conflict on everything.
   - **`ws.files.attach(ref, at, *, readonly=True, root=None)` /
     `detach(at)` / `attachments()`** mount another session's frozen
     tree inside this one, for reading someone else's work in place.

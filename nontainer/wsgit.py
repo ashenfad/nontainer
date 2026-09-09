@@ -25,8 +25,9 @@ wherever cheap; each deviation carries a recorded reason:
   the store APPENDS the restore, so nothing already committed leaves
   the session. ``checkout <name>`` is refused: sessions are branches
   and branches do not switch here. ``checkout <ref> -- <paths>`` is
-  git-exact (take those paths from that ref), and ``<ref>`` may name
-  another session, which means its last commit.
+  git-exact (make those paths match that ref, mirroring a directory
+  it names), and ``<ref>`` may name another session, which means its
+  last commit.
 - ``branch <name>`` forks a SESSION rather than making a pointer, and
   ``merge`` lands even when it conflicts (the markers commit, and
   ``status`` carries the merge context) — both because a session is a
@@ -129,8 +130,10 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   checkout <ref>    restore the tree to a commit of yours (history is
                     append-only: the restore is a new commit)
   checkout <ref> -- <paths>
-                    take just those paths from that ref (another
-                    session, or a commit of yours) into your tree
+                    make just those paths match that ref (another
+                    session, or a commit of yours). A directory is
+                    mirrored: a file it holds here and the ref does
+                    not is removed
   branch            sessions on this store, yours marked *
   branch <name> [--at <ref>] [--fresh] [--paths <paths>]
                     fork a session (does not switch, as in git).

@@ -1909,9 +1909,10 @@ class Workspace:
     ) -> str:
         """Two forms, as ``git checkout <ref> [-- <paths>]`` has two.
 
-        With ``paths``, TAKE: copy those paths from any ref into the
-        working tree and leave everything else alone — git's ``restore
-        --source=<ref> -- <paths>``. See :meth:`_take`.
+        With ``paths``, TAKE: make those paths match any ref and leave
+        everything else alone — git's ``restore --source=<ref> --
+        <paths>``. A named directory is mirrored, so a file it holds
+        here and the ref does not is removed. See :meth:`_take`.
 
         Without them, RESTORE the whole session. The rest of this
         docstring is that form.
@@ -1964,16 +1965,24 @@ class Workspace:
             return landed
 
     def _take(self, ref: "str | Ref", paths: "Iterable[str] | str") -> str:
-        """``ws.checkout(ref, paths=[...])``: copy paths from any ref
-        into the working tree; returns the commit that lands (or the
-        current head when nothing was written or autocommit is off).
+        """``ws.checkout(ref, paths=[...])``: make these paths match
+        the ref; returns the commit that lands (or the current head
+        when nothing was written or autocommit is off).
 
-        Ordinary writes, so the file tools, the view rule and the
-        agent's own status all see them as work in the tree — and only
-        file keys move, so the merge-policy question never arises. The
-        provenance is a soft reference in the commit's info
+        A path that names a DIRECTORY in the ref mirrors that whole
+        subtree: files the ref does not hold are removed from it, so
+        taking a delegate's ``pkg/`` cannot leave behind the
+        ``pkg/old.py`` the delegate deleted. A path that names a FILE
+        moves that one file and removes nothing.
+
+        Ordinary writes and removals, so the file tools, the view rule
+        and the agent's own status all see them as work in the tree —
+        and only file keys move, so the merge-policy question never
+        arises. The provenance is a soft reference in the commit's info
         (``taken_from``), not a parent: taking three files from a
-        delegate does not make its history yours.
+        delegate does not make its history yours. ``paths`` records
+        what landed and ``removed`` what the mirror dropped, so the log
+        accounts for every file the take touched.
 
         ``ref`` may be a ``session@commit``, a session name (that
         session's last agent commit, as a merge would read it), or a
@@ -1982,35 +1991,54 @@ class Workspace:
         wanted = normalize_view(paths, self._root)
         source, files = self._take_source(ref)
         taken: dict[str, Any] = {}
+        mirrored: list[str] = []
         for path in wanted:
             under = {
                 p: v for p, v in files.items() if p == path or p.startswith(path + "/")
             }
             if not under:
                 raise CommitNotFoundError(
-                    f"nothing at {path!r} in {source} — a take copies what is "
-                    "there, and that ref holds no such file or directory."
+                    f"nothing at {path!r} in {source} — a take makes a path "
+                    "match the ref, and that ref holds no such file or "
+                    "directory."
                 )
             taken.update(under)
-        self._refuse_hidden(sorted(taken))
+            if path not in files:
+                # the ref holds it as a directory, so its subtree is
+                # what the take is about, not just the files in it
+                mirrored.append(path)
+        here = self._provider.working_files() if mirrored else {}
+        removed = sorted(
+            path
+            for path in here
+            if path not in taken
+            and any(path.startswith(under + "/") for under in mirrored)
+        )
+        # One refusal for the whole take, writes and removals together:
+        # a file the view hides may not be dropped any more than it may
+        # be overwritten.
+        self._refuse_hidden(sorted(taken) + removed)
         for path, value in sorted(taken.items()):
             data = value if isinstance(value, bytes) else bytes(value)
             parent = posixpath.dirname(path)
             if parent not in ("", "/"):
                 self._fs.makedirs(parent, exist_ok=True)
             self._fs.write(path, data)
+        for path in removed:
+            self._fs.remove(path)
         self._mark_executor_stale()
         if not (self._autocommit and self._provider.caps.versioned):
             return self.head or ""
         if self._provider.caps.staging and not self._provider.dirty:
             return self.head or ""
-        return self._provider.commit(
-            {
-                "tool": "checkout",
-                "taken_from": source,
-                "paths": sorted(taken),
-            }
-        )
+        info: dict[str, Any] = {
+            "tool": "checkout",
+            "taken_from": source,
+            "paths": sorted(taken),
+        }
+        if removed:
+            info["removed"] = removed
+        return self._provider.commit(info)
 
     def _refuse_hidden(self, paths: "Iterable[str]") -> None:
         """The view's write rule over a whole set, before any of it is
