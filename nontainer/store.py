@@ -292,7 +292,7 @@ class Publication:
         )
         target = self.current_version if version is None else self.version(version)
         if target is None:
-            raise WorkspaceError(
+            raise ValueError(
                 f"No such version of {self.name!r}: {version!r} — have "
                 f"{', '.join(v.version for v in self.versions)}"
             )
@@ -832,6 +832,27 @@ class Store:
 
         Returns:
             The :class:`Publication`, with the new version current.
+
+        Raises:
+            ValueError: The call is wrong, and only the caller can fix
+                it — an embedder mapping errors to HTTP answers 400. A
+                publication or version name that is not session-id
+                shaped; an ``info`` key publish writes itself; a
+                version name this lineage already holds, since versions
+                are immutable and a name is never repointed; ``paths``
+                that match no file at ``ws``'s commit. Naming a version
+                the registry does not hold to :meth:`set_current`,
+                :meth:`unpublish` or :meth:`Publication.open` is the
+                same mistake and raises the same class.
+            WorkspaceError: The store is not in a state to publish, and
+                the same call lands once it is — ``ws`` carries staged
+                changes, ``ws`` belongs to another store, an earlier
+                attempt left a tag or a branch of this version's name
+                behind, or the derived commit did not land.
+            NotSupportedError: This store cannot publish at all: a
+                backend without branches and tags, a
+                ``provider_factory`` layout the store does not own, or
+                a provider that keeps no commits.
         """
         self._require_own_layout("publish")
         self._require_kvgit("publish")
@@ -871,7 +892,7 @@ class Store:
             versions = dict(record.get("versions") or {})
             chosen = _next_version(versions) if version is None else version
             if chosen in versions:
-                raise WorkspaceError(
+                raise ValueError(
                     f"Version already published: {name}/{chosen} — versions "
                     "are immutable. Publish a new one, or unpublish that one "
                     "first."
@@ -938,10 +959,10 @@ class Store:
         def point(registry: dict[str, Any]) -> Publication:
             record = registry.get(name)
             if record is None:
-                raise WorkspaceError(f"No such publication: {name!r}")
+                raise ValueError(f"No such publication: {name!r}")
             versions = record.get("versions") or {}
             if version not in versions:
-                raise WorkspaceError(
+                raise ValueError(
                     f"No such version of {name!r}: {version!r} — have "
                     f"{', '.join(sorted(versions))}"
                 )
@@ -969,10 +990,10 @@ class Store:
         def drop(registry: dict[str, Any]) -> None:
             record = registry.get(name)
             if record is None:
-                raise WorkspaceError(f"No such publication: {name!r}")
+                raise ValueError(f"No such publication: {name!r}")
             versions = dict(record.get("versions") or {})
             if version not in versions:
-                raise WorkspaceError(
+                raise ValueError(
                     f"No such version of {name!r}: {version!r} — have "
                     f"{', '.join(sorted(versions))}"
                 )
@@ -1355,7 +1376,7 @@ class Store:
             if _under(path, paths, ws.root)
         }
         if not wanted:
-            raise WorkspaceError(
+            raise ValueError(
                 f"Nothing to publish from {ws.session!r} at {head}: no files "
                 f"under {', '.join(paths)!r}. Publish paths that exist, or "
                 "widen paths=."
