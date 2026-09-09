@@ -14,9 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own reserved `@store/anchor` — minted on that first read, holding one
   empty commit. So a store tag opens for as long as it exists, with
   every session deleted and nothing published. The anchor is not a
-  session (`sessions()` never lists it), `delete` takes session names
-  and cannot reach it, and `clean()` keeps it: a branch head is a GC
-  root and its commit owns nothing to sweep.
+  session (`sessions()` never lists it) and `clean()` keeps it: a branch
+  head is a GC root and its commit owns nothing to sweep.
+- **`Store.delete` deletes sessions only.** Every name is checked as a
+  session id before any of them reaches the backend, so no caller can
+  take out a branch the store keeps for itself by spelling its name —
+  the `@store/` namespace (a publication's branch, the read anchor) is
+  one no session id can reach. A publication is still removed with
+  `unpublish`, which drops its tag, its branch and its registry row
+  together.
 - **The runner is told the fork point.** `SessionRunner.run` takes
   `forked_at` — the parent's commit the child was forked from, `None`
   where the provider keeps no commits — so the provenance header a

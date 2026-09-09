@@ -366,7 +366,11 @@ class KvgitProvider:
         from a store dir that was never materialized. Names are treated
         as branch names, not validated as session ids — snapshot
         branches (``<slug>-pub-<hex>``) are legitimate targets a caller
-        passes through.
+        passes through, and ``Store.unpublish`` drops a publication's
+        reserved branch through here. The session rule is the store
+        verb's: ``Store.delete`` refuses anything that is not a session
+        id, which is what keeps the ``@store/`` branches out of reach
+        of a teardown.
 
         A session's own tags go with it: every tag stored under
         ``<name>/`` is deleted alongside the branch, because a

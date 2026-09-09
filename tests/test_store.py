@@ -312,6 +312,37 @@ def test_teardown_leaves_the_anchor(tmp_path):
         assert snap.files.read("report.txt") == b"published\n"
 
 
+def test_delete_deletes_sessions_only(tmp_path):
+    """The reserved branches are the store's own and `delete` is the
+    session verb: a name that is not a session id is refused before the
+    provider sees it, so no caller takes out the read anchor or a
+    publication's branch by spelling it."""
+    st = Store(tmp_path)
+    with st.open("author") as ws:
+        ws.files.write("app/index.html", "<h1>scores</h1>")
+        ws.commit()
+        st.tags.add(ws, "report")
+    st.delete("author", min_age=0)
+    with st.tags.at("report") as snap:  # nothing to borrow: mints the anchor
+        anchored = snap.ref
+
+    with st.open("publisher") as ws:
+        ws.files.write("app/index.html", "<h1>scores</h1>")
+        ws.commit()
+        st.publish(ws, "scoreboard")
+    st.delete("publisher", min_age=0)  # an ordinary delete, unchanged
+    assert st.sessions() == []
+
+    for reserved in ("@store/anchor", "@store/pub/scoreboard/v1"):
+        with pytest.raises(ValueError, match="not a session id"):
+            st.delete([reserved], min_age=0)
+        assert reserved in st._branches()
+
+    # ...so a snapshot ref taken against the anchor still resolves.
+    with st.resolve(anchored) as again:
+        assert again.files.read("app/index.html") == b"<h1>scores</h1>"
+
+
 def test_session_scoped_tags_stay_off_the_store_surface(tmp_path):
     st = Store(tmp_path)
     with st.open("author") as ws:
