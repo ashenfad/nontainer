@@ -153,6 +153,65 @@ def _merge_metadata_row(
     ).encode()
 
 
+def _merge_legacy_metadata_table(old: Any, ours: Any, theirs: Any) -> Any:
+    """Field-aware merge for the pre-row ``__vfs_metadata__`` table.
+
+    The table is drained one path at a time — writing a path stores its
+    row and drops that path from the table — so two branches that each
+    wrote a DIFFERENT file both changed this one key, and without a rule
+    an otherwise disjoint merge is a hard conflict over state that
+    agrees. Merge it per entry instead:
+
+    - An entry a side removed has been drained there: that path holds a
+      row on that side, and rows merge by key beside their blobs, so the
+      removal wins and the path stays described by its row.
+    - An entry both sides kept unchanged passes through, and an entry
+      only one side changed takes that side.
+    - An entry the two sides changed differently raises ``CantMark`` — a
+      hard conflict — rather than a guess. Nothing writes a table entry
+      any more, so ordinary use cannot produce one.
+
+    When nothing survives, the table describes nothing: the key is
+    removed where a side removed it, and otherwise this side's leftovers
+    stand. Each of those names a path the other side drained, so each is
+    shadowed by that side's row and drains for good on the next write —
+    which is as close to removal as a merge function gets, since it can
+    only drop a key by choosing a side that dropped it.
+    """
+    from kvgit import MergeChoice
+    from kvgit.merges import CantMark
+
+    def table(value: Any) -> dict:
+        if value is None:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError) as e:
+            raise CantMark(f"VFS metadata table not JSON: {e}") from e
+        if not isinstance(parsed, dict):
+            raise CantMark("VFS metadata table not a table")
+        return parsed
+
+    old_t, ours_t, theirs_t = table(old), table(ours), table(theirs)
+    merged: dict[str, Any] = {}
+    for path in old_t.keys() | ours_t.keys() | theirs_t.keys():
+        o, u, t = old_t.get(path), ours_t.get(path), theirs_t.get(path)
+        if u == t:
+            if u is not None:
+                merged[path] = u
+        elif u is None or t is None:
+            continue
+        elif o == u:
+            merged[path] = t
+        elif o == t:
+            merged[path] = u
+        else:
+            raise CantMark(f"two different table entries for {path!r}")
+    if not merged:
+        return MergeChoice.THEIRS if theirs is None else MergeChoice.OURS
+    return json.dumps(merged, sort_keys=True).encode()
+
+
 class _FileView(Mapping):
     """One tree's files as ``path -> stored value``, read on demand.
 
@@ -238,9 +297,11 @@ class KvgitProvider:
         # already uses for them, registered for ORDINARY commits too.
         # A commit whose CAS is lost to another handle on this session
         # three-way merges by key, and these are the keys two writers
-        # are bound to contend on: the cwd and the ws-git blob, plus
-        # the metadata row of any file both of them wrote. Without a
-        # policy each of those turns a routine race into a raised
+        # are bound to contend on: the cwd and the ws-git blob, the
+        # metadata row of any file both of them wrote, and — until every
+        # state written before per-file rows has drained — the legacy
+        # table, which a write to any path still in it changes. Without
+        # a policy each of those turns a routine race into a raised
         # conflict. Rows are registered by prefix because their names
         # are the encoded paths, unknown until a file is written; a
         # merge function under a prefix is consulted only where both
@@ -251,6 +312,7 @@ class KvgitProvider:
             from kvgit import MergeChoice
             from monkeyfs import VirtualFS
 
+            register(VirtualFS.METADATA_KEY, _merge_legacy_metadata_table)
             register(VirtualFS.CWD_KEY, _keep_ours)
             register(_WS_BLOB_KEY, MergeChoice.OURS)
             register(_VIEW_KEY, MergeChoice.OURS)
@@ -949,6 +1011,9 @@ class KvgitProvider:
         at_lca = self._staged.checkout(base) if base is not None else None
         for key in row_keys:
             merge_fns[key] = self._row_merge_fn(key, other, at_lca)
+        # A write drains its own path out of the legacy table, so two
+        # branches change that one key by writing different files.
+        merge_fns[VirtualFS.METADATA_KEY] = _merge_legacy_metadata_table
         merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
         merge_fns[_VIEW_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
