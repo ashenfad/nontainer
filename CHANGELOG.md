@@ -209,7 +209,10 @@ is the migration.
   so a session whose metadata is still the old table publishes rows
   like any other and the table itself never travels. A state written
   before rows keeps working: it reads through the table and drains one
-  write at a time.
+  write at a time, and the table keeps a merge function of its own
+  while it does — a write drains its own path out of it, so two
+  branches that each wrote a different file both changed that one key
+  and would otherwise collide over state that agrees.
 
 ### Added
 

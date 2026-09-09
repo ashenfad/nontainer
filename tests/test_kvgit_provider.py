@@ -947,3 +947,87 @@ def test_a_selective_commit_takes_a_row_and_never_the_legacy_table(tmp_path):
         assert VirtualFS(at).stat("/workspace/b.txt").size == 5
     finally:
         provider.close()
+
+
+def test_branches_that_drain_different_paths_still_merge(tmp_path):
+    """A write drains its own path out of the legacy table, so two
+    branches that each wrote a DIFFERENT file both changed that one key.
+    They agree about every entry, and the merge says so: each drained
+    path keeps the row its write stored, and the table keeps only what
+    neither side touched."""
+    import json
+
+    main = KvgitProvider.open(tmp_path / "kvgit", session="drain-main")
+    worker = None
+    try:
+        for name in ("a.txt", "b.txt", "c.txt"):
+            main.fs.write(f"/workspace/{name}", name.encode())
+        main.commit()
+        _to_legacy_table(main)
+
+        worker = main.fork("drain-worker")
+        worker.fs.write("/workspace/a.txt", b"the worker rewrote a")
+        worker.commit()
+        main.fs.write("/workspace/b.txt", b"main rewrote b")
+        main.commit()
+
+        out = main.merge("drain-worker")
+        assert out.merged
+        assert out.conflicts == ()
+
+        main.fs.invalidate()
+        assert main.fs.read("/workspace/a.txt") == b"the worker rewrote a"
+        assert main.fs.read("/workspace/b.txt") == b"main rewrote b"
+        for name, body in (
+            ("a.txt", b"the worker rewrote a"),
+            ("b.txt", b"main rewrote b"),
+            ("c.txt", b"c.txt"),
+        ):
+            assert main.fs.stat(f"/workspace/{name}").size == len(body)
+        # each drained path has its own row now
+        assert main.kv.get(main.fs.metadata_key("/workspace/a.txt"))
+        assert main.kv.get(main.fs.metadata_key("/workspace/b.txt"))
+        # and the table holds only what neither side wrote
+        assert json.loads(main.kv[VirtualFS.METADATA_KEY]).keys() == {
+            "workspace",
+            "workspace/c.txt",
+        }
+    finally:
+        if worker is not None:
+            worker.close()
+        main.close()
+
+
+def test_both_sides_draining_one_path_conflict_by_path(tmp_path):
+    """Both branches rewrote the same file, so both drained the same
+    entry — agreement about the table, disagreement about the bytes.
+    The conflict is the file's, named by path: the table is not a
+    second thing to resolve."""
+    main = KvgitProvider.open(tmp_path / "kvgit", session="same-main")
+    worker = None
+    try:
+        main.fs.write("/workspace/shared.txt", b"one\ntwo\nthree\n")
+        main.fs.write("/workspace/other.txt", b"other\n")
+        main.commit()
+        _to_legacy_table(main)
+
+        worker = main.fork("same-worker")
+        worker.fs.write("/workspace/shared.txt", b"one\nWORKER\nthree\n")
+        worker.fs.write("/workspace/other.txt", b"the worker touched this\n")
+        worker.commit()
+        main.fs.write("/workspace/shared.txt", b"one\nMAIN\nthree\n")
+        main.commit()
+
+        out = main.merge("same-worker")
+        assert out.merged
+        assert out.conflicts == ("/workspace/shared.txt",)
+        assert VirtualFS.METADATA_KEY not in out.conflicts
+        main.fs.invalidate()
+        body = main.fs.read("/workspace/shared.txt")
+        assert b"<<<<<<< " in body
+        assert main.fs.stat("/workspace/shared.txt").size == len(body)
+        assert main.fs.read("/workspace/other.txt") == b"the worker touched this\n"
+    finally:
+        if worker is not None:
+            worker.close()
+        main.close()
