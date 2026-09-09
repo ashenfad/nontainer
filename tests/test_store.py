@@ -511,6 +511,40 @@ def test_mounts_reach_a_frozen_open_read_only(tmp_path):
             snap.run_python("open('/data/seed.txt', 'w').write('nope')").error
             is not None
         )
+        # the host-side escape hatch reaches the same composed filesystem,
+        # so the mount refuses it too
+        with pytest.raises(PermissionError):
+            snap.files.fs.write("/data/seed.txt", b"nope")
+    assert (src / "seed.txt").read_text() == "from the host"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda st, ref, pub, m: st.tags.at("published", mounts=m),
+        lambda st, ref, pub, m: st.resolve(ref, mounts=m),
+        lambda st, ref, pub, m: pub.open(mounts=m),
+    ],
+)
+def test_a_frozen_open_refuses_a_writable_mount(tmp_path, call):
+    """A frozen workspace accepts no writes from anyone. A mount is the
+    one part of its filesystem that is a real host directory, and
+    ``files.fs`` would carry a write straight into it — so the flag is
+    refused rather than coerced, and the caller hears about it."""
+    from nontainer import Mount
+
+    src = tmp_path / "share"
+    src.mkdir()
+    (src / "seed.txt").write_text("from the host")
+    st = Store(tmp_path / "store")
+    ref = _snapshot_source(st)
+    with st.open("app") as ws:
+        pub = st.publish(ws, "board")
+
+    mounts = {"/data": Mount(src, readonly=False)}
+    with pytest.raises(ValueError, match=r"'/data'.*read-only mounts only"):
+        call(st, ref, pub, mounts)
+    assert (src / "seed.txt").read_text() == "from the host"
 
 
 @pytest.mark.parametrize(
