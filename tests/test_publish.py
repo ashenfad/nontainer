@@ -509,6 +509,102 @@ def test_unpublish_refuses_the_current_version_while_others_remain(tmp_path):
     ws.close()
 
 
+def _registry_write_dies(monkeypatch):
+    """Make the registry write raise, so a publish dies exactly where
+    its branch and tag are already in the store and its record is
+    not — the one window publish cannot make atomic."""
+
+    def boom(self, data):
+        raise RuntimeError("the process died writing the registry")
+
+    monkeypatch.setattr(Store, "_registry_write", boom)
+
+
+def test_a_publish_that_died_before_its_record_is_resumed(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard")
+    monkeypatch.undo()
+
+    stranded = store.tags.list()["scoreboard/v1"]
+    assert store.publication("scoreboard") is None
+    assert "@store/pub/scoreboard/v1" in store._branches()
+
+    # the same publish again: the branch is that attempt's, so it is
+    # adopted rather than rebuilt or refused
+    pub = store.publish(ws, "scoreboard")
+    assert [v.version for v in pub.versions] == ["v1"]
+    assert pub.current_version.ref.commit == stranded
+    assert pub.open().files.read("app/index.html") == b"<h1>scores</h1>"
+    assert [b for b in store._branches() if b.startswith("@store/pub/")] == [
+        "@store/pub/scoreboard/v1"
+    ]
+    ws.close()
+
+
+def test_a_publish_that_died_leaves_a_tag_the_retry_adopts(tmp_path, monkeypatch):
+    """The tag is written with the branch, so the retry finds it there
+    and keeps it rather than refusing its own name."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", version="beta")
+    monkeypatch.undo()
+
+    assert "scoreboard/beta" in store.tags.list()
+    pub = store.publish(ws, "scoreboard", version="beta")
+    assert pub.current == "beta"
+    assert store.tags.list()["scoreboard/beta"] == pub.current_version.ref.commit
+    ws.close()
+
+
+def test_a_stranded_branch_from_another_attempt_is_refused_and_cleared(
+    tmp_path, monkeypatch
+):
+    """A recordless branch whose commit is not this publish's is not
+    adopted: the message names the branch and unpublish clears it."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", version="v1")
+    monkeypatch.undo()
+
+    ws.files.write("/workspace/app/index.html", "<h1>different</h1>")
+    ws.commit()
+    with pytest.raises(WorkspaceError, match="@store/pub/scoreboard/v1"):
+        store.publish(ws, "scoreboard", version="v1")
+
+    # no record names it, and unpublish takes it out anyway
+    assert store.publication("scoreboard") is None
+    store.unpublish("scoreboard", "v1", min_age=0)
+    assert "@store/pub/scoreboard/v1" not in store._branches()
+    assert store.tags.list() == {}
+
+    fresh = store.publish(ws, "scoreboard", version="v1")
+    assert fresh.open().files.read("app/index.html") == b"<h1>different</h1>"
+    ws.close()
+
+
+def test_publishing_other_paths_is_a_different_attempt(tmp_path, monkeypatch):
+    """Adoption matches on what was published as well as where from, so
+    a retry that widened paths= is refused rather than served the
+    narrower tree."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", version="v1", paths=("app/",))
+    monkeypatch.undo()
+
+    with pytest.raises(WorkspaceError, match="@store/pub/scoreboard/v1"):
+        store.publish(ws, "scoreboard", version="v1", paths=("app/", "notes/"))
+    ws.close()
+
+
 def test_unpublish_refuses_what_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)
@@ -702,6 +798,7 @@ def test_info_may_not_overwrite_the_provenance_keys(tmp_path):
         {"tool": "not-publish"},
         {"name": "other"},
         {"version": "v99"},
+        {"paths": ["everything/"]},
     ):
         with pytest.raises(ValueError, match="info may not set"):
             store.publish(ws, "scoreboard", info=bad)

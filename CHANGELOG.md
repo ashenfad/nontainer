@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an embedder that wants every version numbered passes `version=`
   itself.
 
+### Fixed
+- **A publish that died mid-way can be resumed or cleared.** `publish`
+  writes the branch and the tag before the registry record, so a crash
+  in between left a reserved branch nothing could use or remove. The
+  retry now adopts a recordless branch whose head names the same
+  source commit and the same `paths` — that attempt and no other — and
+  writes the record over it; a recordless branch of some other attempt
+  is refused by name, and `unpublish` clears a branch and tag with no
+  record behind them. `paths` joins the commit-info keys a caller's
+  `info` may not spell, because it is half of what identifies an
+  attempt.
+
 ### Changed
 - **A caller's mistake on publish is a `ValueError`.** Reusing a
   version name, publishing `paths` that match no file, and naming a
