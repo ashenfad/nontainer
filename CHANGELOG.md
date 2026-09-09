@@ -39,20 +39,25 @@ history. No compatibility layer — the table is the migration.
   graph are metadata under a reserved key, so nothing suspends
   autocommit; trees are materialized exactly, and a host `ws.commit()`
   may not claim a `ws-git*` tool.
-- **`ws.checkout` appends** a commit whose tree equals the target, so
+- **`ws.checkout` appends** a commit whose tree equals the target
+  whenever the restore changes anything (a checkout onto state the
+  workspace already holds writes nothing and returns the head), so
   history is append-only, only `Store.delete` moves a head backward, and
   a session name is refused — a session is a branch.
 - **A merge takes only committed agent work.** `ws.merge` (new on the
   facade, gated by `caps.merge`) refuses staged or modified work on
-  either side and merges the source at its last agent commit. It is
+  either side and merges the source at its last agent commit; a session
+  that never used ws-git has no such baseline, so only an open index
+  refuses it and as a source it merges at its store head. It is
   filesystem-only: files three-way, while `__cache__/*`, `__agno__/*`,
   cwd, the ws-git blob and the view record take ours.
 - **Metadata rides beside the bytes.** One monkeyfs row per file, not
   one table per write, so a commit or merge carries a file's row with
   its blob.
 - **One key for the working directory.** The filesystem's is the only
-  one (`__cwd__` is dropped on open), and with `mounts` cwd no longer
-  survives reopen.
+  one (`__cwd__` is dropped on open), and on kvgit — whose filesystem
+  owns that key — `mounts` make cwd transient rather than reopened,
+  while dir and AgentFS persist it as before, mounted or not.
 
 ### Added
 - **`nontainer.Store` / `store(...)`** — `open`, `sessions`, `exists`,
