@@ -271,10 +271,24 @@ leave things in.
 **Merge takes only what is agent-committed, on both sides.** The
 target refuses while it has anything modified against its own last
 ws-git commit; the source is merged at *its* last agent commit and is
-refused when it has written since. A delegate's result is what it
-committed, so a runner should make the child commit at the end of its
-task (a session that never used ws-git merges at its store head, which
-is the honest answer for it).
+refused when it has written since. A session that never used ws-git has
+no agent commit to differ from and merges at its store head, which is
+the honest answer for it.
+
+**A fork starts with a fresh ws-git state**, and that is what lets the
+last rule reach delegates. A branch carries the workspace — files,
+cache, cwd, and with `inherit="full"` the conversation — but never the
+agent's index, head or outstanding merge: an index is a composition in
+progress, and a delegate does not start halfway through somebody
+else's. So a delegate that never touched ws-git merges at its branch
+head, where autocommit put every write; one that committed is taken at
+its own last commit; and one that committed and then wrote past it is
+refused, with what it left out reported rather than committed for it.
+A delegate is the author of its own commits — nothing composes one on
+its behalf, because a commit nobody wrote is a worse answer than an
+honest refusal. Before its first commit a delegate reads the way a repo
+does before its first: everything it can see is modified, and what its
+view hides is not its business.
 
 **Providers degrade honestly.** kvgit does all of it. AgentFS refuses
 `fork` and `merge` by name until it has a merge engine — a fork you

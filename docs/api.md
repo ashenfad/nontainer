@@ -539,6 +539,20 @@ it touches no file. A brief, a summary, a distilled context is content
 the caller supplies with the child's task — nothing here can write one,
 since nontainer stores the conversation and does not interpret it.
 
+**A fork starts with a fresh ws-git state**, under either inheritance:
+no `ws.index.head`, nothing staged, no inherited merge context. A
+branch carries the workspace; an index is a composition in progress,
+and a delegate does not start halfway through somebody else's. So the
+child's `ws.index.log()` is its own (`ws-git log <parent>` reaches the
+parent's), and — the reason it matters — a child that never uses ws-git
+merges and is taken from at its branch head, the rule the fiction
+already had for a session with no agent commit. The reset lands as a
+`ws-git.fork` bookkeeping commit, so it is at the child's store head
+for any reader; it is hidden from `ws.log()` and shown by `kind="all"`,
+and a parent that never used ws-git leaves nothing to reset and costs
+the fork no commit. Before its first commit a child reads the way a
+repo does before its first: everything it can see is modified.
+
 `paths` narrows the child's **view**, not its tree. Its branch holds
 everything this one had; its filesystem lists and reads only the seeded
 paths (directories or files, absolute or relative to the root). So
@@ -1118,34 +1132,36 @@ SEES without narrowing its branch; `inherit` (`"fresh"` here, against
 along — a brief or a summary is content the task carries. `wait=True`
 blocks and returns the `Answer` instead.
 
-**The helper commits the child's work before answering.** A fork
-inherits the parent's ws-git blob, so the child's virtual head is the
-*parent's* last agent commit and everything the child writes reads as
-uncommitted agent work — which `merge` and `checkout(ref, paths=)`
-refuse on both sides. One host-side `child.index.commit(message)` when
-the answer arrives is what makes a delegate mergeable, and what makes
-its result one agent commit with a message (the answer's first line).
-No model is involved.
+**The helper never commits for the delegate.** A delegate is the
+author of its own commits, and the answer names what it *landed*:
 
-That commit is the delegate's **whole working set**, deletions
-included, even where the delegate left an index open: a delegate that
-staged half of what it did was composing a commit it never made, and
-the answer names everything it changed, so everything it changed is in
-the commit. Honoring the half-composition instead would answer with the
-rest left as uncommitted agent work — which `merge` refuses and a take
-from `answer.ref` silently omits.
+| the delegate | `answer.ref` names | `merge` / `checkout <name> -- <paths>` |
+|---|---|---|
+| never used ws-git | its branch head — autocommit put every write there | take that head |
+| used ws-git | its last ws-git commit | take that commit |
+| used ws-git, then wrote past it | its last ws-git commit | **refused**; `answer.uncommitted` is True |
+
+The third row is the one worth reading twice. What the delegate
+committed is what it submitted, and a merge refuses such a source
+rather than bringing back a state it has moved on from, so the answer
+reports the rest as left out instead of hiding it — the caller takes
+paths, or asks again. Committing on the delegate's behalf would destroy
+that signal and put a commit nobody wrote in its log.
+
+The first row works because **a fork starts with a fresh ws-git state**
+(see `ws.fork`): no head, nothing staged, no inherited merge context,
+for `inherit="full"` as much as `"fresh"`. A branch carries the
+workspace; an index is a composition in progress, and a delegate does
+not start halfway through somebody else's.
 
 Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
 parent learns a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's. `cancel` means the answer will
 be discarded and the branch left as it is: a runner already working is
-the embedder's loop and cannot be interrupted. It succeeds only
-*before* the landing begins — cancelling and landing an answer are one
-state transition under one lock, so after a cancel succeeds nothing
-goes onto the child's branch, and once the helper has begun committing
-the child's work the answer stands and `cancel` returns the job without
-`status == "cancelled"`. `keep` records a flag on the job for a
-retention sweep to honor; nothing sweeps yet.
+the embedder's loop and cannot be interrupted, and nothing the helper
+does writes to the child's branch, so there is nothing to undo either.
+A job that has already answered comes back unchanged. `keep` records a
+flag on the job for a retention sweep to honor; nothing sweeps yet.
 
 ### `SessionRunner` (the loop seam)
 
@@ -1170,10 +1186,10 @@ boundaries where a handle does not — the job's `name` is the
 serialization format every later verb takes.
 
 ```python
-Job(name, task, status, ref, started, finished, changed, kept)
+Job(name, task, status, ref, started, finished, changed, kept, uncommitted)
 # status: running | answered | declined | capped | cancelled | failed
 
-Answer(text, status, ref, branch, changed, artifacts, provenance)
+Answer(text, status, ref, branch, changed, artifacts, provenance, uncommitted)
 str(answer) == answer.text            # printing one yields prose
 repr(answer)                          # one line, never the body
 answer.changed                        # {"seed": [...], "elsewhere": [...]}

@@ -31,9 +31,9 @@ class Editor:
 
     An embedder's real one drives an agent loop against the child
     session and returns what it said; the seam is one synchronous
-    method either way, and the helper does the rest — it committed
-    this delegate's work before the answer came back, which is what
-    makes `ws-git merge` accept a delegate that never ran ws-git.
+    method either way. This delegate never touches ws-git, so its
+    branch head is its answer — autocommit put every write there, and
+    nothing commits on its behalf.
     """
 
     def __init__(self, store: Store) -> None:

@@ -20,13 +20,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   behind it: `ask` forks under a pet name scoped to the parent
   (`analyst.sleepy-otter`), hands the child to the runner on a worker
   thread and returns a `Job`; `list` / `result` / `cancel` / `keep`
-  collect it, and `wait=True` blocks for the `Answer`. It commits the
-  child's whole working set host-side when the answer arrives — a fork
-  inherits the parent's ws-git blob, so without that commit `merge` and
-  `checkout(ref, paths=)` refuse the delegate, and a delegate that
-  staged only part of what it did would answer with the rest left
-  behind — and reports what it changed by diffing the fork point
-  against the child's head.
+  collect it, and `wait=True` blocks for the `Answer`. It commits
+  nothing on the delegate's behalf: the answer names what the delegate
+  LANDED — its branch head if it never used ws-git, its last ws-git
+  commit if it did — and reports what it changed by diffing the fork
+  point against the child's head. A delegate that committed and then
+  wrote past it is reported, not papered over: `Answer.uncommitted` /
+  `Job.uncommitted` say so, and the tool's text names the take instead
+  of the merge that would be refused.
+- **A fork starts with a fresh ws-git state.** `Workspace.fork`,
+  `Store.fork` and `ws-git branch` give the child no ws-git head,
+  nothing staged and no inherited merge context, for `inherit="full"`
+  as much as `"fresh"`: a branch carries the workspace, never the
+  agent's composition in progress. So a delegate's log is its own
+  (`ws-git log <parent>` reaches the parent's), and a delegate that
+  never used ws-git merges and is taken from at its branch head — the
+  rule the fiction already had for a session with no agent commit. The
+  reset lands as a `ws-git.fork` bookkeeping commit, hidden from
+  `ws.log()` and shown by `kind="all"`. `ws-git status` in a narrowed
+  session no longer names paths its view hides.
 - **`Job` and `Answer` records** in `protocol.py`, pure data:
   `str(answer)` is the reply, `repr` is one line and never the body,
   and declining or running out of budget resolve as a status rather
