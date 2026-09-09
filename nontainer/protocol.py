@@ -893,6 +893,10 @@ class Job:
     """The caller asked for this job to outlive the ordinary retention
     of a delegate's branch."""
 
+    uncommitted: bool = False
+    """The delegate left work its own ws-git head does not hold, so a
+    merge of it is refused (see :attr:`Answer.uncommitted`)."""
+
 
 @dataclass(frozen=True)
 class Answer:
@@ -941,6 +945,14 @@ class Answer:
     the work started and finished, and ``chain`` — the FULL path of
     refs behind it, not the last hop, so an answer cannot launder its
     sources through an intermediate delegate."""
+
+    uncommitted: bool = False
+    """The delegate used ws-git and then wrote past its last commit, so
+    what it committed is not everything it did. A merge refuses such a
+    source rather than bringing back a state the delegate has moved on
+    from, and this says so before the caller tries: the fix is to take
+    paths, or to ask the delegate again. False for a delegate that
+    never used ws-git — its branch head IS its answer."""
 
     def __str__(self) -> str:
         return self.text

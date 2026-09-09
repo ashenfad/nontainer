@@ -14,8 +14,21 @@ import time
 
 import pytest
 
-from nontainer import Answer, Job, JobRunning, SessionsError, Store
-from nontainer.sessions import SEPARATOR, Sessions, pet_name, run_action
+from nontainer import (
+    Answer,
+    Job,
+    JobRunning,
+    SessionsError,
+    Store,
+    WorkspaceError,
+)
+from nontainer.sessions import (
+    SEPARATOR,
+    Sessions,
+    pet_name,
+    render_answer,
+    run_action,
+)
 from nontainer.wsgit import register_wsgit
 
 
@@ -174,10 +187,10 @@ def test_an_unknown_name_is_refused(parent, store):
 # -- the commit the helper makes for the child ---------------------------------
 
 
-def test_a_child_that_never_committed_still_merges(parent, store):
-    """A fork inherits the parent's ws-git blob, so everything the
-    delegate writes reads as uncommitted agent work and merge refuses
-    it. The helper commits for it."""
+def test_a_child_that_never_used_ws_git_merges_at_its_head(parent, store):
+    """A delegate that never touched ws-git said everything with its
+    branch: autocommit landed every write, so its head IS its answer,
+    and nothing has to commit on its behalf."""
     runner = Scripted(
         store,
         {"/workspace/report.md": "# Rates\n\nNorth 4, South 7.\n"},
@@ -186,25 +199,17 @@ def test_a_child_that_never_committed_still_merges(parent, store):
     with Sessions(parent, runner) as sessions:
         answer = sessions.ask("polish the report", wait=True)
 
+    child = store.open(answer.branch)
+    try:
+        assert child.index.head is None  # it made no commit of its own
+        assert answer.ref == f"{answer.branch}@{child.head}"
+    finally:
+        child.close()
+    assert answer.uncommitted is False
+
     out = parent.merge(answer.branch)
     assert out.merged and not out.conflicts
     assert parent.files.read("/workspace/report.md").decode().endswith("South 7.\n")
-
-
-def test_the_commit_message_is_the_answers_first_line(parent, store):
-    runner = Scripted(
-        store,
-        {"/workspace/report.md": "x\n"},
-        text="# Polished the report\n\nand more prose\n",
-    )
-    with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("polish", wait=True)
-
-    child = store.open(answer.branch)
-    try:
-        assert child.index.log(limit=1)[0].info["message"] == "Polished the report"
-    finally:
-        child.close()
 
 
 def test_take_from_the_child_works_too(parent, store):
@@ -217,7 +222,9 @@ def test_take_from_the_child_works_too(parent, store):
     assert next(iter(parent.log(limit=1))).info["taken_from"] == answer.ref
 
 
-def test_a_delegate_that_committed_itself_is_not_committed_twice(parent, store):
+def test_a_delegate_that_committed_is_named_at_its_own_commit(parent, store):
+    """A delegate is the author of its own commits, and the answer
+    names the last one it made."""
     runner = Scripted(store, {"/workspace/report.md": "own\n"}, commits=True)
     with Sessions(parent, runner) as sessions:
         answer = sessions.ask("polish", wait=True)
@@ -225,10 +232,12 @@ def test_a_delegate_that_committed_itself_is_not_committed_twice(parent, store):
     child = store.open(answer.branch)
     try:
         messages = [c.info["message"] for c in child.index.log()]
+        assert messages == ["the delegate's own commit"]
+        assert answer.ref == f"{answer.branch}@{child.index.head}"
     finally:
         child.close()
-    assert messages[0] == "the delegate's own commit"
-    assert messages.count("the delegate's own commit") == 1
+    assert answer.uncommitted is False
+    assert parent.merge(answer.branch).merged
 
 
 # -- what changed --------------------------------------------------------------
@@ -426,72 +435,6 @@ def test_a_job_never_dies_with_its_thread(parent, store):
     assert time.time() >= sessions.list()[0].started
 
 
-def test_a_partial_commit_by_the_delegate_still_lands_everything(parent, store):
-    """The answer lands everything the delegate did. A delegate that
-    staged half its work would otherwise leave the other half as
-    uncommitted agent work — which merge refuses and a take from the
-    answer's ref silently omits, while the job reads as answered."""
-
-    class Partial:
-        def run(self, session, task, *, budget=None):
-            child = store.open(session)
-            try:
-                child.files.write("/workspace/report.md", "polished\n")
-                child.files.write("/workspace/notes.md", "why I did it\n")
-                child.index.stage(["/workspace/report.md"])
-                # the index is a key like any other, and a delegate's
-                # staged set reaches the branch on the next durability
-                # point — a turn hook here, a tool call in a real loop
-                child.commit(info={"tool": "turn"})
-            finally:
-                child.close()
-            return "polished, with a note"
-
-    with Sessions(parent, Partial()) as sessions:
-        answer = sessions.ask("polish the report", wait=True)
-
-    assert answer.changed["seed"] == ("/workspace/notes.md", "/workspace/report.md")
-    child = store.open(answer.branch)
-    try:
-        committed = child._provider.files_at(child.index.head)
-    finally:
-        child.close()
-    assert "/workspace/report.md" in committed
-    assert "/workspace/notes.md" in committed
-
-    out = parent.merge(answer.branch)
-    assert out.merged and not out.conflicts
-    assert parent.files.read("/workspace/notes.md") == b"why I did it\n"
-
-
-def test_a_delegate_that_deleted_a_file_lands_the_deletion(parent, store):
-    """Deletions are part of the working set the answer lands, whether
-    or not the delegate staged them."""
-
-    class Remover:
-        def run(self, session, task, *, budget=None):
-            child = store.open(session)
-            try:
-                child.files.write("/workspace/report.md", "kept\n")
-                child.index.stage(["/workspace/report.md"])
-                child.terminal("rm main.py")  # commits the delete and the index
-            finally:
-                child.close()
-            return "dropped main.py"
-
-    with Sessions(parent, Remover()) as sessions:
-        answer = sessions.ask("drop main.py", wait=True)
-
-    child = store.open(answer.branch)
-    try:
-        committed = child._provider.files_at(child.index.head)
-    finally:
-        child.close()
-    assert "/workspace/main.py" not in committed
-    parent.merge(answer.branch)
-    assert not parent.files.exists("/workspace/main.py")
-
-
 def test_cancel_before_landing_leaves_the_branch_untouched(parent, store):
     """Cancel and the landing are one state transition: after a cancel
     succeeds, no commit of ours can start."""
@@ -526,30 +469,46 @@ def test_cancel_before_landing_leaves_the_branch_untouched(parent, store):
         child.close()
 
 
-def test_cancel_after_landing_begins_leaves_the_answer_standing(parent, store):
-    """Once the landing has started the answer stands; cancel says so
-    rather than reporting a cancellation it cannot deliver."""
-    landing = threading.Event()
-    release = threading.Event()
+def test_a_delegate_that_left_work_uncommitted_says_so(parent, store):
+    """A delegate that used ws-git is the author of its own commits:
+    what it committed is what it submitted. The rest is reported, not
+    committed for it and not hidden — merge refuses such a source, so
+    the answer says that before the caller tries."""
 
-    class Gated(Sessions):
-        def _commit_child(self, child, answer, task):
-            landing.set()
-            release.wait(5)
-            return super()._commit_child(child, answer, task)
+    class HalfDone:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "polished\n")
+                child.index.commit("the part I finished")
+                child.terminal("echo wip > /workspace/notes.md")
+            finally:
+                child.close()
+            return "polished the report; the notes are still rough"
 
-    runner = Scripted(store, {"/workspace/report.md": "polished\n"}, text="landed")
-    with Gated(parent, runner) as sessions:
-        job = sessions.ask("polish")
-        landing.wait(5)
-        too_late = sessions.cancel(job.name)
-        assert too_late.status != "cancelled"
-        assert "is already landing" in run_action(sessions, "cancel", name=job.name)
-        release.set()
-        sessions.close()
+    with Sessions(parent, HalfDone()) as sessions:
+        answer = sessions.ask("polish the report", wait=True)
 
-        answer = sessions.result(job.name)
-        assert answer.text == "landed"
-        assert sessions.list()[0].status == "answered"
+    assert answer.uncommitted is True
+    assert sessions.list()[0].uncommitted is True
+    # the answer names what it LANDED, and the paths still name it all
+    child = store.open(answer.branch)
+    try:
+        assert answer.ref == f"{answer.branch}@{child.index.head}"
+    finally:
+        child.close()
+    assert answer.changed["seed"] == ("/workspace/notes.md", "/workspace/report.md")
 
-    assert parent.merge(answer.branch).merged
+    # merge refuses it, in its own words, and the tool said so first
+    text = render_answer(answer)
+    assert "left work uncommitted" in text
+    assert f"ws-git checkout {answer.branch} -- <paths>" in text
+    assert "ws-git merge will refuse it" in text
+    assert "take all of it" not in text
+    with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
+        parent.merge(answer.branch)
+
+    # taking paths is the way through, and it works
+    parent.checkout(answer.branch, paths=["report.md"])
+    assert parent.files.read("/workspace/report.md") == b"polished\n"
+    assert "left work uncommitted" in run_action(sessions, "list")
