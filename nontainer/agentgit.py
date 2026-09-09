@@ -85,13 +85,15 @@ TOOL = "ws-git"
 MERGE_TOOL = "ws-git.merge"
 
 #: The fiction's OWN bookkeeping commits: the working-tree restore
-#: after a partial commit, the tree a checkout writes, and the blob a
-#: merge records. Each is made by the operation that needs it — never
-#: left to the workspace's autocommit policy, which a per-turn host
-#: turns off — and none of them is an agent commit.
+#: after a partial commit, the tree a checkout writes, the blob a merge
+#: records, and the fresh state a fork starts from. Each is made by the
+#: operation that needs it — never left to the workspace's autocommit
+#: policy, which a per-turn host turns off — and none of them is an
+#: agent commit.
 RESTORE_TOOL = "ws-git.restore"
 CHECKOUT_TOOL = "ws-git.checkout"
 MERGE_RECORD_TOOL = "ws-git.merge-record"
+FORK_TOOL = "ws-git.fork"
 
 _MARKER = b"<<<<<<< "
 
@@ -120,8 +122,9 @@ def is_agent_commit(info: Mapping[str, Any]) -> bool:
     tree). Everything else is plumbing and never appears in ``log``:
     the framework's commits (``terminal``, ``turn``, ``skill``, ...)
     and the fiction's own bookkeeping (``ws-git.restore``,
-    ``ws-git.checkout``, ``ws-git.merge-record``), which is why those
-    three are spelled as ``ws-git.<something>`` and not as ``ws-git``.
+    ``ws-git.checkout``, ``ws-git.merge-record``, ``ws-git.fork``),
+    which is why those are spelled as ``ws-git.<something>`` and not as
+    ``ws-git``.
 
     The reference implementation keys on the presence of a message
     instead, because its framework commits carry no info at all; here
@@ -134,17 +137,19 @@ def is_agent_commit(info: Mapping[str, Any]) -> bool:
 #: The tool values of the fiction's bookkeeping commits, as one set:
 #: what a reader of the session's history filters out to be left with
 #: the commits somebody meant to make.
-BOOKKEEPING_TOOLS = frozenset({RESTORE_TOOL, CHECKOUT_TOOL, MERGE_RECORD_TOOL})
+BOOKKEEPING_TOOLS = frozenset(
+    {RESTORE_TOOL, CHECKOUT_TOOL, MERGE_RECORD_TOOL, FORK_TOOL}
+)
 
 
 def is_bookkeeping_commit(info: Mapping[str, Any]) -> bool:
     """Whether a store commit is the fiction's own housekeeping.
 
     True for the working-tree restore after a partial commit, the tree
-    a checkout writes, and the blob a merge records. Each exists so the
-    store's tree matches what the agent sees; none of them is work
-    anybody performed, so a reader of the session's history is better
-    off without them.
+    a checkout writes, the blob a merge records, and the fresh state a
+    fork starts from. Each exists so the store's record matches what
+    the agent sees; none of them is work anybody performed, so a reader
+    of the session's history is better off without them.
     """
     return info.get("tool") in BOOKKEEPING_TOOLS
 
@@ -206,6 +211,38 @@ def _encode_blob(state: Mapping[str, Any]) -> bytes:
         },
         sort_keys=True,
     ).encode()
+
+
+def reset_for_fork(provider: Any, parent: str) -> str | None:
+    """Give a freshly forked branch a fresh ws-git state.
+
+    A fork carries the workspace — files, cache, cwd, and (with
+    ``inherit="full"``) the conversation. It does not carry the agent's
+    INDEX: an index is a composition in progress, and a delegate does
+    not start halfway through somebody else's. Nor does it carry the
+    parent's head or an outstanding merge of the parent's.
+
+    Without this the child's virtual head would be the PARENT's last
+    agent commit, so every write the child made would read as
+    uncommitted agent work and ``merge`` would refuse a delegate that
+    never touched ws-git at all — the opposite of the fiction's own
+    rule, which is that a session with no agent commit merges at its
+    store head, that being the honest answer for it.
+
+    Returns the commit the reset landed in, or ``None`` when there was
+    nothing to reset (a parent that never used ws-git leaves the child
+    nothing to clear, and a fork should not cost a commit to say so).
+    Keyed and self-committed, like the fiction's other bookkeeping, so
+    the reset is at the child's store head for any reader rather than
+    only in the handle the fork came back on.
+    """
+    if not provider.caps.index:
+        return None
+    fresh = parse_blob(None)
+    if parse_blob(provider.kv.get(BLOB_KEY)) == fresh:
+        return None
+    provider.kv[BLOB_KEY] = _encode_blob(fresh)
+    return provider.commit_keys({"tool": FORK_TOOL, "parent": parent}, keys=[BLOB_KEY])
 
 
 def _has_markers(value: Any) -> bool:
@@ -279,13 +316,22 @@ class AgentGit:
 
         With no head yet, every visible file counts as modified —
         there is no baseline to compare against, exactly as in a repo
-        before its first commit. The comparison is a content one, so a
-        framework commit that landed an edit does not hide it: the edit
-        is still not in the agent's head.
+        before its first commit, and a deletion is not a difference
+        because nothing recorded the file in the first place. The
+        comparison is a content one, so a framework commit that landed
+        an edit does not hide it: the edit is still not in the agent's
+        head.
+
+        VISIBLE is the operative word for a narrowed session: its
+        branch holds the whole tree and its view is a subset, so a path
+        it cannot see is none of its business here. It cannot have
+        changed one (the write rule sees to that), and naming one in a
+        status or sweeping one into a commit would report a file the
+        session can neither read nor stage.
         """
         live = self._provider.working_files()
         if head is None:
-            return set(live)
+            return self._visible(set(live))
         if head == self._provider.head and not self._provider.dirty:
             # The agent's head IS the store's, with nothing pending:
             # the common clean case pays no tree walk.
@@ -294,7 +340,14 @@ class AgentGit:
         live_paths, base_paths = set(live), set(base)
         modified = live_paths ^ base_paths
         modified |= {p for p in live_paths & base_paths if live[p] != base[p]}
-        return modified
+        return self._visible(modified)
+
+    def _visible(self, paths: set[str]) -> set[str]:
+        """``paths`` less anything this session's view hides."""
+        view = getattr(self._ws, "_view_fs", None)
+        if view is None:
+            return paths
+        return {path for path in paths if view.sees(path)}
 
     def _merge_context(self, blob: Mapping[str, Any]) -> tuple[str | None, list[str]]:
         """The outstanding merge, if its markers are still in the tree.

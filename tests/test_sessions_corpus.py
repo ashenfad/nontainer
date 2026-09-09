@@ -139,6 +139,12 @@ def test_a_deletion_against_an_edit_conflicts(parent):
     _seed(parent, doomed="keep\n")
     child = _fork(parent, "child")
     try:
+        # A delegate starts at no commit of its own, and before an
+        # agent's first commit a deletion is not a difference — there
+        # is no baseline that held the file. So it commits once, the
+        # way git needs a commit before `git rm` means anything.
+        child.files.write("/workspace/why.md", "dropping it\n")
+        child.index.commit("noting")
         child.terminal("rm /workspace/doomed")
         child.index.commit("dropped it")
 
@@ -316,6 +322,67 @@ def test_the_merge_joins_the_ancestry_and_shows_in_the_agents_log(parent):
         assert second.merged and not second.conflicts
         assert parent.files.read("/workspace/shared") == b"one\nBOTH\nthree\n"
         assert parent.files.read("/workspace/later.txt") == b"later\n"
+    finally:
+        child.close()
+
+
+# -- h2. a delegate that never used ws-git -------------------------------------
+
+
+def test_a_fork_that_never_used_ws_git_merges_at_its_store_head(parent):
+    """A delegate is the author of its own commits, and one that never
+    made any said everything with its branch. Its store head IS its
+    result — autocommit landed every write — so the merge takes that,
+    and nothing has to commit on its behalf."""
+    _seed(parent, base="base\n")
+    child = _fork(parent, "child")
+    try:
+        child.terminal("echo done > /workspace/done.txt")
+        child.files.write("/workspace/base", "base\nplus\n")
+        assert child.index.head is None  # it never used ws-git
+        assert not child.uncommitted  # but the store has it all
+
+        out = parent.merge("child")
+        assert out.merged and not out.conflicts
+        assert parent.files.read("/workspace/done.txt") == b"done\n"
+        assert parent.files.read("/workspace/base") == b"base\nplus\n"
+        # the ws-git blob takes OURS, so the child's fresh state does
+        # not come back: the parent's graph continues through the merge
+        assert parent.index.head == out.commit
+        assert [c.info.get("message") for c in parent.index.log()][-1] == "seed"
+        assert parent.index.status().staged == ()
+    finally:
+        child.close()
+
+
+def test_a_take_from_a_fork_that_never_used_ws_git_reads_its_head(parent):
+    """Take and merge cannot disagree about what the delegate said."""
+    _seed(parent, base="base\n")
+    child = _fork(parent, "child")
+    try:
+        child.files.write("/workspace/note.md", "how I did it\n")
+        parent.checkout("child", paths=["note.md"])
+        assert parent.files.read("/workspace/note.md") == b"how I did it\n"
+        taken = next(iter(parent.log(limit=1))).info["taken_from"]
+        assert taken == f"child@{child.head}"
+    finally:
+        child.close()
+
+
+def test_a_fork_that_used_ws_git_merges_at_its_last_agent_commit(parent):
+    """The escape is for a delegate with nothing to say about what it
+    committed. One that did commit is taken at its own word."""
+    _seed(parent, base="base\n")
+    child = _fork(parent, "child")
+    try:
+        child.files.write("/workspace/done.txt", "done\n")
+        agent = child.index.commit("done")
+        child.terminal("echo later > /workspace/later.txt")
+        child.index.commit("later too")
+
+        assert parent.merge("child").merged
+        assert parent.files.read("/workspace/later.txt") == b"later\n"
+        assert agent in [c.id for c in child.index.log()]
     finally:
         child.close()
 

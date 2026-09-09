@@ -2257,13 +2257,19 @@ class Workspace:
         """Write the child's own state onto its fresh branch, before a
         workspace is built over it.
 
-        Two keys and nothing else: the view record (written when the
+        Three keys and nothing else: the view record (written when the
         child is narrowed, REMOVED when it is not — a fork of a
         narrowed session that is given the whole tree must not inherit
-        its parent's blinkers), and the conversation, dropped whole for
-        ``inherit="fresh"``. Landed as one commit of the child's own,
-        so its head is consistent from the start and a reopen finds it.
+        its parent's blinkers), the conversation, dropped whole for
+        ``inherit="fresh"``, and the ws-git state, reset for BOTH
+        inheritances (see ``agentgit.reset_for_fork``: a branch carries
+        the workspace, never the agent's composition in progress). The
+        first two land as one commit of the child's own, so its head is
+        consistent from the start and a reopen finds it; the reset
+        lands as the fiction's own bookkeeping commit after them.
         """
+        from .agentgit import reset_for_fork
+
         kv = forked.kv
         changed = False
         if seed is not None:
@@ -2285,6 +2291,7 @@ class Workspace:
                 {"tool": "fork", "parent": self.session, "inherit": inherit}
                 | ({"paths": list(seed)} if seed else {})
             )
+        reset_for_fork(forked, self.session)
 
     def _record_view(self, paths: tuple[str, ...]) -> None:
         """Keep the branch's view record in step with what this session
