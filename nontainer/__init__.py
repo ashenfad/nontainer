@@ -15,11 +15,13 @@ Public surface:
     TerminalResult, PythonResult, WriteOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
-    SessionRunner, HostObjectFactory -- the loop seam (declared; stage 3)
+    SessionRunner, HostObjectFactory -- the loop seam
+    Job, Answer         -- what a delegation is, and what it says back
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
-            CommitNotFoundError, BookkeepingLost
+            CommitNotFoundError, BookkeepingLost, SessionsError,
+            JobRunning
 
 Adapters (optional extras):
 
@@ -33,16 +35,20 @@ from .editing import EditOutcome
 from .errors import (
     BookkeepingLost,
     CommitNotFoundError,
+    JobRunning,
     NotSupportedError,
     SessionIdError,
+    SessionsError,
     WorkspaceError,
 )
 from .protocol import (
     SESSION_ID_RE,
+    Answer,
     Capabilities,
     CommitInfo,
     Executor,
     HostObjectFactory,
+    Job,
     MergeOutcome,
     SessionRunner,
     TagInfo,
@@ -86,6 +92,8 @@ __all__ = [
     "Executor",
     "SessionRunner",
     "HostObjectFactory",
+    "Job",
+    "Answer",
     "Capabilities",
     "CommitInfo",
     "MergeOutcome",
@@ -101,4 +109,6 @@ __all__ = [
     "SessionIdError",
     "CommitNotFoundError",
     "BookkeepingLost",
+    "SessionsError",
+    "JobRunning",
 ]

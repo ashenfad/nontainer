@@ -834,15 +834,127 @@ class Executor(Protocol):
 
 
 # ======================================================================
-# The loop seam (declared, not yet used)
+# The loop seam
 # ======================================================================
 #
 # Running a nested agent turn is neither provider-shaped nor
 # executor-shaped: it needs a model, a tool loop and a budget, none of
-# which nontainer owns. The two protocols below name that seam so the
-# sessions verbs can be typed against a contract the embedder
-# implements, rather than against whatever object happened to be
-# injected. Nothing in nontainer calls them yet.
+# which nontainer owns. The protocols below name that seam so the
+# delegation helper (``nontainer/sessions.py``) can be typed against a
+# contract the embedder implements, rather than against whatever
+# object happened to be injected.
+
+
+#: What a delegated job can be. ``running`` until the runner returns;
+#: ``answered`` / ``declined`` / ``capped`` are the runner's own
+#: verdicts (a delegate that would not do the work, and one that ran
+#: out of budget, both RESOLVE — neither raises); ``cancelled`` is the
+#: caller's; ``failed`` means the runner itself raised.
+JobStatus = Literal["running", "answered", "declined", "capped", "cancelled", "failed"]
+
+
+@dataclass(frozen=True)
+class Job:
+    """One delegation, as the caller sees it before the answer lands.
+
+    Pure data — strings, numbers, tuples in a dict — because a job
+    crosses turns, tool results and process boundaries, where a handle
+    does not. :attr:`name` is the serialization format: it names the
+    child's branch and is what every later verb takes.
+    """
+
+    name: str
+    """The child session, and the delegation's handle."""
+
+    task: str
+    """The instruction the runner was given, verbatim."""
+
+    status: str = "running"
+    """One of :data:`JobStatus`."""
+
+    ref: str | None = None
+    """``session@commit`` the answer came from — the child at its last
+    agent commit. ``None`` while the job runs."""
+
+    started: float = 0.0
+    """When the fork was taken, unix epoch seconds."""
+
+    finished: float | None = None
+    """When the answer landed, or ``None`` while the job runs."""
+
+    changed: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """``{"seed": [...], "elsewhere": [...]}`` once the job is done:
+    the paths the child changed, grouped by whether they are under
+    what it was seeded with (see :class:`WorkspaceDiff`). Empty while
+    it runs, and empty under ``"elsewhere"`` for a child that saw the
+    whole tree."""
+
+    kept: bool = False
+    """The caller asked for this job to outlive the ordinary retention
+    of a delegate's branch."""
+
+
+@dataclass(frozen=True)
+class Answer:
+    """What a delegate says back, and where to find what it did.
+
+    ``str(answer)`` is the reply text, so printing an answer or
+    interpolating it into a prompt yields prose and never a repr. The
+    repr is one line and never carries the body: an answer is often
+    thousands of words, and a REPL echo or a log line that dumps them
+    buries everything around it.
+
+    Pure data, like :class:`Job`, and evidence rather than
+    instruction: provenance lets a human audit where a claim came
+    from; it does not stop a delegate that read a poisoned file from
+    writing prose that instructs its caller.
+    """
+
+    text: str
+    """The reply, as markdown. Whatever trailer an embedder appends to
+    mark provenance for a reader is that embedder's format and is part
+    of this string; nothing here adds or strips one."""
+
+    status: str = "answered"
+    """``answered``, ``declined``, ``capped`` or ``failed`` (see
+    :data:`JobStatus`). A delegate that declines or runs out of budget
+    still answers — the text says so — rather than raising."""
+
+    ref: str | None = None
+    """``session@commit``: the child at the commit this answer
+    describes."""
+
+    branch: str | None = None
+    """The child session's name — the handle for ``ws-git merge`` /
+    ``ws-git diff`` and for a later ``result``."""
+
+    changed: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    """The child's changed paths, grouped as in :attr:`Job.changed`."""
+
+    artifacts: tuple[tuple[str, str], ...] = ()
+    """``(name, workspace path)`` pairs for what the delegate rendered
+    — the same shape the ``ui = {...}`` convention produces — so the
+    caller can forward or display them without re-deriving anything."""
+
+    provenance: dict[str, Any] = field(default_factory=dict)
+    """Where the answer came from: the child session and commit, when
+    the work started and finished, and ``chain`` — the FULL path of
+    refs behind it, not the last hop, so an answer cannot launder its
+    sources through an intermediate delegate."""
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __repr__(self) -> str:
+        where = self.ref or self.branch or "?"
+        if self.ref and "@" in self.ref:
+            session, _, commit = self.ref.rpartition("@")
+            where = f"{session}@{commit[:7]}"
+        paths = sum(len(v) for v in self.changed.values())
+        return (
+            f"<Answer {self.status} from {where}: {paths} path(s), "
+            f"{len(self.text)} chars>"
+        )
 
 
 @runtime_checkable
@@ -855,8 +967,23 @@ class SessionRunner(Protocol):
     (interpretation is the runner's: turns, tokens, seconds).
     """
 
-    def run(self, session: str, task: str, *, budget: Any = None) -> Any:
-        """Run ``task`` against ``session`` and return the answer."""
+    def run(self, session: str, task: str, *, budget: Any = None) -> "Answer | str":
+        """Run ``task`` against ``session`` and return the answer.
+
+        An :class:`Answer` says everything: its ``status`` distinguishes
+        a delegate that did the work from one that declined or hit its
+        budget, and its ``artifacts`` and ``provenance`` are carried
+        through. A plain ``str`` is the short form for the common case
+        and means an ``answered`` answer with that text.
+
+        Either way the caller fills in what only the host knows — the
+        child's ref, its branch, and the paths it changed — so a runner
+        that returns them is not required to get them right.
+
+        Synchronous: the helper calls this on a worker thread of its
+        own, and a runner with an async loop blocks on its own future
+        inside it.
+        """
         ...
 
 

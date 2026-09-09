@@ -42,3 +42,23 @@ class BookkeepingLost(WorkspaceError):
     be repeated (a commit), or ``ws.index.checkout(<id>)`` where it
     cannot (a merge, which is already in the store).
     """
+
+
+class SessionsError(WorkspaceError):
+    """A delegation verb was given something it cannot act on.
+
+    A job name no session ever had, a result asked of a job whose
+    answer was discarded — the everyday refusals of the ``sessions``
+    surface, where the fix is to name a job that exists (``list`` shows
+    them) rather than to retry.
+    """
+
+
+class JobRunning(SessionsError):
+    """The delegate has not answered yet.
+
+    Delivery is pull: a job is asked on one turn and collected on a
+    later one. Raised rather than blocked on, so a caller that wanted
+    to wait can say so (``ask(..., wait=True)``) and one that did not
+    gets its turn back.
+    """
