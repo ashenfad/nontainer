@@ -138,6 +138,13 @@ class CommitInfo:
     with the same bytes still yields a different tree. ``None`` on
     providers with no such hash."""
 
+    parents: tuple[str, ...] = ()
+    """The ids this commit descends from, as the provider records them.
+    One for an ordinary commit, two for a merge (the first is the side
+    the merge was made from, so the diff against it is the merge's own
+    work), empty for a root commit and for a provider whose history is
+    a list rather than a graph."""
+
 
 @dataclass(frozen=True)
 class TagInfo:

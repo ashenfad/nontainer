@@ -213,6 +213,11 @@ is the migration.
 
 ### Added
 
+- `CommitInfo.parents`: the ids a commit descends from, as the
+  provider records them — one for an ordinary commit, two for a merge
+  (first parent is the side the merge was made from), empty for a root
+  commit and for a provider whose history is a list rather than a
+  graph. Field is last, so positional constructions are unaffected.
 - `nontainer.Store` / `store(...)`: `open`, `sessions`, `exists`,
   `delete`, `resolve`, `clean`, `tags`, `close`. `shared()` raises
   `NotImplementedError` until its stage lands.

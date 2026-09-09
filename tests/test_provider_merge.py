@@ -196,6 +196,29 @@ def test_merge_commit_tagged(kv_ws):
         fork.close()
 
 
+def test_history_carries_each_commits_parents(kv_ws):
+    """A merge commit descends from both sides; an ordinary commit from
+    one; the store's first commit from nothing. First parent is the
+    side the merge was made from, which is what makes the diff against
+    it the merge's own work."""
+    kv_ws.terminal("echo one > a.txt")
+    before = _provider(kv_ws).head
+    fork = kv_ws.fork("worker")
+    try:
+        fork.terminal("echo two > b.txt")
+        theirs = _provider(fork).head
+
+        out = _provider(kv_ws).merge("worker")
+        entries = list(kv_ws.log())
+        by_id = {e.id: e for e in entries}
+
+        assert by_id[out.commit].parents == (before, theirs)
+        assert by_id[before].parents == (entries[-2].id,)
+        assert entries[-1].parents == ()
+    finally:
+        fork.close()
+
+
 def test_dir_provider_merge_unsupported(tmp_path):
     from nontainer.providers.dir import DirProvider
 

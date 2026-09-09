@@ -572,6 +572,7 @@ class KvgitProvider:
                 time=float(time_val) if time_val is not None else 0.0,
                 info=info_val if isinstance(info_val, dict) else {},
                 tree=self._tree(commit_hash),
+                parents=tuple(self._staged.versioned.parents(commit_hash)),
             )
             count += 1
 
