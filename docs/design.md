@@ -243,7 +243,7 @@ and the provider tracks an outstanding merge context — `ws-git status`
 shows `## merging` and `UU`, `diff --check` finds the markers, and the
 next commit that removes them clears it. A deliberate deviation from
 git, which leaves conflicts uncommitted: here the conflicted state is
-itself a checkpoint you can restore to, and there is no working tree to
+itself a commit you can check out, and there is no working tree to
 leave things in.
 
 **Merge takes only what is agent-committed, on both sides.** The

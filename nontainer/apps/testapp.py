@@ -15,7 +15,7 @@ instructive 404 during verification instead of breaking at delivery.
 
 Screenshots are written to ``<root>/app/screenshots/`` in the workspace and
 returned as paths — bytes never ride in model-facing observations,
-and the screenshots version/fork/roll back with the session.
+and the screenshots version, fork and check out with the session.
 
 Execution: one Chromium is shared across all test_app calls, on a
 dedicated async loop-thread (see ``browser.py``); each call runs on its

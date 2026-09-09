@@ -9,7 +9,7 @@ Serverless semantics throughout: there is no resident app process. A
 "backend" is handler files on the (versioned) filesystem; requests are
 dispatched into sandboxed executions on demand. No processes to babysit,
 multi-tenancy reduces to routing, and the whole app — code and state —
-forks/rolls back with the session.
+forks and checks out with the session.
 
 ## Scope
 

@@ -108,7 +108,7 @@ def _owns_cwd(provider_fs: Any) -> bool:
 
     True for monkeyfs ``VirtualFS`` (the kvgit backend): cwd is a key
     in the provider's kv, written on ``chdir``, so it commits, forks
-    and rolls back with the files — and nontainer must not write it a
+    and checks out with the files — and nontainer must not write it a
     second time. It must not write it at all there, in fact: with
     mounts the workspace's cwd is the composed ``MountFS``'s, and that
     composition REQUIRES the filesystem underneath to stay at the root
