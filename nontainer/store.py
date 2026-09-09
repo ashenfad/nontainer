@@ -69,6 +69,11 @@ _VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
 # notice it — and ``published_from`` and ``paths`` together are what a
 # retry compares to recognise its own interrupted attempt.
 _RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from", "paths")
+# The same keys read the other way: all of them present, carrying the
+# values a caller can name, is what marks a commit as one publish
+# attempt's work. Nothing the store did not publish is ever removed on
+# the strength of its name alone.
+_PUBLISH_IDENTITY_KEYS = _RESERVED_INFO_KEYS
 
 # The construction keywords a frozen open takes. Exactly
 # :meth:`Store.open`'s, minus ``autocommit``: a frozen provider commits
@@ -1054,6 +1059,12 @@ class Store:
         what a publish that died before writing its record leaves
         behind — is cleared here too: the branch and the tag go, the
         registry is untouched, and the name is free to publish again.
+        Only what publish itself wrote is removed that way. A store tag
+        may hold a slash, so a durable ``release/prod`` somebody tagged
+        by hand answers to ``unpublish("release", "prod")`` by name
+        alone; the tag's and the branch's own provenance is checked
+        first, and one that does not carry it is left exactly as it is
+        and the call raises ``ValueError``.
 
         ``min_age`` is the orphan sweep's grace period in seconds, as
         for :meth:`delete`.
@@ -1068,11 +1079,7 @@ class Store:
                 # No record, but a branch or a tag of that name: an
                 # attempt that died before its record landed. Removing
                 # it is the whole job, and it is what frees the name.
-                if self._remove_version_state(
-                    f"{name}/{version}",
-                    f"{_PUB_BRANCH_PREFIX}{name}/{version}",
-                    min_age=min_age,
-                ):
+                if self._clear_stranded_attempt(name, version, min_age=min_age):
                     return
                 if record is None:
                     raise ValueError(f"No such publication: {name!r}")
@@ -1409,6 +1416,74 @@ class Store:
             **settings,
         )
 
+    def _branch_head(self, branch: str) -> tuple[str | None, dict[str, Any] | None]:
+        """The commit at a branch's head and the info it carries.
+
+        ``(None, None)`` when the store has no such branch or the
+        branch holds no commit. The existence check comes first
+        because opening a kvgit branch by an unknown name creates it,
+        and a reserved branch minted by a read is exactly what would
+        then block republishing that version.
+        """
+        import kvgit
+
+        if branch not in set(self._branches()):
+            return None, None
+        pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
+        try:
+            commit = pub.current_commit
+            info = pub.versioned.commit_info(commit) if commit else None
+            return commit, info
+        finally:
+            self._close_backend(getattr(pub.versioned, "store", None))
+
+    def _clear_stranded_attempt(
+        self, name: str, version: str, *, min_age: float
+    ) -> bool:
+        """Remove what a publish that died before its record left behind.
+
+        True when something was cleared, ``False`` when the store holds
+        nothing of that name. Whatever is there has to prove it came
+        from a publish of this name and this version before any of it
+        is touched: a store tag may hold a slash, so a durable
+        ``release/prod`` somebody tagged by hand answers to
+        ``unpublish("release", "prod")`` by name alone, and deleting it
+        would drop a tag nobody published and make its commit
+        collectable. A tag or a branch that does not carry publish's
+        own provenance is left exactly as it is and the call raises.
+        """
+        expect = {"tool": "publish", "name": name, "version": version}
+        tag = f"{name}/{version}"
+        branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
+        found = self._raw_tag_info(tag)
+        has_branch = branch in set(self._branches())
+        if found is None and not has_branch:
+            return False
+        _, head_info = self._branch_head(branch) if has_branch else (None, None)
+        tag_blocks = found is not None and not _is_publish_attempt(found.info, expect)
+        branch_blocks = has_branch and not _is_publish_attempt(head_info, expect)
+        if tag_blocks or branch_blocks:
+            blocking = ", ".join(
+                part
+                for part, blocked in (
+                    (f"store tag {tag!r}", tag_blocks),
+                    (f"branch {branch!r}", branch_blocks),
+                )
+                if blocked
+            )
+            hint = (
+                f" Delete it with store.tags.delete({tag!r}) if that is what you meant."
+                if tag_blocks
+                else ""
+            )
+            raise ValueError(
+                f"No publication of {name!r} at version {version!r}. What "
+                f"carries that name — {blocking} — was not written by "
+                f"publish, so it is left where it is.{hint}"
+            )
+        self._remove_version_state(tag, branch, min_age=min_age)
+        return True
+
     def _remove_version_state(self, tag: str, branch: str, *, min_age: float) -> bool:
         """Take out a published version's tag and its branch.
 
@@ -1447,18 +1522,12 @@ class Store:
         what it was told to do — one source commit, one set of paths —
         because publishing that twice writes the same files either way.
         """
-        import kvgit
-
-        pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
-        try:
-            commit = pub.current_commit
-            found = pub.versioned.commit_info(commit) if commit else None
-        finally:
-            self._close_backend(getattr(pub.versioned, "store", None))
-        if commit is None or found is None:
+        commit, found = self._branch_head(branch)
+        if commit is None:
             return None
-        identity = ("tool", "name", "version", "published_from", "paths")
-        if any(found.get(key) != commit_info.get(key) for key in identity):
+        if not _is_publish_attempt(
+            found, {key: commit_info.get(key) for key in _PUBLISH_IDENTITY_KEYS}
+        ):
             return None
         existing = self._raw_tag_info(tag)
         if existing is None:
@@ -1804,6 +1873,26 @@ def _validate_version_name(version: str) -> str:
             f"{SESSION_ID_RE.pattern} (no slashes, no leading dot)"
         )
     return version
+
+
+def _is_publish_attempt(
+    info: "Mapping[str, Any] | None", expect: "Mapping[str, Any]"
+) -> bool:
+    """Whether a commit's info was written by a publish attempt.
+
+    Every key in ``_PUBLISH_IDENTITY_KEYS`` must be there, and every
+    key ``expect`` names must carry the value it names; a key ``expect``
+    omits must merely be present, which is all a caller holding a
+    publication name and a version can require. A store tag made by
+    hand carries none of them — and a store tag may hold a slash, so
+    ``release/prod`` is indistinguishable from version ``prod`` of
+    publication ``release`` until this is asked.
+    """
+    if info is None:
+        return False
+    if any(key not in info for key in _PUBLISH_IDENTITY_KEYS):
+        return False
+    return all(info.get(key) == value for key, value in expect.items())
 
 
 def _next_version(versions: Mapping[str, Any]) -> str:

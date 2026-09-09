@@ -24,9 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   source commit and the same `paths` — that attempt and no other — and
   writes the record over it; a recordless branch of some other attempt
   is refused by name, and `unpublish` clears a branch and tag with no
-  record behind them. `paths` joins the commit-info keys a caller's
-  `info` may not spell, because it is half of what identifies an
-  attempt.
+  record behind them — but only what publish itself wrote: a store tag
+  may hold a slash, so `release/prod` answers to `unpublish("release",
+  "prod")` by name alone, and a tag or branch that does not carry
+  publish's own provenance is left where it is. `paths` joins the
+  commit-info keys a caller's `info` may not spell, because it is part
+  of what identifies an attempt.
 
 ### Changed
 - **A caller's mistake on publish is a `ValueError`.** Reusing a

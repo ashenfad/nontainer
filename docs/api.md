@@ -272,7 +272,12 @@ first — or publishing with `current=False`, which never takes it. The
 last version of a publication may go however it is pointed at, and
 takes the publication's record with it. A version with no record but a
 branch or a tag of its name is cleared the same way, so an operator can
-free the name a publish that died mid-way left reserved.
+free the name a publish that died mid-way left reserved — but only what
+publish itself wrote: a store tag may hold a slash, so `release/prod`
+answers to `unpublish("release", "prod")` by name alone, and a tag or
+branch whose info does not carry publish's provenance (`tool`, `name`,
+`version`, `published_from`, `paths`) is left where it is and the call
+raises `ValueError`.
 
 **Not yet:** `store.shared(name)` raises `NotImplementedError`; it is a
 later stage of the API plan.
