@@ -247,7 +247,7 @@ says which seam it belongs to:
 
 | | holds | |
 |---|---|---|
-| `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / export / fs |
+| `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
 | `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
 | `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
@@ -427,7 +427,17 @@ in a reserved key, `status` measures against the agent's last commit
 rather than the store's head, and `log` walks the agent's commits and
 not the framework's. `ws-git` in the terminal is the same
 implementation with the agent's spelling, so host and agent see one
-index. See [design.md](design.md) for the model.
+index — registered by `nontainer.wsgit.register_wsgit(ws)`, which the
+embedder calls and no adapter calls for it, where `ws.index` is on
+every workspace unconditionally. See [design.md](design.md) for the
+model.
+
+`WorkspaceStatus` carries `branch` (the session), `staged` and
+`unstaged` (workspace paths, both measured against the agent's last
+commit rather than the store's head), and the live merge context:
+`merge_source`, the session an outstanding merge came from or `None`,
+and `merge_unresolved`, the paths that merge left still carrying
+markers.
 
 `ws.index.checkout(commit)` takes one of the AGENT's commits — what
 `ws.index.log()` lists — and refuses any other commit in the session's
@@ -603,7 +613,9 @@ reported by path like any other file conflict.
 
 `MergeOutcome.commit` is the merge commit; `ws.head` afterwards is the
 bookkeeping commit that records it as the agent's, which is what
-leaves a clean workspace behind a merge.
+leaves a clean workspace behind a merge. `MergeOutcome.auto_merged` is
+the other half of `conflicts`: the paths the merge changed and settled
+on its own, so the two together are everything the merge touched.
 
 Unversioned providers raise `NotSupportedError`; `autocommit` is
 forced off for them. With autocommit on, each successful mutating
@@ -987,9 +999,9 @@ plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
 ## Providers (`nontainer.providers`)
 
 All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
-`session`, `caps`, `fs`, `kv`, `dirty`, `commit/checkout/history/
+`session`, `caps`, `fs`, `kv`, `dirty`, `head`, `commit/checkout/history/
 fork/discard/merge`, `commit_keys/files_at/working_files`,
-`tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
+`tag/check_tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
 provider keeps two commit primitives — `commit` takes everything and
 `commit_keys` takes exactly the keys it is given — plus two read views
 (`files_at`, `working_files`) over which the agent's git is built. It
