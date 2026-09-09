@@ -136,7 +136,8 @@ part of a session's tree, with a name and a pointer saying which
 version is current.
 
 ```python
-store.publish(ws, name, *, paths=("app/",), version=None, info=None) -> Publication
+store.publish(ws, name, *, paths=("app/",), version=None, current=True,
+              info=None) -> Publication
 store.publications() -> dict[str, Publication]         # by name
 store.publication(name) -> Publication | None
 store.set_current(name, version) -> Publication
@@ -249,9 +250,17 @@ deleted (which would then block republishing that version).
 back as easily. That is true for **code**. Data a version's handlers
 wrote lives outside the workspace and does not roll back with it.
 
+`current=False` records the version and leaves the pointer where it
+is, so a caller can land a tree, check it at `pub.open(version)` and
+switch with `set_current` after. The version that opens a lineage takes
+the pointer whatever the flag says, because a publication must point
+somewhere.
+
 `unpublish` removes a version's tag, its branch and its record. The
-current version is refused while others remain (move the pointer
-first); the last version of a publication may go as it stands, and
+current version is refused while others remain, so undoing a publish
+that went wrong means moving the pointer back with `set_current`
+first — or publishing with `current=False`, which never takes it. The
+last version of a publication may go however it is pointed at, and
 takes the publication's record with it.
 
 **Not yet:** `store.shared(name)` raises `NotImplementedError`; it is a

@@ -791,6 +791,7 @@ class Store:
         *,
         paths: "Sequence[str]" = ("app/",),
         version: str | None = None,
+        current: bool = True,
         info: dict[str, Any] | None = None,
     ) -> Publication:
         """Publish part of a session's tree as an immutable version.
@@ -809,7 +810,13 @@ class Store:
         anchor that lets the version be opened without borrowing a live
         session), a store-scoped tag ``<name>/<version>`` naming it, and
         a record in the store's publication registry, which becomes the
-        current version of ``name``.
+        current version of ``name`` unless ``current=False`` says
+        otherwise.
+
+        :meth:`unpublish` refuses the version a publication points at
+        while others remain, so undoing a publish that went wrong means
+        moving the pointer back with :meth:`set_current` first — or
+        publishing with ``current=False``, which never takes it.
 
         Args:
             ws: The session to publish from. It must be one this store
@@ -831,6 +838,15 @@ class Store:
                 embedder that wants every version numbered passes
                 ``version=`` itself. An explicit name must be unused:
                 versions are immutable, so a name is never repointed.
+            current: Whether this version becomes the one
+                :meth:`Publication.open` serves. ``False`` records it
+                and leaves what is served alone, so a caller can land
+                the tree, check it at ``pub.open(version)`` and switch
+                with :meth:`set_current` after — and can drop it with
+                :meth:`unpublish` in between, which the current version
+                refuses while others remain. The version that opens a
+                lineage takes the pointer whatever this says, because a
+                publication must point somewhere.
             info: Extra keys merged into the commit's info, beside the
                 ``tool``/``name``/``version``/``published_from`` this
                 writes itself.
@@ -933,7 +949,14 @@ class Store:
                 "created": time.time(),
                 "root": ws.root,
             }
-            registry[name] = {"versions": versions, "current": chosen}
+            pointer = record.get("current")
+            registry[name] = {
+                "versions": versions,
+                # The version that opens a lineage takes the pointer
+                # whatever the caller asked: a publication must point
+                # somewhere, and there is nothing else to point at.
+                "current": chosen if current or pointer not in versions else pointer,
+            }
             return self._publication(name, registry)
 
         return self._update_registry(land)
@@ -982,9 +1005,11 @@ class Store:
 
         The current version is refused while others remain — something
         is being served off it, and there is no obvious successor to
-        pick. Move the pointer with :meth:`set_current` first. The last
-        version of a publication may be removed as it stands, and takes
-        the publication's record with it.
+        pick. Move the pointer with :meth:`set_current` first, or
+        publish the version with ``current=False`` so it never takes
+        the pointer and can be dropped as it stands. The last version
+        of a publication may be removed however it is pointed at, and
+        takes the publication's record with it.
 
         ``min_age`` is the orphan sweep's grace period in seconds, as
         for :meth:`delete`.

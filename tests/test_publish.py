@@ -262,6 +262,36 @@ def test_the_default_version_is_the_next_in_the_v_series(tmp_path):
     ws.close()
 
 
+def test_publish_can_record_a_version_without_taking_the_pointer(tmp_path):
+    """current=False records the version and leaves what is served
+    alone, so a caller can land the tree first and switch after."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.files.write("/workspace/app/index.html", "<h1>scores v2</h1>")
+    ws.commit()
+
+    pub = store.publish(ws, "scoreboard", current=False)
+    assert [v.version for v in pub.versions] == ["v1", "v2"]
+    assert pub.current == "v1"
+    assert pub.open().files.read("app/index.html") == b"<h1>scores</h1>"
+    assert pub.open("v2").files.read("app/index.html") == b"<h1>scores v2</h1>"
+
+    promoted = store.set_current("scoreboard", "v2")
+    assert promoted.current == "v2"
+    ws.close()
+
+
+def test_the_first_version_is_current_whatever_current_says(tmp_path):
+    """A publication must point somewhere, so the version that opens a
+    lineage takes the pointer even when the caller declined it."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard", current=False)
+    assert pub.current == "v1"
+    ws.close()
+
+
 def test_set_current_refuses_a_version_that_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)
