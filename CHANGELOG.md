@@ -213,6 +213,14 @@ is the migration.
 
 ### Added
 
+- `ws.log(kind=)`: `"work"` (the default) hides the ws-git fiction's
+  bookkeeping commits — the working-tree restore after a partial
+  commit, the tree a checkout writes, the blob a merge records — so
+  the log reads as the things somebody did; `"agent"` is the agent's
+  own commits, read off the store's history; `"all"` is the store's
+  history as the provider keeps it. `limit` applies after the filter,
+  so `log(limit=5)` is five commits the caller cares about. An unknown
+  kind raises `ValueError`; `ws.index.log()` is unchanged.
 - `CommitInfo.parents`: the ids a commit descends from, as the
   provider records them — one for an ordinary commit, two for a merge
   (first parent is the side the merge was made from), empty for a root

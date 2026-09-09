@@ -42,7 +42,14 @@ import posixpath
 import re
 import threading
 import traceback
-from collections.abc import Callable, Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
@@ -2082,8 +2089,65 @@ class Workspace:
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
         return f"{text}@{virtual}", self._provider.files_at(virtual)
 
-    def log(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
-        return self._provider.history(limit=limit)
+    def log(
+        self, *, limit: int | None = None, kind: str = "work"
+    ) -> Iterable[CommitInfo]:
+        """The session's commits, newest first.
+
+        ``kind`` says whose commits, and the default hides the ones
+        nobody performed:
+
+        - ``"work"`` (default): every commit except the ws-git
+          fiction's bookkeeping — the working-tree restore after a
+          partial commit, the tree a checkout writes, the blob a merge
+          records. What is left is the framework's commits and the
+          agent's: the things somebody did.
+        - ``"agent"``: the agent's own commits alone, the same set
+          ``ws.index.log()`` walks, but read off the store's history
+          rather than the agent's graph.
+        - ``"all"``: the store's history exactly as the provider keeps
+          it, bookkeeping included — what to reach for when the
+          question is about the store rather than about the work.
+
+        ``limit`` counts what comes back, not what was read: five
+        entries of the kind asked for, however many commits stand
+        between them. A provider with no index makes no bookkeeping
+        commits, so ``"work"`` and ``"all"`` are the same history
+        there.
+        """
+        if kind not in ("work", "agent", "all"):
+            raise ValueError(
+                f"Unknown log kind {kind!r}: use 'work' (the default: "
+                "everything but ws-git bookkeeping), 'agent' (the agent's "
+                "own commits) or 'all' (the store's history as kept)."
+            )
+        if kind == "all":
+            return self._provider.history(limit=limit)
+        return self._filtered_log(kind, limit)
+
+    def _filtered_log(self, kind: str, limit: int | None) -> Iterator["CommitInfo"]:
+        """``log`` with the filter applied before the limit.
+
+        Reads the provider's history unbounded and stops as soon as
+        ``limit`` entries of the wanted kind have been yielded, so a
+        run of bookkeeping commits costs reads but never eats into
+        what the caller asked for.
+        """
+        from .agentgit import is_agent_commit, is_bookkeeping_commit
+
+        keep = (
+            is_agent_commit
+            if kind == "agent"
+            else lambda info: not is_bookkeeping_commit(info)
+        )
+        seen = 0
+        for entry in self._provider.history(limit=None):
+            if not keep(entry.info):
+                continue
+            yield entry
+            seen += 1
+            if limit is not None and seen >= limit:
+                return
 
     def fork(
         self,

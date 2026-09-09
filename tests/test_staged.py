@@ -36,7 +36,10 @@ def _provider(ws):
 
 
 def _history(ws):
-    return list(ws.log())
+    """The store's history as kept — bookkeeping included, which is
+    what most of this file is about. ``ws.log()`` hides it by
+    default."""
+    return list(ws.log(kind="all"))
 
 
 def _at(ws, commit):
@@ -286,7 +289,7 @@ def test_a_host_checkout_rewinds_the_agents_git_with_the_tree(kv_ws):
     assert not kv_ws.files.exists("/workspace/b.py")
     # The fiction rewound; the store did not. Both agent commits are
     # still in the session's history, so the second is reachable again.
-    assert {first, second, at_first, landed} <= {e.id for e in kv_ws.log()}
+    assert {first, second, at_first, landed} <= {e.id for e in kv_ws.log(kind="all")}
 
 
 def test_old_layout_blob_migrates(kv_ws):
@@ -1146,3 +1149,65 @@ def test_merge_passes_both_keywords_to_the_provider(tmp_path):
         assert seen["kwargs"]["info"] == {"virtual_parents": []}
     finally:
         ws.close()
+
+
+# -- what the host's log shows ------------------------------------------------
+
+
+def _tools(entries):
+    return [e.info.get("tool") for e in entries]
+
+
+def test_log_hides_the_fictions_bookkeeping_by_default(kv_ws):
+    """The restore after a partial commit is plumbing: it exists so the
+    store's tree matches what the agent sees, and nobody performed it."""
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.stage(["/workspace/a.py"])
+    kv_ws.index.commit("just a")
+
+    assert "ws-git.restore" in _tools(kv_ws.log(kind="all"))
+    assert "ws-git.restore" not in _tools(kv_ws.log())
+    # everything else stands, framework commits included
+    assert _tools(kv_ws.log()) == ["ws-git", "init", None]
+
+
+def test_log_kind_agent_is_the_agents_own_commits(kv_ws):
+    kv_ws.terminal("echo one > a.txt")  # a framework commit
+    kv_ws.files.fs.write("/workspace/b.py", b"B = 1\n")
+    kv_ws.index.commit("agent work")
+
+    assert _tools(kv_ws.log(kind="agent")) == ["ws-git"]
+    assert [e.info.get("message") for e in kv_ws.log(kind="agent")] == ["agent work"]
+    assert "terminal" in _tools(kv_ws.log())
+
+
+def test_log_limit_counts_what_comes_back(kv_ws):
+    """Five entries of the kind asked for, however many commits stand
+    between them: the filter runs before the limit."""
+    for i in range(3):
+        kv_ws.files.fs.write(f"/workspace/f{i}.py", b"x\n")
+        kv_ws.index.stage([f"/workspace/f{i}.py"])
+        kv_ws.index.commit(f"commit {i}")
+    # each agent commit brought a bookkeeping commit with it
+    assert _tools(kv_ws.log(kind="all"))[:2] == ["ws-git.restore", "ws-git"]
+
+    assert _tools(kv_ws.log(limit=3)) == ["ws-git", "ws-git", "ws-git"]
+    assert _tools(kv_ws.log(kind="agent", limit=2)) == ["ws-git", "ws-git"]
+    assert len(list(kv_ws.log(kind="all", limit=3))) == 3
+
+
+def test_log_refuses_a_kind_it_does_not_have(kv_ws):
+    with pytest.raises(ValueError, match="Unknown log kind"):
+        kv_ws.log(kind="plumbing")
+
+
+def test_the_agents_own_log_is_untouched(kv_ws):
+    """``ws.index.log`` walks the agent's graph, not the store's
+    history, and says nothing about ``kind``."""
+    kv_ws.files.fs.write("/workspace/a.py", b"A = 1\n")
+    kv_ws.index.commit("agent work")
+
+    assert [e.info.get("message") for e in kv_ws.index.log()] == ["agent work"]
+    with pytest.raises(TypeError):
+        kv_ws.index.log(kind="all")
