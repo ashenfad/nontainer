@@ -407,3 +407,125 @@ def test_agentfs_backend_lists_files_only(tmp_path):
     st = Store(tmp_path, backend="agentfs")
     assert st.sessions() == ["real"]
     assert not st.exists("impostor")
+
+
+# -- execution settings on a frozen open -------------------------------------
+
+
+class Db:
+    """A live host object: the thing a commit cannot hold."""
+
+    def __init__(self, answer="live"):
+        self.answer = answer
+
+    def read(self):
+        return self.answer
+
+
+def _snapshot_source(st, session="app"):
+    """A committed session, its ref, and a store tag naming its head."""
+    ws = st.open(session)
+    ws.files.write("app/api/board.py", "def get(req):\n    return {'n': 1}\n")
+    ws.commit()
+    ref = ws.ref
+    st.tags.add(ws, "published")
+    ws.close()
+    return ref
+
+
+def test_the_frozen_settings_are_store_opens_settings(tmp_path):
+    """The two surfaces are hand-written lists, so they can drift. A
+    frozen open takes every construction keyword ``Store.open`` takes
+    except ``autocommit``, which a provider that commits nothing has
+    nothing to switch."""
+    import inspect
+
+    from nontainer.store import _FROZEN_SETTINGS
+
+    live = {
+        name
+        for name, p in inspect.signature(Store.open).parameters.items()
+        if p.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    assert set(_FROZEN_SETTINGS) == live - {"autocommit"}
+    # and each one is really a Workspace construction argument
+    built = inspect.signature(Workspace.__init__).parameters
+    assert set(_FROZEN_SETTINGS) <= set(built)
+
+
+def test_a_store_tag_opens_with_the_embedders_host_objects(tmp_path):
+    """The store opens a tree, not a session, so it inherits no
+    settings — the embedder supplies them at the call."""
+    from nontainer import PythonConfig
+
+    st = Store(tmp_path)
+    _snapshot_source(st)
+    db = Db()
+    with st.tags.at("published", python=PythonConfig(host_objects={"db": db})) as snap:
+        assert snap.frozen
+        assert snap.runtime.python_config.host_objects["db"] is db
+        assert snap.run_python("out = db.read()").namespace["out"] == "live"
+
+
+def test_resolve_opens_with_the_embedders_host_objects(tmp_path):
+    from nontainer import PythonConfig
+
+    st = Store(tmp_path)
+    ref = _snapshot_source(st)
+    db = Db("from the ref")
+    with st.resolve(ref, python=PythonConfig(host_objects={"db": db})) as snap:
+        assert snap.runtime.python_config.host_objects["db"] is db
+        assert snap.run_python("out = db.read()").namespace["out"] == "from the ref"
+
+
+def test_a_frozen_open_with_no_settings_is_bare(tmp_path):
+    """Passing nothing is the old call: a readable, writable-nowhere
+    snapshot with the default config and no host objects."""
+    st = Store(tmp_path)
+    ref = _snapshot_source(st)
+    for snap in (st.tags.at("published"), st.resolve(ref)):
+        assert snap.frozen
+        assert snap.root == "/workspace"
+        assert snap.runtime.python_config.host_objects == {}
+        assert snap.files.exists("app/api/board.py")
+        with pytest.raises(NotSupportedError):
+            snap.files.write("app/api/board.py", "nope")
+        snap.close()
+
+
+def test_mounts_reach_a_frozen_open_read_only(tmp_path):
+    """A mount is a live host directory, so it is settings, not state —
+    and the frozen wrapper sits over the whole composed filesystem, so
+    the mounted bytes read and refuse writes like the rest."""
+    from nontainer import Mount
+
+    src = tmp_path / "share"
+    src.mkdir()
+    (src / "seed.txt").write_text("from the host")
+    st = Store(tmp_path / "store")
+    _snapshot_source(st)
+    with st.tags.at("published", mounts={"/data": Mount(src)}) as snap:
+        assert snap.files.read("/data/seed.txt") == b"from the host"
+        assert "from the host" in snap.terminal("cat /data/seed.txt").stdout
+        assert (
+            snap.run_python("open('/data/seed.txt', 'w').write('nope')").error
+            is not None
+        )
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda st, ref: st.tags.at("published", autocommit=False),
+        lambda st, ref: st.tags.at("published", provider=None),
+        lambda st, ref: st.resolve(ref, executor=None),
+        lambda st, ref: st.resolve(ref, pythn=None),
+    ],
+)
+def test_a_frozen_open_names_the_settings_it_takes(tmp_path, call):
+    """``**settings`` accepts any name, so an unknown one has to be
+    refused here or it is silently dropped."""
+    st = Store(tmp_path)
+    ref = _snapshot_source(st)
+    with pytest.raises(TypeError, match="a frozen open takes python, mounts"):
+        call(st, ref)
