@@ -7,461 +7,94 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-**API v2.** A breaking release that makes nontainer's seams visible in
-its API, settles the vocabulary on git's words, and makes ws-git a
-fiction over the store's history. Every consumer is in-repo or the
-studio, so there is no compatibility layer: the table under *Changed*
-is the migration.
+**API v2.** A breaking release: the seams become objects, the vocabulary
+settles on git's words, and ws-git becomes a fiction over the store's
+history. No compatibility layer — the table is the migration.
 
 ### Changed
+- **The seams are objects.** `Store` owns what outlives a session,
+  `Workspace` one session's state, `Runtime` (`ws.runtime`) execution;
+  nothing takes an `AppsConfig` — `enable_apps(ws, config)` does.
+- **Namespaces and git's words.** `ws.files`, `ws.index` and `ws.tags`
+  group the file, staging and tag verbs; versioning takes git's names.
 
-- **The seams are objects.** `Store` owns what outlives a session:
-  opening and listing sessions, deletion, the orphan sweep,
-  store-scoped tags, and resolving a `session@commit` ref. `Workspace`
-  keeps one session's state: the provider, the single-writer lock,
-  the commit flow, cwd, files, history, fork, tags, diffs. `Runtime`
-  (`ws.runtime`) owns execution: the executor and its lifecycle,
-  `exec_python`, the command registry, the shell environment, the
-  python config. `ws.terminal(...)` and `ws.run_python(...)` stay on
-  `Workspace` and delegate. `nontainer.workspace(...)` is sugar for
-  `Store(...).open(...)`. The `Executor` protocol lives in
-  `protocol.py` beside `WorkspaceProvider` (re-exported from
-  `executor.py`).
+  | old | new | note |
+  |---|---|---|
+  | `ws.checkpoint(info)`, `ws.autocheckpoint`, `autocheckpoint=` | `ws.commit(info)`, `ws.autocommit`, `autocommit=` | commits everything uncommitted |
+  | `ws.commit(info)` (the staged set) | `ws.index.commit(message)` | the agent's own commit |
+  | `ws.history()`, `ws.restore(c)`, `ws.rollback(n)`, `ws.dirty` | `ws.log()`, `ws.checkout(ref, paths=None)`, —, `ws.uncommitted` | checkout appends; rollback removed, compensate by id; `uncommitted` is the store's buffer, agent work is `ws.index.status()` |
+  | `ws.write_file/edit_file/put/get/read_artifact/fs`, `ws.mount()` | `ws.files.write/edit/put/get/read_artifact/fs`, `ws.files.export()` | plus `read`, `exists`, `list` |
+  | `ws.stage/unstage/status/discard_staged`, `ws.tag/tags/tag_info/delete_tag/at_tag` | `ws.index.stage/unstage/status/discard`, `ws.tags.add/list/info/delete/at` | index gains `head`, `log`, `checkout`; `scope="store"` → `store.tags.*` |
+  | `ws.exec_python/register_command/python_config/supports_*/cache_enabled` | `ws.runtime.*` | `ws.caps` is the provider's capabilities only |
+  | `ws.set_shell_env(n, v)`, `Runtime.shell_env(...)` | `ws.runtime.env[n] = v` | a `MutableMapping[str, str]` |
+  | `ws.head_tree`, `ws.changed_since(ref, scope=)`, `ws.fork(name, at=)` | `next(iter(ws.log(limit=1))).tree`, `ws.changed_since(ref)`, `ws.fork(name, at=, inherit=, paths=)` | |
+  | `.checkpoint` on results, `CheckpointInfo`, `CheckpointNotFoundError`, `WorkspaceTools(checkpoint=)`, `WorkspaceDiff(added, removed, modified)` | `.commit`, `CommitInfo`, `CommitNotFoundError`, `WorkspaceTools(commit=)`, ...plus `seed`, `paths`, `in_seed`, `elsewhere` | terminal, python, write, edit |
+  | `nontainer.delete_workspace(...)` | `Store.delete(sessions, min_age=)` | |
+  | `provider.checkpoint/commit/restore` | `provider.commit` / `commit_keys(info, keys=)` / `checkout(commit, info=)` | plus `files_at`, `working_files`, `key_at`, `branch_head`, `refresh`, `merge(at=, info=)` |
 
-- **Namespaces and git's words.** `ws.files`, `ws.index` and
-  `ws.tags` group the file, staging and tag verbs; the versioning
-  verbs keep git's names. The migration:
-
-  | old | new |
-  |---|---|
-  | `ws.checkpoint(info)` | `ws.commit(info)` |
-  | `ws.commit(info)` (the staged set) | `ws.index.commit(message)` |
-  | `ws.autocheckpoint` | `ws.autocommit` |
-  | `ws.history(limit=)` | `ws.log(limit=)` |
-  | `ws.restore(commit)` | `ws.checkout(commit)` |
-  | `ws.write_file(path, content)` | `ws.files.write(path, content)` |
-  | `ws.edit_file(path, old, new)` | `ws.files.edit(path, old, new)` |
-  | `ws.put(src, dest)` / `ws.get(src, dest)` | `ws.files.put(...)` / `ws.files.get(...)` |
-  | `ws.read_artifact(path)` | `ws.files.read_artifact(path)` |
-  | `ws.fs` | `ws.files.fs` |
-  | `ws.mount()` | `ws.files.export()` |
-  | `ws.stage(paths)` / `ws.unstage(paths)` | `ws.index.stage(paths)` / `ws.index.unstage(paths)` |
-  | `ws.status()` | `ws.index.status()` |
-  | `ws.discard_staged()` | `ws.index.discard()` |
-  | `ws.tag(name, info=)` | `ws.tags.add(name, at=, info=)` |
-  | `ws.tags()` / `ws.tag_info(name)` | `ws.tags.list()` / `ws.tags.info(name)` |
-  | `ws.delete_tag(name)` / `ws.at_tag(name)` | `ws.tags.delete(name)` / `ws.tags.at(name)` |
-  | `..., scope="store")` on any of those | `store.tags.add/list/info/delete/at` |
-  | `ws.changed_since(ref, scope=)` | `ws.changed_since(ref)` |
-  | `ws.exec_python(...)` | `ws.runtime.exec_python(...)` |
-  | `ws.register_command(name, fn)` | `ws.runtime.register_command(name, fn)` |
-  | `ws.set_shell_env(name, value)` | `ws.runtime.env[name] = value` |
-  | `Runtime.set_shell_env(name, value)` / `Runtime.shell_env(...)` | `Runtime.env` (a `MutableMapping[str, str]`) |
-  | `ws.dirty` | `ws.uncommitted` |
-  | `ws.checkout(commit)` only | `ws.checkout(ref, paths=None)` (the second form takes paths from any ref) |
-  | `ws.fork(name, at=)` only | `ws.fork(name, at=, inherit=, paths=)` |
-  | `WorkspaceDiff(added, removed, modified)` | ...plus `seed`, with `paths` / `in_seed` / `elsewhere` |
-  | ws-git `branch` / `merge` refusals | the verbs themselves |
-  | `ws.python_config` | `ws.runtime.python_config` |
-  | `ws.supports_commands` / `ws.supports_ws_verbs` | `ws.runtime.supports_commands` / `ws.runtime.supports_ws_verbs` |
-  | `ws.cache_enabled` | `ws.runtime.cache_enabled` |
-  | `ws.head_tree` | `next(iter(ws.log(limit=1))).tree` |
-  | `Workspace(..., autocheckpoint=)`, `store.open(..., autocheckpoint=)`, `workspace(..., autocheckpoint=)` | `autocommit=` |
-  | `TerminalResult.checkpoint` / `PythonResult.checkpoint` | `.commit` |
-  | `WriteOutcome.checkpoint` / `EditOutcome.checkpoint` | `.commit` |
-  | `CheckpointInfo` | `CommitInfo` |
-  | `CheckpointNotFoundError` | `CommitNotFoundError` |
-  | `WorkspaceTools(ws, checkpoint="turn")` | `WorkspaceTools(ws, commit="turn")` |
-  | `provider.checkpoint(info)` | `provider.commit(info)` |
-  | `provider.commit(info)` (the staged set) | `provider.commit_keys(info, keys=)` |
-  | `provider.restore(commit)` | `provider.checkout(commit, info=)` (appends; returns the new id) |
-
-- **Two commit verbs, for two callers.** `ws.commit()` commits
-  everything uncommitted, always: the framework's durability verb,
-  fired at moments the agent did not choose. `ws.index.commit(message)`
-  is the agent's: the staged set, as a commit in the agent's own
-  graph. The terminal's `ws-git commit` is the one spelling that reads
-  its context (the staged set when something is staged, everything
-  modified otherwise), because a person at a terminal can see the
-  status line.
-
-- **ws-git is a fiction over the store's history.** The agent's index
-  and commit graph are metadata under a reserved key: the agent's head
-  (a store commit), the staged paths, and any outstanding merge
-  context. `status` diffs the working tree against *that* head, so the
-  framework's own commits never disturb a composition, and `ws-git
-  log` walks the agent's commits, not the tool calls between them.
-  Nothing is withheld from the store and nothing suspends autocommit:
-  work in progress is durable from the moment it is written and stays
-  out of the agent's commits until the agent says so. The shape is
-  `@agex-ts/git`'s with one correction: an agent commit's tree is
-  materialized exactly (paths left out are reverted to the agent's
-  head for the commit and restored to the tree straight after), so a
-  partial commit never absorbs the work it left out. Each operation
-  commits its own bookkeeping, keyed to what it touched and spelled
-  `ws-git.restore` / `ws-git.checkout` / `ws-git.merge-record`, so a
-  host with `autocommit=False` gets the same durability; a refused
-  keyed commit puts the tree and the index back as they were, and one
-  that loses its CAS to another handle on the session is re-applied
-  against the head that won (`BookkeepingLost` when even that fails,
-  naming the agent commit that did land). Which store commits are the
-  agent's is one rule in one place (`agentgit.is_agent_commit`):
-  `info["tool"]` is `"ws-git"` or `"ws-git.merge"`; the bookkeeping and
-  the framework's own commits are never in `ws-git log`. New:
-  `ws-git checkout <ref>` (restore the tree to one of your commits —
-  and only one of yours, since a framework commit has no place in the
-  agent's graph; the fiction rewinds, the store appends),
-  `ws-git show <ref>`,
-  `ws.index.commit/log/head/checkout`. `ws-git stage` is silent and
-  optional. What is still refused — `stash`, `rebase` — names a
-  terminal verb the agent can actually run.
-
-- **A merge takes only what has been committed — by the agent — and
-  refuses a source that has more.**
-  Autocommit keeps the store's buffer clean while an agent composes,
-  so a buffer-clean check said nothing: `ws.merge` would fold work in
-  flight into the merge commit and move the agent's head over it under
-  the merge's name. It now refuses while this session has anything
-  staged, or modified against its own last ws-git commit, naming the
-  two fixes (`ws-git commit -m ...`, `ws-git checkout <your last
-  commit>`); it merges the SOURCE at that session's last agent
-  commit rather than its store head, so the source agent's work in
-  flight stays its own; and it refuses a source that has written since
-  that commit rather than quietly merging a state the delegate has
-  moved past — the same two fixes, in that session's terms. A session
-  that never used ws-git has no such commit and merges at its store
-  head, as before. The merge context
-  `status` reports is seeded from `MergeOutcome.conflicts` — what the
-  merge actually marked, so a file that is *about* conflict markers no
-  longer reads as one — and a marked path stops being unresolved when
-  its markers are gone, not when it is committed.
-
-- **`ws.checkout(commit)` appends, and a session's history is
-  append-only.** It makes this session what it was at one of its own
-  commits — files, `cache`, cwd, the ws-git blob, the stored
-  conversation, everything it holds — by *writing* that state and
-  committing it. So the id it returns is a new commit, everything
-  committed since the target is still in `ws.log()`, an undo is
-  redo-able (`ws.rollback(1)` straight after a checkout lands on the
-  commit it stepped off), and `store.clean()` has nothing to collect
-  after one. `restore`'s head-moving reset is gone: nothing but
-  store-level admin (`Store.delete`) moves a branch head backward.
-  Uncommitted writes are replaced by the restored state — `ws.discard()`
-  is the verb for dropping them on their own — and a checkout onto
-  state the workspace already holds writes nothing and returns the
-  current head. Because the agent's git is metadata in a restored key,
-  a host checkout rewinds the fiction with the tree: `ws.index.head`
-  and `ws-git log` read as they did at the target. `rollback(steps)`
-  counts back over `ws.log()` as it stands, so counting twice in a row
-  is not counting two at once. It still refuses a session name: a
-  session is a branch, reached by `ws.fork("name")` or
-  `store.open("name")`.
-
-- **`ws.caps`** is the provider's capabilities only; `supports_commands`,
-  `supports_ws_verbs` and `cache_enabled` describe the executor and
-  live on `Runtime`.
-
-- **`ws.uncommitted` replaces `ws.dirty`.** It answers the framework's
-  question and only it: whether the store's buffer holds writes no
-  commit has taken. It never answered "does the agent have uncommitted
-  work" — autocommit keeps it False while an agent composes — and the
-  name invited that reading. `ws.index.status()` is the agent's
-  question.
-
-- **`Runtime.env` replaces `Runtime.shell_env(...)`.** The shell
-  environment is a `MutableMapping[str, str]`, so it is read, written
-  and cleared like one (`rt.env["X"] = "1"`, `del rt.env["X"]`,
-  `dict(rt.env)`) instead of through one verb with three forms. Names
-  are still validated at write time. `ExecutionContext.shell_env`
-  keeps its name and holds this mapping.
-
-- **A host commit may not forge an agent commit.** `ws.commit(info=)`
-  raises `ValueError` for `info["tool"]` of `"ws-git"` or any
-  `"ws-git.*"`: those name the agent's own commits and the fiction's
-  bookkeeping, and `ws-git log` reads them as such.
-
-- **One key for the working directory.** The filesystem's cwd key is
-  the only one; the legacy `__cwd__` is adopted and removed on open and
-  merges as `MergeChoice.OURS` while old branches still carry it. On
-  the kvgit backend a workspace with `mounts` no longer persists its
-  cwd across reopen (a `MountFS` requires the filesystem beneath it to
-  sit at the root); mounted trees were already unversioned live views.
-
-- **A file's metadata rides beside its bytes.** monkeyfs keeps one
-  metadata row per path instead of one table every write rewrote, and
-  the kvgit provider now treats a row as part of the file it describes.
-  A selective commit (`ws.index.commit`, the framework's own durability
-  points) takes each committed file's row with its blob, and a staged
-  deletion takes the row's deletion; it never carries the legacy
-  `__vfs_metadata__` table, which moves only with a full commit — a
-  stale entry beside a committed row is harmless because a row wins
-  over the table, whereas committing a drained table would strip the
-  entries of files whose rows are still unstaged. A merge settles rows
-  key by key beside their blobs, field-aware, and the merged row
-  carries the size of the merged bytes, so a clean union of two edits
-  no longer needs a size-fixing commit after the merge: one merge is
-  one commit. Two branches that each wrote a different file no longer
-  contest anything. A file is reported as a conflict once, by path,
-  however many of its keys contested, and a path that is a file on one
-  side and a directory on the other is a hard conflict named by path
-  rather than by the metadata key. A publication writes a row beside
-  each blob it holds, derived from a filesystem over the source commit,
-  so a session whose metadata is still the old table publishes rows
-  like any other and the table itself never travels. A state written
-  before rows keeps working: it reads through the table and drains one
-  write at a time, and the table keeps a merge function of its own
-  while it does — a write drains its own path out of it, so two
-  branches that each wrote a different file both changed that one key
-  and would otherwise collide over state that agrees.
+- **Two commit verbs, for two callers.** `ws.commit()` is everything
+  uncommitted, the framework's durability verb; `ws.index.commit(msg)`
+  is the agent's staged set; `ws-git commit` reads the staging state.
+- **ws-git is a fiction over the store's history.** Index and commit
+  graph are metadata under a reserved key, so nothing suspends
+  autocommit; trees are materialized exactly, and a host `ws.commit()`
+  may not claim a `ws-git*` tool.
+- **`ws.checkout` appends** a commit whose tree equals the target, so
+  history is append-only, only `Store.delete` moves a head backward, and
+  a session name is refused — a session is a branch.
+- **A merge takes only committed agent work.** `ws.merge` (new on the
+  facade, gated by `caps.merge`) refuses staged or modified work on
+  either side and merges the source at its last agent commit. It is
+  filesystem-only: files three-way, while `__cache__/*`, `__agno__/*`,
+  cwd, the ws-git blob and the view record take ours.
+- **Metadata rides beside the bytes.** One monkeyfs row per file, not
+  one table per write, so a commit or merge carries a file's row with
+  its blob.
+- **One key for the working directory.** The filesystem's is the only
+  one (`__cwd__` is dropped on open), and with `mounts` cwd no longer
+  survives reopen.
 
 ### Added
-
-- `ws.log(kind=)`: `"work"` (the default) hides the ws-git fiction's
-  bookkeeping commits — the working-tree restore after a partial
-  commit, the tree a checkout writes, the blob a merge records — so
-  the log reads as the things somebody did; `"agent"` is the agent's
-  own commits, read off the store's history; `"all"` is the store's
-  history as the provider keeps it. `limit` applies after the filter,
-  so `log(limit=5)` is five commits the caller cares about, and a limit
-  that asks for nothing gets nothing whatever the kind. An unknown kind
-  raises `ValueError`; `ws.index.log()` is unchanged.
-- `CommitInfo.parents`: the ids a commit descends from, as the
-  provider records them — one for an ordinary commit, two for a merge
-  (first parent is the side the merge was made from), empty for a root
-  commit and for a provider whose history is a list rather than a
-  graph. Field is last, so positional constructions are unaffected.
-- `nontainer.Store` / `store(...)`: `open`, `sessions`, `exists`,
-  `delete`, `resolve`, `clean`, `tags`, `close`. `shared()` raises
-  `NotImplementedError` until its stage lands.
-- `Store.tags`: `add(ws_or_ref, name, info=)`, `list`, `info`,
-  `delete`, `at` (store-scoped). `ws.tags.add(name, at=...)` names an
-  earlier commit. `at` borrows a branch to read through — a session if
-  the store has one, otherwise a publication's own branch, so a store
-  whose sessions are all gone is still readable, which is the case the
-  store scope exists for.
-- `nontainer.Ref` (`session@commit[:/path]`; `Ref.parse`, `str`),
-  `ws.ref` (this session at its current commit), and
-  `Store.resolve(ref)`, a frozen `Workspace` at that commit. A ref
-  splits at its LAST `@`, so a reserved branch — which leads with one —
-  is a legal ref target.
-- **Publications: `store.publish(ws, name, *, paths=("app/",),
-  version=, info=)`,** with `store.publications()`,
-  `store.publication(name)`, `store.set_current(name, version)`,
-  `store.unpublish(name, version)`, and the frozen `Publication` /
-  `Version` records. What lands is the **subtree, not the session**: a
-  derived commit holding the files under `paths` plus the filesystem
-  rows describing them, and nothing else — no cache, no cwd, no ws-git
-  blob, no conversation record, no file from outside `paths`. The
-  session it came from is a soft `published_from` reference in the
-  commit's info, not a parent pointer, so a version pins none of that
-  session's history and survives the session's deletion intact. One
-  publish writes a reserved branch `@store/pub/<name>/<version>` (the
-  anchor `Publication.open()` reads through), a store-scoped tag
-  `<name>/<version>`, and a record in the publication registry.
-  `info` may not set `tool`, `name`, `version` or `published_from`: a
-  clash raises rather than overriding what publish records, because a
-  false provenance in an immutable commit outlives every chance to
-  notice it. A `Publication` is a snapshot of the registry and not a
-  capability — `open()` and `store.resolve` re-read it and refuse a
-  version that has since been unpublished — and a reserved `@store/`
-  branch is never created by being opened, so a stale ref cannot
-  resurrect what an unpublish deleted.
-- The **publication registry**: `publications.json` under the store
-  path, holding each name's versions and which one is current (in
-  memory for a store with no directory of its own). It is generic — no
-  token, no route, no database — because those describe a deployment of
-  an app rather than the app; an embedder keeps them in its own table
-  keyed by name (`docs/apps.md`). Every mutation reads, decides and
-  writes under one lock — `flock` on `publications.lock` beside the
-  registry across processes, a per-path `threading.Lock` within one —
-  so two publishers cannot pick the same version number or drop each
-  other's record; without `fcntl` the in-process lock is the whole
-  guarantee and says so.
-- `ws.merge(source)` on the facade, gated by `caps.merge`; refuses a
-  dirty tree — or uncommitted ws-git work — with the verbs that fix it.
-- **Delegation: forks with a view, take, attachments.** A session is a
-  branch, so delegating to one needs a calling convention rather than
-  new primitives (`docs/design.md`, "Delegation: forks, views and
-  merges").
-  - **A fork point is always a commit.** `ws.fork` lands uncommitted
-    writes first under `{"tool": "fork", "child": name}` and branches
-    from that commit, so the child's base is a state that existed and
-    the merge base does not predate the parent's own edits. With `at`
-    the buffer is left alone.
-  - **`ws.fork(name, *, at=, inherit="full"|"fresh", paths=None)`.**
-    `inherit` decides whether the stored conversation comes along and
-    nothing else — `"fresh"` drops every `__agno__/*` key on the
-    child's first commit and touches no file. A brief or a summary is
-    content the caller supplies with the task; nontainer stores the
-    conversation and does not interpret it, so it cannot write one.
-  - **`paths` narrows the child's VIEW, not its tree** — a sparse
-    checkout. Its branch holds everything the parent had; its
-    filesystem lists and reads only the seeded paths, so pushing
-    content to a delegate costs no prune commit and the merge back
-    stays ordinary three-way. **One write rule, better than git's**:
-    a new path anywhere is allowed (and joins the view, so a delegate
-    can read back its own note); modifying or deleting a path that
-    exists outside the view is refused with `PermissionError` naming
-    the view. The view is drawn around the FILE, not the name: a link
-    is a second name for one, so a link whose target the view hides
-    cannot be made, and a link out of the view that already exists
-    reads as absent rather than becoming a way through it. Locally the rule lives in the filesystem the sandbox
-    holds; on a guest rung only the seeded subtree is materialized and
-    the same rule is applied to the write harvest, so a call that tried
-    lands nothing. The view is recorded on the branch under a reserved
-    key (so a reopened delegate is narrowed as it was) and merges
-    `MergeChoice.OURS`; a fork given the whole tree records nothing.
-  - **`ws.checkout(ref, paths=[...])`** — git's `restore
-    --source=<ref> -- <paths>`, one verb with two forms. Makes those
-    paths match any ref (a `session@commit`, a session name meaning
-    its last AGENT commit, or a commit of this session) as ordinary
-    writes and removals, committed per `autocommit` with
-    `{"tool": "checkout", "taken_from": ..., "paths": [...],
-    "removed": [...]}` — a soft reference, not ancestry. A path that
-    names a DIRECTORY mirrors that subtree: a file it holds here and
-    the ref does not is removed, so taking a delegate's `pkg/` cannot
-    leave behind the `pkg/old.py` the delegate deleted; a path naming
-    a file moves that file and removes nothing. The view's write rule
-    covers the removals too — a take that would drop a file the view
-    hides is refused whole, before anything is written. File keys
-    only, so the merge-policy question never arises. This is "take",
-    and it is what getting files from an UNRELATED session is: two
-    such sessions share only the store's empty commit, so a merge
-    between them would conflict on everything.
-  - **`ws.files.attach(ref, at, *, readonly=True, root=None)` /
-    `detach(at)` / `attachments()`** mount another session's frozen
-    tree inside this one, for reading someone else's work in place.
-    Explicit, never automatic, and like a `Mount`: unversioned,
-    uncommitted, not carried by a fork, gone when the session closes.
-    The terminal sees it; a point inside the workspace root reaches a
-    guest rung too. What lands is the source's WHOLE branch, not what
-    its own session can see — a delegate given a narrow view is
-    exactly the one worth attaching. A lineage shares one workspace
-    root, so the source is read under this session's; `root=` names a
-    different one for a session from elsewhere.
-    While anything is attached the working directory belongs to the
-    composition, so a session committed in that state reopens at its
-    root — a stored cwd of `/` is now read as "start at the root",
-    which also fixes the same reopen for a session with configured
-    mounts.
-  - **`Store.fork(src, dst, *, at=, inherit=, paths=)`** is the same
-    verb for host code with no workspace open; `root=` opens the
-    source at that root too, since a lineage shares one and a view
-    normalized against another would name paths the child cannot see.
-  - **`Store.resolve(ref, *, root=None)`** reads a commit under a
-    given workspace root. A commit holds its files at whatever root
-    the session that made them used, so resolving at the wrong one
-    reads an empty tree.
-  - **The plane policy, whole.** A merge is filesystem-only: files
-    three-way (the VFS table field-aware), and `__cache__/*`,
-    `__agno__/*`, cwd, the ws-git blob and the view record all take
-    ours. The two prefixes are registered as a kvgit `MergeChoice`
-    rather than a merge function, because a function runs only where
-    both sides changed a key and a run the delegate added under
-    `__agno__/runs/<id>` would otherwise ride in. Registered for the
-    merge verb only: an ordinary commit that loses its CAS to a second
-    handle on the SAME session must still take that handle's
-    conversation.
-  - **`WorkspaceDiff.seed`, `.in_seed`, `.elsewhere`, `.paths`.** A
-    diff ending at a narrowed session carries the paths that session
-    was seeded with and groups by them, so the collateral a delegate
-    touched outside what it was sent to do cannot go unnoticed. The
-    merge takes both. Grouping is by the SEED, not the delegate's
-    current view: a file it created is in its view because it made it,
-    and that is exactly a change the caller has not seen.
-- **ws-git grows the verbs that were refusals.** `branch` (no args:
-  the sessions on this store, yours marked `*`; with a name: a fork,
-  taking `--at <ref>`, `--fresh` and `--paths <paths>`), `merge
-  <session>` (git's `Auto-merging` / `CONFLICT (content)` lines, exit 1
-  when markers land), `checkout <ref> -- <paths>`, `log <session>` and
-  `diff <session>` (grouped `# N path(s) in <session>'s seed` /
-  `# N path(s) elsewhere` when that session was narrowed; a word that
-  names both a path here and a session elsewhere is the PATH, and one
-  that names neither is refused rather than read as a pathspec
-  matching nothing). `stash` and
-  `rebase` stay refusals and now name terminal verbs: a fork IS a
-  stash (`ws-git branch <name>`), and branching from the commit you
-  want is what rebase was for. Same implementation as the host verbs,
-  and the dud ferry needed no new wire verbs — `tests/test_wsgit_conformance.py`
-  asserts the new verbs match output shape on both rungs.
-- `nontainer/planes.py` names the reserved key prefixes once
-  (`CACHE_PREFIX`, `CONVERSATION_PREFIX`), so the merge policy can
-  state the plane table without importing an optional extra.
-- `examples/tour.py`: the whole surface end to end, no LLM — terminal,
-  `run_python`, stage and commit through `ws.index`, a fork with a
-  narrowed view, an edit, a merge, a take, an attachment, a publish, a
-  ref resolved to a frozen workspace. `tests/test_tour_example.py` runs
-  it so it cannot rot.
-- `ws.files.read`, `.exists`, `.list(path, recursive=)`; `ws.files.fs`
-  stays public as the escape hatch.
-- `Runtime` is constructible over an existing (frozen) workspace with
-  its own executor, which is what serving a snapshot needs;
-  `Runtime.shell_env(...)` is one verb, three forms (set, read one,
-  read the mapping); `ExecutionContext.shell_env` beside `commands`.
-- Provider primitives the fiction is built on: `commit_keys(info,
-  keys=)`, `files_at(commit)`, `working_files()`, `key_at(commit, key)`,
-  `branch_head(session)`, `refresh()`. `merge` takes `at=` and `info=`
-  in the protocol, and `Workspace.merge` always passes both, so a
-  provider written to the documented signature works whether or not it
-  has an index. The
-  kvgit provider registers the framework keys' merge policies (the file
-  table, the cwd, the ws-git blob) for ordinary commits too, so a
-  commit that loses its CAS to another handle three-way merges instead
-  of raising.
-- The apps seam, stated outright in `docs/api.md`: `Workspace`,
-  `Store.open` and `nontainer.workspace()` take no `AppsConfig`, and
-  `enable_apps(ws, config)` wires apps in afterwards through
-  `runtime.register_command`, `runtime.shell_env` and
-  `runtime.exec_python(view=)` — the surface any extension may use, and
-  the one `tests/test_apps_surface.py` already enforces. An audit for
-  this release found no apps-shaped parameter, attribute or import left
-  in core to remove; the coupling was already at the extension surface,
-  and `_absorb_before_verb` (the harvest before a hostcall-dispatched
-  verb) is a generic hook that ws-git and ws-curl share.
-- `nontainer.BookkeepingLost`, a `WorkspaceError`: an agent commit
-  landed and the record naming it did not.
-- `SessionRunner` and `HostObjectFactory` in `protocol.py`: the loop
-  seam, declared and unused.
+- **`nontainer.Store` / `store(...)`** — `open`, `sessions`, `exists`,
+  `delete`, `fork`, `resolve`, `clean`, `tags`, `close`; `shared()`
+  raises for now. `nontainer.Ref` (`session@commit[:/path]`), `ws.ref`
+  and `Store.resolve(ref, root=)` open one exact state, frozen.
+- **Publications** — `store.publish(ws, name, *, paths=("app/",),
+  version=, info=)`, `publications()`, `publication()`, `set_current()`,
+  `unpublish()`, frozen `Publication` / `Version`. A version is the
+  subtree, not the session: a derived commit of `paths` and their
+  metadata rows, `published_from` a soft reference, kept as a store tag.
+- **Delegation** — `ws.fork(name, *, at=, inherit=, paths=)`:
+  `inherit="fresh"` drops the stored conversation, `paths` narrows the
+  child's VIEW rather than its tree (new paths join it; touching one
+  outside raises `PermissionError`), and without `at` the fork point is
+  committed first. `ws.checkout(ref, paths=[...])` takes paths from any
+  ref as writes and removals (a directory mirrors its subtree), and
+  `ws.files.attach(ref, at, ...)` / `detach` / `attachments` mount
+  another session's frozen tree, unversioned and gone at close.
+- **`ws.log(kind=)`** — `"work"` (default) hides bookkeeping commits,
+  `"agent"` is the agent's own, `"all"` the provider's history; plus
+  `CommitInfo.parents`, `WorkspaceDiff.seed`/`.in_seed`/`.elsewhere`.
+- **ws-git verbs that were refusals** — `branch` (list, or a fork with
+  `--at` / `--fresh` / `--paths`), `merge <session>`, `checkout <ref>
+  [-- <paths>]`, `show <ref>`, `log`/`diff <session>`; `stash` and
+  `rebase` still refuse.
+- `nontainer.BookkeepingLost`; `examples/tour.py` walks the surface.
 
 ### Removed
-
+- **`Workspace.rollback(steps)`** — a count into a log that `checkout`
+  now appends to, so `rollback(1)` twice was not `rollback(2)`;
+  compensate by identity with `ws.checkout(commit_id)`.
 - The flat `Workspace` methods the namespaces replace, the execution
-  delegates (`exec_python`, `register_command`, `set_shell_env`,
-  `python_config`, `supports_*`, `cache_enabled`), `head_tree`
-  (`CommitInfo.tree`), and `scope=` on the session tag verbs (the
-  object you reach through is the scope).
-- `nontainer.delete_workspace(...)`: use `Store.delete(sessions,
-  min_age=)`.
-- **`Workspace.rollback(steps)`.** It counted positions in a log that
-  `checkout` appends to, so `rollback(1)` twice was not `rollback(2)`
-  and the count meant something different after every restore.
-  Compensation is by identity: `ws.checkout(commit_id)` with an id from
-  `ws.log()`. The undo of a checkout is the commit it stepped off,
-  which is still one entry back in the log. The `{"tool": "init"}`
-  floor went with it — a checkout is given an id the caller has seen,
-  not a distance to travel.
-- The staging suspension machinery: `provider.stage_suspended /
-  commit_index / discard_staged / stage / unstage / status`,
-  `StageResult`, and the staging blob's union merge. `caps.index` now
-  means keyed commits are available.
-
-### Fixed
-
-- Two keys held the working directory, with a merge function each and
-  nothing to say which won; see *One key for the working directory*.
-- The providers doc claimed kvgit deletes from a hidden `__void__`
-  anchor branch; deletion has been anchor-free since it moved to
-  `kvgit.delete_branches`, and `__void__` is only swept.
-- The ws-git refusal hints named host Python (`ws.fork(...)`) the agent
-  cannot call.
+  delegates, `head_tree`, tag `scope=`, `nontainer.delete_workspace`, and
+  the staging suspension machinery (`provider.stage_suspended`,
+  `commit_index`, `discard_staged`, `stage`, `unstage`, `status`,
+  `StageResult`); `caps.index` now means keyed commits.
 
 ### Dependencies
-
-- Floors: `kvgit>=0.3.8` (prefix merge policy, `MergeChoice`,
-  byte-equal merges, the GC lease), `monkeyfs>=0.1.10` (per-file
-  metadata rows, plus the 3.10 accessor rebinds incl. the `expanduser`
-  home leak and strict realpath), `sandtrap>=0.3.5` (raw is the default
-  mode). The `dud` extra keeps its `python_version >= "3.11"` marker.
+- Floors: `kvgit>=0.3.8` (prefix merge policy, `MergeChoice`, byte-equal
+  merges, the GC lease), `monkeyfs>=0.1.10` (per-file metadata rows, the
+  3.10 accessor rebinds), `sandtrap>=0.3.5` (raw is the default mode).
 
 ## 0.5.2 - 2026-09-04
 
