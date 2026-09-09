@@ -121,6 +121,11 @@ def normalize_view(paths: "Any", root: str) -> tuple[str, ...]:
     rejected rather than read as "see nothing": a session that can see
     nothing cannot even list its own root, and a caller who means the
     whole tree passes ``None``.
+
+    The filesystem root ``/`` is rejected for the same reason from the
+    other end: a view of everything is not a view, and the spelling
+    for it is ``paths=None``. The workspace root (``/workspace``) is
+    an ordinary seed and does show the whole tree.
     """
     if isinstance(paths, str):
         paths = [paths]
@@ -131,7 +136,14 @@ def normalize_view(paths: "Any", root: str) -> tuple[str, ...]:
         text = entry.strip().rstrip("/") or "/"
         if not text.startswith("/"):
             text = posixpath.join(root, text)
-        out.add(posixpath.normpath(text))
+        text = posixpath.normpath(text)
+        if text == "/":
+            raise ValueError(
+                f"{entry!r} names the whole filesystem, which is not a view — "
+                "pass paths=None for the whole tree, or name the workspace "
+                f"root ({root!r}) to see all of it as a seed"
+            )
+        out.add(text)
     if not out:
         raise ValueError(
             "paths= must name at least one path; pass paths=None for the whole tree"
