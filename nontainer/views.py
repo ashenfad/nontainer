@@ -212,32 +212,44 @@ class ViewFS:
         return self._visible_abs(target) and not self._escapes(target)
 
     def _escapes(self, path: str) -> bool:
-        """Whether ``path`` is a link that leaves the view.
+        """Whether this name leads somewhere the view hides.
 
-        A backend with no links answers no for one metadata lookup
-        (monkeyfs's ``VirtualFS`` refuses symlinks outright), and one
-        that reports a link it cannot resolve answers YES: where a link
-        goes is the whole question, and guessing it stays inside is the
-        hole this closes.
+        A link is a second name for a file, and a link ANYWHERE along a
+        path leads there — the last component or a directory in the
+        middle, which the name says nothing about. So where the backend
+        can resolve a path, the RESOLVED path is what the view is asked
+        about, on every access and resolved once per call (this runs on
+        every operation and on every entry of a listing).
+
+        Only a name that leads elsewhere can escape: a path that
+        resolves to itself is answered by the name check alone, so a
+        session may still create a new file at a name the view hides,
+        which is the write rule.
+
+        A backend that cannot resolve falls back to one metadata
+        lookup, where any link it reports is treated as leaving: where
+        a link goes is the whole question, and guessing it stays inside
+        is the hole this closes. A backend with no links at all answers
+        no (monkeyfs's ``VirtualFS`` refuses symlinks outright).
         """
-        islink = getattr(self._fs, "islink", None)
         realpath = getattr(self._fs, "realpath", None)
+        if realpath is not None:
+            try:
+                resolved: Any = realpath(path)
+            except Exception:  # noqa: BLE001 - fall back to the link check
+                resolved = None
+            if isinstance(resolved, str):
+                target = self._abs(resolved)
+                if target == self._abs(path):
+                    return False  # nothing was redirected
+                return not self._visible_abs(target)
+        islink = getattr(self._fs, "islink", None)
         if islink is None:
             return False
         try:
-            if not islink(path):
-                return False
+            return bool(islink(path))
         except Exception:  # noqa: BLE001 - a backend that cannot say has no links
             return False
-        if realpath is None:
-            return True
-        try:
-            resolved = realpath(path)
-        except Exception:  # noqa: BLE001 - unresolvable is a link out
-            return True
-        if not isinstance(resolved, str):
-            return True
-        return not self._visible_abs(self._abs(resolved))
 
     def _hidden(self, path: str) -> str:
         return (
@@ -345,7 +357,11 @@ class ViewFS:
         return self._fs.samefile(path1, path2)
 
     def list(self, path: str = ".", recursive: bool = False) -> list[str]:
-        if not self._visible(path):
+        # The directory itself is asked the same question its entries
+        # are: a name that leads out of the view reads as absent, so
+        # listing through a linked directory finds nothing to list
+        # rather than an empty directory that is not empty.
+        if not self._reachable(path):
             self._refuse_missing(path, "list")
         base = self._abs(path)
         return [
@@ -355,7 +371,7 @@ class ViewFS:
         ]
 
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[Any]:
-        if not self._visible(path):
+        if not self._reachable(path):
             self._refuse_missing(path, "list_detailed")
         base = self._abs(path)
         return [

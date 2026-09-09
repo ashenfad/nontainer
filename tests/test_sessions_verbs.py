@@ -680,6 +680,53 @@ def test_a_link_to_a_hidden_file_cannot_be_made(linked):
     assert view.read("/seen/fine.txt") == b"ok"
 
 
+def test_a_linked_directory_is_not_a_way_around_the_view(linked):
+    """A link in the MIDDLE of a path leads out of the view exactly as
+    a link at the end does, so the resolved path is what every access
+    is checked against — reads, writes and listings alike."""
+    base, view = linked
+    base.symlink("/hidden", "/seen/out")
+
+    assert not view.exists("/seen/out/secret.txt")
+    assert not view.isdir("/seen/out")
+    for call in (
+        lambda: view.read("/seen/out/secret.txt"),
+        lambda: view.open("/seen/out/secret.txt", "rb"),
+        lambda: view.stat("/seen/out/secret.txt"),
+        lambda: view.list("/seen/out"),
+        lambda: view.list("/seen/out", recursive=True),
+    ):
+        with pytest.raises(FileNotFoundError):
+            call()
+    assert view.list("/seen") == ["ok.txt"]
+    assert view.list("/seen", recursive=True) == ["ok.txt"]
+
+    for call in (
+        lambda: view.write("/seen/out/secret.txt", b"through the directory"),
+        lambda: view.write("/seen/out/planted.txt", b"planted"),
+    ):
+        with pytest.raises(PermissionError, match="outside this session's view"):
+            call()
+    assert base.read("/hidden/secret.txt") == b"S3CR3T"
+    assert not base.exists("/hidden/planted.txt")
+
+
+def test_a_link_that_stays_inside_the_view_is_ordinary(linked):
+    """Resolving every path must not cost the view its own links: one
+    that lands inside is a name like any other, readable and
+    writable."""
+    base, view = linked
+    base.makedirs("seen/inner", exist_ok=True)
+    base.write("seen/inner/note.md", b"note")
+    base.symlink("/seen/inner", "/seen/near")
+
+    assert view.read("/seen/near/note.md") == b"note"
+    assert view.list("/seen/near") == ["note.md"]
+    assert "near" in view.list("/seen")
+    view.write("/seen/near/more.md", b"more")
+    assert base.read("/seen/inner/more.md") == b"more"
+
+
 # -- one root for a lineage ----------------------------------------------------
 
 
