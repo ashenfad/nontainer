@@ -1139,8 +1139,13 @@ Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
 parent learns a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's. `cancel` means the answer will
 be discarded and the branch left as it is: a runner already working is
-the embedder's loop and cannot be interrupted. `keep` records a flag on
-the job for a retention sweep to honor; nothing sweeps yet.
+the embedder's loop and cannot be interrupted. It succeeds only
+*before* the landing begins — cancelling and landing an answer are one
+state transition under one lock, so after a cancel succeeds nothing
+goes onto the child's branch, and once the helper has begun committing
+the child's work the answer stands and `cancel` returns the job without
+`status == "cancelled"`. `keep` records a flag on the job for a
+retention sweep to honor; nothing sweeps yet.
 
 ### `SessionRunner` (the loop seam)
 

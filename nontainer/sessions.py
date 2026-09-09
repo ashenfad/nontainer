@@ -149,6 +149,10 @@ class Sessions:
         self._futures: dict[str, Future] = {}
         self._children: dict[str, Workspace] = {}
         self._base: dict[str, str | None] = {}
+        # Jobs whose answer has begun landing. Read and written only
+        # under _lock, beside the job's status, because "cancel this"
+        # and "land this" are the two halves of one transition.
+        self._landing: set[str] = set()
         self._closed = False
 
     def __repr__(self) -> str:
@@ -250,14 +254,22 @@ class Sessions:
         committed for it and nothing is deleted; ``ws-git diff <name>``
         still shows whatever it managed to do.
 
-        A job that has already answered is returned unchanged: there is
-        nothing left to discard.
+        **It succeeds only before the landing begins.** Cancelling and
+        landing an answer are ONE state transition, taken under one
+        lock: after a cancel succeeds nothing of ours can go onto the
+        child's branch, and once the helper has begun committing the
+        child's work the answer stands. A cancel that arrives in that
+        window returns the job WITHOUT ``status == "cancelled"`` —
+        promising a discard while the commit is already happening would
+        be a promise the branch could not keep. Read the returned status
+        rather than assuming: a job that has already answered comes back
+        unchanged too, since there is nothing left to discard.
         """
         with self._lock:
             job = self._jobs.get(name)
             if job is None:
                 raise SessionsError(self._unknown(name))
-            if job.status != "running":
+            if job.status != "running" or name in self._landing:
                 return job
             job = replace(job, status="cancelled", finished=time.time())
             self._jobs[name] = job
@@ -403,6 +415,13 @@ class Sessions:
     def _land(self, name: str, task: str, answer: Answer) -> Answer:
         """Commit the child's work, describe it, and record the answer.
 
+        Opens by taking the cancel-or-land decision under one lock: a
+        job cancelled by then is discarded and nothing of ours touches
+        its branch, and a job that gets past it is marked as landing,
+        which is what stops a cancel arriving mid-commit from promising
+        a discard the branch cannot honor. Two separate reads of the
+        status would leave exactly that window open.
+
         The child handle is closed either way: its branch is what the
         parent merges from, and holding a second handle on it past the
         job keeps a store open for nothing.
@@ -411,6 +430,8 @@ class Sessions:
             child = self._children.pop(name)
             base = self._base.get(name)
             cancelled = self._jobs[name].status == "cancelled"
+            if not cancelled:
+                self._landing.add(name)
         try:
             if cancelled:
                 # Discarded, and the branch left exactly as the
@@ -527,9 +548,15 @@ class Sessions:
         }
 
     def _record(self, name: str, answer: Answer) -> None:
-        """Store the answer and close the job out. Cancellation wins:
-        a job the caller stopped caring about does not un-cancel
-        because its runner finished a moment later."""
+        """Store the answer and close the job out.
+
+        The cancelled check is the invariant, not the decision: the
+        decision was taken when the landing was marked, and a job that
+        got there cannot be cancelled afterwards. It stands for the one
+        path that reaches here without that mark — a landing that failed
+        before it began — where a job the caller stopped caring about
+        must not un-cancel itself.
+        """
         with self._lock:
             job = self._jobs[name]
             if job.status == "cancelled":
@@ -685,6 +712,14 @@ def run_action(
                 return render_answer(sessions.result(name))
             if action == "cancel":
                 job = sessions.cancel(name)
+                if job.status == "running":
+                    # Cancel arrived while the answer was landing, so
+                    # the answer stands: say that, rather than a
+                    # cancellation the branch will not honor.
+                    return (
+                        f"{name} is already landing its answer, so it stands; "
+                        f"`sessions result {name}` has it."
+                    )
                 if job.status != "cancelled":
                     return (
                         f"{name} had already finished ({job.status}); nothing to stop."
