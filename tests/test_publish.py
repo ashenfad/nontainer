@@ -291,6 +291,44 @@ def test_a_publication_opens_frozen(tmp_path):
     ws.close()
 
 
+def test_a_publication_is_served_with_the_embedders_settings(tmp_path):
+    """A publication carries the tree; the live objects a handler calls
+    are the embedder's, and it hands them over at the open."""
+    from nontainer import PythonConfig
+
+    class Db:
+        def read(self):
+            return "live"
+
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard")
+    ws.close()
+
+    db = Db()
+    snapshot = pub.open(python=PythonConfig(host_objects={"db": db}))
+    assert snapshot.runtime.python_config.host_objects["db"] is db
+    assert snapshot.run_python("out = db.read()").namespace["out"] == "live"
+    snapshot.close()
+
+    bare = pub.open()
+    assert bare.runtime.python_config.host_objects == {}
+    bare.close()
+
+
+def test_a_publication_open_takes_no_root(tmp_path):
+    """The root the files were published under is recorded with the
+    version, so a second spelling could only contradict it."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard")
+    ws.close()
+    with pytest.raises(TypeError, match="takes no 'root'"):
+        pub.open(root="/elsewhere")
+    with pytest.raises(TypeError, match="a frozen open takes python, mounts"):
+        pub.open(autocommit=False)
+
+
 def test_store_resolve_takes_a_version_ref(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Frozen opens take execution settings.** `store.tags.at(name, ...)`,
+  `store.resolve(ref, ...)` and `Publication.open(version, ...)` take
+  `Store.open`'s construction keywords — every one but `autocommit`,
+  which a provider that commits nothing has nothing to switch. The rule:
+  a commit holds the tree, and the embedder supplies the live objects
+  its handlers call. `Publication.open` takes no `root`, a version
+  recording the one its files were published under.
+
+### Fixed
+- **A published app reaches its host objects.** `pub.open(python=
+  PythonConfig(host_objects={"db": db}))` serves a publication whose
+  handlers call an injected store; the `webapp` example publishes the
+  guestbook again instead of serving a session-scoped tag.
+
 ## 0.6.0 - 2026-09-09
 
 **API v2.** A breaking release: the seams become objects, the vocabulary

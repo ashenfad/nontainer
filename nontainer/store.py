@@ -64,6 +64,52 @@ _VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
 # notice it.
 _RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from")
 
+# The construction keywords a frozen open takes. Exactly
+# :meth:`Store.open`'s, minus ``autocommit``: a frozen provider commits
+# nothing, so the flag has nothing to switch. ``provider`` and
+# ``executor`` are absent for the reason they are absent from
+# ``Store.open`` — the store builds the provider, and an executor
+# instance is bound to one session, so a caller hands over the
+# ``executor_factory`` instead. ``tests/test_store.py`` asserts this
+# tuple and ``Store.open``'s signature stay in step.
+_FROZEN_SETTINGS = (
+    "python",
+    "mounts",
+    "commands",
+    "cache",
+    "max_observation",
+    "executor_factory",
+    "root",
+)
+
+# What ``Publication.open`` takes: the same, without ``root``. A
+# publication records the workspace root its files were published
+# under, so the root is a fact about the version rather than a choice
+# at the call, and reading the tree at another one finds it empty.
+_PUBLICATION_SETTINGS = tuple(n for n in _FROZEN_SETTINGS if n != "root")
+
+
+def _check_frozen_settings(
+    caller: str,
+    settings: Mapping[str, Any],
+    *,
+    accepts: "Sequence[str]" = _FROZEN_SETTINGS,
+) -> None:
+    """Refuse a keyword a frozen open does not take.
+
+    The entry points collect settings as ``**kwargs``, which accepts
+    anything; without this an ``autocommit=False`` would be forwarded to
+    a ``Workspace`` that takes the name and ignores the value, and a
+    typo would open a snapshot missing the very config it was passed.
+    """
+    for name in settings:
+        if name not in accepts:
+            raise TypeError(
+                f"{caller} got an unexpected keyword argument {name!r} — a "
+                f"frozen open takes {', '.join(accepts)}"
+            )
+
+
 # One lock per registry file per process. Two Store objects over the
 # same path are two handles on one file, so the lock cannot live on
 # either of them; the flock underneath covers other processes, and this
@@ -183,7 +229,7 @@ class Publication:
             )
         return found
 
-    def open(self, version: str | None = None) -> "Workspace":
+    def open(self, version: str | None = None, **settings: Any) -> "Workspace":
         """A frozen workspace over a published version (default: the
         current one).
 
@@ -192,14 +238,37 @@ class Publication:
         and a store handle of its own. ``ws.session`` names the
         publication's own branch, because that is where the state
         lives: a publication belongs to no session.
+
+        ``settings`` are :meth:`Store.open`'s construction keywords —
+        ``python``, ``mounts``, ``commands``, ``cache``,
+        ``max_observation``, ``executor_factory`` — applied to the
+        workspace this returns. A publication carries the tree and
+        nothing else, so an embedder that serves it supplies the
+        execution settings here: ``pub.open(python=PythonConfig(
+        host_objects={"db": db}))`` is how a published handler reaches
+        a live database. Host objects are the embedder's own live
+        objects, which is exactly why they are not in the commit.
+
+        ``root`` is not among them. A publication records the
+        workspace root its files were published under, and reading
+        them at another one finds an empty tree.
         """
+        if "root" in settings:
+            raise TypeError(
+                "Publication.open() takes no 'root': a publication records "
+                "the workspace root its files were published under, and "
+                "reading them at another one finds an empty tree"
+            )
+        _check_frozen_settings(
+            "Publication.open()", settings, accepts=_PUBLICATION_SETTINGS
+        )
         target = self.current_version if version is None else self.version(version)
         if target is None:
             raise WorkspaceError(
                 f"No such version of {self.name!r}: {version!r} — have "
                 f"{', '.join(v.version for v in self.versions)}"
             )
-        return self.store._open_publication(target)
+        return self.store._open_publication(target, **settings)
 
 
 class StoreTags:
@@ -285,7 +354,7 @@ class StoreTags:
         still reaches it — a branch, or another tag."""
         self._store._delete_store_tag(name)
 
-    def at(self, name: str) -> "Workspace":
+    def at(self, name: str, **settings: Any) -> "Workspace":
         """A frozen workspace over the tagged state.
 
         Reads see the tagged files, cache and cwd; nothing can be
@@ -295,8 +364,21 @@ class StoreTags:
         A store-scoped tag belongs to no session, so ``ws.session``
         names whichever live branch the read was anchored on rather
         than an origin: the tag is the identity here, not the session.
+
+        ``settings`` are :meth:`Store.open`'s construction keywords —
+        ``python``, ``mounts``, ``commands``, ``cache``,
+        ``max_observation``, ``executor_factory``, ``root`` — applied
+        to the workspace this returns. The store opens a tree, not a
+        session, so it has no settings to inherit; an embedder that
+        serves this snapshot supplies its own, and that is how a
+        handler reaches a live host object (``python=PythonConfig(
+        host_objects={"db": db})``). The commit holds files, never the
+        objects.
         """
-        return self._store._frozen_workspace(self._store._provider_at_store_tag(name))
+        _check_frozen_settings("StoreTags.at()", settings)
+        return self._store._frozen_workspace(
+            self._store._provider_at_store_tag(name), **settings
+        )
 
 
 class Store:
@@ -574,7 +656,9 @@ class Store:
         finally:
             self._close_backend(backend)
 
-    def resolve(self, ref: "str | Ref", *, root: str | None = None) -> "Workspace":
+    def resolve(
+        self, ref: "str | Ref", *, root: str | None = None, **settings: Any
+    ) -> "Workspace":
         """A frozen workspace at the exact commit a ref names.
 
         ``ref`` is ``session@commit`` (see :class:`Ref`). Reads see
@@ -590,8 +674,16 @@ class Store:
 
         The session must exist: resolving a ref into a session the
         store has never held raises rather than creating the branch.
+
+        ``settings`` are :meth:`open`'s remaining construction keywords
+        — ``python``, ``mounts``, ``commands``, ``cache``,
+        ``max_observation``, ``executor_factory`` — applied to the
+        workspace this returns. A commit holds files, never the live
+        objects a handler calls, so an embedder that runs code against
+        a resolved state supplies them here.
         """
         self._require_own_layout("resolve")
+        _check_frozen_settings("Store.resolve()", settings)
         parsed = Ref.parse(ref)
         if self._backend != "kvgit":
             raise NotSupportedError(
@@ -611,7 +703,9 @@ class Store:
                 f"(resolving {str(parsed)!r})"
             )
         return self._frozen_workspace(
-            self._provider_at_commit(parsed.session, parsed.commit), root=root
+            self._provider_at_commit(parsed.session, parsed.commit),
+            root=root,
+            **settings,
         )
 
     # ------------------------------------------------------------------
@@ -965,11 +1059,26 @@ class Store:
         raise ValueError(f"Unknown backend: {self._backend!r}")
 
     def _frozen_workspace(
-        self, provider: WorkspaceProvider, *, root: str | None = None
+        self,
+        provider: WorkspaceProvider,
+        *,
+        root: str | None = None,
+        **settings: Any,
     ) -> "Workspace":
+        """A frozen workspace over ``provider``, built with the
+        embedder's execution settings.
+
+        ``settings`` are the construction keywords the public frozen
+        opens forward (see ``_FROZEN_SETTINGS``), already checked by
+        the entry point the caller used. ``root`` is spelled as a named
+        parameter so a caller can pass it either way and Python binds
+        it here once — there is no second value to conflict with.
+        """
         from .workspace import Workspace
 
-        ws = Workspace(provider) if root is None else Workspace(provider, root=root)
+        if root is not None:
+            settings["root"] = root
+        ws = Workspace(provider, **settings)
         ws._store = self
         return ws
 
@@ -1097,7 +1206,7 @@ class Store:
         current = record.get("current") or (versions[-1].version if versions else "")
         return Publication(name=name, versions=versions, current=current, store=self)
 
-    def _open_publication(self, version: Version) -> "Workspace":
+    def _open_publication(self, version: Version, **settings: Any) -> "Workspace":
         """The frozen workspace behind :meth:`Publication.open`.
 
         The registry is re-read here, not trusted from the
@@ -1123,6 +1232,7 @@ class Store:
         return self._frozen_workspace(
             self._provider_at_commit(ref.session, ref.commit),
             root=row.get("root"),
+            **settings,
         )
 
     def _write_publication(

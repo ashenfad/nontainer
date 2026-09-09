@@ -510,3 +510,55 @@ def test_the_router_serves_a_publication(tmp_path):
     assert client.get(f"/apps/{token}/notes/transcript.txt").status_code == 404
     for snap in snapshots.values():
         snap.close()
+
+
+GUESTBOOK = """
+def get(req):
+    return {"entries": db.entries()}
+
+def post(req):
+    db.add(req.require("name"))
+    return {"ok": True}
+"""
+
+
+def test_a_published_app_reaches_the_embedders_host_objects(tmp_path):
+    """The webapp shape: mutable state lives in an external store the
+    embedder injects, so the published tree can be frozen. The commit
+    holds the app; `pub.open(python=...)` supplies the db."""
+    from nontainer import Store
+
+    class Db:
+        def __init__(self):
+            self._names = []
+
+        def entries(self):
+            return list(self._names)
+
+        def add(self, name):
+            self._names.append(name)
+
+    store = Store(tmp_path)
+    ws = store.open("author")
+    enable_apps(ws)
+    ws.files.write("app/api/guestbook.py", GUESTBOOK)
+    ws.commit()
+    pub = store.publish(ws, "guestbook")
+    ws.close()
+
+    db = Db()
+    snapshot = pub.open(python=PythonConfig(host_objects={"db": db}))
+    token = mint_token()
+    app = Starlette()
+    app.mount("/apps", build_router(lambda t: snapshot if t == token else None))
+    client = TestClient(app)
+
+    assert client.get(f"/apps/{token}/api/guestbook").json() == {"entries": []}
+    assert client.post(
+        f"/apps/{token}/api/guestbook", content=json.dumps({"name": "ada"})
+    ).json() == {"ok": True}
+    assert client.get(f"/apps/{token}/api/guestbook").json() == {"entries": ["ada"]}
+    # the mutation landed in the embedder's store, never in the VFS
+    assert db.entries() == ["ada"]
+    assert snapshot.frozen
+    snapshot.close()
