@@ -1135,7 +1135,7 @@ obvious `lambda p: ws.files.fs.read(p)` raises `FileNotFoundError` and breaks
 the envelope's never-raises guarantee mid-stream:
 
 ```python
-turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, surface_id=sid)
+turn_to_a2ui(prose, artifacts, ws.files.read_artifact, file_url, surface_id=sid)
 ```
 
 Bytes, not a parsed payload: every consumer here parses for itself
@@ -1153,8 +1153,8 @@ both produce the same binding, the same file, and the same
 ### agno sessions (`nontainer.adapters.agno_db`, `[agno]` extra)
 
 The agent's conversation stored in the workspace branch, so one commit
-holds the turn's files, `cache`, cwd **and** memory — `ws.checkout()`
-rewinds all four, `fork_session()` branches all four.
+holds the turn's files, `cache`, cwd **and** memory — `ws.checkout(commit)`
+restores all four, `fork_session()` branches all four.
 
 ```python
 from nontainer.adapters.agno_db import KvgitSessionDb, fork_session
@@ -1375,7 +1375,7 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   script HOSTS still belong in script_hosts, which also
            #   drives ws-curl's message and the agent-facing allowlist
            #   sentence.
-           static_assets={})  # {url_prefix: host_dir} — fixed files
+           static_assets={},  # {url_prefix: host_dir} — fixed files
            #   served WITH the app but absent from the workspace: a
            #   vendored component library, fonts, a charting bundle.
            #   {"vendor": "/srv/assets"} serves /srv/assets/mui.js at
@@ -1388,6 +1388,13 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   Same-origin, so script_hosts needs no entry. Assets skip
            #   max_response_bytes and win over a workspace file at the
            #   same path (noted in api.log). See apps.md.
+           origin="http://localhost")  # the app's canonical base URL.
+           #   enable_apps exports it as $APP_ORIGIN — in the termish
+           #   shell and in a dud guest's real bash — which is how the
+           #   agent spells a request: `ws-curl $APP_ORIGIN/api/scores`.
+           #   Fictional: no listener exists, dispatch is by path, so a
+           #   port here is decorative. Declared last so the positional
+           #   construction order stays as it was.
 
 AppRuntime.dispatch(request: Request) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", ...) -> TestAppResult
@@ -1432,7 +1439,9 @@ handlers discard their staged writes when the provider was clean at
 dispatch. Logs: `/workspace/app/logs/api.log`.
 
 `test_app` actions: `{"click": sel}` · `{"type": [sel, text]}` ·
+`{"select": [sel, value]}` (option value, then visible label) ·
 `{"read": sel}` · `{"eval": js}` · `{"assert": js}` (retries ~2s) ·
+`{"goto": "about.html"}` (a page in the app, relative) ·
 `{"screenshot": true}` (→ `/workspace/app/screenshots/`) · `{"wait": ms}`.
 Viewports: `"desktop"`/`"tablet"`/`"mobile"` or `{width, height}`.
 

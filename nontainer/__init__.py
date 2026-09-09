@@ -24,7 +24,7 @@ Public surface:
 Adapters (optional extras):
 
     nontainer.adapters.agno  -- WorkspaceTools (agno Toolkit)
-    python -m nontainer.mcp  -- MCP server (stdio)
+    python -m nontainer.adapters.mcp  -- MCP server (stdio)
 """
 
 from .artifacts import ArtifactPath, artifact_kind

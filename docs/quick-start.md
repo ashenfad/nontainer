@@ -214,8 +214,8 @@ child = fork_session(ws, "what-if")            # files + chat, O(1)
 ```
 
 One commit per turn then holds files, `cache`, cwd and the run agno
-just persisted; `ws.checkout()` rewinds all four and `fork_session()`
-branches all four. Drive the fork with the same three objects built
+just persisted; `ws.checkout(commit)` restores all four and
+`fork_session()` branches all four. Drive the fork with the same three objects built
 over `child`. When agno's cross-session features matter — its
 past-sessions tool, AgentOS, its own `fork_session` — use
 `KvgitStoreDb` over the whole store instead of a db per workspace.

@@ -69,7 +69,8 @@ cache['n_rows'] = len(rows)                      # persists across the session
 print(rows)
 """)
 
-r.commit                 # commit id this call produced; ws.checkout(it) undoes it
+r.commit                 # this call's commit; ws.checkout(it) restores that state
+                         # (the state BEFORE it is the commit before)
 ws.files.write("notes.md", "# findings\n")   # host-side write, committed
 fork = ws.fork("what-if")    # O(1) branch; the original is untouched
 ws.merge("what-if")          # and bring its work back
@@ -143,7 +144,7 @@ read — the shape the a2ui envelope wants, so wiring a surface is one
 argument rather than a hand-rolled wrapper:
 
 ```python
-turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, surface_id=sid)
+turn_to_a2ui(prose, artifacts, ws.files.read_artifact, file_url, surface_id=sid)
 ```
 
 This happens in `run_python` itself, so it is the same on every

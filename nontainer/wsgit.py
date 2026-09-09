@@ -115,7 +115,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     nothing is staged); no -a, no pathspec. What you
                     left out stays in the working tree, uncommitted
   reset             abandon the composition (mixed-only)
-  status            staged vs unstaged (git-short XY columns)
+  status [--porcelain]
+                    staged vs unstaged (git-short XY columns; porcelain
+                    is the default, so the flag changes nothing)
   diff [<session>] [--cached] [--check] [paths...]
                     unified diff against your last commit; --cached for
                     the staged set; a session name diffs against that

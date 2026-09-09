@@ -129,8 +129,8 @@ serialized per session, by design (handlers are ms-scale).
 
 Consumers:
 
-1. **`ws-curl` terminal builtin** (ships with `[apps]`, injected when the
-   workspace has an `/workspace/app` dir or via config): `ws-curl [-X POST] [-d body]
+1. **`ws-curl` terminal builtin** (ships with `[apps]`; `enable_apps(ws,
+   config)` registers it, whether or not an app tree exists yet): `ws-curl [-X POST] [-d body]
    $APP_ORIGIN/api/scores?limit=3` → dispatch → response rendered to the pipeline.
    The agent's fast inner loop; no browser, no server.
 2. **`test_app`** (headless verify): Playwright intercepts ALL requests
