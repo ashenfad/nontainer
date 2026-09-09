@@ -114,6 +114,28 @@ def test_terminal_description_includes_apps_contract():
     ws.close()
 
 
+def test_shared_backend_code_lives_under_app():
+    """A publication carries app/ and nothing else, so the advice the
+    agent gets about where shared handler code goes has to point
+    there. helpers/ stays the answer where there is no app to
+    publish."""
+    from nontainer.adapters.render import apps_notes, python_description
+
+    notes = apps_notes(root="/workspace")
+    assert "/workspace/app/api/_data.py" in notes
+    assert "from app.api._data import load" in notes
+    # the claim the _-prefixed line already contradicted
+    assert "imports between" not in notes
+
+    ws = make_ws()
+    with_apps = python_description(ws, apps=True)
+    assert "from app.api._mymod import fn" in with_apps
+    plain = python_description(ws)
+    assert "app/api/" not in plain
+    assert "from helpers import mymod" in plain
+    ws.close()
+
+
 def test_apps_notes_derive_from_config():
     """The script-host sentence states what the walls actually enforce,
     and apps_primer (embedder guidance) lands at the end — the agent is

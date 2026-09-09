@@ -128,10 +128,27 @@ variables do NOT persist between calls. What does persist:
   (but to READ or SEARCH a file, use the terminal's grep/sed — not an
   open().readlines() loop here; and to CHANGE one, use file_edit, not
   string surgery, which will silently hit the wrong occurrence)
+__SHARED_CODE__"""
+
+# Where reusable code goes, which depends on whether there is an app.
+# With no app, helpers/ is the home for it. With one, code a handler
+# imports has to sit under app/, because app/ is what a publication
+# carries: a module in helpers/ works in preview and is missing from
+# the served app.
+_SHARED_CODE_HELPERS = """\
 - helpers/: put reusable code in .py files there and import it QUALIFIED
   from the workspace root — `from helpers import mymod`, never a bare
-  `import mymod` (imports resolve from '__WS_ROOT__'; works in app
-  handlers too)"""
+  `import mymod` (imports resolve from '__WS_ROOT__')"""
+
+_SHARED_CODE_APP = """\
+- reusable code: .py files in helpers/, imported QUALIFIED from the
+  workspace root — `from helpers import mymod`, never a bare
+  `import mymod` (imports resolve from '__WS_ROOT__'). Code an APP
+  HANDLER imports goes under app/ instead: put it in
+  __WS_ROOT__/app/api/_mymod.py and write
+  `from app.api._mymod import fn`. Publishing an app publishes app/
+  and nothing else, so a handler importing helpers/ works while you
+  preview it and breaks once the app is served"""
 
 _CACHE_NOTE = """\
 - cache: a persistent dict for DATA (picklable values), e.g.
@@ -177,8 +194,17 @@ def terminal_description(
     return desc
 
 
-def python_description(ws: Workspace, *, primer: str | None = None) -> str:
-    desc = _PYTHON_TOOL_CORE.replace("__WS_ROOT__", ws.root)
+def python_description(
+    ws: Workspace, *, apps: Any = None, primer: str | None = None
+) -> str:
+    """``apps``: the ``AppsConfig`` when the apps loop is enabled
+    (``True`` accepted for the defaults; ``None``/``False`` = no apps).
+    It selects where the description tells the agent to keep reusable
+    code, which differs once a tree can be published."""
+    shared = _SHARED_CODE_APP if apps else _SHARED_CODE_HELPERS
+    desc = _PYTHON_TOOL_CORE.replace("__SHARED_CODE__", shared).replace(
+        "__WS_ROOT__", ws.root
+    )
     extras = _env_notes(ws)
     if extras:
         desc += "\n" + extras
@@ -249,11 +275,14 @@ never guess a global (`preactHooks`, `window.MUI`) that a bundle might
 expose — a guessed name fails at runtime with nothing in the console
 naming the cause.
 __FRONTEND_NOTES__
-Shared backend code: put modules in __WS__/helpers (e.g.
-__WS__/helpers/data.py, then `from helpers import data` in any handler
-— imports resolve from the workspace root, so a bare `import data`
-will NOT find it) —
-imports between __WS__/app/api files do NOT work.
+Shared backend code: put modules beside the handlers as
+__WS__/app/api/_data.py and import them QUALIFIED from the workspace
+root — `from app.api._data import load` in any handler (a bare
+`import _data` will NOT find it). Under app/, because publishing an
+app publishes app/ and nothing else: a module in __WS__/helpers works
+while you preview and is missing once the app is served. _-prefixed
+files are never routed and never served as static, so nobody can fetch
+the source.
 __SCRIPT_HOSTS__
 Images, fetches, styles, and fonts may use any https host (map tiles
 work).

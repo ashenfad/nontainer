@@ -30,10 +30,21 @@ HTM+Preact path only).
 /workspace/app/index.html          ← entry; served at /
 /workspace/app/*.js, *.css, ...    ← static assets, served as-is
 /workspace/app/api/scores.py       ← handlers: routes /api/scores
-/workspace/app/api/_lib.py         ← _-prefixed: importable, never routable
+/workspace/app/api/_lib.py         ← _-prefixed: shared backend code —
+                                     importable, never routable
 /workspace/app/logs/api.log        ← one line per request, + tracebacks
                                      and handler print() output
 ```
+
+Shared backend code lives under `app/` as well: a module at
+`/workspace/app/api/_data.py` imports as `from app.api._data import
+load` from any handler, since imports resolve from the workspace root
+and a bare `import _data` finds nothing. It goes there rather than in
+`/workspace/helpers` because `app/` is what a publication carries — a
+module outside it works while the agent previews the app and is
+missing once the app is served. A `_`-prefixed file is never routed as
+an endpoint and never served as static, so the source is not
+fetchable.
 
 ## Handler contract
 
@@ -660,7 +671,9 @@ Two rules make that snapshot worth serving:
   frozen workspace can read the whole tree, and an export hands over
   the whole tree, so "the whole tree" had better be the app. If your
   handlers read data outside `app/`, name it: `paths=("app/",
-  "data/seed.csv")`.
+  "data/seed.csv")`. Backend modules the handlers import are the same
+  rule read the other way: they belong under `app/api/` as
+  `_`-prefixed files, where the publication carries them.
 - **The cache does not travel.** A publication carries file blobs and
   the filesystem rows describing them; a `cache` entry is neither, so
   a frozen open starts with an empty cache however full the session's

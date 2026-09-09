@@ -227,7 +227,11 @@ def build_server(
 
         @server.tool(
             name="run_python",
-            description=python_description(workspace, primer=python_primer)
+            description=python_description(
+                workspace,
+                apps=apps.config if apps is not None else None,
+                primer=python_primer,
+            )
             + resource_note,
         )
         def run_python(code: str) -> str:
