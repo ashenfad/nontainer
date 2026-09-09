@@ -127,8 +127,8 @@ class KvgitSessionDb(JsonDb):
     the next run sees the rewound conversation with no invalidation
     step. The rewind is a restore COMMIT — the branch head moves
     forward to hold the earlier conversation — so the turns it stepped
-    off are still in ``ws.log()`` and ``ws.rollback(1)`` puts them
-    back. ``cache_session=True`` would break that — agno would append
+    off are still in ``ws.log()`` and checking out the commit the rewind
+    stepped off puts them back. ``cache_session=True`` would break that — agno would append
     to the stale in-memory run list and write the rewound turns back —
     so an upsert whose prior runs are not exactly the branch's
     ``run_ids`` is refused and writes nothing.

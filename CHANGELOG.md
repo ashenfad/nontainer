@@ -415,6 +415,14 @@ is the migration.
   object you reach through is the scope).
 - `nontainer.delete_workspace(...)`: use `Store.delete(sessions,
   min_age=)`.
+- **`Workspace.rollback(steps)`.** It counted positions in a log that
+  `checkout` appends to, so `rollback(1)` twice was not `rollback(2)`
+  and the count meant something different after every restore.
+  Compensation is by identity: `ws.checkout(commit_id)` with an id from
+  `ws.log()`. The undo of a checkout is the commit it stepped off,
+  which is still one entry back in the log. The `{"tool": "init"}`
+  floor went with it — a checkout is given an id the caller has seen,
+  not a distance to travel.
 - The staging suspension machinery: `provider.stage_suspended /
   commit_index / discard_staged / stage / unstage / status`,
   `StageResult`, and the staging blob's union merge. `caps.index` now

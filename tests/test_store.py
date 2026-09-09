@@ -120,7 +120,7 @@ def test_delete_is_idempotent_and_plural(tmp_path):
     st.delete("a", min_age=0)  # deleting nothing is not an error
 
 
-def test_a_rollback_leaves_nothing_to_sweep(tmp_path):
+def test_going_back_leaves_nothing_to_sweep(tmp_path):
     """A session's history is append-only: going back is a new commit,
     so the turns it stepped off are still reachable and clean() has
     nothing to collect."""
@@ -131,7 +131,7 @@ def test_a_rollback_leaves_nothing_to_sweep(tmp_path):
         ws.terminal("echo two > f.txt")
         ws.terminal("echo three > f.txt")
         three = ws.head
-        ws.rollback(2)
+        ws.checkout(one)
         assert ws.terminal("cat f.txt").stdout.strip() == "one"
         assert {one, three} <= {e.id for e in ws.log()}
 

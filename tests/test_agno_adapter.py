@@ -144,8 +144,8 @@ def test_turn_commit_mode():
     tk.end_turn()  # idle turn → no empty commit
     assert len(list(ws.log())) == before + 1
 
-    # rollback rewinds the WHOLE turn
-    ws.rollback(1)
+    # checking out the commit before it rewinds the WHOLE turn
+    ws.checkout(list(ws.log())[1].id)
     assert not ws.files.fs.exists("a.py") and not ws.files.fs.exists("c.txt")
     ws.close()
 

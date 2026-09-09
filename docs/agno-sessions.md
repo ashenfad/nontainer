@@ -137,8 +137,8 @@ record). That write carries no run, so it does not commit; it is
 staged and rides into the turn's commit.
 
 One commit per turn is a preference, not a requirement. It keeps
-the "a commit is a turn" invariant that `rollback(steps=)` and
-`history()` lean on, and it costs nothing when the db is the
+the "a commit is a turn" invariant that `ws.checkout(commit)` and
+`ws.log()` lean on, and it costs nothing when the db is the
 trigger. If that proves awkward in practice, the acceptable fallback
 is the post hook committing files and the db committing the
 conversation as a second commit, with the first stamped
@@ -157,10 +157,10 @@ agno reads the session from the db at the start of every run
 (`Agent.cache_session` defaults to `False`), so the next run sees
 the rewound conversation with no invalidation step.
 
-The rewind is a *restore commit*, not a rollback of the branch: the
+The rewind is a *restore commit*, not a rewind of the branch: the
 checkout writes the target's state — files, `cache`, cwd and the run
 keys together — and commits it, so the turns it stepped off are still
-in `ws.log()` and `ws.rollback(1)` right afterwards puts the
+in `ws.log()` and checking out the commit it stepped off puts the
 conversation back. What the reader sees is rewound; what the store
 holds is everything that ever happened.
 

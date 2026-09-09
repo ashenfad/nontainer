@@ -403,7 +403,6 @@ ws.checkout(ref) -> str                  # restore a commit of THIS session
                                          # (appends; returns the new commit)
 ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
                                          # (a named directory is mirrored)
-ws.rollback(steps: int = 1) -> str       # the same, counted back over log()
 ws.log(limit: int | None = None) -> Iterable[CommitInfo]
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
@@ -471,12 +470,10 @@ The agent's git rewinds with the tree — its head and graph live in a
 key the checkout restores like any other — so after a checkout to a
 commit made when `ws.index.head` was X, it is X again.
 
-`rollback(steps)` is the relative spelling, since a commit id has no
-"one before this". It counts back over `ws.log()` *as it stands now*
-and appends the same way, so `rollback(1)` straight after a checkout is
-the redo — the commit before the restore is the one the checkout
-stepped off. It stops at the `{"tool": "init"}` lifecycle commit rather
-than crossing into a provider's pre-workspace seed.
+Going back is by identity, not by position: name the commit from
+`ws.log()`. That also makes the redo obvious — a checkout appends, so
+the commit it stepped off is still one entry back in the log, and
+checking it out returns you to it.
 
 **`ws.fork(name, *, at=None, inherit="full", paths=None)`** branches
 this session into a new one and opens it.
@@ -667,7 +664,7 @@ store — damage, not an ordinary state).
 **Frozen workspaces.** `ws.tags.at(name)` returns a `Workspace` over the
 tagged state that can be read but never written: `ws.frozen` is True,
 `autocommit` is forced off, `file_write` / `file_edit` / `put` /
-`commit` / `fork` / `tag` / `rollback` raise `NotSupportedError`,
+`commit` / `fork` / `tag` / `checkout` raise `NotSupportedError`,
 and the executor holds a read-only filesystem **and a read-only
 cache**, so a shell redirect, `open(..., "w")` or `cache["x"] = 1` from
 agent code fails where it happens with a message naming the tag

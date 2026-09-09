@@ -276,7 +276,7 @@ def test_frozen_workspace_refuses_history_writes(snapshot):
         lambda: snapshot.fork("child"),
         lambda: snapshot.tags.add("v2"),
         lambda: snapshot.tags.delete("v1"),
-        lambda: snapshot.rollback(1),
+        lambda: snapshot.checkout(snapshot.head),
     ):
         with pytest.raises(NotSupportedError, match="frozen"):
             call()

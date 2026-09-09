@@ -21,7 +21,7 @@ Nontainer keeps three concerns separate:
 
 | | Responsibility |
 |---|---|
-| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap commits, forks, rollback, and audit; other providers declare narrower capabilities rather than pretending equivalence. |
+| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap commits, forks, checkout, and audit; other providers declare narrower capabilities rather than pretending equivalence. |
 | **`Executor`** | Where terminal and Python code run and how they reach workspace state: locally through [sandtrap](https://github.com/ashenfad/sandtrap) and [monkeyfs](https://github.com/ashenfad/monkeyfs), or on a real machine through [dud](https://github.com/ashenfad/dud). |
 | **Adapters** | How the two tools enter an existing agent loop: the core Python API, an [agno](https://github.com/agno-agi/agno) toolkit, or an MCP server. |
 
@@ -73,7 +73,7 @@ r.commit                 # commit id this call produced; ws.checkout(it) undoes 
 ws.files.write("notes.md", "# findings\n")   # host-side write, committed
 fork = ws.fork("what-if")    # O(1) branch; the original is untouched
 ws.merge("what-if")          # and bring its work back
-ws.rollback(steps=1)         # or time-travel by steps
+ws.checkout(r.commit)        # or time-travel to any commit in ws.log()
 ws.tags.add("v1")            # name this state; it outlives the call that made it
 snap = ws.tags.at("v1")      # a frozen workspace at that name: reads, never writes
 ```

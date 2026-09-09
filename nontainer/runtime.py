@@ -501,7 +501,7 @@ class Runtime:
     def mark_stale(self) -> None:
         """Flag the executor's view as out of date. Every path where
         provider state moves behind its back calls this — checkout /
-        rollback / discard, the host-side write helpers, direct
+        discard, the host-side write helpers, direct
         ``ws.files.fs`` writes."""
         self._executor_stale = True
 

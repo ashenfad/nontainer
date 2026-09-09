@@ -720,7 +720,7 @@ class Executor(Protocol):
     the provider directly. The workspace calls ``diff`` after every
     mutating exec (absorbing any harvest into the provider before the
     commit flow) and ``sync`` whenever it changes provider state
-    behind the executor's back (checkout/rollback/discard, host-side
+    behind the executor's back (checkout/discard, host-side
     writes). Both are free no-ops for ``LocalExecutor``.
     """
 
@@ -816,7 +816,7 @@ class Executor(Protocol):
         """Refresh the executor's view of workspace state from the
         provider. Every path where provider state moves without the
         executor seeing it marks the workspace stale — checkout /
-        rollback / discard, the host-side write helpers
+        discard, the host-side write helpers
         (``files.write`` / ``files.edit`` / ``files.put``), and direct
         ``ws.files.fs`` writes — and the workspace calls this once, lazily,
         before the next execution. Lazy because a remote
