@@ -66,8 +66,9 @@ _VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
 # Keys publish() writes into the commit itself. A caller's ``info`` may
 # not spell them: the commit is immutable and is where provenance is
 # read from, so a false ``published_from`` would outlive every chance to
-# notice it.
-_RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from")
+# notice it — and ``published_from`` and ``paths`` together are what a
+# retry compares to recognise its own interrupted attempt.
+_RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from", "paths")
 
 # The construction keywords a frozen open takes. Exactly
 # :meth:`Store.open`'s, minus ``autocommit``: a frozen provider commits
@@ -818,6 +819,15 @@ class Store:
         moving the pointer back with :meth:`set_current` first — or
         publishing with ``current=False``, which never takes it.
 
+        The record lands last, so a process that dies mid-publish
+        leaves a reserved branch, and usually its tag, that no record
+        names. Publishing the same thing again adopts it: a recordless
+        branch whose head names the same source commit and the same
+        ``paths`` was written by that attempt and no other, so its
+        commit becomes this publish's and the record is written over
+        it. A recordless branch of some other attempt is refused by
+        name, and :meth:`unpublish` clears it.
+
         Args:
             ws: The session to publish from. It must be one this store
                 opened, and it must be clean — publish names a commit,
@@ -848,8 +858,8 @@ class Store:
                 lineage takes the pointer whatever this says, because a
                 publication must point somewhere.
             info: Extra keys merged into the commit's info, beside the
-                ``tool``/``name``/``version``/``published_from`` this
-                writes itself.
+                ``tool``/``name``/``version``/``published_from``/``paths``
+                this writes itself.
 
         Returns:
             The :class:`Publication`, with the new version current.
@@ -868,8 +878,9 @@ class Store:
             WorkspaceError: The store is not in a state to publish, and
                 the same call lands once it is — ``ws`` carries staged
                 changes, ``ws`` belongs to another store, an earlier
-                attempt left a tag or a branch of this version's name
-                behind, or the derived commit did not land.
+                attempt of something else left a tag or a branch of
+                this version's name behind, or the derived commit did
+                not land.
             NotSupportedError: This store cannot publish at all: a
                 backend without branches and tags, a
                 ``provider_factory`` layout the store does not own, or
@@ -920,27 +931,49 @@ class Store:
                 )
             tag = f"{name}/{chosen}"
             branch = f"{_PUB_BRANCH_PREFIX}{name}/{chosen}"
-            if self._scoped_store_tag(tag) in self._raw_tags():
-                raise WorkspaceError(
-                    f"Tag already exists: {tag!r} in scope 'store' — a "
-                    "publication cannot reuse it."
-                )
-            if branch in set(self._branches()):
-                raise WorkspaceError(
-                    f"Publication branch already exists: {branch!r} — an "
-                    "earlier publish left it behind. Remove it with "
-                    f"store.unpublish({name!r}, {chosen!r})."
-                )
             published_from = Ref(session=ws.session, commit=head)
             commit_info: dict[str, Any] = {
                 "tool": "publish",
                 "name": name,
                 "version": chosen,
                 "published_from": str(published_from),
+                "paths": sorted(paths),
                 **(info or {}),
             }
-            commit = self._write_publication(
-                ws, head, branch=branch, paths=paths, tag=tag, commit_info=commit_info
+            # No record holds this version (the check above says so), so
+            # a branch of its name is an attempt that died before its
+            # record landed. One that matches this call is that same
+            # attempt and its commit is taken as this publish's; one
+            # that does not is somebody else's leftover and is refused.
+            stranded = branch in set(self._branches())
+            resumed = (
+                self._resume_publication(branch, tag, commit_info) if stranded else None
+            )
+            if resumed is None and stranded:
+                raise WorkspaceError(
+                    f"Publication branch already exists: {branch!r}, no "
+                    "record names it, and its commit is not the one this "
+                    "call would write — an earlier publish of something "
+                    "else left it behind. Clear it with "
+                    f"store.unpublish({name!r}, {chosen!r}), then publish "
+                    "again."
+                )
+            if resumed is None and self._scoped_store_tag(tag) in self._raw_tags():
+                raise WorkspaceError(
+                    f"Tag already exists: {tag!r} in scope 'store' — a "
+                    "publication cannot reuse it."
+                )
+            commit = (
+                resumed
+                if resumed is not None
+                else self._write_publication(
+                    ws,
+                    head,
+                    branch=branch,
+                    paths=paths,
+                    tag=tag,
+                    commit_info=commit_info,
+                )
             )
             versions[chosen] = {
                 "tag": tag,
@@ -1011,6 +1044,11 @@ class Store:
         of a publication may be removed however it is pointed at, and
         takes the publication's record with it.
 
+        A version with no record but a branch or a tag of its name —
+        what a publish that died before writing its record leaves
+        behind — is cleared here too: the branch and the tag go, the
+        registry is untouched, and the name is free to publish again.
+
         ``min_age`` is the orphan sweep's grace period in seconds, as
         for :meth:`delete`.
         """
@@ -1019,10 +1057,19 @@ class Store:
 
         def drop(registry: dict[str, Any]) -> None:
             record = registry.get(name)
-            if record is None:
-                raise ValueError(f"No such publication: {name!r}")
-            versions = dict(record.get("versions") or {})
+            versions = dict((record or {}).get("versions") or {})
             if version not in versions:
+                # No record, but a branch or a tag of that name: an
+                # attempt that died before its record landed. Removing
+                # it is the whole job, and it is what frees the name.
+                if self._remove_version_state(
+                    f"{name}/{version}",
+                    f"{_PUB_BRANCH_PREFIX}{name}/{version}",
+                    min_age=min_age,
+                ):
+                    return
+                if record is None:
+                    raise ValueError(f"No such publication: {name!r}")
                 raise ValueError(
                     f"No such version of {name!r}: {version!r} — have "
                     f"{', '.join(sorted(versions))}"
@@ -1034,16 +1081,11 @@ class Store:
                     "store.set_current(name, version) first, or remove the "
                     "others."
                 )
-            from .providers.kvgit import KvgitProvider
-
-            tag = versions[version].get("tag") or f"{name}/{version}"
-            if self._raw_tag_info(tag) is not None:
-                # The tag first: removing it is what makes the commit
-                # collectable, so the branch deletion's own sweep
-                # finishes the job in one pass.
-                self._delete_store_tag(tag)
-            branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
-            KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
+            self._remove_version_state(
+                versions[version].get("tag") or f"{name}/{version}",
+                f"{_PUB_BRANCH_PREFIX}{name}/{version}",
+                min_age=min_age,
+            )
             versions.pop(version)
             if not versions:
                 registry.pop(name)
@@ -1360,6 +1402,68 @@ class Store:
             root=row.get("root"),
             **settings,
         )
+
+    def _remove_version_state(self, tag: str, branch: str, *, min_age: float) -> bool:
+        """Take out a published version's tag and its branch.
+
+        True when either was there, which is what tells a caller
+        holding no registry record that something was cleared. The tag
+        goes first: removing it is what makes the commit collectable,
+        so the branch deletion's own sweep finishes the job in one
+        pass.
+        """
+        from .providers.kvgit import KvgitProvider
+
+        found = self._raw_tag_info(tag) is not None
+        if found:
+            self._delete_store_tag(tag)
+        if branch in set(self._branches()):
+            found = True
+        KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
+        return found
+
+    def _resume_publication(
+        self, branch: str, tag: str, commit_info: Mapping[str, Any]
+    ) -> str | None:
+        """Finish a publish that died before its registry record.
+
+        The branch and the tag are written before the record, so a
+        crash between them leaves a reserved branch no record names.
+        The retry rebuilds the same commit info, and a branch whose
+        head carries the same ``published_from`` commit and the same
+        ``paths`` was written by that same attempt: its commit is
+        returned to be recorded as this publish's, and the tag is
+        minted if the crash came before it. ``None`` says the branch
+        holds some other attempt's commit, which this publish may not
+        adopt and may not overwrite.
+
+        The whole tree is not compared. What identifies the attempt is
+        what it was told to do — one source commit, one set of paths —
+        because publishing that twice writes the same files either way.
+        """
+        import kvgit
+
+        pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
+        try:
+            commit = pub.current_commit
+            found = pub.versioned.commit_info(commit) if commit else None
+        finally:
+            self._close_backend(getattr(pub.versioned, "store", None))
+        if commit is None or found is None:
+            return None
+        identity = ("tool", "name", "version", "published_from", "paths")
+        if any(found.get(key) != commit_info.get(key) for key in identity):
+            return None
+        existing = self._raw_tag_info(tag)
+        if existing is None:
+            provider = self._provider_at_commit(branch, commit)
+            try:
+                provider.tag(tag, at=commit, info=dict(commit_info), scope="store")
+            finally:
+                provider.close()
+        elif existing.id != commit:
+            return None
+        return commit
 
     def _write_publication(
         self,

@@ -173,8 +173,8 @@ version the caller named stands outside it. An embedder that wants
 every version numbered passes `version=` itself. An explicit name must
 be unused, because versions never move.
 
-`info` may not set `tool`, `name`, `version` or `published_from`: those
-are what publish writes into the commit, and the commit is where a
+`info` may not set `tool`, `name`, `version`, `published_from` or
+`paths`: those are what publish writes into the commit, and the commit is where a
 reader checks where a version came from. A clash raises `ValueError`
 naming the keys, rather than being silently overridden — a false
 provenance in an immutable commit outlives every chance to notice it.
@@ -227,6 +227,15 @@ One publish writes three things:
   embedder serving a publication keeps those in its own table keyed by
   name — see `docs/apps.md`.
 
+  The record is the last of the three to land, so a process that dies
+  mid-publish leaves a branch, and usually its tag, that no record
+  names. Publishing the same thing again adopts it: a recordless
+  branch whose head commit names the same source commit and the same
+  `paths` was written by that attempt and no other, so its commit
+  becomes this publish's and the record is written over it — one
+  version, one branch, no duplicate. A recordless branch of some other
+  attempt is refused by name, and `unpublish` clears it.
+
   Every mutation reads, decides and writes under one lock — a
   `flock` on `publications.lock` beside the registry for other
   processes, and a per-path `threading.Lock` for this one's threads —
@@ -261,7 +270,9 @@ current version is refused while others remain, so undoing a publish
 that went wrong means moving the pointer back with `set_current`
 first — or publishing with `current=False`, which never takes it. The
 last version of a publication may go however it is pointed at, and
-takes the publication's record with it.
+takes the publication's record with it. A version with no record but a
+branch or a tag of its name is cleared the same way, so an operator can
+free the name a publish that died mid-way left reserved.
 
 **Not yet:** `store.shared(name)` raises `NotImplementedError`; it is a
 later stage of the API plan.
