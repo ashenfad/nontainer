@@ -823,9 +823,14 @@ class Store:
                 trailing slash is optional. The default publishes the
                 app tree an ``[apps]`` handler serves.
             version: The version name. Defaults to ``v<N>``, one past
-                the highest ``v``-number this lineage holds. An explicit
-                name must be unused: versions are immutable, so a name
-                is never repointed.
+                the highest ``v``-number this lineage holds — only
+                names of that exact shape are counted, so a lineage
+                holding ``v1``, ``v2`` and ``release-1`` gets ``v3``.
+                The default is a series of its own; a version the
+                caller named stands outside it and never moves it. An
+                embedder that wants every version numbered passes
+                ``version=`` itself. An explicit name must be unused:
+                versions are immutable, so a name is never repointed.
             info: Extra keys merged into the commit's info, beside the
                 ``tool``/``name``/``version``/``published_from`` this
                 writes itself.
@@ -1669,8 +1674,10 @@ def _validate_version_name(version: str) -> str:
 def _next_version(versions: Mapping[str, Any]) -> str:
     """``v<N>``, one past the highest v-number this lineage holds.
 
-    Versions a caller named itself are skipped rather than parsed: the
-    default sequence is nontainer's, and a lineage may hold both.
+    Only names of that exact shape are counted, so ``v1, v2,
+    release-1`` yields ``v3``. Versions a caller named itself are
+    skipped rather than parsed: the default is a series of its own, and
+    a lineage may hold both kinds.
     """
     numbers = [
         int(m.group(1))

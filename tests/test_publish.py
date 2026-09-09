@@ -247,6 +247,21 @@ def test_an_explicit_version_must_be_unused(tmp_path):
     ws.close()
 
 
+def test_the_default_version_is_the_next_in_the_v_series(tmp_path):
+    """The default version name is a series of its own. A version the
+    caller named stands outside it and is never counted, so a lineage
+    holding v1, v2 and release-1 gets v3 next."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    store.publish(ws, "scoreboard")
+    store.publish(ws, "scoreboard", version="release-1")
+    pub = store.publish(ws, "scoreboard")
+    assert pub.current == "v3"
+    assert [v.version for v in pub.versions] == ["v1", "v2", "v3", "release-1"]
+    ws.close()
+
+
 def test_set_current_refuses_a_version_that_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)

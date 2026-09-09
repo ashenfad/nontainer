@@ -165,8 +165,12 @@ optional. Publishing paths that hold no files is refused rather than
 producing an empty version. `ws` must be one this store opened and must
 be clean — publish names a commit, so land staged changes with
 `ws.commit()` or drop them with `ws.discard()` first. `version` defaults
-to `v<N>`, one past the highest `v`-number the lineage holds; an
-explicit name must be unused, because versions never move.
+to `v<N>`, one past the highest `v`-number the lineage holds. Only
+names of that exact shape are counted, so a lineage holding `v1`, `v2`
+and `release-1` gets `v3`: the default is a series of its own, and a
+version the caller named stands outside it. An embedder that wants
+every version numbered passes `version=` itself. An explicit name must
+be unused, because versions never move.
 
 `info` may not set `tool`, `name`, `version` or `published_from`: those
 are what publish writes into the commit, and the commit is where a
