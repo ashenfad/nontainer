@@ -20,15 +20,16 @@ Two rules earn their place here rather than in the runner:
   lands the parent's uncommitted writes first, so the child's base is
   a state that existed and the merge base is not older than the
   parent's own edits.
-- **The helper commits the child's work before answering.** A fork
-  inherits the parent's ws-git blob, so the child's virtual head is the
-  PARENT's last agent commit and every framework commit the child makes
-  reads as uncommitted agent work — which ``merge`` and
-  ``checkout(ref, paths=)`` refuse, on both sides, by design. One
-  host-side ``child.index.commit(message)`` when the answer arrives
-  fixes that and is also what makes the delegate's result one agent
-  commit with a message on it. No model is involved; the message is the
-  answer's first line.
+- **The helper never commits for the delegate.** A delegate is the
+  author of its own commits, and the answer names what it landed: its
+  last ws-git commit if it made one, its branch head if it never
+  touched ws-git — autocommit put every write there, so that head IS
+  its result. A delegate that used ws-git and then wrote past its last
+  commit is the one case in between: what it committed is what it
+  submitted, the answer reports the rest as left out
+  (``Answer.uncommitted``), and ``merge`` refuses it so the caller can
+  take paths or ask again. Committing on its behalf would destroy that
+  signal and put a commit nobody wrote in its log.
 
 Delivery is pull: :meth:`Sessions.ask` returns a :class:`Job` and the
 answer is collected later with :meth:`Sessions.result`. How a parent
@@ -149,10 +150,6 @@ class Sessions:
         self._futures: dict[str, Future] = {}
         self._children: dict[str, Workspace] = {}
         self._base: dict[str, str | None] = {}
-        # Jobs whose answer has begun landing. Read and written only
-        # under _lock, beside the job's status, because "cancel this"
-        # and "land this" are the two halves of one transition.
-        self._landing: set[str] = set()
         self._closed = False
 
     def __repr__(self) -> str:
@@ -247,29 +244,24 @@ class Sessions:
     def cancel(self, name: str) -> Job:
         """Stop caring about job ``name``; returns the job.
 
-        A runner that is already working cannot be interrupted — it is
-        the embedder's loop, and nontainer has no handle on it — so
-        cancel means exactly this: the answer will be DISCARDED when it
-        arrives, and the child's branch is left as it is. Nothing is
-        committed for it and nothing is deleted; ``ws-git diff <name>``
-        still shows whatever it managed to do.
+                A runner that is already working cannot be interrupted — it is
+                the embedder's loop, and nontainer has no handle on it — so
+                cancel means exactly this: the answer will be DISCARDED when it
+                arrives, and the child's branch is left as it is. Nothing is
+                committed for it and nothing is deleted; ``ws-git diff <name>``
+                still shows whatever it managed to do.
 
-        **It succeeds only before the landing begins.** Cancelling and
-        landing an answer are ONE state transition, taken under one
-        lock: after a cancel succeeds nothing of ours can go onto the
-        child's branch, and once the helper has begun committing the
-        child's work the answer stands. A cancel that arrives in that
-        window returns the job WITHOUT ``status == "cancelled"`` —
-        promising a discard while the commit is already happening would
-        be a promise the branch could not keep. Read the returned status
-        rather than assuming: a job that has already answered comes back
-        unchanged too, since there is nothing left to discard.
+        Cancelling and recording an answer are one state transition, taken
+                under one lock, so a cancel either wins outright — the answer is
+                dropped — or finds a job that has already answered and returns
+                it unchanged. There is nothing to undo in the second case: the
+                helper writes nothing to the child's branch either way.
         """
         with self._lock:
             job = self._jobs.get(name)
             if job is None:
                 raise SessionsError(self._unknown(name))
-            if job.status != "running" or name in self._landing:
+            if job.status != "running":
                 return job
             job = replace(job, status="cancelled", finished=time.time())
             self._jobs[name] = job
@@ -413,14 +405,13 @@ class Sessions:
             return self._children[name].session
 
     def _land(self, name: str, task: str, answer: Answer) -> Answer:
-        """Commit the child's work, describe it, and record the answer.
+        """Describe what the delegate did and record the answer.
 
-        Opens by taking the cancel-or-land decision under one lock: a
-        job cancelled by then is discarded and nothing of ours touches
-        its branch, and a job that gets past it is marked as landing,
-        which is what stops a cancel arriving mid-commit from promising
-        a discard the branch cannot honor. Two separate reads of the
-        status would leave exactly that window open.
+        Nothing is committed here. The runner drove the child through a
+        handle of its own, so this one is re-read from the branch first
+        and then only reports: the commit the answer names, the paths
+        that changed, and whether the delegate left work its own merge
+        would refuse.
 
         The child handle is closed either way: its branch is what the
         parent merges from, and holding a second handle on it past the
@@ -430,20 +421,18 @@ class Sessions:
             child = self._children.pop(name)
             base = self._base.get(name)
             cancelled = self._jobs[name].status == "cancelled"
-            if not cancelled:
-                self._landing.add(name)
         try:
             if cancelled:
                 # Discarded, and the branch left exactly as the
-                # delegate left it: no commit of ours goes onto work
-                # nobody is going to read.
+                # delegate left it.
                 return answer
-            commit = self._commit_child(child, answer, task)
+            commit = self._landed(child)
             answer = replace(
                 answer,
                 ref=f"{child.session}@{commit}" if commit else None,
                 branch=child.session,
                 changed=self._changed(base, child),
+                uncommitted=self._uncommitted(child),
                 provenance=self._provenance(answer, child, name, base, commit),
             )
             self._record(name, answer)
@@ -454,47 +443,43 @@ class Sessions:
             except Exception:  # noqa: BLE001 - recording the answer wins
                 pass
 
-    def _commit_child(
-        self, child: "Workspace", answer: Answer, task: str
-    ) -> str | None:
-        """Land the delegate's work as one agent commit; returns the
-        commit the answer names.
+    def _landed(self, child: "Workspace") -> str | None:
+        """The commit the answer names: what the delegate LANDED.
 
-        The runner drove the child through a handle of its own, so this
-        one is re-read from the branch first. Then the fiction's
-        question: has the agent anything uncommitted? For a fork the
-        answer is yes for everything it wrote, because its virtual head
-        is the PARENT's last agent commit — which is exactly why merge
-        and take would refuse it without this.
+        Its last ws-git commit when it made one — a fork starts at no
+        commit of its own, so any head there is the delegate's own word
+        on what it did. Its branch head when it never touched ws-git,
+        because autocommit put every write there and the fiction reads
+        such a session at its store head, which is the honest answer
+        for it. Either way this is the same commit ``merge`` and
+        ``checkout(<child>, paths=)`` resolve the name to, so what the
+        answer cites and what the terminal brings back cannot disagree.
 
-        The commit is the delegate's WHOLE working set, index or no
-        index. A delegate that staged half of what it did was composing
-        a commit it never made, and honoring that composition here
-        would answer with the other half left as uncommitted agent work
-        — which merge refuses and a take from the answer's ref silently
-        omits, while the job reads as answered and names both. So an
-        open index is cleared first: with nothing staged, a commit takes
-        every modified path, deletions included, which is the ``commit
-        -a`` the answer promises. Clearing rather than widening the
-        index also keeps the pathspec out of it, so a narrowed child
-        cannot refuse to stage a path it holds but cannot see.
+        The runner used a handle of its own, so the branch is re-read
+        before any of it is asked.
         """
         refresh = getattr(child._provider, "refresh", None)
         if refresh is not None and child.caps.versioned:
             refresh()
         if not child.caps.index:
             return child.head
-        status = child.index.status()
-        if status.staged or status.unstaged:
-            try:
-                if status.staged and status.unstaged:
-                    child.index.discard()
-                child.index.commit(_first_line(answer.text, task))
-            except WorkspaceError:
-                # Another writer landed it between the status and here;
-                # its commit is as good as ours would have been.
-                pass
         return child.index.head or child.head
+
+    def _uncommitted(self, child: "Workspace") -> bool:
+        """Whether the delegate wrote past its own last ws-git commit.
+
+        Asked in the merge's own terms, from the parent's side, so the
+        answer cannot say one thing and ``ws-git merge <name>`` another:
+        it is the same check that refuses a source with work its agent
+        has not committed. False for a delegate that never used ws-git,
+        which has no commit of its own to differ from.
+        """
+        if not self._ws.caps.index:
+            return False
+        from .agentgit import AgentGit
+
+        with self._ws.lock:
+            return bool(AgentGit(self._ws).source_uncommitted(child.session))
 
     def _changed(self, base: str | None, child: "Workspace") -> dict:
         """The child's changed paths, grouped seed vs elsewhere.
@@ -550,12 +535,11 @@ class Sessions:
     def _record(self, name: str, answer: Answer) -> None:
         """Store the answer and close the job out.
 
-        The cancelled check is the invariant, not the decision: the
-        decision was taken when the landing was marked, and a job that
-        got there cannot be cancelled afterwards. It stands for the one
-        path that reaches here without that mark — a landing that failed
-        before it began — where a job the caller stopped caring about
-        must not un-cancel itself.
+        Cancellation wins: a job the caller stopped caring about does
+        not un-cancel because its runner finished a moment later. The
+        check and the write are one critical section, which is the
+        whole of the race — nothing is written to the child's branch,
+        so there is nothing else for a cancel to be too late for.
         """
         with self._lock:
             job = self._jobs[name]
@@ -568,6 +552,7 @@ class Sessions:
                 ref=answer.ref,
                 finished=time.time(),
                 changed=dict(answer.changed),
+                uncommitted=answer.uncommitted,
             )
 
 
@@ -639,6 +624,8 @@ def render_jobs(jobs: "list[Job]") -> str:
         else:
             paths = sum(len(v) for v in job.changed.values())
             line += f"  ({paths} path(s); sessions result {job.name})"
+            if job.uncommitted:
+                line += " [left work uncommitted]"
         if job.kept:
             line += " [kept]"
         lines.append(line)
@@ -665,11 +652,22 @@ def render_answer(answer: Answer) -> str:
         lines.append(f"changed, in what you sent it to do: {', '.join(seed)}")
     if elsewhere:
         lines.append(f"changed, elsewhere: {', '.join(elsewhere)}")
-    lines.append(
-        f"next, in the terminal: ws-git diff {name} (read it) | "
-        f"ws-git merge {name} (take all of it) | "
-        f"ws-git checkout {name} -- <paths> (take some)"
-    )
+    if answer.uncommitted:
+        # Say what will happen, not what would be nice: the delegate
+        # committed some of this and wrote past it, and a merge refuses
+        # a source in that state rather than bringing back a version it
+        # has moved on from.
+        lines.append(
+            f"{name} left work uncommitted, so what it committed is not "
+            f"everything it did; ws-git merge will refuse it — take paths "
+            f"with ws-git checkout {name} -- <paths>, or ask again."
+        )
+    else:
+        lines.append(
+            f"next, in the terminal: ws-git diff {name} (read it) | "
+            f"ws-git merge {name} (take all of it) | "
+            f"ws-git checkout {name} -- <paths> (take some)"
+        )
     return "\n".join(lines)
 
 
@@ -712,14 +710,6 @@ def run_action(
                 return render_answer(sessions.result(name))
             if action == "cancel":
                 job = sessions.cancel(name)
-                if job.status == "running":
-                    # Cancel arrived while the answer was landing, so
-                    # the answer stands: say that, rather than a
-                    # cancellation the branch will not honor.
-                    return (
-                        f"{name} is already landing its answer, so it stands; "
-                        f"`sessions result {name}` has it."
-                    )
                 if job.status != "cancelled":
                     return (
                         f"{name} had already finished ({job.status}); nothing to stop."
