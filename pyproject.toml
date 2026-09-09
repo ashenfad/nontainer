@@ -43,7 +43,13 @@ dependencies = [
     # did on 3.11+, including the expanduser leak that sent a "~" path
     # to the real home; plus realpath resolves strictly inside the
     # workspace instead of falling through to the host.
-    "monkeyfs>=0.1.9",
+    # 0.1.10: per-file metadata rows — a file's size and timestamps
+    # live in a row beside its blob (``VirtualFS.META_PREFIX``), written
+    # only when that blob is written or its metadata changes, instead of
+    # one JSON table every write rewrites. That is what lets a selective
+    # commit carry a file's metadata with its bytes, and lets a merge
+    # settle metadata key by key with the same policy as the content.
+    "monkeyfs>=0.1.10",
     # 0.3.0: process workers come from a forkserver broker instead of
     # forking the embedding process — the arrangement executor.py's
     # pooling and fork-hazard notes describe
