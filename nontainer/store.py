@@ -806,6 +806,12 @@ class Store:
         is self-contained: it reads alone, it exports alone, and it pins
         none of the session's history against the orphan sweep.
 
+        The live ``cache`` does not travel. What lands is file blobs
+        and the filesystem rows describing them, and a cache entry is
+        neither — a frozen open starts with an empty one. Data an app
+        needs precomputed belongs in a file under ``paths``: write it
+        out, commit it, publish it, and the handler reads it back.
+
         Three things come out of one call: a reserved branch
         ``@store/pub/<name>/<version>`` holding the derived commit (the
         anchor that lets the version be opened without borrowing a live

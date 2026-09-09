@@ -661,6 +661,13 @@ Two rules make that snapshot worth serving:
   the whole tree, so "the whole tree" had better be the app. If your
   handlers read data outside `app/`, name it: `paths=("app/",
   "data/seed.csv")`.
+- **The cache does not travel.** A publication carries file blobs and
+  the filesystem rows describing them; a `cache` entry is neither, so
+  a frozen open starts with an empty cache however full the session's
+  was. Data an app needs precomputed belongs in a file under the
+  published paths — write it out, commit it, publish it, and the
+  handler reads it back. Live, mutable state still belongs in an
+  external store reached through `host_objects`.
 - **Provenance is a soft reference.** The session a version came from
   is recorded in the commit's info as `published_from`, not as a parent
   pointer. So a version pins none of that session's history alive, the
