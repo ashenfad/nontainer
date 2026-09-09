@@ -323,7 +323,13 @@ is named, can write into the scope that outlives it.
 Both ride kvgit's tags, which are branch heads under a reserved name,
 so a tagged commit anchors garbage collection with no rule of its
 own: the state a publication names stays readable after everything else
-about its session is gone. `store.tags.at` opens it as a **frozen**
+about its session is gone. Readable needs one more thing, because kvgit
+reads through a branch handle and a store tag belongs to no branch: the
+store owns a reserved branch of its own, `@store/anchor`, minted the
+first time a store-scoped read finds no session and no publication to
+borrow from. It holds one empty commit, so it is a place to read from
+and nothing else — and a store tag never depends on a session
+outliving it. `store.tags.at` opens it as a **frozen**
 workspace —
 the files read-only down to the executor's filesystem, nothing able to
 commit — because a published snapshot that could be written to is not
@@ -353,11 +359,11 @@ Provenance still matters, so it is kept as a **soft reference** in the
 commit's info rather than a parent pointer: `published_from` names the
 session and commit a version came from, and pins neither.
 
-The branch is not bookkeeping. kvgit reads through a branch handle, so
-without one a publication could only be opened by borrowing some live
-session — which fails on exactly the store the store scope exists for,
-the one whose sessions are all gone. The branch is the anchor that
-makes a publication readable on its own terms.
+The branch is not bookkeeping. kvgit reads through a branch handle,
+and a publication brings its own rather than borrowing a live session
+or leaning on the store's anchor: the version, its tag and the handle
+they are read through are one object that a teardown of everything
+else leaves whole.
 
 The registry — which versions exist, which one is current — is the
 mutable half, and it is deliberately **generic**: no token, no route,

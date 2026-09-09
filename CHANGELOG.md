@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A store-scoped read never needs a session.** `store.tags.at` and
+  the frozen opens beside it anchor on a session where there is one, a
+  publication's branch where there is not, and otherwise on the store's
+  own reserved `@store/anchor` — minted on that first read, holding one
+  empty commit. So a store tag opens for as long as it exists, with
+  every session deleted and nothing published. The anchor is not a
+  session (`sessions()` never lists it), `delete` takes session names
+  and cannot reach it, and `clean()` keeps it: a branch head is a GC
+  root and its commit owns nothing to sweep.
+
 ## 0.6.1 - 2026-09-09
 
 ### Added

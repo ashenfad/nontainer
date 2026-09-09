@@ -44,15 +44,20 @@ if TYPE_CHECKING:
 
 Backend = Literal["kvgit", "dir", "agentfs"]
 
-# kvgit's own reserved branch namespaces, plus the legacy anchor branch
-# older nontainer versions minted during teardown. None of them is a
-# session, so none of them belongs in a session listing.
+# kvgit's own reserved branch namespaces, plus the legacy placeholder
+# branch older nontainer versions minted during teardown. None of them
+# is a session, so none of them belongs in a session listing.
 _RESERVED_BRANCHES = frozenset({"__void__"})
 _RESERVED_BRANCH_PREFIXES = ("refs/tags/", "@")
 
 # Where a publication's tree lives: one reserved branch per version,
 # under the store's own "@" namespace so no session can spell it.
 _PUB_BRANCH_PREFIX = "@store/pub/"
+# The store's own branch, in the same namespace: what a store-scoped
+# read anchors on when the store holds no session and no publication.
+# It carries one commit and that commit is empty, so it names a place
+# to read from and nothing else.
+_ANCHOR_BRANCH = "@store/anchor"
 # The publication registry: the mutable half (which versions exist,
 # which one is current) beside the immutable half (the tags).
 _REGISTRY_FILE = "publications.json"
@@ -385,8 +390,12 @@ class StoreTags:
         and a store handle of its own.
 
         A store-scoped tag belongs to no session, so ``ws.session``
-        names whichever live branch the read was anchored on rather
-        than an origin: the tag is the identity here, not the session.
+        names whichever branch the read was anchored on rather than an
+        origin: the tag is the identity here, not the session. A store
+        with sessions on it anchors on one of those, a store of
+        publications on a publication's branch, and a store with
+        neither on a reserved branch of its own — so a tag opens for as
+        long as it exists, whatever became of the session that made it.
 
         ``settings`` are :meth:`Store.open`'s construction keywords —
         ``python``, ``mounts``, ``commands``, ``cache``,
@@ -559,8 +568,9 @@ class Store:
 
         Reserved names are not sessions and never appear: kvgit's
         ``refs/tags/`` tag refs, anything under the ``@`` store
-        namespace, and the ``__void__`` anchor branch older versions
-        minted during teardown. Anything else that is shaped like a
+        namespace (a publication's branch, the store's own read
+        anchor), and the ``__void__`` branch older versions minted
+        during teardown. Anything else that is shaped like a
         session id is one — including branches a caller made itself
         (a published snapshot, say), because from the store's side
         that is exactly what they are.
@@ -1459,11 +1469,12 @@ class Store:
         matter: a checkout is by commit or tag, both of which are
         store-wide.
 
-        Sessions first, then a publication's own branch. That fallback
-        is what makes a store of publications with no sessions left
-        readable: a publication is exactly the thing a store tag is
-        meant to outlive its session for, and it brings an anchor of
-        its own.
+        Sessions first, then a publication's own branch, then the
+        store's own anchor. Borrowing before minting is why an ordinary
+        store never grows a branch it has no use for: the anchor
+        appears the first time a store-scoped read finds nothing else
+        to read through, which is the case a store with no sessions and
+        no publications left is in.
         """
         names = self.sessions()
         if names:
@@ -1473,10 +1484,42 @@ class Store:
         )
         if reserved:
             return reserved[0]
-        raise WorkspaceError(
-            f"{op} needs a branch on the store to read through, and this "
-            "store has none. Open a session first."
+        return self._ensure_anchor()
+
+    def _ensure_anchor(self) -> str:
+        """The store's own branch to read through, created if absent.
+
+        A store-scoped tag is meant to outlive every session that could
+        have made it, so the store must be able to read one with no
+        session left — which means owning a branch rather than
+        borrowing one. The anchor is that branch: reserved under
+        ``@store/`` where no session id can spell it, absent from
+        :meth:`sessions`, and holding a single commit with nothing in
+        it — the same empty root a publication's branch starts from.
+
+        It is permanent by construction rather than by a guard. Nothing
+        deletes it, because ``delete`` takes session names and no
+        session name reaches the ``@`` namespace; nothing sweeps it,
+        because a branch head is a GC root; and sparing it costs the
+        store nothing, because the commit it holds owns no blobs.
+
+        A store built with a ``provider_factory`` never gets here: the
+        factory owns where state lives, so the store-level verbs refuse
+        before there is an anchor to mint.
+        """
+        import kvgit
+
+        if _ANCHOR_BRANCH in set(self._branches()):
+            return _ANCHOR_BRANCH
+        anchor = kvgit.store(
+            kind="disk", path=str(self._kvgit_path()), branch=_ANCHOR_BRANCH
         )
+        try:
+            if anchor.current_commit is None:
+                anchor.commit(info={"tool": "nontainer", "anchor": True})
+        finally:
+            self._close_backend(getattr(anchor.versioned, "store", None))
+        return _ANCHOR_BRANCH
 
     def _require_registered(self, ref: Ref) -> None:
         """A publication ref names a version the registry still holds.
