@@ -110,6 +110,29 @@ def _check_frozen_settings(
             )
 
 
+def _check_frozen_mounts(mounts: "Mapping[str, Mount] | None") -> None:
+    """Refuse a writable mount on a frozen open.
+
+    A frozen workspace accepts no writes from anyone, and a mount is
+    the one part of its filesystem that is a real host directory rather
+    than a state in the store: ``ws.files.fs`` hands out the composed
+    filesystem for host-side reads, so a mount left writable carries a
+    write through to that directory, permanently and outside the
+    versioning plane. The flag is a caller's mistake to surface rather
+    than to quietly override — coercing it would hand back a workspace
+    whose mounts do not do what the caller asked for, silently.
+    """
+    for point, mount in (mounts or {}).items():
+        if not mount.readonly:
+            raise ValueError(
+                f"cannot mount {point!r} with readonly=False on a frozen "
+                "workspace: a frozen workspace takes read-only mounts only, "
+                "and a writable one would carry a ws.files.fs write into the "
+                "host directory. Pass Mount(..., readonly=True), or open the "
+                "session itself to write there."
+            )
+
+
 # One lock per registry file per process. Two Store objects over the
 # same path are two handles on one file, so the lock cannot live on
 # either of them; the flock underneath covers other processes, and this
@@ -1073,11 +1096,19 @@ class Store:
         the entry point the caller used. ``root`` is spelled as a named
         parameter so a caller can pass it either way and Python binds
         it here once — there is no second value to conflict with.
+
+        A frozen workspace accepts no writes from anyone, so a mount
+        with ``readonly=False`` is refused here rather than coerced:
+        every frozen open funnels through this method, which is what
+        makes the rule one rule instead of three. The mounted bytes
+        still read, and reach the executor read-only like the rest of
+        the tree.
         """
         from .workspace import Workspace
 
         if root is not None:
             settings["root"] = root
+        _check_frozen_mounts(settings.get("mounts"))
         ws = Workspace(provider, **settings)
         ws._store = self
         return ws

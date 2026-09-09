@@ -110,6 +110,17 @@ published under, and reading them at another one finds an empty tree.
 A session's own `ws.tags.at(name)` is the other shape — it inherits
 the settings of the session it came from.
 
+A **writable mount is refused** (`ValueError` naming the point). A
+frozen workspace accepts no writes from anyone, and a mount is the one
+part of its filesystem that is a real host directory rather than a
+state in the store — `ws.files.fs` hands out the composed filesystem,
+so a mount left writable would carry a write through to that
+directory, permanently and outside the versioning plane. The flag is
+surfaced rather than coerced: silently flipping it would hand back a
+workspace whose mounts do not do what the caller asked. Pass
+`Mount(..., readonly=True)` and the bytes read as they do anywhere
+else.
+
 **`store.publications`** — the app, published: an immutable version of
 part of a session's tree, with a name and a pointer saying which
 version is current.

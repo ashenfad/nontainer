@@ -14,7 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which a provider that commits nothing has nothing to switch. The rule:
   a commit holds the tree, and the embedder supplies the live objects
   its handlers call. `Publication.open` takes no `root`, a version
-  recording the one its files were published under.
+  recording the one its files were published under, and a `Mount` with
+  `readonly=False` is refused rather than coerced — a frozen workspace
+  accepts no writes from anyone, and `ws.files.fs` would carry one into
+  the host directory.
 
 ### Fixed
 - **A published app reaches its host objects.** `pub.open(python=
