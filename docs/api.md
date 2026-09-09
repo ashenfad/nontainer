@@ -35,8 +35,9 @@ substrate); the store-level verbs then refuse, because the layout is
 the factory's and guessing it would be worse than saying so.
 
 `sessions()` lists session ids only: kvgit's `refs/tags/` tag refs,
-the `@` store namespace (where the publication branches live), and the
-legacy `__void__` anchor branch are reserved names, not sessions.
+the `@` store namespace (where the publication branches and the store's
+own read anchor live), and the legacy `__void__` branch are reserved
+names, not sessions.
 
 **`store.delete(sessions, *, min_age=3600)`** drops a session's entire
 stored state, dispatching by backend to the layout `open` built —
@@ -79,13 +80,17 @@ naming an exact commit. A workspace tags through its own provider, so
 it must be one this store opened — `Store.open`, or a fork/snapshot of
 one; a workspace from elsewhere is refused rather than silently tagging
 *its* store. Session-scoped tags stay on the workspace (`ws.tags`). Because a store-scoped tag belongs
-to no session, `store.tags.at(name).session` names whichever live
-branch the read was anchored on — the tag is the identity there, not
-the session. kvgit has no handle without a branch, so the read borrows
-one: a session if the store has any, otherwise a publication's own
-`@store/pub/...` branch. That fallback is what makes a store of
-publications with no sessions left readable, which is exactly the case
-the store scope exists for.
+to no session, `store.tags.at(name).session` names whichever branch the
+read was anchored on — the tag is the identity there, not the session.
+kvgit has no handle without a branch, so the read borrows one where it
+can and mints one where it cannot: a session if the store has any,
+otherwise a publication's own `@store/pub/...` branch, otherwise the
+store's own `@store/anchor`, created on that first read and holding a
+single empty commit. **A store-scoped tag therefore opens for as long
+as it exists**, with every session deleted and nothing published. The
+anchor is not a session, `sessions()` never lists it, `delete` takes
+session names and so cannot reach it, and `clean()` keeps it: a branch
+head is a GC root, and the commit it holds owns nothing to sweep.
 
 **Frozen opens take execution settings.** `store.tags.at(name,
 **settings)`, `store.resolve(ref, *, root=None, **settings)` and
@@ -167,10 +172,10 @@ provenance in an immutable commit outlives every chance to notice it.
 One publish writes three things:
 
 - a reserved branch `@store/pub/<name>/<version>` holding the derived
-  commit, started from the store's empty root. It is the **anchor**: it
-  is what lets a version be opened without borrowing a live session,
-  and it is why `store.tags.at(name)` works on a store whose sessions
-  are all gone. It is not a session — `store.sessions()` never lists it,
+  commit, started from the store's empty root. It is what lets a
+  version be opened without borrowing a live session, and a
+  store-scoped read anchors on it before the store mints an anchor of
+  its own. It is not a session — `store.sessions()` never lists it,
   `@` being a character no session id may start with — but it is a
   legal `Ref` target, so `store.resolve(str(version.ref))` opens it.
 - a store-scoped tag `<name>/<version>` naming that commit.

@@ -367,10 +367,12 @@ def test_a_publication_outlives_its_session(tmp_path):
     assert snapshot.files.read("app/index.html") == b"<h1>scores</h1>"
     snapshot.close()
     # ...and a store tag can still be read with no session to anchor on,
-    # because the publication brings its own branch.
+    # because the publication brings its own branch — which the read
+    # borrows rather than minting the store's own anchor.
     anchored = store.tags.at("scoreboard/v1")
     assert anchored.files.read("app/index.html") == b"<h1>scores</h1>"
     anchored.close()
+    assert "@store/anchor" not in store._branches()
 
 
 # -- refusals ---------------------------------------------------------------

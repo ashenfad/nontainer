@@ -262,6 +262,56 @@ def test_store_tags_never_move(tmp_path):
             st.tags.add(ws, "pinned")
 
 
+def test_a_store_scoped_read_needs_no_session(tmp_path):
+    """The store owns an anchor of its own: a store-scoped tag opens
+    with every session deleted and nothing published."""
+    st = Store(tmp_path)
+    with st.open("author") as ws:
+        ws.terminal("echo published > report.txt")
+        st.tags.add(ws, "report")
+    st.delete("author", min_age=0)
+    assert st.sessions() == []
+
+    with st.tags.at("report") as snap:
+        assert snap.files.read("report.txt") == b"published\n"
+        anchored = snap.ref
+    # The anchor is a branch, so the ref that snapshot quotes resolves.
+    with st.resolve(anchored) as again:
+        assert again.files.read("report.txt") == b"published\n"
+
+    assert st.sessions() == []  # ...and the anchor is not a session
+    assert "@store/anchor" in st._branches()
+
+
+def test_the_anchor_is_the_last_resort(tmp_path):
+    """A store with a session to read through grows no anchor branch."""
+    st = Store(tmp_path)
+    with st.open("author") as ws:
+        ws.terminal("echo published > report.txt")
+        st.tags.add(ws, "report")
+        with st.tags.at("report") as snap:
+            assert snap.files.read("report.txt") == b"published\n"
+    assert "@store/anchor" not in st._branches()
+
+
+def test_teardown_leaves_the_anchor(tmp_path):
+    """Deleting every session and sweeping the store keeps the anchor
+    and the tag it reads through: a branch head is a GC root, and the
+    anchor's own commit holds nothing to collect."""
+    st = Store(tmp_path)
+    with st.open("author") as ws:
+        ws.terminal("echo published > report.txt")
+        st.tags.add(ws, "report")
+    st.delete("author", min_age=0)
+    st.tags.at("report").close()  # mints the anchor
+
+    st.delete(["author", "reader"], min_age=0)
+    assert st.clean(min_age=0) == 0  # nothing the anchor or the tag reaches
+    assert "@store/anchor" in st._branches()
+    with st.tags.at("report") as snap:
+        assert snap.files.read("report.txt") == b"published\n"
+
+
 def test_session_scoped_tags_stay_off_the_store_surface(tmp_path):
     st = Store(tmp_path)
     with st.open("author") as ws:
