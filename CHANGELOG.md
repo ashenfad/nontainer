@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`publish(..., current=False)`.** A version can be recorded without
+  taking the pointer, so a caller can land a tree, check it at
+  `pub.open(version)` and switch with `set_current` after — and can
+  drop it with `unpublish` in between, which the current version
+  refuses while others remain. The version that opens a lineage takes
+  the pointer whatever the flag says, because a publication must point
+  somewhere.
+
 ### Documented
 - **The default version is the next in the v-series.** `publish`
   counts only `v<N>` names when it picks a default, so a lineage
