@@ -23,7 +23,7 @@ Design notes (see README "Design decisions"):
   blown context window.
 - **cwd is stateful** across calls (like any other mutating terminal
   command) and persists in the provider's kv under the filesystem's
-  own cwd key, so on versioned providers a rollback also restores
+  own cwd key, so on versioned providers a checkout also restores
   *where you were*.
 - **Execution is a seam.** How code runs — the python sandbox, the
   shell, worker lifecycle — lives behind :class:`Executor` (see
@@ -139,8 +139,8 @@ class Mount:
     (+ ``IsolatedFS``, + ``ReadOnlyFS`` when ``readonly``).
 
     Mounted paths are live views of the real directory: they are NOT
-    versioned and NOT captured by commits, so a rollback or checkout
-    leaves them exactly as they are.
+    versioned and NOT captured by commits, so a checkout leaves them
+    exactly as they are.
 
     A fork **inherits the mount point** and does NOT copy the data
     behind it: parent and fork observe the same live directory, and
@@ -1931,10 +1931,10 @@ class Workspace:
 
         It APPENDS. The restored state is written and committed, so
         the returned id is a NEW commit and everything committed since
-        the target is still in ``ws.log()`` — an undo is redo-able
-        (``ws.rollback(1)`` right after lands on the commit the
-        checkout stepped off), and nothing a tag or a fork was made to
-        protect is at risk. Nothing but store-level admin
+        the target is still in ``ws.log()`` — an undo is redo-able, by
+        checking out the commit the checkout stepped off, which is
+        still one entry back in the log — and nothing a tag or a fork
+        was made to protect is at risk. Nothing but store-level admin
         (``Store.delete``) ever moves a head backward.
 
         The agent's git rewinds with the tree, because its head and
@@ -2081,55 +2081,6 @@ class Workspace:
             return f"{self.session}@{text}", self._provider.files_at(text)
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
         return f"{text}@{virtual}", self._provider.files_at(virtual)
-
-    def rollback(self, steps: int = 1) -> str:
-        """Check out the Nth-previous commit; returns the id of the
-        commit that lands.
-
-        The relative spelling of :meth:`checkout`, and it appends the
-        same way: ``steps`` counts back over ``ws.log()`` as it stands
-        now, and the restore joins that log. So ``rollback(1)``
-        immediately after a checkout is the REDO — the commit before
-        the restore is the one the checkout stepped off — and counting
-        twice in a row is not the same as counting two at once.
-
-        The explicit ``{"tool": "init"}`` lifecycle commit is the
-        floor: rollback may target it, but never cross it into a
-        provider's pre-workspace seed. Legacy histories without that
-        exact marker retain their existing provider-history behavior.
-        """
-        if steps < 1:
-            raise ValueError("steps must be >= 1")
-        with self._lock:
-            entries = list(self._provider.history(limit=steps + 1))
-            if len(entries) <= steps:
-                raise CommitNotFoundError(
-                    f"Cannot roll back {steps} step(s): only "
-                    f"{len(entries)} commit(s) in history"
-                )
-            # Exact metadata equality is deliberate: an unrelated
-            # commit that merely includes tool="init" plus other
-            # caller metadata must not become a workspace lifecycle
-            # boundary. Newest-first history means targets beyond the
-            # marker have a larger index; targeting the marker itself
-            # remains valid.
-            init_index = next(
-                (
-                    i
-                    for i, entry in enumerate(entries)
-                    if entry.info == {"tool": "init"}
-                ),
-                None,
-            )
-            if init_index is not None and steps > init_index:
-                raise CommitNotFoundError(
-                    f"Cannot roll back {steps} step(s): the workspace "
-                    "initialization commit is the rollback floor"
-                )
-            target = entries[steps]
-            landed = self._provider.checkout(target.id)
-            self._mark_executor_stale()  # see checkout()
-            return landed
 
     def log(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         return self._provider.history(limit=limit)

@@ -15,7 +15,7 @@ the workspace tree, runs real bash / real python against it, and hands
 back a diff of what changed. Because nontainer uses a script model —
 no resident interpreter state; persistence lives in cache + files —
 the machine is stateless between calls, so swapping it never touches
-the versioning semantics (commit per call, fork, rollback), which
+the versioning semantics (commit per call, fork, checkout), which
 were always properties of the state layer.
 
 The split of responsibilities:

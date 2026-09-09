@@ -50,7 +50,7 @@ for c in ws.log(limit=3):
     print(c.id[:8], c.info)
 
 fork = ws.fork("what-if")               # O(1); shares storage
-ws.rollback(1)                          # files + cache + cwd rewind together
+ws.checkout(c.id)                       # files + cache + cwd rewind together
 ```
 
 Each `run_python` is a **fresh execution** — there's no resident REPL
@@ -161,7 +161,7 @@ Or from the terminal: `tar -czf out.tgz out` then `ws.files.get("out.tgz", ...)`
 
 | backend | what it is | versioning |
 |---|---|---|
-| `kvgit` (default) | one shared store, branch per session | ✅ commits, O(1) forks, rollback |
+| `kvgit` (default) | one shared store, branch per session | ✅ commits, O(1) forks, checkout |
 | `dir` | a plain real directory per session | ❌ (but sqlite/mmap/C extensions work natively) |
 | `agentfs` | one SQLite file per session ([Turso AgentFS](https://github.com/tursodatabase/agentfs)) | ❌ (spike) — but SQL-inspectable |
 
@@ -196,9 +196,10 @@ quoting-free path for multiline files and surgical exact-string edits
 Commit granularity is yours: the default commits every mutating
 call (max durability); `WorkspaceTools(ws, commit="turn")` plus
 `Agent(post_hooks=[tk.end_turn])` gives the agex model — one commit
-per agent turn, so `rollback(1)` undoes a whole turn.
+per agent turn, so checking out the commit before one undoes a whole
+turn.
 
-The conversation can live in the workspace too, so a rollback or a
+The conversation can live in the workspace too, so a checkout or a
 fork carries the agent's memory along with the files:
 
 ```python

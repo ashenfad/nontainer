@@ -5,7 +5,7 @@ against workspace state (termish shell, monkeyfs VFS, sandtrap
 gates), ``DudExecutor`` runs a *real* one: a dud ``Session`` — real
 bash, real python, a real scratch filesystem — materialized from the
 provider's tree, harvested back as a diff. The versioning semantics
-(commit per call, fork, rollback) are untouched: they were always
+(commit per call, fork, checkout) are untouched: they were always
 the provider's, and the workspace stages the harvest through its
 normal commit flow.
 

@@ -27,7 +27,7 @@ resident REPL whose namespace *is* the state — couples "what the agent
 computed" to "a live process that must stay up," which is exactly the
 coupling a persistent, forkable, restorable workspace is trying to
 break. Reusable code as importable files (not as REPL history) is what
-makes fork and rollback mean something: you're versioning source and
+makes fork and checkout mean something: you're versioning source and
 data, not a heap.
 
 ## Commit granularity is the tool call or turn, not the write
@@ -72,8 +72,9 @@ Within a session, a branch head only ever moves forward. `ws.checkout`
 does not rewind it: the target's state is *written* into the working
 tree and committed, so going back is a new commit whose keyset equals
 the target's — files, cache, cwd, the ws-git blob, the stored
-conversation, everything the session holds. `rollback(steps)` is the
-same verb counting back over `log()`.
+conversation, everything the session holds. Going back is by
+identity: name a commit from `log()`, since counting positions in a
+log the verb itself appends to means something different each time.
 
 That gives three properties worth naming:
 
@@ -82,8 +83,8 @@ That gives three properties worth naming:
   reclaims them and `store.clean()` finds nothing after a checkout.
   Nothing has to be tagged or forked before stepping off it.
 - **Undo is redo-able.** The commit before a restore is the one the
-  restore stepped off, so `rollback(1)` straight after a checkout goes
-  back to where the checkout was invoked.
+  restore stepped off, so checking that one out goes back to where the
+  checkout was invoked.
 - **One verb, one behaviour.** The agent's `ws-git checkout` restores a
   tree and rewinds its own head while the store appends; the host's
   `ws.checkout` restores the whole session and the store appends. Two
@@ -376,7 +377,7 @@ a remote executor, a diff of what changed); the workspace absorbs
 them, holds the single-writer lock, and decides what becomes a
 commit. That is why swapping the executor for a real machine never
 touches the versioning semantics — commit-per-call, fork,
-rollback were always properties of the state layer.
+checkout were always properties of the state layer.
 
 The third object is `Store`, and it exists because a session is not
 the only unit. Deleting a session, listing what a user has, sweeping
