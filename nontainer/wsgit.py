@@ -538,6 +538,11 @@ def _other_session(ws: Any, name: str) -> Any:
     session's provider: a session is a workspace, and the verbs that
     read one (``log``) want the whole fiction over it, not a branch
     handle. The caller closes it.
+
+    At THIS session's root, because a lineage shares one: opening a
+    session at a root it does not use creates that directory and can
+    commit the making of it, so a read-only verb would write to the
+    session it was only asked to read.
     """
     store = getattr(ws, "_store", None)
     if store is None:
@@ -546,7 +551,7 @@ def _other_session(ws: Any, name: str) -> Any:
         )
     if name not in set(store.sessions()):
         raise ValueError(f"unknown session {name!r} (ws-git branch lists them)")
-    return store.open(name)
+    return store.open(name, root=ws.root)
 
 
 def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:

@@ -827,6 +827,36 @@ def test_store_fork_opens_the_source_at_the_childs_root(store):
         child.close()
 
 
+def test_log_of_another_session_opens_it_at_the_lineages_root(store):
+    """Reading another session's log must not write to it. Opening a
+    session at a root it does not use makes that directory and can
+    commit the making of it, so the root a verb opens with is this
+    session's."""
+    ws = store.open("origin", root="/data")
+    register_wsgit(ws)
+    try:
+        ws.files.write("/data/a.py", "a\n")
+        ws.index.commit("seed")
+        child = ws.fork("child")
+        child.files.write("/data/b.py", "b\n")
+        child.index.commit("work")
+        before = len(list(child.log()))
+        child.close()
+
+        r = ws.terminal("ws-git log child")
+        assert r.exit_code == 0
+        assert "work" in r.stdout
+
+        again = store.open("child", root="/data")
+        try:
+            assert len(list(again.log())) == before
+            assert not again.files.exists("/workspace")
+        finally:
+            again.close()
+    finally:
+        ws.close()
+
+
 def test_attach_reads_the_lineages_root_and_the_whole_branch(store):
     """Two things at once: a commit holds its files at the root the
     session used, and what is attached is the source's whole branch —
