@@ -616,6 +616,12 @@ the tree — ask `changed_since` when the question is content.
 `CommitInfo.tree` carries the same hash per history entry (`None`
 on a provider that keeps no such hash).
 
+`CommitInfo.parents` carries the ids a commit descends from: one for an
+ordinary commit, two for a merge, empty for a root commit and for a
+provider whose history is a list rather than a graph. A merge's first
+parent is the side it was made from, so `ws.diff(merge.parents[0],
+merge.id)` is the merge's own work.
+
 #### Tags (`ws.caps.tags`)
 
 A tag is a name for a commit that outlives the call that made it —
