@@ -140,6 +140,9 @@ def test_the_published_commit_holds_the_subtree_and_nothing_else(tmp_path):
         "app/index.html",
     ]
     assert not snapshot.files.exists("notes/private.txt")
+    # the live cache is session state, not a file: a publication does
+    # not carry it, and a frozen open starts with an empty one
+    assert dict(snapshot.cache) == {}
     snapshot.close()
     ws.close()
 

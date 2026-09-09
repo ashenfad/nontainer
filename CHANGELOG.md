@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   somewhere.
 
 ### Documented
+- **The cache does not travel with a publication.** A publication
+  carries file blobs and the filesystem rows describing them; a
+  `cache` entry is neither, so a frozen open starts with an empty
+  cache. Data an app needs precomputed belongs in a file under the
+  published paths.
 - **The default version is the next in the v-series.** `publish`
   counts only `v<N>` names when it picks a default, so a lineage
   holding `v1`, `v2` and `release-1` gets `v3`. The default is a
