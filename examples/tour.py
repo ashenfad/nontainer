@@ -3,9 +3,10 @@
 Every verb an embedder reaches for, in the order a real session would
 meet them: open a store and a session, run a shell command and some
 python, compose a commit through the agent's own index, delegate to a
-fork with a narrowed view, merge it back, take one file from a session
-you did not fork, read another session's tree in place, publish a
-subtree and open the publication frozen.
+fork with a narrowed view, merge it back, delegate again through the
+`sessions` tool, take one file from a session you did not fork, read
+another session's tree in place, publish a subtree and open the
+publication frozen.
 
 Nothing here needs a model: the "agent" is this script, calling the
 same verbs an agent's tools call.
@@ -16,12 +17,39 @@ Run:  uv run python examples/tour.py
 import tempfile
 
 from nontainer import Store, WorkspaceError
+from nontainer.sessions import Sessions, run_action
 from nontainer.wsgit import register_wsgit
 
 APP_PAGE = """<!doctype html>
 <title>Rates</title>
 <h1>Rates</h1>
 """
+
+
+class Editor:
+    """A SessionRunner with no model in it.
+
+    An embedder's real one drives an agent loop against the child
+    session and returns what it said; the seam is one synchronous
+    method either way, and the helper does the rest — it committed
+    this delegate's work before the answer came back, which is what
+    makes `ws-git merge` accept a delegate that never ran ws-git.
+    """
+
+    def __init__(self, store: Store) -> None:
+        self.store = store
+
+    def run(self, session: str, task: str, *, budget=None) -> str:
+        child = self.store.open(session)
+        try:
+            child.files.write(
+                "/workspace/report.md",
+                "# Rates\n\nNorth 4, South 7.\n\n## Summary\n\nNorth leads.\n",
+            )
+            child.files.write("/workspace/summary.md", "working note: north leads\n")
+        finally:
+            child.close()
+        return "Summarized it, and left the working note in summary.md."
 
 
 def step(n: int, what: str) -> None:
@@ -94,7 +122,26 @@ def main() -> None:
     print("report.md now:", ws.files.read("/workspace/report.md").decode().strip())
     child.close()
 
-    step(5, "take one file from a session you did not fork")
+    step(5, "the same delegation, as the agent spells it: the sessions tool")
+    # The runner is the third seam: nontainer has no loop, so driving a
+    # session to an answer is the embedder's. This one has no model in
+    # it — it edits the child and answers, which is all the seam is.
+    with Sessions(ws, Editor(store)) as sessions:
+        # run_action is what the `sessions` tool call goes through, so
+        # these two prints are exactly what a model would read back.
+        print(
+            run_action(
+                sessions,
+                "ask",
+                task="summarize the report and say how you did it",
+                paths=["report.md"],
+                wait=True,
+            )
+        )
+        print()
+        print(run_action(sessions, "list"))
+
+    step(6, "take one file from a session you did not fork")
     other = store.open("colleague")
     other.files.write("/workspace/method.md", "how the rates were sampled\n")
     other.commit(info={"tool": "seed"})
@@ -103,13 +150,13 @@ def main() -> None:
     print("taken:", ws.files.read("/workspace/method.md").decode().strip())
     print("provenance:", next(iter(ws.log(limit=1))).info)
 
-    step(6, "attach another session's tree and read it in place")
+    step(7, "attach another session's tree and read it in place")
     at = ws.files.attach("colleague", "reviews")
     print("attached", at, "->", ws.files.attachments())
     print(ws.terminal("cat reviews/method.md").stdout.strip())
     ws.files.detach("reviews")
 
-    step(7, "publish a subtree, and open the publication frozen")
+    step(8, "publish a subtree, and open the publication frozen")
     ws.files.write("/workspace/app/index.html", APP_PAGE)  # autocommit lands it
     pub = store.publish(ws, "rates", paths=("app/",))
     version = pub.current_version
@@ -127,7 +174,7 @@ def main() -> None:
     finally:
         frozen.close()
 
-    step(8, "two histories over one branch")
+    step(9, "two histories over one branch")
     print("the store's, newest first — every durability point:")
     for c in list(ws.log())[:6]:
         print(f"  {c.id[:10]}  {c.info.get('tool', '?')}")
