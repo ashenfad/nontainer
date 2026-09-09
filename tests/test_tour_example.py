@@ -37,6 +37,13 @@ def test_the_tour_runs_and_shows_each_verb():
         "refused: uncommitted ws-git work on this session",
         "merged: True | conflicts: ()",
         "North 4, South 7.",
+        # delegation as a tool call: the answer, what it changed
+        # grouped, and the next step spelled for the terminal
+        "Summarized it, and left the working note in summary.md.",
+        "changed, in what you sent it to do: /workspace/report.md",
+        "changed, elsewhere: /workspace/summary.md",
+        "next, in the terminal: ws-git diff analyst.",
+        "answered  summarize the report and say how you did it",
         # take, with provenance
         "taken: how the rates were sampled",
         "'tool': 'checkout', 'taken_from': 'colleague@",

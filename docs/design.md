@@ -163,6 +163,22 @@ is a terminal builtin registered by `register_wsgit(ws)`, the way
 answers `ws-git: command not found`. The host's `ws.index` needs no such
 switch — a workspace whose provider has `caps.index` always has it.
 
+**Delegation is a tool; versioning is the terminal.** The two halves are
+spelled in different places on purpose. Sending work out is a `sessions`
+tool call — one tool with an `action` argument, registered by the
+adapters only when the embedder supplies a `SessionRunner` — and
+bringing the work back is `ws-git merge` / `ws-git checkout <name> --
+<paths>` / `ws-git diff <name>` in the terminal, next to every other
+verb over history. A tool never enters the executor: the model emits
+it, the host runs it, the result lands in the transcript, so delegation
+needs no transport on any rung and changes nothing per substrate, where
+`ws-git` relays into the sandbox because a shell verb runs there. It is
+also where the embedder's own concerns already live — who may fork or
+read whom, budgets, the pending-merge UI — the same seam `test_app` sits
+on. What the parent composes is the child's *branch*, and the terminal
+already composes branches, so a second spelling for `merge` would buy
+nothing and cost the model a choice.
+
 ## Delegation: forks, views and merges
 
 A session is a kvgit branch carrying the whole world — files, cache,

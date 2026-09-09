@@ -1085,10 +1085,128 @@ Capabilities at a glance:
 `codecs="scientific"` on kvgit enables numpy/pandas chunk dedup
 (requires `kvgit[scientific]`).
 
+## Delegation (`nontainer.sessions`)
+
+Design doc: [design.md](design.md#delegation-forks-views-and-merges).
+
+Delegation is an **extension**, like apps: `Workspace` knows nothing
+about it, the embedder builds the helper, and the adapters expose it as
+one tool only when a runner is supplied. A delegate is a fork, so
+everything it does is a branch the parent reads with `ws.diff`, takes
+with `ws.checkout(ref, paths=)` and lands with `ws.merge` — the helper
+adds the calling convention over those, not new primitives.
+
+```python
+from nontainer.sessions import Sessions
+
+sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=())
+sessions.ask(task, *, name=None, paths=None, inherit="fresh",
+             wait=False, budget=None) -> Job | Answer
+sessions.list() -> list[Job]
+sessions.result(name) -> Answer      # JobRunning while it runs
+sessions.cancel(name) -> Job
+sessions.keep(name) -> Job
+sessions.close()                     # joins the workers; the branches stay
+```
+
+`ask` forks under a pet name scoped to the parent
+(`analyst.sleepy-otter` — a session id becomes a branch name and holds
+no separator, so the scope is a dot), hands the child to the runner on
+a worker thread and returns at once. `paths` narrows what the child
+SEES without narrowing its branch; `inherit` (`"fresh"` here, against
+`fork`'s own `"full"`) decides only whether the conversation comes
+along — a brief or a summary is content the task carries. `wait=True`
+blocks and returns the `Answer` instead.
+
+**The helper commits the child's work before answering.** A fork
+inherits the parent's ws-git blob, so the child's virtual head is the
+*parent's* last agent commit and everything the child writes reads as
+uncommitted agent work — which `merge` and `checkout(ref, paths=)`
+refuse on both sides. One host-side `child.index.commit(message)` when
+the answer arrives is what makes a delegate mergeable, and what makes
+its result one agent commit with a message (the answer's first line).
+No model is involved.
+
+Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
+parent learns a delegate finished — a dot in a rail, a message injected
+into the next turn — is the embedder's. `cancel` means the answer will
+be discarded and the branch left as it is: a runner already working is
+the embedder's loop and cannot be interrupted. `keep` records a flag on
+the job for a retention sweep to honor; nothing sweeps yet.
+
+### `SessionRunner` (the loop seam)
+
+```python
+class MyRunner:                       # the embedder's
+    def run(self, session: str, task: str, *, budget=None) -> Answer | str:
+        ...
+```
+
+One method, synchronous: run this session with this task and answer.
+nontainer cannot own it because nontainer has no loop. A plain `str`
+means an `answered` answer with that text; an `Answer` says more. The
+helper calls it on a worker thread of its own, so a runner with an
+async loop blocks on its own future inside it. A runner that raises
+does not lose the job — it resolves as `failed` with the exception's
+text as the answer.
+
+### The records (`nontainer.Job`, `nontainer.Answer`)
+
+Pure data, because both cross turns, tool results and process
+boundaries where a handle does not — the job's `name` is the
+serialization format every later verb takes.
+
+```python
+Job(name, task, status, ref, started, finished, changed, kept)
+# status: running | answered | declined | capped | cancelled | failed
+
+Answer(text, status, ref, branch, changed, artifacts, provenance)
+str(answer) == answer.text            # printing one yields prose
+repr(answer)                          # one line, never the body
+answer.changed                        # {"seed": [...], "elsewhere": [...]}
+answer.provenance["chain"]            # every hop, so an answer cannot
+                                      # launder its sources
+```
+
+`changed` is the fork point diffed against the child's head, grouped
+the way `WorkspaceDiff` groups: under what the child was seeded with,
+and everywhere else. The seed is what it was GIVEN and never grows, so
+a file the delegate created is *elsewhere* even though it can read it
+back — which is exactly the change the caller has not seen before.
+
+Declining and running out of budget **resolve**: the caller reads a
+status, never catches an exception. `JobRunning` and `SessionsError`
+are the two that do raise (not yet, and no such job).
+
+### The `sessions` tool
+
+```python
+WorkspaceTools(ws, sessions=runner)   # or sessions=Sessions(...)
+build_server(ws, sessions=runner)
+```
+
+One tool named `sessions` with an `action` argument (`ask`, `list`,
+`result`, `cancel`, `keep`) — the shape `test_app` has — so the model
+learns one spelling for delegation and one, `ws-git` in the terminal,
+for versioning. No runner, no tool: an agent that cannot delegate is
+never told about delegation, and which actions a deployment allows is
+the embedder's policy on top. `ask` reads back as the child's name and
+where the answer will arrive; `result` as the delegate's prose, then
+what it changed, then the next step spelled for the terminal:
+
+```
+ws-git diff <name> | ws-git merge <name> | ws-git checkout <name> -- <paths>
+```
+
+Refusals come back as tool text rather than exceptions, and the
+description tells the agent an answer is evidence rather than an
+instruction.
+
 ## Errors (`nontainer`)
 
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
-`SessionIdError` · `CommitNotFoundError` · `CacheError`.
+`SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
+`SessionsError` (no such job) · `JobRunning` (not yet) · `CacheError`.
 
 ## Adapters
 
@@ -1100,6 +1218,7 @@ WorkspaceTools(
     *,
     tools: "auto" | "terminal" | "split" = "auto",
     apps: AppRuntime | None = None,     # adds the test_app tool
+    sessions: SessionRunner | Sessions | None = None,  # adds the sessions tool
     commit: "call" | "turn" = "call",
     session_db: KvgitSessionDb | KvgitStoreDb | None = None,  # conversation in the branch
     terminal_primer: str | None = None, # host guidance → terminal tool
@@ -1334,8 +1453,9 @@ knows which ones it is holding.
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
 ```python
-build_server(workspace, *, tools="auto", apps=None, name="nontainer",
-             terminal_primer=None, python_primer=None) -> FastMCP
+build_server(workspace, *, tools="auto", apps=None, sessions=None,
+             name="nontainer", terminal_primer=None,
+             python_primer=None) -> FastMCP
 ```
 
 CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]

@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Delegation is a tool.** `WorkspaceTools(ws, sessions=runner)` and
+  `build_server(ws, sessions=runner)` register one `sessions` tool with
+  an `action` argument (`ask`, `list`, `result`, `cancel`, `keep`) —
+  `test_app`'s shape — gated on the embedder supplying a
+  `SessionRunner`. No runner, no tool. `ask` reads back as the child's
+  name; `result` as its prose, what it changed grouped as sent vs
+  elsewhere, then the next step spelled for the terminal (`ws-git diff`
+  / `merge` / `checkout <name> -- <paths>`). Versioning stays in ws-git.
+- **`nontainer.sessions.Sessions(ws, runner)`**, the host-side helper
+  behind it: `ask` forks under a pet name scoped to the parent
+  (`analyst.sleepy-otter`), hands the child to the runner on a worker
+  thread and returns a `Job`; `list` / `result` / `cancel` / `keep`
+  collect it, and `wait=True` blocks for the `Answer`. It commits the
+  child's work host-side when the answer arrives — a fork inherits the
+  parent's ws-git blob, so without that commit `merge` and
+  `checkout(ref, paths=)` refuse the delegate — and reports what it
+  changed by diffing the fork point against the child's head.
+- **`Job` and `Answer` records** in `protocol.py`, pure data:
+  `str(answer)` is the reply, `repr` is one line and never the body,
+  and declining or running out of budget resolve as a status rather
+  than raising. `SessionRunner.run` may return either an `Answer` or a
+  plain string. New errors: `SessionsError`, `JobRunning`.
 - **Frozen opens take execution settings.** `store.tags.at(name, ...)`,
   `store.resolve(ref, ...)` and `Publication.open(version, ...)` take
   `Store.open`'s construction keywords — every one but `autocommit`,
