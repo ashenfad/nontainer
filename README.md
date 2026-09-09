@@ -4,7 +4,7 @@
 
 Give any Python agent loop a stateful terminal and Python tool over a
 workspace that commits files and cache together, forks in O(1), and
-rolls back as a unit. Run locally — where agent code can work through
+checks out as a unit. Run locally — where agent code can work through
 whitelisted live host objects — or on a microVM while the workspace history
 stays in the state layer.
 
@@ -21,7 +21,7 @@ Nontainer keeps three concerns separate:
 
 | | Responsibility |
 |---|---|
-| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap commits, forks, checkout, and audit; other providers declare narrower capabilities rather than pretending equivalence. |
+| **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap commits, forks, checkout, and history; other providers declare narrower capabilities rather than pretending equivalence. |
 | **`Executor`** | Where terminal and Python code run and how they reach workspace state: locally through [sandtrap](https://github.com/ashenfad/sandtrap) and [monkeyfs](https://github.com/ashenfad/monkeyfs), or on a real machine through [dud](https://github.com/ashenfad/dud). |
 | **Adapters** | How the two tools enter an existing agent loop: the core Python API, an [agno](https://github.com/agno-agi/agno) toolkit, or an MCP server. |
 
@@ -31,8 +31,8 @@ the shell's `cd` sticks, files one call writes the next call reads, and a
 `cache` dict persists for the whole conversation.
 
 Because that state is a **versioned workspace**, each state-changing call can
-be committed as one unit. The host can fork a session in O(1), roll back
-to any commit, or audit its history without teaching the agent a version
+be committed as one unit. The host can fork a session in O(1), check out
+any commit, or audit its history without teaching the agent a version
 control protocol.
 
 | | |
@@ -170,7 +170,7 @@ from nontainer.adapters.agno import WorkspaceTools   # agno Toolkit
 | plain dir | ❌ | ❌ | ❌ |
 | AgentFS (spike) | ❌ | ❌ | ✅ |
 
-kvgit for fork/undo/audit, `dir` when agent code needs real files (C
+kvgit for fork/undo/history, `dir` when agent code needs real files (C
 extensions, subprocesses), AgentFS for the one-file-artifact + SQL story --
 or bring your own provider. Full guidance in the [API reference](docs/api.md).
 

@@ -288,7 +288,8 @@ you'd rather not use the facade.
 
 `terminal` executes pipes, redirects (`> >> <`), `&&`/`||`/`;`,
 quoting, ~33 builtins (via termish) plus injected commands. `cd`
-persists across calls (and rolls back with commits on kvgit).
+persists across calls (and is committed with them on kvgit, so a
+checkout restores it).
 A reserved `python` builtin bridges into `run_python` with script
 semantics: `python -c 'code'`, `python file.py`, or piped stdin;
 stdout flows to the pipeline, errors → exit 1, the namespace is
