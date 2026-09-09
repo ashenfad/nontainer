@@ -624,6 +624,16 @@ through `host_objects` (a sqlite/postgres client), not the served VFS —
 at which point you've graduated from "shared dashboard" to "small real
 app," and the store owns its own concurrency.
 
+**The snapshot carries the tree; you carry the objects.** A published
+commit holds files, and a live sqlite handle is not a file — which is
+precisely why it is injected rather than committed. So the frozen
+opens take the execution settings at the call:
+`pub.open(python=PythonConfig(host_objects={"db": db}))`, and the same
+keywords (`mounts`, `commands`, `executor_factory`, `cache`,
+`max_observation`) on `store.tags.at(name, ...)` and
+`store.resolve(ref, ...)`. Serve a version twice with two databases and
+they are two deployments of one app.
+
 ### `store.publish` makes the snapshot
 
 The snapshot a router serves is a **publication**: a named, versioned
@@ -635,7 +645,9 @@ ws.files.write("app/index.html", "...")    # the agent keeps working
 ws.commit()
 pub = store.publish(ws, "scoreboard")      # -> v2, now current
 store.set_current("scoreboard", "v1")      # roll the code back
-snapshot = store.publication("scoreboard").open()   # frozen Workspace
+snapshot = store.publication("scoreboard").open(   # frozen Workspace
+    python=PythonConfig(host_objects={"db": db})   # the handlers' live db
+)
 ```
 
 Two rules make that snapshot worth serving:
@@ -680,15 +692,19 @@ def resolve(token):
     if pub is None:
         return None
     return snapshots.setdefault(                  # cache: it is immutable
-        (row["name"], pub.current), pub.open()
+        (row["name"], pub.current),
+        pub.open(python=PythonConfig(host_objects={"db": Db(row["db"])})),
     )
 
 app.mount("/apps", build_router(resolve))
 ```
 
-Pinning a deployment to one version is `pub.open(row["version"])`;
-following the pointer is `pub.open()`. Either way the router gets a
-frozen `Workspace` and nothing else has to change.
+The deployment's database arrives here, at the open, because that is
+where the deployment is known: the registry holds a name and a tree,
+the row holds everything about *this* serving of it. Pinning a
+deployment to one version is `pub.open(row["version"], python=...)`;
+following the pointer is `pub.open(python=...)`. Either way the router
+gets a frozen `Workspace` and nothing else has to change.
 
 Because a frozen snapshot is immutable, serving is **stateless** — the
 router keeps nothing:

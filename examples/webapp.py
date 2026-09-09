@@ -10,8 +10,8 @@ thread-safe SQLite) owns its own state and its own locking.
 Flow:
   1. Author: the agent builds the guestbook using the injected `db`
      (SQL), verifies it with curl + test_app.  (needs an API key)
-  2. Freeze: tag the commit and open the tag — a frozen workspace, one
-     immutable state that nothing can write to.
+  2. Publish: commit, then publish app/ — a derived, immutable commit
+     that nothing can write to, opened with the `db` the handlers call.
   3. Serve: build_router serves that frozen workspace read-only; POSTs
      still work because the mutation lands in SQLite, not the VFS.
      (runs without a key)
@@ -28,7 +28,7 @@ import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from nontainer import PythonConfig, workspace
+from nontainer import PythonConfig, Store
 from nontainer.apps import build_router, enable_apps
 
 
@@ -120,11 +120,8 @@ def main() -> None:
     db_path = os.path.join(tempfile.mkdtemp(), "guestbook.db")
     db = Db(db_path)
 
-    ws = workspace(
-        "guestbook",
-        store=tempfile.mkdtemp(),
-        python=PythonConfig(host_objects={"db": db}),
-    )
+    store = Store(tempfile.mkdtemp())
+    ws = store.open("guestbook", python=PythonConfig(host_objects={"db": db}))
     runtime = enable_apps(ws)
 
     if _has_key():
@@ -147,17 +144,20 @@ def main() -> None:
         ws.files.write(f"{ws.root}/app/api/entries.py", SEED_HANDLER)
         ws.files.write(f"{ws.root}/app/index.html", SEED_HTML)
 
-    # -- the freeze point: name the commit, then open the name ----------
-    # `ws.tags.at` hands back a frozen workspace — same state, nothing
-    # can write to it — and it keeps this session's `host_objects`, so
-    # the served handlers still reach `db`. `store.publish(ws, name)` +
-    # `pub.open()` is the other frozen shape (docs/apps.md): it derives
-    # a rootless commit holding only `app/`, and the workspace it opens
-    # comes from the store rather than from this session, so it carries
-    # no host objects — the right choice for an app whose state is not
-    # injected.
-    ws.tags.add("published", info={"published": True})
-    snapshot = ws.tags.at("published")
+    # -- the publish point: the app subtree, derived and frozen ---------
+    # `publish` names a commit, so land what the session is holding
+    # first. What it derives holds `app/` and nothing else — not the
+    # transcript, not the cache, not the scratch files — which is what
+    # makes the whole served tree safe to hand to the internet.
+    #
+    # A publication carries the tree; `db` is a live SQLite handle, and
+    # a live handle is not a file. So the embedder hands it over at the
+    # open, and the frozen workspace the router serves reaches exactly
+    # the store this process owns. Serve the same version twice with two
+    # databases and you have two deployments of one app.
+    ws.commit()
+    pub = store.publish(ws, "guestbook")
+    snapshot = pub.open(python=PythonConfig(host_objects={"db": db}))
 
     print("\n=== serving frozen (read-only VFS; state lives in SQLite) ===")
     from starlette.applications import Starlette
@@ -187,6 +187,7 @@ def main() -> None:
     )
     snapshot.close()
     ws.close()
+    store.close()
 
 
 if __name__ == "__main__":
