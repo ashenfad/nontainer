@@ -445,6 +445,18 @@ class Sessions:
         answer is yes for everything it wrote, because its virtual head
         is the PARENT's last agent commit — which is exactly why merge
         and take would refuse it without this.
+
+        The commit is the delegate's WHOLE working set, index or no
+        index. A delegate that staged half of what it did was composing
+        a commit it never made, and honoring that composition here
+        would answer with the other half left as uncommitted agent work
+        — which merge refuses and a take from the answer's ref silently
+        omits, while the job reads as answered and names both. So an
+        open index is cleared first: with nothing staged, a commit takes
+        every modified path, deletions included, which is the ``commit
+        -a`` the answer promises. Clearing rather than widening the
+        index also keeps the pathspec out of it, so a narrowed child
+        cannot refuse to stage a path it holds but cannot see.
         """
         refresh = getattr(child._provider, "refresh", None)
         if refresh is not None and child.caps.versioned:
@@ -454,6 +466,8 @@ class Sessions:
         status = child.index.status()
         if status.staged or status.unstaged:
             try:
+                if status.staged and status.unstaged:
+                    child.index.discard()
                 child.index.commit(_first_line(answer.text, task))
             except WorkspaceError:
                 # Another writer landed it between the status and here;

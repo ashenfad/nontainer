@@ -1127,6 +1127,14 @@ the answer arrives is what makes a delegate mergeable, and what makes
 its result one agent commit with a message (the answer's first line).
 No model is involved.
 
+That commit is the delegate's **whole working set**, deletions
+included, even where the delegate left an index open: a delegate that
+staged half of what it did was composing a commit it never made, and
+the answer names everything it changed, so everything it changed is in
+the commit. Honoring the half-composition instead would answer with the
+rest left as uncommitted agent work — which `merge` refuses and a take
+from `answer.ref` silently omits.
+
 Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
 parent learns a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's. `cancel` means the answer will
