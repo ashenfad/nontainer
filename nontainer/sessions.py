@@ -19,7 +19,9 @@ Two rules earn their place here rather than in the runner:
 - **The fork point is a commit, and the helper takes it.** ``fork``
   lands the parent's uncommitted writes first, so the child's base is
   a state that existed and the merge base is not older than the
-  parent's own edits.
+  parent's own edits. The runner is handed that commit (``forked_at``)
+  before the first turn, because the provenance header a delegate
+  arrives with names it.
 - **The helper never commits for the delegate.** A delegate is the
   author of its own commits, and the answer names what it landed: its
   last ws-git commit if it made one, its branch head if it never
@@ -39,6 +41,7 @@ into the next turn — is the embedder's, not nontainer's.
 
 from __future__ import annotations
 
+import inspect
 import random
 import threading
 import time
@@ -106,6 +109,28 @@ def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
+def _accepts_forked_at(runner: "SessionRunner") -> bool:
+    """Whether ``runner.run`` takes the fork point.
+
+    A runner belongs to the embedder, and one written against a
+    signature that has no ``forked_at`` must keep working — so the fork
+    point is passed only where the signature accepts it, by name or
+    through ``**kwargs``. A signature does not change, so this is read
+    once per runner rather than once per job.
+    """
+    try:
+        params = inspect.signature(runner.run).parameters
+    except (TypeError, ValueError):
+        return False  # no signature to read: the call without it is safe
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    found = params.get("forked_at")
+    return found is not None and found.kind in (
+        inspect.Parameter.KEYWORD_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    )
+
+
 class Sessions:
     """Delegation over one parent workspace.
 
@@ -139,6 +164,7 @@ class Sessions:
     ) -> None:
         self._ws = workspace
         self._runner = runner
+        self._forked_at_ok = _accepts_forked_at(runner)
         self._budget = budget
         self._chain = tuple(chain)
         self._pool = ThreadPoolExecutor(
@@ -240,6 +266,20 @@ class Sessions:
                 f"ws-git diff {name} shows what it had done."
             )
         return answer
+
+    def base(self, name: str) -> str | None:
+        """The commit job ``name`` was forked from.
+
+        The parent's head at the moment the child was taken, which is
+        the merge base for everything the delegate does; ``None`` when
+        the parent's provider keeps no commits. The runner is handed
+        the same value as ``forked_at``, and this is how a caller that
+        holds only the job name asks for it.
+        """
+        with self._lock:
+            if name not in self._jobs:
+                raise SessionsError(self._unknown(name))
+            return self._base.get(name)
 
     def cancel(self, name: str) -> Job:
         """Stop caring about job ``name``; returns the job.
@@ -380,8 +420,13 @@ class Sessions:
         runner's failure as ``failed`` with the exception's text, and a
         failure to land the answer as the answer plus what went wrong.
         """
+        # The fork point goes only to a runner whose signature accepts
+        # it — an embedder's runner written without the parameter gets
+        # the call it was written for.
+        with self._lock:
+            extra = {"forked_at": self._base.get(name)} if self._forked_at_ok else {}
         try:
-            out = self._runner.run(self._session_of(name), task, budget=budget)
+            out = self._runner.run(self._session_of(name), task, budget=budget, **extra)
             answer = out if isinstance(out, Answer) else Answer(text=str(out))
         except BaseException as exc:  # noqa: BLE001 - the job must resolve
             answer = Answer(text=_error_text(exc), status="failed")

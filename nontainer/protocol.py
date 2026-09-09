@@ -976,11 +976,31 @@ class SessionRunner(Protocol):
     The embedder implements this — it owns the model, the toolkit and
     the accounting. ``session`` names the workspace the turn runs
     against; ``task`` is the instruction; ``budget`` caps the work
-    (interpretation is the runner's: turns, tokens, seconds).
+    (interpretation is the runner's: turns, tokens, seconds);
+    ``forked_at`` is where the child came from.
+
+    ``forked_at`` is optional in the signature as well as in value: a
+    caller passes it only to a runner whose signature accepts it (by
+    name or through ``**kwargs``), so a runner written without it keeps
+    working unchanged.
     """
 
-    def run(self, session: str, task: str, *, budget: Any = None) -> "Answer | str":
+    def run(
+        self,
+        session: str,
+        task: str,
+        *,
+        budget: Any = None,
+        forked_at: str | None = None,
+    ) -> "Answer | str":
         """Run ``task`` against ``session`` and return the answer.
+
+        ``forked_at`` is the parent's commit the child was forked from,
+        and ``None`` when the parent's provider keeps no commits. It is
+        here rather than only in the answer's provenance because a
+        runner needs it BEFORE the first turn: the child arrives as a
+        peer, and the provenance header that says so ("asked by session
+        X at commit Y") is written at the top of the turn, not after it.
 
         An :class:`Answer` says everything: its ``status`` distinguishes
         a delegate that did the work from one that declined or hit its
