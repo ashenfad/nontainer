@@ -544,6 +544,29 @@ def test_a_failed_commit_leaves_the_agent_where_it_was(ws, monkeypatch):
     assert _subjects(ws) == ["base"]
 
 
+def test_an_ambiguous_short_id_is_refused_by_show_and_checkout(ws, monkeypatch):
+    """One ambiguity rule everywhere: two commits under one prefix are
+    named, never silently picked between."""
+    from nontainer.agentgit import AgentGit
+    from nontainer.protocol import CommitInfo
+
+    ws.terminal("echo one > a.txt")
+    ws.terminal("ws-git commit -m base")
+    twins = [
+        CommitInfo(
+            id="abc1234" + c * 33, time=0.0, info={"tool": "ws-git", "message": m}
+        )
+        for c, m in (("f", "one"), ("e", "two"))
+    ]
+    monkeypatch.setattr(AgentGit, "log", lambda self, limit=None: twins)
+
+    for cmd in ("ws-git show abc1234", "ws-git checkout abc1234"):
+        r = ws.terminal(cmd)
+        assert r.exit_code == 1, (cmd, r.stdout)
+        assert "ambiguous commit 'abc1234'" in r.stderr, (cmd, r.stderr)
+        assert twins[0].id[:12] in r.stderr and twins[1].id[:12] in r.stderr, r.stderr
+
+
 # -- log -S: where a string appeared or vanished -------------------------------
 
 
