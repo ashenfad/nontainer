@@ -803,6 +803,80 @@ def test_two_stores_publishing_one_name_get_two_versions(tmp_path):
         ws.close()
 
 
+# -- create_only -------------------------------------------------------------
+
+
+def test_create_only_opens_a_lineage(tmp_path):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard", create_only=True)
+    assert [v.version for v in pub.versions] == ["v1"]
+    assert pub.current == "v1"
+    ws.close()
+
+
+def test_create_only_refuses_a_name_that_is_already_published(tmp_path):
+    """The refusal lands before anything is written: no branch, no tag,
+    no commit, no record."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+
+    registry = json.loads((tmp_path / "publications.json").read_text())
+    branches = sorted(store._branches())
+    tags = dict(store.tags.list())
+
+    with pytest.raises(ValueError, match="already published"):
+        store.publish(ws, "scoreboard", create_only=True)
+
+    assert json.loads((tmp_path / "publications.json").read_text()) == registry
+    assert sorted(store._branches()) == branches
+    assert dict(store.tags.list()) == tags
+    ws.close()
+
+
+def test_create_only_refuses_a_name_whose_pointer_moved_off_v1(tmp_path):
+    """Any version of the name counts, not just the current one."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard", current=False, version="draft")
+    with pytest.raises(ValueError, match="already published"):
+        store.publish(ws, "scoreboard", create_only=True)
+    ws.close()
+
+
+def test_create_only_lets_exactly_one_of_two_racing_publishes_win(tmp_path):
+    """Two workers that each checked the name was free: without this the
+    loser silently publishes a second version of someone else's app."""
+    stores = [Store(tmp_path), Store(tmp_path)]
+    sessions = [seeded(stores[0], "a"), seeded(stores[1], "b")]
+    gate = threading.Barrier(2)
+    landed = []
+    errors = []
+
+    def publish(store, ws):
+        gate.wait()
+        try:
+            landed.append(store.publish(ws, "scoreboard", create_only=True))
+        except ValueError as e:
+            errors.append(e)
+
+    threads = [
+        threading.Thread(target=publish, args=(store, ws))
+        for store, ws in zip(stores, sessions)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(landed) == 1 and len(errors) == 1
+    pub = Store(tmp_path).publication("scoreboard")
+    assert [v.version for v in pub.versions] == ["v1"]
+    for ws in sessions:
+        ws.close()
+
+
 # -- a retained Publication is not a licence ---------------------------------
 
 
