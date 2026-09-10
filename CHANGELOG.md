@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what it accepts back. An ambiguous prefix raises `ValueError` naming
   the commits it could mean; one nothing matches raises the not-found
   error a whole id nothing matches earns.
+- **`ws-git sparse-checkout list`, and a `view:` header in
+  `ws-git status`.** A narrowed session could not ask what its view
+  was; it found out by hitting the write rule. The verb prints the
+  seed paths one per line, or `(full)` for a session that sees the
+  whole tree, and the bare `ws-git sparse-checkout` prints the same.
+  `ws-git status` leads with one `view: a/, b.md` line when the session
+  was given part of the tree. A view is given at the fork
+  (`ws-git branch <name> --paths <paths>`) and cannot be changed from
+  the terminal, so any other subcommand is a usage error that says so.
 
 ## 0.6.5 - 2026-09-10
 

@@ -817,7 +817,7 @@ def test_a_narrowed_session_sees_its_view_through_its_own_verbs(ws, store):
     try:
         register_wsgit(worker)
         worker.terminal("echo done > /workspace/a.py")
-        assert worker.terminal("ws-git status").stdout == " M a.py\n"
+        assert worker.terminal("ws-git status").stdout == "view: a.py\n M a.py\n"
         r = worker.terminal("ws-git commit -m done")
         assert r.exit_code == 0 and "(1 file)" in r.stdout
     finally:
@@ -1089,6 +1089,71 @@ def test_diff_reads_a_word_that_is_both_a_path_and_a_session_as_the_path(ws, sto
     ws.terminal("rm worker")
     ws.index.commit("gone")
     assert ws.terminal("ws-git diff worker").stdout.startswith("diff --git a/worker")
+
+
+# -- the sparse checkout -------------------------------------------------------
+
+
+def _narrowed(store, ws, *paths: str):
+    """A worker forked with a view, opened with ws-git registered."""
+    ws.terminal("ws-git branch worker --paths " + " ".join(paths))
+    worker = store.open("worker")
+    register_wsgit(worker)
+    return worker
+
+
+def test_sparse_checkout_lists_the_seed(ws, store):
+    """A narrowed session can ask what its view is, instead of finding
+    out by hitting the write rule."""
+    _seed(ws, **{"a.py": "a\n", "b.py": "b\n"})
+    ws.files.write("/workspace/pkg/mod.py", "m\n")
+    ws.index.commit("pkg")
+
+    worker = _narrowed(store, ws, "a.py", "pkg")
+    try:
+        assert worker.terminal("ws-git sparse-checkout list").stdout == "a.py\npkg/\n"
+        # git's default subcommand: the bare verb lists
+        assert worker.terminal("ws-git sparse-checkout").stdout == "a.py\npkg/\n"
+    finally:
+        worker.close()
+
+
+def test_status_leads_with_the_view(ws, store):
+    """One line, before the rows, so a reader sees what it can see
+    before it reads what changed."""
+    _seed(ws, **{"a.py": "a\n", "b.py": "b\n"})
+
+    worker = _narrowed(store, ws, "a.py")
+    try:
+        worker.terminal("echo done > /workspace/a.py")
+        assert worker.terminal("ws-git status").stdout.startswith("view: a.py\n")
+        assert (
+            worker.terminal("ws-git status --porcelain").stdout
+            == worker.terminal("ws-git status").stdout
+        )
+    finally:
+        worker.close()
+
+
+def test_a_full_session_has_no_view_to_print(ws):
+    _seed(ws, **{"a.py": "a\n"})
+    assert ws.terminal("ws-git sparse-checkout list").stdout == "(full)\n"
+
+    ws.files.write("/workspace/a.py", "edited\n")
+    assert ws.terminal("ws-git status").stdout == " M a.py\n"
+
+
+def test_sparse_checkout_takes_no_other_subcommand(ws):
+    """The view is a fork-time decision, so the verb that reads it does
+    not pretend it can be set here."""
+    _seed(ws, **{"a.py": "a\n"})
+    r = ws.terminal("ws-git sparse-checkout set a.py")
+    assert r.exit_code == 2
+    assert r.stderr.startswith(
+        "ws-git: sparse-checkout takes no 'set' (list is all there is): a "
+        "view is given when the session is forked (ws-git branch <name> "
+        "--paths <paths>) and cannot be changed here."
+    )
 
 
 # -- short commit ids ----------------------------------------------------------
