@@ -32,6 +32,10 @@ wherever cheap; each deviation carries a recorded reason:
   ``merge`` lands even when it conflicts (the markers commit, and
   ``status`` carries the merge context) — both because a session is a
   branch and there is no working tree to leave things in.
+- ``worktree add`` checks out another session under a directory of
+  its own, as git's does, but read-only and frozen at a commit: work
+  moves between sessions by merge and take, and a second tree an agent
+  could edit in place would be a third way with no way back.
 - ``diff <name>`` and ``log <name>`` read another session, and where
   that session has a narrowed view ``diff`` groups its changes under
   ``# ... in <name>'s view`` / ``# ... elsewhere``. git has no such
@@ -72,18 +76,20 @@ _VERBS = (
     "checkout",
     "branch",
     "merge",
+    "worktree",
     "help",
 )
 _USAGE = (
     "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
-    "checkout|branch|merge) [...]"
+    "checkout|branch|merge|worktree) [...]"
 )
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
     "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
     "log [<session>] [-n N] | show <ref> | checkout <ref> [-- <paths>] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
-    "merge <session> | help"
+    "merge <session> | "
+    "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | help"
 )
 _ROOT = "/workspace"
 
@@ -104,10 +110,15 @@ _EDGE = {
     ),
 }
 
+#: The three forms, printed by a bare ``ws-git worktree``.
+_WORKTREE_FORMS = """usage: ws-git worktree add <dir> <session>[@<commit>]
+       ws-git worktree list
+       ws-git worktree remove <dir>"""
+
 _HELP = """ws-git: the agent's git over this session.
 
 usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
-               branch|merge) [...]
+               branch|merge|worktree) [...]
   stage <paths>     add paths to the index (optional: commit with an
                     empty index takes everything modified)
   unstage <paths>   drop paths from the index
@@ -144,7 +155,22 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   merge <session>   merge that session's last commit into yours.
                     Conflicts land as markers in the merge commit and
                     show as UU in status; fix them and commit
+  worktree add <dir> <session>[@<commit>]
+                    check another session's tree out under <dir> and
+                    read it with ordinary tools (cat, ls, grep). A
+                    session name takes its head at this moment: add it
+                    again to see newer work
+  worktree list     the worktrees here, one line each
+  worktree remove <dir>
+                    take one down
   help              this text
+
+A worktree is READ-ONLY and pinned at a commit, because work moves
+between sessions only by merge and take. To change another session's
+branch, ask it, or take its files with ws-git checkout <session> --
+<paths> and change yours. It lives outside your versioned tree, so no
+commit of yours carries it and no status or diff of yours ever names a
+file in it.
 
 Subset, on purpose: no stash (a fork is a stash: ws-git branch <name>),
 no rebase (history is append-only). There is no .git — branches are
@@ -377,6 +403,8 @@ def make_wsgit_command(ws: Any) -> Any:
                 return _branch(ws, ctx, rest)
             if verb == "merge":
                 return _merge(git, ws, ctx, rest)
+            if verb == "worktree":
+                return _worktree(ws, ctx, rest)
         except (
             ValueError,
             WorkspaceError,
@@ -391,7 +419,7 @@ def make_wsgit_command(ws: Any) -> Any:
     wsgit.__doc__ = (
         "The agent's git over this session and its neighbours: ws-git "
         "(stage|unstage|commit|reset|status|diff|log|show|checkout|"
-        "branch|merge) [...]"
+        "branch|merge|worktree) [...]"
     )
     return wsgit
 
@@ -672,6 +700,125 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             ),
         )
     return None
+
+
+def _worktree(ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if not rest:
+        ctx.stdout.write(_WORKTREE_FORMS + "\n")
+        return None
+    sub, args = rest[0], rest[1:]
+    if sub == "add":
+        return _worktree_add(ws, ctx, args)
+    if sub == "list":
+        if args:
+            return _usage_error("worktree list takes no arguments.")
+        ctx.stdout.write("\n".join(_worktree_lines(ws) or ["(none)"]) + "\n")
+        return None
+    if sub == "remove":
+        return _worktree_remove(ws, ctx, args)
+    return _usage_error(f"worktree takes no {sub!r} (add, list, remove).")
+
+
+def _worktree_lines(ws: Any) -> list[str]:
+    """One line per worktree: where it is, what it holds, and that it
+    cannot be written to."""
+    return [
+        f"worktree {_show(at)}: {_short_ref(ref)} (read-only)"
+        for at, ref in sorted(ws.files.attachments().items())
+    ]
+
+
+def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
+    from termish import CommandResult
+
+    if len(rest) != 2 or any(a.startswith("-") for a in rest):
+        return _usage_error(
+            "worktree add takes a directory and a session (ws-git branch lists them)."
+        )
+    where, ref = rest
+    point = _abspath(ctx, where)
+    session = ref.rpartition("@")[0] or ref
+    if session == ws.session:
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                f"cannot add a worktree of {session!r}: a worktree reads "
+                "another session, and this one is already your own tree."
+            ),
+        )
+    for held in sorted(ws.files.attachments()):
+        if point.startswith(held + "/"):
+            return CommandResult(
+                exit_code=1,
+                stderr=(
+                    f"cannot add a worktree at {where!r}: that is inside "
+                    f"the worktree {_show(held)}."
+                ),
+            )
+    fs = ws.files.fs
+    if fs.exists(point):
+        # A worktree is a mount: what it lands on is hidden rather than
+        # merged, so anything already there would silently disappear.
+        reason = None
+        if not fs.isdir(point):
+            reason = "a file is already there"
+        elif fs.list(point):
+            reason = "that directory is not empty (a worktree needs a new or empty one)"
+        if reason is not None:
+            return CommandResult(
+                exit_code=1,
+                stderr=f"cannot add a worktree at {where!r}: {reason}.",
+            )
+    landed = ws.files.attach(_worktree_ref(ws, ref), point)
+    ctx.stdout.write(f"worktree {_show(point)}: {_short_ref(landed)} (read-only)\n")
+    return None
+
+
+def _short_ref(ref: str) -> str:
+    """Ref → display shape: the session and seven characters of the
+    commit, as every other ws-git verb prints one."""
+    from .store import Ref
+
+    parsed = Ref.parse(ref)
+    return f"{parsed.session}@{parsed.commit[:7]}"
+
+
+def _worktree_ref(ws: Any, ref: str) -> str:
+    """A ref an agent typed → one the store can resolve.
+
+    ws-git prints seven characters of a commit id and the store
+    resolves whole ones, so a ``session@commit`` copied off a log line
+    is expanded against that session's history. Every commit counts
+    here, the framework's included: a worktree reads a state and takes
+    no place in anyone's graph.
+    """
+    session, sep, commit = ref.rpartition("@")
+    if not sep or len(commit) >= 40 or not HASH_RE.fullmatch(commit):
+        return ref
+    other = _other_session(ws, session)
+    try:
+        for entry in other.log(kind="all"):
+            if entry.id.startswith(commit):
+                return f"{session}@{entry.id}"
+    finally:
+        other.close()
+    raise CommitNotFoundError(f"no commit {commit!r} on session {session!r}")
+
+
+def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if len(rest) != 1 or rest[0].startswith("-"):
+        return _usage_error("worktree remove takes one directory.")
+    where = rest[0]
+    point = _abspath(ctx, where)
+    held = sorted(ws.files.attachments())
+    if point not in held:
+        known = ", ".join(_show(p) for p in held)
+        return _usage_error(
+            f"no worktree at {where!r} "
+            f"({'worktrees here: ' + known if held else 'no worktrees here'})."
+        )
+    ws.files.detach(point)
+    return None  # silent, like git worktree remove
 
 
 def _show_verb(git: AgentGit, ctx: Any, rest: list[str]) -> Any:

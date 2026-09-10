@@ -13,12 +13,13 @@ import re
 
 import pytest
 
-from nontainer import Workspace
+from nontainer import Store, Workspace
 from nontainer.providers import KvgitProvider
 from nontainer.wsgit import (
     _HELP,
     _SUPPORTED,
     _USAGE,
+    _WORKTREE_FORMS,
     make_wsgit_command,
     register_wsgit,
 )
@@ -528,3 +529,160 @@ def test_a_failed_commit_leaves_the_agent_where_it_was(ws, monkeypatch):
     assert ws.terminal("cat a.txt").stdout == "edited\n"
     assert ws.terminal("cat b.txt").stdout == "edited\n"
     assert _subjects(ws) == ["base"]
+
+
+# -- worktrees: another session's tree, read in place --------------------------
+
+
+@pytest.fixture
+def store(tmp_path):
+    """A store, so a session has neighbours to read."""
+    s = Store(tmp_path / "store")
+    try:
+        yield s
+    finally:
+        s.close()
+
+
+@pytest.fixture
+def peer_ws(store):
+    """A ws-git session on a store, with a committed peer to attach."""
+    peer = store.open("peer")
+    peer.files.write("/workspace/note.md", "first\n")
+    peer.commit(info={"tool": "test"})
+    peer.close()
+    w = store.open("main")
+    register_wsgit(w)
+    try:
+        yield w
+    finally:
+        w.close()
+
+
+def _advance_peer(store):
+    """A newer commit on the peer, so a second add has something to see."""
+    peer = store.open("peer")
+    peer.files.write("/workspace/note.md", "second\n")
+    peer.commit(info={"tool": "test"})
+    peer.close()
+
+
+def test_worktree_add_list_remove(peer_ws):
+    """The round trip: nothing, one worktree in the list shape, nothing."""
+    assert peer_ws.terminal("ws-git worktree list").stdout == "(none)\n"
+
+    r = peer_ws.terminal("ws-git worktree add peek peer")
+    assert r.exit_code == 0, r.stderr
+    assert re.fullmatch(rf"worktree peek: peer@{SHORT} \(read-only\)\n", r.stdout), (
+        r.stdout
+    )
+
+    assert peer_ws.terminal("ws-git worktree list").stdout == r.stdout
+
+    r = peer_ws.terminal("ws-git worktree remove peek")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == ""
+    assert peer_ws.terminal("ws-git worktree list").stdout == "(none)\n"
+
+
+def test_worktree_reads_the_other_session(peer_ws):
+    """Ordinary tools read it: the point of a worktree over a verb."""
+    assert peer_ws.terminal("ws-git worktree add peek peer").exit_code == 0
+    assert peer_ws.terminal("cat peek/note.md").stdout == "first\n"
+    assert peer_ws.terminal("ls peek").stdout == "note.md\n"
+
+
+def test_worktree_is_read_only(peer_ws):
+    """Work moves between sessions by merge and take, never by writing
+    into someone else's tree."""
+    peer_ws.terminal("ws-git worktree add peek peer")
+    r = peer_ws.terminal("echo edited > peek/note.md")
+    assert r.exit_code != 0
+    assert "Read-only filesystem" in r.stderr
+    assert peer_ws.terminal("cat peek/note.md").stdout == "first\n"
+
+
+def test_worktree_paths_are_never_modified(peer_ws):
+    """An attachment sits outside the versioned tree, so no verb that
+    measures the tree ever names it."""
+    peer_ws.files.fs.write("/workspace/a.txt", b"mine\n")
+    peer_ws.terminal("ws-git commit -m base")
+    peer_ws.terminal("ws-git worktree add peek peer")
+
+    assert "note.md" not in peer_ws.terminal("ws-git status").stdout
+    assert peer_ws.terminal("ws-git diff").stdout == ""
+    assert peer_ws.terminal("ws-git diff --cached").stdout == ""
+
+
+def test_worktree_add_again_sees_newer_work(peer_ws, store):
+    """A worktree is pinned at a commit: adding again is how you see
+    what the session has done since."""
+    peer_ws.terminal("ws-git worktree add peek peer")
+    first = peer_ws.terminal("ws-git worktree list").stdout
+    _advance_peer(store)
+    assert peer_ws.terminal("cat peek/note.md").stdout == "first\n"
+
+    peer_ws.terminal("ws-git worktree remove peek")
+    r = peer_ws.terminal("ws-git worktree add peek peer")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout != first
+    assert peer_ws.terminal("cat peek/note.md").stdout == "second\n"
+
+
+def test_worktree_add_at_a_commit(peer_ws, store):
+    """The session@commit spelling pins an older state."""
+    peer_ws.terminal("ws-git worktree add peek peer")
+    pinned = (
+        peer_ws.terminal("ws-git worktree list").stdout.split(": ")[1].split(" ")[0]
+    )
+    peer_ws.terminal("ws-git worktree remove peek")
+    _advance_peer(store)
+
+    r = peer_ws.terminal(f"ws-git worktree add old {pinned}")
+    assert r.exit_code == 0, r.stderr
+    assert peer_ws.terminal("cat old/note.md").stdout == "first\n"
+
+
+def test_worktree_add_refusals(peer_ws):
+    """Three refusals, each with its one-line reason."""
+    peer_ws.files.fs.write("/workspace/full/a.txt", b"a\n")
+    r = peer_ws.terminal("ws-git worktree add full peer")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: cannot add a worktree at 'full': that directory is not "
+        "empty (a worktree needs a new or empty one)."
+    )
+
+    peer_ws.terminal("ws-git worktree add peek peer")
+    r = peer_ws.terminal("ws-git worktree add peek/inner peer")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: cannot add a worktree at 'peek/inner': that is inside the "
+        "worktree peek."
+    )
+
+    r = peer_ws.terminal("ws-git worktree add mine main")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: cannot add a worktree of 'main': a worktree reads another "
+        "session, and this one is already your own tree."
+    )
+
+
+def test_worktree_remove_unknown_dir(peer_ws):
+    """A usage error that names what is actually there."""
+    r = peer_ws.terminal("ws-git worktree remove nope")
+    assert r.exit_code == 2
+    assert r.stderr.startswith("ws-git: no worktree at 'nope' (no worktrees here).")
+
+    peer_ws.terminal("ws-git worktree add peek peer")
+    r = peer_ws.terminal("ws-git worktree remove nope")
+    assert r.exit_code == 2
+    assert r.stderr.startswith("ws-git: no worktree at 'nope' (worktrees here: peek).")
+
+
+def test_worktree_bare_prints_the_forms(peer_ws):
+    r = peer_ws.terminal("ws-git worktree")
+    assert r.exit_code == 0
+    assert r.stdout == _WORKTREE_FORMS + "\n"
+    assert "worktree add <dir> <session>[@<commit>]" in r.stdout
