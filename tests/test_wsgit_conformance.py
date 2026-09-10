@@ -271,3 +271,43 @@ def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
         assert ws._provider.files_at(child.head)["/workspace/hidden.txt"] == b"hidden\n"
     finally:
         child.close()
+
+
+def test_worktree_reads_a_neighbour_across_the_rungs(ws, store):
+    """Reading another session's tree is the same three verbs wherever
+    code runs: the worktree is host-side state on the workspace, and
+    the guest is handed the files like any other part of the tree."""
+    ws.terminal("cat > a.txt <<'EOF'\nbase\nEOF\nws-git commit -m base")
+    peer = f"{ws.session}-p"
+    assert ws.terminal(f"ws-git branch {peer}").exit_code == 0
+
+    worker = store.open(
+        peer,
+        **(
+            {"executor_factory": store.executor_factory}
+            if store.executor_factory is not None
+            else {}
+        ),
+    )
+    register_wsgit(worker)
+    try:
+        r = worker.terminal("cat > note.md <<'EOF'\npeer\nEOF\nws-git commit -m note")
+        assert r.exit_code == 0, r.stdout
+    finally:
+        worker.close()
+
+    assert ws.terminal("ws-git worktree list").stdout == "(none)\n"
+    r = ws.terminal(f"ws-git worktree add peek {peer}")
+    assert r.exit_code == 0, r.stderr
+    line = rf"worktree peek: {re.escape(peer)}@{SHORT} \(read-only\)\n"
+    assert re.fullmatch(line, r.stdout), r.stdout
+    assert ws.terminal("ws-git worktree list").stdout == r.stdout
+
+    # ordinary tools read it, and nothing in it is work of this session
+    assert ws.terminal("cat peek/note.md").stdout == "peer\n"
+    assert ws.terminal("ws-git status").stdout == "worktrees:\n" + r.stdout
+    assert ws.terminal("ws-git diff").stdout == ""
+
+    assert ws.terminal("ws-git worktree remove peek").stdout == ""
+    assert ws.terminal("ws-git worktree list").stdout == "(none)\n"
+    assert ws.terminal("ws-git status").stdout == ""
