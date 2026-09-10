@@ -65,7 +65,13 @@ commit a ref names. A `Ref` is `session@commit`, optionally
 `session@commit:/path` (the path is carried, not yet interpreted);
 `Ref.parse(str)` and `str(ref)` are the two directions. Resolving into
 a session the store has never held raises rather than creating the
-branch.
+branch. **A commit may be spelled short**, wherever a ref is taken
+(`store.resolve`, `ws.checkout`, `ws.files.attach`, the ws-git verbs):
+a unique prefix of seven hex characters or more — the length every
+ws-git line prints — expands against that session's whole history, the
+framework's commits included. An ambiguous prefix raises `ValueError`
+naming the commits it could mean; one nothing matches raises
+`CommitNotFoundError`, exactly as a whole id nothing matches does.
 
 **`store.tags`** — the store-scoped half of tags, the names that
 deliberately outlive the session that made them:

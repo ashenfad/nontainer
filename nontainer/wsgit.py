@@ -784,7 +784,7 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 exit_code=1,
                 stderr=f"cannot add a worktree at {where!r}: {reason}.",
             )
-    landed = ws.files.attach(_worktree_ref(ws, ref), point)
+    landed = ws.files.attach(ref, point)
     ctx.stdout.write(f"worktree {_show(ws, point)}: {_short_ref(landed)} (read-only)\n")
     return None
 
@@ -796,28 +796,6 @@ def _short_ref(ref: str) -> str:
 
     parsed = Ref.parse(ref)
     return f"{parsed.session}@{parsed.commit[:7]}"
-
-
-def _worktree_ref(ws: Any, ref: str) -> str:
-    """A ref an agent typed → one the store can resolve.
-
-    ws-git prints seven characters of a commit id and the store
-    resolves whole ones, so a ``session@commit`` copied off a log line
-    is expanded against that session's history. Every commit counts
-    here, the framework's included: a worktree reads a state and takes
-    no place in anyone's graph.
-    """
-    session, sep, commit = ref.rpartition("@")
-    if not sep or len(commit) >= 40 or not HASH_RE.fullmatch(commit):
-        return ref
-    other = _other_session(ws, session)
-    try:
-        for entry in other.log(kind="all"):
-            if entry.id.startswith(commit):
-                return f"{session}@{entry.id}"
-    finally:
-        other.close()
-    raise CommitNotFoundError(f"no commit {commit!r} on session {session!r}")
 
 
 def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:

@@ -123,6 +123,19 @@ def test_partial_commit_leaves_the_rest_in_the_tree(ws):
     assert "a/a.txt" in body and "b.txt" not in body
 
 
+def test_show_takes_the_short_id_the_log_printed(ws):
+    """What a verb prints, a verb accepts: the seven characters of a
+    log line name that commit to show."""
+    ws.terminal("echo one > a.txt")
+    ws.terminal("ws-git commit -m first")
+    ws.terminal("echo two > a.txt")
+    ws.terminal("ws-git commit -m second")
+    first = ws.terminal("ws-git log").stdout.splitlines()[1].split()[0]
+
+    body = ws.terminal(f"ws-git show {first}").stdout
+    assert "first" in body and "+one" in body
+
+
 def test_unstaged_diff_and_status_columns(ws):
     ws.files.fs.write("/workspace/a.txt", b"one\n")
     assert ws.terminal("ws-git status").stdout == " M a.txt\n"

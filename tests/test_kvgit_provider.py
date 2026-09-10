@@ -1031,3 +1031,66 @@ def test_both_sides_draining_one_path_conflict_by_path(tmp_path):
         if worker is not None:
             worker.close()
         main.close()
+
+
+# -- short commit ids ------------------------------------------------------
+
+
+def test_expand_commit_takes_a_unique_prefix(kv_ws):
+    """Seven characters is what every ws-git line prints, so seven
+    characters is a commit id the substrate accepts back."""
+    provider = kv_ws._provider
+    kv_ws.files.write("/workspace/a.txt", "one\n")
+    full = kv_ws.commit()
+
+    assert provider.expand_commit(full[:7]) == full
+    assert provider.expand_commit(full) == full
+
+
+def test_expand_commit_leaves_alone_what_is_not_a_short_id(kv_ws):
+    """A name, a word too short to be a commit id, and a whole id that
+    matches nothing all come back as they went in: what follows judges
+    them, so a short id nothing matches reads like a whole one."""
+    provider = kv_ws._provider
+    kv_ws.files.write("/workspace/a.txt", "one\n")
+    kv_ws.commit()
+
+    assert provider.expand_commit("HEAD") == "HEAD"
+    assert provider.expand_commit("abc") == "abc"
+    assert provider.expand_commit("0123456") == "0123456"
+    assert provider.expand_commit("0" * 40) == "0" * 40
+
+
+def test_expand_commit_refuses_an_ambiguous_prefix(kv_ws, monkeypatch):
+    """Two commits under one prefix is not a ref: name them and ask for
+    more of the id, rather than picking one."""
+    provider = kv_ws._provider
+    monkeypatch.setattr(
+        provider,
+        "_commit_ids",
+        lambda session: ["abc1234ffff" + "0" * 29, "abc1234eeee" + "0" * 29],
+    )
+    with pytest.raises(ValueError) as excinfo:
+        provider.expand_commit("abc1234")
+    message = str(excinfo.value)
+    assert "abc1234eeee" in message and "abc1234ffff" in message
+    assert "2 commits" in message
+
+
+def test_expand_commit_searches_the_session_it_is_asked_about(kv_ws):
+    """A ref names a commit on a session, so the prefix is expanded
+    against that session's history and not the reader's."""
+    provider = kv_ws._provider
+    kv_ws.files.write("/workspace/a.txt", "one\n")
+    kv_ws.commit()
+
+    worker = provider.fork("expand-worker")
+    try:
+        worker.fs.write("/workspace/b.txt", b"theirs\n")
+        theirs = worker.commit()
+    finally:
+        worker.close()
+
+    assert provider.expand_commit(theirs[:7], session="expand-worker") == theirs
+    # not on this session's branch, so this session cannot name it
+    assert provider.expand_commit(theirs[:7]) == theirs[:7]

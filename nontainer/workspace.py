@@ -1953,7 +1953,7 @@ class Workspace:
             self._check_writable("checkout")
             if paths is not None:
                 return self._take(ref, paths)
-            commit = str(ref)
+            commit = self._expand_commit(str(ref))
             try:
                 landed = self._provider.checkout(commit)
             except CommitNotFoundError as e:
@@ -2063,6 +2063,20 @@ class Workspace:
             if reason is not None:
                 raise PermissionError(reason)
 
+    def _expand_commit(self, commit: str, *, session: str | None = None) -> str:
+        """A commit id typed short → the whole one it names, where the
+        substrate can say.
+
+        Seven characters is what every ws-git line prints, and a
+        spelling nontainer prints is one it accepts back. A substrate
+        with no commit prefixes to expand hands the text back as it
+        came, so the read that follows judges it.
+        """
+        expand = getattr(self._provider, "expand_commit", None)
+        if expand is None:
+            return commit
+        return expand(commit, session=session)
+
     def _take_source(self, ref: "str | Ref") -> "tuple[str, Mapping[str, Any]]":
         """``(ref as recorded, that state's files)`` for a take.
 
@@ -2079,13 +2093,13 @@ class Workspace:
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
             parsed = Ref.parse(text)
-            return str(Ref(parsed.session, parsed.commit)), self._provider.files_at(
-                parsed.commit
-            )
+            commit = self._expand_commit(parsed.commit, session=parsed.session)
+            return str(Ref(parsed.session, commit)), self._provider.files_at(commit)
         try:
             head = self._provider.branch_head(text)
         except (ValueError, NotSupportedError, AttributeError):
-            return f"{self.session}@{text}", self._provider.files_at(text)
+            commit = self._expand_commit(text)
+            return f"{self.session}@{commit}", self._provider.files_at(commit)
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
         return f"{text}@{virtual}", self._provider.files_at(virtual)
 

@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merge and take; add again to see newer work. `ws-git status` ends
   with a `worktrees:` block, so a directory whose files never show as
   modified is not a puzzle.
+- **A short commit id is a ref everywhere.** A unique prefix of seven
+  hex characters or more — the length every ws-git line prints —
+  resolves wherever a ref is taken: `store.resolve`, `ws.checkout`
+  (both forms), `ws.files.attach`, and the ws-git verbs that name a
+  `<session>@<commit>`. The prefix expands against that session's whole
+  history, the framework's commits included, so what a verb prints is
+  what it accepts back. An ambiguous prefix raises `ValueError` naming
+  the commits it could mean; one nothing matches raises the not-found
+  error a whole id nothing matches earns.
 
 ## 0.6.5 - 2026-09-10
 
