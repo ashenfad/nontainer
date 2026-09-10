@@ -128,7 +128,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   reset             abandon the composition (mixed-only)
   status [--porcelain]
                     staged vs unstaged (git-short XY columns; porcelain
-                    is the default, so the flag changes nothing)
+                    is the default, so the flag changes nothing), then
+                    a worktrees: block — one line per worktree, the
+                    shape worktree list prints — when any are up
   diff [<session>] [--cached] [--check] [paths...]
                     unified diff against your last commit; --cached for
                     the staged set; a session name diffs against that
@@ -170,7 +172,7 @@ between sessions only by merge and take. To change another session's
 branch, ask it, or take its files with ws-git checkout <session> --
 <paths> and change yours. It lives outside your versioned tree, so no
 commit of yours carries it and no status or diff of yours ever names a
-file in it.
+file in it; ws-git status ends with a worktrees: block instead.
 
 Subset, on purpose: no stash (a fork is a stash: ws-git branch <name>),
 no rebase (history is append-only). There is no .git — branches are
@@ -382,7 +384,7 @@ def make_wsgit_command(ws: Any) -> Any:
         git = AgentGit(ws)
         try:
             if verb == "status":
-                return _status(git, ctx, rest)
+                return _status(git, ws, ctx, rest)
             if verb == "stage":
                 return _stage(git, ctx, rest)
             if verb == "unstage":
@@ -452,7 +454,7 @@ def _usage_error(detail: str) -> Any:
     return CommandResult(exit_code=2, stderr=f"{detail}\n{_USAGE}\n{_SUPPORTED}")
 
 
-def _status(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     for flag in rest:
         if flag != "--porcelain":
             return _usage_error(f"status takes no {flag!r} (porcelain is the default).")
@@ -473,6 +475,13 @@ def _status(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
             x = "M" if path in staged else " "
             y = "M" if path in unstaged else " "
             lines.append(f"{x}{y} {_show(path)}")
+    # A worktree sits outside the versioned tree, so no row above can
+    # ever name a file in one; without this block a directory full of
+    # files that never show as modified is a puzzle.
+    worktrees = _worktree_lines(ws)
+    if worktrees:
+        lines.append("worktrees:")
+        lines.extend(worktrees)
     if lines:
         ctx.stdout.write("\n".join(lines) + "\n")
     return None

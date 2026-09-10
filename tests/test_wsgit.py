@@ -686,3 +686,28 @@ def test_worktree_bare_prints_the_forms(peer_ws):
     assert r.exit_code == 0
     assert r.stdout == _WORKTREE_FORMS + "\n"
     assert "worktree add <dir> <session>[@<commit>]" in r.stdout
+
+
+def test_status_ends_with_the_worktrees(peer_ws):
+    """A directory that never shows as modified would puzzle an agent,
+    so status says it is there and what it holds."""
+    peer_ws.terminal("ws-git worktree add peek peer")
+    block = peer_ws.terminal("ws-git worktree list").stdout
+
+    out = peer_ws.terminal("ws-git status").stdout
+    assert out == "worktrees:\n" + block
+    assert peer_ws.terminal("ws-git status --porcelain").stdout == out
+
+    # file rows first, the block last
+    peer_ws.files.fs.write("/workspace/a.txt", b"mine\n")
+    out = peer_ws.terminal("ws-git status").stdout
+    assert out == " M a.txt\nworktrees:\n" + block
+    assert peer_ws.terminal("ws-git status --porcelain").stdout == out
+
+
+def test_status_omits_the_block_with_no_worktrees(peer_ws):
+    assert peer_ws.terminal("ws-git status").stdout == ""
+    peer_ws.terminal("ws-git worktree add peek peer")
+    peer_ws.terminal("ws-git worktree remove peek")
+    assert peer_ws.terminal("ws-git status").stdout == ""
+    assert peer_ws.terminal("ws-git status --porcelain").stdout == ""
