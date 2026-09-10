@@ -231,11 +231,16 @@ class Version:
     ``name``, ``version``, ``published_from`` and ``paths``. A row
     written before the field existed reads as an empty mapping.
 
+    ``info`` reads as a read-only view all the way down: nested
+    mappings are read-only too, and a JSON array reads as a tuple. A
+    version is immutable, and a record that let a caller edit three
+    keys in would say otherwise.
+
     ``info`` counts for equality but is left out of the hash, so a
     version goes in a set or a dict key like any other frozen record.
-    It holds whatever JSON the caller passed — a list, a nested dict —
-    and none of that is hashable, while everything that identifies the
-    version (``tag``, ``ref``) is.
+    It holds whatever JSON the caller passed — a nested dict — and that
+    is not hashable, while everything that identifies the version
+    (``tag``, ``ref``) is.
     """
 
     name: str
@@ -267,9 +272,13 @@ class Publication:
     This object is a record of the registry as it was read, not a live
     view of it: a snapshot taken before a ``set_meta`` keeps the
     ``meta`` it was fetched with, and re-reading it is what shows the
-    new one. ``meta`` counts for equality but is left out of the hash,
-    for the reason ``Version.info`` is — it holds whatever JSON the
-    caller passed, and none of that is hashable.
+    new one. ``meta`` reads read-only all the way down for that
+    reason — nested mappings are read-only too, and a JSON array reads
+    as a tuple — so the way to change it is :meth:`Store.set_meta`,
+    which is where the registry lock and the validation are. It counts
+    for equality but is left out of the hash, as ``Version.info``
+    does: it holds whatever JSON the caller passed, and that is not
+    hashable.
     """
 
     name: str
@@ -1157,7 +1166,11 @@ class Store:
         The mapping is replaced whole rather than merged, so dropping a
         key is spelled the same way as changing one: pass what the
         publication should read as. ``{}`` clears it. Values must be
-        JSON-serializable, because the registry is a JSON file.
+        JSON-serializable, because the registry is a JSON file, and
+        what lands is a copy: editing a nested list afterwards says
+        nothing about the publication. A mapping read back off a
+        record is accepted as it comes, so ``set_meta(name, {**pub.meta,
+        "title": "New"})`` is the way to change one key.
 
         The read, the replacement and the write happen under the
         registry lock, so a concurrent publish or ``set_current`` on
@@ -1570,7 +1583,7 @@ class Store:
                     else None
                 ),
                 created=float(row.get("created") or 0.0),
-                info=MappingProxyType(dict(row.get("info") or {})),
+                info=_frozen_json(row.get("info") or {}),
                 paths=tuple(row.get("paths") or ()),
             )
             for v, row in sorted(rows.items(), key=lambda kv: _version_order(kv[0]))
@@ -1581,7 +1594,7 @@ class Store:
             versions=versions,
             current=current,
             store=self,
-            meta=MappingProxyType(dict(record.get("meta") or {})),
+            meta=_frozen_json(record.get("meta") or {}),
         )
 
     def _open_publication(self, version: Version, **settings: Any) -> "Workspace":
@@ -2095,12 +2108,49 @@ class Store:
         return frozen
 
 
-def _validate_meta(meta: Any) -> dict[str, Any]:
-    """A publication's metadata: a JSON-serializable mapping.
+def _as_json_value(value: Any) -> Any:
+    """What ``json.dumps`` should make of a value it does not know.
 
-    Checked before the registry lock, so a value the registry could not
-    be written with never reaches the file. Both refusals are
-    ``ValueError``: what was passed is the caller's to fix.
+    The mappings a record hands back are ``MappingProxyType``, which
+    ``json`` refuses; they serialize as the dicts they are, so the
+    obvious edit — read a record's metadata, change one key, write it
+    back — is not refused for the shape it came back in. Anything else
+    is genuinely not JSON and raises.
+    """
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
+def _frozen_json(value: Any) -> Any:
+    """A JSON value as a read-only view of itself, all the way down.
+
+    Mappings become ``MappingProxyType`` and arrays become tuples, so a
+    record's metadata cannot be edited through the record — at the top
+    level or three keys in. A record describes what the store holds; a
+    caller who wants a change builds a new mapping and writes it back,
+    where the write is the thing that can be refused, locked and
+    logged. Deep-frozen rather than deep-copied because a read is the
+    common case and a copy per read would pay for a write that mostly
+    does not come.
+    """
+    if isinstance(value, Mapping):
+        return MappingProxyType({k: _frozen_json(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_frozen_json(v) for v in value)
+    return value
+
+
+def _validate_meta(meta: Any) -> dict[str, Any]:
+    """A publication's metadata, normalized to plain JSON.
+
+    The round trip is the serializability check and the copy at once:
+    what comes back shares nothing with what the caller passed, so
+    editing a nested list afterwards says nothing about the
+    publication, and a value the registry could not be written with is
+    refused before the lock rather than halfway through the write.
+    Both refusals are ``ValueError``: what was passed is the caller's
+    to fix.
     """
     if not isinstance(meta, Mapping):
         raise ValueError(
@@ -2108,15 +2158,13 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
             f"{meta!r}. It is replaced whole, so pass what the publication "
             "should read as."
         )
-    replacement = dict(meta)
     try:
-        json.dumps(replacement, sort_keys=True)
+        return json.loads(json.dumps(dict(meta), default=_as_json_value))
     except (TypeError, ValueError) as e:
         raise ValueError(
             f"Publication meta must be JSON-serializable, and this is not: "
             f"{e}. The registry is a JSON file beside the store."
         ) from e
-    return replacement
 
 
 def _validate_publication_name(name: str) -> str:
