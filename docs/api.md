@@ -150,6 +150,8 @@ Publication: .name, .versions -> tuple[Version, ...], .current
              .open(version=None, **settings) -> Workspace   # frozen, at that version
 
 Version:     .name, .version, .tag, .ref, .published_from, .created
+             .info -> Mapping[str, Any]      # the caller's publish info
+             .paths -> tuple[str, ...]       # what was published
 ```
 
 What lands is **the subtree, not the session**. `publish` derives a new
@@ -173,6 +175,14 @@ and `release-1` gets `v3`: the default is a series of its own, and a
 version the caller named stands outside it. An embedder that wants
 every version numbered passes `version=` itself. An explicit name must
 be unused, because versions never move.
+
+`Version.info` is the caller's own `publish(info=...)` keys, read back
+off the registry row rather than the tag: listing publications with
+their display titles and owners is one registry read and no backend
+open. It carries what the caller passed and nothing else — what publish
+writes itself is already spelled out by `name`, `version`,
+`published_from` and `paths`. A row written before the field existed
+reads as an empty mapping, and `paths` as an empty tuple.
 
 `info` may not set `tool`, `name`, `version`, `published_from` or
 `paths`: those are what publish writes into the commit, and the commit is where a
@@ -216,7 +226,9 @@ One publish writes three things:
           "ref": "@store/pub/scoreboard/v1@<commit>",
           "published_from": "author@<commit>",
           "created": 1788897774.69,
-          "root": "/workspace"
+          "root": "/workspace",
+          "paths": ["app/"],
+          "info": {"title": "Scores", "owner": "ann"}
         }
       },
       "current": "v1"

@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import NotSupportedError, WorkspaceError
@@ -221,6 +222,14 @@ class Version:
     ``published_from`` is the session ref it was derived from — a soft
     reference recorded in the commit's info, not a parent pointer, so
     the version pins none of that session's history.
+
+    ``info`` is the caller's own metadata from ``publish(info=...)``,
+    recorded on the registry row as well as in the commit, so listing
+    published apps with their display titles and owners is one registry
+    read and no backend open. It holds what the caller passed and
+    nothing else: what publish writes itself is already spelled out by
+    ``name``, ``version``, ``published_from`` and ``paths``. A row
+    written before the field existed reads as an empty mapping.
     """
 
     name: str
@@ -229,6 +238,8 @@ class Version:
     ref: Ref
     published_from: Ref | None
     created: float
+    info: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -887,7 +898,10 @@ class Store:
                 publication must point somewhere.
             info: Extra keys merged into the commit's info, beside the
                 ``tool``/``name``/``version``/``published_from``/``paths``
-                this writes itself.
+                this writes itself. They are recorded on the registry
+                row as well and come back as :attr:`Version.info`, so
+                listing publications with their metadata costs one
+                registry read and no backend open.
 
         Returns:
             The :class:`Publication`, with the new version current.
@@ -1009,6 +1023,15 @@ class Store:
                 "published_from": str(published_from),
                 "created": time.time(),
                 "root": ws.root,
+                "paths": sorted(paths),
+                # The caller's keys only. What publish writes itself is
+                # already spelled out by the fields around this one, and
+                # the commit stays the place provenance is read from.
+                "info": {
+                    k: v
+                    for k, v in (info or {}).items()
+                    if k not in _RESERVED_INFO_KEYS
+                },
             }
             pointer = record.get("current")
             registry[name] = {
@@ -1398,6 +1421,8 @@ class Store:
                     else None
                 ),
                 created=float(row.get("created") or 0.0),
+                info=MappingProxyType(dict(row.get("info") or {})),
+                paths=tuple(row.get("paths") or ()),
             )
             for v, row in sorted(rows.items(), key=lambda kv: _version_order(kv[0]))
         )

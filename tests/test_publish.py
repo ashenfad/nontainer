@@ -93,6 +93,8 @@ def test_publish_makes_a_branch_a_tag_and_a_record(tmp_path):
                     "published_from": str(ws.ref),
                     "created": version.created,
                     "root": "/workspace",
+                    "paths": ["app/"],
+                    "info": {},
                 }
             },
         }
@@ -191,6 +193,46 @@ def test_info_rides_along_on_the_commit(tmp_path):
     assert entry.info["tool"] == "publish"
     snapshot.close()
     ws.close()
+
+
+def test_the_version_row_carries_the_callers_info(tmp_path):
+    """Listing published apps with their titles is a registry read: the
+    caller's keys ride on the row, so no tag has to be opened for them."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard", info={"title": "Scores", "owner": "ann"})
+    ws.close()
+
+    version = Store(tmp_path).publications()["scoreboard"].current_version
+    assert version.info == {"title": "Scores", "owner": "ann"}
+    assert version.paths == ("app/",)
+
+    row = json.loads((tmp_path / "publications.json").read_text())
+    row = row["scoreboard"]["versions"]["v1"]
+    assert row["info"] == {"title": "Scores", "owner": "ann"}
+    # The provenance keys are row fields already; the info mapping is
+    # the caller's own and does not repeat them.
+    assert set(row["info"]).isdisjoint({"tool", "name", "version", "published_from"})
+
+
+def test_a_version_row_written_without_info_reads_as_empty(tmp_path):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+
+    path = tmp_path / "publications.json"
+    registry = json.loads(path.read_text())
+    row = registry["scoreboard"]["versions"]["v1"]
+    row.pop("info")
+    row.pop("paths")
+    path.write_text(json.dumps(registry))
+
+    version = Store(tmp_path).publication("scoreboard").current_version
+    assert version.info == {}
+    assert version.paths == ()
+    with pytest.raises(TypeError):
+        version.info["title"] = "no"
 
 
 def test_paths_select_what_lands(tmp_path):
