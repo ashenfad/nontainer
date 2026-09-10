@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A ref nontainer hands out is a ref `store.tags.add` accepts.** A
+  published version's own ref named a reserved branch rather than a
+  session, so tagging it raised `SessionIdError` while
+  `store.resolve` read the same ref fine. `tags.add` now reads a
+  publication's branch the way `resolve` does — the registry says
+  whether the version is still published, and the branch is never
+  minted by being read. `store.open` and `store.delete` stay
+  sessions-only.
+
 ## 0.6.4 - 2026-09-10
 
 ### Added
