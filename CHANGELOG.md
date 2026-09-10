@@ -27,7 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   error a whole id nothing matches earns. A ref is made whole
   before anything compares it with what the store holds, so a
   publication's own ref (`version.ref`) shortened to seven characters
-  resolves, tags and attaches instead of reading as unpublished.
+  resolves, tags and attaches instead of reading as unpublished. The
+  agent's own graph answers to the same rule: `ws-git show <short>` and
+  `ws-git checkout <short>` name the candidates rather than resolving
+  to whichever commit under the prefix came first.
 - **`ws-git sparse-checkout list`, and a `view:` header in
   `ws-git status`.** A narrowed session could not ask what its view
   was; it found out by hitting the write rule. The verb prints the

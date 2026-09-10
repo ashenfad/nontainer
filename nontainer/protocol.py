@@ -64,6 +64,32 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*$")
 SHORT_ID_RE = re.compile(r"[0-9a-f]{7,39}")
 
 
+def expand_commit(commit: str, ids: "Iterable[str]", *, where: str) -> str:
+    """A commit id typed short → the whole one it names among ``ids``.
+
+    One rule wherever a commit id is typed: a unique prefix of seven hex
+    characters or more expands, an ambiguous one raises ``ValueError``
+    naming the commits it could mean, and anything else — a whole id, a
+    prefix nothing matches, a name — comes back unchanged so that the
+    read which follows judges it and refuses it in its own words.
+
+    ``where`` names the history searched, for the ambiguous message
+    ("on session 'x'").
+    """
+    if not isinstance(commit, str) or not SHORT_ID_RE.fullmatch(commit):
+        return commit
+    matches = sorted({cid for cid in ids if cid.startswith(commit)})
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        return commit
+    named = ", ".join(cid[:12] for cid in matches)
+    raise ValueError(
+        f"ambiguous commit {commit!r} {where}: it names {len(matches)} "
+        f"commits ({named}) — type more of the id."
+    )
+
+
 def validate_session_id(session: str) -> str:
     """Return ``session`` unchanged or raise ``SessionIdError``."""
     from .errors import SessionIdError

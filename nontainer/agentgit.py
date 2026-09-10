@@ -65,7 +65,7 @@ from .errors import (
     NotSupportedError,
     WorkspaceError,
 )
-from .protocol import CommitInfo, WorkspaceStatus
+from .protocol import CommitInfo, WorkspaceStatus, expand_commit
 
 #: Reserved store key holding the agent's index and commit graph. Not a
 #: file key (the VFS prefixes its own), so no path can collide with it.
@@ -730,11 +730,13 @@ class AgentGit:
         ``HEAD`` is the agent's head; a hash (7 chars or more) names a
         commit it made — its own graph first, then the rest of the
         session's history, so a commit it stepped off with ``checkout``
-        can still be named. A framework commit is refused by name: it
-        is not a point in the agent's graph, and taking one as a head
-        would leave the agent's whole log behind it. Anything else is
-        refused too — a name is a session, and sessions are branches
-        that do not switch.
+        can still be named. Seven characters is what every ws-git line
+        prints, and a prefix under which two commits sit is refused by
+        name rather than resolved to whichever came first. A framework
+        commit is refused by name too: it is not a point in the agent's
+        graph, and taking one as a head would leave the agent's whole
+        log behind it. Anything else is refused as well — a name is a
+        session, and sessions are branches that do not switch.
         """
         self._require("ws-git checkout")
         blob = self._read()
@@ -748,19 +750,22 @@ class AgentGit:
                 f"{ref!r} is not a commit — sessions are branches, and a "
                 "branch does not switch here. Name a commit from ws-git log."
             )
-        for entry in self.log():
-            if entry.id.startswith(ref):
-                return entry.id
-        theirs: str | None = None
-        for entry in self._provider.history():
-            if not entry.id.startswith(ref):
-                continue
-            if is_agent_commit(entry.info):
-                return entry.id
-            theirs = entry.id
-        if theirs is not None:
-            raise ValueError(_NOT_YOURS.format(commit=theirs[:7]))
-        raise CommitNotFoundError(f"no commit {ref!r} on session {self._ws.session!r}")
+        mine = [entry.id for entry in self.log()]
+        found = expand_commit(ref, mine, where="in this session's ws-git log")
+        if found in mine:
+            return found
+        # Not in the agent's graph: the session's own history is where a
+        # commit it stepped off with checkout still answers to its id.
+        history = {entry.id: entry for entry in self._provider.history()}
+        found = expand_commit(ref, history, where=f"on session {self._ws.session!r}")
+        entry = history.get(found)
+        if entry is None:
+            raise CommitNotFoundError(
+                f"no commit {ref!r} on session {self._ws.session!r}"
+            )
+        if is_agent_commit(entry.info):
+            return entry.id
+        raise ValueError(_NOT_YOURS.format(commit=entry.id[:7]))
 
     # -- checkout ------------------------------------------------------
 

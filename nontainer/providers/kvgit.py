@@ -56,6 +56,7 @@ from ..protocol import (
     MergeOutcome,
     TagInfo,
     WorkspaceDiff,
+    expand_commit,
     validate_session_id,
 )
 from ..views import VIEW_KEY as _VIEW_KEY
@@ -748,18 +749,10 @@ class KvgitProvider:
         """
         if not isinstance(commit, str) or not SHORT_ID_RE.fullmatch(commit):
             return commit
-        matches = sorted(
-            {cid for cid in self._commit_ids(session) if cid.startswith(commit)}
-        )
-        if len(matches) == 1:
-            return matches[0]
-        if not matches:
-            return commit
-        named = ", ".join(cid[:12] for cid in matches)
-        raise ValueError(
-            f"ambiguous commit {commit!r} on session "
-            f"{session or self.session!r}: it names {len(matches)} commits "
-            f"({named}) — type more of the id."
+        return expand_commit(
+            commit,
+            self._commit_ids(session),
+            where=f"on session {session or self.session!r}",
         )
 
     def _commit_ids(self, session: str | None) -> Iterable[str]:
