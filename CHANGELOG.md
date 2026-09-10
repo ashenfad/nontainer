@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`Publication.meta` and `store.set_meta(name, mapping)`.** A
+  publication's own metadata on the registry row, replaced whole under
+  the registry lock — the mutable overlay for what changes without a
+  release, such as a display title. `Version.info` stays the immutable
+  half, written at publish, so a version keeps the title it shipped
+  under while its publication is renamed. `publish` leaves `meta`
+  alone on an existing publication and starts a new lineage with none;
+  the last `unpublish` takes it with the row. A row written before the
+  field existed reads as an empty mapping.
+
 ### Fixed
 - **A ref nontainer hands out is a ref `store.tags.add` accepts.** A
   published version's own ref named a reserved branch rather than a

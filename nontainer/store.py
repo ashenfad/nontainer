@@ -257,12 +257,28 @@ class Publication:
     Generic on purpose: it knows nothing about handlers, tokens, routes
     or databases. An embedder that serves a publication keeps those in
     its own table, keyed by name — see ``docs/apps.md``.
+
+    ``meta`` is the publication's own metadata, written by
+    :meth:`Store.set_meta` and replaced whole: the mutable overlay for
+    what changes without a release, such as a display title. It is
+    per-publication, where ``Version.info`` is per-version and written
+    once at publish; a row with none reads as an empty mapping.
+
+    This object is a record of the registry as it was read, not a live
+    view of it: a snapshot taken before a ``set_meta`` keeps the
+    ``meta`` it was fetched with, and re-reading it is what shows the
+    new one. ``meta`` counts for equality but is left out of the hash,
+    for the reason ``Version.info`` is — it holds whatever JSON the
+    caller passed, and none of that is hashable.
     """
 
     name: str
     versions: tuple[Version, ...]
     current: str
     store: "Store" = field(repr=False, compare=False)
+    meta: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}), hash=False
+    )
 
     def version(self, name: str) -> Version | None:
         """One version by name, or ``None``."""
@@ -1078,6 +1094,10 @@ class Store:
                 # whatever the caller asked: a publication must point
                 # somewhere, and there is nothing else to point at.
                 "current": chosen if current or pointer not in versions else pointer,
+                # Publishing says nothing about the publication's own
+                # metadata: an existing one keeps what set_meta wrote,
+                # and a new lineage starts with none.
+                "meta": dict(record.get("meta") or {}),
             }
             return self._publication(name, registry)
 
@@ -1121,6 +1141,38 @@ class Store:
             return self._publication(name, registry)
 
         return self._update_registry(point)
+
+    def set_meta(self, name: str, meta: "Mapping[str, Any]") -> Publication:
+        """Replace a publication's own metadata; returns the row as it
+        now reads.
+
+        The mutable overlay beside the versions: a display title, an
+        owner, a blurb — what changes about a published app without a
+        release. ``Version.info`` is the other half and the immutable
+        one, written at publish and never edited, so a reader can tell
+        what a version was shipped as apart from what its publication
+        is called today.
+
+        The mapping is replaced whole rather than merged, so dropping a
+        key is spelled the same way as changing one: pass what the
+        publication should read as. ``{}`` clears it. Values must be
+        JSON-serializable, because the registry is a JSON file.
+
+        The read, the replacement and the write happen under the
+        registry lock, so a concurrent publish or ``set_current`` on
+        another publication is not lost.
+        """
+        replacement = _validate_meta(meta)
+
+        def write(registry: dict[str, Any]) -> Publication:
+            record = registry.get(name)
+            if record is None:
+                raise ValueError(f"No such publication: {name!r}")
+            record["meta"] = replacement
+            registry[name] = record
+            return self._publication(name, registry)
+
+        return self._update_registry(write)
 
     def unpublish(self, name: str, version: str, *, min_age: float = 3600) -> None:
         """Remove one published version: its tag, its branch, its record.
@@ -1495,7 +1547,13 @@ class Store:
             for v, row in sorted(rows.items(), key=lambda kv: _version_order(kv[0]))
         )
         current = record.get("current") or (versions[-1].version if versions else "")
-        return Publication(name=name, versions=versions, current=current, store=self)
+        return Publication(
+            name=name,
+            versions=versions,
+            current=current,
+            store=self,
+            meta=MappingProxyType(dict(record.get("meta") or {})),
+        )
 
     def _open_publication(self, version: Version, **settings: Any) -> "Workspace":
         """The frozen workspace behind :meth:`Publication.open`.
@@ -2004,6 +2062,30 @@ class Store:
         # Shares a backend with the provider it came from, which is
         # therefore not closed here (see _provider_at_commit).
         return frozen
+
+
+def _validate_meta(meta: Any) -> dict[str, Any]:
+    """A publication's metadata: a JSON-serializable mapping.
+
+    Checked before the registry lock, so a value the registry could not
+    be written with never reaches the file. Both refusals are
+    ``ValueError``: what was passed is the caller's to fix.
+    """
+    if not isinstance(meta, Mapping):
+        raise ValueError(
+            f"Publication meta must be a mapping, not {type(meta).__name__}: "
+            f"{meta!r}. It is replaced whole, so pass what the publication "
+            "should read as."
+        )
+    replacement = dict(meta)
+    try:
+        json.dumps(replacement, sort_keys=True)
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"Publication meta must be JSON-serializable, and this is not: "
+            f"{e}. The registry is a JSON file beside the store."
+        ) from e
+    return replacement
 
 
 def _validate_publication_name(name: str) -> str:

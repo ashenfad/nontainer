@@ -99,6 +99,7 @@ def test_publish_makes_a_branch_a_tag_and_a_record(tmp_path):
                     "info": {},
                 }
             },
+            "meta": {},
         }
     }
     ws.close()
@@ -1124,3 +1125,153 @@ def test_tagging_an_unpublished_reserved_branch_is_refused(tmp_path):
         store.tags.add(made_up, "snap")
     assert store.tags.list() == {"scoreboard/v1": version.ref.commit}
     assert "@store/pub/nothing/v1" not in store._branches()
+
+
+def test_publication_meta_is_set_read_and_replaced_whole(tmp_path):
+    """The mutable half of a publication that is not a version pointer:
+    a mapping on the row, replaced entire, read back from both listing
+    verbs."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+
+    assert store.publication("scoreboard").meta == {}
+
+    store.set_meta("scoreboard", {"title": "Scores", "owner": "ann"})
+
+    assert store.publication("scoreboard").meta == {"title": "Scores", "owner": "ann"}
+    assert store.publications()["scoreboard"].meta["title"] == "Scores"
+    assert Store(tmp_path).publication("scoreboard").meta["owner"] == "ann"
+
+    store.set_meta("scoreboard", {"title": "Scoreboard"})
+
+    assert store.publication("scoreboard").meta == {"title": "Scoreboard"}
+
+
+def test_publication_meta_is_a_read_only_mapping(tmp_path):
+    """A Publication is a record of the registry, not a handle on it:
+    writing through .meta is refused, and a snapshot taken before a
+    set_meta keeps what it was fetched with."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+    store.set_meta("scoreboard", {"title": "Scores"})
+
+    before = store.publication("scoreboard")
+    store.set_meta("scoreboard", {"title": "Renamed"})
+
+    assert before.meta == {"title": "Scores"}
+    assert store.publication("scoreboard").meta == {"title": "Renamed"}
+    with pytest.raises(TypeError):
+        before.meta["title"] = "nope"
+
+
+def test_publication_meta_survives_a_later_publish(tmp_path):
+    """Publishing a version says nothing about the publication's own
+    metadata, so it is left exactly as it was — and a new lineage
+    starts empty."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    store.set_meta("scoreboard", {"title": "Scores"})
+
+    pub = store.publish(ws, "scoreboard")
+
+    assert pub.meta == {"title": "Scores"}
+    assert [v.version for v in pub.versions] == ["v1", "v2"]
+    assert store.publish(ws, "other").meta == {}
+    ws.close()
+
+
+def test_publication_meta_goes_with_the_last_unpublish(tmp_path):
+    """Metadata belongs to the row, and the last version takes the row
+    — so republishing the name starts empty rather than inheriting what
+    the old publication was called."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    store.publish(ws, "scoreboard", current=False)
+    store.set_meta("scoreboard", {"title": "Scores"})
+
+    store.unpublish("scoreboard", "v2")
+    assert store.publication("scoreboard").meta == {"title": "Scores"}
+
+    store.unpublish("scoreboard", "v1")
+    assert store.publication("scoreboard") is None
+    assert store.publish(ws, "scoreboard").meta == {}
+    ws.close()
+
+
+def test_publication_meta_of_an_old_row_reads_as_empty(tmp_path):
+    """A registry written before the field existed has no meta key, and
+    reads as an empty mapping rather than raising."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+
+    path = tmp_path / "publications.json"
+    registry = json.loads(path.read_text())
+    registry["scoreboard"].pop("meta", None)
+    path.write_text(json.dumps(registry))
+
+    assert Store(tmp_path).publication("scoreboard").meta == {}
+
+
+def test_set_meta_refuses_a_bad_value_or_an_unknown_name(tmp_path):
+    """The caller's mistakes, all ValueError: not a mapping, not JSON,
+    no such publication."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+
+    for bad in ("title", [("title", "Scores")], None, 7):
+        with pytest.raises(ValueError, match="mapping"):
+            store.set_meta("scoreboard", bad)
+    with pytest.raises(ValueError, match="JSON"):
+        store.set_meta("scoreboard", {"handler": object()})
+    with pytest.raises(ValueError, match="No such publication"):
+        store.set_meta("nothing", {"title": "Scores"})
+
+    assert store.publication("scoreboard").meta == {}
+
+
+def test_concurrent_set_meta_keeps_the_rest_of_the_registry(tmp_path):
+    """Two writers replacing two publications' metadata at once: the
+    registry is read, changed and written under one lock, so neither
+    call drops the other's row, versions or pointer."""
+    stores = [Store(tmp_path), Store(tmp_path)]
+    ws = seeded(stores[0])
+    for name in ("first", "second"):
+        stores[0].publish(ws, name)
+    ws.close()
+
+    ready = threading.Barrier(2)
+    errors = []
+
+    def rename(store, name):
+        try:
+            ready.wait()
+            store.set_meta(name, {"title": name.title()})
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    threads = [
+        threading.Thread(target=rename, args=(store, name))
+        for store, name in zip(stores, ("first", "second"))
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == []
+    fresh = Store(tmp_path).publications()
+    assert sorted(fresh) == ["first", "second"]
+    for name in ("first", "second"):
+        assert fresh[name].meta == {"title": name.title()}
+        assert [v.version for v in fresh[name].versions] == ["v1"]
+        assert fresh[name].current == "v1"

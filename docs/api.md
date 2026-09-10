@@ -147,9 +147,11 @@ store.publish(ws, name, *, paths=("app/",), version=None, current=True,
 store.publications() -> dict[str, Publication]         # by name
 store.publication(name) -> Publication | None
 store.set_current(name, version) -> Publication
+store.set_meta(name, mapping) -> Publication           # replaces meta whole
 store.unpublish(name, version, *, min_age=3600) -> None
 
 Publication: .name, .versions -> tuple[Version, ...], .current
+             .meta -> Mapping[str, Any]      # the publication's own metadata
              .version(name) -> Version | None
              .current_version -> Version
              .open(version=None, **settings) -> Workspace   # frozen, at that version
@@ -215,10 +217,10 @@ The publication verbs split their refusals by whose mistake it is. A
 **`ValueError`** is the call's: a name that is not session-id shaped, an
 `info` key publish writes itself, a version name the lineage already
 holds, a publication name that already holds a version under
-`create_only`, `paths` matching no file, and a version name
-`set_current`,
-`unpublish` or `Publication.open` cannot find. An embedder mapping
-errors to HTTP answers 400 to all of them. A **`WorkspaceError`** is the
+`create_only`, `paths` matching no file, a version name `set_current`,
+`unpublish` or `Publication.open` cannot find, and a `set_meta` whose
+name is unknown or whose value is not a JSON-serializable mapping. An
+embedder mapping errors to HTTP answers 400 to all of them. A **`WorkspaceError`** is the
 store's state: a session with staged changes, a leftover tag or branch,
 a version unpublished since the `Publication` was fetched. A
 **`NotSupportedError`** (a `WorkspaceError`) says this store cannot
@@ -255,7 +257,8 @@ One publish writes three things:
           "info": {"title": "Scores", "owner": "ann"}
         }
       },
-      "current": "v1"
+      "current": "v1",
+      "meta": {"title": "Scoreboard"}
     }
   }
   ```
@@ -295,6 +298,25 @@ unpublished, and so does `store.resolve` on a publication's ref. The
 same goes for the branch — a reserved `@store/` branch is never created
 by being opened, so a stale ref cannot resurrect what an unpublish
 deleted (which would then block republishing that version).
+
+**Two kinds of metadata, and the split is mutability.**
+`Version.info` is written at publish and never edited: it says what a
+version was shipped as, and a reader comparing two versions can trust
+it. `Publication.meta` is the mutable overlay on the row — what
+changes about a published app without a release. Renaming an app from
+"Scores" to "Scoreboard" is `store.set_meta("scoreboard", {"title":
+"Scoreboard"})`; every version keeps the title it shipped under, and
+nothing is republished. `set_meta` replaces the mapping whole rather
+than merging, so dropping a key is spelled the same way as changing
+one, and `{}` clears it; values must be JSON-serializable, because the
+registry is a JSON file. A publication with none reads as an empty
+mapping, and so does a row written before the field existed.
+`publish` leaves `meta` where it is on an existing publication and
+starts a new lineage with none; the last `unpublish` takes the row and
+its `meta` with it, so republishing the name starts empty. A
+`Publication` is a record of the registry as it was read, not a live
+view: a snapshot fetched before a `set_meta` keeps the old `meta`, and
+re-reading it is what shows the new one.
 
 `set_current` is the mutable half: it moves the pointer, and moves it
 back as easily. That is true for **code**. Data a version's handlers
