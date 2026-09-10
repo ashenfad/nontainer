@@ -34,6 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was given part of the tree. A view is given at the fork
   (`ws-git branch <name> --paths <paths>`) and cannot be changed from
   the terminal, so any other subcommand is a usage error that says so.
+- **`ws-git log -S <string> [<session>] [--all]`.** git's pickaxe: the
+  commits where the number of times `<string>` occurs in the tree
+  changed between the commit and its parent, with `+` or `-` after the
+  id for appeared or vanished; a commit that only moved the string
+  within a file is not one of them. It reads the files that changed in
+  each commit and no others, and bytes that are not text hold no
+  occurrences. `ws-git log --all` also stands on its own now: every
+  commit the session holds, the framework's included.
 
 ## 0.6.5 - 2026-09-10
 

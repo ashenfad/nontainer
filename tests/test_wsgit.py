@@ -544,6 +544,88 @@ def test_a_failed_commit_leaves_the_agent_where_it_was(ws, monkeypatch):
     assert _subjects(ws) == ["base"]
 
 
+# -- log -S: where a string appeared or vanished -------------------------------
+
+
+def _pickaxe(w, args=""):
+    """(sign, subject) per line of a pickaxe log, hashes checked away."""
+    out = []
+    for line in w.terminal(f"ws-git log -S needle {args}").stdout.splitlines():
+        head, sign, subject = line.split(" ", 2)
+        assert re.fullmatch(SHORT, head), line
+        out.append((sign, subject))
+    return out
+
+
+def test_log_S_finds_where_a_string_appeared_and_vanished(ws):
+    """git's pickaxe rule: the commits where the count of the string in
+    the tree changed, and nothing else."""
+    ws.terminal("echo plain > a.txt")
+    ws.terminal("ws-git commit -m base")
+    ws.terminal("echo needle > a.txt")
+    ws.terminal("ws-git commit -m adds")
+    ws.terminal("echo other > b.txt")
+    ws.terminal("ws-git commit -m unrelated")
+    ws.terminal("echo plain > a.txt")
+    ws.terminal("ws-git commit -m drops")
+
+    assert _pickaxe(ws) == [("-", "drops"), ("+", "adds")]
+
+
+def test_log_S_ignores_a_commit_that_only_moved_the_string(ws):
+    """The count in the tree is what changed or did not: moving the
+    string within a file is not an appearance."""
+    ws.terminal("echo needle > a.txt; echo tail >> a.txt")
+    ws.terminal("ws-git commit -m adds")
+    ws.terminal("echo tail > a.txt; echo needle >> a.txt")
+    ws.terminal("ws-git commit -m moved")
+
+    assert _pickaxe(ws) == [("+", "adds")]
+
+
+def test_log_S_reads_undecodable_bytes_as_not_containing_it(ws):
+    """A file that is not text holds no string to count."""
+    ws.files.fs.write("/workspace/blob.bin", b"\xff\xfeneedle\xff")
+    ws.terminal("ws-git commit -m binary")
+
+    assert _pickaxe(ws) == []
+
+
+def test_log_S_all_reaches_a_framework_commit(ws):
+    """The default walk is the agent's own commits; --all is every
+    commit the session holds."""
+    ws.terminal("echo plain > a.txt")
+    ws.terminal("ws-git commit -m base")
+    ws.files.fs.write("/workspace/a.txt", b"needle\n")
+    framework = ws.commit(info={"tool": "framework"})
+    assert framework not in [e.id for e in ws.index.log()]
+
+    assert _pickaxe(ws) == []
+    assert _pickaxe(ws, "--all") == [("+", "framework")]
+
+
+def test_log_all_lists_the_commits_log_hides(ws):
+    """--all on its own is the session's history, bookkeeping and all."""
+    ws.terminal("echo one > a.txt")
+    ws.terminal("ws-git commit -m base")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
+    ws.commit(info={"tool": "framework"})
+
+    assert _subjects(ws) == ["base"]
+    every = [
+        line.split(" ", 1)[1]
+        for line in ws.terminal("ws-git log --all").stdout.splitlines()
+    ]
+    assert every[0] == "framework"
+    assert "base" in every and len(every) > len(_subjects(ws))
+
+
+def test_log_S_needs_a_string(ws):
+    r = ws.terminal("ws-git log -S")
+    assert r.exit_code == 2
+    assert r.stderr.startswith("ws-git: log takes no '-S'")
+
+
 # -- worktrees: another session's tree, read in place --------------------------
 
 

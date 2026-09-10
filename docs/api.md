@@ -852,6 +852,18 @@ commits, so `"work"` and `"all"` are the same history there. An unknown
 kind raises `ValueError`. `ws.index.log()` is the agent's own fiction
 and takes no `kind`.
 
+**`ws-git log [<session>] [-n N] [--all] [-S <string>]`** is the
+agent's spelling: its own commits by default, another session's where
+permitted, and `--all` for every commit the session holds — the
+framework's included. `-S <string>` is git's pickaxe: only the commits
+where the number of times `<string>` occurs in the tree changed
+between the commit and its parent, with `+` or `-` after the id for
+appeared or vanished. A commit that only moved the string within a
+file is not one of them. It reads the files that changed in each
+commit and no others — a file both sides hold unchanged counts the
+same on each side, so it cannot move the total — and bytes that are
+not text hold no occurrences, so a binary file never matches.
+
 `CommitInfo.parents` carries the ids a commit descends from: one for an
 ordinary commit, two for a merge, empty for a root commit and for a
 provider whose history is a list rather than a graph. A merge's first

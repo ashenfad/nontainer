@@ -87,7 +87,8 @@ _USAGE = (
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
     "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
-    "log [<session>] [-n N] | show <ref> | checkout <ref> [-- <paths>] | "
+    "log [<session>] [-n N] [--all] [-S <string>] | show <ref> | "
+    "checkout <ref> [-- <paths>] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge <session> | "
     "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | "
@@ -140,9 +141,13 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     --check finds leftover conflict markers
                     (unstaged, or staged with --cached;
                     unresolved merges always)
-  log [<session>] [-n N]
+  log [<session>] [-n N] [--all] [-S <string>]
                     your own commits, newest first; a session name
-                    shows that session's
+                    shows that session's; --all is every commit the
+                    session holds, the framework's included
+                    -S <string> keeps only the commits where the number
+                    of times <string> occurs in the tree changed, with
+                    + or - after the id for appeared or vanished
   show <ref>        one commit: its message and its diff
   checkout <ref>    restore the tree to a commit of yours (history is
                     append-only: the restore is a new commit)
@@ -184,7 +189,8 @@ file in it; ws-git status ends with a worktrees: block instead.
 Subset, on purpose: no stash (a fork is a stash: ws-git branch <name>),
 no rebase (history is append-only). There is no .git — branches are
 sessions, history is commits. The workspace commits on its own as you
-work; ws-git log shows only the commits you made."""
+work; ws-git log shows only the commits you made (--all for every
+commit this session holds)."""
 
 
 #: The dud host-object name fronting ws-git on guest rungs. A user
@@ -1127,30 +1133,123 @@ def _diff_branch(git: AgentGit, ws: Any, ctx: Any, name: str) -> Any:
 def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     limit: int | None = None
     session: str | None = None
+    needle: str | None = None
+    every = False
     args = list(rest)
     while args:
         flag = args.pop(0)
         if flag in ("-n", "--max-count") and args and args[0].isdigit():
             limit = int(args.pop(0))
+        elif flag == "-S" and args:
+            needle = args.pop(0)
+        elif flag == "--all":
+            every = True
         elif not flag.startswith("-") and session is None:
             session = flag
         else:
-            return _usage_error(f"log takes no {flag!r} (try: -n N).")
+            return _usage_error(
+                f"log takes no {flag!r} (try: -n N, --all, -S <string>)."
+            )
     if session is not None and session != ws.session:
         other = _other_session(ws, session)
         try:
-            return _log_lines(AgentGit(other).log(limit), ctx)
+            return _log_out(AgentGit(other), other, ctx, limit, every, needle)
         finally:
             other.close()
-    return _log_lines(git.log(limit), ctx)
+    return _log_out(git, ws, ctx, limit, every, needle)
 
 
-def _log_lines(entries: Any, ctx: Any) -> Any:
+def _log_out(
+    git: AgentGit,
+    ws: Any,
+    ctx: Any,
+    limit: int | None,
+    every: bool,
+    needle: str | None,
+) -> Any:
+    """One session's log: the agent's commits, or every commit the
+    session holds with ``--all``, filtered to where a string appeared
+    or vanished when one was named."""
+    walk = _walk(git, every)
+    if needle is None:
+        entries = [entry for entry, _ in _capped(walk, limit)]
+        return _log_lines(entries, ctx)
+    found = _capped(_pickaxe(ws._provider, walk, needle), limit)
+    return _log_lines([entry for entry, _ in found], ctx, {e.id: s for e, s in found})
+
+
+def _capped(pairs: Any, limit: int | None) -> list:
+    """The first ``limit`` of what a walk yields, or all of it."""
+    out = []
+    for pair in pairs:
+        out.append(pair)
+        if limit is not None and len(out) >= limit:
+            break
+    return out
+
+
+def _walk(git: AgentGit, every: bool):
+    """``(commit, its parent)`` newest first.
+
+    The agent's own commits walk the agent's graph, so the parent is
+    the previous commit the agent made and the framework's commits
+    between the two are part of that step. ``--all`` walks the
+    session's history instead, where the parent is the commit before
+    this one in the store.
+    """
+    from .agentgit import virtual_parents
+
+    if every:
+        for entry in git.history():
+            yield entry, (entry.parents[0] if entry.parents else None)
+        return
+    for entry in git.log():
+        parents = virtual_parents(entry.info)
+        yield entry, (parents[0] if parents else None)
+
+
+def _pickaxe(provider: Any, walk: Any, needle: str):
+    """``(commit, "+" or "-")`` for the commits where the number of
+    times ``needle`` occurs in the tree changed — git's pickaxe rule.
+
+    Only the files that changed between a commit and its parent are
+    read: a file both sides hold unchanged contributes the same count
+    to each, so it cannot move the total. Bytes that are not text hold
+    no occurrences, so a binary file is never a match.
+    """
+    for entry, parent in walk:
+        new = provider.files_at(entry.id)
+        old = provider.files_at(parent) if parent else {}
+        if parent is None:
+            changed: Any = set(new)
+        else:
+            changed = provider.diff(parent, entry.id).paths
+        delta = sum(_occurrences(new, p, needle) for p in changed) - sum(
+            _occurrences(old, p, needle) for p in changed
+        )
+        if delta:
+            yield entry, ("+" if delta > 0 else "-")
+
+
+def _occurrences(files: Mapping[str, Any], path: str, needle: str) -> int:
+    """How many times ``needle`` occurs in one file of a tree. Absent
+    and undecodable both count none."""
+    raw = _decode(files.get(path)) if path in files else None
+    if raw is None:
+        return 0
+    try:
+        return raw.decode().count(needle)
+    except UnicodeDecodeError:
+        return 0
+
+
+def _log_lines(entries: Any, ctx: Any, signs: "Mapping[str, str] | None" = None) -> Any:
     lines: list[str] = []
     for entry in entries:
         tool = entry.info.get("tool", "?")
         subject = entry.info.get("message") or tool
-        line = f"{entry.id[:7]} {subject}"
+        mark = f"{signs[entry.id]} " if signs else ""
+        line = f"{entry.id[:7]} {mark}{subject}"
         if tool == MERGE_TOOL and entry.info.get("source"):
             line += f" from {entry.info['source']}"
             if entry.info.get("sizes"):
