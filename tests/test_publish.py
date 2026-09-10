@@ -606,6 +606,48 @@ def test_a_publish_that_died_leaves_a_tag_the_retry_adopts(tmp_path, monkeypatch
     ws.close()
 
 
+def test_a_resumed_row_records_the_commits_info_not_the_retrys(tmp_path, monkeypatch):
+    """The adopted commit is immutable, so the retry's info never landed
+    anywhere. Recording it on the row would make Version.info disagree
+    with what Publication.open() serves."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", info={"title": "a", "dropped": "yes"})
+    monkeypatch.undo()
+
+    pub = store.publish(ws, "scoreboard", info={"title": "b"})
+    version = pub.current_version
+    assert version.info == {"title": "a", "dropped": "yes"}
+
+    row = json.loads((tmp_path / "publications.json").read_text())
+    assert row["scoreboard"]["versions"]["v1"]["info"] == dict(version.info)
+
+    snapshot = pub.open()
+    entry = next(iter(snapshot.log()))
+    assert entry.info["title"] == "a"
+    assert entry.info["dropped"] == "yes"
+    snapshot.close()
+    ws.close()
+
+
+def test_a_resumed_tag_carries_the_commits_info_not_the_retrys(tmp_path, monkeypatch):
+    """The tag is minted late when the crash came between the commit and
+    the tag, and it describes the commit it names."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", info={"title": "a"})
+    monkeypatch.undo()
+    store.tags.delete("scoreboard/v1")
+
+    store.publish(ws, "scoreboard", info={"title": "b"})
+    assert store.tags.info("scoreboard/v1").info["title"] == "a"
+    ws.close()
+
+
 def test_a_stranded_branch_from_another_attempt_is_refused_and_cleared(
     tmp_path, monkeypatch
 ):

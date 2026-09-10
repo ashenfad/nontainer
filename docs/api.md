@@ -261,7 +261,11 @@ One publish writes three things:
   `paths` was written by that attempt and no other, so its commit
   becomes this publish's and the record is written over it — one
   version, one branch, no duplicate. A recordless branch of some other
-  attempt is refused by name, and `unpublish` clears it.
+  attempt is refused by name, and `unpublish` clears it. The record
+  describes the commit that was adopted, not the call that adopted it:
+  an adopted commit is immutable, so its `info` and `paths` are what
+  the row and a late-minted tag carry, and the retry's own `info`
+  lands nowhere.
 
   Every mutation reads, decides and writes under one lock — a
   `flock` on `publications.lock` beside the registry for other

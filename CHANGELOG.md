@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inside the lock that decides between creating and extending, and the
   refusal lands before anything is written.
 
+### Fixed
+- **A resumed publish is described by the commit it adopted.** A retry
+  that finds the branch and tag of an attempt that died before its
+  record takes that commit, which is immutable — so the record and a
+  late-minted tag now carry the adopted commit's `info` and `paths`
+  rather than the retry's arguments, and `Version.info` cannot
+  disagree with what `Publication.open()` serves. Minting the tag late
+  raised `NotSupportedError`, because it wrote through a checkout at a
+  commit and those are frozen; it goes through the branch now.
+
 ## 0.6.3 - 2026-09-09
 
 ### Added
