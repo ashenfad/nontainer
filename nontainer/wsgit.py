@@ -728,11 +728,25 @@ def _worktree(ws: Any, ctx: Any, rest: list[str]) -> Any:
     return _usage_error(f"worktree takes no {sub!r} (add, list, remove).")
 
 
+def _worktree_dir(ws: Any, point: str) -> str:
+    """A mount point as the agent can type it back: relative to this
+    session's root when it is under it, absolute when it is not.
+
+    What a verb prints, the verb accepts — and a point outside the root
+    has no relative spelling, so printing one would name a different
+    directory than the one that is there.
+    """
+    root = ws.root.rstrip("/")
+    if root and point.startswith(root + "/"):
+        return point[len(root) + 1 :]
+    return point
+
+
 def _worktree_lines(ws: Any) -> list[str]:
     """One line per worktree: where it is, what it holds, and that it
     cannot be written to."""
     return [
-        f"worktree {_show(at)}: {_short_ref(ref)} (read-only)"
+        f"worktree {_worktree_dir(ws, at)}: {_short_ref(ref)} (read-only)"
         for at, ref in sorted(ws.files.attachments().items())
     ]
 
@@ -761,7 +775,7 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 exit_code=1,
                 stderr=(
                     f"cannot add a worktree at {where!r}: that is inside "
-                    f"the worktree {_show(held)}."
+                    f"the worktree {_worktree_dir(ws, held)}."
                 ),
             )
     fs = ws.files.fs
@@ -779,7 +793,9 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 stderr=f"cannot add a worktree at {where!r}: {reason}.",
             )
     landed = ws.files.attach(_worktree_ref(ws, ref), point)
-    ctx.stdout.write(f"worktree {_show(point)}: {_short_ref(landed)} (read-only)\n")
+    ctx.stdout.write(
+        f"worktree {_worktree_dir(ws, point)}: {_short_ref(landed)} (read-only)\n"
+    )
     return None
 
 
@@ -821,7 +837,7 @@ def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:
     point = _abspath(ctx, where)
     held = sorted(ws.files.attachments())
     if point not in held:
-        known = ", ".join(_show(p) for p in held)
+        known = ", ".join(_worktree_dir(ws, p) for p in held)
         return _usage_error(
             f"no worktree at {where!r} "
             f"({'worktrees here: ' + known if held else 'no worktrees here'})."

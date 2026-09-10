@@ -711,3 +711,46 @@ def test_status_omits_the_block_with_no_worktrees(peer_ws):
     peer_ws.terminal("ws-git worktree remove peek")
     assert peer_ws.terminal("ws-git status").stdout == ""
     assert peer_ws.terminal("ws-git status --porcelain").stdout == ""
+
+
+def test_worktree_outside_the_root_keeps_its_absolute_path(peer_ws):
+    """What the verb prints, the verb takes back: a point outside the
+    root has no relative spelling, so it is printed absolute."""
+    r = peer_ws.terminal("ws-git worktree add /reviews peer")
+    assert r.exit_code == 0, r.stderr
+    assert re.fullmatch(
+        rf"worktree /reviews: peer@{SHORT} \(read-only\)\n", r.stdout
+    ), r.stdout
+    assert peer_ws.terminal("ws-git worktree list").stdout == r.stdout
+    assert peer_ws.terminal("ws-git status").stdout == "worktrees:\n" + r.stdout
+
+    printed = r.stdout.split(" ", 2)[1].rstrip(":")
+    assert printed == "/reviews"
+    assert peer_ws.terminal(f"ws-git worktree remove {printed}").exit_code == 0
+    assert peer_ws.terminal("ws-git worktree list").stdout == "(none)\n"
+
+
+def test_worktree_under_a_configured_root(store):
+    """A session at a root of its own renders a worktree against THAT
+    root, not against a default spelled into the code."""
+    peer = store.open("peer", root="/data")
+    peer.files.write("/data/note.md", "first\n")
+    peer.commit(info={"tool": "test"})
+    peer.close()
+
+    w = store.open("main", root="/data")
+    register_wsgit(w)
+    try:
+        r = w.terminal("ws-git worktree add peek peer")
+        assert r.exit_code == 0, r.stderr
+        assert re.fullmatch(
+            rf"worktree peek: peer@{SHORT} \(read-only\)\n", r.stdout
+        ), r.stdout
+        assert w.terminal("ws-git worktree list").stdout == r.stdout
+        assert w.terminal("ws-git status").stdout.endswith("worktrees:\n" + r.stdout)
+        assert w.terminal("cat peek/note.md").stdout == "first\n"
+
+        assert w.terminal("ws-git worktree remove peek").exit_code == 0
+        assert w.terminal("ws-git worktree list").stdout == "(none)\n"
+    finally:
+        w.close()
