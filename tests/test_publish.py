@@ -7,8 +7,10 @@ back to the session is a soft reference in the commit's info rather
 than a parent pointer.
 """
 
+import dataclasses
 import json
 import threading
+from types import MappingProxyType
 
 import pytest
 from monkeyfs import VirtualFS
@@ -233,6 +235,28 @@ def test_a_version_row_written_without_info_reads_as_empty(tmp_path):
     assert version.paths == ()
     with pytest.raises(TypeError):
         version.info["title"] = "no"
+
+
+def test_a_version_and_a_publication_stay_hashable(tmp_path):
+    """Public frozen records go in sets and dict keys. The info mapping
+    holds whatever JSON the caller passed, so it is out of the hash and
+    in the comparison."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "plain")
+    store.publish(ws, "tagged", info={"title": "Scores", "labels": ["a", "b"]})
+    ws.close()
+
+    pubs = Store(tmp_path).publications()
+    for pub in pubs.values():
+        assert hash(pub) == hash(pub)
+        assert {v: v.version for v in pub.versions}
+    assert len({pub for pub in pubs.values()}) == 2
+
+    version = pubs["tagged"].current_version
+    other = dataclasses.replace(version, info=MappingProxyType({"title": "Other"}))
+    assert version != other
+    assert hash(version) == hash(other)
 
 
 def test_paths_select_what_lands(tmp_path):

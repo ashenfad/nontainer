@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so listing publications with their display titles and owners is one
   registry read and no backend open. The mapping holds the caller's
   keys only; a row written before the field existed reads as empty.
+  `info` counts for equality and is left out of the hash, so a
+  `Version` stays usable as a set member or a dict key.
 - **`publish(..., create_only=True)`.** Refuses a name that already
   holds a version instead of extending its lineage, so a caller that
   means to open one hears about the collision rather than silently

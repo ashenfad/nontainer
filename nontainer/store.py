@@ -230,6 +230,12 @@ class Version:
     nothing else: what publish writes itself is already spelled out by
     ``name``, ``version``, ``published_from`` and ``paths``. A row
     written before the field existed reads as an empty mapping.
+
+    ``info`` counts for equality but is left out of the hash, so a
+    version goes in a set or a dict key like any other frozen record.
+    It holds whatever JSON the caller passed — a list, a nested dict —
+    and none of that is hashable, while everything that identifies the
+    version (``tag``, ``ref``) is.
     """
 
     name: str
@@ -238,7 +244,9 @@ class Version:
     ref: Ref
     published_from: Ref | None
     created: float
-    info: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    info: Mapping[str, Any] = field(
+        default_factory=lambda: MappingProxyType({}), hash=False
+    )
     paths: tuple[str, ...] = ()
 
 
