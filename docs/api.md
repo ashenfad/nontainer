@@ -194,7 +194,11 @@ their display titles and owners is one registry read and no backend
 open. It carries what the caller passed and nothing else — what publish
 writes itself is already spelled out by `name`, `version`,
 `published_from` and `paths`. A row written before the field existed
-reads as an empty mapping, and `paths` as an empty tuple.
+reads as an empty mapping, and `paths` as an empty tuple. `info` counts
+for equality but is left out of the hash, so a `Version` — and a
+`Publication` holding one — goes in a set or a dict key like any other
+frozen record: the mapping holds whatever JSON the caller passed, and
+none of that is hashable.
 
 `info` may not set `tool`, `name`, `version`, `published_from` or
 `paths`: those are what publish writes into the commit, and the commit is where a
