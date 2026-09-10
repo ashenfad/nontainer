@@ -91,8 +91,6 @@ _SUPPORTED = (
     "merge <session> | "
     "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | help"
 )
-_ROOT = "/workspace"
-
 # Movie-set edge: name the missing corner in git's own terms plus the
 # terminal verb an agent can reach for instead — never host Python it
 # cannot run. Exit 1: refusals, not usage errors.
@@ -398,7 +396,7 @@ def make_wsgit_command(ws: Any) -> Any:
             if verb == "log":
                 return _log(git, ws, ctx, rest)
             if verb == "show":
-                return _show_verb(git, ctx, rest)
+                return _show_verb(git, ws, ctx, rest)
             if verb == "checkout":
                 return _checkout(git, ws, ctx, rest)
             if verb == "branch":
@@ -441,11 +439,19 @@ def _abspath(ctx: Any, arg: str) -> str:
     return posixpath.normpath(posixpath.join(ctx.fs.getcwd(), arg))
 
 
-def _show(path: str) -> str:
-    """Display path → workspace-root-relative, git-short style."""
-    if path.startswith(_ROOT + "/"):
-        return path[len(_ROOT) + 1 :]
-    return path.lstrip("/")
+def _show(ws: Any, path: str) -> str:
+    """Display path → what the agent can type back: relative to this
+    session's root when it is under it, git-short style, and absolute
+    when it is not.
+
+    What a verb prints, the verb accepts — and a path outside the root
+    has no relative spelling, so printing one would name a different
+    file than the one that is there.
+    """
+    root = ws.root.rstrip("/")
+    if root and path.startswith(root + "/"):
+        return path[len(root) + 1 :]
+    return path
 
 
 def _usage_error(detail: str) -> Any:
@@ -470,11 +476,11 @@ def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     unresolved = set(st.merge_unresolved)
     for path in sorted(staged | unstaged | unresolved):
         if path in unresolved:
-            lines.append(f"UU {_show(path)}")
+            lines.append(f"UU {_show(ws, path)}")
         else:
             x = "M" if path in staged else " "
             y = "M" if path in unstaged else " "
-            lines.append(f"{x}{y} {_show(path)}")
+            lines.append(f"{x}{y} {_show(ws, path)}")
     # A worktree sits outside the versioned tree, so no row above can
     # ever name a file in one; without this block a directory full of
     # files that never show as modified is a puzzle.
@@ -682,16 +688,16 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     source = rest[0]
     out = ws.merge(source)
     if not out.merged:
-        lines = [f"CONFLICT: {_show(path)}" for path in out.conflicts]
+        lines = [f"CONFLICT: {_show(ws, path)}" for path in out.conflicts]
         lines.append(
             f"Merge of {source} refused: contested state no rule resolves. "
             "Nothing changed."
         )
         return CommandResult(exit_code=1, stderr="\n".join(lines))
     for path in out.auto_merged:
-        ctx.stdout.write(f"Auto-merging {_show(path)}\n")
+        ctx.stdout.write(f"Auto-merging {_show(ws, path)}\n")
     for path in out.conflicts:
-        ctx.stdout.write(f"CONFLICT (content): Merge conflict in {_show(path)}\n")
+        ctx.stdout.write(f"CONFLICT (content): Merge conflict in {_show(ws, path)}\n")
     n = len(out.auto_merged) + len(out.conflicts)
     ctx.stdout.write(
         f"[{git.status().branch} {out.commit[:7]}] merge {source} "
@@ -728,25 +734,11 @@ def _worktree(ws: Any, ctx: Any, rest: list[str]) -> Any:
     return _usage_error(f"worktree takes no {sub!r} (add, list, remove).")
 
 
-def _worktree_dir(ws: Any, point: str) -> str:
-    """A mount point as the agent can type it back: relative to this
-    session's root when it is under it, absolute when it is not.
-
-    What a verb prints, the verb accepts — and a point outside the root
-    has no relative spelling, so printing one would name a different
-    directory than the one that is there.
-    """
-    root = ws.root.rstrip("/")
-    if root and point.startswith(root + "/"):
-        return point[len(root) + 1 :]
-    return point
-
-
 def _worktree_lines(ws: Any) -> list[str]:
     """One line per worktree: where it is, what it holds, and that it
     cannot be written to."""
     return [
-        f"worktree {_worktree_dir(ws, at)}: {_short_ref(ref)} (read-only)"
+        f"worktree {_show(ws, at)}: {_short_ref(ref)} (read-only)"
         for at, ref in sorted(ws.files.attachments().items())
     ]
 
@@ -775,7 +767,7 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 exit_code=1,
                 stderr=(
                     f"cannot add a worktree at {where!r}: that is inside "
-                    f"the worktree {_worktree_dir(ws, held)}."
+                    f"the worktree {_show(ws, held)}."
                 ),
             )
     fs = ws.files.fs
@@ -793,9 +785,7 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 stderr=f"cannot add a worktree at {where!r}: {reason}.",
             )
     landed = ws.files.attach(_worktree_ref(ws, ref), point)
-    ctx.stdout.write(
-        f"worktree {_worktree_dir(ws, point)}: {_short_ref(landed)} (read-only)\n"
-    )
+    ctx.stdout.write(f"worktree {_show(ws, point)}: {_short_ref(landed)} (read-only)\n")
     return None
 
 
@@ -837,7 +827,7 @@ def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:
     point = _abspath(ctx, where)
     held = sorted(ws.files.attachments())
     if point not in held:
-        known = ", ".join(_worktree_dir(ws, p) for p in held)
+        known = ", ".join(_show(ws, p) for p in held)
         return _usage_error(
             f"no worktree at {where!r} "
             f"({'worktrees here: ' + known if held else 'no worktrees here'})."
@@ -846,7 +836,7 @@ def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:
     return None  # silent, like git worktree remove
 
 
-def _show_verb(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     from termish import CommandResult
 
     if len(rest) != 1 or rest[0].startswith("-"):
@@ -868,7 +858,7 @@ def _show_verb(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
         lines.append(f"    {message}")
     lines.append("")
     ctx.stdout.write("\n".join(lines) + "\n")
-    body = _render_diff(sorted(want), old, new)
+    body = _render_diff(ws, sorted(want), old, new)
     if body:
         ctx.stdout.write("\n".join(body) + "\n")
     return None
@@ -882,11 +872,13 @@ def _decode(value: Any) -> bytes | None:
     return None
 
 
-def _render_diff(paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any]):
+def _render_diff(
+    ws: Any, paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any]
+):
     """Unified diff lines for these paths between two trees."""
     out: list[str] = []
     for path in paths:
-        show = _show(path)
+        show = _show(ws, path)
         before = _decode(old.get(path)) if path in old else b""
         after = _decode(new.get(path)) if path in new else b""
         if (
@@ -984,13 +976,13 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             return unknown
     st = git.status()
     if check:
-        return _diff_check(git, ctx, st, paths, cached)
+        return _diff_check(git, ws, ctx, st, paths, cached)
     want = set(st.staged) if cached else set(st.unstaged)
     if paths:
         want = {p for p in want if _under_any(p, paths)}
     if not want:
         return None
-    out = _render_diff(sorted(want), git.head_files(), git.working_files())
+    out = _render_diff(ws, sorted(want), git.head_files(), git.working_files())
     if out:
         ctx.stdout.write("\n".join(out) + "\n")
     return None
@@ -1030,7 +1022,7 @@ _MARKERS = (b"<<<<<<< ", b"=======", b">>>>>>> ")
 
 
 def _diff_check(
-    git: AgentGit, ctx: Any, st: Any, paths: list[str], cached: bool
+    git: AgentGit, ws: Any, ctx: Any, st: Any, paths: list[str], cached: bool
 ) -> Any:
     from termish import CommandResult
 
@@ -1050,7 +1042,7 @@ def _diff_check(
             continue
         for lineno, line in enumerate(value.split(b"\n"), start=1):
             if line.startswith(_MARKERS):
-                hits.append(f"{_show(path)}:{lineno}: leftover conflict marker")
+                hits.append(f"{_show(ws, path)}:{lineno}: leftover conflict marker")
     if hits:
         # Findings go to stdout like git; only the exit code signals.
         ctx.stdout.write("\n".join(hits) + "\n")
@@ -1079,7 +1071,7 @@ def _diff_branch(git: AgentGit, ws: Any, ctx: Any, name: str) -> Any:
         return None
     seed = parse_seed(provider.key_at(theirs, VIEW_KEY))
     if not seed:
-        body = _render_diff(changed, old, new)
+        body = _render_diff(ws, changed, old, new)
         if body:
             ctx.stdout.write("\n".join(body) + "\n")
         return None
@@ -1095,7 +1087,7 @@ def _diff_branch(git: AgentGit, ws: Any, ctx: Any, name: str) -> Any:
         if not group:
             continue
         lines.append(f"# {len(group)} path(s) {label}")
-        lines.extend(_render_diff(group, old, new))
+        lines.extend(_render_diff(ws, group, old, new))
     if lines:
         ctx.stdout.write("\n".join(lines) + "\n")
     return None
