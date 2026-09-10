@@ -74,6 +74,7 @@ deliberately outlive the session that made them:
 store.tags.add(ws_or_ref, name, *, info=None) -> str   # commit id
 store.tags.list() -> dict[str, str]                    # name -> commit id
 store.tags.info(name) -> TagInfo | None
+store.tags.list_info() -> dict[str, TagInfo]           # every tag, one open
 store.tags.delete(name) -> None
 store.tags.at(name, **settings) -> Workspace           # frozen snapshot
 ```
@@ -772,6 +773,7 @@ ws.changed_since(ref) -> WorkspaceDiff       # tag name, commit id or Ref
 
 store.tags.add(ws_or_ref, name, *, info=None) -> str  # the store scope
 store.tags.list() / .info(name) / .delete(name) / .at(name)
+store.tags.list_info() -> dict[str, TagInfo]          # every tag, one open
 ```
 
 **Two scopes, and the object you reach through is the scope** — no
@@ -795,6 +797,14 @@ non-empty name without `%`, `/` included. Tags never move — an existing
 name raises rather than being repointed. `ws.tags.add()` commits staged
 work first (`info={"tool": "tag", "name": ...}`, like `fork`), so the
 name means what the caller saw.
+
+`store.tags.list_info()` is the bulk read: every store-scoped tag
+described on one backend open, where `info(name)` opens the store for
+each call — a store keeps no handle of its own, and holding a branch
+open by name would create that branch. `list()` stays the cheaper
+answer when only the commit ids are wanted. A session's tags are read
+through the workspace's own live handle, so `ws.tags.info()` opens
+nothing and needs no bulk form.
 
 `TagInfo` carries `name`, `scope`, `id` (the commit), `tree`,
 `time`, the `info` dict, and `dangling` (the commit is not in the
