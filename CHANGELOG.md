@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one backend open, where `info(name)` opens the store per call —
   reading the metadata of N tags cost N opens. `list()` stays the
   cheaper answer when only the commit ids are wanted.
+- **`Version.info` and `Version.paths`.** A publish records the
+  caller's `info` keys on the registry row as well as in the commit,
+  so listing publications with their display titles and owners is one
+  registry read and no backend open. The mapping holds the caller's
+  keys only; a row written before the field existed reads as empty.
 
 ## 0.6.3 - 2026-09-09
 
