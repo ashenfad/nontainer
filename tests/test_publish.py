@@ -1075,3 +1075,52 @@ def test_publishing_an_old_format_state_writes_rows_and_leaves_the_table(tmp_pat
     finally:
         snapshot.close()
     ws.close()
+
+
+def test_a_publication_ref_is_a_tag_source(tmp_path):
+    """A ref nontainer hands out is a ref nontainer takes back: the
+    version's own ref names a commit on a reserved branch, and naming
+    that commit store-scoped is a read of the branch and a write of the
+    tag."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    version = store.publish(ws, "scoreboard").current_version
+    ws.close()
+
+    commit = store.tags.add(version.ref, "snap", info={"by": "ann"})
+
+    assert commit == version.ref.commit
+    info = store.tags.info("snap")
+    assert info is not None
+    assert info.id == version.ref.commit
+    assert info.info["by"] == "ann"
+
+    with store.resolve(version.ref) as resolved:
+        assert resolved.files.read("app/index.html") == b"<h1>scores</h1>"
+    with store.tags.at("snap") as snap:
+        assert snap.files.read("app/index.html") == b"<h1>scores</h1>"
+
+
+def test_a_publication_ref_spelled_as_a_string_is_a_tag_source(tmp_path):
+    """The string spelling of that ref names the same commit."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    version = store.publish(ws, "scoreboard").current_version
+    ws.close()
+
+    assert store.tags.add(str(version.ref), "snap") == version.ref.commit
+
+
+def test_tagging_an_unpublished_reserved_branch_is_refused(tmp_path):
+    """A reserved branch the registry does not hold is not a tag
+    source, and the refusal says so instead of minting the branch."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    version = store.publish(ws, "scoreboard").current_version
+    ws.close()
+
+    made_up = Ref(session="@store/pub/nothing/v1", commit=version.ref.commit)
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        store.tags.add(made_up, "snap")
+    assert store.tags.list() == {"scoreboard/v1": version.ref.commit}
+    assert "@store/pub/nothing/v1" not in store._branches()

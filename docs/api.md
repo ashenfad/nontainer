@@ -81,7 +81,12 @@ store.tags.at(name, **settings) -> Workspace           # frozen snapshot
 
 `add` takes the workspace whose current state to name (staged changes
 are committed first, so the name means what the caller saw) or a ref
-naming an exact commit. A workspace tags through its own provider, so
+naming an exact commit. Any ref the store hands out is one `add` takes
+back: a session's, and a published version's own `version.ref`, which
+names the publication's reserved branch rather than a session — a
+second, durable name for a released version, on the terms the registry
+sets, so a version unpublished since is refused there as it is for
+`store.resolve`. A workspace tags through its own provider, so
 it must be one this store opened — `Store.open`, or a fork/snapshot of
 one; a workspace from elsewhere is refused rather than silently tagging
 *its* store. Session-scoped tags stay on the workspace (`ws.tags`). Because a store-scoped tag belongs
@@ -228,7 +233,8 @@ One publish writes three things:
   store-scoped read anchors on it before the store mints an anchor of
   its own. It is not a session — `store.sessions()` never lists it,
   `@` being a character no session id may start with — but it is a
-  legal `Ref` target, so `store.resolve(str(version.ref))` opens it.
+  legal `Ref` target, so `store.resolve(str(version.ref))` opens it and
+  `store.tags.add(version.ref, name)` names its commit.
 - a store-scoped tag `<name>/<version>` naming that commit.
 - a record in the **publication registry**, `publications.json` under
   the store path, written atomically (write-then-rename). A store with

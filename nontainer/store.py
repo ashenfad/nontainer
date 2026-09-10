@@ -329,8 +329,8 @@ class StoreTags:
 
     Every workspace on the store can read one, and it survives the
     deletion of the session that made it — that is the whole point of
-    the scope. A publication, the state an app serves, the snapshot a
-    report links to.
+    the scope. The state an app serves, the snapshot a report links
+    to, a released version somebody wants a second name for.
 
     Session-scoped tags stay on the workspace (``ws.tags.add``,
     ``ws.tags.list``, ``ws.tags.at``): they belong to a session and go
@@ -354,7 +354,12 @@ class StoreTags:
 
         ``source`` is the workspace whose current state to name (its
         staged changes are committed first, so the name means what the
-        caller saw), or a ref naming an exact commit on a session.
+        caller saw), or a ref naming an exact commit. Any ref this
+        store hands out is a ref this takes back: a session's, and a
+        published version's own (``version.ref``), which names a
+        reserved branch rather than a session. A published version is
+        named on the terms the registry sets — a version unpublished
+        since is refused, as it is for every other read of its ref.
 
         A workspace tags through its own provider, so it must be one
         this store opened — a workspace from somewhere else would write
@@ -371,7 +376,7 @@ class StoreTags:
             self._require_own(source)
             return source._tag(name, info=info, scope="store")
         ref = Ref.parse(source)
-        provider = self._store._session_provider(ref.session)
+        provider = self._store._ref_provider(ref, "store.tags.add")
         try:
             provider.check_tag(name, scope="store")
             if provider.tag_info(name, scope="store") is not None:
@@ -774,7 +779,7 @@ class Store:
                 f"The {self._backend!r} backend is not versioned, so it has no "
                 "commits to resolve a ref against. Use the kvgit backend."
             )
-        if parsed.session.startswith(_PUB_BRANCH_PREFIX):
+        if self._is_publication_branch(parsed.session):
             # A publication's ref names its own reserved branch, which
             # is deliberately not a session and never appears in
             # sessions(). The registry is what says whether that version
@@ -1283,6 +1288,36 @@ class Store:
         if name.startswith(_RESERVED_BRANCH_PREFIXES):
             return False
         return bool(SESSION_ID_RE.match(name))
+
+    @staticmethod
+    def _is_publication_branch(name: str) -> bool:
+        """A publication's own reserved branch, which is not a session:
+        it fails session-id validation, ``sessions()`` never lists it,
+        and the publication registry is what says it may be read."""
+        return name.startswith(_PUB_BRANCH_PREFIX)
+
+    def _ref_provider(self, ref: Ref, op: str) -> WorkspaceProvider:
+        """A provider open on the branch a ref names.
+
+        Two kinds of branch answer to a ref. A session opens through
+        the store's own session resolution. A publication's own
+        reserved branch opens the way :meth:`resolve` reads one: the
+        registry says whether that version is still published, and the
+        branch is opened only when it is already there, because
+        opening a reserved branch by name would mint it. The handle
+        that comes back reads — a publication's branch takes no
+        commits of its own — which is all a caller naming a commit by
+        id needs.
+        """
+        if not self._is_publication_branch(ref.session):
+            return self._session_provider(ref.session)
+        self._require_own_layout(op)
+        self._require_kvgit(op)
+        self._require_registered(ref)
+        self._require_branch(ref.session, op)
+        from .providers.kvgit import KvgitProvider
+
+        return KvgitProvider.open(self._kvgit_path(), session=ref.session)
 
     def _session_provider(self, session: str) -> WorkspaceProvider:
         """The provider for one session — the resolution
