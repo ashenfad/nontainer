@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`store.tags.list_info()`.** Every store-scoped tag described on
+  one backend open, where `info(name)` opens the store per call —
+  reading the metadata of N tags cost N opens. `list()` stays the
+  cheaper answer when only the commit ids are wanted.
+
 ## 0.6.3 - 2026-09-09
 
 ### Added

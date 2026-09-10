@@ -377,9 +377,26 @@ class StoreTags:
             if stored.startswith(prefix)
         }
 
+    def list_info(self) -> dict[str, TagInfo]:
+        """Tag name → :class:`TagInfo`, for every store-scoped tag, on
+        one backend open.
+
+        The bulk read: describing N tags one at a time costs N opens,
+        this costs one. :meth:`list` stays the cheaper answer when only
+        the commit ids are wanted — it reads the tag table and nothing
+        per tag.
+        """
+        return self._store._raw_tag_infos()
+
     def info(self, name: str) -> TagInfo | None:
         """Describe one store-scoped tag, or ``None`` if there is
-        no such tag."""
+        no such tag.
+
+        Opens the backend for the read and closes it again: a store
+        keeps no handle of its own, and holding a branch open by name
+        would create that branch. Describing several tags at once goes
+        through :meth:`list_info`, which pays that open once.
+        """
         return self._store._raw_tag_info(name)
 
     def delete(self, name: str) -> None:
@@ -1651,52 +1668,84 @@ class Store:
 
         return _STORE_PREFIX
 
-    def _raw_tags(self) -> dict[str, str]:
-        """Every tag in the kvgit store, stored (prefixed) names and
-        all. Read without a branch handle: opening one by name would
-        create that branch."""
+    @contextmanager
+    def _raw_backend(self) -> "Iterator[Any | None]":
+        """The kvgit store open for a handle-free read, or ``None``
+        when nothing was ever written under this store.
+
+        Opened as a backend rather than a branch handle: opening a
+        branch by name would create that branch. Every admin read that
+        must not do that goes through here, and a caller reading many
+        things holds one of these across the lot.
+        """
         p = self._kvgit_path()
         if not p.is_dir():
-            return {}
+            yield None
+            return
         from kvgit.kv.disk import Disk
-        from kvgit.versioned.kv import tags as raw_tags
 
         backend = Disk(str(p))
         try:
-            return dict(raw_tags(backend))
+            yield backend
         finally:
             self._close_backend(backend)
 
-    def _raw_tag_info(self, name: str) -> TagInfo | None:
-        p = self._kvgit_path()
-        if not p.is_dir():
-            return None
+    def _raw_tags(self, backend: Any = None) -> dict[str, str]:
+        """Every tag in the kvgit store, stored (prefixed) names and
+        all. Reads on ``backend`` when given one, else on an open of
+        its own."""
+        from kvgit.versioned.kv import tags as raw_tags
+
+        if backend is not None:
+            return dict(raw_tags(backend))
+        with self._raw_backend() as opened:
+            return {} if opened is None else dict(raw_tags(opened))
+
+    def _raw_tag_info(self, name: str, backend: Any = None) -> TagInfo | None:
+        """Describe one store-scoped tag. Reads on ``backend`` when
+        given one, else on an open of its own."""
+        if backend is None:
+            with self._raw_backend() as opened:
+                if opened is None:
+                    return None
+                return self._raw_tag_info(name, opened)
         from kvgit.encoding import safe_loads
-        from kvgit.kv.disk import Disk
         from kvgit.versioned.kv import tag_info as raw_tag_info
 
         stored = self._scoped_store_tag(name)
-        backend = Disk(str(p))
-        try:
-            info = raw_tag_info(backend, stored)
-            if info is None:
-                return None
-            # The commit's keyset root hash, read off the store key that
-            # holds it — the same raw read KvgitProvider makes for a
-            # commit's tree, since kvgit has no public accessor.
-            raw = backend.get(f"__commit_root__{info.commit}")
-            root = safe_loads(raw) if raw is not None else None
-            return TagInfo(
-                name=name,
-                scope="store",
-                id=info.commit,
-                tree=root if isinstance(root, str) else None,
-                time=info.time,
-                info=info.info,
-                dangling=info.dangling,
-            )
-        finally:
-            self._close_backend(backend)
+        info = raw_tag_info(backend, stored)
+        if info is None:
+            return None
+        # The commit's keyset root hash, read off the store key that
+        # holds it — the same raw read KvgitProvider makes for a
+        # commit's tree, since kvgit has no public accessor.
+        raw = backend.get(f"__commit_root__{info.commit}")
+        root = safe_loads(raw) if raw is not None else None
+        return TagInfo(
+            name=name,
+            scope="store",
+            id=info.commit,
+            tree=root if isinstance(root, str) else None,
+            time=info.time,
+            info=info.info,
+            dangling=info.dangling,
+        )
+
+    def _raw_tag_infos(self) -> dict[str, TagInfo]:
+        """Every store-scoped tag described, on one backend open."""
+        prefix = self._store_tag_prefix()
+        with self._raw_backend() as backend:
+            if backend is None:
+                return {}
+            described = {}
+            for stored in self._raw_tags(backend):
+                if not stored.startswith(prefix):
+                    continue
+                name = stored[len(prefix) :]
+                info = self._raw_tag_info(name, backend)
+                if info is not None:
+                    described[name] = info
+            return described
 
     def _delete_store_tag(self, name: str) -> None:
         from .errors import CommitNotFoundError

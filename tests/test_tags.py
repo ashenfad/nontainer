@@ -545,3 +545,49 @@ def test_the_two_tag_namespaces_are_reached_through_their_owners(tmp_path):
         # the scope argument is gone: the object is the scope
         with pytest.raises(TypeError):
             alice.tags.add("v2", scope="store")
+
+
+def test_store_tags_list_info_matches_info_per_name(tmp_path):
+    store = Store(tmp_path)
+    with store.open("author") as ws:
+        ws.terminal("echo one > a.txt")
+        store.tags.add(ws, "v1", info={"by": "ann"})
+        ws.terminal("echo two > b.txt")
+        store.tags.add(ws, "v2", info={"by": "bo", "title": "Two"})
+        ws.terminal("echo three > c.txt")
+        store.tags.add(ws, "release/prod")
+
+    described = store.tags.list_info()
+    assert set(described) == {"v1", "v2", "release/prod"}
+    for name, info in described.items():
+        assert info == store.tags.info(name)
+    assert described["v2"].info == {"by": "bo", "title": "Two"}
+    assert all(info.tree for info in described.values())
+    assert {name: info.id for name, info in described.items()} == store.tags.list()
+
+
+def test_store_tags_list_info_opens_the_backend_once(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    with store.open("author") as ws:
+        ws.terminal("echo one > a.txt")
+        for name in ("v1", "v2", "v3"):
+            store.tags.add(ws, name)
+
+    import kvgit.kv.disk
+
+    opens = []
+    real = kvgit.kv.disk.Disk
+
+    def counting(*args, **kwargs):
+        opens.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(kvgit.kv.disk, "Disk", counting)
+    described = store.tags.list_info()
+
+    assert set(described) == {"v1", "v2", "v3"}
+    assert len(opens) == 1
+
+
+def test_store_tags_list_info_is_empty_without_a_store(tmp_path):
+    assert Store(tmp_path / "never-used").tags.list_info() == {}
