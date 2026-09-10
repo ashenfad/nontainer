@@ -585,10 +585,11 @@ in a reserved key, `status` measures against the agent's last commit
 rather than the store's head, and `log` walks the agent's commits and
 not the framework's. `ws-git` in the terminal is the same
 implementation with the agent's spelling, so host and agent see one
-index — registered by `nontainer.wsgit.register_wsgit(ws)`, which the
-embedder calls and no adapter calls for it, where `ws.index` is on
-every workspace unconditionally. See [design.md](design.md) for the
-model.
+index — plus `branch`, `merge` and `worktree`, the verbs that reach
+the sessions around this one. Registered by
+`nontainer.wsgit.register_wsgit(ws)`, which the embedder calls and no
+adapter calls for it, where `ws.index` is on every workspace
+unconditionally. See [design.md](design.md) for the model.
 
 `WorkspaceStatus` carries `branch` (the session), `staged` and
 `unstaged` (workspace paths, both measured against the agent's last
@@ -739,6 +740,15 @@ sees it — the contract a `Mount` outside the root already has. And as
 with a mount, while anything is attached the working directory belongs
 to the composition, so a session committed in that state reopens at its
 root rather than where its agent was standing.
+
+The agent's spelling of the same three verbs is `ws-git worktree add
+<dir> <session>[@<commit>]` / `list` / `remove <dir>` in the terminal,
+which resolves `<dir>` against the shell's cwd and prints `worktree
+<dir>: <session>@<short commit> (read-only)`. It refuses a directory
+that already holds something, one inside a worktree already up, and
+this session's own name. `ws-git status` ends with a `worktrees:`
+block listing them, since nothing else it prints can ever name a file
+inside one.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s
