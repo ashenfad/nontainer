@@ -1370,3 +1370,80 @@ def test_resolving_a_publication_ref_cannot_straddle_an_unpublish(tmp_path):
         assert outcome["read"] == b"<h1>scores</h1>"
     assert version.ref.session not in Store(tmp_path)._branches()
     assert Store(tmp_path).publication("scoreboard") is None
+
+
+def test_set_meta_takes_a_copy_of_what_it_is_given(tmp_path):
+    """A record holds its own data: the caller's nested containers are
+    normalized on the way in, so editing them afterwards says nothing
+    about the publication."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+
+    given = {"title": "Scores", "owners": ["ann"], "links": {"home": "/"}}
+    pub = store.set_meta("scoreboard", given)
+    given["owners"].append("bo")
+    given["links"]["home"] = "/elsewhere"
+
+    assert pub.meta == {"title": "Scores", "owners": ("ann",), "links": {"home": "/"}}
+    assert store.publication("scoreboard").meta["owners"] == ("ann",)
+    assert store.publication("scoreboard").meta["links"] == {"home": "/"}
+
+
+def test_publication_meta_is_frozen_all_the_way_down(tmp_path):
+    """The mapping refuses writes at every depth: a caller who wants a
+    change builds a new mapping and calls set_meta with it."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+    store.set_meta("scoreboard", {"links": {"home": "/"}, "owners": ["ann"]})
+
+    meta = store.publication("scoreboard").meta
+
+    with pytest.raises(TypeError):
+        meta["links"] = {}
+    with pytest.raises(TypeError):
+        meta["links"]["home"] = "/elsewhere"
+    with pytest.raises(AttributeError):
+        meta["owners"].append("bo")
+    assert store.publication("scoreboard").meta["links"] == {"home": "/"}
+
+
+def test_version_info_is_frozen_all_the_way_down(tmp_path):
+    """The immutable half reads the same way the mutable one does: a
+    nested value cannot be edited through the record."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    version = store.publish(
+        ws, "scoreboard", info={"owners": ["ann"], "links": {"home": "/"}}
+    ).current_version
+    ws.close()
+
+    with pytest.raises(TypeError):
+        version.info["links"]["home"] = "/elsewhere"
+    with pytest.raises(AttributeError):
+        version.info["owners"].append("bo")
+    assert store.publication("scoreboard").current_version.info["links"] == {
+        "home": "/"
+    }
+
+
+def test_meta_read_off_a_record_can_be_written_back(tmp_path):
+    """The frozen view round-trips: the obvious edit — read the meta,
+    change one key, set it — is not refused for the shape it came
+    back in."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    ws.close()
+    store.set_meta("scoreboard", {"title": "Scores", "links": {"home": "/"}})
+
+    meta = store.publication("scoreboard").meta
+    store.set_meta("scoreboard", {**meta, "title": "Scoreboard"})
+
+    assert store.publication("scoreboard").meta == {
+        "title": "Scoreboard",
+        "links": {"home": "/"},
+    }

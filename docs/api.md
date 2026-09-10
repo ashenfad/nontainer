@@ -205,7 +205,16 @@ reads as an empty mapping, and `paths` as an empty tuple. `info` counts
 for equality but is left out of the hash, so a `Version` — and a
 `Publication` holding one — goes in a set or a dict key like any other
 frozen record: the mapping holds whatever JSON the caller passed, and
-none of that is hashable.
+that is not hashable.
+
+`Version.info` and `Publication.meta` both read as **read-only views
+all the way down**: nested mappings are read-only too, and a JSON
+array reads as a tuple. A record describes what the store holds, so
+the way to change metadata is `set_meta`, where the lock and the
+validation are — and there is no version of it that edits a version's
+`info`, which is immutable by design. A view read off a record is
+accepted straight back, so `store.set_meta(name, {**pub.meta, "title":
+"New"})` is how one key changes.
 
 `info` may not set `tool`, `name`, `version`, `published_from` or
 `paths`: those are what publish writes into the commit, and the commit is where a
@@ -309,7 +318,8 @@ changes about a published app without a release. Renaming an app from
 nothing is republished. `set_meta` replaces the mapping whole rather
 than merging, so dropping a key is spelled the same way as changing
 one, and `{}` clears it; values must be JSON-serializable, because the
-registry is a JSON file. A publication with none reads as an empty
+registry is a JSON file, and what lands is a copy, so editing a nested
+list afterwards says nothing about the publication. A publication with none reads as an empty
 mapping, and so does a row written before the field existed.
 `publish` leaves `meta` where it is on an existing publication and
 starts a new lineage with none; the last `unpublish` takes the row and

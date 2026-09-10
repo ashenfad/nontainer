@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field existed reads as an empty mapping.
 
 ### Fixed
+- **A publication record holds its own data.** `set_meta` copied only
+  the outer mapping, so a nested list or dict stayed shared with the
+  caller and editing it afterwards changed what the record read as;
+  the mapping now normalizes through JSON on the way in. And
+  `Publication.meta` and `Version.info` both read as read-only views
+  all the way down — nested mappings read-only too, JSON arrays as
+  tuples — so metadata changes through `set_meta`, where the lock and
+  the validation are. A view read off a record is accepted straight
+  back: `set_meta(name, {**pub.meta, "title": "New"})`.
 - **Reading a publication's ref cannot straddle its `unpublish`.**
   The registration check and the open that followed it sat either side
   of the registry lock, so an `unpublish` landing in between left the
