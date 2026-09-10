@@ -738,6 +738,12 @@ def test_ws_git_log_and_diff_read_another_session(ws, store):
         line.split(" ", 1)[1] for line in ws.terminal("ws-git log").stdout.splitlines()
     ] == ["seed"]
 
+    # and the pickaxe reaches it too: where the delegate's work put a
+    # string into the tree
+    pick = ws.terminal("ws-git log -S refactored worker").stdout.splitlines()
+    assert [line.split(" ", 1)[1] for line in pick] == ["+ their work"]
+    assert ws.terminal("ws-git log -S refactored").stdout == ""
+
     out = ws.terminal("ws-git diff worker").stdout
     assert "# 1 path(s) in worker's seed" in out
     assert "# 1 path(s) elsewhere" in out

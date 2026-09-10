@@ -176,6 +176,29 @@ def test_checkout_restores_the_tree_across_the_rungs(ws):
     assert [e.info["message"] for e in ws.index.log()] == ["first"]
 
 
+def test_log_S_across_the_rungs(ws):
+    """The pickaxe reads the same wherever the writing was done: the
+    commits where the string appeared and vanished, signed, and the one
+    that only moved it left out."""
+    ws.terminal("cat > a.txt <<'EOF'\nplain\nEOF\nws-git commit -m base")
+    ws.terminal("cat > a.txt <<'EOF'\nneedle\ntail\nEOF\nws-git commit -m adds")
+    ws.terminal("cat > a.txt <<'EOF'\ntail\nneedle\nEOF\nws-git commit -m moved")
+    ws.terminal("cat > a.txt <<'EOF'\nplain\nEOF\nws-git commit -m drops")
+
+    out = ws.terminal("ws-git log -S needle").stdout.splitlines()
+    assert [line.split(" ", 1)[1] for line in out] == ["- drops", "+ adds"]
+    for line in out:
+        assert re.fullmatch(SHORT, line.split(" ", 1)[0]), line
+
+    # the default walk is the agent's; --all is every commit the
+    # session holds, so it reaches one the agent never made
+    ws.files.fs.write("/workspace/b.txt", b"needle\n")
+    ws.commit(info={"tool": "framework"})
+    assert ws.terminal("ws-git log -S needle").stdout.splitlines() == out
+    every = ws.terminal("ws-git log -S needle --all").stdout.splitlines()
+    assert every[0].split(" ", 1)[1] == "+ framework"
+
+
 # -- the sessions verbs, on both rungs -----------------------------------------
 
 
