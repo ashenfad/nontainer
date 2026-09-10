@@ -754,3 +754,26 @@ def test_worktree_under_a_configured_root(store):
         assert w.terminal("ws-git worktree list").stdout == "(none)\n"
     finally:
         w.close()
+
+
+def test_file_rows_use_the_sessions_root(store):
+    """A session at a root of its own names its files the way its agent
+    typed them: status rows and diff headers are root-relative here as
+    everywhere, and the root is the session's, not a default."""
+    w = store.open("main", root="/data")
+    register_wsgit(w)
+    try:
+        w.terminal("echo one > note.md")
+        assert w.terminal("ws-git status").stdout == " M note.md\n"
+
+        w.terminal("ws-git stage note.md")
+        assert w.terminal("ws-git status").stdout == "M  note.md\n"
+        assert w.terminal("ws-git diff --cached").stdout == (
+            "diff --git a/note.md b/note.md\n"
+            "--- a/note.md\n"
+            "+++ b/note.md\n"
+            "@@ -0,0 +1 @@\n"
+            "+one\n"
+        )
+    finally:
+        w.close()
