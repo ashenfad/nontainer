@@ -42,6 +42,7 @@ cannot collide however a session is named.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -76,6 +77,13 @@ _KVGIT_CAPS = Capabilities(
     fuse_mount=False,
     tags=True,
 )
+
+#: A commit id typed SHORT: hex, at least seven characters, and less
+#: than a whole one. Seven is git's abbreviation and the length every
+#: ws-git line prints, so what an agent reads off a log line is what
+#: this matches. A whole id, a session name, ``HEAD`` and anything else
+#: fall through untouched.
+_SHORT_ID_RE = re.compile(r"[0-9a-f]{7,39}")
 
 _LEGACY_CWD_KEY = "__cwd__"
 """The cwd key nontainer kept beside the filesystem's own, before the
@@ -724,6 +732,48 @@ class KvgitProvider:
         """Another session's current commit on this store. Unknown
         names raise ``ValueError``."""
         return self._open_branch(session).current_commit
+
+    def expand_commit(self, commit: str, *, session: str | None = None) -> str:
+        """A commit id typed short → the whole one it names.
+
+        Every ref spelling nontainer prints is one it accepts back, and
+        what it prints is seven characters of a commit id. A unique
+        prefix of seven hex characters or more expands here, against
+        the full history of the session that holds it — the framework's
+        commits included, since a ref names a state and takes no place
+        in anyone's graph.
+
+        An ambiguous prefix raises ``ValueError`` naming the commits it
+        could mean. A prefix nothing matches is returned unchanged, so
+        the read that follows refuses it with the same not-found error
+        a whole id nothing matches earns. Anything that is not a short
+        id — a whole one, a name — is returned unchanged too, and costs
+        no walk.
+
+        ``session`` names whose history to search; the default is this
+        provider's own.
+        """
+        if not isinstance(commit, str) or not _SHORT_ID_RE.fullmatch(commit):
+            return commit
+        matches = sorted(
+            {cid for cid in self._commit_ids(session) if cid.startswith(commit)}
+        )
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            return commit
+        named = ", ".join(cid[:12] for cid in matches)
+        raise ValueError(
+            f"ambiguous commit {commit!r} on session "
+            f"{session or self.session!r}: it names {len(matches)} commits "
+            f"({named}) — type more of the id."
+        )
+
+    def _commit_ids(self, session: str | None) -> Iterable[str]:
+        """Every commit id on a session's branch, newest first."""
+        if session is None or session == self.session:
+            return self._staged.history()
+        return self._open_branch(session).history()
 
     def refresh(self) -> None:
         """Re-read the branch head, DISCARDING uncommitted writes.

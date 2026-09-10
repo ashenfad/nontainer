@@ -2083,6 +2083,13 @@ class Store:
 
         self._require_branch(session, f"read at {session}@{commit}")
         provider = KvgitProvider.open(self._kvgit_path(), session=session)
+        # What ws-git prints is seven characters of a commit id, and
+        # every spelling nontainer prints is one it accepts back.
+        try:
+            commit = provider.expand_commit(commit)
+        except BaseException:
+            provider.close()
+            raise
         handle = provider._staged.checkout(commit)
         if handle is None:
             provider.close()

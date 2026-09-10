@@ -10,7 +10,7 @@ of ``ws-git branch`` / ``merge`` / ``checkout -- <paths>`` /
 
 import pytest
 
-from nontainer import NotSupportedError, Store, WorkspaceError
+from nontainer import CommitNotFoundError, NotSupportedError, Store, WorkspaceError
 from nontainer.views import VIEW_KEY, parse_view
 from nontainer.wsgit import register_wsgit
 
@@ -781,6 +781,35 @@ def test_ws_git_checkout_takes_paths_from_another_session(ws, store):
     assert ws.terminal("ws-git status").stdout == " M a.py\n"
 
 
+def test_ws_git_checkout_takes_paths_at_a_short_id(ws, store):
+    """A log line prints seven characters of a commit id, and the take
+    accepts exactly what it printed."""
+    _seed(ws, **{"a.py": "mine\n"})
+    ws.terminal("ws-git branch worker")
+    worker = store.open("worker")
+    try:
+        register_wsgit(worker)
+        worker.files.write("/workspace/a.py", "theirs\n")
+        worker.index.commit("work")
+        short = worker.terminal("ws-git log").stdout.split()[0]
+    finally:
+        worker.close()
+
+    r = ws.terminal(f"ws-git checkout worker@{short} -- a.py")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == f"Updated 1 path from worker@{short}\n"
+    assert ws.files.read("/workspace/a.py") == b"theirs\n"
+
+
+def test_ws_git_take_of_an_unknown_short_id_says_so(ws, store):
+    _seed(ws, **{"a.py": "mine\n"})
+    ws.terminal("ws-git branch worker")
+
+    r = ws.terminal("ws-git checkout worker@0123456 -- a.py")
+    assert r.exit_code == 1
+    assert "0123456" in r.stderr
+
+
 def test_a_narrowed_session_sees_its_view_through_its_own_verbs(ws, store):
     _seed(ws, **{"a.py": "a\n", "b.py": "b\n"})
     ws.terminal("ws-git branch worker --paths a.py")
@@ -1060,3 +1089,94 @@ def test_diff_reads_a_word_that_is_both_a_path_and_a_session_as_the_path(ws, sto
     ws.terminal("rm worker")
     ws.index.commit("gone")
     assert ws.terminal("ws-git diff worker").stdout.startswith("diff --git a/worker")
+
+
+# -- short commit ids ----------------------------------------------------------
+
+
+def test_store_resolve_takes_a_short_commit_id(ws, store):
+    """Every ref spelling nontainer prints is one it accepts back: the
+    seven characters a log line shows name the commit they came from."""
+    _seed(ws, **{"a.txt": "one\n"})
+    full = ws.head
+    ws.files.write("/workspace/a.txt", "two\n")
+    ws.commit()
+
+    frozen = store.resolve(f"main@{full[:7]}")
+    try:
+        assert frozen.files.read("/workspace/a.txt") == b"one\n"
+        assert str(frozen.ref) == f"main@{full}"
+    finally:
+        frozen.close()
+
+
+def test_a_take_reads_a_short_commit_id(ws):
+    """``ws.checkout(ref, paths=)`` takes the short spelling too, of
+    this session and of another."""
+    _seed(ws, **{"a.txt": "one\n"})
+    mine = ws.head
+    child = ws.fork("child")
+    try:
+        child.files.write("/workspace/b.txt", "theirs\n")
+        child.index.commit("work")
+        theirs = child.index.head
+
+        ws.files.write("/workspace/a.txt", "two\n")
+        ws.checkout(f"main@{mine[:7]}", paths=["a.txt"])
+        assert ws.files.read("/workspace/a.txt") == b"one\n"
+
+        ws.checkout(f"child@{theirs[:7]}", paths=["b.txt"])
+        assert ws.files.read("/workspace/b.txt") == b"theirs\n"
+        assert next(iter(ws.log(limit=1))).info["taken_from"] == f"child@{theirs}"
+    finally:
+        child.close()
+
+
+def test_a_whole_tree_checkout_reads_a_short_commit_id(ws):
+    _seed(ws, **{"a.txt": "one\n"})
+    first = ws.head
+    ws.files.write("/workspace/a.txt", "two\n")
+    ws.commit()
+
+    ws.checkout(first[:7])
+    assert ws.files.read("/workspace/a.txt") == b"one\n"
+
+
+def test_attach_takes_a_short_commit_id(ws, store):
+    _seed(ws, **{"a.txt": "one\n"})
+    child = ws.fork("child")
+    try:
+        child.files.write("/workspace/note.md", "theirs\n")
+        child.index.commit("note")
+        short = child.index.head[:7]
+    finally:
+        child.close()
+
+    ws.files.attach(f"child@{short}", "/workspace/peek")
+    assert ws.files.read("/workspace/peek/note.md") == b"theirs\n"
+    assert ws.files.attachments() == {
+        "/workspace/peek": f"child@{store.open('child').index.head}"
+    }
+
+
+def test_a_short_id_of_a_framework_commit_is_a_ref(ws, store):
+    """A worktree reads a state and takes no place in anyone's graph,
+    so every commit of the session counts — the framework's included."""
+    _seed(ws, **{"a.txt": "one\n"})
+    ws.files.write("/workspace/a.txt", "two\n")
+    framework = ws.commit()
+    assert framework not in [e.id for e in ws.index.log()]
+
+    frozen = store.resolve(f"main@{framework[:7]}")
+    try:
+        assert frozen.files.read("/workspace/a.txt") == b"two\n"
+    finally:
+        frozen.close()
+
+
+def test_a_short_id_nothing_matches_reads_like_a_whole_one(ws, store):
+    _seed(ws, **{"a.txt": "one\n"})
+    with pytest.raises(CommitNotFoundError):
+        store.resolve("main@0123456")
+    with pytest.raises(CommitNotFoundError):
+        store.resolve(f"main@{'0' * 40}")
