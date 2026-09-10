@@ -37,7 +37,13 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import NotSupportedError, WorkspaceError
-from .protocol import SESSION_ID_RE, TagInfo, WorkspaceProvider, validate_session_id
+from .protocol import (
+    SESSION_ID_RE,
+    SHORT_ID_RE,
+    TagInfo,
+    WorkspaceProvider,
+    validate_session_id,
+)
 
 if TYPE_CHECKING:
     from .protocol import Executor
@@ -401,7 +407,7 @@ class StoreTags:
             self._require_own(source)
             return source._tag(name, info=info, scope="store")
         ref = Ref.parse(source)
-        with self._store._ref_provider(ref, "store.tags.add") as provider:
+        with self._store._ref_provider(ref, "store.tags.add") as (provider, at):
             try:
                 provider.check_tag(name, scope="store")
                 if provider.tag_info(name, scope="store") is not None:
@@ -409,7 +415,7 @@ class StoreTags:
                         f"Tag already exists: {name!r} in scope 'store' — tags "
                         "never move; delete it first if you mean to repoint it"
                     )
-                return provider.tag(name, at=ref.commit, info=info, scope="store")
+                return provider.tag(name, at=at.commit, info=info, scope="store")
             finally:
                 provider.close()
 
@@ -819,8 +825,8 @@ class Store:
         # after: it holds a handle checked out at the commit, which is
         # pinned by the version's tag for the sweep's grace period and
         # names no branch, so nothing it does later can mint one.
-        with self._ref_source_held(parsed, "resolve"):
-            provider = self._provider_at_commit(parsed.session, parsed.commit)
+        with self._ref_source_held(parsed, "resolve") as source:
+            provider = self._provider_at_commit(source.session, source.commit)
         return self._frozen_workspace(provider, root=root, **settings)
 
     # ------------------------------------------------------------------
@@ -1363,8 +1369,9 @@ class Store:
         return name.startswith(_PUB_BRANCH_PREFIX)
 
     @contextmanager
-    def _ref_source_held(self, ref: Ref, op: str) -> "Iterator[None]":
-        """Check the source a ref names and hold it still for the body.
+    def _ref_source_held(self, ref: Ref, op: str) -> "Iterator[Ref]":
+        """Check the source a ref names, hold it still for the body, and
+        hand the body that ref with its commit spelled whole.
 
         A publication's reserved branch is checked under the registry
         lock, and the caller opens it in the body, so the check and
@@ -1375,21 +1382,59 @@ class Store:
         opened by a name it does not know — and a reserved branch no
         record names refuses to let that version be published again.
 
+        The expansion comes first, and for a publication inside that
+        same lock: a ref carries what a caller was shown, which may be
+        seven characters of a commit id, while the registry holds whole
+        ones — an exact comparison made before the expansion reads a
+        published version as unpublished.
+
         A ref naming a session takes no lock: a session's branch is
         not the registry's to remove.
         """
         if not self._is_publication_branch(ref.session):
-            yield
+            yield self._expanded_ref(ref)
             return
         self._require_own_layout(op)
         self._require_kvgit(op)
         with self._registry_locked():
-            self._require_registered(ref)
-            yield
+            whole = self._expanded_ref(ref)
+            self._require_registered(whole)
+            yield whole
+
+    def _expanded_ref(self, ref: Ref) -> Ref:
+        """A ref whose commit is spelled in full.
+
+        Every spelling nontainer prints is one it accepts back, and what
+        ws-git prints is seven characters of a commit id — so a ref is
+        made whole before anything compares it with what the store
+        holds. A commit already whole, or a substrate that keeps no
+        commits, costs no open.
+
+        A branch that is not there expands nothing and the ref comes
+        back as it went in: opening one by a name kvgit does not know
+        would mint it, and the check that follows is what says why the
+        branch is missing.
+        """
+        if self._backend != "kvgit" or self._provider_factory is not None:
+            return ref
+        if not SHORT_ID_RE.fullmatch(ref.commit):
+            return ref
+        if ref.session not in set(self._branches()):
+            return ref
+        from .providers.kvgit import KvgitProvider
+
+        provider = KvgitProvider.open(self._kvgit_path(), session=ref.session)
+        try:
+            return Ref(ref.session, provider.expand_commit(ref.commit), ref.path)
+        finally:
+            provider.close()
 
     @contextmanager
-    def _ref_provider(self, ref: Ref, op: str) -> "Iterator[WorkspaceProvider]":
-        """A provider open on the branch a ref names, for the body.
+    def _ref_provider(
+        self, ref: Ref, op: str
+    ) -> "Iterator[tuple[WorkspaceProvider, Ref]]":
+        """A provider open on the branch a ref names, and that ref with
+        its commit spelled whole, for the body.
 
         Two kinds of branch answer to a ref. A session opens through
         the store's own session resolution. A publication's own
@@ -1404,14 +1449,17 @@ class Store:
         for as long as the body runs: whatever the body does with the
         handle happens on a version the registry still holds.
         """
-        with self._ref_source_held(ref, op):
-            if not self._is_publication_branch(ref.session):
-                yield self._session_provider(ref.session)
+        with self._ref_source_held(ref, op) as source:
+            if not self._is_publication_branch(source.session):
+                yield self._session_provider(source.session), source
                 return
-            self._require_branch(ref.session, op)
+            self._require_branch(source.session, op)
             from .providers.kvgit import KvgitProvider
 
-            yield KvgitProvider.open(self._kvgit_path(), session=ref.session)
+            yield (
+                KvgitProvider.open(self._kvgit_path(), session=source.session),
+                source,
+            )
 
     def _session_provider(self, session: str) -> WorkspaceProvider:
         """The provider for one session — the resolution

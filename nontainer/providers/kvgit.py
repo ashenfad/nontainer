@@ -42,7 +42,6 @@ cannot collide however a session is named.
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -51,6 +50,7 @@ from ..agentgit import BLOB_KEY as _WS_BLOB_KEY
 from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 from ..planes import CACHE_PREFIX, CONVERSATION_PREFIX
 from ..protocol import (
+    SHORT_ID_RE,
     Capabilities,
     CommitInfo,
     MergeOutcome,
@@ -77,13 +77,6 @@ _KVGIT_CAPS = Capabilities(
     fuse_mount=False,
     tags=True,
 )
-
-#: A commit id typed SHORT: hex, at least seven characters, and less
-#: than a whole one. Seven is git's abbreviation and the length every
-#: ws-git line prints, so what an agent reads off a log line is what
-#: this matches. A whole id, a session name, ``HEAD`` and anything else
-#: fall through untouched.
-_SHORT_ID_RE = re.compile(r"[0-9a-f]{7,39}")
 
 _LEGACY_CWD_KEY = "__cwd__"
 """The cwd key nontainer kept beside the filesystem's own, before the
@@ -753,7 +746,7 @@ class KvgitProvider:
         ``session`` names whose history to search; the default is this
         provider's own.
         """
-        if not isinstance(commit, str) or not _SHORT_ID_RE.fullmatch(commit):
+        if not isinstance(commit, str) or not SHORT_ID_RE.fullmatch(commit):
             return commit
         matches = sorted(
             {cid for cid in self._commit_ids(session) if cid.startswith(commit)}
