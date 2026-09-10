@@ -77,11 +77,12 @@ _VERBS = (
     "branch",
     "merge",
     "worktree",
+    "sparse-checkout",
     "help",
 )
 _USAGE = (
     "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
-    "checkout|branch|merge|worktree) [...]"
+    "checkout|branch|merge|worktree|sparse-checkout) [...]"
 )
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
@@ -89,7 +90,8 @@ _SUPPORTED = (
     "log [<session>] [-n N] | show <ref> | checkout <ref> [-- <paths>] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge <session> | "
-    "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | help"
+    "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | "
+    "sparse-checkout [list] | help"
 )
 # Movie-set edge: name the missing corner in git's own terms plus the
 # terminal verb an agent can reach for instead — never host Python it
@@ -116,7 +118,7 @@ _WORKTREE_FORMS = """usage: ws-git worktree add <dir> <session>[@<commit>]
 _HELP = """ws-git: the agent's git over this session.
 
 usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
-               branch|merge|worktree) [...]
+               branch|merge|worktree|sparse-checkout) [...]
   stage <paths>     add paths to the index (optional: commit with an
                     empty index takes everything modified)
   unstage <paths>   drop paths from the index
@@ -125,10 +127,12 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     left out stays in the working tree, uncommitted
   reset             abandon the composition (mixed-only)
   status [--porcelain]
-                    staged vs unstaged (git-short XY columns; porcelain
-                    is the default, so the flag changes nothing), then
-                    a worktrees: block — one line per worktree, the
-                    shape worktree list prints — when any are up
+                    a view: line when this session was given part of
+                    the tree, then staged vs unstaged (git-short XY
+                    columns; porcelain is the default, so the flag
+                    changes nothing), then a worktrees: block — one
+                    line per worktree, the shape worktree list prints —
+                    when any are up
   diff [<session>] [--cached] [--check] [paths...]
                     unified diff against your last commit; --cached for
                     the staged set; a session name diffs against that
@@ -163,6 +167,11 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   worktree list     the worktrees here, one line each
   worktree remove <dir>
                     take one down
+  sparse-checkout list
+                    the paths this session was given to see, one per
+                    line, or (full) when it sees the whole tree. A view
+                    is given when the session is forked (ws-git branch
+                    <name> --paths <paths>) and cannot be changed here
   help              this text
 
 A worktree is READ-ONLY and pinned at a commit, because work moves
@@ -405,6 +414,8 @@ def make_wsgit_command(ws: Any) -> Any:
                 return _merge(git, ws, ctx, rest)
             if verb == "worktree":
                 return _worktree(ws, ctx, rest)
+            if verb == "sparse-checkout":
+                return _sparse_checkout(ws, ctx, rest)
         except (
             ValueError,
             WorkspaceError,
@@ -419,7 +430,7 @@ def make_wsgit_command(ws: Any) -> Any:
     wsgit.__doc__ = (
         "The agent's git over this session and its neighbours: ws-git "
         "(stage|unstage|commit|reset|status|diff|log|show|checkout|"
-        "branch|merge|worktree) [...]"
+        "branch|merge|worktree|sparse-checkout) [...]"
     )
     return wsgit
 
@@ -466,6 +477,12 @@ def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             return _usage_error(f"status takes no {flag!r} (porcelain is the default).")
     st = git.status()
     lines: list[str] = []
+    # A narrowed session discovers what it cannot see by being refused,
+    # unless it is told: what it was given leads, so a reader knows
+    # what the rows below are measured over.
+    seed = _seed_paths(ws)
+    if seed:
+        lines.append("view: " + ", ".join(seed))
     if st.merge_source is not None:
         short = _merge_hash(git, st.merge_source)
         at = f"@{short}" if short else ""
@@ -814,6 +831,36 @@ def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:
     return None  # silent, like git worktree remove
 
 
+def _seed_paths(ws: Any) -> list[str]:
+    """The paths this session was GIVEN to see, rendered the way every
+    other path this verb prints is: relative to the root, a directory
+    with its slash. Empty for a session that sees the whole tree.
+
+    The seed, not the view as it stands: a file the session created
+    joined its view because it made it, while what it was narrowed to
+    is what it was given at the fork.
+    """
+    from .views import VIEW_KEY, parse_seed
+
+    return [
+        _show(ws, path) + ("/" if _is_dir(ws, path) else "")
+        for path in parse_seed(ws._provider.kv.get(VIEW_KEY))
+    ]
+
+
+def _sparse_checkout(ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if rest and rest[0] != "list":
+        return _usage_error(
+            f"sparse-checkout takes no {rest[0]!r} (list is all there is): "
+            "a view is given when the session is forked (ws-git branch "
+            "<name> --paths <paths>) and cannot be changed here."
+        )
+    if len(rest) > 1:
+        return _usage_error("sparse-checkout list takes no arguments.")
+    ctx.stdout.write("\n".join(_seed_paths(ws) or ["(full)"]) + "\n")
+    return None
+
+
 def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     from termish import CommandResult
 
@@ -890,9 +937,15 @@ def _names_a_path(git: AgentGit, ws: Any, path: str) -> bool:
     a file it holds or held at the agent's head, or a directory."""
     if path in set(git.working_files()) | set(git.head_files()):
         return True
+    return _is_dir(ws, path)
+
+
+def _is_dir(ws: Any, path: str) -> bool:
+    """Whether a workspace path is a directory here. A path the
+    filesystem cannot judge is not one."""
     try:
         return bool(ws._fs.isdir(path))
-    except Exception:  # noqa: BLE001 - a path the filesystem cannot judge is not one
+    except Exception:  # noqa: BLE001 - unjudgeable is the answer
         return False
 
 

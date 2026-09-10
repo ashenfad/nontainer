@@ -591,8 +591,9 @@ in a reserved key, `status` measures against the agent's last commit
 rather than the store's head, and `log` walks the agent's commits and
 not the framework's. `ws-git` in the terminal is the same
 implementation with the agent's spelling, so host and agent see one
-index — plus `branch`, `merge` and `worktree`, the verbs that reach
-the sessions around this one. Registered by
+index — plus `branch`, `merge`, `worktree` and `sparse-checkout`, the
+verbs that reach the sessions around this one and the view this one
+was given. Registered by
 `nontainer.wsgit.register_wsgit(ws)`, which the embedder calls and no
 adapter calls for it, where `ws.index` is on every workspace
 unconditionally. See [design.md](design.md) for the model.
@@ -710,6 +711,19 @@ reopened delegate is narrowed exactly as it was, and it merges
 `MergeChoice.OURS` — merging a narrowed delegate never narrows the
 caller. A fork given the whole tree records nothing, so a child of a
 narrowed session does not inherit its blinkers.
+
+**`ws-git sparse-checkout list`** is how a narrowed session asks what
+it was given, instead of discovering it by hitting the write rule: the
+seed paths one per line, rendered as every other path is (relative to
+the root, a directory with its slash), or `(full)` for a session that
+sees the whole tree. The bare `ws-git sparse-checkout` prints the same.
+`ws-git status` leads with one `view: a/, b.md` line carrying those
+paths — omitted for a full session — so a reader sees what the rows
+below are measured over. It is the seed and not the view as it stands:
+a file the session created joined its view because it made it. A view
+is given when the session is forked and cannot be changed from the
+terminal, so any other subcommand is a usage error naming `ws-git
+branch <name> --paths <paths>`.
 
 **`ws.checkout(ref, paths=[...])`** is the second form of one verb, and
 git's `restore --source=<ref> -- <paths>`: it makes those paths match

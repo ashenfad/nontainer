@@ -256,12 +256,20 @@ def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
         assert child.terminal("ls").stdout == "seen.txt\n"
         assert child.terminal("cat hidden.txt").exit_code != 0
 
+        # the child can ask what it was given rather than finding out
+        # by being refused, and status leads with the same answer
+        assert child.terminal("ws-git sparse-checkout list").stdout == "seen.txt\n"
+        assert child.terminal("ws-git sparse-checkout").stdout == "seen.txt\n"
+
         # a new path anywhere is ordinary work. The child starts at no
         # commit of its own, so what it can SEE reads as modified —
         # and what its view hides is absent here as everywhere else
         r = child.terminal("cat > note.md <<'EOF'\nnote\nEOF\nws-git status")
         assert r.exit_code == 0, r.stdout
-        assert r.stdout == " M note.md\n M seen.txt\n"
+        assert r.stdout == "view: seen.txt\n M note.md\n M seen.txt\n"
+        # the seed, not the view as it stands: a file the child made
+        # joined its view because it made it
+        assert child.terminal("ws-git sparse-checkout list").stdout == "seen.txt\n"
 
         # the hidden one is refused, and the call does not land
         before = child.terminal("ws-git status").stdout
@@ -271,6 +279,16 @@ def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
         assert ws._provider.files_at(child.head)["/workspace/hidden.txt"] == b"hidden\n"
     finally:
         child.close()
+
+
+def test_a_full_session_has_no_view_across_the_rungs(ws):
+    """A session that sees the whole tree says so, and its status
+    carries no header to explain."""
+    ws.terminal("cat > a.txt <<'EOF'\nbase\nEOF\nws-git commit -m base")
+
+    assert ws.terminal("ws-git sparse-checkout list").stdout == "(full)\n"
+    ws.terminal("cat > a.txt <<'EOF'\nedited\nEOF")
+    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
 
 
 def test_worktree_reads_a_neighbour_across_the_rungs(ws, store):
