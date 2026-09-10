@@ -643,6 +643,22 @@ def test_log_all_lists_the_commits_log_hides(ws):
     assert "base" in every and len(every) > len(_subjects(ws))
 
 
+def test_log_of_nothing_is_nothing(ws):
+    """A limit that asks for nothing gets nothing, on every walk."""
+    ws.terminal("echo needle > a.txt")
+    ws.terminal("ws-git commit -m base")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
+    ws.commit(info={"tool": "framework"})
+
+    assert ws.terminal("ws-git log -n 0").stdout == ""
+    assert ws.terminal("ws-git log --all -n 0").stdout == ""
+    assert ws.terminal("ws-git log -S needle -n 0").stdout == ""
+    # and the host's own reader of the agent's graph agrees
+    assert list(ws.index.log(limit=0)) == []
+    # a limit that asks for something still gets it
+    assert len(ws.terminal("ws-git log -n 1").stdout.splitlines()) == 1
+
+
 def test_log_S_needs_a_string(ws):
     r = ws.terminal("ws-git log -S")
     assert r.exit_code == 2

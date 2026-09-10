@@ -1179,7 +1179,13 @@ def _log_out(
 
 
 def _capped(pairs: Any, limit: int | None) -> list:
-    """The first ``limit`` of what a walk yields, or all of it."""
+    """The first ``limit`` of what a walk yields, or all of it.
+
+    A limit that asks for nothing gets nothing: ``-n 0`` is an empty
+    log, and so is a negative one.
+    """
+    if limit is not None and limit <= 0:
+        return []
     out = []
     for pair in pairs:
         out.append(pair)
