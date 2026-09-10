@@ -392,17 +392,17 @@ class StoreTags:
             self._require_own(source)
             return source._tag(name, info=info, scope="store")
         ref = Ref.parse(source)
-        provider = self._store._ref_provider(ref, "store.tags.add")
-        try:
-            provider.check_tag(name, scope="store")
-            if provider.tag_info(name, scope="store") is not None:
-                raise WorkspaceError(
-                    f"Tag already exists: {name!r} in scope 'store' — tags "
-                    "never move; delete it first if you mean to repoint it"
-                )
-            return provider.tag(name, at=ref.commit, info=info, scope="store")
-        finally:
-            provider.close()
+        with self._store._ref_provider(ref, "store.tags.add") as provider:
+            try:
+                provider.check_tag(name, scope="store")
+                if provider.tag_info(name, scope="store") is not None:
+                    raise WorkspaceError(
+                        f"Tag already exists: {name!r} in scope 'store' — tags "
+                        "never move; delete it first if you mean to repoint it"
+                    )
+                return provider.tag(name, at=ref.commit, info=info, scope="store")
+            finally:
+                provider.close()
 
     def _require_own(self, ws: "Workspace") -> None:
         """Refuse a workspace this store did not open."""
@@ -795,23 +795,24 @@ class Store:
                 f"The {self._backend!r} backend is not versioned, so it has no "
                 "commits to resolve a ref against. Use the kvgit backend."
             )
-        if self._is_publication_branch(parsed.session):
-            # A publication's ref names its own reserved branch, which
-            # is deliberately not a session and never appears in
-            # sessions(). The registry is what says whether that version
-            # is still published; the branch outliving it would not make
-            # it servable again.
-            self._require_registered(parsed)
-        elif parsed.session not in set(self._branches()):
-            raise WorkspaceError(
-                f"No such session on this store: {parsed.session!r} "
-                f"(resolving {str(parsed)!r})"
-            )
-        return self._frozen_workspace(
-            self._provider_at_commit(parsed.session, parsed.commit),
-            root=root,
-            **settings,
-        )
+        if not self._is_publication_branch(parsed.session):
+            if parsed.session not in set(self._branches()):
+                raise WorkspaceError(
+                    f"No such session on this store: {parsed.session!r} "
+                    f"(resolving {str(parsed)!r})"
+                )
+        # A publication's ref names its own reserved branch, which is
+        # deliberately not a session and never appears in sessions().
+        # The registry is what says whether that version is still
+        # published; the branch outliving it would not make it servable
+        # again. The check and the open share the registry lock, so an
+        # unpublish cannot land between them. The workspace is built
+        # after: it holds a handle checked out at the commit, which is
+        # pinned by the version's tag for the sweep's grace period and
+        # names no branch, so nothing it does later can mint one.
+        with self._ref_source_held(parsed, "resolve"):
+            provider = self._provider_at_commit(parsed.session, parsed.commit)
+        return self._frozen_workspace(provider, root=root, **settings)
 
     # ------------------------------------------------------------------
     # store-scoped tags
@@ -1348,28 +1349,56 @@ class Store:
         and the publication registry is what says it may be read."""
         return name.startswith(_PUB_BRANCH_PREFIX)
 
-    def _ref_provider(self, ref: Ref, op: str) -> WorkspaceProvider:
-        """A provider open on the branch a ref names.
+    @contextmanager
+    def _ref_source_held(self, ref: Ref, op: str) -> "Iterator[None]":
+        """Check the source a ref names and hold it still for the body.
+
+        A publication's reserved branch is checked under the registry
+        lock, and the caller opens it in the body, so the check and
+        the open are one critical section. ``unpublish`` deletes the
+        row, the tag and the branch under that same lock; a check that
+        passed and an open that followed on either side of it would
+        mint the reserved branch again, because kvgit creates a branch
+        opened by a name it does not know — and a reserved branch no
+        record names refuses to let that version be published again.
+
+        A ref naming a session takes no lock: a session's branch is
+        not the registry's to remove.
+        """
+        if not self._is_publication_branch(ref.session):
+            yield
+            return
+        self._require_own_layout(op)
+        self._require_kvgit(op)
+        with self._registry_locked():
+            self._require_registered(ref)
+            yield
+
+    @contextmanager
+    def _ref_provider(self, ref: Ref, op: str) -> "Iterator[WorkspaceProvider]":
+        """A provider open on the branch a ref names, for the body.
 
         Two kinds of branch answer to a ref. A session opens through
         the store's own session resolution. A publication's own
         reserved branch opens the way :meth:`resolve` reads one: the
         registry says whether that version is still published, and the
-        branch is opened only when it is already there, because
-        opening a reserved branch by name would mint it. The handle
+        branch is opened only when it is already there. The handle
         that comes back reads — a publication's branch takes no
         commits of its own — which is all a caller naming a commit by
         id needs.
-        """
-        if not self._is_publication_branch(ref.session):
-            return self._session_provider(ref.session)
-        self._require_own_layout(op)
-        self._require_kvgit(op)
-        self._require_registered(ref)
-        self._require_branch(ref.session, op)
-        from .providers.kvgit import KvgitProvider
 
-        return KvgitProvider.open(self._kvgit_path(), session=ref.session)
+        A context manager because a publication's source is held still
+        for as long as the body runs: whatever the body does with the
+        handle happens on a version the registry still holds.
+        """
+        with self._ref_source_held(ref, op):
+            if not self._is_publication_branch(ref.session):
+                yield self._session_provider(ref.session)
+                return
+            self._require_branch(ref.session, op)
+            from .providers.kvgit import KvgitProvider
+
+            yield KvgitProvider.open(self._kvgit_path(), session=ref.session)
 
     def _session_provider(self, session: str) -> WorkspaceProvider:
         """The provider for one session — the resolution
@@ -1564,25 +1593,27 @@ class Store:
         names may have been unpublished since. Opening one anyway would
         serve unpublished content for as long as the orphan sweep's
         grace period, which is the opposite of what unpublish means.
+
+        The re-read and the open share the registry lock, so an
+        unpublish cannot land between them and leave the reserved
+        branch minted again by the open.
         """
         self._require_own_layout("Publication.open")
         self._require_kvgit("Publication.open")
-        registry = self._registry_read()
-        row = ((registry.get(version.name) or {}).get("versions") or {}).get(
-            version.version
-        )
-        if row is None:
-            raise WorkspaceError(
-                f"No longer published: {version.name}/{version.version} — it "
-                "was unpublished after this Publication was fetched. Re-read "
-                f"it with store.publication({version.name!r})."
+        with self._registry_locked():
+            registry = self._registry_read()
+            row = ((registry.get(version.name) or {}).get("versions") or {}).get(
+                version.version
             )
-        ref = Ref.parse(row["ref"])
-        return self._frozen_workspace(
-            self._provider_at_commit(ref.session, ref.commit),
-            root=row.get("root"),
-            **settings,
-        )
+            if row is None:
+                raise WorkspaceError(
+                    f"No longer published: {version.name}/{version.version} — "
+                    "it was unpublished after this Publication was fetched. "
+                    f"Re-read it with store.publication({version.name!r})."
+                )
+            ref = Ref.parse(row["ref"])
+            provider = self._provider_at_commit(ref.session, ref.commit)
+        return self._frozen_workspace(provider, root=row.get("root"), **settings)
 
     def _branch_head(self, branch: str) -> tuple[str | None, dict[str, Any] | None]:
         """The commit at a branch's head and the info it carries.
