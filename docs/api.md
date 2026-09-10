@@ -138,7 +138,7 @@ version is current.
 
 ```python
 store.publish(ws, name, *, paths=("app/",), version=None, current=True,
-              info=None) -> Publication
+              create_only=False, info=None) -> Publication
 store.publications() -> dict[str, Publication]         # by name
 store.publication(name) -> Publication | None
 store.set_current(name, version) -> Publication
@@ -176,6 +176,18 @@ version the caller named stands outside it. An embedder that wants
 every version numbered passes `version=` itself. An explicit name must
 be unused, because versions never move.
 
+`create_only=True` refuses the call when `name` already holds any
+version, rather than extending the lineage — for a caller that means to
+open one and would rather hear about a collision than silently publish
+a second version of somebody else's app. The check runs inside the lock
+that decides between creating and extending, so two publishers racing
+to open one lineage get one success and one `ValueError`, and the loser
+is refused before anything is written: no branch, no tag, no commit, no
+record. It closes the check-then-publish race only for the caller that
+stops doing the check — the lock covers this call, not a read the
+caller made before it, and a name an earlier `publication()` saw free
+can be taken before this call reaches the lock.
+
 `Version.info` is the caller's own `publish(info=...)` keys, read back
 off the registry row rather than the tag: listing publications with
 their display titles and owners is one registry read and no backend
@@ -193,7 +205,9 @@ provenance in an immutable commit outlives every chance to notice it.
 The publication verbs split their refusals by whose mistake it is. A
 **`ValueError`** is the call's: a name that is not session-id shaped, an
 `info` key publish writes itself, a version name the lineage already
-holds, `paths` matching no file, and a version name `set_current`,
+holds, a publication name that already holds a version under
+`create_only`, `paths` matching no file, and a version name
+`set_current`,
 `unpublish` or `Publication.open` cannot find. An embedder mapping
 errors to HTTP answers 400 to all of them. A **`WorkspaceError`** is the
 store's state: a session with staged changes, a leftover tag or branch,

@@ -826,6 +826,7 @@ class Store:
         paths: "Sequence[str]" = ("app/",),
         version: str | None = None,
         current: bool = True,
+        create_only: bool = False,
         info: dict[str, Any] | None = None,
     ) -> Publication:
         """Publish part of a session's tree as an immutable version.
@@ -896,6 +897,19 @@ class Store:
                 refuses while others remain. The version that opens a
                 lineage takes the pointer whatever this says, because a
                 publication must point somewhere.
+            create_only: Refuse the call if ``name`` already holds any
+                version, rather than extending the lineage — for a
+                caller that means to open one and would rather hear
+                about a collision than silently publish a second
+                version of somebody else's app. The check runs inside
+                the lock that decides between creating and extending,
+                so two publishers racing to open one lineage get one
+                success and one ``ValueError``. It closes the
+                check-then-publish race only for the caller that stops
+                doing the check: the lock covers this call, not a read
+                the caller made before it, and a name seen free by an
+                earlier ``publication()`` can be taken before this call
+                reaches the lock.
             info: Extra keys merged into the commit's info, beside the
                 ``tool``/``name``/``version``/``published_from``/``paths``
                 this writes itself. They are recorded on the registry
@@ -912,8 +926,10 @@ class Store:
                 publication or version name that is not session-id
                 shaped; an ``info`` key publish writes itself; a
                 version name this lineage already holds, since versions
-                are immutable and a name is never repointed; ``paths``
-                that match no file at ``ws``'s commit. Naming a version
+                are immutable and a name is never repointed; a
+                publication name that already holds a version, under
+                ``create_only``; ``paths`` that match no file at
+                ``ws``'s commit. Naming a version
                 the registry does not hold to :meth:`set_current`,
                 :meth:`unpublish` or :meth:`Publication.open` is the
                 same mistake and raises the same class.
@@ -964,6 +980,13 @@ class Store:
             # written whose branch and tag did not land.
             record = registry.get(name) or {"versions": {}, "current": None}
             versions = dict(record.get("versions") or {})
+            if create_only and versions:
+                raise ValueError(
+                    f"Publication already published: {name!r} — it holds "
+                    f"{', '.join(sorted(versions))} and create_only= asked "
+                    "for a new lineage. Publish under another name, or drop "
+                    "create_only= to add a version to this one."
+                )
             chosen = _next_version(versions) if version is None else version
             if chosen in versions:
                 raise ValueError(

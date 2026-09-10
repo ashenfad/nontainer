@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so listing publications with their display titles and owners is one
   registry read and no backend open. The mapping holds the caller's
   keys only; a row written before the field existed reads as empty.
+- **`publish(..., create_only=True)`.** Refuses a name that already
+  holds a version instead of extending its lineage, so a caller that
+  means to open one hears about the collision rather than silently
+  publishing a second version of somebody else's app. The check runs
+  inside the lock that decides between creating and extending, and the
+  refusal lands before anything is written.
 
 ## 0.6.3 - 2026-09-09
 
