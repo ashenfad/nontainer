@@ -1275,3 +1275,98 @@ def test_concurrent_set_meta_keeps_the_rest_of_the_registry(tmp_path):
         assert fresh[name].meta == {"title": name.title()}
         assert [v.version for v in fresh[name].versions] == ["v1"]
         assert fresh[name].current == "v1"
+
+
+def _unpublish_between_check_and_open(tmp_path, read):
+    """Drive ``read`` past its registration check, let an unpublish of
+    that very version land in another thread, and report what the store
+    looks like afterwards.
+
+    The hook waits for the unpublish rather than racing it, so the
+    window is opened deliberately instead of by timing. When the read
+    holds the registry lock the unpublish cannot land while the hook
+    waits, and the wait times out — which is the point being tested.
+    """
+    store = Store(tmp_path)
+    ws = seeded(store)
+    version = store.publish(ws, "scoreboard").current_version
+    ws.close()
+
+    checked = threading.Event()
+    unpublished = threading.Event()
+    real = store._require_branch
+
+    def hook(name, op):
+        real(name, op)
+        checked.set()
+        unpublished.wait(timeout=2.0)
+
+    store._require_branch = hook
+    outcome = {}
+
+    def remove():
+        checked.wait(timeout=5.0)
+        try:
+            Store(tmp_path).unpublish("scoreboard", "v1", min_age=0)
+        except Exception as e:  # noqa: BLE001 - reported below
+            outcome["unpublish"] = e
+        unpublished.set()
+
+    remover = threading.Thread(target=remove)
+    remover.start()
+    try:
+        outcome["read"] = read(store, version)
+    except Exception as e:  # noqa: BLE001 - reported below
+        outcome["read"] = e
+    finally:
+        checked.set()
+        remover.join(timeout=10.0)
+    store._require_branch = real
+    return store, version, outcome
+
+
+def test_tagging_a_publication_ref_cannot_straddle_an_unpublish(tmp_path):
+    """A check that passed and an open that followed must not sit
+    either side of an unpublish: opening a kvgit branch by a name it no
+    longer knows mints it, and a reserved branch no record names blocks
+    republishing that version for good."""
+
+    def read(store, version):
+        return store.tags.add(version.ref, "snap")
+
+    store, version, outcome = _unpublish_between_check_and_open(tmp_path, read)
+
+    assert outcome.get("unpublish") is None
+    if isinstance(outcome["read"], Exception):
+        assert isinstance(outcome["read"], WorkspaceError)
+        assert "No longer published" in str(outcome["read"])
+        assert "snap" not in store.tags.list()
+    else:
+        assert outcome["read"] == version.ref.commit
+        assert store.tags.info("snap").id == version.ref.commit
+    assert version.ref.session not in Store(tmp_path)._branches()
+    assert Store(tmp_path).publication("scoreboard") is None
+
+
+def test_resolving_a_publication_ref_cannot_straddle_an_unpublish(tmp_path):
+    """The same window on the read side, which is also the one
+    ws.files.attach opens: no ordering may leave the reserved branch
+    behind."""
+
+    def read(store, version):
+        ws = store.resolve(version.ref)
+        try:
+            return ws.files.read("app/index.html")
+        finally:
+            ws.close()
+
+    store, version, outcome = _unpublish_between_check_and_open(tmp_path, read)
+
+    assert outcome.get("unpublish") is None
+    if isinstance(outcome["read"], Exception):
+        assert isinstance(outcome["read"], WorkspaceError)
+        assert "No longer published" in str(outcome["read"])
+    else:
+        assert outcome["read"] == b"<h1>scores</h1>"
+    assert version.ref.session not in Store(tmp_path)._branches()
+    assert Store(tmp_path).publication("scoreboard") is None

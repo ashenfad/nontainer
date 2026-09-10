@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   field existed reads as an empty mapping.
 
 ### Fixed
+- **Reading a publication's ref cannot straddle its `unpublish`.**
+  The registration check and the open that followed it sat either side
+  of the registry lock, so an `unpublish` landing in between left the
+  read to mint the reserved branch again — kvgit creates a branch
+  opened by a name it does not know, and a reserved branch no record
+  names refuses to let that version be published again.
+  `store.tags.add`, `store.resolve` (and `ws.files.attach` through it)
+  and `Publication.open` now check and open under that lock.
 - **A ref nontainer hands out is a ref `store.tags.add` accepts.** A
   published version's own ref named a reserved branch rather than a
   session, so tagging it raised `SessionIdError` while
