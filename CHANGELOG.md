@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ws-git worktree add <dir> <session>[@<commit>]` / `list` /
+  `remove <dir>`.** The terminal spelling of `ws.files.attach` /
+  `attachments` / `detach`: another session's tree checked out under a
+  directory of its own and read with ordinary tools. Read-only and
+  pinned at a commit, because work moves between sessions only by
+  merge and take; add again to see newer work. `ws-git status` ends
+  with a `worktrees:` block, so a directory whose files never show as
+  modified is not a puzzle.
+
 ## 0.6.5 - 2026-09-10
 
 ### Added
