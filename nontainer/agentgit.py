@@ -689,8 +689,13 @@ class AgentGit:
         Walks ``virtual_parents`` from the agent's head, so the
         framework's per-call commits — the ones between the agent's —
         are never in it. The walk is first-parent, as ``git log`` is.
+
+        ``limit`` counts what comes back. A limit that asks for nothing
+        gets nothing: zero is an empty log, and so is a negative one.
         """
         self._require("ws-git log")
+        if limit is not None and limit <= 0:
+            return []  # a limit that asks for nothing gets nothing
         head = self._read()["head"]
         if head is None:
             return []

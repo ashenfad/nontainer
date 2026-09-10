@@ -47,7 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   within a file is not one of them. It reads the files that changed in
   each commit and no others, and bytes that are not text hold no
   occurrences. `ws-git log --all` also stands on its own now: every
-  commit the session holds, the framework's included.
+  commit the session holds, the framework's included. A limit that asks
+  for nothing gets nothing on every walk: `ws-git log -n 0` is an empty
+  log, plain, `--all` or `-S`, as `ws.log(limit=0)` already was.
 
 ## 0.6.5 - 2026-09-10
 
