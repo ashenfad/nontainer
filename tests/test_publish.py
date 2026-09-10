@@ -457,6 +457,43 @@ def test_store_resolve_takes_a_version_ref(tmp_path):
     ws.close()
 
 
+def test_a_version_ref_takes_a_short_commit_id(tmp_path):
+    """A ref this store hands out is a ref it takes back however the
+    commit is spelled: the expansion happens before the registry row is
+    compared, so a shortened version ref is not read as unpublished."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    version = store.publish(ws, "scoreboard").current_version
+    short = Ref(version.ref.session, version.ref.commit[:7])
+
+    resolved = store.resolve(str(short))
+    assert resolved.files.read("app/index.html") == b"<h1>scores</h1>"
+    resolved.close()
+
+    assert store.tags.add(str(short), "shipped") == version.ref.commit
+    assert store.tags.list()["shipped"] == version.ref.commit
+
+    ws.files.attach(str(short), "/workspace/peek")
+    assert ws.files.read("/workspace/peek/app/index.html") == b"<h1>scores</h1>"
+
+    # and an unpublished version stays refused, short or whole
+    ws.files.detach("/workspace/peek")
+    store.unpublish("scoreboard", "v1")
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        store.resolve(str(short))
+    ws.close()
+
+
+def test_a_session_ref_with_a_short_commit_id_tags(tmp_path):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    whole = ws.head
+
+    assert store.tags.add(f"author@{whole[:7]}", "here") == whole
+    assert store.tags.list()["here"] == whole
+    ws.close()
+
+
 def test_publication_branches_are_not_sessions(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)

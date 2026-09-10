@@ -56,6 +56,14 @@ if TYPE_CHECKING:
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*$")
 
 
+#: A commit id typed SHORT: hex, at least seven characters, and less
+#: than a whole one. Seven is git's abbreviation and the length every
+#: ws-git line prints, so what a caller reads off a log line is what
+#: this matches. A whole id, a session name, ``HEAD`` and anything else
+#: fall outside it and are never expanded.
+SHORT_ID_RE = re.compile(r"[0-9a-f]{7,39}")
+
+
 def validate_session_id(session: str) -> str:
     """Return ``session`` unchanged or raise ``SessionIdError``."""
     from .errors import SessionIdError

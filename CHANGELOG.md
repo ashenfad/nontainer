@@ -24,7 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   history, the framework's commits included, so what a verb prints is
   what it accepts back. An ambiguous prefix raises `ValueError` naming
   the commits it could mean; one nothing matches raises the not-found
-  error a whole id nothing matches earns.
+  error a whole id nothing matches earns. A ref is made whole
+  before anything compares it with what the store holds, so a
+  publication's own ref (`version.ref`) shortened to seven characters
+  resolves, tags and attaches instead of reading as unpublished.
 - **`ws-git sparse-checkout list`, and a `view:` header in
   `ws-git status`.** A narrowed session could not ask what its view
   was; it found out by hitting the write rule. The verb prints the
