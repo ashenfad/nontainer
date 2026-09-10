@@ -1028,10 +1028,15 @@ class Store:
                     f"Tag already exists: {tag!r} in scope 'store' — a "
                     "publication cannot reuse it."
                 )
-            commit = (
-                resumed
-                if resumed is not None
-                else self._write_publication(
+            # The record describes the commit that is there, and an
+            # adopted commit carries the info the attempt that wrote it
+            # was given. A row built from this call's arguments would
+            # say something the version does not serve.
+            if resumed is not None:
+                commit, landed = resumed
+            else:
+                landed = commit_info
+                commit = self._write_publication(
                     ws,
                     head,
                     branch=branch,
@@ -1039,21 +1044,18 @@ class Store:
                     tag=tag,
                     commit_info=commit_info,
                 )
-            )
             versions[chosen] = {
                 "tag": tag,
                 "ref": str(Ref(session=branch, commit=commit)),
                 "published_from": str(published_from),
                 "created": time.time(),
                 "root": ws.root,
-                "paths": sorted(paths),
+                "paths": list(landed.get("paths") or sorted(paths)),
                 # The caller's keys only. What publish writes itself is
                 # already spelled out by the fields around this one, and
                 # the commit stays the place provenance is read from.
                 "info": {
-                    k: v
-                    for k, v in (info or {}).items()
-                    if k not in _RESERVED_INFO_KEYS
+                    k: v for k, v in landed.items() if k not in _RESERVED_INFO_KEYS
                 },
             }
             pointer = record.get("current")
@@ -1570,7 +1572,7 @@ class Store:
 
     def _resume_publication(
         self, branch: str, tag: str, commit_info: Mapping[str, Any]
-    ) -> str | None:
+    ) -> "tuple[str, dict[str, Any]] | None":
         """Finish a publish that died before its registry record.
 
         The branch and the tag are written before the record, so a
@@ -1583,10 +1585,20 @@ class Store:
         holds some other attempt's commit, which this publish may not
         adopt and may not overwrite.
 
+        The commit and the info IT carries come back together, and that
+        info is what the record and a late-minted tag describe. The
+        adopted commit is immutable, so the resuming call's own ``info``
+        landed nowhere: writing that into the record or the tag would
+        describe the version as something it is not.
+
         The whole tree is not compared. What identifies the attempt is
         what it was told to do — one source commit, one set of paths —
         because publishing that twice writes the same files either way.
         """
+        import kvgit
+
+        from .providers.kvgit import KvgitProvider
+
         commit, found = self._branch_head(branch)
         if commit is None:
             return None
@@ -1594,16 +1606,22 @@ class Store:
             found, {key: commit_info.get(key) for key in _PUBLISH_IDENTITY_KEYS}
         ):
             return None
+        landed = dict(found or {})
         existing = self._raw_tag_info(tag)
         if existing is None:
-            provider = self._provider_at_commit(branch, commit)
+            # Tagged through a handle on the branch that holds the
+            # commit. A checkout at a commit is frozen, and a frozen
+            # provider writes nothing — tags included.
+            pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
             try:
-                provider.tag(tag, at=commit, info=dict(commit_info), scope="store")
+                KvgitProvider(pub, session=branch).tag(
+                    tag, at=commit, info=landed, scope="store"
+                )
             finally:
-                provider.close()
+                self._close_backend(getattr(pub.versioned, "store", None))
         elif existing.id != commit:
             return None
-        return commit
+        return commit, landed
 
     def _write_publication(
         self,
