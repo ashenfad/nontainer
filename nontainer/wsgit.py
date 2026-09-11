@@ -655,8 +655,7 @@ def _other_session(ws: Any, name: str) -> Any:
         raise ValueError(
             f"cannot reach {name!r}: this session was not opened from a store"
         )
-    if name not in set(store.sessions()):
-        raise ValueError(f"unknown session {name!r} (ws-git branch lists them)")
+    ws._require_session(name, to_open=True)
     return store.open(name, root=ws.root)
 
 
@@ -1187,6 +1186,9 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 "another session, and this one is already your own tree."
             ),
         )
+    # The session before anything about the commit or the directory: a
+    # name nothing holds is the answer, not what it does not hold.
+    ws._require_session(session)  # a worktree reads, so a branch is enough
     held_here = ws.files.attachments()
     if point in held_here:
         # Adding over a live worktree cannot refresh it: what is pinned

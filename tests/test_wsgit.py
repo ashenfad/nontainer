@@ -1596,6 +1596,26 @@ def test_index_checkout_refuses_over_an_outstanding_merge(peer_ws):
         peer_ws.index.checkout(base)
 
 
+def test_an_unknown_session_in_a_ref_says_the_session_is_unknown(peer_ws):
+    """A ref names a session and a commit, and the session is the half
+    that is checked first: a typo in the name earned a report about the
+    commit half, sending a reader to list the commits of a session that
+    is not there."""
+    peer_ws.files.fs.write("/workspace/a.txt", b"one\n")
+    peer_ws.terminal("ws-git commit -m base")
+
+    want = "ws-git: unknown session 'typo' (ws-git branch lists them)"
+    for cmd in (
+        "ws-git worktree add review typo@nosuch",
+        "ws-git cherry-pick typo@nosuch",
+        "ws-git worktree add review typo@deadbeef1234",
+        "ws-git worktree add review typo",
+    ):
+        r = peer_ws.terminal(cmd)
+        assert r.exit_code == 1, (cmd, r.stdout)
+        assert r.stderr == want, (cmd, r.stderr)
+
+
 def test_a_bad_ref_says_what_was_looked_up_and_where(peer_ws, store):
     """The commit half of a <session>@<x> ref is resolved in one place,
     so a word that is none of the three spellings earns one message
