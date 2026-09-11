@@ -32,6 +32,11 @@ wherever cheap; each deviation carries a recorded reason:
   ``merge`` lands even when it conflicts (the markers commit, and
   ``status`` carries the merge context) — both because a session is a
   branch and there is no working tree to leave things in.
+- ``revert`` and ``cherry-pick`` land the same way, so neither has a
+  ``--continue`` or an ``--abort``: the commit is already made, its
+  markers are in it, and the next commit that removes them ends it.
+  ``revert`` takes no ``-m``: a merge commit reverts to ours, which is
+  the only side a session has.
 - ``worktree add`` checks out another session under a directory of
   its own, as git's does, but read-only and frozen at a commit: work
   moves between sessions by merge and take, and a second tree an agent
@@ -61,7 +66,7 @@ import posixpath
 from collections.abc import Mapping
 from typing import Any
 
-from .agentgit import HASH_RE, MERGE_TOOL, AgentGit
+from .agentgit import HASH_RE, MERGE_TOOL, PICK_TOOL, AgentGit
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 
 _VERBS = (
@@ -76,13 +81,15 @@ _VERBS = (
     "checkout",
     "branch",
     "merge",
+    "revert",
+    "cherry-pick",
     "worktree",
     "sparse-checkout",
     "help",
 )
 _USAGE = (
     "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
-    "checkout|branch|merge|worktree|sparse-checkout) [...]"
+    "checkout|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]"
 )
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
@@ -90,7 +97,8 @@ _SUPPORTED = (
     "log [<session>] [-n N] [--all] [-S <string>] | show <ref> | "
     "checkout <ref> [-- <paths>] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
-    "merge <session> | "
+    "merge <session> | revert <commit> | "
+    "cherry-pick <session>@<commit> | "
     "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | "
     "sparse-checkout [list] | help"
 )
@@ -119,7 +127,7 @@ _WORKTREE_FORMS = """usage: ws-git worktree add <dir> <session>[@<commit>]
 _HELP = """ws-git: the agent's git over this session.
 
 usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
-               branch|merge|worktree|sparse-checkout) [...]
+               branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]
   stage <paths>     add paths to the index (optional: commit with an
                     empty index takes everything modified)
   unstage <paths>   drop paths from the index
@@ -164,6 +172,13 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   merge <session>   merge that session's last commit into yours.
                     Conflicts land as markers in the merge commit and
                     show as UU in status; fix them and commit
+  revert <commit>   a new commit undoing that commit's change. What was
+                    done since stands, and the commit it undoes stays
+                    in the log: history is append-only
+  cherry-pick <session>@<commit>
+                    a new commit applying one commit's change from
+                    another session. Its change, not its tree — what
+                    the commit before it holds is left as yours
   worktree add <dir> <session>[@<commit>]
                     check another session's tree out under <dir> and
                     read it with ordinary tools (cat, ls, grep). A
@@ -185,6 +200,11 @@ branch, ask it, or take its files with ws-git checkout <session> --
 <paths> and change yours. It lives outside your versioned tree, so no
 commit of yours carries it and no status or diff of yours ever names a
 file in it; ws-git status ends with a worktrees: block instead.
+
+A revert and a cherry-pick land even when they conflict, as a merge
+does: the markers are in the commit, status shows them as UU on a
+## merging line naming what was applied, and the next commit that
+removes them ends it. There is no --continue and no --abort.
 
 Subset, on purpose: no stash (a fork is a stash: ws-git branch <name>),
 no rebase (history is append-only). There is no .git — branches are
@@ -418,6 +438,10 @@ def make_wsgit_command(ws: Any) -> Any:
                 return _branch(ws, ctx, rest)
             if verb == "merge":
                 return _merge(git, ws, ctx, rest)
+            if verb == "revert":
+                return _revert(git, ws, ctx, rest)
+            if verb == "cherry-pick":
+                return _cherry_pick(git, ws, ctx, rest)
             if verb == "worktree":
                 return _worktree(ws, ctx, rest)
             if verb == "sparse-checkout":
@@ -436,7 +460,7 @@ def make_wsgit_command(ws: Any) -> Any:
     wsgit.__doc__ = (
         "The agent's git over this session and its neighbours: ws-git "
         "(stage|unstage|commit|reset|status|diff|log|show|checkout|"
-        "branch|merge|worktree|sparse-checkout) [...]"
+        "branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]"
     )
     return wsgit
 
@@ -733,6 +757,86 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             exit_code=1,
             stderr=(
                 "Merge landed with conflict markers in "
+                f"{len(out.conflicts)} file(s): fix them and commit "
+                "(ws-git status shows them as UU)."
+            ),
+        )
+    return None
+
+
+def _revert(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if len(rest) != 1 or rest[0].startswith("-"):
+        return _usage_error("revert takes one commit (a commit from ws-git log).")
+    commit = git.resolve(rest[0])
+    return _applied(
+        git, ws, ctx, ws.revert(commit), verb="revert", what=commit[:7], noun="Revert"
+    )
+
+
+def _cherry_pick(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if len(rest) != 1 or rest[0].startswith("-") or "@" not in rest[0]:
+        named = rest[0] if rest and not rest[0].startswith("-") else "<session>"
+        return _usage_error(
+            "cherry-pick takes one commit of another session, spelled "
+            f"<session>@<commit> (ws-git log {named} lists them)."
+        )
+    ref = _short_ref(rest[0])
+    return _applied(
+        git,
+        ws,
+        ctx,
+        ws.cherry_pick(rest[0]),
+        verb="cherry-pick",
+        what=ref,
+        noun="Cherry-pick",
+    )
+
+
+def _applied(
+    git: AgentGit, ws: Any, ctx: Any, out: Any, *, verb: str, what: str, noun: str
+) -> Any:
+    """Render what applying one commit's change did, in merge's shapes.
+
+    A revert and a cherry-pick are the same operation with the two
+    commits swapped, and both are a three-way against this tree, so
+    what they print is what a merge prints: the files taken without
+    judgment, the ones left marked, and one line naming the commit
+    that landed. A change that is already here changes nothing and
+    says so.
+    """
+    from termish import CommandResult
+
+    if not out.merged and not out.conflicts:
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                f"nothing to {verb}: {what} changes nothing this tree does "
+                "not already hold. Nothing changed."
+            ),
+        )
+    if not out.merged:
+        lines = [f"CONFLICT: {_show(ws, path)}" for path in out.conflicts]
+        lines.append(
+            f"{noun} of {what} refused: contested state no rule resolves. "
+            "Nothing changed."
+        )
+        return CommandResult(exit_code=1, stderr="\n".join(lines))
+    for path in out.auto_merged:
+        ctx.stdout.write(f"Auto-merging {_show(ws, path)}\n")
+    for path in out.conflicts:
+        ctx.stdout.write(f"CONFLICT (content): Merge conflict in {_show(ws, path)}\n")
+    n = len(out.auto_merged) + len(out.conflicts)
+    ctx.stdout.write(
+        f"[{git.status().branch} {out.commit[:7]}] {verb} {what} "
+        f"({n} file{'' if n == 1 else 's'})\n"
+    )
+    if out.conflicts:
+        # The change lands, markers and all, so the news is what to do
+        # next — there is no state to continue or abort from.
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                f"{noun} landed with conflict markers in "
                 f"{len(out.conflicts)} file(s): fix them and commit "
                 "(ws-git status shows them as UU)."
             ),
@@ -1260,6 +1364,10 @@ def _log_lines(entries: Any, ctx: Any, signs: "Mapping[str, str] | None" = None)
             line += f" from {entry.info['source']}"
             if entry.info.get("sizes"):
                 line += " (sizes)"
+        elif tool == PICK_TOOL and entry.info.get("picked_from"):
+            # A cherry-pick keeps the subject the other session wrote,
+            # so the line has to say whose change it is.
+            line += f" from {_short_ref(entry.info['picked_from'])}"
         lines.append(line)
     if lines:
         ctx.stdout.write("\n".join(lines) + "\n")

@@ -22,6 +22,14 @@ from nontainer.wsgit import register_wsgit
 SHORT = r"[0-9a-f]{7}"
 
 
+def _said(result):
+    """Everything a verb said, on either rung: the dud rung's guest
+    shell hands the terminal one stream, so a message the verb wrote to
+    stderr arrives on stdout there. What must match across rungs is the
+    text and the exit code."""
+    return result.stdout + result.stderr
+
+
 @pytest.fixture(params=["local", "dud"])
 def store(request, tmp_path):
     """One store per rung per test, with the rung bound as a FACTORY so
@@ -239,6 +247,84 @@ def test_branch_merge_and_log_across_the_rungs(ws, store):
     assert "Auto-merging b.txt" in r.stdout
     assert re.search(rf"\] merge {re.escape(ws.session)}-w \(1 file\)", r.stdout)
     assert ws.terminal("cat b.txt").stdout == "worker\n"
+    assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_revert_across_the_rungs(ws):
+    """Undoing one commit's change appends a commit that says what it
+    undid, and the tree it leaves is the same wherever code runs."""
+    ws.terminal("cat > a.txt <<'EOF'\none\nEOF\nws-git commit -m first")
+    ws.terminal("cat > a.txt <<'EOF'\ntwo\nEOF\nws-git commit -m second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+
+    r = ws.terminal(f"ws-git revert {second}")
+
+    assert r.exit_code == 0, (r.stdout, r.stderr)
+    assert r.stdout.splitlines()[0] == "Auto-merging a.txt"
+    assert re.search(rf"\] revert {second} \(1 file\)", r.stdout), r.stdout
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    assert ws.terminal("ws-git status").stdout == ""
+    assert [
+        line.split(" ", 1)[1] for line in ws.terminal("ws-git log").stdout.splitlines()
+    ] == ['Revert "second"', "second", "first"]
+
+
+def test_cherry_pick_across_the_rungs(ws, store):
+    """One commit of a neighbour, brought over: the clean case and the
+    conflicted one read the same on both rungs."""
+    ws.terminal("cat > shared.txt <<'EOF'\none\ntwo\nthree\nEOF\nws-git commit -m base")
+    assert ws.terminal(f"ws-git branch {ws.session}-w").stdout == ""
+
+    worker = store.open(
+        f"{ws.session}-w",
+        **(
+            {"executor_factory": store.executor_factory}
+            if store.executor_factory is not None
+            else {}
+        ),
+    )
+    register_wsgit(worker)
+    try:
+        r = worker.terminal("cat > new.txt <<'EOF'\nworker\nEOF\nws-git commit -m add")
+        assert r.exit_code == 0, r.stdout
+        added = worker.terminal("ws-git log").stdout.split()[0]
+        r = worker.terminal(
+            "cat > shared.txt <<'EOF'\none\nWORKER\nthree\nEOF\nws-git commit -m edit"
+        )
+        assert r.exit_code == 0, r.stdout
+        edited = worker.terminal("ws-git log").stdout.split()[0]
+    finally:
+        worker.close()
+
+    picked = f"{ws.session}-w@{added}"
+    r = ws.terminal(f"ws-git cherry-pick {picked}")
+    assert r.exit_code == 0, (r.stdout, r.stderr)
+    assert r.stdout.splitlines()[0] == "Auto-merging new.txt"
+    assert re.search(rf"\] cherry-pick {re.escape(picked)} \(1 file\)", r.stdout)
+    assert ws.terminal("cat new.txt").stdout == "worker\n"
+    assert ws.terminal("ws-git status").stdout == ""
+
+    # and the conflicted shape: this side edits the same line first
+    ws.terminal(
+        "cat > shared.txt <<'EOF'\none\nMINE\nthree\nEOF\nws-git commit -m mine"
+    )
+    r = ws.terminal(f"ws-git cherry-pick {ws.session}-w@{edited}")
+    assert r.exit_code == 1, (r.stdout, r.stderr)
+    assert "CONFLICT (content): Merge conflict in shared.txt" in r.stdout
+    assert (
+        "Cherry-pick landed with conflict markers in 1 file(s): "
+        "fix them and commit (ws-git status shows them as UU)."
+    ) in _said(r)
+    lines = ws.terminal("ws-git status").stdout.splitlines()
+    assert re.fullmatch(
+        rf"## merging {re.escape(ws.session)}-w@{SHORT} \(1 unresolved\)", lines[0]
+    ), lines
+    assert lines[1:] == ["UU shared.txt"]
+    assert "<<<<<<< " in ws.terminal("cat shared.txt").stdout
+
+    ws.terminal(
+        "cat > shared.txt <<'EOF'\none\nBOTH\nthree\nEOF\nws-git commit -m resolved"
+    )
     assert ws.terminal("ws-git status").stdout == ""
 
 
