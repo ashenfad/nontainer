@@ -3,6 +3,7 @@ workspace artifacts under <root>/ui/, sniffed down a theming hierarchy
 (spec formats > pixels > html > data), never silently dropped.
 """
 
+import importlib.util
 import json
 
 import pytest
@@ -373,6 +374,59 @@ def test_plotly_spec_written_as_a_dict_still_renders(ws):
     assert problems == []
     assert json.loads(ws.files.fs.read("/workspace/ui/trend.plotly.json")) == spec
     assert artifact_kind(out[0][1]) == "plotly"
+
+
+def test_plotly_spec_with_exotic_values_is_still_a_chart(ws):
+    """A spec straight out of `fig.to_dict()` carries NumPy arrays and
+    timestamps, which plain json rejects. Falling through to the repr
+    floor there wrote a .txt and said nothing, so a value advertised as
+    a chart quietly stopped being one."""
+    import datetime as dt
+
+    np = pytest.importorskip("numpy")
+    spec = {
+        "data": [
+            {
+                "type": "scatter",
+                "x": np.array([1, 2, 3]),
+                "y": np.array([1.5, 2.5, 3.5]),
+            }
+        ],
+        "layout": {"xaxis": {"range": [dt.datetime(2020, 1, 1), dt.date(2020, 2, 1)]}},
+    }
+    out, problems = materialize_ui(ws, {"trend": spec})
+    assert out == [("trend", "/workspace/ui/trend.plotly.json")]
+    assert artifact_kind(out[0][1]) == "plotly"
+    # plotly is what encodes these exactly. Without it the artifact
+    # still lands, and the note says what was approximated.
+    if importlib.util.find_spec("plotly") is not None:
+        assert problems == []
+    else:
+        assert any("may not plot" in p for p in problems), problems
+    payload = json.loads(ws.files.fs.read("/workspace/ui/trend.plotly.json"))
+    assert payload["data"][0]["type"] == "scatter"
+    # and the projection still reads it as a chart, not a link
+    from nontainer.adapters.a2ui import component_for
+
+    frag = component_for(
+        "trend",
+        out[0][1],
+        ws.files.fs.read(out[0][1]),
+        lambda p: f"https://host{p}",
+    )
+    assert frag["component"]["componentType"] == "Chart"
+
+
+def test_plotly_spec_dict_encodes_the_way_the_figure_does(ws):
+    """The rule behind it: one encoder for both spellings of a figure,
+    so a chart does not depend on whether the agent assigned the object
+    or its dict."""
+    plotly = pytest.importorskip("plotly.graph_objects")
+    fig = plotly.Figure(data=[plotly.Scatter(x=[1, 2], y=[3, 4])])
+    materialize_ui(ws, {"obj": fig, "spec": fig.to_dict()})
+    assert json.loads(ws.files.fs.read("/workspace/ui/obj.plotly.json")) == json.loads(
+        ws.files.fs.read("/workspace/ui/spec.plotly.json")
+    )
 
 
 def test_ui_note_names_the_supported_set(ws):

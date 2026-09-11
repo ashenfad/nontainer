@@ -805,7 +805,48 @@ def _normalize_card(i: dict) -> dict:
     return item
 
 
-def _materialize_one(ws: Workspace, name: str, value: object) -> str:
+def _plotly_json(name: str, spec: dict) -> tuple[bytes, str | None]:
+    """A plotly spec dict as JSON bytes, plus a note when the encoding
+    had to approximate.
+
+    A figure OBJECT is encoded by ``Figure.to_json()`` — plotly's own
+    encoder, which knows what a NumPy array, a pandas index and a
+    timestamp mean inside a spec. The same dict reached by
+    ``fig.to_dict()`` holds those same values, so it is encoded the same
+    way: one encoder for both spellings, or a chart would depend on
+    which one the agent assigned.
+
+    Without plotly installed there is no such encoder. A spec that is
+    already plain JSON encodes identically anyway and costs nothing. One
+    that is not gets ``default=str``, which keeps the artifact but turns
+    an array into its printed form — so that case, and only that case,
+    comes back with a note saying what was approximated and how to
+    avoid it.
+    """
+    import json as _json
+
+    try:
+        from plotly.io.json import to_json_plotly
+    except ImportError:
+        pass
+    else:
+        return to_json_plotly(spec).encode(), None
+    try:
+        return _json.dumps(spec).encode(), None
+    except (TypeError, ValueError):
+        return (
+            _json.dumps(spec, default=str).encode(),
+            f"{name!r} is a plotly spec holding values only plotly can "
+            "encode (a NumPy array, a timestamp), and plotly is not "
+            "importable here, so they were written as text and may not "
+            "plot. Assign the Figure itself, or convert those values to "
+            "lists and ISO strings first.",
+        )
+
+
+def _materialize_one(
+    ws: Workspace, name: str, value: object, notes: list[str] | None = None
+) -> str:
     """One value -> one workspace file. The sniff order is a THEMING
     hierarchy, most-declarative first: spec formats let the shell
     render (and theme) the artifact itself; html gives it partial say;
@@ -844,9 +885,10 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     # component behind it. Named by its suffix rather than left for a
     # consumer to content-sniff out of a bare `.json`.
     if looks_like_plotly(value):
-        return _ui_write(
-            ws, f"{ui_root(ws)}/{name}.plotly.json", _json.dumps(value).encode()
-        )
+        data, note = _plotly_json(name, value)
+        if note is not None and notes is not None:
+            notes.append(note)
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.plotly.json", data)
     if mod.startswith("pandas") and hasattr(value, "columns"):
         total = len(value)
         payload = _json.loads(
@@ -991,7 +1033,7 @@ def materialize_ui(
             problems.append(near_miss)
         name = _re.sub(r"[^\w.-]+", "-", str(raw_name)).strip("-.") or "artifact"
         try:
-            path = _materialize_one(ws, name, value)
+            path = _materialize_one(ws, name, value, problems)
         except _NotRenderable as e:
             # One diagnosis per value: where a near-miss already named
             # the item that broke the card row, the general rule adds
