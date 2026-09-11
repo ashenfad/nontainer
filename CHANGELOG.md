@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `attachments` / `detach`: another session's tree checked out under a
   directory of its own and read with ordinary tools. Read-only and
   pinned at a commit, because work moves between sessions only by
-  merge and take; add again to see newer work. `ws-git status` ends
+  merge and take; to see newer work, remove it and add it again.
+  `ws-git status` ends
   with a `worktrees:` block, so a directory whose files never show as
   modified is not a puzzle.
 - **A short commit id is a ref everywhere.** A unique prefix of seven
@@ -132,6 +133,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   yields a problem note naming the value and the error, where it used
   to leave a capped `repr` in a `.txt` and say nothing — an artifact
   line the agent read as a figure that had arrived.
+- **Adding over a live worktree says how to refresh one.** A worktree
+  is pinned at a commit, so a second `ws-git worktree add` at the same
+  directory cannot move it — and it earned the generic "that directory
+  is not empty" reason, which sends a reader looking for files to
+  delete out of a tree it does not own. It now names the two steps:
+  `ws-git worktree remove <dir>`, then add it again. The help said
+  "add it again to see newer work", which the verb refuses; it says
+  the two steps now too.
 
 ## 0.6.5 - 2026-09-10
 

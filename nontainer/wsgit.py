@@ -182,8 +182,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   worktree add <dir> <session>[@<commit>]
                     check another session's tree out under <dir> and
                     read it with ordinary tools (cat, ls, grep). A
-                    session name takes its head at this moment: add it
-                    again to see newer work
+                    session name takes its head at this moment, and it
+                    stays there: to see newer work, remove it and add
+                    it again
   worktree list     the worktrees here, one line each
   worktree remove <dir>
                     take one down
@@ -888,7 +889,22 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 "another session, and this one is already your own tree."
             ),
         )
-    for held in sorted(ws.files.attachments()):
+    held_here = ws.files.attachments()
+    if point in held_here:
+        # Adding over a live worktree cannot refresh it: what is pinned
+        # stays pinned, and the directory a worktree fills reads as a
+        # directory with something in it. Naming the two steps beats
+        # the not-empty reason, which sends a reader looking for files
+        # to delete out of a tree it does not own.
+        return CommandResult(
+            exit_code=1,
+            stderr=(
+                f"there is already a worktree at {where!r}: it is pinned "
+                "at a commit, so seeing newer work means taking it down "
+                f"and putting it up again (ws-git worktree remove {where})."
+            ),
+        )
+    for held in sorted(held_here):
         if point.startswith(held + "/"):
             return CommandResult(
                 exit_code=1,

@@ -236,9 +236,26 @@ edit in place would be a third way with no way back. To change another
 session's branch, ask that session, or take its files with
 `ws-git checkout <session> -- <paths>` and change yours.
 
-A bare session name takes its head at that moment; nothing later
-appears in the worktree by itself. Add it again to see newer work, or
-name the commit you want with `<session>@<commit>`.
+A bare session name takes its head at that moment, and it stays there;
+nothing later appears in the worktree by itself. To see newer work,
+take the worktree down and put it up again:
+
+```
+$ ws-git worktree remove review
+$ ws-git worktree add review polish
+worktree review: polish@a3b4203 (read-only)
+```
+
+Adding over a worktree that is still up refuses and says the same
+thing, since what is pinned stays pinned:
+
+```
+$ ws-git worktree add review polish
+ws-git: there is already a worktree at 'review': it is pinned at a commit, so seeing newer work means taking it down and putting it up again (ws-git worktree remove review).
+```
+
+To pin a state deliberately rather than take a head, name the commit
+with `<session>@<commit>`.
 
 What lands is the source's **whole branch**, not what its own session
 can see — a delegate given a narrow view is exactly the one worth
