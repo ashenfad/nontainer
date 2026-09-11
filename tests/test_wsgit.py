@@ -480,14 +480,9 @@ def test_cherry_pick_needs_the_commit_named(peer_ws):
 
 
 def test_edges_name_what_the_agent_can_do(ws):
-    cases = [
-        ("ws-git stash", "ws-git: no stash here — a fork IS a stash"),
-        ("ws-git rebase", "ws-git: no rebase here — history is append-only"),
-    ]
-    for cmd, prefix in cases:
-        r = ws.terminal(cmd)
-        assert r.exit_code == 1, cmd
-        assert r.stderr.startswith(prefix), (cmd, r.stderr)
+    r = ws.terminal("ws-git rebase")
+    assert r.exit_code == 1
+    assert r.stderr.startswith("ws-git: no rebase here — history is append-only")
     # Every hint names a terminal verb the agent can actually run —
     # never host Python it cannot reach.
     from nontainer.wsgit import _EDGE
@@ -495,9 +490,10 @@ def test_edges_name_what_the_agent_can_do(ws):
     for verb, text in _EDGE.items():
         assert "ws.fork(" not in text and "provider." not in text, verb
         assert "ws-git " in text, verb
-    # branch and merge are the agent's now, not refusals
+    # branch, merge and stash are the agent's now, not refusals
     assert ws.terminal("ws-git branch").exit_code == 0
     assert ws.terminal("ws-git merge").exit_code == 2
+    assert ws.terminal("ws-git stash nonsense").exit_code == 2
 
     r = ws.terminal("ws-git frobnicate")
     assert r.exit_code == 2
@@ -1319,3 +1315,113 @@ def test_merge_abort_with_nothing_outstanding_refuses(ws):
     ws.terminal("echo resolved > doc.txt")
     ws.terminal("ws-git commit -m resolved")
     assert ws.terminal("ws-git merge --abort").exit_code == 1
+
+
+# -- stash: sugar over fork and checkout ---------------------------------------
+
+
+def _stash_base(w):
+    """A committed base with work in progress on top of it."""
+    w.files.fs.write("/workspace/a.txt", b"one\n")
+    w.terminal("ws-git commit -m base")
+    w.files.fs.write("/workspace/a.txt", b"edited\n")
+    w.files.fs.write("/workspace/new.txt", b"fresh\n")
+
+
+def test_stash_takes_the_work_aside_and_pops_it_back(peer_ws, store):
+    _stash_base(peer_ws)
+    assert peer_ws.terminal("ws-git stash list").stdout == "(none)\n"
+
+    r = peer_ws.terminal("ws-git stash")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "Saved working directory and index state stash@{0}: base\n"
+
+    # the tree is what the head holds, and the work is on a branch
+    assert peer_ws.terminal("ws-git status").stdout == ""
+    assert peer_ws.terminal("cat a.txt").stdout == "one\n"
+    assert peer_ws.terminal("ls new.txt").exit_code != 0
+    assert peer_ws.terminal("ws-git stash list").stdout == "stash@{0}: base\n"
+    assert "main.stash-0" in store.sessions()
+
+    r = peer_ws.terminal("ws-git stash pop")
+    assert r.exit_code == 0, r.stderr
+    assert "Auto-merging a.txt" in r.stdout
+    assert r.stdout.endswith("Dropped stash@{0} (main.stash-0)\n")
+    assert peer_ws.terminal("cat a.txt").stdout == "edited\n"
+    assert peer_ws.terminal("cat new.txt").stdout == "fresh\n"
+
+    # a clean pop takes the branch with it
+    assert peer_ws.terminal("ws-git stash list").stdout == "(none)\n"
+    assert "main.stash-0" not in store.sessions()
+
+
+def test_stash_push_message_list_and_show(peer_ws):
+    _stash_base(peer_ws)
+    assert peer_ws.terminal('ws-git stash push -m "wip auth"').exit_code == 0
+    peer_ws.files.fs.write("/workspace/a.txt", b"again\n")
+    assert peer_ws.terminal("ws-git stash push").exit_code == 0
+
+    # newest first
+    assert peer_ws.terminal("ws-git stash list").stdout == (
+        "stash@{0}: base\nstash@{1}: wip auth\n"
+    )
+
+    # show diffs one against your head
+    r = peer_ws.terminal("ws-git stash show stash@{1}")
+    assert r.exit_code == 0, r.stderr
+    assert "diff --git a/a.txt b/a.txt" in r.stdout
+    assert "+edited" in r.stdout
+    assert "diff --git a/new.txt b/new.txt" in r.stdout
+
+    r = peer_ws.terminal("ws-git stash show")
+    assert r.exit_code == 0, r.stderr
+    assert "+again" in r.stdout
+
+
+def test_stash_drop_leaves_the_tree_alone(peer_ws, store):
+    _stash_base(peer_ws)
+    peer_ws.terminal("ws-git stash")
+    r = peer_ws.terminal("ws-git stash drop")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "Dropped stash@{0} (main.stash-0)\n"
+    assert peer_ws.terminal("ws-git stash list").stdout == "(none)\n"
+    assert "main.stash-0" not in store.sessions()
+    assert peer_ws.terminal("cat a.txt").stdout == "one\n"
+
+
+def test_stash_with_nothing_to_save(peer_ws):
+    peer_ws.files.fs.write("/workspace/a.txt", b"one\n")
+    peer_ws.terminal("ws-git commit -m base")
+    r = peer_ws.terminal("ws-git stash")
+    assert r.exit_code == 1
+    assert r.stderr == "ws-git: No local changes to save"
+
+    # and a session that has committed nothing has nowhere to go back to
+    r = peer_ws.terminal("ws-git stash pop stash@{0}")
+    assert r.exit_code == 1
+    assert r.stderr == "ws-git: no stash@{0}: this session has no stashes"
+
+
+def test_stash_pop_conflict_keeps_the_stash(peer_ws, store):
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    peer_ws.terminal("ws-git commit -m base")
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nSTASHED\n")
+    assert peer_ws.terminal("ws-git stash").exit_code == 0
+
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nHERE\n")
+    peer_ws.terminal("ws-git commit -m here")
+
+    r = peer_ws.terminal("ws-git stash pop")
+    assert r.exit_code == 1
+    assert "CONFLICT (content): Merge conflict in doc.txt" in r.stdout
+    assert "The stash is kept" in r.stderr
+    assert "<<<<<<< " in peer_ws.terminal("cat doc.txt").stdout
+    assert peer_ws.terminal("ws-git stash list").stdout == "stash@{0}: base\n"
+    assert "main.stash-0" in store.sessions()
+
+
+def test_stash_is_no_longer_refused(ws):
+    from nontainer.wsgit import _EDGE
+
+    assert "stash" not in _EDGE
+    assert "no stash here" not in _HELP
