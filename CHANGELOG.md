@@ -7,180 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+ws-git grows the git concepts an agent reaches for: worktrees, short
+commit ids, the view it was given, `log -S`, `revert`, `cherry-pick`,
+`stash`, `merge --abort` and `tag`. The agent-facing reference moves to
+`docs/ws-git.md`, the twin of `ws-git help`, leaving `docs/api.md`'s
+versioning section the host API alone. Elsewhere, the `ui` set closes.
+
 ### Added
-- **`ws-git tag`, the agent's own bookmark.** `ws-git tag` lists,
-  `ws-git tag [-f] <name> [<commit>]` names a commit (your head by
-  default) and `ws-git tag -d <name>` drops the name. The name is then
-  a ref wherever a ref is taken — `checkout`, `checkout -- <paths>`,
-  `show`, `revert` — and `<session>@<tag>` reads another session's for
-  `worktree add` and `cherry-pick`; `ws-git log` decorates the id with
-  `(tag: a, b)`. It is not a store tag: the session's history is
-  append-only and every commit the agent made is reachable from its
-  head, so there is nothing to pin. It lives in the agent's own blob,
-  dies with the session, is not inherited by a fork and is not brought
-  over by a merge. A name already taken is refused as git refuses one,
-  and a name spelled like a commit id (seven or more hex characters) is
-  refused outright, which is what lets a tag be read before a hash with
-  nothing ambiguous about it. Host-side: `ws.index.tags()`,
-  `ws.index.tag()`, `ws.index.delete_tag()`.
-- **`ws-git merge --abort`.** A merge that conflicts lands, markers and
-  all, and stays outstanding until they are gone; there was no way out
-  of it but to edit every marked file. The verb restores the tree to
-  the commit the merge landed on and clears the merge, so `status`
-  reads clean. The merge itself stays in the session's history — the
-  restore is a new appended commit, as `ws-git checkout` is. Refused
-  when nothing is outstanding, and when the merge landed on a session
-  with no ws-git commit of its own, since there is then no commit of
-  the agent's to go back to.
-- **`ws-git stash`**, replacing the refusal that said a fork is a
-  stash — because it is one. `ws-git stash` (and `stash push [-m MSG]`)
-  forks the modified working set to `<session>.stash-N` and restores
-  the tree to the agent's last commit; `stash list` numbers them git's
-  way, newest `stash@{0}`; `stash pop` merges one back and deletes its
-  branch when it lands clean, keeping it when it conflicts; `stash
-  drop` deletes one; `stash show` diffs one against the head. The
-  branch is forked AT the head with the modified files written onto it,
-  so the stash holds the change and a pop is an ordinary three-way
-  against that same head. With nothing modified it refuses with git's
-  `No local changes to save`, and a session that has committed nothing
-  gets git's `You do not have the initial commit yet`. A stash is an
-  ordinary session on the store: an embedder listing `store.sessions()`
-  sees `<session>.stash-N` while one is up, and `Store.delete` takes
-  one by name.
 - **`ws-git worktree add <dir> <session>[@<commit>]` / `list` /
-  `remove <dir>`.** The terminal spelling of `ws.files.attach` /
-  `attachments` / `detach`: another session's tree checked out under a
-  directory of its own and read with ordinary tools. Read-only and
-  pinned at a commit, because work moves between sessions only by
-  merge and take; to see newer work, remove it and add it again.
-  `ws-git status` ends
-  with a `worktrees:` block, so a directory whose files never show as
-  modified is not a puzzle.
-- **A short commit id is a ref everywhere.** A unique prefix of seven
-  hex characters or more — the length every ws-git line prints —
-  resolves wherever a ref is taken: `store.resolve`, `ws.checkout`
-  (both forms), `ws.fork(at=)` (so `ws-git branch <name> --at <ref>`
-  takes one), `ws.files.attach`, and the ws-git verbs that name a
-  `<session>@<commit>`. The prefix expands against that session's whole
-  history, the framework's commits included, so what a verb prints is
-  what it accepts back. An ambiguous prefix raises `ValueError` naming
-  the commits it could mean; one nothing matches raises the not-found
-  error a whole id nothing matches earns. A ref is made whole
-  before anything compares it with what the store holds, so a
-  publication's own ref (`version.ref`) shortened to seven characters
-  resolves, tags and attaches instead of reading as unpublished. The
-  agent's own graph answers to the same rule: `ws-git show <short>` and
-  `ws-git checkout <short>` name the candidates rather than resolving
-  to whichever commit under the prefix came first.
-- **`ws-git sparse-checkout list`, and a `view:` header in
-  `ws-git status`.** A narrowed session could not ask what its view
-  was; it found out by hitting the write rule. The verb prints the
-  seed paths one per line, or `(full)` for a session that sees the
-  whole tree, and the bare `ws-git sparse-checkout` prints the same.
-  `ws-git status` leads with one `view: a/, b.md` line when the session
-  was given part of the tree. A view is given at the fork
-  (`ws-git branch <name> --paths <paths>`) and cannot be changed from
-  the terminal, so any other subcommand is a usage error that says so.
-- **A merged metadata row describes the bytes that landed.** A file
-  deleted on one side and edited on the other keeps the surviving row,
-  and that row kept the size of the side it came from while the
-  content merge landed conflict markers beside it — so `stat` reported
-  a length nothing held. The size the merge computes is applied to a
-  one-sided row as it already was to a two-sided one.
-- **Every fork leaves a fork point.** The `ws-git.fork` bookkeeping
-  commit is now landed by every fork, including one whose parent never
-  used ws-git and has no ws-git state to clear. It is the child's fork
-  POINT as well as its reset: the change in a delegate's first commit
-  is the difference from the tree it started with, and with nothing
-  marking where that was, every file it inherited read as one it
-  added. Hidden from `ws.log()` as before, shown by `kind="all"`.
+  `remove <dir>`** — `ws.files.attach` / `attachments` / `detach` in
+  the terminal, read-only and pinned at a commit; remove and re-add to
+  see newer work. `ws-git status` ends with a `worktrees:` block.
 - **`ws-git revert <commit>` and `ws-git cherry-pick
-  <session>@<commit>`, with `ws.revert` / `ws.cherry_pick` on the
-  host.** One commit's change applied to the tree as it stands: a
-  three-way whose base is named rather than found, with the commit and
-  the one before it swapped between the two verbs. Both APPEND — the
-  commit named is still in the log afterwards, and the new commit can
-  itself be reverted — and both take the change rather than the state,
-  so work done since in other files, and elsewhere in the same file,
-  stands. A merge commit reverts to ours, as git's `-m 1` does; a
-  commit with none before it in the agent's graph is measured from the
-  fork its session started at, which is what makes a delegate's first
-  commit its own work rather than the tree it inherited. Conflicts are
-  spelled exactly as a merge's: markers in the commit, `UU` in
-  `ws-git status`, and an outstanding merge context that `ws-git
-  commit` clears when the markers are gone — so neither verb has a
-  `--continue` or an `--abort`. A change already in the tree changes
-  nothing and says so. `KvgitProvider.apply(base, theirs, info=)` is
-  the primitive, gated by `caps.merge` and built on the same rules the
-  merge verb resolves by; providers without the engine refuse by name.
-- **`ws-git log -S <string> [<session>] [--all]`.** git's pickaxe: the
-  commits where the number of times `<string>` occurs in the tree
-  changed between the commit and its parent, with `+` or `-` after the
-  id for appeared or vanished; a commit that only moved the string
-  within a file is not one of them. It reads the files that changed in
-  each commit and no others, and bytes that are not text hold no
-  occurrences. `ws-git log --all` also stands on its own now: every
-  commit the session holds, the framework's included. A limit that asks
-  for nothing gets nothing on every walk: `ws-git log -n 0` is an empty
-  log, plain, `--all` or `-S`, as `ws.log(limit=0)` already was.
-- **`docs/ws-git.md`.** The agent-facing reference and the
-  human-readable twin of `ws-git help`: the verb table with git's
-  spelling on the left, the two commit modes, what `status` shows, the
-  ref grammar and short ids, the conflict shape and how a commit
-  resolves it, worktrees, revert and cherry-pick, the five ways a
-  parent takes a delegate's work back, the refusals, and how the
-  agent's git relates to the store's append-only history.
-  `docs/api.md`'s versioning section is the host API alone now, with
-  one paragraph naming `ws-git` as the same implementation spelled for
-  the agent and a link to the page; every agent-facing paragraph moved
-  there rather than being copied.
+  <session>@<commit>`**, with `ws.revert` / `ws.cherry_pick` over
+  `KvgitProvider.apply(base, theirs, info=)`: one commit's change
+  against the tree as it stands, appended, conflicting as a merge does
+  — so neither verb has a `--continue`.
+- **`ws-git stash`**, replacing the refusal that said a fork is a
+  stash: it forks the modified set to `<session>.stash-N` and restores
+  the tree, with `list`, `pop` (kept when it conflicts), `drop`, `show`.
+- **`ws-git merge --abort`** restores the tree to the commit a
+  conflicted merge landed on and clears it; the merge itself stays in
+  the history, since the restore is a new appended commit.
+- **`ws-git tag`** — the agent's own bookmark, a ref wherever a ref is
+  taken, `<session>@<tag>` for another session's, decorating `ws-git
+  log`. It pins nothing and no fork or merge carries one; the host half
+  is `ws.index.tags()` / `tag()` / `delete_tag()`.
+- **A short commit id is a ref everywhere** — a unique prefix of seven
+  hex characters or more, in `store.resolve`, `ws.checkout`,
+  `ws.fork(at=)`, `ws.files.attach` and the ws-git verbs.
+- **`ws-git log -S <string>`**, git's pickaxe with `+` or `-` after the
+  id, and `--all` (every commit the session holds) on its own; `-n 0`
+  is an empty log on every walk.
+- **`ws-git sparse-checkout list`, and a `view:` header in `ws-git
+  status`**, so a narrowed session can ask what it was given.
+
+### Changed
+- **The ui set is closed, and the JSON floor is gone.** A ui value is a
+  plotly figure, a pandas DataFrame, a matplotlib figure, an image, a
+  list of card rows, or a string naming a workspace file. Anything else
+  — scalars and plain dicts included — yields a `ui_problems` note and
+  no file, where the data tier wrote a `.json` or a capped `repr`.
+- **The ws-git blob is layout 3**, holding `tags`, `pre_merge` and the
+  stash record; a layout 2 blob is read as it stands, not discarded.
+- **Every fork lands its `ws-git.fork` commit**, one whose parent never
+  used ws-git included: it is the child's fork POINT, and without it
+  every file a delegate inherited read as one it added.
+- **`ws-git.revert` and `ws-git.cherry-pick` count as agent commits**,
+  as `ws-git.merge` does, so `ws.index.log()` shows them.
+- **A stash is an ordinary session on the store**: `store.sessions()`
+  lists `<session>.stash-N`, and dropping one is `Store.delete` by name.
 
 ### Fixed
-- **A plain dict is not a ui artifact.** `ui = {"name": value}` wrote
-  any dict that was not a card row or a plotly figure to
-  `ui/<name>.json` and announced it in the artifacts note, so an agent
-  believed a raw payload had rendered and cited its path in prose,
-  while a consumer has no component for raw JSON and showed nothing or
-  a bare link. A dict or a list with no component now writes no file
-  and yields a `ui_problems` note naming the value's shape and the
-  three shapes that do render — the way a near-miss card row already
-  did, and the near-miss note still wins where it applies, so a value
-  earns one diagnosis and not two. The python primer names the set
-  exactly (a plotly figure, a pandas DataFrame, a matplotlib figure, an
-  image, or a list of card rows) and says a plain dict is data, to
-  print or write as a file. A plotly spec that arrives as a plain dict
-  keeps its artifact and now lands on `ui/<name>.plotly.json`, so it is
-  named by its suffix rather than left to a consumer's content sniff.
-  Scalars no longer take a JSON floor either: the set the primer names
-  is the set the code accepts.
-- **A plotly spec dict is encoded the way a plotly figure is.** A spec
-  reached through `fig.to_dict()` holds NumPy arrays and timestamps,
-  which plain json rejects — so the value fell to the repr floor, wrote
-  a `.txt` and said nothing, and a chart quietly stopped being one.
-  Plotly's own encoder now writes both spellings of a figure, so which
-  one the agent assigned cannot change the result. Where plotly is not
-  importable, a spec that is already plain JSON encodes identically and
-  one that is not keeps its artifact with `default=str` plus a note
-  saying which values were written as text and how to avoid it.
-- **The ui set is closed, and the JSON floor is gone.** A ui value is a
-  plotly figure, a pandas DataFrame, a matplotlib figure, an image, or
-  a list of card rows — plus a string naming a workspace file the agent
-  saved itself, which points at an artifact rather than being one.
-  Anything else, scalars included, gets the diagnostic and no file: the
-  primer named a closed set while the data tier wrote numbers and loose
-  strings as `.json` artifacts, so the note told agents not to use a
-  value the code accepted. A renderer inside the set that raises now
-  yields a problem note naming the value and the error, where it used
-  to leave a capped `repr` in a `.txt` and say nothing — an artifact
-  line the agent read as a figure that had arrived.
-- **Adding over a live worktree says how to refresh one.** A worktree
-  is pinned at a commit, so a second `ws-git worktree add` at the same
-  directory cannot move it — and it earned the generic "that directory
-  is not empty" reason, which sends a reader looking for files to
-  delete out of a tree it does not own. It now names the two steps:
-  `ws-git worktree remove <dir>`, then add it again. The help said
-  "add it again to see newer work", which the verb refuses; it says
-  the two steps now too.
+- **A plotly spec dict is encoded the way a plotly figure is** — one
+  from `fig.to_dict()` holds NumPy arrays and timestamps, fell to the
+  repr floor, and a chart quietly stopped being one. It lands on
+  `ui/<name>.plotly.json` now.
+- **A merged metadata row describes the bytes that landed**, where a
+  one-sided row kept a size the conflicted content beside it never had.
+- **Adding over a live worktree names the two steps that refresh one**
+  rather than "that directory is not empty", a reason with no fix in it.
 
 ## 0.6.5 - 2026-09-10
 
