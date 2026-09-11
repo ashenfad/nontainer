@@ -50,7 +50,7 @@ import json
 import re
 from typing import Callable, Union
 
-from .render import artifact_kind
+from .render import artifact_kind, looks_like_plotly
 
 # ("md", text) | ("artifact", name, path). Matches the two shapes studio's
 # AgentMessage.svelte emits from its own splice.
@@ -175,7 +175,7 @@ def component_for(
                 # (studio's looksLikePlotly, full-parse only since we hold
                 # the whole file); otherwise fall to the link.
                 spec = _try_json(data)
-                if _looks_like_plotly(spec):
+                if looks_like_plotly(spec):
                     return _chart(spec)
         except Exception:
             pass
@@ -403,17 +403,6 @@ def _try_json(data: bytes) -> object | None:
         return json.loads(data)
     except (ValueError, TypeError):
         return None
-
-
-def _looks_like_plotly(obj: object) -> bool:
-    """Port of studio's ``looksLikePlotly`` (frontend/src/lib/sniff.js),
-    full-parse branch only: a top-level dict with a ``data`` list and a
-    ``layout`` dict."""
-    return (
-        isinstance(obj, dict)
-        and isinstance(obj.get("data"), list)
-        and isinstance(obj.get("layout"), dict)
-    )
 
 
 # ---------------------------------------------------------------------------

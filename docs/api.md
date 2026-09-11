@@ -483,8 +483,8 @@ class PythonResult:
                                         # inline it into observations
     commit: str | None = None       # commit this call created
     ui_problems: tuple[str, ...] = ()   # why a `ui` value did not render
-                                        # as intended (the 8MB cap, with
-                                        # the remediation) -- actionable
+                                        # as intended (the 8MB cap; a value
+                                        # nothing renders) -- actionable
                                         # text meant to reach the agent
     # truthy iff error is None
 
@@ -1497,7 +1497,15 @@ html > data), then appends a single model-facing line to the tool result:
 ```
 
 The agent reads it to embed `![name](/ui/...)` in its reply; unreferenced
-artifacts display after the prose. This line is a **public, round-trippable
+artifacts display after the prose.
+
+The set that renders is closed: a plotly figure (object or spec dict), a
+pandas DataFrame, a matplotlib figure, an image, a list of card rows, or
+a scalar. **A plain dict or list is data, not an artifact** — there is
+no component for raw JSON, so no file is written and the value earns a
+`ui_problems` note naming its shape and the three ways to make it
+renderable. Writing it anyway told the agent a rendering had happened,
+and it went on to cite the path in its prose. This line is a **public, round-trippable
 contract** — harnesses parse tool results with `parse_artifacts_note`, never
 a private regex:
 

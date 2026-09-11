@@ -94,6 +94,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the agent and a link to the page; every agent-facing paragraph moved
   there rather than being copied.
 
+### Fixed
+- **A plain dict is not a ui artifact.** `ui = {"name": value}` wrote
+  any dict that was not a card row or a plotly figure to
+  `ui/<name>.json` and announced it in the artifacts note, so an agent
+  believed a raw payload had rendered and cited its path in prose,
+  while a consumer has no component for raw JSON and showed nothing or
+  a bare link. A dict or a list with no component now writes no file
+  and yields a `ui_problems` note naming the value's shape and the
+  three shapes that do render — the way a near-miss card row already
+  did, and the near-miss note still wins where it applies, so a value
+  earns one diagnosis and not two. The python primer names the set
+  exactly (a plotly figure, a pandas DataFrame, a matplotlib figure, an
+  image, or a list of card rows) and says a plain dict is data, to
+  print or write as a file. A plotly spec that arrives as a plain dict
+  keeps its artifact and now lands on `ui/<name>.plotly.json`, so it is
+  named by its suffix rather than left to a consumer's content sniff.
+  Scalars still take the never-fail JSON floor: there the JSON is the
+  whole value.
+
 ## 0.6.5 - 2026-09-10
 
 ### Added
