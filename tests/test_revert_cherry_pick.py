@@ -221,6 +221,33 @@ def test_cherry_pick_of_a_delegates_first_commit_brings_only_its_work(ws):
         child.close()
 
 
+def test_cherry_pick_of_a_first_commit_from_a_parent_that_never_used_ws_git(ws):
+    """A fork always leaves a fork point, whether or not the parent
+    ever used ws-git — it is what the change in a delegate's first
+    commit is measured against, and without it every file the delegate
+    inherited would read as one it added."""
+    ws.files.write("/workspace/kept.txt", "kept\n")
+    ws.files.write("/workspace/gone.txt", "gone\n")
+    child = _fork(ws, "child")
+    try:
+        child.files.write("/workspace/kept.txt", "kept, by the child\n")
+        child.index.commit("child edit")
+        wanted = child.index.head
+
+        # this side drops a different inherited file, its own business
+        ws.files.fs.remove("/workspace/gone.txt")
+        ws.commit()
+
+        out = ws.cherry_pick(f"child@{wanted}")
+
+        assert out.merged and out.conflicts == ()
+        assert out.auto_merged == ("/workspace/kept.txt",)
+        assert ws.files.read("/workspace/kept.txt") == b"kept, by the child\n"
+        assert not ws.files.exists("/workspace/gone.txt")
+    finally:
+        child.close()
+
+
 def test_a_cherry_pick_that_conflicts(ws):
     ws.files.write("/workspace/shared.txt", "one\ntwo\nthree\n")
     ws.index.commit("seed")

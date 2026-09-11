@@ -682,9 +682,12 @@ parent's), and — the reason it matters — a child that never uses ws-git
 merges and is taken from at its branch head, the rule the fiction
 already had for a session with no agent commit. The reset lands as a
 `ws-git.fork` bookkeeping commit, so it is at the child's store head
-for any reader; it is hidden from `ws.log()` and shown by `kind="all"`,
-and a parent that never used ws-git leaves nothing to reset and costs
-the fork no commit. Before its first commit a child reads the way a
+for any reader; it is hidden from `ws.log()` and shown by `kind="all"`.
+Every fork lands it, a parent that never used ws-git included: the
+commit is the child's fork POINT as well as its reset, and
+`ws.cherry_pick` / `ws.revert` measure the change in the child's first
+commit against it — without the mark, every file the child inherited
+would read as one it added. Before its first commit a child reads the way a
 repo does before its first: everything it can see is modified.
 
 `paths` narrows the child's **view**, not its tree. Its branch holds

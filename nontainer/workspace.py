@@ -2659,9 +2659,10 @@ class Workspace:
         else.
 
         An agent commit with no agent commit before it was composed on
-        the state its session started from. That is the fork, where
-        there was one — which is what makes a delegate's first commit
-        its own work rather than the tree it inherited — and otherwise
+        the state its session started from. That is the fork its
+        session began at — every fork leaves one to find, which is what
+        makes a delegate's first commit its own work rather than the
+        tree it inherited — and for a session that was never forked,
         the empty tree, since what such a commit changed is everything
         it holds, as reverting a root commit in git removes the files
         it added.

@@ -40,6 +40,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was given part of the tree. A view is given at the fork
   (`ws-git branch <name> --paths <paths>`) and cannot be changed from
   the terminal, so any other subcommand is a usage error that says so.
+- **Every fork leaves a fork point.** The `ws-git.fork` bookkeeping
+  commit is now landed by every fork, including one whose parent never
+  used ws-git and has no ws-git state to clear. It is the child's fork
+  POINT as well as its reset: the change in a delegate's first commit
+  is the difference from the tree it started with, and with nothing
+  marking where that was, every file it inherited read as one it
+  added. Hidden from `ws.log()` as before, shown by `kind="all"`.
 - **`ws-git revert <commit>` and `ws-git cherry-pick
   <session>@<commit>`, with `ws.revert` / `ws.cherry_pick` on the
   host.** One commit's change applied to the tree as it stands: a

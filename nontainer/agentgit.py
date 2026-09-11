@@ -238,19 +238,24 @@ def reset_for_fork(provider: Any, parent: str) -> str | None:
     rule, which is that a session with no agent commit merges at its
     store head, that being the honest answer for it.
 
-    Returns the commit the reset landed in, or ``None`` when there was
-    nothing to reset (a parent that never used ws-git leaves the child
-    nothing to clear, and a fork should not cost a commit to say so).
-    Keyed and self-committed, like the fiction's other bookkeeping, so
-    the reset is at the child's store head for any reader rather than
-    only in the handle the fork came back on.
+    EVERY fork lands this commit, including one whose parent never
+    used ws-git and has no state to clear. It is the child's fork
+    POINT as well as its reset: the change a delegate's first commit
+    made is the difference from the tree it started with, and with no
+    commit marking where that was, every file the delegate inherited
+    would read as one it added — a revert or a cherry-pick of that
+    commit would then carry files the delegate never touched. One
+    hidden commit per fork is what makes the mark an invariant.
+
+    Returns the commit it landed in, or ``None`` on a provider with no
+    index (nothing there keeps this state). Keyed and self-committed,
+    like the fiction's other bookkeeping, so the mark is at the child's
+    store head for any reader rather than only in the handle the fork
+    came back on.
     """
     if not provider.caps.index:
         return None
-    fresh = parse_blob(None)
-    if parse_blob(provider.kv.get(BLOB_KEY)) == fresh:
-        return None
-    provider.kv[BLOB_KEY] = _encode_blob(fresh)
+    provider.kv[BLOB_KEY] = _encode_blob(parse_blob(None))
     return provider.commit_keys({"tool": FORK_TOOL, "parent": parent}, keys=[BLOB_KEY])
 
 
