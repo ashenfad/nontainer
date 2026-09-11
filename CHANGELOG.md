@@ -79,7 +79,10 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   `nosuch is not a commit, a short id or a tag on session 'polish'
   (ws-git log polish, ws-git tag)` — so every verb taking that shape
   says the same thing, and a well-formed id nobody holds names its
-  session too.
+  session too. The session half is checked first, so a typo in the
+  name earns `unknown session 'typo' (ws-git branch lists them)`
+  rather than a report about the commits of a session that is not
+  there.
 - **Adding over a live worktree names the two steps that refresh one**
   rather than "that directory is not empty", a reason with no fix in it.
 

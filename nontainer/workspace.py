@@ -2131,9 +2131,13 @@ class Workspace:
         A word that is none of the three is refused here, by the one
         funnel, so every verb that takes this shape of ref says what it
         looked up and on which session rather than echoing the word.
+        The SESSION is checked first: a ref names both halves, and a
+        report about the commit half of a session that is not there
+        sends a reader to list what nothing holds.
         """
         from .agentgit import HASH_RE, AgentGit, tags_at
 
+        self._require_session(session)
         if self._provider.caps.index:
             try:
                 if session == self.session:
@@ -2153,6 +2157,28 @@ class Workspace:
         ):
             raise CommitNotFoundError(self._not_a_ref(session, commit))
         return whole
+
+    def _require_session(self, name: str, *, to_open: bool = False) -> None:
+        """Refuse a name this store holds nothing under.
+
+        The other half of a ref, checked before the commit half is
+        classified. ``to_open`` narrows the question to names a session
+        can be opened at: a publication's reserved branch is a ref this
+        store hands out and reads back, so a read of one must pass,
+        while nothing can log it or merge it. A workspace opened
+        straight from a provider has no store to ask, and a name that
+        is this session's own is here by definition; both skip the
+        check.
+        """
+        if name == self.session:
+            return
+        store = getattr(self, "_store", None)
+        if store is None:
+            return
+        held = set(store.sessions()) if to_open else set(store._branches())
+        if name in held:
+            return
+        raise ValueError(f"unknown session {name!r} (ws-git branch lists them)")
 
     def _not_a_ref(self, session: str, word: str) -> str:
         """Why a word is not the commit half of a ref, and where to look
