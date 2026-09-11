@@ -112,6 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   named by its suffix rather than left to a consumer's content sniff.
   Scalars still take the never-fail JSON floor: there the JSON is the
   whole value.
+- **A plotly spec dict is encoded the way a plotly figure is.** A spec
+  reached through `fig.to_dict()` holds NumPy arrays and timestamps,
+  which plain json rejects — so the value fell to the repr floor, wrote
+  a `.txt` and said nothing, and a chart quietly stopped being one.
+  Plotly's own encoder now writes both spellings of a figure, so which
+  one the agent assigned cannot change the result. Where plotly is not
+  importable, a spec that is already plain JSON encodes identically and
+  one that is not keeps its artifact with `default=str` plus a note
+  saying which values were written as text and how to avoid it.
 
 ## 0.6.5 - 2026-09-10
 
