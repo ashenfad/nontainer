@@ -65,6 +65,11 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   `ui/<name>.plotly.json` now.
 - **A merged metadata row describes the bytes that landed**, where a
   one-sided row kept a size the conflicted content beside it never had.
+- **A merge refuses over an outstanding merge.** A second merge landed
+  its own markers and recorded its own context, dropping the first
+  merge's — leaving a clean `ws-git status` over a tree that still held
+  the first merge's markers. It takes the guard `stash`, `revert` and
+  `cherry-pick` already take.
 - **Adding over a live worktree names the two steps that refresh one**
   rather than "that directory is not empty", a reason with no fix in it.
 

@@ -108,9 +108,9 @@ own durability points and with the plain rule that nothing an agent
 writes should sit outside the store.
 
 So the agent's git is metadata instead — a blob at a reserved key
-holding the agent's head (a store commit hash), the staged paths, and
-the context of an outstanding merge. Four consequences, and they are
-the whole model:
+holding the agent's head (a store commit hash), the staged paths, the
+agent's tags, the context of an outstanding merge and the commit it
+landed on. The rules below are the whole model:
 
 - **The framework's commits are plumbing.** `status` diffs the working
   tree against the AGENT's head, so a turn hook, a session db or an
@@ -140,7 +140,9 @@ the whole model:
   plumbing like the framework's own.
 - **`log`, `show` and `diff` walk the agent's graph**, threaded
   through `virtual_parents` in commit info. The framework's per-call
-  commits are never in it.
+  commits are never in it, so a log is the agent's own work and not a
+  transcript of its tool calls; `ws-git log --all` is the escape that
+  shows every commit the session holds, bookkeeping included.
 - **Branches are real branches.** A session IS a branch, so `ws-git
   branch <name>` forks a session rather than making a pointer, and
   `ws-git checkout <ref>` restores a tree rather than switching: the
@@ -154,6 +156,67 @@ the whole model:
   agent commit rather than at its store head, and a source whose agent
   has written since is refused rather than merged at a state it has
   moved past.
+- **History is append-only, all the way through the fiction.** Every
+  verb that looks like it moves a head backward appends instead:
+  `ws-git checkout` appends the restore, `revert` and `cherry-pick`
+  append the change they compute, and `merge --abort` appends the
+  commit that takes the tree back, leaving the conflicted merge it
+  undoes in the history for anyone who still wants it. That is why
+  `rebase` is refused by name rather than approximated, and why a tag
+  here pins nothing: every commit the agent made is reachable from its
+  head already.
+- **A fork starts fresh, and leaves a mark saying where.** The child
+  gets no head, no staged set, no tags, no stash and no outstanding
+  merge; an index is a composition in progress, and a delegate does not
+  start halfway through somebody else's. The reset lands as a
+  `ws-git.fork` commit, and EVERY fork lands one — a parent that never
+  used ws-git included, where there is no state to clear. The commit is
+  the child's fork POINT as well as its reset: without it, the change
+  in a delegate's first commit reads as every file it inherited.
+- **Merge moves files; the fiction's own state takes ours.** The blob
+  and the view record are registered `ours` over the whole key, so a
+  merge never brings the source's head, staged set, tags, stash record
+  or outstanding merge across, and merging a delegate that was given a
+  narrow view never narrows the caller. Two agents' bookkeeping is
+  never reconciled, which is what keeps the merge rules about files
+  alone.
+- **A commit's change is measured against its VIRTUAL parent.** What a
+  commit changed — what `revert` undoes and `cherry-pick` applies — is
+  the difference from its parent in the agent's graph, never the
+  store's: the framework commits an agent's edits for durability as
+  they are made, so the store parent of a ws-git commit already holds
+  them. An agent commit with none before it is measured against the
+  commit its session was forked at, and against the empty tree for a
+  session that never forked, so reverting a first commit removes the
+  files it introduced.
+- **Nothing moves the tree while a merge is outstanding.** A conflicted
+  merge is a composition in progress: the markers are in the tree, and
+  the recorded paths are the only thing that says they are there. A
+  verb landing a change of its own would mark files the merge already
+  marked, with no way to tell whose conflict is whose; one moving the
+  tree elsewhere would carry the markers along and drop the record of
+  them, leaving a clean status over a tree full of them. So `merge`,
+  `stash push`, `stash pop`, `revert` and `cherry-pick` refuse until
+  the markers are gone, and the message names the two ways out: commit
+  the resolution, or `ws-git merge --abort`.
+- **A tag is the agent's bookmark, not a store tag.** A name in the
+  agent's blob pointing at one of its own commits, then a ref wherever
+  a ref is taken. The store's tags are garbage-collection roots that
+  deliberately outlive the session that made them; this one holds
+  nothing in place, because an append-only history already reaches
+  every commit the agent made from its head. So it is session-local:
+  gone when the session is, not inherited by a fork, not brought over
+  by a merge. A name spelled like a commit id (seven or more hex
+  characters) is refused, which is what lets a tag be read before a
+  hash with nothing ambiguous about it.
+- **A stash is an ordinary session on the store.** `ws-git stash` forks
+  the modified working set to `<session>.stash-N` and checks the agent
+  back out at its last commit, so what the branch holds is the change
+  and a pop is an ordinary three-way against that same commit. Nothing
+  in the store learned what a stash is: `store.sessions()` lists the
+  branch while one is up, and dropping it is `Store.delete` by name.
+  What marks it as a stash is a record in its own ws-git blob, so a
+  branch merely NAMED like one is not mistaken for one.
 
 The one thing the substrate must provide is a keyed commit
 (`provider.commit_keys`, gated by `caps.index`). Everything else is
@@ -250,7 +313,7 @@ takes ours:
 | file keys (a VFS blob and the metadata row beside it) | three-way, marker merge; the row field-aware, its size taken from the merged bytes |
 | `__cache__/*` | ours — a delegate's working memory does not come back |
 | `__agno__/*` | ours — a delegate's conversation does not come back; what it has to say arrives as its answer |
-| cwd, the ws-git blob, the view record | ours |
+| cwd, the ws-git blob (head, staged set, tags, stash record, outstanding merge), the view record | ours |
 
 "Ours" has to own the *whole* prefix, not only contested keys: a merge
 function runs only where both sides changed a key, so a run the

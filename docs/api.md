@@ -805,6 +805,12 @@ that means committed by the agent:**
   ws-git has no such baseline and is merged at its store head, as
   before.
 
+A merge is also refused while one of this session's own merges is
+still outstanding, the rule `ws.revert` and `ws.cherry_pick` take: a
+second merge would mark files the first already marked and record its
+own context over the first's, leaving a clean status over a tree that
+still holds the first merge's markers.
+
 File conflicts land as conflict markers IN the merge commit and are
 reported in `MergeOutcome.conflicts` rather than blocking it: resolve
 them with ordinary edits and commit — the paths the merge reports are
