@@ -669,6 +669,9 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         if not paths:
             return _usage_error("checkout -- needs at least one path.")
         ref = _take_ref(git, head[0] if head else "HEAD")
+        # Ordinary writes into the tree, which a conflicted merge is
+        # still composing: the guard the tree-moving verbs take.
+        ws._require_unmerged(git, "checkout -- <paths>")
         ws.checkout(ref, paths=[_abspath(ctx, a) for a in paths])
         n = len(paths)
         plural = "" if n == 1 else "s"
@@ -677,6 +680,7 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if len(rest) != 1 or rest[0].startswith("-"):
         return _usage_error("checkout takes one ref (a commit from ws-git log).")
     commit = git.resolve(rest[0])
+    ws._require_unmerged(git, "checkout")
     git.checkout(commit)
     st = git.status()
     ctx.stdout.write(f"[{st.branch}] restored to {commit[:7]}\n")
