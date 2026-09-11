@@ -1500,6 +1500,38 @@ def test_stash_pop_refuses_over_an_outstanding_merge(peer_ws, store):
     assert "main.stash-0" in store.sessions()
 
 
+def test_merge_refuses_over_an_outstanding_merge(peer_ws):
+    """A second merge lands its own markers and records its own
+    context, dropping the first merge's — after which status reads
+    clean over a tree that still holds the first merge's markers, and
+    merge --abort has nothing left to find."""
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    peer_ws.terminal("ws-git commit -m base")
+    for name, body in (("worker", b"a\nFORK\n"), ("other", b"a\nb\nOTHER\n")):
+        fork = peer_ws.fork(name)
+        try:
+            fork.files.fs.write("/workspace/doc.txt", body)
+            fork.index.commit("theirs")
+        finally:
+            fork.close()
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git merge worker").exit_code == 1
+    was = peer_ws.terminal("ws-git status").stdout
+    assert "UU doc.txt" in was
+
+    r = peer_ws.terminal("ws-git merge other")
+    assert r.exit_code == 1
+    assert r.stderr.startswith(
+        "ws-git: an unresolved merge from worker is outstanding"
+    ), r.stderr
+    assert "ws-git merge --abort" in r.stderr
+
+    # nothing moved: the first merge's context and markers stand
+    assert peer_ws.terminal("ws-git status").stdout == was
+    assert "<<<<<<< " in peer_ws.terminal("cat doc.txt").stdout
+
+
 def test_branch_at_takes_a_tag_and_a_short_id(peer_ws, store):
     """`--at` is a ref, so every spelling of one works there: what the
     log printed, and what the session bookmarked."""

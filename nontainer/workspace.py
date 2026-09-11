@@ -2513,6 +2513,10 @@ class Workspace:
           the delegate has already moved past. A session that never
           used ws-git has no agent commit to differ from and is merged
           at its store head, as before.
+        - This session must have no merge of its own outstanding. A
+          second merge would mark files the first already marked and
+          record its own context over the first's, leaving a clean
+          status over a tree that still holds the first's markers.
 
         File conflicts land as conflict markers IN the merge commit and
         are reported in the outcome rather than blocking it — resolve
@@ -2539,6 +2543,7 @@ class Workspace:
 
                 git = AgentGit(self)
                 self._require_agent_clean(git)
+                self._require_unmerged(git, "merge")
                 head = git.head
                 # The merge commit joins the agent's graph, so its own
                 # log walks through it instead of stopping at it.
