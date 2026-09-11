@@ -842,7 +842,10 @@ new commit whose only parent is the current head. Both return a
 - `ws.cherry_pick("session@commit")` applies one commit's change from
   another session (short ids accepted). Its change, not its tree: what
   the commit before it holds is left as yours. Bringing everything a
-  session committed is `ws.merge`.
+  session committed is `ws.merge`. The ref names a session AND a
+  commit, and the named session must be one whose history reaches it —
+  whole id or short — so a sibling's commit under the wrong name is
+  refused rather than applied with a provenance nothing supports.
 
 **What a commit CHANGED is the difference from the state it was
 composed on**, which for a ws-git commit is its parent in the AGENT's

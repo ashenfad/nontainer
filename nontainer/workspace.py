@@ -2609,7 +2609,8 @@ class Workspace:
             )
         parsed = Ref.parse(text)
         target = self._change_commit(
-            self._expand_commit(parsed.commit, session=parsed.session)
+            self._expand_commit(parsed.commit, session=parsed.session),
+            session=parsed.session,
         )
         source = str(Ref(parsed.session, target.id[:7]))
         return self._apply_change(
@@ -2636,16 +2637,29 @@ class Workspace:
             "(caps.merge), and this provider has none. Use the kvgit backend."
         )
 
-    def _change_commit(self, commit: str) -> CommitInfo:
-        """One commit's record, or ``CommitNotFoundError`` naming it."""
-        record = self._provider.commit_at(commit)
-        if record is None:
+    def _change_commit(self, commit: str, *, session: str | None = None) -> CommitInfo:
+        """One commit's record, or ``CommitNotFoundError`` naming it.
+
+        ``session`` is the session a ref named, and the commit has to
+        be one that session's history reaches — whole id or short, and
+        whether or not the id needed expanding. A commit the store
+        holds on some other branch is not the one the ref names, and
+        applying it would record a provenance nothing supports.
+        """
+        record = self._provider.commit_at(commit, session=session)
+        if record is not None:
+            return record
+        if session is not None:
             raise CommitNotFoundError(
-                f"no commit {commit!r} on this store — a revert or a "
-                "cherry-pick names a commit some session committed "
-                "(ws-git log lists them)."
+                f"no commit {commit!r} on session {session!r} — a "
+                "cherry-pick names a commit that session committed "
+                f"(ws-git log {session} lists them)."
             )
-        return record
+        raise CommitNotFoundError(
+            f"no commit {commit!r} on this store — a revert or a "
+            "cherry-pick names a commit some session committed "
+            "(ws-git log lists them)."
+        )
 
     def _change_base(self, entry: CommitInfo) -> str | None:
         """The commit one commit's change is measured against.

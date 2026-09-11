@@ -1372,14 +1372,28 @@ class KvgitProvider:
         handle = at_theirs if at_base is None else at_base
         return set(handle.keys()) if handle is not None else set()
 
-    def commit_at(self, commit: str) -> CommitInfo | None:
-        """One commit's record by id, from anywhere in the store.
+    def commit_at(
+        self, commit: str, *, session: str | None = None
+    ) -> CommitInfo | None:
+        """One commit's record by id; ``None`` when there is no such
+        commit to read.
 
         ``history()`` walks this session's branch; this answers for any
         commit the store holds, which is what reading the change
-        another session's commit made takes. ``None`` when the store
-        has no such commit.
+        another session's commit made takes.
+
+        ``session`` narrows that to one branch: the commit must be one
+        that session's history reaches, and a commit the store holds
+        somewhere else reads as absent. A ref names a session AND a
+        commit, so a commit a sibling branch made is not the one a ref
+        under this name means, however whole the id. A session the
+        store does not have raises ``ValueError`` naming it — no such
+        session is a different answer from no such commit.
         """
+        if session is not None and not any(
+            held == commit for held in self._commit_ids(session)
+        ):
+            return None
         return self._commit_record(commit)
 
     def _commit_record(self, commit_hash: str) -> CommitInfo | None:

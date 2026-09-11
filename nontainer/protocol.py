@@ -558,15 +558,21 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
-    def commit_at(self, commit: str) -> CommitInfo | None:
-        """One commit's record by id, from anywhere the provider can
-        reach (requires ``caps.merge``); ``None`` when there is no such
-        commit.
+    def commit_at(
+        self, commit: str, *, session: str | None = None
+    ) -> CommitInfo | None:
+        """One commit's record by id (requires ``caps.merge``);
+        ``None`` when there is no such commit to read.
 
         ``history()`` walks one session's branch. This answers for any
         commit the substrate holds, which is what naming the change
         another session's commit made takes — its parents included,
         since a change is measured against where it came from.
+
+        ``session`` narrows it to one branch: the commit must be one
+        that session's history reaches, and a commit held elsewhere
+        reads as absent, because a ref names a session AND a commit. A
+        session the substrate does not have raises ``ValueError``.
         """
         ...
 
