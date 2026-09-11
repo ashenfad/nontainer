@@ -331,6 +331,130 @@ def test_merge_status_and_diff_check(ws):
     assert "from worker" in _subjects(ws)[1]
 
 
+def test_revert_appends_a_commit_that_undoes_one(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    ws.files.fs.write("/workspace/a.txt", b"two\n")
+    ws.terminal("ws-git commit -m second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+
+    r = ws.terminal(f"ws-git revert {second}")
+
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.splitlines() == [
+        "Auto-merging a.txt",
+        f"[wsgit {ws.index.head[:7]}] revert {second} (1 file)",
+    ]
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    # the commit it undid is still in the log, with the revert on top
+    assert _subjects(ws) == ['Revert "second"', "second", "first"]
+    assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_revert_of_a_commit_already_undone_says_so(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    ws.files.fs.write("/workspace/a.txt", b"two\n")
+    ws.terminal("ws-git commit -m second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal(f"ws-git revert {second}")
+    before = _subjects(ws)
+
+    r = ws.terminal(f"ws-git revert {second}")
+
+    assert r.exit_code == 1
+    assert r.stderr == (
+        f"ws-git: nothing to revert: {second} changes nothing this tree "
+        "does not already hold. Nothing changed."
+    )
+    assert _subjects(ws) == before
+
+
+def test_revert_conflict_lands_with_markers(ws):
+    ws.files.fs.write("/workspace/doc.txt", b"a\nb\nc\n")
+    ws.terminal("ws-git commit -m first")
+    ws.files.fs.write("/workspace/doc.txt", b"a\nSECOND\nc\n")
+    ws.terminal("ws-git commit -m second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+    ws.files.fs.write("/workspace/doc.txt", b"a\nTHIRD\nc\n")
+    ws.terminal("ws-git commit -m third")
+
+    r = ws.terminal(f"ws-git revert {second}")
+
+    assert r.exit_code == 1
+    assert r.stdout.splitlines() == [
+        "CONFLICT (content): Merge conflict in doc.txt",
+        f"[wsgit {ws.index.head[:7]}] revert {second} (1 file)",
+    ]
+    assert r.stderr == (
+        "ws-git: Revert landed with conflict markers in 1 file(s): fix "
+        "them and commit (ws-git status shows them as UU)."
+    )
+    lines = ws.terminal("ws-git status").stdout.splitlines()
+    assert re.fullmatch(rf"## merging wsgit@{SHORT} \(1 unresolved\)", lines[0]), lines
+    assert lines[1:] == ["UU doc.txt"]
+    assert b"<<<<<<< " in ws.files.read("/workspace/doc.txt")
+
+    ws.files.fs.write("/workspace/doc.txt", b"a\nRESOLVED\nc\n")
+    ws.terminal("ws-git commit -m resolved")
+    assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_revert_takes_only_a_commit(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    r = ws.terminal("ws-git revert")
+    assert r.exit_code == 2
+    assert r.stderr.startswith("ws-git: revert takes one commit")
+    r = ws.terminal("ws-git revert worker")
+    assert r.exit_code == 1
+    assert "is not a commit" in r.stderr
+
+
+def test_cherry_pick_brings_one_commit_of_another_session(peer_ws):
+    peer_ws.files.fs.write("/workspace/mine.txt", b"mine\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git branch worker").exit_code == 0
+
+    worker = peer_ws._store.open("worker", root=peer_ws.root)
+    register_wsgit(worker)
+    try:
+        worker.terminal("cat > one.txt <<'EOF'\none\nEOF\nws-git commit -m one")
+        worker.terminal("cat > two.txt <<'EOF'\ntwo\nEOF\nws-git commit -m two")
+        wanted = worker.terminal("ws-git log").stdout.split()[0]
+    finally:
+        worker.close()
+
+    r = peer_ws.terminal(f"ws-git cherry-pick worker@{wanted}")
+
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.splitlines() == [
+        "Auto-merging two.txt",
+        f"[main {peer_ws.index.head[:7]}] cherry-pick worker@{wanted} (1 file)",
+    ]
+    assert peer_ws.terminal("cat two.txt").stdout == "two\n"
+    assert peer_ws.terminal("cat one.txt").exit_code != 0
+    # the log says whose change it is
+    line = peer_ws.terminal("ws-git log").stdout.splitlines()[0]
+    assert line.endswith(f"two from worker@{wanted}")
+
+
+def test_cherry_pick_needs_the_commit_named(peer_ws):
+    peer_ws.files.fs.write("/workspace/mine.txt", b"mine\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git branch worker").exit_code == 0
+
+    r = peer_ws.terminal("ws-git cherry-pick worker")
+    assert r.exit_code == 2
+    assert r.stderr.startswith(
+        "ws-git: cherry-pick takes one commit of another session, spelled "
+        "<session>@<commit> (ws-git log worker lists them)."
+    )
+    r = peer_ws.terminal("ws-git cherry-pick")
+    assert r.exit_code == 2
+    assert r.stderr.startswith("ws-git: cherry-pick takes one commit")
+
+
 def test_edges_name_what_the_agent_can_do(ws):
     cases = [
         ("ws-git stash", "ws-git: no stash here — a fork IS a stash"),

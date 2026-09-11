@@ -2567,7 +2567,7 @@ class Workspace:
             verb="revert",
             info={
                 "tool": REVERT_TOOL,
-                "message": f"Revert {subject!r}"
+                "message": f'Revert "{subject}"'
                 if subject
                 else f"Revert {target.id[:7]}",
                 "reverted": target.id,
