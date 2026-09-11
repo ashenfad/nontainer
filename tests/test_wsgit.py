@@ -922,6 +922,14 @@ def test_worktree_add_over_a_worktree_names_the_way_to_refresh(peer_ws):
     )
 
 
+def test_help_says_all_walks_the_session_named():
+    """--all with a session name walks THAT session's history, so the
+    help cannot call it every commit this one holds."""
+    flat = " ".join(_HELP.split())
+    assert "--all every commit this session holds" not in flat
+    assert "--all every commit the selected session holds" in flat
+
+
 def test_help_says_how_a_worktree_is_refreshed():
     """The help said 'add it again', which the verb refuses."""
     flat = " ".join(_HELP.split())  # the help is wrapped; the rule is not
