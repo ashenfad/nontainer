@@ -288,6 +288,8 @@ environment layer alone, offered to someone else's loop.
 - [Quick Start](docs/quick-start.md) -- first workspace, sandbox config,
   backends, adapters, the apps loop; runnable examples
 - [API Reference](docs/api.md) -- every class, method, and flag
+- [ws-git](docs/ws-git.md) -- the agent's git over its session: every
+  verb, what it prints, what it refuses
 - [Design notes](docs/design.md) -- why it's shaped this way (execution
   model, commit granularity, tool exposure) and what's still ahead
 - [Apps design](docs/apps.md) -- handler contract, execution model,

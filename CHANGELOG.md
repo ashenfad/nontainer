@@ -82,6 +82,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commit the session holds, the framework's included. A limit that asks
   for nothing gets nothing on every walk: `ws-git log -n 0` is an empty
   log, plain, `--all` or `-S`, as `ws.log(limit=0)` already was.
+- **`docs/ws-git.md`.** The agent-facing reference and the
+  human-readable twin of `ws-git help`: the verb table with git's
+  spelling on the left, the two commit modes, what `status` shows, the
+  ref grammar and short ids, the conflict shape and how a commit
+  resolves it, worktrees, revert and cherry-pick, the five ways a
+  parent takes a delegate's work back, the refusals, and how the
+  agent's git relates to the store's append-only history.
+  `docs/api.md`'s versioning section is the host API alone now, with
+  one paragraph naming `ws-git` as the same implementation spelled for
+  the agent and a link to the page; every agent-facing paragraph moved
+  there rather than being copied.
 
 ## 0.6.5 - 2026-09-10
 
