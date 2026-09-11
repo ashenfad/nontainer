@@ -1,6 +1,8 @@
 """The `ui = {...}` rich-reply convention: namespace values become
 workspace artifacts under <root>/ui/, sniffed down a theming hierarchy
-(spec formats > pixels > html > data), never silently dropped.
+(spec formats > pixels > html). The set is closed: a value outside it
+is never written, and never silently dropped either — it comes back as
+a problem note.
 """
 
 import importlib.util
@@ -102,7 +104,7 @@ def test_matplotlib_figure_becomes_png(ws):
     assert ws.files.fs.read("/workspace/ui/chart.png")[:8] == b"\x89PNG\r\n\x1a\n"
 
 
-def test_bytes_and_html_and_json_tiers(ws):
+def test_bytes_and_html_tiers(ws):
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
         "7753de0000000c49444154089963f8cfc000000301010018dd8db0000000"
@@ -119,7 +121,6 @@ def test_bytes_and_html_and_json_tiers(ws):
             {
                 "shot": png,
                 "widget": Widget(),
-                "mean": 2.5,
                 "blob": b"\x00\x01\x02",
             },
         )[0]
@@ -127,28 +128,14 @@ def test_bytes_and_html_and_json_tiers(ws):
     assert out["shot"] == "/workspace/ui/shot.png"
     assert out["widget"] == "/workspace/ui/widget.html"
     assert ws.files.fs.read("/workspace/ui/widget.html") == b"<b>hi</b>"
-    assert json.loads(ws.files.fs.read("/workspace/ui/mean.json")) == 2.5
     assert out["blob"] == "/workspace/ui/blob.bin"
-
-
-def test_unrenderable_lands_as_repr_not_silence(ws):
-    class Cursed:
-        def _repr_html_(self):
-            raise RuntimeError("nope")
-
-        def __repr__(self):
-            return "<Cursed>"
-
-    out, _ = materialize_ui(ws, {"x": Cursed()})
-    assert out == [("x", "/workspace/ui/x.txt")]
-    assert ws.files.fs.read("/workspace/ui/x.txt") == b"<Cursed>"
 
 
 def test_name_sanitization_and_non_dict(ws):
     # the returned name is the SANITIZED one — it rides the artifacts
     # note verbatim, so a raw name with ", " or " -> " must never leak
-    out, _ = materialize_ui(ws, {"my plot / v2": 42})
-    assert out == [("my-plot-v2", "/workspace/ui/my-plot-v2.json")]
+    out, _ = materialize_ui(ws, {"my plot / v2": [{"label": "a", "value": 1}]})
+    assert out == [("my-plot-v2", "/workspace/ui/my-plot-v2.cards.json")]
     assert materialize_ui(ws, "not a dict") == ([], [])
     assert materialize_ui(ws, None) == ([], [])
 
@@ -429,6 +416,42 @@ def test_plotly_spec_dict_encodes_the_way_the_figure_does(ws):
     )
 
 
+@pytest.mark.parametrize(
+    "name,value",
+    [("n", 42), ("note", "all done"), ("nothing", None), ("flag", True)],
+)
+def test_scalars_are_not_ui_artifacts(ws, name, value):
+    """The primer names a closed set, so the code has to mean it. A
+    number or a loose string announced as an artifact sends an agent to
+    embed a path whose file holds a bare literal."""
+    out, problems = materialize_ui(ws, {name: value})
+    assert out == []
+    assert not ws.files.fs.exists(f"/workspace/ui/{name}.json")
+    (problem,) = problems
+    assert name in problem
+    assert "print it" in problem
+
+
+def test_a_supported_path_that_raises_says_which_value_and_why(ws):
+    """A renderer that blows up used to leave a capped repr in a .txt
+    and no note, so the agent read an artifact line and never learned
+    its figure had failed."""
+
+    class Cursed:
+        def _repr_html_(self):
+            raise RuntimeError("nope")
+
+        def __repr__(self):
+            return "<Cursed>"
+
+    out, problems = materialize_ui(ws, {"x": Cursed()})
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/x.txt")
+    (problem,) = problems
+    assert "'x'" in problem
+    assert "RuntimeError" in problem and "nope" in problem
+
+
 def test_ui_note_names_the_supported_set(ws):
     """The note is what the agent reads before it assigns anything, so
     it must name the set exactly and stop implying a dict is one."""
@@ -436,7 +459,8 @@ def test_ui_note_names_the_supported_set(ws):
 
     assert "or dict" not in PYTHON_UI_NOTE
     assert "a list of card rows" in PYTHON_UI_NOTE
-    assert "plain dict is data" in PYTHON_UI_NOTE
+    assert "That is the whole\nset." in PYTHON_UI_NOTE
+    assert "is data, not an artifact" in PYTHON_UI_NOTE
 
 
 def test_bare_non_card_list_still_renders_nothing(ws):
@@ -590,19 +614,13 @@ def test_string_path_to_existing_file_passes_through(ws):
     assert ws.files.fs.read("/workspace/ui/plot.png") == b"\x89PNG\r\n\x1a\nfake"
 
 
-def test_string_path_to_missing_file_falls_to_data_tier(ws):
-    out, _ = materialize_ui(ws, {"ghost": "/nope/missing.png"})
-    assert out == [("ghost", "/workspace/ui/ghost.json")]
-    assert (
-        json.loads(ws.files.fs.read("/workspace/ui/ghost.json")) == "/nope/missing.png"
-    )
-
-
-def test_plain_strings_stay_data(ws):
-    """Only rooted paths get the pointer treatment — ordinary prose
-    strings still land as json artifacts."""
-    out, _ = materialize_ui(ws, {"note": "all done"})
-    assert out == [("note", "/workspace/ui/note.json")]
+def test_string_path_to_missing_file_is_not_an_artifact(ws):
+    """A path is honored because the FILE is the artifact. Nothing is
+    there, so there is nothing to point at, and the string is a string."""
+    out, problems = materialize_ui(ws, {"ghost": "/nope/missing.png"})
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/ghost.json")
+    assert len(problems) == 1
 
 
 def test_oversize_value_reports_why(ws):
