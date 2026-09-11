@@ -79,10 +79,14 @@ BLOB_VERSION = 2
 #: framework commit, which carries a tool name of its own.
 TOOL = "ws-git"
 
-#: ``info["tool"]`` on a merge commit, as the provider stamps it. The
-#: host invokes a merge, but it changes the agent's tree and joins the
-#: agent's graph, so the agent sees it.
+#: ``info["tool"]`` on the commits a host verb makes that change the
+#: agent's tree and join its graph: a merge of another session, a
+#: revert of one commit's change, a cherry-pick of one from elsewhere.
+#: The host invokes them; the agent sees them, so each is one of the
+#: agent's commits.
 MERGE_TOOL = "ws-git.merge"
+REVERT_TOOL = "ws-git.revert"
+PICK_TOOL = "ws-git.cherry-pick"
 
 #: The fiction's OWN bookkeeping commits: the working-tree restore
 #: after a partial commit, the tree a checkout writes, the blob a merge
@@ -113,25 +117,30 @@ _NOT_YOURS = (
 )
 
 
+#: The tool values of the agent's own commits, as one set: the ones it
+#: composed and the ones a host verb made that changed its tree.
+AGENT_TOOLS = frozenset({TOOL, MERGE_TOOL, REVERT_TOOL, PICK_TOOL})
+
+
 def is_agent_commit(info: Mapping[str, Any]) -> bool:
     """Whether a store commit belongs to the agent's graph.
 
     THE RULE, in one place. A commit is the agent's when
-    ``info["tool"]`` is exactly ``"ws-git"`` (one the agent made) or
-    ``"ws-git.merge"`` (one the host made that changed the agent's
-    tree). Everything else is plumbing and never appears in ``log``:
-    the framework's commits (``terminal``, ``turn``, ``skill``, ...)
-    and the fiction's own bookkeeping (``ws-git.restore``,
-    ``ws-git.checkout``, ``ws-git.merge-record``, ``ws-git.fork``),
-    which is why those are spelled as ``ws-git.<something>`` and not as
-    ``ws-git``.
+    ``info["tool"]`` names one of two things: the commit verb the agent
+    itself composed (``"ws-git"``), or a host verb that changed the
+    agent's tree and took its place in the agent's graph — a merge, a
+    revert, a cherry-pick. Everything else is plumbing and never
+    appears in ``log``: the framework's commits (``terminal``,
+    ``turn``, ``skill``, ...) and the fiction's own bookkeeping
+    (``ws-git.restore``, ``ws-git.checkout``, ``ws-git.merge-record``,
+    ``ws-git.fork``).
 
     The reference implementation keys on the presence of a message
     instead, because its framework commits carry no info at all; here
     a message is optional, and a commit without one is still a point
     in the agent's graph.
     """
-    return info.get("tool") in (TOOL, MERGE_TOOL)
+    return info.get("tool") in AGENT_TOOLS
 
 
 #: The tool values of the fiction's bookkeeping commits, as one set:
