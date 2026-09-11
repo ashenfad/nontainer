@@ -182,9 +182,10 @@ def test_the_empty_tree_is_a_side_for_a_file_changed_since(kv_ws):
 
     assert out.merged
     assert out.conflicts == ("/workspace/a.txt",)
-    assert b"<<<<<<< " in kv_ws.files.read("/workspace/a.txt")
-    # the file is still a file, described by a row the merge wrote
-    assert not kv_ws.files.fs.stat("/workspace/a.txt").is_dir
+    body = kv_ws.files.read("/workspace/a.txt")
+    assert b"<<<<<<< " in body
+    # the row that landed describes the bytes that landed beside it
+    assert kv_ws.files.fs.stat("/workspace/a.txt").size == len(body)
 
 
 def test_apply_refuses_uncommitted_work(kv_ws):

@@ -40,6 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was given part of the tree. A view is given at the fork
   (`ws-git branch <name> --paths <paths>`) and cannot be changed from
   the terminal, so any other subcommand is a usage error that says so.
+- **A merged metadata row describes the bytes that landed.** A file
+  deleted on one side and edited on the other keeps the surviving row,
+  and that row kept the size of the side it came from while the
+  content merge landed conflict markers beside it — so `stat` reported
+  a length nothing held. The size the merge computes is applied to a
+  one-sided row as it already was to a two-sided one.
 - **Every fork leaves a fork point.** The `ws-git.fork` bookkeeping
   commit is now landed by every fork, including one whose parent never
   used ws-git and has no ws-git state to clear. It is the child's fork

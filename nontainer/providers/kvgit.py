@@ -140,9 +140,11 @@ def _merge_metadata_row(
     other — raises ``CantMark``: no field merge can resolve that, so it
     is filed as a hard conflict and the merge aborts untouched.
 
-    ``size`` describes the merged bytes when the caller knows them; a
-    size copied from one side would be wrong wherever the content merge
-    produced bytes that match neither.
+    ``size`` describes the merged bytes when the caller knows them, and
+    it is applied whether the row came from one side or from both: a
+    size copied from a side would be wrong wherever the content merge
+    produced bytes that match neither, which is exactly what a file
+    deleted on one side and edited on the other lands.
     """
     from kvgit.merges import CantMark
 
@@ -150,7 +152,10 @@ def _merge_metadata_row(
     if u is None and t is None:
         raise CantMark("no metadata row on either side")
     if u is None or t is None:
-        return json.dumps(u if t is None else t, sort_keys=True).encode()
+        survivor = dict(u if t is None else t)
+        if size is not None:
+            survivor["size"] = size
+        return json.dumps(survivor, sort_keys=True).encode()
     if u.get("is_dir", False) != t.get("is_dir", False):
         raise CantMark("a file on one side and a directory on the other")
     winner = u if u.get("modified_at", "") >= t.get("modified_at", "") else t
