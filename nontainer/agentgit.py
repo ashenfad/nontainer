@@ -15,10 +15,10 @@ So the agent's git is metadata instead:
 
 - **The index and the agent's commit graph live in a blob** at a
   reserved key (:data:`BLOB_KEY`): the agent's current head (a store
-  commit hash), the staged paths, and the context of an outstanding
-  merge. The blob is an ordinary key. Autocommit commits it like any
-  other. Nothing is ever withheld from the store and nothing suspends
-  autocommit.
+  commit hash), the staged paths, the context of an outstanding merge,
+  and the names the agent has bookmarked with ``tag``. The blob is an
+  ordinary key. Autocommit commits it like any other. Nothing is ever
+  withheld from the store and nothing suspends autocommit.
 - **status diffs the working tree against the agent's head**, not the
   store's. Framework commits between turns move the store's head and
   leave the agent's where it was, so a composition survives them by
@@ -72,8 +72,15 @@ from .protocol import CommitInfo, WorkspaceStatus, expand_commit
 BLOB_KEY = "__ws_git__"
 
 #: Layout version of the blob. 1 was the staged set plus the suspension
-#: flag of the old model; 2 is head + staged + merge context.
-BLOB_VERSION = 2
+#: flag of the old model; 2 is head + staged + merge context; 3 adds
+#: the agent's own tags.
+BLOB_VERSION = 3
+
+#: The layouts a read understands. A layout 2 blob is a layout 3 one
+#: with no tags, so it is read rather than discarded — an old branch
+#: keeps its head and its composition, and the next write states the
+#: layout it is written in.
+READABLE_VERSIONS = frozenset({2, 3})
 
 #: ``info["tool"]`` on an agent commit — what tells one from a
 #: framework commit, which carries a tool name of its own.
@@ -105,6 +112,12 @@ _MARKER = b"<<<<<<< "
 #: enough to be one. Shared with the ``ws-git`` verbs, which have to
 #: tell a commit an agent typed from a session name.
 HASH_RE = re.compile(r"[0-9a-f]{7,}")
+
+#: What may be a tag name: git's own shape, less the corners nothing
+#: here needs. Letters, digits and ``_`` to start; ``.``, ``-`` and
+#: ``/`` allowed after. ``..`` and a trailing ``/`` or ``.`` are
+#: refused separately, as git's check-ref-format refuses them.
+TAG_NAME_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 
 #: Refusing a store commit that is not one of the agent's. Taking one
 #: as the agent's head would strand its whole log behind a commit with
@@ -178,9 +191,10 @@ def parse_blob(raw: Any) -> dict[str, Any]:
     dict) and whatever an older layout wrote. A blob from layout 1 held
     a key-level index and a suspension flag, neither of which means
     anything now: it migrates to a fresh state (no head, nothing
-    staged) rather than being reinterpreted. The migrated state is
-    recorded by the next write — a read never writes, so ``status`` on
-    an old branch stays a pure read.
+    staged) rather than being reinterpreted. A blob from layout 2 is
+    read as it stands and has no tags, since nothing wrote any. The
+    migrated state is recorded by the next write — a read never writes,
+    so ``status`` on an old branch stays a pure read.
     """
     if isinstance(raw, dict):
         parsed: Any = raw
@@ -191,7 +205,7 @@ def parse_blob(raw: Any) -> dict[str, Any]:
             parsed = json.loads(raw)
         except (ValueError, TypeError):
             parsed = {}
-    if not isinstance(parsed, dict) or parsed.get("version") != BLOB_VERSION:
+    if not isinstance(parsed, dict) or parsed.get("version") not in READABLE_VERSIONS:
         parsed = {}
     head = parsed.get("head")
     source = parsed.get("merge_source")
@@ -200,7 +214,61 @@ def parse_blob(raw: Any) -> dict[str, Any]:
         "staged": sorted(_strings(parsed.get("staged"))),
         "merge_source": source if isinstance(source, str) else None,
         "unresolved": sorted(_strings(parsed.get("unresolved"))),
+        "tags": _tag_map(parsed.get("tags")),
     }
+
+
+def _tag_map(value: Any) -> dict[str, str]:
+    """A blob's tag table → name to commit, dropping anything else."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        name: commit
+        for name, commit in sorted(value.items())
+        if isinstance(name, str) and isinstance(commit, str)
+    }
+
+
+def check_tag_name(name: str) -> str:
+    """Return ``name`` unchanged, or say why it cannot be a tag.
+
+    Two rules. It has to look like a name git would accept, so a tag
+    can be typed wherever a ref is typed. And it may not look like a
+    commit id: seven or more hex characters is how a commit id is
+    spelled, and a word that could be read as either would resolve to
+    whichever the reader tried first.
+    """
+    if HASH_RE.fullmatch(name):
+        raise ValueError(
+            f"{name!r} cannot be a tag name: seven or more hex characters "
+            "is how a commit id is spelled here, and a word that could be "
+            "read as either would be neither."
+        )
+    if (
+        not TAG_NAME_RE.fullmatch(name)
+        or ".." in name
+        or name.endswith((".", "/", ".lock"))
+    ):
+        raise ValueError(
+            f"{name!r} is not a tag name: letters, digits or _ to start, "
+            "then any of . - / as well; no .., and nothing trailing a . "
+            "or a /."
+        )
+    return name
+
+
+def tags_at(provider: Any, session: str) -> dict[str, str]:
+    """Another session's ws-git tags, read at its branch head.
+
+    A tag is that session's own bookmark, kept in its blob, so reading
+    one means reading the blob where that session last committed it.
+    Empty for a session that has none, or one whose provider keeps no
+    index.
+    """
+    if not provider.caps.index:
+        return {}
+    head = provider.branch_head(session)
+    return parse_blob(provider.key_at(head, BLOB_KEY))["tags"]
 
 
 def _strings(value: Any) -> list[str]:
@@ -217,6 +285,7 @@ def _encode_blob(state: Mapping[str, Any]) -> bytes:
             "staged": sorted(_strings(list(state.get("staged") or []))),
             "merge_source": state.get("merge_source"),
             "unresolved": sorted(_strings(list(state.get("unresolved") or []))),
+            "tags": _tag_map(state.get("tags")),
         },
         sort_keys=True,
     ).encode()
@@ -229,7 +298,10 @@ def reset_for_fork(provider: Any, parent: str) -> str | None:
     ``inherit="full"``) the conversation. It does not carry the agent's
     INDEX: an index is a composition in progress, and a delegate does
     not start halfway through somebody else's. Nor does it carry the
-    parent's head or an outstanding merge of the parent's.
+    parent's head, an outstanding merge of the parent's, or the
+    parent's tags: a tag is one agent's bookmark for its own commits,
+    and a name the child never chose would point into a log the child
+    does not have.
 
     Without this the child's virtual head would be the PARENT's last
     agent commit, so every write the child made would read as
@@ -743,11 +815,67 @@ class AgentGit:
                 return record
         return None
 
+    # -- tags ----------------------------------------------------------
+
+    def tags(self) -> dict[str, str]:
+        """The agent's own bookmarks: tag name → commit id.
+
+        A record of what the tags are at this moment, not a live view —
+        changing the mapping changes no tag.
+        """
+        self._require("ws-git tag")
+        return dict(self._read()["tags"])
+
+    def tag(self, name: str, ref: str | None = None, *, force: bool = False) -> str:
+        """Bookmark one of the agent's commits by name; returns the id.
+
+        ``ref`` is any ref the agent can type — a commit of its own, a
+        short id, another tag — and defaults to its head. A name that
+        is already taken is refused, as git refuses one, unless
+        ``force`` moves it.
+
+        The bookmark is the agent's and lives in its blob. It is not a
+        store tag: the store's history is append-only and everything
+        the agent committed is reachable from its head, so there is
+        nothing here to pin against collection. It belongs to this
+        session, dies with it, is not inherited by a fork, and is not
+        brought over by a merge.
+        """
+        self._writable("ws-git tag")
+        check_tag_name(name)
+        blob = self._read()
+        if name in blob["tags"] and not force:
+            raise ValueError(
+                f"tag {name!r} already exists — ws-git tag -f {name} moves it."
+            )
+        commit = self.resolve(ref) if ref is not None else self.resolve("HEAD")
+        blob["tags"] = {**blob["tags"], name: commit}
+        self._write(blob)
+        return commit
+
+    def delete_tag(self, name: str) -> str:
+        """Drop one bookmark; returns the commit it named.
+
+        The commit stays exactly where it is: a tag here names a commit
+        the session's own history already holds, so removing the name
+        takes nothing with it.
+        """
+        self._writable("ws-git tag")
+        blob = self._read()
+        if name not in blob["tags"]:
+            raise ValueError(f"tag {name!r} not found")
+        tags = dict(blob["tags"])
+        commit = tags.pop(name)
+        blob["tags"] = tags
+        self._write(blob)
+        return commit
+
     def resolve(self, ref: str) -> str:
         """A ref an agent typed → one of the agent's own commits.
 
-        ``HEAD`` is the agent's head; a hash (7 chars or more) names a
-        commit it made — its own graph first, then the rest of the
+        ``HEAD`` is the agent's head; a tag is the commit that tag
+        bookmarks; a hash (7 chars or more) names a commit it made —
+        its own graph first, then the rest of the
         session's history, so a commit it stepped off with ``checkout``
         can still be named. Seven characters is what every ws-git line
         prints, and a prefix under which two commits sit is refused by
@@ -756,6 +884,10 @@ class AgentGit:
         graph, and taking one as a head would leave the agent's whole
         log behind it. Anything else is refused as well — a name is a
         session, and sessions are branches that do not switch.
+
+        Tags are read before hashes, and no tag can be spelled like a
+        hash (``tag`` refuses such a name), so the two orders would
+        give the same answer.
         """
         self._require("ws-git checkout")
         blob = self._read()
@@ -764,10 +896,13 @@ class AgentGit:
             if head is None:
                 raise ValueError("HEAD is unborn: this session has no ws-git commits")
             return head
+        if ref in blob["tags"]:
+            return blob["tags"][ref]
         if not HASH_RE.fullmatch(ref):
             raise ValueError(
                 f"{ref!r} is not a commit — sessions are branches, and a "
-                "branch does not switch here. Name a commit from ws-git log."
+                "branch does not switch here. Name a commit from ws-git "
+                "log, or a tag from ws-git tag."
             )
         mine = [entry.id for entry in self.log()]
         found = expand_commit(ref, mine, where="in this session's ws-git log")

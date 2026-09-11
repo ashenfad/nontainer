@@ -1162,6 +1162,40 @@ class WorkspaceIndex:
             ws._check_open()
             return self._git.checkout(commit)
 
+    def tags(self) -> dict[str, str]:
+        """The agent's own bookmarks: tag name → commit id.
+
+        A record of what the tags are, not a live view — changing the
+        mapping changes no tag. These are not ``ws.tags``, which are
+        the store's: a ws-git tag is a name in the agent's own blob,
+        pins nothing against collection (the session's history is
+        append-only and reaches every commit the agent made), belongs
+        to this session, and is neither inherited by a fork nor
+        brought over by a merge.
+        """
+        return self._git.tags()
+
+    def tag(self, name: str, ref: str | None = None, *, force: bool = False) -> str:
+        """Bookmark one of the agent's commits by name; returns the id.
+
+        ``ref`` defaults to the agent's head and may be any ref the
+        agent can type. A name already taken is refused unless
+        ``force`` moves it, and a name that could be read as a commit
+        id is refused outright.
+        """
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            return self._git.tag(name, ref, force=force)
+
+    def delete_tag(self, name: str) -> str:
+        """Drop one bookmark; returns the commit it named. The commit
+        stays where it is."""
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            return self._git.delete_tag(name)
+
 
 class WorkspaceTags:
     """``ws.tags``: names this session gives its own commits.
@@ -2077,6 +2111,30 @@ class Workspace:
             return commit
         return expand(commit, session=session)
 
+    def _ref_commit(self, session: str, commit: str) -> str:
+        """The commit half of a ``session@x`` ref → a commit id.
+
+        One funnel for every verb that reads one exact state on one
+        session. ``x`` may be that session's own ws-git tag, which is a
+        name in ITS blob and means whatever it bookmarked; otherwise it
+        is a commit id, short ids expanded against that session's
+        history. A tag is read first, and no tag can be spelled like a
+        commit id, so the two orders agree.
+        """
+        from .agentgit import AgentGit, tags_at
+
+        if self._provider.caps.index:
+            try:
+                if session == self.session:
+                    tags = AgentGit(self).tags()
+                else:
+                    tags = tags_at(self._provider, session)
+            except (ValueError, NotSupportedError, AttributeError):
+                tags = {}
+            if commit in tags:
+                return tags[commit]
+        return self._expand_commit(commit, session=session)
+
     def _take_source(self, ref: "str | Ref") -> "tuple[str, Mapping[str, Any]]":
         """``(ref as recorded, that state's files)`` for a take.
 
@@ -2093,7 +2151,7 @@ class Workspace:
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
             parsed = Ref.parse(text)
-            commit = self._expand_commit(parsed.commit, session=parsed.session)
+            commit = self._ref_commit(parsed.session, parsed.commit)
             return str(Ref(parsed.session, commit)), self._provider.files_at(commit)
         try:
             head = self._provider.branch_head(text)
@@ -2394,7 +2452,15 @@ class Workspace:
             )
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
-            return self._store.resolve(Ref.parse(text), root=root)
+            parsed = Ref.parse(text)
+            return self._store.resolve(
+                Ref(
+                    parsed.session,
+                    self._ref_commit(parsed.session, parsed.commit),
+                    parsed.path,
+                ),
+                root=root,
+            )
         head = self._provider.branch_head(text)
         return self._store.resolve(Ref(session=text, commit=head), root=root)
 
@@ -2609,7 +2675,7 @@ class Workspace:
             )
         parsed = Ref.parse(text)
         target = self._change_commit(
-            self._expand_commit(parsed.commit, session=parsed.session),
+            self._ref_commit(parsed.session, parsed.commit),
             session=parsed.session,
         )
         source = str(Ref(parsed.session, target.id[:7]))

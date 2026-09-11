@@ -438,3 +438,31 @@ def test_worktree_reads_a_neighbour_across_the_rungs(ws, store):
     assert ws.terminal("ws-git worktree remove peek").stdout == ""
     assert ws.terminal("ws-git worktree list").stdout == "(none)\n"
     assert ws.terminal("ws-git status").stdout == ""
+
+
+def test_tag_across_the_rungs(ws):
+    """The agent's own bookmark reads the same wherever code runs: a
+    name it can list, type as a ref, and see decorating its log."""
+    ws.terminal("cat > a.txt <<'EOF'\none\nEOF\nws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+
+    assert ws.terminal("ws-git tag").stdout == "(none)\n"
+    r = ws.terminal("ws-git tag start")
+    assert r.exit_code == 0, _said(r)
+    assert r.stdout == ""
+    assert ws.terminal("ws-git tag").stdout == f"start -> {first}\n"
+
+    ws.terminal("cat > a.txt <<'EOF'\ntwo\nEOF\nws-git commit -m second")
+    lines = ws.terminal("ws-git log").stdout.splitlines()
+    assert re.fullmatch(rf"{SHORT} \(tag: start\) first", lines[1]), lines
+
+    # a ref wherever a ref is taken
+    r = ws.terminal("ws-git checkout start")
+    assert r.exit_code == 0, _said(r)
+    assert r.stdout == f"[{ws.session}] restored to {first}\n"
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+
+    r = ws.terminal("ws-git tag -d start")
+    assert r.exit_code == 0, _said(r)
+    assert r.stdout == f"Deleted tag 'start' (was {first})\n"
+    assert ws.terminal("ws-git tag").stdout == "(none)\n"
