@@ -2253,7 +2253,10 @@ class Workspace:
         child starts at that commit with everything the commit holds,
         and nothing here is rewound to get it there. Nothing is
         committed for it either — the buffer belongs to this session's
-        present, not to the past the fork branches from.
+        present, not to the past the fork branches from. It is a ref
+        like any other: a commit id whole or shortened to the seven
+        characters a log line prints, or one of this session's own
+        ws-git tags.
 
         ``inherit`` decides whether the stored conversation comes
         along, and nothing else: ``"full"`` (default) keeps it — the
@@ -2294,11 +2297,15 @@ class Workspace:
                 )
             # Providers written to the older fork(name) shape — a custom
             # one, say — must keep working for the call that has no
-            # ``at``; only a fork from the past asks them for more.
+            # ``at``; only a fork from the past asks them for more. The
+            # ref goes through the same funnel every other ref does, so
+            # a fork point may be spelled the way the log printed it (a
+            # short id) or the way this session bookmarked it (a tag);
+            # the provider is handed a commit id either way.
             forked = (
                 self._provider.fork(name)
                 if at is None
-                else self._provider.fork(name, at=at)
+                else self._provider.fork(name, at=self._ref_commit(self.session, at))
             )
             self._seed_fork(forked, inherit=inherit, seed=seed)
         # Commands and autocommit are replayed from the LIVE
