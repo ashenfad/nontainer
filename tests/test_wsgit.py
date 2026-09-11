@@ -439,6 +439,30 @@ def test_cherry_pick_brings_one_commit_of_another_session(peer_ws):
     assert line.endswith(f"two from worker@{wanted}")
 
 
+def test_cherry_pick_refuses_a_commit_that_session_never_made(peer_ws):
+    """A ref names a session and a commit: a sibling's commit under
+    this session's name is not a commit it holds."""
+    peer_ws.files.fs.write("/workspace/mine.txt", b"mine\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git branch worker").exit_code == 0
+    assert peer_ws.terminal("ws-git branch bystander").exit_code == 0
+
+    worker = peer_ws._store.open("worker", root=peer_ws.root)
+    register_wsgit(worker)
+    try:
+        worker.terminal("cat > w.txt <<'EOF'\nworker\nEOF\nws-git commit -m work")
+        made = worker.terminal("ws-git log").stdout.split()[0]
+    finally:
+        worker.close()
+
+    r = peer_ws.terminal(f"ws-git cherry-pick bystander@{made}")
+
+    assert r.exit_code == 1
+    assert "bystander" in r.stderr
+    assert peer_ws.terminal("cat w.txt").exit_code != 0
+    assert peer_ws.terminal("ws-git status").stdout == ""
+
+
 def test_cherry_pick_needs_the_commit_named(peer_ws):
     peer_ws.files.fs.write("/workspace/mine.txt", b"mine\n")
     peer_ws.terminal("ws-git commit -m mine")

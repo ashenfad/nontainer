@@ -271,6 +271,43 @@ def test_a_cherry_pick_that_conflicts(ws):
         child.close()
 
 
+def test_cherry_pick_refuses_a_commit_the_named_session_does_not_hold(ws):
+    """A ref names a session AND a commit. A commit some other session
+    made is not the one it names, whole id or short, so applying it
+    under that name would record a provenance nothing supports."""
+    from nontainer import CommitNotFoundError
+
+    ws.files.write("/workspace/a.txt", "one\n")
+    ws.index.commit("seed")
+    peer = ws.fork("peer")
+    child = _fork(ws, "child")
+    try:
+        peer.files.write("/workspace/peer.txt", "peer\n")
+        peer.index.commit("peer work")
+        elsewhere = peer.index.head
+        child.files.write("/workspace/child.txt", "child\n")
+        child.index.commit("child work")
+
+        # a real commit, named under a session that never made it
+        with pytest.raises(CommitNotFoundError, match="child"):
+            ws.cherry_pick(f"child@{elsewhere}")
+        with pytest.raises(CommitNotFoundError, match="child"):
+            ws.cherry_pick(f"child@{elsewhere[:7]}")
+        assert not ws.files.exists("/workspace/peer.txt")
+
+        # a session that is not there at all
+        with pytest.raises(ValueError, match="peerless"):
+            ws.cherry_pick(f"peerless@{elsewhere}")
+
+        # and the right pairing still applies
+        out = ws.cherry_pick(f"peer@{elsewhere}")
+        assert out.merged
+        assert ws.files.read("/workspace/peer.txt") == b"peer\n"
+    finally:
+        child.close()
+        peer.close()
+
+
 def test_both_refuse_uncommitted_agent_work(ws):
     ws.files.write("/workspace/a.txt", "one\n")
     ws.index.commit("first")
