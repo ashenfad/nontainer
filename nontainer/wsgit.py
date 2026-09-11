@@ -159,9 +159,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     session; --check finds leftover conflict markers
   log [<session>] [-n N] [--all] [-S <string>]
                     your own commits, newest first; a session name
-                    shows that session's; --all every commit this
-                    session holds; -S the commits where <string>
-                    appeared (+) or vanished (-)
+                    shows that session's; --all every commit the
+                    selected session holds; -S the commits where
+                    <string> appeared (+) or vanished (-)
   show <ref>        one commit: its message and its diff
   checkout <ref>    restore the tree to a commit of yours (the restore
                     is a new commit)
