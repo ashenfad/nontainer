@@ -173,7 +173,7 @@ def test_dud_edges_match_local(ws):
     # the transcript (TerminalResult.stderr stays empty), so the corpus
     # asserts the same text one stream over. Exit codes carry untouched.
     for cmd, prefix, code in [
-        ("ws-git stash", "ws-git: no stash here", 1),
+        ("ws-git rebase", "ws-git: no rebase here", 1),
         ("ws-git frobnicate", "ws-git: 'frobnicate' is not a ws-git command", 2),
         ("ws-git commit -a", "ws-git: commit stages nothing itself (no -a)", 2),
         ("ws-git status --short", "ws-git: status takes no '--short'", 2),

@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import difflib
 import posixpath
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -80,6 +81,7 @@ _VERBS = (
     "show",
     "checkout",
     "tag",
+    "stash",
     "branch",
     "merge",
     "revert",
@@ -90,7 +92,7 @@ _VERBS = (
 )
 _USAGE = (
     "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
-    "checkout|tag|branch|merge|revert|cherry-pick|worktree|"
+    "checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|"
     "sparse-checkout) [...]"
 )
 _SUPPORTED = (
@@ -99,6 +101,8 @@ _SUPPORTED = (
     "log [<session>] [-n N] [--all] [-S <string>] | show <ref> | "
     "checkout <ref> [-- <paths>] | "
     "tag [[-f] <name> [<commit>] | -d <name>] | "
+    "stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | "
+    "show [stash@{N}]] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge (<session> | --abort) | revert <commit> | "
     "cherry-pick <session>@<commit> | "
@@ -109,12 +113,6 @@ _SUPPORTED = (
 # terminal verb an agent can reach for instead — never host Python it
 # cannot run. Exit 1: refusals, not usage errors.
 _EDGE = {
-    "stash": (
-        "no stash here — a fork IS a stash: ws-git branch <name> takes your "
-        "state to a session of its own and leaves this one where it is. "
-        "Or commit what you have (ws-git commit -m ...) and keep going; "
-        "snapshots are cheap."
-    ),
     "rebase": (
         "no rebase here — history is append-only. Branch from the commit "
         "you want (ws-git branch <name> --at <ref>) and merge forward; "
@@ -130,7 +128,7 @@ _WORKTREE_FORMS = """usage: ws-git worktree add <dir> <session>[@<commit>]
 _HELP = """ws-git: the agent's git over this session.
 
 usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
-               tag|branch|merge|revert|cherry-pick|worktree|
+               tag|stash|branch|merge|revert|cherry-pick|worktree|
                sparse-checkout) [...]
   stage <paths>     add paths to the index (optional: commit with an
                     empty index takes everything modified)
@@ -176,6 +174,20 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     this session's: it is gone when the session is, a
                     fork starts with none, and a merge brings none over
   tag -d <name>     drop a bookmark. The commit stays where it is
+  stash [push [-m MSG]]
+                    put everything you have modified on a branch of its
+                    own (<session>.stash-N) and restore your tree to
+                    your last commit. The message defaults to that
+                    commit's
+  stash list        your stashes, newest first, as stash@{N}: message
+  stash pop [stash@{N}]
+                    merge one back and delete its branch. Overlapping
+                    work conflicts the way a merge does, and the stash
+                    is kept when it does
+  stash drop [stash@{N}]
+                    delete one without bringing it back
+  stash show [stash@{N}]
+                    what one holds, as a diff against your last commit
   branch            sessions on this store, yours marked *
   branch <name> [--at <ref>] [--fresh] [--paths <paths>]
                     fork a session (does not switch, as in git).
@@ -223,8 +235,11 @@ does: the markers are in the commit, status shows them as UU on a
 ## merging line naming what was applied, and the next commit that
 removes them ends it. There is no --continue and no --abort.
 
-Subset, on purpose: no stash (a fork is a stash: ws-git branch <name>),
-no rebase (history is append-only). There is no .git — branches are
+A stash is a branch: ws-git branch lists <session>.stash-N while one is
+up, and ws-git stash list is the view that numbers them.
+
+Subset, on purpose: no rebase (history is append-only). There is no
+.git — branches are
 sessions, history is commits. The workspace commits on its own as you
 work; ws-git log shows only the commits you made (--all for every
 commit this session holds)."""
@@ -453,6 +468,8 @@ def make_wsgit_command(ws: Any) -> Any:
                 return _checkout(git, ws, ctx, rest)
             if verb == "tag":
                 return _tag(git, ctx, rest)
+            if verb == "stash":
+                return _stash(git, ws, ctx, rest)
             if verb == "branch":
                 return _branch(ws, ctx, rest)
             if verb == "merge":
@@ -479,7 +496,8 @@ def make_wsgit_command(ws: Any) -> Any:
     wsgit.__doc__ = (
         "The agent's git over this session and its neighbours: ws-git "
         "(stage|unstage|commit|reset|status|diff|log|show|checkout|tag|"
-        "branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]"
+        "stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) "
+        "[...]"
     )
     return wsgit
 
@@ -727,6 +745,227 @@ def _tag(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     return None  # silent, like git tag
 
 
+#: How a stash is spelled back at the verb, git's own numbering: 0 is
+#: the newest. The branch it names is ``<session>.stash-<n>`` with a
+#: number of its own, which only ever goes up, so the two are not the
+#: same number and the branch is never renamed under a stash.
+_STASH_REF_RE = re.compile(r"stash@\{(\d+)\}")
+
+#: Branch name → the stash it may be: this session's, numbered.
+_STASH_BRANCH_RE = re.compile(r"\.stash-(\d+)$")
+
+
+def _stash_store(ws: Any) -> Any:
+    """The store a stash needs, or the refusal that says why not.
+
+    A stash is a branch and dropping one deletes a branch, both of
+    which are the store's to do. A workspace built straight from a
+    provider has no store to ask.
+    """
+    store = getattr(ws, "_store", None)
+    if store is None:
+        raise ValueError(
+            "stash needs a store: this session was not opened from one, so "
+            "there is nowhere to put a branch aside. Commit what you have "
+            "instead (ws-git commit -m ...)."
+        )
+    return store
+
+
+def _stash_names(ws: Any) -> list[tuple[int, str]]:
+    """``(number, branch)`` for every branch NAMED like a stash of this
+    session, newest number first — whether or not it is really one.
+
+    Numbering reads names, because a number already used must not be
+    handed out again even to a branch whose record went missing.
+    """
+    prefix = f"{ws.session}."
+    out: list[tuple[int, str]] = []
+    for name in _sessions(ws):
+        if not name.startswith(prefix):
+            continue
+        found = _STASH_BRANCH_RE.search(name[len(prefix) - 1 :])
+        if found is not None and name[: -len(found.group(0))] == ws.session:
+            out.append((int(found.group(1)), name))
+    return sorted(out, reverse=True)
+
+
+def _stashes(ws: Any) -> list[tuple[str, str]]:
+    """``(branch, message)`` for this session's stashes, newest first.
+
+    A branch counts only where its own blob says it is a stash of this
+    session: a name is a spelling, and a session somebody named like a
+    stash is still a session.
+    """
+    from .agentgit import stash_at
+
+    out: list[tuple[str, str]] = []
+    for _, name in _stash_names(ws):
+        try:
+            record = stash_at(ws._provider, name)
+        except Exception:  # noqa: BLE001 - unreadable is not a stash
+            continue
+        if record is not None and record["of"] == ws.session:
+            out.append((name, record["message"]))
+    return out
+
+
+def _stash_pick(ws: Any, word: str | None) -> tuple[int, str, str]:
+    """``stash@{n}`` (or nothing, meaning the newest) → what it names."""
+    index = 0
+    if word is not None:
+        found = _STASH_REF_RE.fullmatch(word)
+        if found is None:
+            raise ValueError(
+                f"{word!r} is not a stash: one is spelled stash@{{N}} "
+                "(ws-git stash list lists them)."
+            )
+        index = int(found.group(1))
+    stashes = _stashes(ws)
+    if index < len(stashes):
+        branch, message = stashes[index]
+        return index, branch, message
+    if not stashes:
+        raise ValueError(f"no stash@{{{index}}}: this session has no stashes")
+    raise ValueError(
+        f"no stash@{{{index}}}: this session has {len(stashes)} "
+        "(ws-git stash list lists them)"
+    )
+
+
+def _stash(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
+    if not rest or rest[0].startswith("-"):
+        sub, args = "push", list(rest)
+    else:
+        sub, args = rest[0], rest[1:]
+    if sub not in ("push", "list", "pop", "drop", "show"):
+        return _usage_error(f"stash takes no {sub!r} (push, list, pop, drop, show).")
+    _stash_store(ws)
+    if sub == "push":
+        return _stash_push(git, ws, ctx, args)
+    if len(args) > 1 or any(a.startswith("-") for a in args):
+        return _usage_error(f"stash {sub} takes one stash at most.")
+    if sub == "list":
+        if args:
+            return _usage_error("stash list takes no arguments.")
+        lines = [
+            f"stash@{{{i}}}: {message}" for i, (_, message) in enumerate(_stashes(ws))
+        ]
+        ctx.stdout.write("\n".join(lines or ["(none)"]) + "\n")
+        return None
+    word = args[0] if args else None
+    if sub == "pop":
+        return _stash_pop(git, ws, ctx, word)
+    if sub == "drop":
+        return _stash_drop(ws, ctx, word)
+    return _stash_show(git, ws, ctx, word)
+
+
+def _stash_push(git: AgentGit, ws: Any, ctx: Any, args: list[str]) -> Any:
+    """Put the work in progress on a branch of its own and restore the
+    tree to the agent's head.
+
+    A fork and a checkout, in that order, and nothing new underneath.
+    The branch is forked AT the head rather than at the current state,
+    and the modified files are written onto it, so what the stash holds
+    is the CHANGE: popping it is then an ordinary three-way against the
+    same head, which is what makes the work come back to a session that
+    has since been restored to that head.
+    """
+    from termish import CommandResult
+
+    from .agentgit import write_stash
+
+    args = list(args)
+    message: str | None = None
+    while args:
+        flag = args.pop(0)
+        if flag in ("-m", "--message") and args:
+            message = args.pop(0)
+        else:
+            return _usage_error("stash push takes a message only (-m MSG).")
+
+    head = git.head
+    if head is None:
+        # git's own answer: there is no state to go back to, so there
+        # is nothing a stash could put aside.
+        return CommandResult(
+            exit_code=1, stderr="You do not have the initial commit yet"
+        )
+    st = git.status()
+    modified = sorted(set(st.staged) | set(st.unstaged))
+    if not modified:
+        return CommandResult(exit_code=1, stderr="No local changes to save")
+    if message is None:
+        entry = git.entry(head)
+        message = (entry.info.get("message") if entry else None) or head[:7]
+
+    taken = (max(n for n, _ in _stash_names(ws)) + 1) if _stash_names(ws) else 0
+    branch = f"{ws.session}.stash-{taken}"
+    live = git.working_files()
+    files = {path: live.get(path) for path in modified}
+    child = ws.fork(branch, at=head, inherit="fresh")
+    try:
+        write_stash(child._provider, of=ws.session, message=message, files=files)
+    finally:
+        # The branch is what the verb makes; the handle it came back on
+        # is this call's and holds an executor of its own.
+        child.close()
+    git.checkout(head)
+    ctx.stdout.write(
+        f"Saved working directory and index state stash@{{0}}: {message}\n"
+    )
+    return None
+
+
+def _stash_pop(git: AgentGit, ws: Any, ctx: Any, word: str | None) -> Any:
+    """Merge one stash back, and delete its branch when it lands clean.
+
+    A conflict keeps the branch: the markers are in the commit and the
+    stash is still there to read, so nothing is lost by an agent that
+    resolves them wrongly.
+    """
+    index, branch, _ = _stash_pick(ws, word)
+    result = _merged(
+        git,
+        ws,
+        ctx,
+        ws.merge(branch),
+        branch,
+        note=(
+            f" The stash is kept as stash@{{{index}}}: drop it "
+            "(ws-git stash drop) once you are done with it."
+        ),
+    )
+    if result is not None:
+        return result
+    _stash_store(ws).delete(branch)
+    ctx.stdout.write(f"Dropped stash@{{{index}}} ({branch})\n")
+    return None
+
+
+def _stash_drop(ws: Any, ctx: Any, word: str | None) -> Any:
+    index, branch, _ = _stash_pick(ws, word)
+    _stash_store(ws).delete(branch)
+    ctx.stdout.write(f"Dropped stash@{{{index}}} ({branch})\n")
+    return None
+
+
+def _stash_show(git: AgentGit, ws: Any, ctx: Any, word: str | None) -> Any:
+    """What one stash holds, as a diff against the agent's head."""
+    _, branch, _ = _stash_pick(ws, word)
+    provider = ws._provider
+    new = provider.files_at(provider.branch_head(branch))
+    old = git.head_files()
+    changed = sorted(
+        path for path in set(old) | set(new) if old.get(path) != new.get(path)
+    )
+    body = _render_diff(ws, changed, old, new)
+    if body:
+        ctx.stdout.write("\n".join(body) + "\n")
+    return None
+
+
 def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
     if not rest:
         mine = ws.session
@@ -772,8 +1011,6 @@ def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
 
 
 def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
-    from termish import CommandResult
-
     if rest == ["--abort"]:
         source, commit = git.abort_merge()
         ctx.stdout.write(
@@ -786,7 +1023,22 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             "merge takes one session name (ws-git branch lists them), or --abort."
         )
     source = rest[0]
-    out = ws.merge(source)
+    return _merged(git, ws, ctx, ws.merge(source), source)
+
+
+def _merged(
+    git: AgentGit, ws: Any, ctx: Any, out: Any, source: str, note: str = ""
+) -> Any:
+    """Render what a merge did. ``None`` means it landed clean.
+
+    One shape for every merge, whoever asked for it: the verb the agent
+    typed and the pop that merges a stash back are the same operation,
+    and a stash that conflicted would be unreadable spelled any other
+    way. ``note`` is what the caller has to add about the state it
+    keeps on its own side.
+    """
+    from termish import CommandResult
+
     if not out.merged:
         lines = [f"CONFLICT: {_show(ws, path)}" for path in out.conflicts]
         lines.append(
@@ -811,7 +1063,7 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             stderr=(
                 "Merge landed with conflict markers in "
                 f"{len(out.conflicts)} file(s): fix them and commit "
-                "(ws-git status shows them as UU)."
+                f"(ws-git status shows them as UU).{note}"
             ),
         )
     return None

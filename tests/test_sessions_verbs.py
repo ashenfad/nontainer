@@ -135,6 +135,7 @@ def test_a_fork_starts_with_a_fresh_ws_git_state(ws):
                 "merge_source": None,
                 "unresolved": [],
                 "pre_merge": None,
+                "stash": None,
                 "tags": {},
             }
         finally:

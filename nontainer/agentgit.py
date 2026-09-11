@@ -102,6 +102,7 @@ PICK_TOOL = "ws-git.cherry-pick"
 #: policy, which a per-turn host turns off — and none of them is an
 #: agent commit.
 RESTORE_TOOL = "ws-git.restore"
+STASH_TOOL = "ws-git.stash"
 CHECKOUT_TOOL = "ws-git.checkout"
 MERGE_RECORD_TOOL = "ws-git.merge-record"
 FORK_TOOL = "ws-git.fork"
@@ -216,8 +217,20 @@ def parse_blob(raw: Any) -> dict[str, Any]:
         "merge_source": source if isinstance(source, str) else None,
         "unresolved": sorted(_strings(parsed.get("unresolved"))),
         "pre_merge": pre if isinstance(pre, str) else None,
+        "stash": _stash_record(parsed.get("stash")),
         "tags": _tag_map(parsed.get("tags")),
     }
+
+
+def _stash_record(value: Any) -> dict[str, str] | None:
+    """A branch's stash record: whose work it holds and under what
+    name. ``None`` for every branch that is not a stash."""
+    if not isinstance(value, dict):
+        return None
+    of, message = value.get("of"), value.get("message")
+    if not isinstance(of, str) or not isinstance(message, str):
+        return None
+    return {"of": of, "message": message}
 
 
 def _tag_map(value: Any) -> dict[str, str]:
@@ -288,6 +301,7 @@ def _encode_blob(state: Mapping[str, Any]) -> bytes:
             "merge_source": state.get("merge_source"),
             "unresolved": sorted(_strings(list(state.get("unresolved") or []))),
             "pre_merge": state.get("pre_merge"),
+            "stash": _stash_record(state.get("stash")),
             "tags": _tag_map(state.get("tags")),
         },
         sort_keys=True,
@@ -332,6 +346,49 @@ def reset_for_fork(provider: Any, parent: str) -> str | None:
         return None
     provider.kv[BLOB_KEY] = _encode_blob(parse_blob(None))
     return provider.commit_keys({"tool": FORK_TOOL, "parent": parent}, keys=[BLOB_KEY])
+
+
+def write_stash(
+    provider: Any, *, of: str, message: str, files: Mapping[str, Any]
+) -> str | None:
+    """Put one session's work in progress onto a fresh stash branch.
+
+    ``files`` maps each path the session had modified to its live
+    content, or to ``None`` for one it had deleted. The branch was
+    forked at the session's head, so writing them here is what makes
+    the stash hold the change and nothing else: a pop is then an
+    ordinary three-way against that same head, and the work comes back
+    even though the session has meanwhile been restored to it.
+
+    The record of what the stash IS — whose it is and what to call it —
+    rides in the branch's own ws-git blob, so a stash describes itself
+    wherever it is read from and dies with the branch.
+    """
+    fs = provider.fs
+    for path, value in sorted(files.items()):
+        if value is None:
+            fs.remove(path)
+        else:
+            _put(fs, path, value)
+    blob = parse_blob(provider.kv.get(BLOB_KEY))
+    blob["stash"] = {"of": of, "message": message}
+    provider.kv[BLOB_KEY] = _encode_blob(blob)
+    return provider.commit_keys(
+        {"tool": STASH_TOOL, "of": of, "message": message},
+        keys=[*files, BLOB_KEY],
+    )
+
+
+def stash_at(provider: Any, session: str) -> dict[str, str] | None:
+    """A branch's stash record, or ``None`` when it is not a stash.
+
+    Read from the blob at the branch head, so a session that merely
+    happens to be NAMED like a stash is not mistaken for one.
+    """
+    if not provider.caps.index:
+        return None
+    head = provider.branch_head(session)
+    return parse_blob(provider.key_at(head, BLOB_KEY))["stash"]
 
 
 def _has_markers(value: Any) -> bool:

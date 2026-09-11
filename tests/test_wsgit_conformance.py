@@ -508,3 +508,36 @@ def test_merge_abort_across_the_rungs(ws, store):
     r = ws.terminal("ws-git merge --abort")
     assert r.exit_code == 1
     assert "no merge to abort" in _said(r)
+
+
+def test_stash_across_the_rungs(ws):
+    """Putting work aside and taking it back rewrites the worktree
+    twice, so both halves have to reach the guest."""
+    ws.terminal("cat > a.txt <<'EOF'\none\nEOF\nws-git commit -m base")
+    ws.terminal("cat > a.txt <<'EOF'\nedited\nEOF\ncat > new.txt <<'EOF'\nfresh\nEOF")
+
+    assert ws.terminal("ws-git stash list").stdout == "(none)\n"
+    r = ws.terminal("ws-git stash")
+    assert r.exit_code == 0, _said(r)
+    assert r.stdout == "Saved working directory and index state stash@{0}: base\n"
+
+    assert ws.terminal("ws-git status").stdout == ""
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+    assert ws.terminal("ls new.txt").exit_code != 0
+    assert ws.terminal("ws-git stash list").stdout == "stash@{0}: base\n"
+
+    r = ws.terminal("ws-git stash show")
+    assert r.exit_code == 0, _said(r)
+    assert "+edited" in r.stdout and "+fresh" in r.stdout
+
+    r = ws.terminal("ws-git stash pop")
+    assert r.exit_code == 0, _said(r)
+    assert "Auto-merging a.txt" in r.stdout
+    assert r.stdout.endswith(f"Dropped stash@{{0}} ({ws.session}.stash-0)\n")
+    assert ws.terminal("cat a.txt").stdout == "edited\n"
+    assert ws.terminal("cat new.txt").stdout == "fresh\n"
+    assert ws.terminal("ws-git stash list").stdout == "(none)\n"
+
+    r = ws.terminal("ws-git stash")
+    assert r.exit_code == 1
+    assert _said(r).strip().endswith("No local changes to save")
