@@ -1081,3 +1081,175 @@ def test_file_rows_use_the_sessions_root(store):
         )
     finally:
         w.close()
+
+
+# -- tag: the agent's own bookmark ---------------------------------------------
+
+
+def test_tag_creates_lists_and_deletes(ws):
+    """The round trip: nothing, a name pointing at the head, nothing."""
+    assert ws.terminal("ws-git tag").stdout == "(none)\n"
+
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+
+    r = ws.terminal("ws-git tag v1")
+    assert r.exit_code == 0
+    assert r.stdout == ""  # silent, like git tag
+
+    assert ws.terminal("ws-git tag").stdout == f"v1 -> {first}\n"
+
+    ws.files.fs.write("/workspace/a.txt", b"two\n")
+    ws.terminal("ws-git commit -m second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+    assert ws.terminal(f"ws-git tag v2 {second}").exit_code == 0
+    assert ws.terminal("ws-git tag").stdout == f"v1 -> {first}\nv2 -> {second}\n"
+
+    r = ws.terminal("ws-git tag -d v1")
+    assert r.exit_code == 0
+    assert r.stdout == f"Deleted tag 'v1' (was {first})\n"
+    assert ws.terminal("ws-git tag").stdout == f"v2 -> {second}\n"
+
+
+def test_tag_refusals(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal("ws-git tag v1")
+
+    # a name that is taken is refused, and -f moves it
+    r = ws.terminal("ws-git tag v1")
+    assert r.exit_code == 1
+    assert r.stderr == ("ws-git: tag 'v1' already exists — ws-git tag -f v1 moves it.")
+    ws.files.fs.write("/workspace/a.txt", b"two\n")
+    ws.terminal("ws-git commit -m second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+    assert ws.terminal("ws-git tag -f v1").exit_code == 0
+    assert ws.terminal("ws-git tag").stdout == f"v1 -> {second}\n"
+
+    # a name that is not a tag name
+    r = ws.terminal("ws-git tag ..bad")
+    assert r.exit_code == 1
+    assert r.stderr.startswith("ws-git: '..bad' is not a tag name")
+
+    # a name a ref reader would take for a commit id
+    r = ws.terminal("ws-git tag deadbee")
+    assert r.exit_code == 1
+    assert "hex characters" in r.stderr
+
+    # deleting one that is not there
+    r = ws.terminal("ws-git tag -d nope")
+    assert r.exit_code == 1
+    assert r.stderr == "ws-git: tag 'nope' not found"
+
+    # unchanged by all of that
+    assert ws.terminal("ws-git tag").stdout == f"v1 -> {second}\n"
+    assert first != second
+
+
+def test_tag_is_a_ref_for_checkout_show_and_take(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    ws.terminal("ws-git tag start")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.files.fs.write("/workspace/a.txt", b"two\n")
+    ws.files.fs.write("/workspace/b.txt", b"new\n")
+    ws.terminal("ws-git commit -m second")
+
+    # show
+    r = ws.terminal("ws-git show start")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.splitlines()[0].startswith("commit ")
+    assert "+one" in r.stdout
+
+    # take
+    r = ws.terminal("ws-git checkout start -- a.txt")
+    assert r.exit_code == 0, r.stderr
+    assert ws.terminal("cat a.txt").stdout == "one\n"
+
+    # and the whole-tree restore
+    r = ws.terminal("ws-git checkout start")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == f"[{ws.session}] restored to {first}\n"
+    assert ws.terminal("ws-git status").stdout == ""
+    assert ws.terminal("ls b.txt").exit_code != 0
+
+
+def test_tag_decorates_the_log(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    ws.terminal("ws-git tag v1")
+    ws.terminal("ws-git tag ship")
+    ws.files.fs.write("/workspace/a.txt", b"two\n")
+    ws.terminal("ws-git commit -m second")
+
+    lines = ws.terminal("ws-git log").stdout.splitlines()
+    assert re.fullmatch(rf"{SHORT} second", lines[0]), lines
+    assert re.fullmatch(rf"{SHORT} \(tag: ship, v1\) first", lines[1]), lines
+
+
+def test_tags_are_not_inherited_by_a_fork(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    ws.terminal("ws-git tag v1")
+
+    child = ws.fork("worker")
+    try:
+        assert child.index.tags() == {}
+    finally:
+        child.close()
+    assert set(ws.index.tags()) == {"v1"}
+
+
+def test_a_merge_does_not_bring_the_sources_tags(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.commit()
+    fork = ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/b.txt", b"worker\n")
+        fork.index.commit("work")
+        fork.index.tag("theirs")
+        assert set(fork.index.tags()) == {"theirs"}
+    finally:
+        fork.close()
+    ws.index.commit("mine")
+    ws.index.tag("mine")
+    ws.commit()
+    ws.merge("worker")
+    assert set(ws.index.tags()) == {"mine"}
+
+
+def test_index_tags_is_a_record_not_a_live_view(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    ws.index.tag("v1")
+    got = ws.index.tags()
+    assert list(got) == ["v1"]
+    got["sneaky"] = "abc"
+    assert list(ws.index.tags()) == ["v1"]
+
+
+def test_another_sessions_tag_is_a_ref(peer_ws, store):
+    """``session@tag`` reads the other session's own bookmark, for the
+    verbs that name one exact state on one session."""
+    peer = store.open("peer")
+    register_wsgit(peer)
+    try:
+        peer.files.fs.write("/workspace/note.md", "second\n".encode())
+        peer.terminal("ws-git commit -m note")
+        peer.terminal("ws-git tag good")
+        tagged = peer.terminal("ws-git log").stdout.split()[0]
+    finally:
+        peer.close()
+
+    r = peer_ws.terminal("ws-git worktree add peek peer@good")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == f"worktree peek: peer@{tagged} (read-only)\n"
+    assert peer_ws.terminal("cat peek/note.md").stdout == "second\n"
+    peer_ws.terminal("ws-git worktree remove peek")
+
+    r = peer_ws.terminal("ws-git cherry-pick peer@good")
+    assert r.exit_code == 0, r.stderr
+    assert f"] cherry-pick peer@{tagged} (1 file)" in r.stdout
+    assert peer_ws.terminal("cat note.md").stdout == "second\n"

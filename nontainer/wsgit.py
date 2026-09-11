@@ -79,6 +79,7 @@ _VERBS = (
     "log",
     "show",
     "checkout",
+    "tag",
     "branch",
     "merge",
     "revert",
@@ -89,13 +90,15 @@ _VERBS = (
 )
 _USAGE = (
     "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
-    "checkout|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]"
+    "checkout|tag|branch|merge|revert|cherry-pick|worktree|"
+    "sparse-checkout) [...]"
 )
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
     "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
     "log [<session>] [-n N] [--all] [-S <string>] | show <ref> | "
     "checkout <ref> [-- <paths>] | "
+    "tag [[-f] <name> [<commit>] | -d <name>] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge <session> | revert <commit> | "
     "cherry-pick <session>@<commit> | "
@@ -127,7 +130,8 @@ _WORKTREE_FORMS = """usage: ws-git worktree add <dir> <session>[@<commit>]
 _HELP = """ws-git: the agent's git over this session.
 
 usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
-               branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]
+               tag|branch|merge|revert|cherry-pick|worktree|
+               sparse-checkout) [...]
   stage <paths>     add paths to the index (optional: commit with an
                     empty index takes everything modified)
   unstage <paths>   drop paths from the index
@@ -164,6 +168,14 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     session, or a commit of yours). A directory is
                     mirrored: a file it holds here and the ref does
                     not is removed
+  tag               your bookmarks, one "name -> commit" per line
+  tag [-f] <name> [<commit>]
+                    bookmark a commit of yours (your head by default)
+                    by name, and use that name wherever a ref is taken.
+                    -f moves a name that is taken. A tag is yours and
+                    this session's: it is gone when the session is, a
+                    fork starts with none, and a merge brings none over
+  tag -d <name>     drop a bookmark. The commit stays where it is
   branch            sessions on this store, yours marked *
   branch <name> [--at <ref>] [--fresh] [--paths <paths>]
                     fork a session (does not switch, as in git).
@@ -435,6 +447,8 @@ def make_wsgit_command(ws: Any) -> Any:
                 return _show_verb(git, ws, ctx, rest)
             if verb == "checkout":
                 return _checkout(git, ws, ctx, rest)
+            if verb == "tag":
+                return _tag(git, ctx, rest)
             if verb == "branch":
                 return _branch(ws, ctx, rest)
             if verb == "merge":
@@ -460,7 +474,7 @@ def make_wsgit_command(ws: Any) -> Any:
 
     wsgit.__doc__ = (
         "The agent's git over this session and its neighbours: ws-git "
-        "(stage|unstage|commit|reset|status|diff|log|show|checkout|"
+        "(stage|unstage|commit|reset|status|diff|log|show|checkout|tag|"
         "branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]"
     )
     return wsgit
@@ -673,15 +687,40 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
 def _take_ref(git: AgentGit, ref: str) -> str:
     """A ref an agent typed, for the take form.
 
-    ``HEAD`` and a bare hash are this session's and go through the
-    agent's own resolution, so a framework commit is refused by name
-    the way the whole-tree form refuses it. Everything else — a
-    session name, a ``session@commit`` — is passed on for the
-    workspace to resolve, because a take may reach anywhere.
+    ``HEAD``, a bare hash and a tag of this session's are this
+    session's and go through the agent's own resolution, so a framework
+    commit is refused by name the way the whole-tree form refuses it. A
+    tag wins over a session of the same name: it is the spelling this
+    session chose for a state of its own. Everything else — a session
+    name, a ``session@commit`` — is passed on for the workspace to
+    resolve, because a take may reach anywhere.
     """
-    if ref == "HEAD" or HASH_RE.fullmatch(ref):
+    if ref == "HEAD" or HASH_RE.fullmatch(ref) or ref in git.tags():
         return git.resolve(ref)
     return ref
+
+
+def _tag(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+    if not rest:
+        tags = git.tags()
+        lines = [f"{name} -> {commit[:7]}" for name, commit in sorted(tags.items())]
+        ctx.stdout.write("\n".join(lines or ["(none)"]) + "\n")
+        return None
+    if rest[0] == "-d":
+        if len(rest) != 2 or rest[1].startswith("-"):
+            return _usage_error("tag -d takes one name.")
+        commit = git.delete_tag(rest[1])
+        ctx.stdout.write(f"Deleted tag {rest[1]!r} (was {commit[:7]})\n")
+        return None
+    force = rest[0] == "-f"
+    args = rest[1:] if force else rest
+    if not 1 <= len(args) <= 2 or any(a.startswith("-") for a in args):
+        return _usage_error(
+            "tag takes a name and optionally a commit (try: -f to move a "
+            "name that is taken, -d to drop one)."
+        )
+    git.tag(args[0], args[1] if len(args) > 1 else None, force=force)
+    return None  # silent, like git tag
 
 
 def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
@@ -781,7 +820,7 @@ def _cherry_pick(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             "cherry-pick takes one commit of another session, spelled "
             f"<session>@<commit> (ws-git log {named} lists them)."
         )
-    ref = _short_ref(rest[0])
+    ref = _short_ref(_whole_ref(ws, rest[0]))
     return _applied(
         git,
         ws,
@@ -930,6 +969,22 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
     landed = ws.files.attach(ref, point)
     ctx.stdout.write(f"worktree {_show(ws, point)}: {_short_ref(landed)} (read-only)\n")
     return None
+
+
+def _whole_ref(ws: Any, ref: str) -> str:
+    """A ``session@x`` an agent typed, with ``x`` spelled as a commit.
+
+    What the verb PRINTS has to be a state, not the spelling that
+    reached it: a tag is one session's private name for a commit, so a
+    line naming ``peer@good`` says nothing about which commit landed
+    and nothing another session can look up. Anything the funnel
+    cannot resolve comes back as it came, for the verb itself to
+    refuse in its own words.
+    """
+    from .store import Ref
+
+    parsed = Ref.parse(ref)
+    return str(Ref(parsed.session, ws._ref_commit(parsed.session, parsed.commit)))
 
 
 def _short_ref(ref: str) -> str:
@@ -1289,13 +1344,28 @@ def _log_out(
 ) -> Any:
     """One session's log: the agent's commits, or every commit the
     session holds with ``--all``, filtered to where a string appeared
-    or vanished when one was named."""
+    or vanished when one was named.
+
+    The tags are that session's own, so a log of a neighbour carries
+    the neighbour's bookmarks and not this session's."""
     walk = _walk(git, every)
+    tags = _by_commit(git.tags())
     if needle is None:
         entries = [entry for entry, _ in _capped(walk, limit)]
-        return _log_lines(entries, ctx)
+        return _log_lines(entries, ctx, tags)
     found = _capped(_pickaxe(ws._provider, walk, needle), limit)
-    return _log_lines([entry for entry, _ in found], ctx, {e.id: s for e, s in found})
+    return _log_lines(
+        [entry for entry, _ in found], ctx, tags, {e.id: s for e, s in found}
+    )
+
+
+def _by_commit(tags: Mapping[str, str]) -> dict[str, list[str]]:
+    """Tag name → commit, turned around: commit → its names, sorted, so
+    a log line can say what points at it."""
+    out: dict[str, list[str]] = {}
+    for name, commit in sorted(tags.items()):
+        out.setdefault(commit, []).append(name)
+    return out
 
 
 def _capped(pairs: Any, limit: int | None) -> list:
@@ -1369,13 +1439,22 @@ def _occurrences(files: Mapping[str, Any], path: str, needle: str) -> int:
         return 0
 
 
-def _log_lines(entries: Any, ctx: Any, signs: "Mapping[str, str] | None" = None) -> Any:
+def _log_lines(
+    entries: Any,
+    ctx: Any,
+    tags: "Mapping[str, list[str]] | None" = None,
+    signs: "Mapping[str, str] | None" = None,
+) -> Any:
     lines: list[str] = []
     for entry in entries:
         tool = entry.info.get("tool", "?")
         subject = entry.info.get("message") or tool
         mark = f"{signs[entry.id]} " if signs else ""
-        line = f"{entry.id[:7]} {mark}{subject}"
+        # git decorates the id with what points at it; here the only
+        # thing that can is one of this session's own tags.
+        named = (tags or {}).get(entry.id)
+        deco = f" (tag: {', '.join(named)})" if named else ""
+        line = f"{entry.id[:7]}{deco} {mark}{subject}"
         if tool == MERGE_TOOL and entry.info.get("source"):
             line += f" from {entry.info['source']}"
             if entry.info.get("sizes"):

@@ -112,11 +112,15 @@ def test_a_fork_starts_with_a_fresh_ws_git_state(ws):
     composition in progress. A delegate starts at no commit of its
     own, with nothing staged — which is also what lets the fiction's
     escape apply to it: a session that never made an agent commit
-    merges at its store head."""
+    merges at its store head. Its bookmarks do not come along either:
+    a tag names a commit in the parent's log, which is not the log the
+    child has."""
     _seed(ws, **{"a.txt": "one\n", "b.txt": "two\n"})
     ws.files.write("/workspace/a.txt", "edited\n")
     ws.index.stage(["/workspace/a.txt"])
+    ws.index.tag("v1")
     assert ws.index.head is not None and ws.index.status().staged
+    assert set(ws.index.tags()) == {"v1"}
 
     for inherit in ("full", "fresh"):
         child = ws.fork(f"child-{inherit}", inherit=inherit)
@@ -124,11 +128,13 @@ def test_a_fork_starts_with_a_fresh_ws_git_state(ws):
             assert child.index.head is None
             assert child.index.status().staged == ()
             assert child.index.log() == []
+            assert child.index.tags() == {}
             assert _blob(child) == {
                 "head": None,
                 "staged": [],
                 "merge_source": None,
                 "unresolved": [],
+                "tags": {},
             }
         finally:
             child.close()

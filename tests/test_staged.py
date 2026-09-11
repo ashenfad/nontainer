@@ -18,7 +18,7 @@ from nontainer import (
     WorkspaceError,
     workspace,
 )
-from nontainer.agentgit import BLOB_KEY
+from nontainer.agentgit import BLOB_KEY, BLOB_VERSION
 from nontainer.providers import KvgitProvider
 
 
@@ -314,9 +314,27 @@ def test_old_layout_blob_migrates(kv_ws):
     # and the next write records the new layout
     kv_ws.index.stage(["/workspace/a.txt"])
     blob = json.loads(_provider(kv_ws).kv.get(BLOB_KEY))
-    assert blob["version"] == 2
+    assert blob["version"] == BLOB_VERSION
     assert blob["staged"] == ["/workspace/a.txt"]
     assert blob["head"] is None
+
+
+def test_a_blob_written_before_tags_keeps_its_head(kv_ws):
+    """A branch written when the blob had no tag table is read as it
+    stands, with no tags. Discarding it would cost the session its head
+    and its composition over a field nothing had written yet."""
+    kv_ws.files.fs.write("/workspace/a.txt", b"one")
+    head = kv_ws.index.commit("first")
+    kv = _provider(kv_ws).kv
+    was = json.loads(kv.get(BLOB_KEY))
+    kv[BLOB_KEY] = json.dumps(
+        {k: v for k, v in was.items() if k != "tags"} | {"version": 2}
+    ).encode()
+    kv_ws.commit()
+
+    assert kv_ws.index.head == head
+    assert kv_ws.index.tags() == {}
+    assert kv_ws.index.status().unstaged == ()
 
 
 def test_frozen_verbs_refused_status_open(kv_ws):
