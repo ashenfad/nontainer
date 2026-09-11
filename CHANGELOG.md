@@ -110,8 +110,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   print or write as a file. A plotly spec that arrives as a plain dict
   keeps its artifact and now lands on `ui/<name>.plotly.json`, so it is
   named by its suffix rather than left to a consumer's content sniff.
-  Scalars still take the never-fail JSON floor: there the JSON is the
-  whole value.
+  Scalars no longer take a JSON floor either: the set the primer names
+  is the set the code accepts.
 - **A plotly spec dict is encoded the way a plotly figure is.** A spec
   reached through `fig.to_dict()` holds NumPy arrays and timestamps,
   which plain json rejects — so the value fell to the repr floor, wrote
@@ -121,6 +121,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   importable, a spec that is already plain JSON encodes identically and
   one that is not keeps its artifact with `default=str` plus a note
   saying which values were written as text and how to avoid it.
+- **The ui set is closed, and the JSON floor is gone.** A ui value is a
+  plotly figure, a pandas DataFrame, a matplotlib figure, an image, or
+  a list of card rows — plus a string naming a workspace file the agent
+  saved itself, which points at an artifact rather than being one.
+  Anything else, scalars included, gets the diagnostic and no file: the
+  primer named a closed set while the data tier wrote numbers and loose
+  strings as `.json` artifacts, so the note told agents not to use a
+  value the code accepted. A renderer inside the set that raises now
+  yields a problem note naming the value and the error, where it used
+  to leave a capped `repr` in a `.txt` and say nothing — an artifact
+  line the agent read as a figure that had arrived.
 
 ## 0.6.5 - 2026-09-10
 

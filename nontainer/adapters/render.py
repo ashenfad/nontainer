@@ -606,8 +606,9 @@ PYTHON_UI_NOTE = """
 Rich reply artifacts: assign `ui = {"name": value}` at top level, with
 the OBJECT as the value — a plotly figure, a pandas DataFrame, a
 matplotlib figure, an image, or a list of card rows. That is the whole
-set: a plain dict is data, not an artifact — nothing renders it, so
-print it or write it as a file instead.
+set. Anything else — a dict, a list of other things, a number, a
+string — is data, not an artifact: nothing renders it, so print it or
+write it as a file instead.
 The harness saves each under __WS__/ui/ (no savefig,
 no writing into __WS__/ui/ yourself) and the result notes its path;
 embed one in your reply with markdown image syntax, e.g.
@@ -724,8 +725,8 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
     renders nothing — say which item broke the row and why, in the
     problems channel the agent already reads (the 8MB cap's lesson: name
     the fix, not just the failure). None when the list isn't card-shaped
-    enough to diagnose, which leaves the general rule about lists and
-    dicts to say why nothing rendered."""
+    enough to diagnose, which leaves the general rule to say why nothing
+    rendered."""
     # A lone stat, unwrapped. Not adopted the way a lone callout is —
     # {label, value} is too ordinary a shape to claim — but silence is
     # what made the callout case a bug report, so say the fix.
@@ -757,26 +758,48 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
 
 
 def _not_an_artifact(name: object, value: object) -> str:
-    """Why a dict or a list is data rather than an artifact, and what to
-    assign instead.
+    """Why a value is data rather than an artifact, and what to assign
+    instead.
 
-    Consumers have no component for raw JSON: they render nothing, or
-    degrade to a link. Writing the file anyway and announcing it in the
-    artifacts note tells the agent a rendering happened, and it goes on
-    to cite the path in its prose. So the file is not written and this
-    is what the agent gets — the value's own shape, so it can tell
-    WHICH assignment is meant, and the three shapes that do render.
+    The set that renders is closed, and consumers have no component for
+    anything outside it — they render nothing, or degrade to a link.
+    Writing a file anyway and announcing it in the artifacts note tells
+    the agent a rendering happened, and it goes on to cite the path in
+    its prose. So no file is written and this is what the agent gets:
+    the value's own shape, so it can tell WHICH assignment is meant,
+    and the shapes that do render.
     """
     import reprobate
 
-    kind = "list" if isinstance(value, list) else "dict"
+    if isinstance(value, (dict, list)):
+        kind = f"plain {'list' if isinstance(value, list) else 'dict'}"
+    else:
+        kind = type(value).__name__
     return (
-        f"{str(name)!r} is a plain {kind}, which is data and not a UI "
-        f"artifact — nothing renders raw JSON, so no file was written: "
+        f"{str(name)!r} is a {kind}, which is data and not a UI artifact "
+        f"— nothing renders it, so no file was written: "
         f"{reprobate.render(value, budget=200)}. To show it, assign a "
-        f"pandas DataFrame (a table), a plotly figure (a chart), or a "
-        f"list of card rows ([{{'label': ..., 'value': ...}}]). To keep "
-        f"it as data, print it or write it to a file yourself."
+        f"pandas DataFrame (a table), a plotly figure (a chart), a "
+        f"matplotlib figure or an image (a picture), or a list of card "
+        f"rows ([{{'label': ..., 'value': ...}}]). To keep it as data, "
+        f"print it or write it to a file yourself."
+    )
+
+
+def _renderer_failed(name: object, value: object, error: BaseException) -> str:
+    """A value in the supported set whose renderer raised.
+
+    Named, with the error, because the agent has to know WHICH of its
+    assignments failed and why — a figure whose serializer blew up is a
+    fixable mistake, and the silence that used to stand in for it (a
+    capped repr in a .txt slot, announced as an artifact) read as
+    success.
+    """
+    return (
+        f"{str(name)!r} could not be rendered: "
+        f"{type(error).__name__}: {error}. The value is a "
+        f"{type(value).__name__}; fix what it holds, or write the file "
+        f"yourself and assign its path."
     )
 
 
@@ -852,13 +875,14 @@ def _materialize_one(
     render (and theme) the artifact itself; html gives it partial say;
     pixels give it none. See the adapter docs in docs/api.md.
 
-    The floor still never fails for a SCALAR — a number, a string, a
-    date, an object nobody taught to render — because there the JSON is
-    the whole value and a consumer showing it verbatim shows everything
-    there was. A dict or a list is the case where that stops being
-    true: raw JSON has no component, so the file would be announced as
-    an artifact and render nothing. Those raise :class:`_NotRenderable`
-    instead, and the caller turns it into a problem note.
+    The set is closed and there is no floor under it: a value no tier
+    claims raises :class:`_NotRenderable`, and the caller turns that
+    into a problem note. A file holding a bare number or a loose string
+    is not an artifact — no consumer has a component for one — and
+    announcing it told the agent a rendering had happened, which it
+    then cited in its prose. The one value outside the set that still
+    lands is a string naming a workspace file the agent saved itself:
+    that is a pointer to an artifact, not a value to render.
     """
     import json as _json
 
@@ -873,7 +897,7 @@ def _materialize_one(
             if ws.files.fs.exists(value) and not ws.files.fs.isdir(value):
                 return value
         except Exception:
-            pass  # unreadable path: fall through to the data tier
+            pass  # unreadable path: it names no artifact, so it is not one
 
     # spec tier: shell-rendered, shell-themed
     if mod.startswith("plotly") and hasattr(value, "to_json"):
@@ -979,12 +1003,10 @@ def _materialize_one(
     if callable(html_fn):
         return _ui_write(ws, f"{ui_root(ws)}/{name}.html", str(html_fn()).encode())
 
-    # data tier: a scalar renders as itself, a structure renders as
-    # nothing — so the structure gets a diagnosis instead of a file.
-    if isinstance(value, (dict, list)):
-        raise _NotRenderable(_not_an_artifact(name, value))
-    text = _json.dumps(value, indent=2, default=str)
-    return _ui_write(ws, f"{ui_root(ws)}/{name}.json", text.encode())
+    # No tier claimed it, so nothing renders it. There is no JSON floor:
+    # a file holding a bare literal is not an artifact, and announcing
+    # one told the agent its figure had arrived.
+    raise _NotRenderable(_not_an_artifact(name, value))
 
 
 def materialize_ui(
@@ -994,12 +1016,11 @@ def materialize_ui(
     workspace artifacts under ``/ui/`` (committed writes). Returns
     ``(artifacts, problems)``: ``[(name, path)]`` for the observation
     note, plus diagnosis strings for values that could not be rendered
-    as intended — the size cap, and a value there is no component for —
-    which the adapter puts in the tool result so the agent can
-    self-correct. A value with no component yields a problem and NO
-    artifact: announcing a file nothing renders would tell the agent
-    its figure arrived. Values that merely defeat every renderer still
-    land as a capped ``repr`` — a debuggable floor, not a silent drop.
+    as intended — the size cap, a value there is no component for, and
+    a renderer that raised — which the adapter puts in the tool result
+    so the agent can self-correct. Every one of those yields a problem
+    and NO artifact: announcing a file nothing renders would tell the
+    agent its figure arrived.
 
     ``claims``, when given, is filled with ``{original_key:
     ArtifactPath}`` so a caller can swap the rendered values out of the
@@ -1050,20 +1071,13 @@ def materialize_ui(
                 path = _ui_write(ws, f"{ui_root(ws)}/{name}.txt", msg.encode())
             except Exception:
                 continue
-        except Exception:
-            try:
-                # slice sized values BEFORE repr — repr of a huge
-                # bytes/str builds the whole representation in memory
-                preview = (
-                    value[:10_000]
-                    if isinstance(value, (str, bytes, bytearray))
-                    else value
-                )
-                path = _ui_write(
-                    ws, f"{ui_root(ws)}/{name}.txt", repr(preview)[:10_000].encode()
-                )
-            except Exception:
-                continue
+        except Exception as e:
+            # A renderer in the supported set raised. The value was
+            # meant to be an artifact, so the agent is told which one
+            # failed and why — a capped repr announced as an artifact
+            # said a figure had arrived when none had.
+            problems.append(_renderer_failed(raw_name, value, e))
+            continue
         out.append((name, path))
         if claims is not None:
             claims[raw_name] = ArtifactPath(path)

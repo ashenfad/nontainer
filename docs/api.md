@@ -1490,7 +1490,7 @@ section (and warns). Same params on `build_server`.
 
 **The artifacts note (`run_python`).** The `ui = {...}` convention
 materializes namespace values into `/ui/` files (spec formats > pixels >
-html > data), then appends a single model-facing line to the tool result:
+html), then appends a single model-facing line to the tool result:
 
 ```
 [ui artifacts: name -> /ui/name.plotly.json, other -> /ui/other.png]
@@ -1499,13 +1499,16 @@ html > data), then appends a single model-facing line to the tool result:
 The agent reads it to embed `![name](/ui/...)` in its reply; unreferenced
 artifacts display after the prose.
 
-The set that renders is closed: a plotly figure (object or spec dict), a
-pandas DataFrame, a matplotlib figure, an image, a list of card rows, or
-a scalar. **A plain dict or list is data, not an artifact** — there is
-no component for raw JSON, so no file is written and the value earns a
-`ui_problems` note naming its shape and the three ways to make it
-renderable. Writing it anyway told the agent a rendering had happened,
-and it went on to cite the path in its prose. This line is a **public, round-trippable
+The set that renders is closed: a plotly figure (the object or its spec
+dict), a pandas DataFrame, a matplotlib figure, an image, or a list of
+card rows — plus a string naming a workspace file the agent saved
+itself, which is a pointer to an artifact rather than a value to
+render. **Everything else is data, not an artifact**: a dict, a list of
+other things, a number, a loose string. No file is written, and the
+value earns a `ui_problems` note naming its shape and the shapes that
+do render. Writing one anyway told the agent a rendering had happened,
+and it went on to cite the path in its prose. A renderer inside the set
+that raises earns a note too, naming the value and the error. This line is a **public, round-trippable
 contract** — harnesses parse tool results with `parse_artifacts_note`, never
 a private regex:
 
