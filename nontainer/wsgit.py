@@ -143,121 +143,83 @@ _HELP = """ws-git: the agent's git over this session.
 usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                tag|stash|branch|merge|revert|cherry-pick|worktree|
                sparse-checkout) [...]
-  stage <paths>     add paths to the index (optional: commit with an
-                    empty index takes everything modified)
+  stage <paths>     add paths to the index
   unstage <paths>   drop paths from the index
-  commit [-m MSG]   commit the staged set (everything modified, when
-                    nothing is staged); no -a, no pathspec. What you
-                    left out stays in the working tree, uncommitted
-  reset             abandon the composition (mixed-only)
+  commit [-m MSG]   commit the staged set, or everything modified when
+                    nothing is staged. No -a and no pathspec: what you
+                    left out stays in the tree, uncommitted
+  reset             abandon the composition and keep the tree
   status [--porcelain]
-                    a view: line when this session was given part of
-                    the tree, then staged vs unstaged (git-short XY
-                    columns; porcelain is the default, so the flag
-                    changes nothing), then a worktrees: block — one
-                    line per worktree, the shape worktree list prints —
-                    when any are up
+                    a view: line, a ## merging line while one is
+                    outstanding, the staged and modified rows in git's
+                    XY columns, then a worktrees: block
   diff [<session>] [--cached] [--check] [paths...]
-                    unified diff against your last commit; --cached for
-                    the staged set; a session name diffs against that
-                    session instead
-                    --check finds leftover conflict markers
-                    (unstaged, or staged with --cached;
-                    unresolved merges always)
+                    unified diff against your last commit; --cached the
+                    staged set; a session name diffs against that
+                    session; --check finds leftover conflict markers
   log [<session>] [-n N] [--all] [-S <string>]
                     your own commits, newest first; a session name
-                    shows that session's; --all is every commit the
-                    session holds, the framework's included
-                    -S <string> keeps only the commits where the number
-                    of times <string> occurs in the tree changed, with
-                    + or - after the id for appeared or vanished
+                    shows that session's; --all every commit this
+                    session holds; -S the commits where <string>
+                    appeared (+) or vanished (-)
   show <ref>        one commit: its message and its diff
-  checkout <ref>    restore the tree to a commit of yours (history is
-                    append-only: the restore is a new commit)
+  checkout <ref>    restore the tree to a commit of yours (the restore
+                    is a new commit)
   checkout <ref> -- <paths>
-                    make just those paths match that ref (another
-                    session, or a commit of yours). A directory is
-                    mirrored: a file it holds here and the ref does
-                    not is removed
+                    make just those paths match that ref, which may
+                    name another session. A directory is mirrored
   tag               your bookmarks, one "name -> commit" per line
   tag [-f] <name> [<commit>]
-                    bookmark a commit of yours (your head by default)
-                    by name, and use that name wherever a ref is taken.
-                    -f moves a name that is taken. A tag is yours and
-                    this session's: it is gone when the session is, a
-                    fork starts with none, and a merge brings none over
+                    bookmark a commit of yours, your head by default.
+                    -f moves a name that is taken
   tag -d <name>     drop a bookmark. The commit stays where it is
   stash [push [-m MSG]]
                     put everything you have modified on a branch of its
                     own (<session>.stash-N) and restore your tree to
-                    your last commit. The message defaults to that
-                    commit's
+                    your last commit
   stash list        your stashes, newest first, as stash@{N}: message
   stash pop [stash@{N}]
-                    merge one back and delete its branch. Overlapping
-                    work conflicts the way a merge does, and the stash
-                    is kept when it does
+                    merge one back and delete its branch; a pop that
+                    conflicts keeps the stash
   stash drop [stash@{N}]
                     delete one without bringing it back
   stash show [stash@{N}]
                     what one holds, as a diff against your last commit
-  branch            sessions on this store, yours marked *
+  branch            the sessions on this store, yours marked *
   branch <name> [--at <ref>] [--fresh] [--paths <paths>]
-                    fork a session (does not switch, as in git).
-                    --fresh starts it with no conversation; --paths
-                    narrows what it can SEE, not what its branch holds
+                    fork a session; it does not switch. --fresh starts
+                    it with no conversation, --paths narrows what it
+                    can SEE
   merge <session>   merge that session's last commit into yours.
                     Conflicts land as markers in the merge commit and
-                    show as UU in status; fix them and commit
+                    show as UU in status: fix them and commit
   merge --abort     restore the tree to the commit the merge landed on
-                    and clear the merge, while the merge itself stays
-                    in the session's history (the restore is a new
-                    commit). Only while a merge is outstanding
-  revert <commit>   a new commit undoing that commit's change. What was
-                    done since stands, and the commit it undoes stays
-                    in the log: history is append-only
+                    and clear the merge
+  revert <commit>   a new commit undoing that commit's change
   cherry-pick <session>@<commit>
                     a new commit applying one commit's change from
-                    another session. Its change, not its tree — what
-                    the commit before it holds is left as yours
+                    another session
   worktree add <dir> <session>[@<commit>]
-                    check another session's tree out under <dir> and
-                    read it with ordinary tools (cat, ls, grep). A
-                    session name takes its head at this moment, and it
-                    stays there: to see newer work, remove it and add
-                    it again
+                    check another session's tree out under <dir>,
+                    read-only, and read it with cat, ls and grep. It is
+                    pinned at a commit: to see newer work, remove it
+                    and add it again
   worktree list     the worktrees here, one line each
   worktree remove <dir>
                     take one down
   sparse-checkout list
-                    the paths this session was given to see, one per
-                    line, or (full) when it sees the whole tree. A view
-                    is given when the session is forked (ws-git branch
-                    <name> --paths <paths>) and cannot be changed here
+                    the paths this session was given to see, or (full)
   help              this text
 
-A worktree is READ-ONLY and pinned at a commit, because work moves
-between sessions only by merge and take. To change another session's
-branch, ask it, or take its files with ws-git checkout <session> --
-<paths> and change yours. It lives outside your versioned tree, so no
-commit of yours carries it and no status or diff of yours ever names a
-file in it; ws-git status ends with a worktrees: block instead.
+A ref is HEAD, a commit id of seven hex characters or more, a session
+name, <session>@<commit>, or a tag of yours.
 
-A revert and a cherry-pick land even when they conflict, as a merge
-does: the markers are in the commit, status shows them as UU on a
-## merging line naming what was applied, and the next commit that
-removes them ends it. Neither has a --continue or an --abort: the
-change is already committed, and neither records a merge as
-outstanding for merge --abort to find.
+While a merge is outstanding nothing else moves the tree: resolve the
+markers and commit, or ws-git merge --abort.
 
-A stash is a branch: ws-git branch lists <session>.stash-N while one is
-up, and ws-git stash list is the view that numbers them.
-
-Subset, on purpose: no rebase (history is append-only). There is no
-.git — branches are
+No rebase: history is append-only. There is no .git — branches are
 sessions, history is commits. The workspace commits on its own as you
-work; ws-git log shows only the commits you made (--all for every
-commit this session holds)."""
+work; ws-git log shows only the commits you made."""
 
 
 #: The dud host-object name fronting ws-git on guest rungs. A user

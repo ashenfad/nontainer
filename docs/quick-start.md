@@ -116,7 +116,7 @@ from nontainer.wsgit import register_wsgit
 
 register_wsgit(ws)                      # now the shell answers `ws-git`
 ws.terminal("ws-git branch polish --paths auth.py")
-ws.terminal("ws-git merge polish")      # also: status, commit, log, checkout
+ws.terminal("ws-git merge polish")      # ws-git help lists the rest
 ```
 
 The rule: `ws.index` is the host's half and needs no switch — every

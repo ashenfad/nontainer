@@ -66,7 +66,8 @@ commit a ref names. A `Ref` is `session@commit`, optionally
 `Ref.parse(str)` and `str(ref)` are the two directions. Resolving into
 a session the store has never held raises rather than creating the
 branch. **A commit may be spelled short**, wherever a ref is taken
-(`store.resolve`, `ws.checkout`, `ws.files.attach`, the ws-git verbs):
+(`store.resolve`, `ws.checkout`, `ws.fork(at=)`, `ws.files.attach`, the
+ws-git verbs):
 a unique prefix of seven hex characters or more — the length every
 ws-git line prints — expands against that session's whole history, the
 framework's commits included. An ambiguous prefix raises `ValueError`
@@ -609,11 +610,12 @@ model.
 **`ws-git` in the terminal is the same implementation spelled for the
 agent**, so the host and the agent see one index and one graph. It adds
 the verbs that reach the sessions around this one, the commits behind
-it, and the view this one was given — `branch`, `merge`, `revert`,
-`cherry-pick`, `worktree`, `sparse-checkout` — and it is registered by
-`nontainer.wsgit.register_wsgit(ws)`, which the embedder calls and no
-adapter calls for it. [ws-git.md](ws-git.md) is the reference for every
-verb, its output and its refusals.
+it, and the view this one was given — `branch`, `merge` (with
+`--abort`), `revert`, `cherry-pick`, `worktree`, `sparse-checkout`,
+`tag` and `stash`, the last of which has no host half — and it is
+registered by `nontainer.wsgit.register_wsgit(ws)`, which the embedder
+calls and no adapter calls for it. [ws-git.md](ws-git.md) is the
+reference for every verb, its output and its refusals.
 
 `WorkspaceStatus` carries `branch` (the session), `staged` and
 `unstaged` (workspace paths, both measured against the agent's last
@@ -669,6 +671,9 @@ checking it out returns you to it.
 
 **`ws.fork(name, *, at=None, inherit="full", paths=None)`** branches
 this session into a new one and opens it.
+
+`at` is any ref this session can name: a commit id whole or short, or
+one of the agent's own `ws.index` tags.
 
 **A fork point is always a commit.** Uncommitted writes here are landed
 first, under `{"tool": "fork", "child": name}`, and that commit is the

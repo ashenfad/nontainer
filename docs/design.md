@@ -171,9 +171,10 @@ Every verb, its output and its refusals are in [ws-git.md](ws-git.md).
 spelled in different places on purpose. Sending work out is a `sessions`
 tool call — one tool with an `action` argument, registered by the
 adapters only when the embedder supplies a `SessionRunner` — and
-bringing the work back is `ws-git merge` / `ws-git checkout <name> --
-<paths>` / `ws-git diff <name>` in the terminal, next to every other
-verb over history. A tool never enters the executor: the model emits
+bringing the work back is `ws-git diff <name>`, `ws-git worktree add
+<dir> <name>`, `ws-git merge <name>`, `ws-git checkout <name> --
+<paths>` or `ws-git cherry-pick <name>@<commit>` in the terminal, next
+to every other verb over history. A tool never enters the executor: the model emits
 it, the host runs it, the result lands in the transcript, so delegation
 needs no transport on any rung and changes nothing per substrate, where
 `ws-git` relays into the sandbox because a shell verb runs there. It is
