@@ -123,7 +123,10 @@ class Capabilities:
 
     merge: bool = False
     """This branch can merge another branch's HEAD (CAS + key-level
-    three-way merge with conflict markers)."""
+    three-way merge with conflict markers). The same engine is what
+    applies one commit's change to this tree (``apply``), so the flag
+    gates both verbs and the ``commit_at`` lookup that names the
+    commits an apply resolves between."""
 
     sql_audit: bool = False
     """Operation-level audit log queryable with SQL (AgentFS)."""
@@ -267,14 +270,19 @@ class WorkspaceDiff:
 class MergeOutcome:
     """What merging another branch produced, as workspace file paths.
 
-    ``merged`` tells whether a merge commit was created. File conflicts
+    ``merged`` tells whether a commit was created. File conflicts
     materialize as conflict markers IN that commit (flagged here, never
     blocking): resolve with ordinary edits and commit. ``merged``
-    False with ``commit`` None means nothing changed — non-file
-    contested state, which no merge function can resolve, aborts
-    untouched. ``conflicts`` names the paths needing resolution (raw
-    store keys for non-files); ``auto_merged`` names what the merge
-    took without judgment.
+    False with ``commit`` None means nothing changed, and ``conflicts``
+    says why: non-file contested state, which no merge function can
+    resolve, aborts untouched and is named there, while an empty
+    ``conflicts`` means there was nothing to do — the change is
+    already in this tree, or the two commits differ in nothing.
+    ``conflicts`` names the paths needing resolution (raw store keys
+    for non-files); ``auto_merged`` names what landed without judgment.
+
+    The same shape answers ``apply`` (revert, cherry-pick), which is
+    the merge engine with the base named rather than found.
     """
 
     merged: bool
@@ -508,6 +516,57 @@ class WorkspaceProvider(Protocol):
         ``NotSupportedError``. ``info`` is caller metadata recorded on
         the merge commit (and on any follow-up the merge needs), which
         is how the agent-facing git threads a merge into its own graph.
+        """
+        ...
+
+    def apply(
+        self,
+        base: str | None,
+        theirs: str | None,
+        *,
+        info: dict[str, Any] | None = None,
+    ) -> MergeOutcome:
+        """Apply the change between two commits here (requires
+        ``caps.merge``).
+
+        The three-way of a merge with the base NAMED rather than found:
+        for every key that differs between ``base`` and ``theirs``, the
+        working tree is resolved against those two sides by the rules
+        that provider's merge resolves by, and the result lands as ONE
+        appended commit whose only parent is the current head. Which is
+        why one primitive spells two verbs: a revert names the commit
+        as ``base`` and its parent as ``theirs``, a cherry-pick names
+        them the other way about.
+
+        ``None`` on either side names the tree before anything, so the
+        change a first commit made can be applied and undone like any
+        other. Either id may name a commit on another session: a change
+        is content, and reading it takes no place in anyone's graph.
+
+        ``theirs`` and ``base`` are recorded on the commit as soft
+        references, never as parents — applying one commit's change
+        does not make its history this session's — alongside whatever
+        ``info`` the caller adds.
+
+        Conflicts are spelled exactly as a merge's: markers land IN the
+        commit and are reported in the outcome. Where the two commits
+        differ in nothing, or in nothing this tree does not already
+        hold, nothing is committed and the outcome says so. Refuses
+        with ``WorkspaceError`` on uncommitted changes here; a commit
+        the provider does not hold raises ``CommitNotFoundError``.
+        Providers without the capability raise ``NotSupportedError``.
+        """
+        ...
+
+    def commit_at(self, commit: str) -> CommitInfo | None:
+        """One commit's record by id, from anywhere the provider can
+        reach (requires ``caps.merge``); ``None`` when there is no such
+        commit.
+
+        ``history()`` walks one session's branch. This answers for any
+        commit the substrate holds, which is what naming the change
+        another session's commit made takes — its parents included,
+        since a change is measured against where it came from.
         """
         ...
 
