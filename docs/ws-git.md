@@ -177,8 +177,13 @@ verbs that list what is there:
 
 ```
 $ ws-git worktree add review polish@nosuch
-ws-git: nosuch is not a commit, a short id or a tag on session 'polish' (ws-git log polish, ws-git tag)
+ws-git: nosuch is not a commit, a short id or a tag on session 'polish' (ws-git log polish, where its commits and its tags both show)
 ```
+
+`ws-git tag` lists the bookmarks of the session it is typed in, so the
+refusal points there only for your own. Another session's log is the
+listing for both of its spellings: a log line carries the commit and
+decorates the tags on it.
  A word that names neither a commit nor a session
 is refused too: `diff` calls it an ambiguous argument rather than
 reading it as a pathspec that matches nothing, since silence there means

@@ -2182,17 +2182,27 @@ class Workspace:
 
     def _not_a_ref(self, session: str, word: str) -> str:
         """Why a word is not the commit half of a ref, and where to look
-        for one that is."""
-        log = "ws-git log" if session == self.session else f"ws-git log {session}"
+        for one that is.
+
+        The hint names a listing that shows the thing. ``ws-git tag``
+        lists the bookmarks of the session it is typed in, so it is
+        only an answer about this one; another session's log is the
+        listing for both of its spellings, since a log line carries the
+        commit and decorates the tags on it.
+        """
+        if session == self.session:
+            where = "ws-git log, ws-git tag"
+        else:
+            where = f"ws-git log {session}, where its commits and its tags both show"
         if word == "HEAD":
             return (
                 f"HEAD is not a ref in this position: it takes one exact "
                 f"commit on session {session!r}, spelled as a commit id, a "
-                f"short id or a tag of that session ({log}, ws-git tag)"
+                f"short id or a tag of that session ({where})"
             )
         return (
             f"{word} is not a commit, a short id or a tag on session "
-            f"{session!r} ({log}, ws-git tag)"
+            f"{session!r} ({where})"
         )
 
     def _take_source(self, ref: "str | Ref") -> "tuple[str, Mapping[str, Any]]":

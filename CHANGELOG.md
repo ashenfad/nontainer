@@ -77,7 +77,8 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   the word back with nothing about where it had been looked for. The
   one funnel that resolves a ref's commit half refuses it now —
   `nosuch is not a commit, a short id or a tag on session 'polish'
-  (ws-git log polish, ws-git tag)` — so every verb taking that shape
+  (ws-git log polish, where its commits and its tags both show)` — so
+  every verb taking that shape
   says the same thing, and a well-formed id nobody holds names its
   session too. The session half is checked first, so a typo in the
   name earns `unknown session 'typo' (ws-git branch lists them)`
