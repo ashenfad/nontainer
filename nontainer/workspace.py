@@ -2816,14 +2816,21 @@ class Workspace:
 
     @staticmethod
     def _require_unmerged(git: "AgentGit", verb: str) -> None:
-        """Refuse a verb that applies a change while a merge is still
+        """Refuse a verb that moves the tree while a merge is still
         outstanding.
 
         A conflicted merge is a composition in progress: its markers
-        are in the tree and the paths carrying them are recorded. A
-        second change applied over that would mark files the merge
-        already marked and leave no way to tell whose conflict is
-        whose.
+        are in the tree and the paths carrying them are recorded, and
+        the recorded paths are the only thing that says the markers are
+        there. So NOTHING else moves this tree until they are gone.
+        A verb that lands a change of its own would mark files the
+        merge already marked, with no way to tell whose conflict is
+        whose; one that moves the tree elsewhere would carry the
+        markers along and drop the record of them, leaving a clean
+        status over a tree full of them.
+
+        Two ways out, and the message names both: resolve the markers
+        and commit, or drop the merge with ``merge --abort``.
         """
         status = git.status()
         if status.merge_source is None:
@@ -2831,8 +2838,9 @@ class Workspace:
         raise WorkspaceError(
             f"an unresolved merge from {status.merge_source} is outstanding: "
             f"{len(status.merge_unresolved)} path(s) still carry conflict "
-            f"markers, and a {verb} lands a change of its own. Fix them and "
-            f"commit (ws-git commit -m ...), then {verb}."
+            "markers, and nothing else moves this tree until they are gone. "
+            "Fix them and commit (ws-git commit -m ...), or drop the merge "
+            f"(ws-git merge --abort), then {verb}."
         )
 
     def discard(self) -> None:
