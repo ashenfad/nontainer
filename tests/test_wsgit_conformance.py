@@ -466,3 +466,45 @@ def test_tag_across_the_rungs(ws):
     assert r.exit_code == 0, _said(r)
     assert r.stdout == f"Deleted tag 'start' (was {first})\n"
     assert ws.terminal("ws-git tag").stdout == "(none)\n"
+
+
+def test_merge_abort_across_the_rungs(ws, store):
+    """Undoing a conflicted merge reaches the guest's tree the way the
+    whole-tree restore does: the markers are gone wherever code runs."""
+    ws.terminal("cat > doc.txt <<'EOF'\na\nb\nEOF\nws-git commit -m base")
+    peer = f"{ws.session}-w"
+    assert ws.terminal(f"ws-git branch {peer}").exit_code == 0
+
+    worker = store.open(
+        peer,
+        **(
+            {"executor_factory": store.executor_factory}
+            if store.executor_factory is not None
+            else {}
+        ),
+    )
+    register_wsgit(worker)
+    try:
+        r = worker.terminal("cat > doc.txt <<'EOF'\na\nWORKER\nEOF\nws-git commit -m w")
+        assert r.exit_code == 0, r.stdout
+    finally:
+        worker.close()
+
+    ws.terminal("cat > doc.txt <<'EOF'\na\nMINE\nEOF\nws-git commit -m mine")
+    before = ws.terminal("ws-git log").stdout.split()[0]
+    r = ws.terminal(f"ws-git merge {peer}")
+    assert r.exit_code == 1, (r.stdout, r.stderr)
+    assert ws.terminal("ws-git status").stdout.splitlines()[1:] == ["UU doc.txt"]
+
+    r = ws.terminal("ws-git merge --abort")
+    assert r.exit_code == 0, _said(r)
+    assert r.stdout == (
+        f"[{ws.session}] aborted merge of {peer}, restored to {before}\n"
+    )
+    assert ws.terminal("cat doc.txt").stdout == "a\nMINE\n"
+    assert ws.terminal("ws-git status").stdout == ""
+    assert ws.terminal("ws-git log").stdout.split()[0] == before
+
+    r = ws.terminal("ws-git merge --abort")
+    assert r.exit_code == 1
+    assert "no merge to abort" in _said(r)
