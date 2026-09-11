@@ -1626,7 +1626,8 @@ def test_a_bad_ref_says_what_was_looked_up_and_where(peer_ws, store):
 
     want = (
         "ws-git: nosuch is not a commit, a short id or a tag on session "
-        "'polish' (ws-git log polish, ws-git tag)"
+        "'polish' (ws-git log polish, where its commits and its tags "
+        "both show)"
     )
     for cmd in (
         "ws-git worktree add review polish@nosuch",
