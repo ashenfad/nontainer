@@ -2484,14 +2484,15 @@ class Workspace:
             return outcome
 
     @staticmethod
-    def _require_agent_clean(git: "AgentGit") -> None:
-        """Refuse a merge over work the agent has not committed.
+    def _require_agent_clean(git: "AgentGit", verb: str = "merge") -> None:
+        """Refuse a verb that commits over work the agent has not committed.
 
         The store's buffer is clean by then — autocommit saw to that —
         so the only honest reading of "uncommitted" here is the agent's
-        own: anything modified against its last ws-git commit. Merging
-        over it would put work the agent never committed into the merge
-        commit and move its head past it, with the merge's name on it.
+        own: anything modified against its last ws-git commit.
+        Committing over it would put work the agent never committed
+        into the commit this verb makes and move its head past it, with
+        that verb's name on it.
 
         A session that has never made a ws-git commit has no such
         commit to differ from — every file it holds reads as modified —
@@ -2506,9 +2507,9 @@ class Workspace:
         raise WorkspaceError(
             "uncommitted ws-git work on this session: "
             f"{len(status.staged) + len(status.unstaged)} path(s) differ from "
-            "your last ws-git commit, and a merge takes only what has been "
+            f"your last ws-git commit, and a {verb} takes only what has been "
             f"committed. Land it (ws-git commit -m ...) or drop it ({drop}), "
-            "then merge."
+            f"then {verb}."
         )
 
     @staticmethod
@@ -2531,6 +2532,226 @@ class Workspace:
             "takes only what has been committed. Land it there "
             "(ws-git commit -m ... in that session) or drop it "
             "(ws-git checkout <its last commit>), then merge."
+        )
+
+    def revert(self, commit: str) -> MergeOutcome:
+        """Undo one commit's change, as a NEW commit; returns the outcome.
+
+        The commit stays exactly where it is and the undoing lands on
+        top of it, git's own spelling: history here is append-only, and
+        a revert is itself a commit that can be reverted. What is
+        undone is the CHANGE the commit made, not the state it held —
+        so work done since in other files, and elsewhere in the same
+        file, stands.
+
+        A merge commit reverts to ours, the side the merge was made
+        from, the way git's ``-m 1`` does. A first commit — one with no
+        commit before it in the graph it belongs to — reverts the keys
+        it introduced, since what it changed is everything it holds.
+
+        Overlapping work lands as conflict markers IN the commit and is
+        reported in the outcome rather than blocking it: resolve with
+        ordinary edits and commit, the way a merge's conflicts end.
+        Refuses work the agent has not committed and a merge still
+        outstanding. Requires ``caps.merge``.
+        """
+        from .agentgit import REVERT_TOOL
+
+        self._require_apply("revert")
+        target = self._change_commit(self._expand_commit(str(commit)))
+        subject = target.info.get("message")
+        return self._apply_change(
+            base=target.id,
+            theirs=self._change_base(target),
+            source=f"{self.session}@{target.id[:7]}",
+            verb="revert",
+            info={
+                "tool": REVERT_TOOL,
+                "message": f"Revert {subject!r}"
+                if subject
+                else f"Revert {target.id[:7]}",
+                "reverted": target.id,
+            },
+        )
+
+    def cherry_pick(self, ref: "str | Ref") -> MergeOutcome:
+        """Apply one commit's change from another session; returns the
+        outcome.
+
+        ``ref`` names one commit: ``session@commit``, short ids
+        accepted. A session name alone is refused — a session is a
+        moving head, and what is picked is one change — and bringing a
+        whole session's work is ``merge``.
+
+        The change is the difference between that commit and the one
+        before it in its own graph, so a delegate's second commit
+        brings its second piece of work and nothing it inherited. The
+        commit that lands here records where it came from as a soft
+        reference, not as a parent: taking one change from a session
+        does not make its history yours.
+
+        Overlapping work lands as conflict markers IN the commit and is
+        reported in the outcome rather than blocking it: resolve with
+        ordinary edits and commit, the way a merge's conflicts end.
+        Refuses work the agent has not committed and a merge still
+        outstanding. Requires ``caps.merge``.
+        """
+        from .agentgit import PICK_TOOL
+        from .store import Ref
+
+        self._require_apply("cherry-pick")
+        text = str(ref)
+        if not isinstance(ref, Ref) and "@" not in text:
+            raise ValueError(
+                f"{text!r} names no commit: a cherry-pick takes one, spelled "
+                "'session@commit' (ws-git log <session> lists them). To bring "
+                f"everything {text!r} has committed, merge it."
+            )
+        parsed = Ref.parse(text)
+        target = self._change_commit(
+            self._expand_commit(parsed.commit, session=parsed.session)
+        )
+        source = str(Ref(parsed.session, target.id[:7]))
+        return self._apply_change(
+            base=self._change_base(target),
+            theirs=target.id,
+            source=source,
+            verb="cherry-pick",
+            info={
+                "tool": PICK_TOOL,
+                "message": target.info.get("message") or f"Pick {target.id[:7]}",
+                "picked_from": str(Ref(parsed.session, target.id)),
+            },
+        )
+
+    def _require_apply(self, verb: str) -> None:
+        """Refuse a verb that applies one commit's change where the
+        substrate has no engine to apply it with."""
+        provider = self._provider
+        if provider.caps.merge and hasattr(provider, "apply"):
+            return
+        raise NotSupportedError(
+            f"{type(provider).__name__} cannot {verb}: applying one commit's "
+            "change is the three-way merge engine with the base named "
+            "(caps.merge), and this provider has none. Use the kvgit backend."
+        )
+
+    def _change_commit(self, commit: str) -> CommitInfo:
+        """One commit's record, or ``CommitNotFoundError`` naming it."""
+        record = self._provider.commit_at(commit)
+        if record is None:
+            raise CommitNotFoundError(
+                f"no commit {commit!r} on this store — a revert or a "
+                "cherry-pick names a commit some session committed "
+                "(ws-git log lists them)."
+            )
+        return record
+
+    def _change_base(self, entry: CommitInfo) -> str | None:
+        """The commit one commit's change is measured against.
+
+        A commit says what it HOLDS; what it CHANGED is the difference
+        from the state it was composed on. For an agent commit that is
+        its parent in the AGENT's graph, never the store's: the
+        framework commits the agent's edits for durability as they are
+        made, so the store parent of a ws-git commit already holds
+        them, and the difference against it is bookkeeping and nothing
+        else.
+
+        An agent commit with no agent commit before it was composed on
+        the state its session started from. That is the fork, where
+        there was one — which is what makes a delegate's first commit
+        its own work rather than the tree it inherited — and otherwise
+        the empty tree, since what such a commit changed is everything
+        it holds, as reverting a root commit in git removes the files
+        it added.
+
+        Anything else is a framework commit, and the store's own first
+        parent is the state it changed.
+        """
+        from .agentgit import FORK_TOOL, is_agent_commit, virtual_parents
+
+        if not is_agent_commit(entry.info):
+            return entry.parents[0] if entry.parents else None
+        parents = virtual_parents(entry.info)
+        if parents:
+            return parents[0]
+        walk: CommitInfo | None = entry
+        while walk is not None and walk.parents:
+            walk = self._provider.commit_at(walk.parents[0])
+            if walk is not None and walk.info.get("tool") == FORK_TOOL:
+                return walk.id
+        return None
+
+    def _apply_change(
+        self,
+        *,
+        base: str | None,
+        theirs: str | None,
+        source: str,
+        verb: str,
+        info: dict[str, Any],
+    ) -> MergeOutcome:
+        """The body of :meth:`revert` and :meth:`cherry_pick`.
+
+        One engine, two signs: the two verbs differ in which commit is
+        the base and which is theirs, and in what they record. Both
+        take only what has been committed, both append, and both leave
+        a conflicted result the way a merge does — markers in the
+        commit and an outstanding merge context naming what was
+        applied, which ``ws-git commit`` clears when the markers go.
+        """
+        with self._lock:
+            self._check_open()
+            self._check_writable(verb)
+            if self._provider.dirty:
+                raise WorkspaceError(
+                    f"uncommitted changes on this session; a {verb} needs a "
+                    "clean tree to land against — ws.commit() them, or "
+                    f"ws.discard() them, then {verb}"
+                )
+            indexed = self._provider.caps.index
+            if indexed:
+                from .agentgit import AgentGit
+
+                git = AgentGit(self)
+                self._require_agent_clean(git, verb)
+                self._require_unmerged(git, verb)
+                head = git.head
+                # The commit joins the agent's graph, so its own log
+                # walks through it instead of stopping at it.
+                info = {**info, "virtual_parents": [head] if head else []}
+            outcome = self._provider.apply(base, theirs, info=info)
+            if outcome.merged:
+                if indexed:
+                    from .agentgit import AgentGit
+
+                    AgentGit(self).record_merge(
+                        source, outcome.commit, outcome.conflicts
+                    )
+                # provider state moved under the executor: flag its view.
+                self._mark_executor_stale()
+            return outcome
+
+    @staticmethod
+    def _require_unmerged(git: "AgentGit", verb: str) -> None:
+        """Refuse a verb that applies a change while a merge is still
+        outstanding.
+
+        A conflicted merge is a composition in progress: its markers
+        are in the tree and the paths carrying them are recorded. A
+        second change applied over that would mark files the merge
+        already marked and leave no way to tell whose conflict is
+        whose.
+        """
+        status = git.status()
+        if status.merge_source is None:
+            return
+        raise WorkspaceError(
+            f"an unresolved merge from {status.merge_source} is outstanding: "
+            f"{len(status.merge_unresolved)} path(s) still carry conflict "
+            f"markers, and a {verb} lands a change of its own. Fix them and "
+            f"commit (ws-git commit -m ...), then {verb}."
         )
 
     def discard(self) -> None:
