@@ -945,7 +945,14 @@ def _stash_pop(git: AgentGit, ws: Any, ctx: Any, word: str | None) -> Any:
     A conflict keeps the branch: the markers are in the commit and the
     stash is still there to read, so nothing is lost by an agent that
     resolves them wrongly.
+
+    Refused while a merge is outstanding, because a pop IS a merge: a
+    clean one would clear the merge context that is already there and a
+    conflicting one would replace it, and either way the markers the
+    first merge left would stop being anything status or merge --abort
+    can see.
     """
+    ws._require_unmerged(git, "stash pop")
     index, branch, _ = _stash_pick(ws, word)
     result = _merged(
         git,
