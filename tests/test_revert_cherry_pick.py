@@ -99,6 +99,25 @@ def test_a_revert_that_conflicts_leaves_markers_and_the_context(ws):
     assert ws.terminal("ws-git status").stdout == ""
 
 
+def test_revert_of_a_first_commit_against_an_edited_file(ws):
+    """A first commit changed the world from nothing, so the side the
+    revert applies is the empty tree — and a file edited since is
+    resolved against it like any other, markers and all."""
+    ws.files.write("/workspace/a.txt", "one\ntwo\nthree\n")
+    ws.index.commit("first")
+    first = ws.index.head
+    ws.files.write("/workspace/a.txt", "one\nEDITED\nthree\n")
+    ws.index.commit("second")
+
+    out = ws.revert(first)
+
+    assert out.merged
+    assert out.conflicts == ("/workspace/a.txt",)
+    assert b"<<<<<<< " in ws.files.read("/workspace/a.txt")
+    assert ws.index.status().merge_unresolved == ("/workspace/a.txt",)
+    assert "UU a.txt" in ws.terminal("ws-git status").stdout
+
+
 def test_revert_of_a_merge_goes_back_to_ours(ws):
     ws.files.write("/workspace/base.txt", "base\n")
     ws.index.commit("seed")
