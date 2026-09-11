@@ -90,6 +90,21 @@ def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
     return ours if ours is not None else theirs
 
 
+def _same(a: Any, b: Any) -> bool:
+    """Whether two stored values are the same value.
+
+    Values from the file planes are bytes and compare by content; a key
+    from somewhere else can hold anything at all, including an object
+    whose ``==`` raises or answers with something that is not a bool.
+    Such a pair is reported as different, which files it as contested
+    rather than assuming an agreement nothing established.
+    """
+    try:
+        return bool(a == b)
+    except Exception:  # noqa: BLE001 - an answer that raises is not equality
+        return False
+
+
 def _row(value: Any) -> dict | None:
     """One metadata row as a dict, or ``None`` where there is no row.
 
@@ -624,25 +639,14 @@ class KvgitProvider:
         return self._history_iter(limit)
 
     def _history_iter(self, limit: int | None) -> Iterator[CommitInfo]:
-        from kvgit.encoding import safe_loads
-
-        store = self._staged.versioned.store
         count = 0
         for commit_hash in self._staged.history():
             if limit is not None and count >= limit:
                 return
-            raw_time = store.get(f"__commit_time__{commit_hash}")
-            raw_info = store.get(f"__info__{commit_hash}")
-            time_val = safe_loads(raw_time) if raw_time is not None else None
-            info_val = safe_loads(raw_info) if raw_info is not None else None
-            yield CommitInfo(
-                id=commit_hash,
-                time=float(time_val) if time_val is not None else 0.0,
-                info=info_val if isinstance(info_val, dict) else {},
-                tree=self._tree(commit_hash),
-                parents=tuple(self._staged.versioned.parents(commit_hash)),
-            )
-            count += 1
+            record = self._commit_record(commit_hash)
+            if record is not None:
+                yield record
+                count += 1
 
     def _tree(self, commit_hash: str) -> str | None:
         """The commit's keyset root hash — the identity of its content.
@@ -1007,9 +1011,7 @@ class KvgitProvider:
         marker conflicts are reported by provenance, so pre-existing
         marker-like bytes in a brought file don't count as conflicts.
         """
-        from kvgit import MergeChoice, MergeConflict
-        from kvgit.merges import text as text_merge
-        from monkeyfs import VirtualFS
+        from kvgit import MergeConflict
 
         self._refuse_frozen("merge")
         if self.dirty:
@@ -1029,59 +1031,14 @@ class KvgitProvider:
                 raise CommitNotFoundError(f"No such commit: {at!r}")
             other = probe
 
-        # Text merge applies to file-content keys only: the merge fn
-        # receives no key, so a blanket default would marker-merge cache
-        # blobs. Enumerate from both heads; the union is harmless
-        # (uncontested keys never consult a fn). No try/except:
-        # enumeration failing means store trouble, and that must
-        # surface, not silently narrow the merge.
-        file_keys: set[str] = set()
-        row_keys: set[str] = set()
-        for handle in (self._staged, other):
-            keys = list(handle.keys())
-            file_keys.update(self._file_keys(keys).keys())
-            row_keys.update(k for k in keys if VirtualFS.is_metadata_key(k))
-        merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
-        # Each row merges under the policy its own blob merges under:
-        # field-aware, with the size taken from the merged bytes rather
-        # than from a side. Bound per key because a merge function is
-        # handed values, not the key it was registered for, and the row
-        # needs to know which file it describes.
+        # The rules are the same three-way rules an apply resolves by,
+        # read against the base kvgit's own merge will use: the merged
+        # bytes of a contested file are a function of that base, and a
+        # row whose size was computed against a different one would
+        # describe bytes nothing holds.
         base = self._merge_base(self._staged.current_commit, source_head)
-        at_lca = self._staged.checkout(base) if base is not None else None
-        for key in row_keys:
-            merge_fns[key] = self._row_merge_fn(key, other, at_lca)
-        # A write drains its own path out of the legacy table, so two
-        # branches change that one key by writing different files.
-        merge_fns[VirtualFS.METADATA_KEY] = _merge_legacy_metadata_table
-        merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
-        merge_fns[_VIEW_KEY] = MergeChoice.OURS
-        merge_fns[VirtualFS.CWD_KEY] = _keep_ours
-        # THE PLANE POLICY, whole: a merge is filesystem-only. The
-        # cache and the stored conversation are session-scoped by
-        # construction — a delegate's working memory and a chat that
-        # never happened here — so this side keeps every key under
-        # those prefixes, and that has to include keys the other side
-        # merely ADDED. A merge function would not do it: kvgit
-        # consults one only where both sides changed a key, so a new
-        # ``__agno__/runs/<id>`` would ride in untouched. A
-        # ``MergeChoice`` over the prefix is the whole-side policy that
-        # also drops their-only adds and ignores their-only removes.
-        # Registered for the merge verb ONLY, not on the handle: an
-        # ordinary commit that loses its CAS to a second handle on THIS
-        # session must still take that handle's conversation, which is
-        # this session's own.
-        merge_prefixes = {
-            CACHE_PREFIX: MergeChoice.OURS,
-            CONVERSATION_PREFIX: MergeChoice.OURS,
-        }
-        # The key nontainer used to keep a cwd of its own under. It is
-        # dead: a workspace drops it on open. Branches written before
-        # that still carry it, and two of them can carry different
-        # values, which is a conflict over state neither side reads.
-        # OURS ends it every time — whichever side still has the key,
-        # the merge takes this side's answer, including its removal.
-        merge_fns[_LEGACY_CWD_KEY] = MergeChoice.OURS
+        at_base = self._staged.checkout(base) if base is not None else None
+        merge_fns, merge_prefixes = self._three_way_rules(other, at_base)
 
         # Markers commit WITH the merge (flagged in the outcome), they
         # don't block it: the agent resolves with ordinary edit tools
@@ -1132,6 +1089,318 @@ class KvgitProvider:
             commit=self._staged.current_commit,
             conflicts=conflicts,
             auto_merged=tuple(sorted(set(candidates) - set(conflicts))),
+        )
+
+    def _three_way_rules(
+        self, other: Any, at_base: Any
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The rules a three-way over this session resolves by.
+
+        One table, two callers: the merge verb and the apply verb
+        resolve the same trees by the same rules, and a rule that lived
+        in only one of them would make "cherry-pick" and "merge" mean
+        different things about the same two files. ``other`` is the
+        handle holding THEIRS and ``at_base`` the one holding the base
+        the three-way resolves against (``None`` where there is none).
+
+        Returns per-key merge functions and whole-prefix policies:
+
+        - file content merges as text, with markers where both sides
+          changed the same lines. Registered per key rather than as a
+          default, because a merge function is handed values and not
+          the key it was registered for, so a blanket default would
+          marker-merge cache blobs. Enumerated from ours and theirs;
+          the union is harmless, since an uncontested key never
+          consults a function.
+        - a file's metadata row merges field-aware beside its blob,
+          carrying the size of the merged bytes. Bound per key for the
+          same reason: the function has to know which file it describes.
+        - the legacy VFS table merges per entry, because a write drains
+          its own path out of that one key, so two sides change it by
+          writing different files.
+        - the ws-git blob, the view seed and the cwd take ours: they
+          are this session's position, not content to reconcile.
+        - THE PLANE POLICY, whole: this is filesystem-only. The cache
+          and the stored conversation are session-scoped by
+          construction — a delegate's working memory and a chat that
+          never happened here — so this side keeps every key under
+          those prefixes, and that has to include keys the other side
+          merely ADDED. A merge function would not do it: kvgit
+          consults one only where both sides changed a key, so a new
+          ``__agno__/runs/<id>`` would ride in untouched. A
+          ``MergeChoice`` over the prefix is the whole-side policy that
+          also drops their-only adds and ignores their-only removes.
+          Built for these two verbs ONLY, never registered on the
+          handle: an ordinary commit that loses its CAS to a second
+          handle on THIS session must still take that handle's
+          conversation, which is this session's own.
+
+        No try/except around the enumeration: failing there means store
+        trouble, and that must surface rather than silently narrow what
+        the rules cover.
+        """
+        from kvgit import MergeChoice
+        from kvgit.merges import text as text_merge
+        from monkeyfs import VirtualFS
+
+        file_keys: set[str] = set()
+        row_keys: set[str] = set()
+        for handle in (self._staged, other):
+            if handle is None:
+                continue
+            keys = list(handle.keys())
+            file_keys.update(self._file_keys(keys).keys())
+            row_keys.update(k for k in keys if VirtualFS.is_metadata_key(k))
+        merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
+        for key in row_keys:
+            merge_fns[key] = self._row_merge_fn(key, other, at_base)
+        merge_fns[VirtualFS.METADATA_KEY] = _merge_legacy_metadata_table
+        merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
+        merge_fns[_VIEW_KEY] = MergeChoice.OURS
+        merge_fns[VirtualFS.CWD_KEY] = _keep_ours
+        # The key nontainer used to keep a cwd of its own under. It is
+        # dead: a workspace drops it on open. Branches written before
+        # that still carry it, and two of them can carry different
+        # values, which is a conflict over state neither side reads.
+        # OURS ends it every time — whichever side still has the key,
+        # the three-way takes this side's answer, including its removal.
+        merge_fns[_LEGACY_CWD_KEY] = MergeChoice.OURS
+        merge_prefixes: dict[str, Any] = {
+            CACHE_PREFIX: MergeChoice.OURS,
+            CONVERSATION_PREFIX: MergeChoice.OURS,
+        }
+        return merge_fns, merge_prefixes
+
+    def apply(
+        self,
+        base: str | None,
+        theirs: str | None,
+        *,
+        info: dict[str, Any] | None = None,
+    ) -> MergeOutcome:
+        """Apply the change between two commits to the working tree.
+
+        The one engine behind revert and cherry-pick, which are this
+        call with the two commits swapped: for every key that differs
+        between ``base`` and ``theirs``, three-way merge the working
+        tree against those two sides by the rules a merge resolves by
+        (:meth:`_three_way_rules`), and land the result as ONE appended
+        commit whose only parent is the current head. ``None`` on
+        either side names the tree before anything, so the change a
+        root commit made can be applied and undone like any other.
+
+        Where the two commits differ in nothing — or in nothing this
+        tree does not already hold — nothing is committed and the
+        outcome says so: ``merged`` False with no commit and no
+        conflicts.
+
+        The commit is not a merge commit in the graph: ``theirs`` and
+        ``base`` are recorded in its info as ``applied_from`` and
+        ``applied_base``, soft references rather than parents, because
+        applying one commit's change does not make its history this
+        session's. Conflicts are spelled exactly as a merge's are:
+        markers land IN the commit and are reported in the outcome,
+        with only contested state no rule resolves aborting untouched.
+        """
+        from kvgit import MergeChoice, MergeConflict
+        from kvgit.versioned.helpers import diff_keysets
+        from kvgit.versioned.merge import pick_merge_policy, resolve_merge
+
+        self._refuse_frozen("apply")
+        if self.dirty:
+            raise WorkspaceError(
+                "uncommitted changes on this branch; commit or discard them first"
+            )
+        at_base = self._at_commit(base)
+        at_theirs = self._at_commit(theirs)
+        merge_fns, merge_prefixes = self._three_way_rules(at_theirs, at_base)
+        # A key a policy gives to ours outright is not read at all: the
+        # planes that take ours keep every key under them, and their
+        # values are the one part of a session's state that is not
+        # content to compare.
+        changed = {
+            key
+            for key in self._changed_keys(base, theirs, at_base, at_theirs)
+            if pick_merge_policy(key, merge_fns, merge_prefixes, None)
+            is not MergeChoice.OURS
+        }
+        if not changed:
+            return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
+
+        # kvgit resolves a three-way over KEYSETS — key to content id,
+        # with a reader from id to bytes — and it compares those ids
+        # only within one key. So the three trees are handed to it as
+        # keysets of values: an id per distinct value of a key, and a
+        # reader that hands the value back. That keeps the resolution
+        # kvgit's own (equal-content shortcuts, removals, the order a
+        # policy is picked in) while the base is ours to name, which is
+        # the whole difference between this and a merge.
+        values: dict[str, Any] = {}
+        base_keys: dict[str, str] = {}
+        our_keys: dict[str, str] = {}
+        their_keys: dict[str, str] = {}
+        for key in changed:
+            slots: list[tuple[Any, str]] = []
+            for keyset, handle in (
+                (base_keys, at_base),
+                (our_keys, self._staged),
+                (their_keys, at_theirs),
+            ):
+                if handle is None or key not in handle:
+                    continue
+                value = handle.get(key)
+                for held, name in slots:
+                    if _same(held, value):
+                        keyset[key] = name
+                        break
+                else:
+                    name = f"{key}#{len(slots)}"
+                    slots.append((value, name))
+                    values[name] = value
+                    keyset[key] = name
+        try:
+            resolution = resolve_merge(
+                lca_keyset=base_keys,
+                our_keyset=our_keys,
+                their_keyset=their_keys,
+                our_diff=diff_keysets(base_keys, our_keys),
+                their_diff=diff_keysets(base_keys, their_keys),
+                blob_reader=values.get,
+                merge_fns=merge_fns,
+                default_merge=None,
+                merge_prefixes=merge_prefixes,
+            )
+        except MergeConflict as e:
+            return MergeOutcome(
+                merged=False,
+                commit=None,
+                conflicts=tuple(sorted(self._display_conflicts(e))),
+                auto_merged=(),
+            )
+
+        written = self._stage_applied(changed, resolution, values)
+        if not written:
+            return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
+        before = self._staged.current_commit
+        try:
+            landed = self.commit(
+                info={
+                    "applied_from": theirs,
+                    "applied_base": base,
+                    **(info or {}),
+                }
+            )
+        except BaseException:
+            # Nothing of anyone's is at stake in the buffer: it holds
+            # only what this call put there.
+            self._staged.reset()
+            self._invalidate_fs()
+            raise
+        # The tree moved under the VirtualFS object: drop its caches
+        # like checkout()/discard() do, or listings and stat go stale.
+        self._invalidate_fs()
+        # Conflicts by provenance, not by scan: a file the change
+        # brings may legitimately contain marker-like bytes, so only
+        # markers absent from both sides count.
+        at_before = self._staged.checkout(before)
+        paths = self._file_keys(written)
+        conflicts = tuple(
+            sorted(
+                path
+                for key, path in paths.items()
+                if self._markers_introduced(key, at_before, at_theirs)
+            )
+        )
+        return MergeOutcome(
+            merged=True,
+            commit=landed,
+            conflicts=conflicts,
+            auto_merged=tuple(sorted(set(paths.values()) - set(conflicts))),
+        )
+
+    def _stage_applied(
+        self, changed: "Iterable[str]", resolution: Any, values: dict[str, Any]
+    ) -> set[str]:
+        """Stage a resolved apply; returns the keys it wrote.
+
+        A resolved key lands as the merge function's own value, as the
+        value of whichever side the resolution kept, or as a removal
+        where neither side kept it. A key whose resolution is what the
+        tree already holds is not written at all, so a change already
+        present costs no commit.
+        """
+        written: set[str] = set()
+        for key in changed:
+            if key in resolution.merged_values:
+                value = resolution.merged_values[key]
+            elif key in resolution.merged_keyset:
+                value = values[resolution.merged_keyset[key]]
+            else:
+                if key in self._staged:
+                    del self._staged[key]
+                    written.add(key)
+                continue
+            if key in self._staged and _same(self._staged.get(key), value):
+                continue
+            self._staged[key] = value
+            written.add(key)
+        return written
+
+    def _at_commit(self, commit: str | None) -> Any:
+        """A read handle on one commit, or ``None`` for the empty tree.
+
+        ``None`` names the tree before anything — what the first commit
+        of a session changed the world from — and is a side a three-way
+        can take. Any other id the store does not hold is an error.
+        """
+        if commit is None:
+            return None
+        handle = self._staged.checkout(commit)
+        if handle is None:
+            raise CommitNotFoundError(f"No such commit: {commit!r}")
+        return handle
+
+    def _changed_keys(
+        self, base: str | None, theirs: str | None, at_base: Any, at_theirs: Any
+    ) -> set[str]:
+        """The keys one commit's change touches, from the store's own
+        diff — and every key of the one side there is where the other
+        side is the empty tree."""
+        if base is not None and theirs is not None:
+            change = self._staged.versioned.diff(base, theirs)
+            return set(change.added) | set(change.removed) | set(change.modified)
+        handle = at_theirs if at_base is None else at_base
+        return set(handle.keys()) if handle is not None else set()
+
+    def commit_at(self, commit: str) -> CommitInfo | None:
+        """One commit's record by id, from anywhere in the store.
+
+        ``history()`` walks this session's branch; this answers for any
+        commit the store holds, which is what reading the change
+        another session's commit made takes. ``None`` when the store
+        has no such commit.
+        """
+        return self._commit_record(commit)
+
+    def _commit_record(self, commit_hash: str) -> CommitInfo | None:
+        """One commit as a :class:`CommitInfo`, or ``None`` if the store
+        holds no such commit."""
+        from kvgit.encoding import safe_loads
+
+        root = self._tree(commit_hash)
+        if root is None:
+            return None
+        store = self._staged.versioned.store
+        raw_time = store.get(f"__commit_time__{commit_hash}")
+        raw_info = store.get(f"__info__{commit_hash}")
+        time_val = safe_loads(raw_time) if raw_time is not None else None
+        info_val = safe_loads(raw_info) if raw_info is not None else None
+        return CommitInfo(
+            id=commit_hash,
+            time=float(time_val) if time_val is not None else 0.0,
+            info=info_val if isinstance(info_val, dict) else {},
+            tree=root,
+            parents=tuple(self._staged.versioned.parents(commit_hash)),
         )
 
     def _open_branch(self, source: str):
