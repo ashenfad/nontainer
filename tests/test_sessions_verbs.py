@@ -165,15 +165,21 @@ def test_the_reset_commit_is_bookkeeping(ws):
         child.close()
 
 
-def test_a_fork_of_a_session_that_never_used_ws_git_makes_no_record(ws):
-    """Nothing to reset is nothing to record: the fork of a session
-    with no ws-git state costs no commit."""
+def test_a_fork_of_a_session_that_never_used_ws_git_is_still_marked(ws):
+    """The mark is an invariant, not a record of work done: it is where
+    the child's own history starts, so the change in its first commit
+    can be told from the tree it inherited. A parent with no ws-git
+    state of its own leaves nothing to clear and the mark all the
+    same."""
+    from nontainer.agentgit import FORK_TOOL
+
     ws.files.write("/workspace/a.txt", "one\n")
     child = ws.fork("child")
     try:
-        tools = [c.info.get("tool") for c in child.log(kind="all")]
-        assert "ws-git.fork" not in tools
+        assert FORK_TOOL in [c.info.get("tool") for c in child.log(kind="all")]
+        assert FORK_TOOL not in [c.info.get("tool") for c in child.log()]
         assert child.index.head is None
+        assert child.index.status().staged == ()
     finally:
         child.close()
 

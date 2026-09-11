@@ -719,7 +719,9 @@ def test_fork_at_an_earlier_commit_leaves_the_parent_alone(tmp_path):
         assert child.files.fs.read("/workspace/a.txt") == b"A"
         assert not child.files.fs.exists("/workspace/b.txt")
         assert not child.files.fs.exists("/workspace/staged.txt")
-        assert child.head == first
+        # the child starts at the fork mark every fork leaves, which
+        # descends from the commit the fork named
+        assert child._provider.commit_at(child.head).parents == (first,)
         # the parent kept its head AND its staged work
         assert ws.head == head and ws.uncommitted
         assert ws.files.fs.read("/workspace/staged.txt") == b"S"

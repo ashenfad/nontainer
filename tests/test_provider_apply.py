@@ -215,12 +215,14 @@ def test_commit_at_reads_any_commit_in_the_store(kv_ws):
     here = p.head
     fork = kv_ws.fork("worker")
     try:
+        marked = fork._provider.head  # the fork mark the child starts at
         fork.files.write("/workspace/b.txt", "two\n")
         there = fork._provider.head
         entry = p.commit_at(there)
         assert entry is not None
         assert entry.id == there
-        assert entry.parents == (here,)
+        assert entry.parents == (marked,)
+        assert p.commit_at(marked).parents == (here,)
         assert p.commit_at("0" * 40) is None
     finally:
         fork.close()
