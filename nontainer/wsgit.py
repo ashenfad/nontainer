@@ -32,11 +32,24 @@ wherever cheap; each deviation carries a recorded reason:
   ``merge`` lands even when it conflicts (the markers commit, and
   ``status`` carries the merge context) — both because a session is a
   branch and there is no working tree to leave things in.
+  ``merge --abort`` is therefore a checkout of the commit the merge
+  landed on, appended like any other, rather than a working tree
+  thrown away.
 - ``revert`` and ``cherry-pick`` land the same way, so neither has a
   ``--continue`` or an ``--abort``: the commit is already made, its
-  markers are in it, and the next commit that removes them ends it.
+  markers are in it, and the next commit that removes them ends it,
+  and neither records a merge as outstanding for an abort to find.
   ``revert`` takes no ``-m``: a merge commit reverts to ours, which is
   the only side a session has.
+- ``tag`` names a commit in the agent's own blob, never in the store:
+  the session's history is append-only and reaches every commit the
+  agent made, so there is nothing for a tag to pin. It dies with the
+  session, a fork starts with none, and a merge brings none over.
+- ``stash`` is a fork and a checkout: the work goes to a branch of its
+  own (``<session>.stash-N``, forked at the head so the branch holds
+  the CHANGE) and the tree is restored to the head. A pop is the merge
+  verb spelled differently, so a conflicted one reads exactly as a
+  conflicted merge does.
 - ``worktree add`` checks out another session under a directory of
   its own, as git's does, but read-only and frozen at a commit: work
   moves between sessions by merge and take, and a second tree an agent
@@ -233,7 +246,9 @@ file in it; ws-git status ends with a worktrees: block instead.
 A revert and a cherry-pick land even when they conflict, as a merge
 does: the markers are in the commit, status shows them as UU on a
 ## merging line naming what was applied, and the next commit that
-removes them ends it. There is no --continue and no --abort.
+removes them ends it. Neither has a --continue or an --abort: the
+change is already committed, and neither records a merge as
+outstanding for merge --abort to find.
 
 A stash is a branch: ws-git branch lists <session>.stash-N while one is
 up, and ws-git stash list is the view that numbers them.

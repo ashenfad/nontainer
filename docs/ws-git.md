@@ -39,9 +39,18 @@ Git's spelling is on the left, what it does here on the right.
 | `show <ref>` | one commit: its message and its diff |
 | `checkout <ref>` | restore your tree to one of your commits |
 | `checkout <ref> -- <paths>` | make just those paths match that ref, which may name another session |
+| `tag` | your bookmarks, one `name -> commit` per line |
+| `tag [-f] <name> [<commit>]` | bookmark a commit of yours by name. `-f` moves a name that is taken |
+| `tag -d <name>` | drop a bookmark. The commit stays where it is |
+| `stash [push [-m MSG]]` | put everything you have modified on a branch of its own and restore your tree to your last commit |
+| `stash list` | your stashes, newest first, as `stash@{N}: message` |
+| `stash pop [stash@{N}]` | merge one back and delete its branch |
+| `stash drop [stash@{N}]` | delete one without bringing it back |
+| `stash show [stash@{N}]` | what one holds, as a diff against your last commit |
 | `branch` | the sessions on this store, yours marked `*` |
 | `branch <name> [--at <ref>] [--fresh] [--paths <paths>]` | fork a session. It does not switch, as `git branch` does not |
 | `merge <session>` | merge that session's last commit into yours |
+| `merge --abort` | restore the tree to the commit an outstanding merge landed on, and clear it |
 | `revert <commit>` | a new commit undoing one commit's change |
 | `cherry-pick <session>@<commit>` | a new commit applying one change from another session |
 | `worktree add <dir> <session>[@<commit>]` | check another session's tree out under a directory, read-only |
@@ -130,7 +139,7 @@ habit.
 
 ## Refs and short ids
 
-Four things can be a ref, and which of them a verb takes is the verb's
+Five things can be a ref, and which of them a verb takes is the verb's
 business:
 
 - **`HEAD`** — your last ws-git commit. Unborn before your first one,
@@ -148,6 +157,12 @@ business:
 - **`<session>@<commit>`** — one exact state on one session: this commit
   on this branch. `cherry-pick` requires this form, and
   `worktree add` accepts it.
+- **a tag** — a name you gave one of your own commits with `ws-git tag`.
+  It is a ref wherever a ref is taken, and `<session>@<tag>` reads
+  another session's bookmark the way `<session>@<commit>` reads one of
+  its commits. These are not the host's tags (`ws.tags`, `store.tags`),
+  which name states for the code around the workspace; a ws-git tag is
+  yours, and the [Tags](#tags) section says what that means.
 
 Every spelling ws-git prints, it accepts back. Commit lines print seven
 characters of an id; worktree lines print `session@<seven characters>`;
@@ -161,8 +176,111 @@ reading it as a pathspec that matches nothing, since silence there means
 "no differences" and would answer a mistyped session name with an
 apparent all-clear.
 
-A tag name is not a ref here. Tags are the host's (`ws.tags`,
-`store.tags`); ws-git reads commits and sessions.
+## Tags
+
+`ws-git tag <name>` bookmarks one of your commits, and from then on the
+name is a ref:
+
+```
+$ ws-git tag before-refactor
+$ ws-git tag
+before-refactor -> 3250a37
+
+$ ws-git log
+df5ad62 strip the user
+3250a37 (tag: before-refactor) add auth
+
+$ ws-git checkout before-refactor
+[main] restored to 3250a37
+```
+
+With no commit named it bookmarks your head; `ws-git tag <name> <ref>`
+bookmarks whatever the ref names. A name already taken is refused, as
+git refuses one, and `-f` moves it. `ws-git tag -d <name>` drops the
+name and leaves the commit exactly where it is.
+
+**The tag is your bookmark, not a name in the store.** It lives with
+your index and your commit graph, in your session:
+
+- It pins nothing. The store's history is append-only and every commit
+  you made is reachable from your head, so there is nothing for a tag
+  to hold in place — which is what the host's tags are for.
+- It is gone when the session is.
+- A fork starts with none. A name you chose points into your log, and
+  your log is not the one the delegate has.
+- A merge brings none over. Merging a session brings its files, never
+  its names for its own commits.
+
+Two names it will not take: one that is already a tag here, and one
+spelled like a commit id (seven or more hex characters). The second is
+what lets a tag be read before a hash with nothing ambiguous about it.
+
+Another session's bookmarks are readable as `<session>@<tag>`, which
+is that session's name for one exact state:
+
+```
+$ ws-git worktree add review polish@shipped
+worktree review: polish@dd906ff (read-only)
+
+$ ws-git cherry-pick polish@shipped
+```
+
+What the verb prints back is the commit, never the name it was given:
+the name is the other session's and means nothing in yours.
+
+## Stash
+
+`ws-git stash` puts everything you have modified on a branch of its own
+and restores your tree to your last commit:
+
+```
+$ ws-git status
+ M auth.py
+ M notes.md
+
+$ ws-git stash
+Saved working directory and index state stash@{0}: add auth
+
+$ ws-git status
+$ ws-git stash list
+stash@{0}: add auth
+```
+
+The message defaults to your last commit's; `ws-git stash push -m
+"half-done rewrite"` gives it one of its own. Taking it back is
+`ws-git stash pop`:
+
+```
+$ ws-git stash pop
+Auto-merging auth.py
+Auto-merging notes.md
+[main 8c1f2ad] merge main.stash-0 (2 files)
+Dropped stash@{0} (main.stash-0)
+```
+
+It is **a fork and a checkout**, which is why it behaves the way it
+does. The branch is forked at your last commit and your modified files
+are written onto it, so what the stash holds is the change; popping it
+is an ordinary three-way merge against that same commit, and it comes
+back even though your tree has since moved. Overlapping work conflicts
+exactly as a merge does — markers in the commit, `UU` in `status` — and
+a pop that conflicts **keeps the stash**, so you can drop it yourself
+once the resolution is what you wanted. `ws-git stash drop` deletes one
+without bringing it back, and `ws-git stash show` diffs one against
+your last commit.
+
+Two refusals, both git's. With nothing modified: `No local changes to
+save`. In a session that has committed nothing: `You do not have the
+initial commit yet` — there is no commit to restore your tree to, so
+there is nothing a stash could put aside.
+
+A stash **is a branch**, so `ws-git branch` lists `<session>.stash-N`
+while one is up, and so does a host or an embedder listing the store's
+sessions (`store.sessions()`) — a stash is an ordinary session there,
+and `Store.delete` takes one by name. `ws-git stash list` is the view
+that numbers them git's way, newest `stash@{0}`; the branch keeps a
+number of its own that only ever goes up, so no stash is ever renamed
+under you.
 
 ## Conflicts
 
@@ -208,9 +326,26 @@ A commit that *includes* a marked path resolves it only if what it
 commits has no markers left; a commit that leaves the path out leaves it
 marked. Membership in a commit is not resolution.
 
-There is no `--continue` and no `--abort`, for merge or for the other
-two: the commit is already made, so there is no half-finished operation
-to continue out of. The way back from a landed merge you do not want is
+There is no `--continue`, for merge or for the other two: the commit is
+already made, so there is no half-finished operation to continue out
+of.
+
+**`ws-git merge --abort` is the way out of a merge you do not want.**
+It restores your tree to the commit the merge landed on and clears the
+merge, so `status` reads clean and the markers are gone:
+
+```
+$ ws-git merge --abort
+[main] aborted merge of other, restored to 3250a37
+```
+
+The merge itself stays in the session's history — the restore is a new
+appended commit, as `ws-git checkout` is — so the conflicted state is
+still there for anyone who wants it. It is refused when no merge is
+outstanding, and refused in a session that had no commit of its own
+when the merge landed, since there is then no commit of yours to go
+back to. A revert and a cherry-pick have no abort: neither records a
+merge to be outstanding, and the way back from either is
 `ws-git checkout <your commit before it>`.
 
 Non-file contested state — something no merge function can resolve —
@@ -333,6 +468,9 @@ order of commitment:
 | some files | `ws-git checkout <name> -- <paths>` |
 | one of its commits | `ws-git cherry-pick <name>@<commit>` |
 
+A commit there may be spelled as that session's own tag,
+`<name>@<tag>`.
+
 `ws-git diff <name>` groups its changes by the view the delegate was
 given:
 
@@ -396,16 +534,11 @@ to is what it was given.
 
 ## What is refused
 
-Two verbs refuse with a hint that names a terminal verb to reach for
-instead:
-
-- **`rebase`**, and history rewriting generally: history here is
-  append-only. Branch from the commit you want
-  (`ws-git branch <name> --at <ref>`) and merge forward;
-  `ws-git checkout <ref>` goes back.
-- **`stash`**: a fork *is* a stash. `ws-git branch <name>` takes your
-  state to a session of its own and leaves this one where it is. Or
-  commit what you have and keep going — snapshots are cheap.
+One verb refuses with a hint that names a terminal verb to reach for
+instead: **`rebase`**, and history rewriting generally. History here is
+append-only, so branch from the commit you want
+(`ws-git branch <name> --at <ref>`) and merge forward;
+`ws-git checkout <ref>` goes back.
 
 `switch`, `reflog`, `remote` and every other git verb are simply not
 ws-git commands: they earn the unknown-command message, which lists the

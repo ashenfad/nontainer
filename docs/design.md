@@ -267,10 +267,11 @@ come back with `<<<<<<<` markers. It never guesses. And it always
 commits or changes nothing: a conflicted merge lands *with* the markers
 and the provider tracks an outstanding merge context — `ws-git status`
 shows `## merging` and `UU`, `diff --check` finds the markers, and the
-next commit that removes them clears it. A deliberate deviation from
-git, which leaves conflicts uncommitted: here the conflicted state is
-itself a commit you can check out, and there is no working tree to
-leave things in.
+next commit that removes them clears it, as does `ws-git merge
+--abort`, which restores the tree to the commit the merge landed on and
+appends that restore. A deliberate deviation from git, which leaves
+conflicts uncommitted: here the conflicted state is itself a commit you
+can check out, and there is no working tree to leave things in.
 
 **Merge takes only what is agent-committed, on both sides.** The
 target refuses while it has anything modified against its own last
@@ -282,7 +283,7 @@ the honest answer for it.
 **A fork starts with a fresh ws-git state**, and that is what lets the
 last rule reach delegates. A branch carries the workspace — files,
 cache, cwd, and with `inherit="full"` the conversation — but never the
-agent's index, head or outstanding merge: an index is a composition in
+agent's index, head, outstanding merge or tags: an index is a composition in
 progress, and a delegate does not start halfway through somebody
 else's. So a delegate that never touched ws-git merges at its branch
 head, where autocommit put every write; one that committed is taken at
