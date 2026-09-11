@@ -1596,6 +1596,53 @@ def test_index_checkout_refuses_over_an_outstanding_merge(peer_ws):
         peer_ws.index.checkout(base)
 
 
+def test_a_bad_ref_says_what_was_looked_up_and_where(peer_ws, store):
+    """The commit half of a <session>@<x> ref is resolved in one place,
+    so a word that is none of the three spellings earns one message
+    naming the session it was looked for on — not the bare word."""
+    peer_ws.files.fs.write("/workspace/a.txt", b"one\n")
+    peer_ws.terminal("ws-git commit -m base")
+    peer_ws.terminal("ws-git branch polish")
+
+    want = (
+        "ws-git: nosuch is not a commit, a short id or a tag on session "
+        "'polish' (ws-git log polish, ws-git tag)"
+    )
+    for cmd in (
+        "ws-git worktree add review polish@nosuch",
+        "ws-git cherry-pick polish@nosuch",
+    ):
+        r = peer_ws.terminal(cmd)
+        assert r.exit_code == 1, (cmd, r.stdout)
+        assert r.stderr == want, (cmd, r.stderr)
+
+    # this session's own: the log that lists its commits takes no name
+    r = peer_ws.terminal("ws-git cherry-pick main@nosuch")
+    assert r.stderr == (
+        "ws-git: nosuch is not a commit, a short id or a tag on session "
+        "'main' (ws-git log, ws-git tag)"
+    ), r.stderr
+
+    # a commit id shaped right but held by nobody names its session too
+    r = peer_ws.terminal("ws-git worktree add review polish@deadbeef1234")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: no commit 'deadbeef1234' on session 'polish' "
+        "(ws-git log polish lists what it holds)"
+    ), r.stderr
+
+    # and a real tag of that session still resolves
+    other = store.open("polish")
+    register_wsgit(other)
+    try:
+        other.files.fs.write("/workspace/a.txt", b"two\n")
+        other.terminal("ws-git commit -m theirs")
+        other.terminal("ws-git tag shipped")
+    finally:
+        other.close()
+    assert peer_ws.terminal("ws-git worktree add review polish@shipped").exit_code == 0
+
+
 def test_branch_at_takes_a_tag_and_a_short_id(peer_ws, store):
     """`--at` is a ref, so every spelling of one works there: what the
     log printed, and what the session bookmarked."""

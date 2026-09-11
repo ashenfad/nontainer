@@ -170,7 +170,16 @@ both go straight back into the next verb.
 
 A short id that matches more than one commit is refused, naming the
 commits it could mean and asking for more of it — never resolved to
-whichever came first. A word that names neither a commit nor a session
+whichever came first. In `<session>@<x>`, an `x` that is none of the
+three — not a commit that session holds, not a short id of one, not a
+tag it set — is refused with the session it was looked for on and the
+verbs that list what is there:
+
+```
+$ ws-git worktree add review polish@nosuch
+ws-git: nosuch is not a commit, a short id or a tag on session 'polish' (ws-git log polish, ws-git tag)
+```
+ A word that names neither a commit nor a session
 is refused too: `diff` calls it an ambiguous argument rather than
 reading it as a pathspec that matches nothing, since silence there means
 "no differences" and would answer a mistyped session name with an

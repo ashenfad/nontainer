@@ -2141,7 +2141,10 @@ class Store:
         handle = provider._staged.checkout(commit)
         if handle is None:
             provider.close()
-            raise CommitNotFoundError(commit)
+            raise CommitNotFoundError(
+                f"no commit {commit!r} on session {session!r} "
+                f"(ws-git log {session} lists what it holds)"
+            )
         # The frozen provider and the handle it came from share one
         # backend, so closing the workspace this ends up in closes the
         # store exactly once. The opening provider is not closed here:
