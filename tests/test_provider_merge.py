@@ -163,6 +163,28 @@ def test_non_file_contested_is_hard_conflict(kv_ws):
         fork.close()
 
 
+def test_a_deleted_side_leaves_a_row_describing_the_merged_bytes(kv_ws):
+    """A file deleted on one side and edited on the other keeps the
+    surviving record, and the record describes what landed: the marker
+    bytes the content merge produced, not the size either side held."""
+    kv_ws.files.write("/workspace/a.txt", "one\ntwo\nthree\n")
+    fork = kv_ws.fork("worker")
+    try:
+        fork.files.fs.remove("/workspace/a.txt")
+        fork.commit()
+        kv_ws.files.write("/workspace/a.txt", "one\nEDITED\nthree\n")
+
+        out = _provider(kv_ws).merge("worker")
+
+        assert out.merged
+        assert out.conflicts == ("/workspace/a.txt",)
+        body = kv_ws.files.read("/workspace/a.txt")
+        assert b"<<<<<<< " in body
+        assert kv_ws.files.fs.stat("/workspace/a.txt").size == len(body)
+    finally:
+        fork.close()
+
+
 def test_the_cache_plane_takes_ours_whole(kv_ws):
     """The cache is session-scoped by construction, so the whole prefix
     is ours: a contested key keeps our value, and one only the other
