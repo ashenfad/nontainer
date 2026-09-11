@@ -1425,3 +1425,96 @@ def test_stash_is_no_longer_refused(ws):
 
     assert "stash" not in _EDGE
     assert "no stash here" not in _HELP
+
+
+def test_stash_push_refuses_over_an_outstanding_merge(peer_ws):
+    """A conflicted merge is a composition in progress. Putting it
+    aside would restore the merge commit — markers and all — while
+    clearing the context that says the markers are there, so status
+    would read clean over a tree full of them."""
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    peer_ws.terminal("ws-git commit -m base")
+    fork = peer_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.index.commit("theirs")
+    finally:
+        fork.close()
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git merge worker").exit_code == 1
+    was = peer_ws.terminal("ws-git status").stdout
+    assert "UU doc.txt" in was
+
+    # an edit to a marked file is what makes the tree look stashable
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\n<<<<<<< here\nhalf\n")
+
+    r = peer_ws.terminal("ws-git stash")
+    assert r.exit_code == 1
+    assert r.stderr.startswith(
+        "ws-git: an unresolved merge from worker is outstanding"
+    ), r.stderr
+    assert "ws-git commit" in r.stderr
+    assert "ws-git merge --abort" in r.stderr
+
+    # nothing moved: the context stands and the markers are still there
+    assert peer_ws.terminal("ws-git stash list").stdout == "(none)\n"
+    assert "UU doc.txt" in peer_ws.terminal("ws-git status").stdout
+    assert "<<<<<<< " in peer_ws.terminal("cat doc.txt").stdout
+
+
+def test_stash_pop_refuses_over_an_outstanding_merge(peer_ws, store):
+    """A pop is a merge, so it lands a second set of markers over the
+    first and takes the first merge's context with it — after which
+    neither status nor merge --abort can see the markers already in the
+    tree."""
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    peer_ws.files.fs.write("/workspace/side.txt", b"side\n")
+    peer_ws.terminal("ws-git commit -m base")
+    peer_ws.files.fs.write("/workspace/side.txt", b"stashed\n")
+    assert peer_ws.terminal("ws-git stash").exit_code == 0
+
+    fork = peer_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.index.commit("theirs")
+    finally:
+        fork.close()
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git merge worker").exit_code == 1
+    was = peer_ws.terminal("ws-git status").stdout
+    assert "UU doc.txt" in was
+
+    r = peer_ws.terminal("ws-git stash pop")
+    assert r.exit_code == 1
+    assert r.stderr.startswith(
+        "ws-git: an unresolved merge from worker is outstanding"
+    ), r.stderr
+    assert "ws-git merge --abort" in r.stderr
+
+    # the first merge's context is exactly as it was, and the stash
+    # is still there to pop once it is resolved
+    assert peer_ws.terminal("ws-git status").stdout == was
+    assert peer_ws.terminal("ws-git stash list").stdout == "stash@{0}: base\n"
+    assert "main.stash-0" in store.sessions()
+
+
+def test_branch_at_takes_a_tag_and_a_short_id(peer_ws, store):
+    """`--at` is a ref, so every spelling of one works there: what the
+    log printed, and what the session bookmarked."""
+    peer_ws.files.fs.write("/workspace/a.txt", b"one\n")
+    peer_ws.terminal("ws-git commit -m first")
+    first = peer_ws.index.head
+    peer_ws.terminal("ws-git tag start")
+    peer_ws.files.fs.write("/workspace/a.txt", b"two\n")
+    peer_ws.terminal("ws-git commit -m second")
+
+    for name, ref in (("by-tag", "start"), ("by-id", first[:7])):
+        r = peer_ws.terminal(f"ws-git branch {name} --at {ref}")
+        assert r.exit_code == 0, (ref, r.stderr)
+        child = store.open(name)
+        try:
+            assert child.files.read("/workspace/a.txt") == b"one\n"
+        finally:
+            child.close()

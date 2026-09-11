@@ -900,6 +900,12 @@ def _stash_push(git: AgentGit, ws: Any, ctx: Any, args: list[str]) -> Any:
         else:
             return _usage_error("stash push takes a message only (-m MSG).")
 
+    # A stash MOVES the tree rather than landing a change in it, which
+    # is exactly what an outstanding merge cannot survive: the branch
+    # would carry the markers away while the checkout restored the
+    # merge commit and cleared the record of which paths were marked,
+    # leaving a clean status over a tree full of them.
+    ws._require_unmerged(git, "stash")
     head = git.head
     if head is None:
         # git's own answer: there is no state to go back to, so there
