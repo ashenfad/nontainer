@@ -897,8 +897,8 @@ def test_worktree_paths_are_never_modified(peer_ws):
 
 
 def test_worktree_add_again_sees_newer_work(peer_ws, store):
-    """A worktree is pinned at a commit: adding again is how you see
-    what the session has done since."""
+    """A worktree is pinned at a commit, so taking it down and putting
+    it up again is how you see what the session has done since."""
     peer_ws.terminal("ws-git worktree add peek peer")
     first = peer_ws.terminal("ws-git worktree list").stdout
     _advance_peer(store)
@@ -909,6 +909,28 @@ def test_worktree_add_again_sees_newer_work(peer_ws, store):
     assert r.exit_code == 0, r.stderr
     assert r.stdout != first
     assert peer_ws.terminal("cat peek/note.md").stdout == "second\n"
+
+
+def test_worktree_add_over_a_worktree_names_the_way_to_refresh(peer_ws):
+    """A worktree is pinned, so seeing newer work means taking it down
+    and putting it up again. The refusal has to say so: adding again
+    over a live worktree earned the generic not-empty reason, which
+    sent an agent looking for a directory to clear instead."""
+    peer_ws.terminal("ws-git worktree add peek peer")
+    r = peer_ws.terminal("ws-git worktree add peek peer")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: there is already a worktree at 'peek': it is pinned at a "
+        "commit, so seeing newer work means taking it down and putting it "
+        "up again (ws-git worktree remove peek)."
+    )
+
+
+def test_help_says_how_a_worktree_is_refreshed():
+    """The help said 'add it again', which the verb refuses."""
+    flat = " ".join(_HELP.split())  # the help is wrapped; the rule is not
+    assert "add it again to see newer work" not in flat
+    assert "to see newer work, remove it and add it again" in flat
 
 
 def test_worktree_add_at_a_commit(peer_ws, store):
