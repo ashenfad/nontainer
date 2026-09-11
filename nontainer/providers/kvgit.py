@@ -1494,7 +1494,11 @@ class KvgitProvider:
         does — identical sides stand, a side that did not change takes
         the other, and anything else is the marker merge — so the size
         is the merged blob's, whether the merge was clean or marked.
-        ``None`` where that cannot be answered (a directory row, an
+        A side given as no handle at all is the empty tree, and holds
+        no bytes for any file: the same reading every other rule here
+        takes of a missing side.
+
+        ``None`` where the size cannot be answered (a directory row, an
         unreadable side, bytes no marker merge can mark): the row then
         keeps a side's own size, which is the best that is known.
         """
@@ -1509,7 +1513,7 @@ class KvgitProvider:
             return None
         base = at_lca.get(blob_key) if at_lca is not None else None
         ours = self._staged.get(blob_key)
-        theirs = other.get(blob_key)
+        theirs = other.get(blob_key) if other is not None else None
         for side in (base, ours, theirs):
             if side is not None and not isinstance(side, bytes):
                 return None

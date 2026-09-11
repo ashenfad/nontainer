@@ -170,6 +170,23 @@ def test_the_empty_tree_is_a_side(kv_ws):
     assert not kv_ws.files.exists("/workspace/a.txt")
 
 
+def test_the_empty_tree_is_a_side_for_a_file_changed_since(kv_ws):
+    """A side that is the empty tree is the empty tree everywhere the
+    three-way reads, the metadata row's sizing included."""
+    p = _provider(kv_ws)
+    kv_ws.files.write("/workspace/a.txt", "one\ntwo\nthree\n")
+    first = p.head
+    kv_ws.files.write("/workspace/a.txt", "one\nEDITED\nthree\n")
+
+    out = p.apply(first, None)
+
+    assert out.merged
+    assert out.conflicts == ("/workspace/a.txt",)
+    assert b"<<<<<<< " in kv_ws.files.read("/workspace/a.txt")
+    # the file is still a file, described by a row the merge wrote
+    assert not kv_ws.files.fs.stat("/workspace/a.txt").is_dir
+
+
 def test_apply_refuses_uncommitted_work(kv_ws):
     p = _provider(kv_ws)
     kv_ws.files.write("/workspace/a.txt", "one\n")
