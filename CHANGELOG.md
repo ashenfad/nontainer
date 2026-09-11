@@ -8,6 +8,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ws-git tag`, the agent's own bookmark.** `ws-git tag` lists,
+  `ws-git tag [-f] <name> [<commit>]` names a commit (your head by
+  default) and `ws-git tag -d <name>` drops the name. The name is then
+  a ref wherever a ref is taken — `checkout`, `checkout -- <paths>`,
+  `show`, `revert` — and `<session>@<tag>` reads another session's for
+  `worktree add` and `cherry-pick`; `ws-git log` decorates the id with
+  `(tag: a, b)`. It is not a store tag: the session's history is
+  append-only and every commit the agent made is reachable from its
+  head, so there is nothing to pin. It lives in the agent's own blob,
+  dies with the session, is not inherited by a fork and is not brought
+  over by a merge. A name already taken is refused as git refuses one,
+  and a name spelled like a commit id (seven or more hex characters) is
+  refused outright, which is what lets a tag be read before a hash with
+  nothing ambiguous about it. Host-side: `ws.index.tags()`,
+  `ws.index.tag()`, `ws.index.delete_tag()`.
+- **`ws-git merge --abort`.** A merge that conflicts lands, markers and
+  all, and stays outstanding until they are gone; there was no way out
+  of it but to edit every marked file. The verb restores the tree to
+  the commit the merge landed on and clears the merge, so `status`
+  reads clean. The merge itself stays in the session's history — the
+  restore is a new appended commit, as `ws-git checkout` is. Refused
+  when nothing is outstanding, and when the merge landed on a session
+  with no ws-git commit of its own, since there is then no commit of
+  the agent's to go back to.
+- **`ws-git stash`**, replacing the refusal that said a fork is a
+  stash — because it is one. `ws-git stash` (and `stash push [-m MSG]`)
+  forks the modified working set to `<session>.stash-N` and restores
+  the tree to the agent's last commit; `stash list` numbers them git's
+  way, newest `stash@{0}`; `stash pop` merges one back and deletes its
+  branch when it lands clean, keeping it when it conflicts; `stash
+  drop` deletes one; `stash show` diffs one against the head. The
+  branch is forked AT the head with the modified files written onto it,
+  so the stash holds the change and a pop is an ordinary three-way
+  against that same head. With nothing modified it refuses with git's
+  `No local changes to save`, and a session that has committed nothing
+  gets git's `You do not have the initial commit yet`. A stash is an
+  ordinary session on the store: an embedder listing `store.sessions()`
+  sees `<session>.stash-N` while one is up, and `Store.delete` takes
+  one by name.
 - **`ws-git worktree add <dir> <session>[@<commit>]` / `list` /
   `remove <dir>`.** The terminal spelling of `ws.files.attach` /
   `attachments` / `detach`: another session's tree checked out under a

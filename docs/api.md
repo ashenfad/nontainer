@@ -412,7 +412,7 @@ says which seam it belongs to:
 | | holds | |
 |---|---|---|
 | `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
-| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout |
+| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout / tags / tag / delete_tag |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
 | `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
 | `store.tags` | names that outlive the session | add / list / info / delete / at |
@@ -585,7 +585,18 @@ ws.index.log(limit=None) -> list[CommitInfo]     # the agent's own commits
 ws.index.head -> str | None                      # the agent's last commit
 ws.index.checkout(commit) -> str                 # restore the tree to one
                                                  # of the AGENT's commits
+ws.index.tags() -> dict[str, str]                # the agent's bookmarks
+ws.index.tag(name, ref=None, *, force=False) -> str
+ws.index.delete_tag(name) -> str                 # returns what it named
 ```
+
+**`ws.index` tags are the agent's own bookmarks**, not `ws.tags`. A
+name in the agent's blob, pointing at one of its commits: it pins
+nothing (the session's history is append-only and reaches every commit
+the agent made), it belongs to this session and dies with it, a fork
+starts with none, and a merge brings none over. `tags()` hands back a
+record of what they are, not a live view. `ws.tags` and `store.tags`
+are the store's, and they do pin what they name.
 
 **`ws.index` is the agent's own git**, and a fiction over this
 session's history: the index and the agent's commit graph are metadata
