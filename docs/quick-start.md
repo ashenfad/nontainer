@@ -124,6 +124,8 @@ workspace whose backend has `caps.index` (kvgit does) has it. The
 terminal `ws-git` exists only where `register_wsgit(ws)` has been
 called; until then the agent gets `ws-git: command not found`. Both
 drive the same index, so host and agent see one composition.
+[ws-git.md](ws-git.md) is the reference for the agent's half — every
+verb, what it prints, and what it refuses.
 
 [examples/tour.py](../examples/tour.py) runs all of it end to end.
 

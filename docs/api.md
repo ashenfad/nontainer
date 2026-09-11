@@ -591,14 +591,18 @@ ws.index.checkout(commit) -> str                 # restore the tree to one
 session's history: the index and the agent's commit graph are metadata
 in a reserved key, `status` measures against the agent's last commit
 rather than the store's head, and `log` walks the agent's commits and
-not the framework's. `ws-git` in the terminal is the same
-implementation with the agent's spelling, so host and agent see one
-index — plus `branch`, `merge`, `revert`, `cherry-pick`, `worktree`
-and `sparse-checkout`, the verbs that reach the sessions around this
-one, the commits behind it, and the view this one was given. Registered by
+not the framework's. `ws.index` is on every workspace whose provider
+has `caps.index`, unconditionally. See [design.md](design.md) for the
+model.
+
+**`ws-git` in the terminal is the same implementation spelled for the
+agent**, so the host and the agent see one index and one graph. It adds
+the verbs that reach the sessions around this one, the commits behind
+it, and the view this one was given — `branch`, `merge`, `revert`,
+`cherry-pick`, `worktree`, `sparse-checkout` — and it is registered by
 `nontainer.wsgit.register_wsgit(ws)`, which the embedder calls and no
-adapter calls for it, where `ws.index` is on every workspace
-unconditionally. See [design.md](design.md) for the model.
+adapter calls for it. [ws-git.md](ws-git.md) is the reference for every
+verb, its output and its refusals.
 
 `WorkspaceStatus` carries `branch` (the session), `staged` and
 `unstaged` (workspace paths, both measured against the agent's last
@@ -623,9 +627,7 @@ work in progress modified, because both are measured against the
 agent's own last commit. `ws.index.commit(message)` is the agent's
 verb: the staged set (everything modified when nothing is staged),
 committed as a point in the agent's graph, with the work in progress
-left in the tree and out of the commit. The terminal's `ws-git commit`
-is the same verb — it reads its context, because a person at a
-terminal can see the status line and has no `-a` to ask with.
+left in the tree and out of the commit.
 
 The content hash of the head — the identity of *what* the files and
 cache are, where `head` identifies the point in history — is
@@ -717,19 +719,6 @@ reopened delegate is narrowed exactly as it was, and it merges
 caller. A fork given the whole tree records nothing, so a child of a
 narrowed session does not inherit its blinkers.
 
-**`ws-git sparse-checkout list`** is how a narrowed session asks what
-it was given, instead of discovering it by hitting the write rule: the
-seed paths one per line, rendered as every other path is (relative to
-the root, a directory with its slash), or `(full)` for a session that
-sees the whole tree. The bare `ws-git sparse-checkout` prints the same.
-`ws-git status` leads with one `view: a/, b.md` line carrying those
-paths — omitted for a full session — so a reader sees what the rows
-below are measured over. It is the seed and not the view as it stands:
-a file the session created joined its view because it made it. A view
-is given when the session is forked and cannot be changed from the
-terminal, so any other subcommand is a usage error naming `ws-git
-branch <name> --paths <paths>`.
-
 **`ws.checkout(ref, paths=[...])`** is the second form of one verb, and
 git's `restore --source=<ref> -- <paths>`: it makes those paths match
 any ref and leaves everything else alone. `ref` is a `session@commit`,
@@ -765,15 +754,6 @@ sees it — the contract a `Mount` outside the root already has. And as
 with a mount, while anything is attached the working directory belongs
 to the composition, so a session committed in that state reopens at its
 root rather than where its agent was standing.
-
-The agent's spelling of the same three verbs is `ws-git worktree add
-<dir> <session>[@<commit>]` / `list` / `remove <dir>` in the terminal,
-which resolves `<dir>` against the shell's cwd and prints `worktree
-<dir>: <session>@<short commit> (read-only)`. It refuses a directory
-that already holds something, one inside a worktree already up, and
-this session's own name. `ws-git status` ends with a `worktrees:`
-block listing them, since nothing else it prints can ever name a file
-inside one.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s
@@ -901,18 +881,6 @@ commits, so `"work"` and `"all"` are the same history there. An unknown
 kind raises `ValueError`. `ws.index.log()` is the agent's own fiction
 and takes no `kind`.
 
-**`ws-git log [<session>] [-n N] [--all] [-S <string>]`** is the
-agent's spelling: its own commits by default, another session's where
-permitted, and `--all` for every commit the session holds — the
-framework's included. `-S <string>` is git's pickaxe: only the commits
-where the number of times `<string>` occurs in the tree changed
-between the commit and its parent, with `+` or `-` after the id for
-appeared or vanished. A commit that only moved the string within a
-file is not one of them. It reads the files that changed in each
-commit and no others — a file both sides hold unchanged counts the
-same on each side, so it cannot move the total — and bytes that are
-not text hold no occurrences, so a binary file never matches.
-
 `CommitInfo.parents` carries the ids a commit descends from: one for an
 ordinary commit, two for a merge, empty for a root commit and for a
 provider whose history is a list rather than a graph. A merge's first
@@ -1017,9 +985,7 @@ sent the delegate to do from everything else it touched. The merge
 takes both — the grouping is what stops the second from going
 unnoticed. It groups by the *seed*, not the delegate's current view: a
 file the delegate created is in its view because it made it, and that
-is exactly a change the caller has not seen before. `ws-git diff
-<session>` prints the same split under `# N path(s) in <session>'s
-seed` / `# N path(s) elsewhere`.
+is exactly a change the caller has not seen before.
 
 `modified` is the content question: a file re-saved with the bytes it
 already had is not a change, even though it is a new write. kvgit

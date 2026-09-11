@@ -2,7 +2,8 @@
 
 Why nontainer is shaped the way it is. This is the rationale doc — for
 *using* nontainer, see [quick-start](quick-start.md) and the
-[API reference](api.md); for the apps extra, [apps.md](apps.md).
+[API reference](api.md); for the verbs the agent types, [ws-git.md](ws-git.md);
+for the apps extra, [apps.md](apps.md).
 
 ## Script model, not a persistent REPL
 
@@ -131,10 +132,12 @@ the whole model:
   touched — not left to `autocommit`, which a per-turn host turns off,
   and not allowed to sweep up unrelated dirty work. A refused commit
   (a CAS conflict) puts the working tree and the index back. Which
-  commits are the agent's is one rule: `info["tool"]` is `ws-git` or
-  `ws-git.merge`; the bookkeeping's `ws-git.restore`,
-  `ws-git.checkout` and `ws-git.merge-record` are plumbing like the
-  framework's own.
+  commits are the agent's is one rule: `info["tool"]` is the verb the
+  agent composed (`ws-git`) or a host verb that changed its tree and
+  took a place in its graph (`ws-git.merge`, `ws-git.revert`,
+  `ws-git.cherry-pick`); the bookkeeping's `ws-git.restore`,
+  `ws-git.checkout`, `ws-git.merge-record` and `ws-git.fork` are
+  plumbing like the framework's own.
 - **`log`, `show` and `diff` walk the agent's graph**, threaded
   through `virtual_parents` in commit info. The framework's per-call
   commits are never in it.
@@ -162,6 +165,7 @@ is a terminal builtin registered by `register_wsgit(ws)`, the way
 `enable_apps` registers `ws-curl`, and a session where nobody called it
 answers `ws-git: command not found`. The host's `ws.index` needs no such
 switch — a workspace whose provider has `caps.index` always has it.
+Every verb, its output and its refusals are in [ws-git.md](ws-git.md).
 
 **Delegation is a tool; versioning is the terminal.** The two halves are
 spelled in different places on purpose. Sending work out is a `sessions`

@@ -1,0 +1,454 @@
+# ws-git
+
+`ws-git` is the agent's git over its own session: an index it fills
+across several edits, commits it names, a log it can read back, and the
+verbs that reach the sessions around it. It is a terminal builtin, so an
+agent types it in the shell next to `cat` and `grep`.
+
+This page is the human-readable twin of `ws-git help`. The host's half
+of the same machinery is `ws.index` in the
+[API reference](api.md#versioning-gated-by-wscaps) — one implementation
+with two spellings, so the host and the agent see one index and one
+graph. Registration is the embedder's call:
+
+```python
+from nontainer.wsgit import register_wsgit
+
+register_wsgit(ws)        # now the shell answers `ws-git`
+```
+
+Until someone calls it the agent gets `ws-git: command not found`. The
+verbs need a provider with `caps.index` (kvgit has it); anywhere else
+every verb refuses by name.
+
+## The verbs
+
+Git's spelling is on the left, what it does here on the right.
+
+| ws-git | what it does here |
+|---|---|
+| `stage <paths>` | add paths to the index. Silent, like `git add` |
+| `unstage <paths>` | drop paths from the index |
+| `commit [-m MSG]` | commit the staged set, or everything modified when nothing is staged |
+| `reset` | abandon the composition and keep the tree. Mixed-only |
+| `status [--porcelain]` | what is staged, what is modified, what a merge left marked |
+| `diff [--cached] [--check] [paths...]` | unified diff against your last commit |
+| `diff <session>` | your tree against another session's last commit, grouped by what that session was sent to do |
+| `log [-n N] [--all] [-S <string>]` | your own commits, newest first |
+| `log <session>` | another session's commits |
+| `show <ref>` | one commit: its message and its diff |
+| `checkout <ref>` | restore your tree to one of your commits |
+| `checkout <ref> -- <paths>` | make just those paths match that ref, which may name another session |
+| `branch` | the sessions on this store, yours marked `*` |
+| `branch <name> [--at <ref>] [--fresh] [--paths <paths>]` | fork a session. It does not switch, as `git branch` does not |
+| `merge <session>` | merge that session's last commit into yours |
+| `revert <commit>` | a new commit undoing one commit's change |
+| `cherry-pick <session>@<commit>` | a new commit applying one change from another session |
+| `worktree add <dir> <session>[@<commit>]` | check another session's tree out under a directory, read-only |
+| `worktree list` / `worktree remove <dir>` | the worktrees here; take one down |
+| `sparse-checkout list` | the paths this session was given to see |
+| `help` | the whole surface in one screen |
+
+There is no `.git`: branches are sessions and history is commits.
+
+## Two ways to commit
+
+`ws-git commit` reads what you staged, and there are exactly two cases.
+
+**Nothing staged commits everything modified.** Git would refuse this
+("no changes added to commit") because git has `-a` to ask with; here
+the verb reads its own context instead, since an agent has no index open
+in front of it to have forgotten about.
+
+**A staged set commits only that set.** What you left out stays in the
+working tree, uncommitted and unchanged — the commit's tree is exactly
+what you said it was, never what happened to be modified at the time. So
+a partial commit is safe to make in the middle of other work: the rest
+is still there afterwards, still modified, still yours to commit next.
+
+`-m MSG` is optional, where git insists on a message. A commit without
+one is still a point in the graph, and `log` shows it under the name of
+the verb that made it.
+
+There is no `-a` and no pathspec. Staging is what names a subset:
+
+```
+$ ws-git status
+ M auth.py
+ M notes.md
+
+$ ws-git stage auth.py
+
+$ ws-git status
+M  auth.py
+ M notes.md
+
+$ ws-git commit -m 'add auth'
+[main 3250a37] add auth (1 file)
+
+$ ws-git status
+ M notes.md
+```
+
+`ws-git reset` clears the index and leaves every file as it is. Going
+back to a commit is `ws-git checkout <ref>`, so `--soft` and `--hard`
+are usage errors naming it.
+
+## What status shows
+
+Clean is silent, as in git. Otherwise `status` prints, in this order:
+
+- **`view: a/, b.md`** — the paths this session was given to see, when
+  it was forked with a narrowed view. A session that sees the whole tree
+  prints no such line. It tells a reader what the rows below are
+  measured over.
+- **`## merging <session>@<commit> (N unresolved)`** — the merge, revert
+  or cherry-pick that left markers behind, and how many files still
+  carry them. Git has no equivalent line; a session has no working tree
+  to leave a conflicted state in, so the state is named instead.
+- **the file rows**, in git's short `XY` columns: `M ` staged, ` M`
+  modified and not staged, `UU` left marked by a merge. A path is in one
+  column or the other, never both — staging a file moves it from the
+  right column to the left.
+- **a `worktrees:` block** when any are up, one line per worktree in the
+  shape `worktree list` prints.
+
+```
+$ ws-git status
+## merging other@569ede1 (1 unresolved)
+UU shared.md
+```
+
+The rows are measured against **your last ws-git commit**, never the
+store's head. The workspace commits on its own as you work, and none of
+those commits disturbs a composition: they land in the store and leave
+your index and your modified files exactly where they were.
+
+`--porcelain` is accepted and changes nothing: the porcelain shape is
+the only shape, so the flag is there for an agent that types it out of
+habit.
+
+## Refs and short ids
+
+Four things can be a ref, and which of them a verb takes is the verb's
+business:
+
+- **`HEAD`** — your last ws-git commit. Unborn before your first one,
+  and the refusal says so.
+- **a commit id** — seven hex characters or more. Seven is what every
+  ws-git line prints, so an id read off a log line is one you can type
+  back. `checkout` and `show` take one of *your* commits; a commit of
+  this session that is not one of yours is refused by name, because
+  taking one as your head would strand your whole log behind it.
+- **a session name** — what that session's agent last committed, or its
+  branch head when it never used ws-git. `merge <session>`,
+  `diff <session>`, `log <session>` and `checkout <session> -- <paths>`
+  all read a name that way, so they cannot disagree about what a
+  delegate said.
+- **`<session>@<commit>`** — one exact state on one session: this commit
+  on this branch. `cherry-pick` requires this form, and
+  `worktree add` accepts it.
+
+Every spelling ws-git prints, it accepts back. Commit lines print seven
+characters of an id; worktree lines print `session@<seven characters>`;
+both go straight back into the next verb.
+
+A short id that matches more than one commit is refused, naming the
+commits it could mean and asking for more of it — never resolved to
+whichever came first. A word that names neither a commit nor a session
+is refused too: `diff` calls it an ambiguous argument rather than
+reading it as a pathspec that matches nothing, since silence there means
+"no differences" and would answer a mistyped session name with an
+apparent all-clear.
+
+A tag name is not a ref here. Tags are the host's (`ws.tags`,
+`store.tags`); ws-git reads commits and sessions.
+
+## Conflicts
+
+A merge, a revert and a cherry-pick all **land even when they
+conflict**. Git leaves conflicts uncommitted in the working tree; there
+is no working tree here to leave them in, so the markers go *into* the
+commit and the conflicted state is itself a commit you can check out.
+
+```
+$ ws-git merge other
+CONFLICT (content): Merge conflict in shared.md
+[main 569ede1] merge other (1 file)
+ws-git: Merge landed with conflict markers in 1 file(s): fix them and commit (ws-git status shows them as UU).
+```
+
+The exit code is non-zero and the news on stderr says what to do next.
+From there:
+
+- `ws-git status` lists the marked files as `UU` under the `## merging`
+  line.
+- `ws-git diff --check` finds the marker lines by path and line number,
+  and exits 2 when it finds any.
+- Edit the files as you would any others — the markers are ordinary
+  bytes.
+- `ws-git commit` records the resolution.
+
+A file stops being unresolved **when its markers are gone**, not when it
+is committed. So resolving them one at a time shows progress in
+`status`, and the merge context ends with the last marker — whichever
+commit carried the resolution:
+
+```
+$ ws-git status
+ M shared.md
+
+$ ws-git commit -m resolve
+[main 728de11] resolve (1 file)
+
+$ ws-git status
+```
+
+A commit that *includes* a marked path resolves it only if what it
+commits has no markers left; a commit that leaves the path out leaves it
+marked. Membership in a commit is not resolution.
+
+There is no `--continue` and no `--abort`, for merge or for the other
+two: the commit is already made, so there is no half-finished operation
+to continue out of. The way back from a landed merge you do not want is
+`ws-git checkout <your commit before it>`.
+
+Non-file contested state — something no merge function can resolve —
+aborts instead, changes nothing, and says so.
+
+## Worktrees
+
+`ws-git worktree add <dir> <session>` checks another session's tree out
+under a directory of its own, and you read it with `cat`, `ls` and
+`grep`:
+
+```
+$ ws-git worktree add review polish
+worktree review: polish@dd906ff (read-only)
+
+$ ws-git worktree list
+worktree review: polish@dd906ff (read-only)
+```
+
+It is **read-only and pinned at a commit**, on purpose. Work moves
+between sessions by merge and by take, and a second tree an agent could
+edit in place would be a third way with no way back. To change another
+session's branch, ask that session, or take its files with
+`ws-git checkout <session> -- <paths>` and change yours.
+
+A bare session name takes its head at that moment; nothing later
+appears in the worktree by itself. Add it again to see newer work, or
+name the commit you want with `<session>@<commit>`.
+
+What lands is the source's **whole branch**, not what its own session
+can see — a delegate given a narrow view is exactly the one worth
+reading this way.
+
+A worktree lives outside your versioned tree. No commit of yours carries
+it, and no `status` or `diff` row can ever name a file in it, which is
+why `status` ends with a `worktrees:` block: a directory full of files
+that never show as modified is otherwise a puzzle.
+
+`worktree add` refuses a directory that already holds something, a
+directory inside a worktree already up, and this session's own name.
+
+## Revert and cherry-pick
+
+These are one operation with the two commits swapped: a three-way merge
+whose base is *named* rather than found, resolved by the rules a merge
+resolves by, landing as a new commit.
+
+```
+$ ws-git revert HEAD
+Auto-merging shared.md
+[main 1661332] revert 728de11 (1 file)
+
+$ ws-git cherry-pick helper@c274c81
+Auto-merging b.txt
+[main fae9ede] cherry-pick helper@c274c81 (1 file)
+```
+
+`revert <commit>` undoes what that commit changed. The commit stays in
+the log and the undoing lands on top of it — history is append-only, and
+a revert is itself a commit that can be reverted. What is undone is the
+**change**, not the state: work done since in other files, and elsewhere
+in the same file, stands.
+
+`cherry-pick <session>@<commit>` applies one commit's change from
+another session. Its change, not its tree: what the commit before it
+holds is left as yours. Taking everything a session committed is
+`ws-git merge`. The named session must be one whose history reaches that
+commit, so a sibling's commit under the wrong name is refused rather
+than applied with a provenance nothing supports.
+
+Two rules decide what "that commit's change" means:
+
+- **The virtual parent.** A commit's change is measured against its
+  parent in *your* graph, never the store's. The workspace commits your
+  edits for durability as you make them, so the store parent of a ws-git
+  commit already holds them; only the agent's graph knows what the
+  commit was composed on.
+- **The fork point.** A session's first ws-git commit is measured
+  against the commit its session was forked at, which is what makes a
+  delegate's first commit its own work rather than the tree it
+  inherited. A session that never forked measures against the empty
+  tree, so reverting its first commit removes the files it introduced.
+
+A merge commit reverts to **ours** — the side it was made from, the way
+`git revert -m 1` does. It is the only side a session has.
+
+Where the change is already in your tree, nothing is committed and the
+verb says so. Both verbs refuse work you have not committed, and refuse
+while a merge is still outstanding, since a second change over a
+conflicted merge would mark files that merge already marked.
+
+## Bringing a delegate's work back
+
+A delegate works on a branch of its own and touches none of your files.
+You bring the work back yourself, and there are five ways, in rising
+order of commitment:
+
+| you want | type |
+|---|---|
+| to read what it changed | `ws-git diff <name>` |
+| to read its tree with ordinary tools | `ws-git worktree add <dir> <name>` |
+| all of it | `ws-git merge <name>` |
+| some files | `ws-git checkout <name> -- <paths>` |
+| one of its commits | `ws-git cherry-pick <name>@<commit>` |
+
+`ws-git diff <name>` groups its changes by the view the delegate was
+given:
+
+```
+$ ws-git diff polish
+# 1 path(s) in polish's seed
+diff --git a/auth.py b/auth.py
+--- a/auth.py
++++ b/auth.py
+@@ -1,2 +1,2 @@
+ def login(user):
+-    return user.strip()
++    return user.strip().lower()
+# 1 path(s) elsewhere
+diff --git a/why.md b/why.md
+--- a/why.md
++++ b/why.md
+@@ -0,0 +1 @@
++lowercased for lookup
+```
+
+Git has no such headers. The collateral a delegate touched outside what
+it was sent to do is the thing a caller must not miss, and a merge takes
+both groups — the grouping is what stops the second from going
+unnoticed. The split is by the paths the delegate was *seeded* with: a
+file it created is in its view because it made it, and that is exactly a
+change you have not seen before.
+
+`ws-git checkout <name> -- <paths>` is git's
+`restore --source=<ref> -- <paths>`, exactly. A path that names a
+**directory** mirrors that subtree, so a file it holds here and the ref
+does not is removed — taking a delegate's `pkg/` cannot leave behind the
+`pkg/old.py` the delegate deleted. A path that names a file moves that
+file and removes nothing. What lands are ordinary writes, so your own
+`status` sees them as work in the tree, to commit or not as you choose.
+
+`ws-git merge <name>` takes only what has been **committed, on both
+sides**. Your tree must have nothing modified against your own last
+ws-git commit, and the source is merged at its last agent commit rather
+than at its branch head — a source that has written since is refused
+rather than merged at a state its agent has moved past. Both refusals
+name the same two fixes: commit the work, or check out the last commit
+to drop it. A session that has never made a ws-git commit has no such
+commit to differ from, so there only an open index refuses.
+
+`ws-git branch <name> --paths <paths>` is the other direction: forking a
+session and narrowing what it can **see**, not what its branch holds.
+
+A narrowed session asks what it was given with
+`ws-git sparse-checkout list`, instead of discovering it by being
+refused a write. It prints the seed paths one per line, rendered the way
+every other path is — relative to the root, a directory with its slash —
+or `(full)` for a session that sees the whole tree. The bare
+`ws-git sparse-checkout` prints the same, and any other subcommand is a
+usage error, because a view is given at the fork and cannot be changed
+from the terminal.
+
+It prints the **seed**, not the view as it stands: a file the session
+created joined its view because it made it, while what it was narrowed
+to is what it was given.
+
+## What is refused
+
+Two verbs refuse with a hint that names a terminal verb to reach for
+instead:
+
+- **`rebase`**, and history rewriting generally: history here is
+  append-only. Branch from the commit you want
+  (`ws-git branch <name> --at <ref>`) and merge forward;
+  `ws-git checkout <ref>` goes back.
+- **`stash`**: a fork *is* a stash. `ws-git branch <name>` takes your
+  state to a session of its own and leaves this one where it is. Or
+  commit what you have and keep going — snapshots are cheap.
+
+`switch`, `reflog`, `remote` and every other git verb are simply not
+ws-git commands: they earn the unknown-command message, which lists the
+whole supported surface. What each would have meant is covered anyway —
+a session **is** a branch, so there is nothing to switch to;
+`ws-git log --all` is the reflog, showing every commit the session
+holds; and there is no remote, because every session lives in one store
+and the verbs that reach another one name it directly.
+
+## ws-git and the store
+
+The session's own history is append-only: a branch head only ever moves
+forward, and nothing but store-level administration takes a commit away.
+That has three consequences worth knowing at the terminal.
+
+**The workspace commits on its own.** Every tool call that changes
+something lands in the store, for durability, at moments you did not
+choose. Those commits are plumbing: `ws-git log` never shows them, and
+showing them would bury your history in your own tool calls. `--all`
+shows every commit the session holds, the framework's and the fiction's
+bookkeeping included:
+
+```
+$ ws-git log
+df5ad62 ws-git.merge from polish
+e0ec0be strip the user
+3250a37 add auth
+
+$ ws-git log --all -n 6
+b1b59c9 terminal
+42ddae4 ws-git.merge-record
+df5ad62 ws-git.merge from polish
+cefe3a1 terminal
+7fd1dcb ws-git.restore
+e0ec0be strip the user
+```
+
+**Your work is durable before you commit it.** Nothing is withheld from
+the store while you compose, and nothing suspends the workspace's own
+committing. A commit of yours is a point in *your* graph, not the
+difference between saved and lost.
+
+**`ws-git checkout` rewinds you, and the store appends.** The tree is
+restored and your head moves back, but the restore lands as a new
+commit, so nothing already committed leaves the session:
+
+```
+$ ws-git checkout 23954a1
+[main] restored to 23954a1
+```
+
+The commits you stepped off are still in the session's history, which
+means an undo is redo-able and stepping off a line of work costs nothing
+— you do not have to tag or fork before going back.
+
+`ws-git log -S <string>` is git's pickaxe over the same history: only
+the commits where the number of times `<string>` occurs in the tree
+changed between the commit and its parent, with `+` or `-` after the id
+for appeared or vanished. A commit that only moved the string within a
+file is not one of them. It reads the files that changed in each commit
+and no others — a file both sides hold unchanged counts the same on each
+side, so it cannot move the total — and bytes that are not text hold no
+occurrences, so a binary file never matches.
