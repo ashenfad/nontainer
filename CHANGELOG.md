@@ -59,7 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A short commit id is a ref everywhere.** A unique prefix of seven
   hex characters or more — the length every ws-git line prints —
   resolves wherever a ref is taken: `store.resolve`, `ws.checkout`
-  (both forms), `ws.files.attach`, and the ws-git verbs that name a
+  (both forms), `ws.fork(at=)` (so `ws-git branch <name> --at <ref>`
+  takes one), `ws.files.attach`, and the ws-git verbs that name a
   `<session>@<commit>`. The prefix expands against that session's whole
   history, the framework's commits included, so what a verb prints is
   what it accepts back. An ambiguous prefix raises `ValueError` naming
