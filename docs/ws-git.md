@@ -195,7 +195,8 @@ $ ws-git checkout before-refactor
 ```
 
 With no commit named it bookmarks your head; `ws-git tag <name> <ref>`
-bookmarks whatever the ref names. A name already taken is refused, as
+bookmarks whatever the ref names. The bare `ws-git tag` prints `(none)`
+when you have made none. A name already taken is refused, as
 git refuses one, and `-f` moves it. `ws-git tag -d <name>` drops the
 name and leaves the commit exactly where it is.
 
@@ -278,9 +279,32 @@ A stash **is a branch**, so `ws-git branch` lists `<session>.stash-N`
 while one is up, and so does a host or an embedder listing the store's
 sessions (`store.sessions()`) — a stash is an ordinary session there,
 and `Store.delete` takes one by name. `ws-git stash list` is the view
-that numbers them git's way, newest `stash@{0}`; the branch keeps a
-number of its own that only ever goes up, so no stash is ever renamed
-under you.
+that numbers them git's way, newest `stash@{0}`, and prints `(none)`
+when there are none; the branch keeps a number of its own that only
+ever goes up, so no stash is ever renamed under you.
+
+## What a merge carries, and what a fork starts with
+
+Everything ws-git knows about *your* session — your head, your staged
+set, your tags, the stash you took, the commit an outstanding merge
+landed on, and the view the session was given — is one record on your
+branch, and two rules cover all of it.
+
+**A merge takes yours.** `ws-git merge <session>` brings that session's
+files and nothing else. Your tags stay yours and none of its arrive;
+its stashes are its own, on its own branch and numbered there; the
+merge `merge --abort` finds is the one you started, never one the
+source left outstanding; and merging a delegate that was given a narrow
+view never narrows you. Two sessions' bookkeeping is never reconciled,
+because on this record a merge resolves to ours every time.
+
+**A fork starts with none of it.** A new session has no head, nothing
+staged, no tags, no stashes and no merge outstanding, so `ws-git log`
+there is empty until it commits and until then everything it can see
+reads as modified — the way a repo reads before its first commit. It
+inherits the files, and a view only when it is forked with `--paths`:
+a fork of a narrowed session that is handed the whole tree sees the
+whole tree.
 
 ## Conflicts
 
