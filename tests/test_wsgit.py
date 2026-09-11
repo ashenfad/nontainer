@@ -1253,3 +1253,69 @@ def test_another_sessions_tag_is_a_ref(peer_ws, store):
     assert r.exit_code == 0, r.stderr
     assert f"] cherry-pick peer@{tagged} (1 file)" in r.stdout
     assert peer_ws.terminal("cat note.md").stdout == "second\n"
+
+
+# -- merge --abort -------------------------------------------------------------
+
+
+def _conflicted_merge(ws):
+    """A merge that landed with markers, and the commit it landed on."""
+    ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    ws.terminal("ws-git commit -m base")
+    fork = ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.index.commit("theirs")
+    finally:
+        fork.close()
+    ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+    ws.terminal("ws-git commit -m mine")
+    before = ws.index.head
+    r = ws.terminal("ws-git merge worker")
+    assert r.exit_code == 1, (r.stdout, r.stderr)
+    assert "UU doc.txt" in ws.terminal("ws-git status").stdout
+    return before
+
+
+def test_merge_abort_returns_to_the_pre_merge_commit(ws):
+    before = _conflicted_merge(ws)
+    was = dict(ws._provider.files_at(before))
+    grew = len(ws.terminal("ws-git log --all").stdout.splitlines())
+    log = ws.terminal("ws-git log").stdout
+
+    r = ws.terminal("ws-git merge --abort")
+    assert r.exit_code == 0, (r.stdout, r.stderr)
+    assert r.stdout == (
+        f"[{ws.session}] aborted merge of worker, restored to {before[:7]}\n"
+    )
+
+    # the tree the merge landed on, markers and all, is gone
+    assert ws.terminal("ws-git status").stdout == ""
+    assert ws.terminal("cat doc.txt").stdout == "a\nMAIN\n"
+    assert dict(ws._provider.working_files()) == was
+    assert ws.index.head == before
+    assert ws.terminal("ws-git log").stdout == log.split("\n", 1)[1]
+
+    # append-only: the abort is a commit of its own, and the merge it
+    # stepped off is still in the session's history
+    after = ws.terminal("ws-git log --all").stdout.splitlines()
+    assert len(after) == grew + 1
+
+
+def test_merge_abort_with_nothing_outstanding_refuses(ws):
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    ws.terminal("ws-git commit -m first")
+    r = ws.terminal("ws-git merge --abort")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: no merge to abort: nothing is outstanding here. A merge "
+        "that conflicts stays outstanding until its markers are gone — "
+        "start one with ws-git merge <session>."
+    )
+    assert ws.terminal("ws-git status").stdout == ""
+
+    # and once the conflict is resolved the merge is no longer one to abort
+    _conflicted_merge(ws)
+    ws.terminal("echo resolved > doc.txt")
+    ws.terminal("ws-git commit -m resolved")
+    assert ws.terminal("ws-git merge --abort").exit_code == 1

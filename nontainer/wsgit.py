@@ -100,7 +100,7 @@ _SUPPORTED = (
     "checkout <ref> [-- <paths>] | "
     "tag [[-f] <name> [<commit>] | -d <name>] | "
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
-    "merge <session> | revert <commit> | "
+    "merge (<session> | --abort) | revert <commit> | "
     "cherry-pick <session>@<commit> | "
     "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | "
     "sparse-checkout [list] | help"
@@ -184,6 +184,10 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   merge <session>   merge that session's last commit into yours.
                     Conflicts land as markers in the merge commit and
                     show as UU in status; fix them and commit
+  merge --abort     restore the tree to the commit the merge landed on
+                    and clear the merge, while the merge itself stays
+                    in the session's history (the restore is a new
+                    commit). Only while a merge is outstanding
   revert <commit>   a new commit undoing that commit's change. What was
                     done since stands, and the commit it undoes stays
                     in the log: history is append-only
@@ -770,8 +774,17 @@ def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
 def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     from termish import CommandResult
 
+    if rest == ["--abort"]:
+        source, commit = git.abort_merge()
+        ctx.stdout.write(
+            f"[{git.status().branch}] aborted merge of {source}, "
+            f"restored to {commit[:7]}\n"
+        )
+        return None
     if len(rest) != 1 or rest[0].startswith("-"):
-        return _usage_error("merge takes one session name (ws-git branch lists them).")
+        return _usage_error(
+            "merge takes one session name (ws-git branch lists them), or --abort."
+        )
     source = rest[0]
     out = ws.merge(source)
     if not out.merged:

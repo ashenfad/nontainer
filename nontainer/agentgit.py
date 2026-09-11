@@ -209,11 +209,13 @@ def parse_blob(raw: Any) -> dict[str, Any]:
         parsed = {}
     head = parsed.get("head")
     source = parsed.get("merge_source")
+    pre = parsed.get("pre_merge")
     return {
         "head": head if isinstance(head, str) else None,
         "staged": sorted(_strings(parsed.get("staged"))),
         "merge_source": source if isinstance(source, str) else None,
         "unresolved": sorted(_strings(parsed.get("unresolved"))),
+        "pre_merge": pre if isinstance(pre, str) else None,
         "tags": _tag_map(parsed.get("tags")),
     }
 
@@ -285,6 +287,7 @@ def _encode_blob(state: Mapping[str, Any]) -> bytes:
             "staged": sorted(_strings(list(state.get("staged") or []))),
             "merge_source": state.get("merge_source"),
             "unresolved": sorted(_strings(list(state.get("unresolved") or []))),
+            "pre_merge": state.get("pre_merge"),
             "tags": _tag_map(state.get("tags")),
         },
         sort_keys=True,
@@ -623,6 +626,7 @@ class AgentGit:
         landed["unresolved"] = self._still_marked(blob["unresolved"], files, live, base)
         if not landed["unresolved"]:
             landed["merge_source"] = None
+            landed["pre_merge"] = None
         # The commit cannot carry its own hash, so the blob rides along
         # with the composition closed and the head it had; the new head
         # is written straight after and lands with the restore.
@@ -957,7 +961,13 @@ class AgentGit:
             _put(fs, path, target[path])
         blob = self._read()
         before = dict(blob)
-        blob.update(head=commit, staged=[], merge_source=None, unresolved=[])
+        blob.update(
+            head=commit,
+            staged=[],
+            merge_source=None,
+            unresolved=[],
+            pre_merge=None,
+        )
         # The restored tree and the head that names it are one
         # operation, so they are one commit — keyed to the paths the
         # restore touched, and made here rather than left to the
@@ -1052,6 +1062,11 @@ class AgentGit:
             head=commit,
             merge_source=source if marked else None,
             unresolved=marked,
+            # Where the merge started, so an abort has somewhere to go
+            # back to. Only while the merge is outstanding: once the
+            # markers are gone there is nothing to abort, and a stale
+            # pointer would offer to undo work done since.
+            pre_merge=blob["head"] if marked else None,
         )
         self._record(
             {"tool": MERGE_RECORD_TOOL, "source": source, "merge": commit},
@@ -1069,6 +1084,40 @@ class AgentGit:
             ),
         )
         return tuple(marked)
+
+    def abort_merge(self) -> tuple[str, str]:
+        """Undo an outstanding merge; returns ``(source, commit)``.
+
+        The merge itself stays in the session's history — history is
+        append-only, and the conflicted state is a commit somebody may
+        yet want. What moves is the agent: its tree and its head go
+        back to the commit the merge landed on, as a new appended
+        commit, and the merge context goes with them. So ``status``
+        reads clean and the markers are out of the tree.
+
+        Refused when no merge is outstanding, and when the merge landed
+        on a session that had no ws-git commit of its own — there is no
+        commit of the agent's to go back to, and inventing one would
+        put the fiction's head somewhere the agent never was.
+        """
+        self._writable("ws-git merge --abort")
+        blob = self._read()
+        source, _ = self._merge_context(blob)
+        if source is None:
+            raise WorkspaceError(
+                "no merge to abort: nothing is outstanding here. A merge "
+                "that conflicts stays outstanding until its markers are "
+                "gone — start one with ws-git merge <session>."
+            )
+        before = blob["pre_merge"]
+        if before is None:
+            raise WorkspaceError(
+                f"cannot abort the merge of {source}: it landed on a "
+                "session with no ws-git commit of its own, so there is no "
+                "commit of yours to go back to. Edit the marked files and "
+                "commit (ws-git status shows them as UU)."
+            )
+        return source, self.checkout(before)
 
     # -- content, for the verbs that render ----------------------------
 
