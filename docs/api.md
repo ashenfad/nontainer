@@ -571,6 +571,8 @@ ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
 ws.log(limit=None, kind="work"|"agent"|"all") -> Iterable[CommitInfo]
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
+ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
+ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
 ws.discard() -> None                             # drop staged writes
 ws.autocommit: bool                              # settable; see below
 
@@ -591,9 +593,9 @@ in a reserved key, `status` measures against the agent's last commit
 rather than the store's head, and `log` walks the agent's commits and
 not the framework's. `ws-git` in the terminal is the same
 implementation with the agent's spelling, so host and agent see one
-index — plus `branch`, `merge`, `worktree` and `sparse-checkout`, the
-verbs that reach the sessions around this one and the view this one
-was given. Registered by
+index — plus `branch`, `merge`, `revert`, `cherry-pick`, `worktree`
+and `sparse-checkout`, the verbs that reach the sessions around this
+one, the commits behind it, and the view this one was given. Registered by
 `nontainer.wsgit.register_wsgit(ws)`, which the embedder calls and no
 adapter calls for it, where `ws.index` is on every workspace
 unconditionally. See [design.md](design.md) for the model.
@@ -821,6 +823,47 @@ bookkeeping commit that records it as the agent's, which is what
 leaves a clean workspace behind a merge. `MergeOutcome.auto_merged` is
 the other half of `conflicts`: the paths the merge changed and settled
 on its own, so the two together are everything the merge touched.
+
+**`ws.revert(commit)` and `ws.cherry_pick(ref)`** apply ONE commit's
+change to the tree as it stands (`caps.merge`). They are one operation
+with the two commits swapped: a three-way whose base is named rather
+than found, resolved by the rules a merge resolves by, landing as a
+new commit whose only parent is the current head. Both return a
+`MergeOutcome`.
+
+- `ws.revert(commit)` undoes the change that commit made. The commit
+  stays where it is and the undoing lands on top — history here is
+  append-only, and a revert is itself a commit that can be reverted.
+  What is undone is the CHANGE, not the state: work done since in
+  other files, and elsewhere in the same file, stands.
+- `ws.cherry_pick("session@commit")` applies one commit's change from
+  another session (short ids accepted). Its change, not its tree: what
+  the commit before it holds is left as yours. Bringing everything a
+  session committed is `ws.merge`.
+
+**What a commit CHANGED is the difference from the state it was
+composed on**, which for a ws-git commit is its parent in the AGENT's
+graph and never the store's: the framework commits an agent's edits
+for durability as they are made, so the store parent of a ws-git
+commit already holds them. An agent commit with none before it was
+composed on the state its session started from — the fork, which is
+what makes a delegate's first commit its own work rather than the tree
+it inherited, and otherwise the empty tree, so reverting a first
+commit removes the files it introduced. A merge commit reverts to
+ours, the side it was made from, as git's `-m 1` does.
+
+Both refuse work the agent has not committed (the rule `ws.merge`
+takes, naming the verb that refuses) and a merge still outstanding,
+since a second change over a conflicted merge would mark files that
+merge already marked. Conflicts are spelled exactly as a merge's are:
+markers land IN the commit, the paths come back in
+`MergeOutcome.conflicts`, `ws-git status` shows them as `UU` under a
+`## merging` line naming what was applied, and the next commit that
+removes the markers ends it. Where the change is already in this tree,
+nothing is committed: `merged` False, `commit` None, and no conflicts.
+The commit records where the change came from (`reverted`,
+`picked_from`) as a soft reference, never as a parent — applying one
+commit's change does not make its history this session's.
 
 Unversioned providers raise `NotSupportedError`; `autocommit` is
 forced off for them. With autocommit on, each successful mutating
@@ -1229,7 +1272,7 @@ plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
 
 All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
 `session`, `caps`, `fs`, `kv`, `dirty`, `head`, `commit/checkout/history/
-fork/discard/merge`, `commit_keys/files_at/working_files`,
+fork/discard/merge/apply/commit_at`, `commit_keys/files_at/working_files`,
 `tag/check_tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
 provider keeps two commit primitives — `commit` takes everything and
 `commit_keys` takes exactly the keys it is given — plus two read views
@@ -1264,6 +1307,11 @@ so stores written back then end up clean. `path` is the store directory — the 
 resolve `<session>/` and `<session>.db` under it).
 
 Capabilities at a glance:
+
+`caps.merge` gates three verbs, not one: `merge`, and the `apply`
+primitive behind `ws.revert` / `ws.cherry_pick` (a three-way with the
+base named rather than found, plus the `commit_at` lookup that names
+the commits it resolves between).
 
 | | versioned | staging | cheap_fork | merge | tags | sql_audit |
 |---|---|---|---|---|---|---|

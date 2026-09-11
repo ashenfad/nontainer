@@ -40,6 +40,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   was given part of the tree. A view is given at the fork
   (`ws-git branch <name> --paths <paths>`) and cannot be changed from
   the terminal, so any other subcommand is a usage error that says so.
+- **`ws-git revert <commit>` and `ws-git cherry-pick
+  <session>@<commit>`, with `ws.revert` / `ws.cherry_pick` on the
+  host.** One commit's change applied to the tree as it stands: a
+  three-way whose base is named rather than found, with the commit and
+  the one before it swapped between the two verbs. Both APPEND — the
+  commit named is still in the log afterwards, and the new commit can
+  itself be reverted — and both take the change rather than the state,
+  so work done since in other files, and elsewhere in the same file,
+  stands. A merge commit reverts to ours, as git's `-m 1` does; a
+  commit with none before it in the agent's graph is measured from the
+  fork its session started at, which is what makes a delegate's first
+  commit its own work rather than the tree it inherited. Conflicts are
+  spelled exactly as a merge's: markers in the commit, `UU` in
+  `ws-git status`, and an outstanding merge context that `ws-git
+  commit` clears when the markers are gone — so neither verb has a
+  `--continue` or an `--abort`. A change already in the tree changes
+  nothing and says so. `KvgitProvider.apply(base, theirs, info=)` is
+  the primitive, gated by `caps.merge` and built on the same rules the
+  merge verb resolves by; providers without the engine refuse by name.
 - **`ws-git log -S <string> [<session>] [--all]`.** git's pickaxe: the
   commits where the number of times `<string>` occurs in the tree
   changed between the commit and its parent, with `+` or `-` after the
