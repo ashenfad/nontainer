@@ -355,13 +355,14 @@ already made, so there is no half-finished operation to continue out
 of.
 
 **While a merge is outstanding, nothing else moves your tree.**
-`merge`, `stash`, `stash pop`, `revert` and `cherry-pick` all refuse
-until the markers are gone. A second change would mark files this merge
-already marked, with no way to tell whose conflict is whose; moving the
-tree elsewhere would carry the markers along and drop the record of
-where they are, leaving `status` clean over a tree full of them. There
-are two ways out, and every one of those refusals names both: commit
-the resolution, or abort.
+`merge`, `checkout` in both its forms, `stash`, `stash pop`, `revert`
+and `cherry-pick` all refuse until the markers are gone. A second
+change would mark files this merge already marked, with no way to tell
+whose conflict is whose; moving the tree elsewhere would carry the
+markers along and drop the record of where they are, leaving `status`
+clean over a tree full of them — which is what checking out the merge
+commit itself would do. There are two ways out, and every one of those
+refusals names both: commit the resolution, or abort.
 
 **`ws-git merge --abort` is the way out of a merge you do not want.**
 It restores your tree to the commit the merge landed on and clears the

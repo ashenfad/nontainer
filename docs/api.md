@@ -627,7 +627,11 @@ markers.
 `ws.index.checkout(commit)` takes one of the AGENT's commits — what
 `ws.index.log()` lists — and refuses any other commit in the session's
 history, because a commit with no place in the agent's graph would
-strand its whole log behind it. Moving the session to an arbitrary
+strand its whole log behind it. It is refused outright while a merge
+of this session's is outstanding: the restore writes a different tree
+and clears the record of where the markers are, and a checkout of the
+merge commit itself would restore the marked tree under a clean
+status. Resolve the markers and commit, or `ws-git merge --abort`. Moving the session to an arbitrary
 store commit is `ws.checkout(commit)`, the host's verb.
 
 **Two commit verbs, and they are for two different callers.**
@@ -806,10 +810,11 @@ that means committed by the agent:**
   before.
 
 A merge is also refused while one of this session's own merges is
-still outstanding, the rule `ws.revert` and `ws.cherry_pick` take: a
-second merge would mark files the first already marked and record its
-own context over the first's, leaving a clean status over a tree that
-still holds the first merge's markers.
+still outstanding — the rule every verb that moves this tree takes
+(`ws.revert`, `ws.cherry_pick`, `ws.index.checkout`, and `stash` and
+`checkout` in the terminal). A second merge would mark files the first
+already marked and record its own context over the first's, leaving a
+clean status over a tree that still holds the first merge's markers.
 
 File conflicts land as conflict markers IN the merge commit and are
 reported in `MergeOutcome.conflicts` rather than blocking it: resolve

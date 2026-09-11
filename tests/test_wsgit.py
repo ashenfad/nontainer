@@ -1532,6 +1532,70 @@ def test_merge_refuses_over_an_outstanding_merge(peer_ws):
     assert "<<<<<<< " in peer_ws.terminal("cat doc.txt").stdout
 
 
+def test_checkout_refuses_over_an_outstanding_merge(peer_ws):
+    """A checkout moves the tree somewhere else and clears the merge
+    context with it, so the markers ride along with nothing left
+    recording them — including a checkout of the merge commit itself,
+    which restores the marked tree under a clean status."""
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    peer_ws.files.fs.write("/workspace/side.txt", b"side\n")
+    peer_ws.terminal("ws-git commit -m base")
+    base = peer_ws.index.head
+    fork = peer_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.files.fs.write("/workspace/side.txt", b"worker\n")
+        fork.index.commit("theirs")
+    finally:
+        fork.close()
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git merge worker").exit_code == 1
+    merge = peer_ws.index.head
+    was = peer_ws.terminal("ws-git status").stdout
+    assert "UU doc.txt" in was
+
+    for cmd in (
+        f"ws-git checkout {merge[:7]}",
+        f"ws-git checkout {base[:7]}",
+        "ws-git checkout worker -- side.txt",
+    ):
+        r = peer_ws.terminal(cmd)
+        assert r.exit_code == 1, (cmd, r.stdout)
+        assert r.stderr.startswith(
+            "ws-git: an unresolved merge from worker is outstanding"
+        ), (cmd, r.stderr)
+        assert "ws-git merge --abort" in r.stderr, cmd
+        assert peer_ws.terminal("ws-git status").stdout == was, cmd
+
+    # the way out, then the checkout the agent wanted
+    assert peer_ws.terminal("ws-git merge --abort").exit_code == 0
+    r = peer_ws.terminal(f"ws-git checkout {base[:7]}")
+    assert r.exit_code == 0, r.stderr
+    assert peer_ws.files.read("/workspace/doc.txt") == b"a\nb\n"
+
+
+def test_index_checkout_refuses_over_an_outstanding_merge(peer_ws):
+    """The host half of the agent's checkout takes the same rule."""
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nb\n")
+    peer_ws.terminal("ws-git commit -m base")
+    base = peer_ws.index.head
+    fork = peer_ws.fork("worker")
+    try:
+        fork.files.fs.write("/workspace/doc.txt", b"a\nFORK\n")
+        fork.index.commit("theirs")
+    finally:
+        fork.close()
+    peer_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    assert peer_ws.terminal("ws-git merge worker").exit_code == 1
+
+    from nontainer import WorkspaceError
+
+    with pytest.raises(WorkspaceError, match="unresolved merge from worker"):
+        peer_ws.index.checkout(base)
+
+
 def test_branch_at_takes_a_tag_and_a_short_id(peer_ws, store):
     """`--at` is a ref, so every spelling of one works there: what the
     log printed, and what the session bookmarked."""

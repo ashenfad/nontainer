@@ -1156,10 +1156,17 @@ class WorkspaceIndex:
         history. Only the AGENT's commits are reachable here;
         ``ws.checkout`` is the host's verb, which takes any commit of
         the session — and appends in the same way.
+
+        Refused while a merge of this session's is outstanding: the
+        restore would write a different tree and clear the context
+        that records where the markers are, so a tree still holding
+        them would read clean. Resolve them and commit, or
+        ``ws-git merge --abort``.
         """
         ws = self._ws
         with ws._lock:
             ws._check_open()
+            ws._require_unmerged(self._git, "checkout")
             return self._git.checkout(commit)
 
     def tags(self) -> dict[str, str]:
