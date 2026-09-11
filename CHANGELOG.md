@@ -72,6 +72,14 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   over the first's and left a clean `ws-git status` over a tree that
   still held the markers. All of them refuse now, naming the two ways
   out: commit the resolution, or `ws-git merge --abort`.
+- **A bad `<session>@<x>` says what was looked up and where.** `ws-git
+  worktree add review polish@nosuch` answered `ws-git: nosuch`, echoing
+  the word back with nothing about where it had been looked for. The
+  one funnel that resolves a ref's commit half refuses it now —
+  `nosuch is not a commit, a short id or a tag on session 'polish'
+  (ws-git log polish, ws-git tag)` — so every verb taking that shape
+  says the same thing, and a well-formed id nobody holds names its
+  session too.
 - **Adding over a live worktree names the two steps that refresh one**
   rather than "that directory is not empty", a reason with no fix in it.
 

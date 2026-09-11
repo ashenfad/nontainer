@@ -2127,8 +2127,12 @@ class Workspace:
         is a commit id, short ids expanded against that session's
         history. A tag is read first, and no tag can be spelled like a
         commit id, so the two orders agree.
+
+        A word that is none of the three is refused here, by the one
+        funnel, so every verb that takes this shape of ref says what it
+        looked up and on which session rather than echoing the word.
         """
-        from .agentgit import AgentGit, tags_at
+        from .agentgit import HASH_RE, AgentGit, tags_at
 
         if self._provider.caps.index:
             try:
@@ -2140,7 +2144,30 @@ class Workspace:
                 tags = {}
             if commit in tags:
                 return tags[commit]
-        return self._expand_commit(commit, session=session)
+        whole = self._expand_commit(commit, session=session)
+        # Only where the substrate spells commits the way ws-git prints
+        # them: a provider with no prefixes to expand may name its
+        # commits anything, and cannot be told a word is not one.
+        if getattr(self._provider, "expand_commit", None) is not None and not (
+            HASH_RE.fullmatch(whole)
+        ):
+            raise CommitNotFoundError(self._not_a_ref(session, commit))
+        return whole
+
+    def _not_a_ref(self, session: str, word: str) -> str:
+        """Why a word is not the commit half of a ref, and where to look
+        for one that is."""
+        log = "ws-git log" if session == self.session else f"ws-git log {session}"
+        if word == "HEAD":
+            return (
+                f"HEAD is not a ref in this position: it takes one exact "
+                f"commit on session {session!r}, spelled as a commit id, a "
+                f"short id or a tag of that session ({log}, ws-git tag)"
+            )
+        return (
+            f"{word} is not a commit, a short id or a tag on session "
+            f"{session!r} ({log}, ws-git tag)"
+        )
 
     def _take_source(self, ref: "str | Ref") -> "tuple[str, Mapping[str, Any]]":
         """``(ref as recorded, that state's files)`` for a take.
