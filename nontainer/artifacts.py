@@ -75,6 +75,21 @@ def too_large_note(name: str, size: int, mod: str) -> str:
     return note + " Downsample or aggregate before assigning to `ui`."
 
 
+def looks_like_plotly(obj: object) -> bool:
+    """Whether a decoded JSON value is a plotly figure spec: a dict with
+    a ``data`` list and a ``layout`` dict.
+
+    The same rule studio's ``looksLikePlotly`` applies to a bare
+    ``.json`` artifact, kept in one place so what the harness writes and
+    what a consumer sniffs cannot drift apart.
+    """
+    return (
+        isinstance(obj, dict)
+        and isinstance(obj.get("data"), list)
+        and isinstance(obj.get("layout"), dict)
+    )
+
+
 def artifact_kind(path: str) -> str:
     """Suffix -> render kind, the single source of truth mirroring
     studio's ``Artifact.svelte`` dispatch. The compound spec suffixes

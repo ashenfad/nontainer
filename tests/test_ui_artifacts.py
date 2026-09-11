@@ -118,7 +118,7 @@ def test_bytes_and_html_and_json_tiers(ws):
             {
                 "shot": png,
                 "widget": Widget(),
-                "stats": {"mean": 2.5},
+                "mean": 2.5,
                 "blob": b"\x00\x01\x02",
             },
         )[0]
@@ -126,7 +126,7 @@ def test_bytes_and_html_and_json_tiers(ws):
     assert out["shot"] == "/workspace/ui/shot.png"
     assert out["widget"] == "/workspace/ui/widget.html"
     assert ws.files.fs.read("/workspace/ui/widget.html") == b"<b>hi</b>"
-    assert json.loads(ws.files.fs.read("/workspace/ui/stats.json")) == {"mean": 2.5}
+    assert json.loads(ws.files.fs.read("/workspace/ui/mean.json")) == 2.5
     assert out["blob"] == "/workspace/ui/blob.bin"
 
 
@@ -146,7 +146,7 @@ def test_unrenderable_lands_as_repr_not_silence(ws):
 def test_name_sanitization_and_non_dict(ws):
     # the returned name is the SANITIZED one — it rides the artifacts
     # note verbatim, so a raw name with ", " or " -> " must never leak
-    out, _ = materialize_ui(ws, {"my plot / v2": {"a": 1}})
+    out, _ = materialize_ui(ws, {"my plot / v2": 42})
     assert out == [("my-plot-v2", "/workspace/ui/my-plot-v2.json")]
     assert materialize_ui(ws, "not a dict") == ([], [])
     assert materialize_ui(ws, None) == ([], [])
@@ -296,11 +296,12 @@ def test_a_lone_callout_renders_as_a_one_item_row(ws):
 
 def test_a_lone_stat_is_not_adopted_but_is_explained(ws):
     """The other half, deliberately asymmetric. `{label, value}` is too
-    ordinary a shape to claim — an agent may well want it shown as JSON
-    — so it is not adopted. But silence is what made the callout case a
-    bug report, so it says the fix."""
+    ordinary a shape to claim, so it is not adopted. But silence is what
+    made the callout case a bug report, so it says the fix — and says it
+    once, since the general rule about dicts would only repeat it."""
     out, problems = materialize_ui(ws, {"lonely": {"label": "BEVs", "value": "280k"}})
-    assert out == [("lonely", "/workspace/ui/lonely.json")]
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/lonely.json")
     assert len(problems) == 1
     assert "card row is a LIST" in problems[0]
     assert "lonely" in problems[0]
@@ -320,10 +321,68 @@ def test_a_callout_carrying_stat_metadata_is_not_scolded(ws):
 
 def test_ordinary_dicts_are_not_mistaken_for_cards(ws):
     """No false positives: a dict that is neither tagged nor
-    stat-shaped renders as JSON and says nothing."""
+    stat-shaped is never read as a card row. It is a plain dict, so it
+    earns the plain-dict note and not the card one."""
     out, problems = materialize_ui(ws, {"cfg": {"a": 1, "b": 2}})
-    assert out == [("cfg", "/workspace/ui/cfg.json")]
+    assert out == []
+    (problem,) = problems
+    assert "looks like a card row" not in problem
+    assert "plain dict" in problem
+
+
+def test_plain_dict_is_data_not_an_artifact(ws):
+    """A raw payload has no component on the other side, so announcing
+    it as an artifact tells the agent a rendering happened that did
+    not. Nothing is written and the note names the three shapes that
+    do render."""
+    out, problems = materialize_ui(ws, {"payload": {"a": 1, "b": [2, 3]}})
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/payload.json")
+    (problem,) = problems
+    assert "payload" in problem
+    assert "DataFrame" in problem and "plotly" in problem and "card" in problem
+
+
+def test_plain_list_is_data_not_an_artifact(ws):
+    """The list half of the same rule: a list of things that are not
+    card rows renders nothing either."""
+    out, problems = materialize_ui(ws, {"rows": [1, 2, 3]})
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/rows.json")
+    assert len(problems) == 1
+
+
+def test_card_rows_still_render(ws):
+    """The supported set is untouched: a list of card rows is still an
+    artifact, with no problem note."""
+    out, problems = materialize_ui(
+        ws, {"kpis": [{"label": "Revenue", "value": "$1.2M"}]}
+    )
+    assert out == [("kpis", "/workspace/ui/kpis.cards.json")]
     assert problems == []
+
+
+def test_plotly_spec_written_as_a_dict_still_renders(ws):
+    """A figure serialized to a plain dict is the one dict shape with a
+    real component behind it, so it keeps its artifact — and lands on
+    the suffix that says what it is, rather than on a consumer's
+    content sniff."""
+    spec = {"data": [{"type": "scatter", "x": [1, 2], "y": [3, 4]}], "layout": {}}
+    out, problems = materialize_ui(ws, {"trend": spec})
+    assert out == [("trend", "/workspace/ui/trend.plotly.json")]
+    assert problems == []
+    assert json.loads(ws.files.fs.read("/workspace/ui/trend.plotly.json")) == spec
+    assert artifact_kind(out[0][1]) == "plotly"
+
+
+def test_ui_note_names_the_supported_set(ws):
+    """The note is what the agent reads before it assigns anything, so
+    it must name the set exactly and stop implying a dict is one."""
+    from nontainer.adapters.render import PYTHON_UI_NOTE
+
+    assert "or dict" not in PYTHON_UI_NOTE
+    assert "a list of card rows" in PYTHON_UI_NOTE
+    assert "plain dict is data" in PYTHON_UI_NOTE
 
 
 def test_bare_non_card_list_still_renders_nothing(ws):
@@ -349,13 +408,15 @@ def test_bare_near_miss_list_gets_a_problem_note(ws):
     assert "'label': 'C'" in problems[0]
 
 
-def test_named_near_miss_list_notes_and_lands_on_json_floor(ws):
-    """A NAMED almost-cards value still materializes (JSON floor) so the
-    human sees something, and the note tells the agent which item to fix."""
+def test_named_near_miss_list_notes_which_item_broke_the_row(ws):
+    """A NAMED almost-cards value renders nothing, and the one note it
+    gets is the specific one: which item to fix, not the general rule
+    about lists."""
     out, problems = materialize_ui(
         ws, {"kpis": [{"label": "A", "value": 1}, {"labl": "B", "value": 2}]}
     )
-    assert out == [("kpis", "/workspace/ui/kpis.json")]
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/kpis.json")
     assert len(problems) == 1
     assert "'kpis' looks like a card row" in problems[0]
     assert "'labl': 'B'" in problems[0]
@@ -373,12 +434,15 @@ def test_near_miss_note_is_bounded_for_huge_items(ws):
     assert len(problems[0]) < 600
 
 
-def test_minority_match_list_is_not_diagnosed(ws):
+def test_minority_match_list_is_not_diagnosed_as_cards(ws):
     """A list where card-shaped dicts are the MINORITY isn't plausibly a
-    card row — no note, plain JSON floor."""
+    card row, so nobody is told to fix an item. It is still a plain
+    list, which renders nothing and says so."""
     out, problems = materialize_ui(ws, {"stuff": [{"label": "A", "value": 1}, 2, 3]})
-    assert out == [("stuff", "/workspace/ui/stuff.json")]
-    assert problems == []
+    assert out == []
+    (problem,) = problems
+    assert "looks like a card row" not in problem
+    assert "plain list" in problem
 
 
 def test_ui_note_shows_the_envelope():
@@ -408,13 +472,15 @@ def test_cards_cap_at_24(ws):
         [{"label": "a", "value": 1}, "plain"],  # a non-dict element
     ],
 )
-def test_cards_near_miss_falls_to_json_floor(ws, value):
-    """A single element that is neither a stat nor a tagged callout sends
-    the WHOLE list through to the generic JSON data tier — the convention
-    never half-renders."""
-    out, _ = materialize_ui(ws, {"x": value})
-    assert out == [("x", "/workspace/ui/x.json")]
-    assert json.loads(ws.files.fs.read("/workspace/ui/x.json")) == value
+def test_cards_near_miss_renders_nothing(ws, value):
+    """A single element that is neither a stat nor a tagged callout
+    disqualifies the WHOLE list — the convention never half-renders, and
+    a list that is not a card row has no other component, so no artifact
+    is written and the agent is told why."""
+    out, problems = materialize_ui(ws, {"x": value})
+    assert out == []
+    assert not ws.files.fs.exists("/workspace/ui/x.json")
+    assert len(problems) == 1
 
 
 def test_agno_run_python_notes_ui_artifacts():
@@ -423,9 +489,11 @@ def test_agno_run_python_notes_ui_artifacts():
 
     ws = Workspace(KvgitProvider.open(None, session="ui-agno"))
     tk = WorkspaceTools(ws)
-    out = tk.functions["run_python"].entrypoint(code="ui = {'stats': {'n': 3}}")
-    assert "[ui artifacts: stats -> /workspace/ui/stats.json]" in out
-    assert json.loads(ws.files.fs.read("/workspace/ui/stats.json")) == {"n": 3}
+    out = tk.functions["run_python"].entrypoint(
+        code="ui = {'kpis': [{'label': 'n', 'value': 3}]}"
+    )
+    assert "[ui artifacts: kpis -> /workspace/ui/kpis.cards.json]" in out
+    assert json.loads(ws.files.fs.read("/workspace/ui/kpis.cards.json"))["items"]
     # and the tool description teaches the convention
     assert "ui = " in (tk.functions["run_python"].entrypoint.__doc__ or "")
     ws.close()
@@ -447,12 +515,13 @@ def test_agno_run_python_adopts_direct_ui_writes():
         code=(
             "with open('/workspace/ui/chart.json', 'w') as f:\n"
             '    f.write(\'{"data": [], "layout": {}}\')\n'
-            "ui = {'stats': {'n': 3}}"
+            "ui = {'kpis': [{'label': 'n', 'value': 3}]}"
         )
     )
     assert "[ui artifacts:" in out
     assert "chart.json -> /workspace/ui/chart.json" in out
-    assert out.count("/workspace/ui/stats.json") == 1  # materialized, not re-adopted
+    # materialized, not re-adopted
+    assert out.count("/workspace/ui/kpis.cards.json") == 1
     ws.close()
 
 

@@ -24,6 +24,7 @@ from ..artifacts import MAX_ARTIFACT_BYTES as _MAX_ARTIFACT_BYTES
 from ..artifacts import (
     ArtifactPath,
     artifact_kind,  # noqa: F401  (public re-export)
+    looks_like_plotly,  # noqa: F401  (public re-export)
 )
 from ..artifacts import too_large_note as _too_large_note
 from ..workspace import PythonResult, TerminalResult, Workspace
@@ -603,8 +604,11 @@ def _env_notes(ws: Workspace) -> str:
 PYTHON_UI_NOTE = """
 
 Rich reply artifacts: assign `ui = {"name": value}` at top level, with
-the OBJECT as the value — a plotly figure, pandas DataFrame, matplotlib
-figure, image, or dict. The harness saves each under __WS__/ui/ (no savefig,
+the OBJECT as the value — a plotly figure, a pandas DataFrame, a
+matplotlib figure, an image, or a list of card rows. That is the whole
+set: a plain dict is data, not an artifact — nothing renders it, so
+print it or write it as a file instead.
+The harness saves each under __WS__/ui/ (no savefig,
 no writing into __WS__/ui/ yourself) and the result notes its path;
 embed one in your reply with markdown image syntax, e.g.
 ![name](__WS__/ui/name.plotly.json), using the exact path from the
@@ -625,6 +629,20 @@ def ui_root(ws: Workspace) -> str:
     """Where `ui = {...}` artifacts land: ``<ws.root>/ui``."""
     base = "" if ws.root == "/" else ws.root
     return f"{base}/ui"
+
+
+class _NotRenderable(ValueError):
+    """A value the ``ui`` namespace has no component for — it carries
+    the diagnostic the agent reads in place of a file.
+
+    Raised rather than returned so the sniff order reads as one
+    cascade: a tier that can render says so by writing, and the floor
+    says why nothing could.
+    """
+
+    def __init__(self, note: str) -> None:
+        super().__init__(note)
+        self.note = note
 
 
 class _ArtifactTooLarge(ValueError):
@@ -702,10 +720,12 @@ def _is_callout(i: object) -> bool:
 
 def _card_row_near_miss(name: object, value: object) -> str | None:
     """The dict-native version of a constructor error: a list where MOST
-    items duck-type as cards but some don't would silently miss the cards
-    tier — say which item broke the row and why, in the problems channel
-    the agent already reads (the 8MB cap's lesson: name the fix, not just
-    the failure). None when the list isn't card-shaped enough to diagnose."""
+    items duck-type as cards but some don't misses the cards tier and
+    renders nothing — say which item broke the row and why, in the
+    problems channel the agent already reads (the 8MB cap's lesson: name
+    the fix, not just the failure). None when the list isn't card-shaped
+    enough to diagnose, which leaves the general rule about lists and
+    dicts to say why nothing rendered."""
     # A lone stat, unwrapped. Not adopted the way a lone callout is —
     # {label, value} is too ordinary a shape to claim — but silence is
     # what made the callout case a bug report, so say the fix.
@@ -718,7 +738,7 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
         return (
             f"{str(name)!r} looks like a single stat, but a card row is a "
             f"LIST — wrap it as [{{...}}] to render it as a card. On its "
-            f"own it renders as JSON."
+            f"own it is a plain dict, which renders nothing."
         )
     if not isinstance(value, list) or not value:
         return None
@@ -733,6 +753,30 @@ def _card_row_near_miss(name: object, value: object) -> str | None:
         f"stat (needs 'label' and 'value') nor a tagged callout (needs "
         f"'type': 'callout' plus a 'title' or 'body'): "
         f"{reprobate.render(bad, budget=200)}. Fix that item to render cards."
+    )
+
+
+def _not_an_artifact(name: object, value: object) -> str:
+    """Why a dict or a list is data rather than an artifact, and what to
+    assign instead.
+
+    Consumers have no component for raw JSON: they render nothing, or
+    degrade to a link. Writing the file anyway and announcing it in the
+    artifacts note tells the agent a rendering happened, and it goes on
+    to cite the path in its prose. So the file is not written and this
+    is what the agent gets — the value's own shape, so it can tell
+    WHICH assignment is meant, and the three shapes that do render.
+    """
+    import reprobate
+
+    kind = "list" if isinstance(value, list) else "dict"
+    return (
+        f"{str(name)!r} is a plain {kind}, which is data and not a UI "
+        f"artifact — nothing renders raw JSON, so no file was written: "
+        f"{reprobate.render(value, budget=200)}. To show it, assign a "
+        f"pandas DataFrame (a table), a plotly figure (a chart), or a "
+        f"list of card rows ([{{'label': ..., 'value': ...}}]). To keep "
+        f"it as data, print it or write it to a file yourself."
     )
 
 
@@ -765,7 +809,16 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     """One value -> one workspace file. The sniff order is a THEMING
     hierarchy, most-declarative first: spec formats let the shell
     render (and theme) the artifact itself; html gives it partial say;
-    pixels give it none. See the adapter docs in docs/api.md."""
+    pixels give it none. See the adapter docs in docs/api.md.
+
+    The floor still never fails for a SCALAR — a number, a string, a
+    date, an object nobody taught to render — because there the JSON is
+    the whole value and a consumer showing it verbatim shows everything
+    there was. A dict or a list is the case where that stops being
+    true: raw JSON has no component, so the file would be announced as
+    an artifact and render nothing. Those raise :class:`_NotRenderable`
+    instead, and the caller turns it into a problem note.
+    """
     import json as _json
 
     mod = type(value).__module__ or ""
@@ -786,6 +839,14 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
         return _ui_write(
             ws, f"{ui_root(ws)}/{name}.plotly.json", value.to_json().encode()
         )
+    # A figure serialized to a plain dict (fig.to_dict(), a spec built
+    # by hand, one loaded from JSON) is the one dict shape with a real
+    # component behind it. Named by its suffix rather than left for a
+    # consumer to content-sniff out of a bare `.json`.
+    if looks_like_plotly(value):
+        return _ui_write(
+            ws, f"{ui_root(ws)}/{name}.plotly.json", _json.dumps(value).encode()
+        )
     if mod.startswith("pandas") and hasattr(value, "columns"):
         total = len(value)
         payload = _json.loads(
@@ -804,8 +865,8 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     # (zero sandbox imports) rather than demand a marker. A stat is any dict
     # with label+value (tagged or not — the shape agents naturally produce);
     # a callout must be tagged (type "callout") with a title or body. If a
-    # single element is neither, the whole list falls through to the JSON
-    # floor. The renderer never infers sentiment from a value's sign —
+    # single element is neither, the whole list falls through and is
+    # diagnosed rather than rendered. The renderer never infers sentiment from a value's sign —
     # direction lives in the sublabel's words, tone only on callouts.
     # A bare TAGGED callout is adopted as a one-item row. Same
     # forgiveness `materialize_ui` already applies to a bare list
@@ -815,8 +876,8 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     #
     # Callouts only. `type: "callout"` is an explicit marker nobody
     # writes by accident, so there is nothing to guess; a bare
-    # {label, value} stat collides with ordinary data an agent may well
-    # want shown as JSON, so that one gets a note instead of a guess
+    # {label, value} stat is too ordinary a shape to claim, so that one
+    # gets a note naming the wrapper it is missing rather than a guess
     # (see `_card_row_near_miss`).
     cards = (
         value if isinstance(value, list) else [value] if _is_callout(value) else None
@@ -876,7 +937,10 @@ def _materialize_one(ws: Workspace, name: str, value: object) -> str:
     if callable(html_fn):
         return _ui_write(ws, f"{ui_root(ws)}/{name}.html", str(html_fn()).encode())
 
-    # data tier: never fail — always render SOMETHING
+    # data tier: a scalar renders as itself, a structure renders as
+    # nothing — so the structure gets a diagnosis instead of a file.
+    if isinstance(value, (dict, list)):
+        raise _NotRenderable(_not_an_artifact(name, value))
     text = _json.dumps(value, indent=2, default=str)
     return _ui_write(ws, f"{ui_root(ws)}/{name}.json", text.encode())
 
@@ -888,10 +952,12 @@ def materialize_ui(
     workspace artifacts under ``/ui/`` (committed writes). Returns
     ``(artifacts, problems)``: ``[(name, path)]`` for the observation
     note, plus diagnosis strings for values that could not be rendered
-    as intended (today: the size cap) — the adapter puts those in the
-    tool result so the agent can self-correct. Values that defeat every
-    renderer land as a capped ``repr`` — a debuggable floor, not a
-    silent drop.
+    as intended — the size cap, and a value there is no component for —
+    which the adapter puts in the tool result so the agent can
+    self-correct. A value with no component yields a problem and NO
+    artifact: announcing a file nothing renders would tell the agent
+    its figure arrived. Values that merely defeat every renderer still
+    land as a capped ``repr`` — a debuggable floor, not a silent drop.
 
     ``claims``, when given, is filled with ``{original_key:
     ArtifactPath}`` so a caller can swap the rendered values out of the
@@ -922,10 +988,17 @@ def materialize_ui(
     for raw_name, value in list(ui.items())[:20]:
         near_miss = _card_row_near_miss(raw_name, value)
         if near_miss:
-            problems.append(near_miss)  # value still lands (JSON floor)
+            problems.append(near_miss)
         name = _re.sub(r"[^\w.-]+", "-", str(raw_name)).strip("-.") or "artifact"
         try:
             path = _materialize_one(ws, name, value)
+        except _NotRenderable as e:
+            # One diagnosis per value: where a near-miss already named
+            # the item that broke the card row, the general rule adds
+            # noise to an agent that has been told exactly what to fix.
+            if not near_miss:
+                problems.append(e.note)
+            continue
         except _ArtifactTooLarge as e:
             # the one failure agents hit in practice — say WHY, in both
             # the artifact slot (human) and the problems note (agent)
