@@ -460,9 +460,10 @@ semantics: `python -c 'code'`, `python file.py`, or piped stdin;
 stdout flows to the pipeline, errors → exit 1, the namespace is
 dropped.
 
-`run_python` scope: whitelisted `modules`, injected `host_objects`,
-`cache` (when enabled), stdlib `open()`/`os` routed to the workspace
-fs (monkeyfs), imports from `helpers/` on the fs. Script model:
+`run_python` scope: whitelisted `modules`, injected `host_objects`
+(as bare names, and as `from host import db` — which a module on the fs
+can use too), `cache` (when enabled), stdlib `open()`/`os` routed to the
+workspace fs (monkeyfs), imports from `helpers/` on the fs. Script model:
 top-level bindings do NOT persist between calls — they are *reported*
 via `result.namespace`.
 
@@ -1161,7 +1162,8 @@ class PythonConfig:
   datetime/time/calendar/zoneinfo, re/string/textwrap,
   difflib, narrow shlex (`quote`, `join`),
   json/csv/struct/base64/binascii/uuid/hashlib, pprint/traceback
-  formatters, typing,
+  formatters, typing, `unittest.mock` (the public API; `unittest`
+  itself exposes nothing else),
   io, VFS-routed os/os.path/pathlib/glob/fnmatch, and
   gzip/zipfile/tarfile. `stdlib=False` for a truly bare cell.
 - `pickle` is intentionally excluded: deserialization executes
@@ -1188,6 +1190,29 @@ class PythonConfig:
   `recursive=True` to submodules, and dotted patterns match qualified
   names (`"DataFrame.eval"`, `"pandas.core*"`) — sandtrap ≥ 0.2.2
   semantics.
+- `host_objects` are bound into the program the executor runs — the
+  top-level `run_python` code, and an app handler — and also arrive as a
+  synthetic `host` module: `from host import db` resolves at the top
+  level, in a handler, and in a workspace module the program imports,
+  which the bare name does not reach. One spelling that works
+  everywhere, with the bare names as sugar where the code is a REPL.
+  `cache` rides the module too, as the view's own — the read-only one
+  under a GET handler.
+
+  The module is rebuilt per execution, because the objects it carries
+  differ per call, and it takes no writes: an attribute set on it would
+  be a channel from one execution to the next. A module that wants to be
+  patchable does `import host` and reads `host.db` at the call site —
+  `from host import db` binds at import time, so patching `host.db`
+  afterwards changes nothing the module reads. `patch.object(host, ...)`
+  is refused for the same read-only reason; patch the name your own
+  module reads.
+
+  `host` is reserved. A host object or a module grant under that name is
+  refused at construction, and a workspace `host.py` (or `host/`) comes
+  back as an execution error naming the rule — `import host` resolves
+  the injected objects ahead of the workspace tree, so the file would
+  never run and nothing would say why.
 - Kernel caveat: with `isolation="kernel"`, ANY network/host-fs grant
   disables that kernel restriction for the whole worker (seccomp/
   Landlock are monotonic). nontainer emits a `RuntimeWarning` at

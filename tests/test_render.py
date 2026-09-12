@@ -233,3 +233,31 @@ def test_unknown_executors_keep_the_historical_default():
     ws._runtime = Runtime.__new__(Runtime)
     ws._runtime._executor = OldExecutor()
     assert ws.runtime.supports_commands is True
+
+
+def test_injected_names_carry_the_import_spelling():
+    """A bare name is right where the code is a REPL and wrong in a
+    module, so the line that names the injected objects also names the
+    spelling that works everywhere."""
+    from nontainer.adapters.render import python_description
+
+    class Db:
+        def query(self):
+            return []
+
+    ws = make_ws(python=PythonConfig(host_objects={"db": Db()}))
+    desc = python_description(ws)
+    assert "injected objects available by name: db" in desc
+    assert "from host import db" in desc
+    ws.close()
+
+
+def test_apps_notes_offer_the_import_to_a_shared_module():
+    """The recommendation stays arguments — that is what a test can call
+    with a fake — but a module that wants the ambient object is told how
+    to reach it instead of being left with the NameError."""
+    from nontainer.adapters.render import apps_notes
+
+    notes = apps_notes()
+    assert "def load(db, limit)" in notes  # still the recommendation
+    assert "from host import db" in notes

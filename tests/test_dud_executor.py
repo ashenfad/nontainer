@@ -441,6 +441,30 @@ def test_apps_mutating_handler_absorbs_fs_write(ws):
         runtime.close()
 
 
+def test_handler_traceback_names_the_handler_line(ws):
+    """The twin of the local rung's `line 3`: a guest exec compiles
+    scaffolding ahead of the handler — the pickled-inputs prelude, the
+    contract-class bootstrap, the host module — and the line numbers it
+    reports run that far ahead of the ones the agent counted in the
+    file. The api.log entry is the agent's documented repair loop, so it
+    names the agent's line."""
+    from nontainer.apps import enable_apps, request
+
+    _seed_app(
+        ws,
+        "boom.py",
+        b"def get(req):\n    rows = []\n    return rows[0]\n",
+    )
+    runtime = enable_apps(ws)
+    try:
+        assert runtime.dispatch(request("GET", "/api/boom")).status == 500
+        log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
+        assert "IndexError" in log
+        assert "line 3" in log, log  # `return rows[0]`, as written
+    finally:
+        runtime.close()
+
+
 def test_handler_traceback_is_readable_from_the_terminal(ws):
     """The audited regression, end to end.
 
