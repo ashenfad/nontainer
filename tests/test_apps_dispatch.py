@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from nontainer import Workspace
+from nontainer import PythonConfig, Workspace
 from nontainer.apps import (
     AppRuntime,
     HttpError,
@@ -304,6 +304,48 @@ def test_handler_sees_cache_and_files():
     )
     resp = rt.dispatch(request("GET", "/api/combo"))
     assert json.loads(resp.text) == {"c": "hello", "f": "file-data"}
+    ws.close()
+
+
+def test_shared_code_takes_its_dependencies_as_arguments():
+    """A guard on behavior that already holds, not a fix: injected host
+    objects are bound into the handler's exec namespace, never into the
+    globals of a module it imports. So a helper taking db as a parameter
+    serves 200, and one naming db free 500s with a NameError in the log
+    — which is the rule docs/apps.md and the apps primer state."""
+
+    class FakeDb:
+        def query(self, limit):
+            return ["ann", "bo", "cy"][:limit]
+
+    ws, rt = make_ws(python=PythonConfig(host_objects={"db": FakeDb()}))
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write(
+        "/workspace/app/api/_data.py",
+        b"def load(db, limit):\n    return db.query(limit)\n"
+        b"\n\ndef load_ambient(limit):\n    return db.query(limit)\n",
+    )
+    write_handler(
+        ws,
+        "passed",
+        "from app.api._data import load\n\n\n"
+        "def get(req):\n    return {'names': load(db, 2)}\n",
+    )
+    write_handler(
+        ws,
+        "ambient",
+        "from app.api._data import load_ambient\n\n\n"
+        "def get(req):\n    return {'names': load_ambient(2)}\n",
+    )
+
+    passed = rt.dispatch(request("GET", "/api/passed"))
+    assert passed.status == 200
+    assert json.loads(passed.text) == {"names": ["ann", "bo"]}
+
+    ambient = rt.dispatch(request("GET", "/api/ambient"))
+    assert ambient.status == 500
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
+    assert "NameError: name 'db' is not defined" in log
     ws.close()
 
 

@@ -283,7 +283,11 @@ root — `from app.api._data import load` in any handler (a bare
 app publishes app/ and nothing else: a module in __WS__/helpers works
 while you preview and is missing once the app is served. _-prefixed
 files are never routed and never served as static, so nobody can fetch
-the source.
+the source. A HANDLER sees the injected objects (cache, db) as bare
+names; a module it imports does NOT — a shared function naming cache
+or db free raises NameError and the request 500s. Give shared
+functions what they need as arguments — `def load(db, limit)`, called
+`load(db, 10)` from the handler.
 __SCRIPT_HOSTS__
 Images, fetches, styles, and fonts may use any https host (map tiles
 work).
