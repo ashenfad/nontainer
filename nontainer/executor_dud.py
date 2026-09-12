@@ -914,14 +914,15 @@ class DudExecutor:
         # The host prelude runs AFTER the view prelude: plain-data host
         # objects reach the guest inside the pickle blob, so they are
         # globals only once it has been unpickled.
-        full = (
-            imports
-            + _VIEW_BOOTSTRAP
-            + _VIEW_PRELUDE
-            + _HOST_PRELUDE
-            + code
-            + _VIEW_EPILOGUE
-        )
+        #
+        # The handler's own source is what follows, at line 1 of ``code``
+        # — so the guest's line numbers run ahead of the file's by the
+        # whole of this prefix, and the result puts them back. That is
+        # the number the api.log traceback shows an agent reading its
+        # own handler.
+        prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + _HOST_PRELUDE
+        line_offset = prefix.count("\n")
+        full = prefix + code + _VIEW_EPILOGUE
         timeout = (
             view.timeout if view.timeout is not None else ctx.python_config.timeout
         )
@@ -972,7 +973,11 @@ class DudExecutor:
             except _lost_exc():
                 self._recover()
                 out = self._map_result(
-                    result, ctx, duration, contract=view.extra_classes
+                    result,
+                    ctx,
+                    duration,
+                    contract=view.extra_classes,
+                    line_offset=line_offset,
                 )
                 return replace(
                     out,
@@ -986,7 +991,13 @@ class DudExecutor:
                 tuple(self._fs_rel(k) for k in d.deletes),
             )
 
-        return self._map_result(result, ctx, duration, contract=view.extra_classes)
+        return self._map_result(
+            result,
+            ctx,
+            duration,
+            contract=view.extra_classes,
+            line_offset=line_offset,
+        )
 
     def _map_result(
         self,
