@@ -229,6 +229,68 @@ def _is_plain_data(obj: Any) -> bool:
     return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
 
 
+HOST_MODULE = "host"
+"""The module every execution can import the injected objects from.
+
+A bare injected name is a REPL convenience: it is bound into the
+program the executor runs — top-level ``run_python`` code and an app
+handler — and a module that program imports gets none of it. The
+import is the spelling that works at all three sites, so ``from host
+import db`` is the contract and the bare names are sugar over it.
+
+The name is therefore reserved: a host object, a module grant or a
+workspace module called ``host`` would be shadowed by the module or
+shadow it, with nothing said either way.
+"""
+
+
+def _refuse_reserved_host_name(cfg: PythonConfig) -> None:
+    """Refuse a config whose own names collide with the ``host`` module.
+
+    Construction time, because both collisions are the embedder's: a
+    host object named ``host`` would have to live inside the module
+    named ``host``, and a module grant under that name is a second
+    answer to ``import host``.
+    """
+    if HOST_MODULE in cfg.host_objects:
+        raise ValueError(
+            f"Reserved host object name: {HOST_MODULE!r} is the module the "
+            "injected objects are imported from (`from host import db`) — "
+            "rename yours."
+        )
+    for grant in _flatten_grants(cfg):
+        if (grant.name or grant.module.__name__) == HOST_MODULE:
+            raise ValueError(
+                f"Reserved module grant name: {HOST_MODULE!r} is the module "
+                "the injected objects are imported from (`from host import "
+                "db`) — grant yours under another name."
+            )
+
+
+def _refuse_shadowed_host_module(ctx: ExecutionContext) -> str | None:
+    """The rendered error for a workspace ``host.py`` / ``host/``, or None.
+
+    ``import host`` resolves the injected-objects module ahead of the
+    workspace tree, so a file of that name in the tree never runs and
+    nothing says why. Agent code writes these files, so this is an
+    execution result rather than a raised exception — the agent renames
+    the file and carries on.
+    """
+    root = "" if ctx.root == "/" else ctx.root.rstrip("/")
+    for rel in (f"{HOST_MODULE}.py", HOST_MODULE):
+        path = f"{root}/{rel}"
+        try:
+            if ctx.fs.exists(path):
+                return (
+                    f"ImportError: {path} shadows the module the injected "
+                    "objects are imported from (`from host import db`). "
+                    f"{HOST_MODULE!r} is reserved — rename it."
+                )
+        except OSError:
+            continue
+    return None
+
+
 def _flatten_grants(cfg: PythonConfig) -> list[ModuleGrant]:
     """Normalize ``cfg.modules`` to a flat ModuleGrant list: the stdlib
     set first (when enabled), then user entries — nested sequences
@@ -534,6 +596,7 @@ class LocalExecutor:
     def open(self, context: ExecutionContext) -> None:
         self._ctx = context
         cfg = context.python_config
+        _refuse_reserved_host_name(cfg)
         self._sandbox = self._build_sandbox()
         # View calls keep resident workers instead of forking per call.
         # Pooling only means anything where a call would otherwise fork:
@@ -764,6 +827,9 @@ class LocalExecutor:
         from contextlib import ExitStack
 
         ctx = self._require_ctx()
+        shadowed = _refuse_shadowed_host_module(ctx)
+        if shadowed is not None:
+            return PythonResult(stdout="", stderr="", error=shadowed)
         namespace: dict[str, Any] = {}
 
         for name, value in (inputs or {}).items():
@@ -822,9 +888,27 @@ class LocalExecutor:
                     namespace["cache"] = RpcProxyMarker(
                         target="cache", wrapper="nontainer.cache:RemoteCache"
                     )
+            # The same values under a name code can import. Built from
+            # the namespace rather than from the config, so the module's
+            # attributes are whatever the namespace got: markers (which
+            # sandtrap materializes as live proxies worker-side, exactly
+            # as it does for the namespace) under bridged isolation, and
+            # the view's own cache — the read-only one under a GET.
+            # Handed to the exec rather than to the sandbox because host
+            # objects differ per call and pooled workers outlive one.
+            host_module = {
+                name: namespace[name]
+                for name in (*ctx.python_config.host_objects, "cache")
+                if name in namespace
+            }
             start = time.monotonic()
             exec_result = sb.exec(
-                code, namespace=namespace, stdin=stdin, argv=argv, echo=echo
+                code,
+                namespace=namespace,
+                modules={HOST_MODULE: host_module},
+                stdin=stdin,
+                argv=argv,
+                echo=echo,
             )
             duration = time.monotonic() - start
 
