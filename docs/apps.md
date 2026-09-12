@@ -66,6 +66,17 @@ def get(req):
     return {"scores": load(db, int(req.params.get("limit", 10)))}
 ```
 
+A module that genuinely wants the ambient object imports it: `from host
+import db` binds the same object the handler names free, and it works in
+a module, in a handler and at the top level of `run_python` alike. That
+makes the bare names sugar for the two places the code is a REPL, and
+the import the one spelling that is always right. Arguments stay the
+recommendation for code you want to test — a function that takes `db` is
+called with a fake, while a module that imports it is patched at the
+name the module itself reads (`import host` at the top of the module,
+then `host.db` at the call site, since `from host import db` binds once
+at import time).
+
 ## Handler contract
 
 File-based routing + verb exports (the Next.js/SvelteKit idiom):
