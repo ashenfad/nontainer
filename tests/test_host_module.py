@@ -281,12 +281,55 @@ def test_dud_carries_the_proxy_plain_data_and_nothing_of_the_ferries():
             "import host\n"
             "rows = host.db.query(2)\n"
             "n = host.settings['n']\n"
-            "names = sorted(k for k in vars(host) if not k.startswith('__'))\n"
+            "names = sorted(dir(host))\n"
         )
         assert r.error is None, r.error
         assert r.namespace["rows"] == ["ann", "bo"]
         assert r.namespace["n"] == 3
         assert r.namespace["names"] == ["cache", "db", "settings"]
+    finally:
+        w.close()
+
+
+def test_the_guest_module_takes_no_writes_by_any_door():
+    """Read-only means every door, not just the polite one. Refusing
+    `setattr` while the backing dict stays writable would let
+    `vars(host)['db'] = fake` swap the object out from under the import,
+    which is the channel between executions the module exists to deny —
+    and the local rung denies it, so this rung has to as well."""
+    w = _dud_ws("host-dud-frozen", host_objects={"db": Db()})
+    try:
+        r = w.run_python(
+            "import host\n"
+            "refused = []\n"
+            "try:\n"
+            "    host.db = 'FAKE'\n"
+            "except AttributeError:\n"
+            "    refused.append('setattr')\n"
+            "try:\n"
+            "    del host.db\n"
+            "except AttributeError:\n"
+            "    refused.append('delattr')\n"
+            # the quiet doors: neither raises, and neither lands
+            "vars(host)['db'] = 'FAKE'\n"
+            "host.__dict__['db'] = 'FAKE'\n"
+            "object.__setattr__(host, 'db', 'FAKE')\n"
+            "from host import db\n"
+            "imported = db.query(1)\n"
+            "attribute = host.db.query(1)\n"
+            "names = sorted(dir(host))\n"
+        )
+        assert r.error is None, r.error
+        assert r.namespace["refused"] == ["setattr", "delattr"]
+        assert r.namespace["imported"] == ["ann"]
+        assert r.namespace["attribute"] == ["ann"]
+        assert r.namespace["names"] == ["cache", "db"]
+
+        # and the next execution starts from the injected objects, not
+        # from anything the last one wrote
+        later = w.run_python("from host import db\nout = db.query(1)")
+        assert later.error is None, later.error
+        assert later.namespace["out"] == ["ann"]
     finally:
         w.close()
 
@@ -384,6 +427,29 @@ def test_dud_tracebacks_still_name_the_line_the_agent_wrote():
         r = w.run_python("a = 1\nb = 2\nrows = []\nrows[0]\n")
         assert r.error is not None
         assert "line 4" in r.error, r.error
+    finally:
+        w.close()
+
+
+def test_no_door_writes_the_module_on_the_local_rung():
+    """The twin of the dud rung's check, and the reason the rule can be
+    stated without naming a rung. Here the gates answer: the reflection
+    the other rung has to design around is simply not reachable."""
+    w = _local_ws("host-doors", "none", host_objects={"db": Db()})
+    try:
+        for door in (
+            "host.db = 'FAKE'",
+            "del host.db",
+            "vars(host)['db'] = 'FAKE'",
+            "host.__dict__['db'] = 'FAKE'",
+            "object.__setattr__(host, 'db', 'FAKE')",
+        ):
+            r = w.run_python(f"import host\n{door}\n")
+            assert r.error is not None, door
+
+        still = w.run_python("from host import db\nout = db.query(1)")
+        assert still.error is None, still.error
+        assert still.namespace["out"] == ["ann"]
     finally:
         w.close()
 
