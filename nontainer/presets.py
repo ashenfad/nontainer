@@ -55,6 +55,8 @@ import textwrap
 import time
 import traceback
 import typing
+import unittest
+import unittest.mock
 import urllib
 import urllib.parse
 import uuid
@@ -141,6 +143,15 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(binascii),
     ModuleGrant(uuid),
     ModuleGrant(hashlib),
+    # testing: the workspace module a handler imports is the unit worth
+    # testing, and patching its collaborators is how that test is
+    # written. The bare package rides along so `import unittest.mock`
+    # resolves, but exposes nothing beyond mock — the runners, the
+    # TestCase assertions and the rest are a different tool.
+    ModuleGrant(unittest, include=("mock",)),
+    # The default exclude stands: `patch`/`MagicMock`/`sentinel` are
+    # the API, `_patch` and its neighbours are the implementation.
+    ModuleGrant(unittest.mock, name="unittest.mock", recursive=True),
     # debugging: safe formatters only
     ModuleGrant(pprint, include=_PPRINT_INCLUDE),
     ModuleGrant(traceback, include=("format_exc", "format_exception", "print_exc")),

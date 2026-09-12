@@ -415,3 +415,74 @@ def test_plotting_requires_plotly_when_asked():
 
     with pytest.raises(ImportError):
         plotting(plotly=True)
+
+
+# -- unittest.mock ------------------------------------------------------------
+
+
+def test_stdlib_grants_unittest_mock():
+    """The workspace module a handler imports is the unit worth testing,
+    and patching its collaborators is how that test is written."""
+    ws = make_ws()
+    r = ws.run_python(
+        "from unittest.mock import MagicMock, patch\n"
+        "m = MagicMock(return_value=7)\n"
+        "out = m('ignored')\n"
+    )
+    assert r, r.error
+    assert r.namespace["out"] == 7
+    ws.close()
+
+
+def test_patch_object_replaces_what_a_workspace_module_calls():
+    """A patch on the module's own name is the name the module's code
+    reads — the facade a workspace module is loaded behind resolves to
+    the module itself."""
+    ws = make_ws()
+    ws.files.fs.write(
+        "/workspace/_lib.py",
+        b"def fetch():\n    return 'real'\n\n\ndef headline():\n    return fetch().upper()\n",
+    )
+    r = ws.run_python(
+        "import _lib\n"
+        "from unittest.mock import patch\n"
+        "with patch.object(_lib, 'fetch', return_value='fake'):\n"
+        "    patched = _lib.headline()\n"
+        "restored = _lib.headline()\n"
+    )
+    assert r, r.error
+    assert r.namespace["patched"] == "FAKE"
+    assert r.namespace["restored"] == "REAL"  # the patch came back off
+    ws.close()
+
+
+def test_patch_object_replaces_a_method_on_a_workspace_class():
+    ws = make_ws()
+    ws.files.fs.write(
+        "/workspace/_svc.py",
+        b"class Svc:\n"
+        b"    def rate(self):\n"
+        b"        return 1.0\n\n"
+        b"    def total(self, n):\n"
+        b"        return n * self.rate()\n",
+    )
+    r = ws.run_python(
+        "from _svc import Svc\n"
+        "from unittest.mock import patch\n"
+        "with patch.object(Svc, 'rate', return_value=2.0):\n"
+        "    patched = Svc().total(3)\n"
+        "restored = Svc().total(3)\n"
+    )
+    assert r, r.error
+    assert r.namespace["patched"] == 6.0
+    assert r.namespace["restored"] == 3.0
+    ws.close()
+
+
+def test_mock_internals_stay_behind_the_default_exclude():
+    """The grant is the public mock API; `_patch` and friends are the
+    implementation and stay where the default exclude leaves them."""
+    ws = make_ws()
+    r = ws.run_python("import unittest.mock as m\nout = m._patch\n")
+    assert not r
+    ws.close()
