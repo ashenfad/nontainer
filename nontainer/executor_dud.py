@@ -180,28 +180,44 @@ drops the rest of the scaffolding."""
 # rung registers for its own terminal verbs, which exist on one rung
 # only and are not part of the import's contract.
 #
-# Nothing may write to it: an attribute set on a per-exec module would
-# be a channel from one execution to the next, and there is no such
-# thing. The class swap installs the refusal AFTER the contents land,
-# and the contents land through ``__dict__`` rather than ``setattr``.
+# Nothing may write to it, by any door: an attribute set on a per-exec
+# module would be a channel from one execution to the next, and there is
+# no such thing. `__setattr__` and `__delattr__` refuse out loud, and
+# the doors that do not go through them — `vars(host)[...] = x`,
+# `host.__dict__[...] = x`, `object.__setattr__(host, ...)` — write into
+# a module dict that nothing reads: the attributes live in a mapping the
+# constructing call closes over, which `__getattribute__` answers from,
+# so no attribute path reaches the mapping and the module dict cannot
+# shadow it. `dir(host)` is what lists the names.
 #
-# All names are ``__nt_``-prefixed so the runner's harvest (which drops
-# ``_*``) ignores the scaffolding.
+# The guest names are ``__nt_``-prefixed so the runner's harvest (which
+# drops ``_*``) ignores the scaffolding. Inside the class body they
+# would be mangled, so what the methods close over is single-underscore.
 _HOST_PRELUDE = (
     "import sys as __nt_sys, types as __nt_ty\n"
-    "def __nt_host_readonly(__nt_mod, __nt_attr, *__nt_rest):\n"
-    "    raise AttributeError(\n"
-    '        "Cannot set attribute \'" + __nt_attr + "\' on module '
+    "def __nt_host_module(_nt_names, _nt_base):\n"
+    "    _nt_get = _nt_base.__getattribute__\n"
+    "    def _nt_refuse(_mod, _attr, *_rest):\n"
+    "        raise AttributeError(\n"
+    '            "Cannot set attribute \'" + _attr + "\' on module '
     f"'{HOST_MODULE}': \"\n"
-    "        'the injected objects are read-only')\n"
-    f"__nt_host = __nt_ty.ModuleType({HOST_MODULE!r})\n"
-    "__nt_host.__dict__.update(\n"
+    "            'the injected objects are read-only')\n"
+    "    class Host(_nt_base):\n"
+    "        def __getattribute__(self, attr):\n"
+    "            try:\n"
+    "                return _nt_names[attr]\n"
+    "            except KeyError:\n"
+    "                return _nt_get(self, attr)\n"
+    "        def __dir__(self):\n"
+    "            return sorted(_nt_names)\n"
+    "        __setattr__ = _nt_refuse\n"
+    "        __delattr__ = _nt_refuse\n"
+    f"    return Host({HOST_MODULE!r})\n"
+    "__nt_host = __nt_host_module(\n"
     "    {__nt_n: globals()[__nt_n]\n"
-    f"     for __nt_n in {_HOST_NAMES_INPUT} if __nt_n in globals()}}\n"
+    f"     for __nt_n in {_HOST_NAMES_INPUT} if __nt_n in globals()}},\n"
+    "    __nt_ty.ModuleType,\n"
     ")\n"
-    f"__nt_host.__class__ = type({HOST_MODULE!r}, (__nt_ty.ModuleType,),\n"
-    "                           {'__setattr__': __nt_host_readonly,\n"
-    "                            '__delattr__': __nt_host_readonly})\n"
     f"__nt_sys.modules[{HOST_MODULE!r}] = __nt_host\n"
 )
 
