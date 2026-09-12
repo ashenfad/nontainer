@@ -46,6 +46,26 @@ missing once the app is served. A `_`-prefixed file is never routed as
 an endpoint and never served as static, so the source is not
 fetchable.
 
+Shared code takes its dependencies as arguments. A handler file is the
+program dispatch executes, so injected host objects (`db`, `cache`) are
+bound into its namespace and it names them free; a module it imports is
+not that program and gets none of them, so a helper that reads `db` as a
+bare name raises `NameError: name 'db' is not defined` at request time
+and the request 500s. Pass them instead — which is also the shape a unit
+test can call with a fake:
+
+```python
+# /workspace/app/api/_data.py
+def load(db, limit):
+    return db.query(limit)
+
+# /workspace/app/api/scores.py
+from app.api._data import load
+
+def get(req):
+    return {"scores": load(db, int(req.params.get("limit", 10)))}
+```
+
 ## Handler contract
 
 File-based routing + verb exports (the Next.js/SvelteKit idiom):

@@ -57,6 +57,12 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   as `ws-git.merge` does, so `ws.index.log()` shows them.
 - **A stash is an ordinary session on the store**: `store.sessions()`
   lists `<session>.stash-N`, and dropping one is `Store.delete` by name.
+- **Shared backend code takes its dependencies as arguments.**
+  `docs/apps.md` and the apps primer now say that injected host objects
+  are bound into the handler's namespace and not into the globals of a
+  module it imports, so a helper reading `db` as a bare name 500s with a
+  `NameError`; the documented shape is `def load(db, limit)` with the
+  handler passing them, which a unit test can call with a fake.
 
 ### Fixed
 - **A plotly spec dict is encoded the way a plotly figure is** — one
