@@ -64,7 +64,7 @@ dependencies = [
     # 0.3.5: raw is the default sandbox mode and the wrapped mode is
     # deprecated — the mode nontainer has always asked for is now the
     # one that gets the attention.
-    "sandtrap>=0.3.5",
+    "sandtrap>=0.3.6",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
     # 0.3.3: the incremental orphan sweep no longer deletes chunks that
