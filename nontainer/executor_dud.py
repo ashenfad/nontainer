@@ -71,6 +71,7 @@ from typing import Any, Literal
 from .cache import PREFIX
 from .errors import NotSupportedError
 from .executor import (
+    HOST_MODULE,
     ExecutionContext,
     HarvestLost,
     StagedDiff,
@@ -78,6 +79,8 @@ from .executor import (
     _apply_diff,
     _flatten_grants,
     _is_plain_data,
+    _refuse_reserved_host_name,
+    _refuse_shadowed_host_module,
     _truncate,
 )
 from .workspace import PythonResult, TerminalResult
@@ -154,6 +157,82 @@ _VIEW_BOOTSTRAP = (
     "    for __nt_n in __nt_boot[__nt_mod]['names']:\n"
     "        globals()[__nt_n] = getattr(__nt_sys.modules[__nt_mod], __nt_n)\n"
 )
+
+_HOST_NAMES_INPUT = "__nt_host_names"
+"""The input naming what belongs on the ``host`` module for one exec.
+
+Underscore-prefixed, so the guest runner's harvest drops it the way it
+drops the rest of the scaffolding."""
+
+# ``from host import db``: the injected objects under a name code can
+# import. A bare injected name is bound into the program the guest runs
+# — top-level ``run_python`` code and an app handler — and a module that
+# program imports gets none of it, so the import is the spelling that
+# works at all three sites and the bare names are sugar over it.
+#
+# The guest is a fresh interpreter per exec with no import hook, so the
+# module is source text: a ``sys.modules`` entry built from the guest's
+# own globals, which is where the hostcall proxies, the plain-data
+# inputs and the cache already are — the same values under both
+# spellings, rebuilt per exec because that is what an exec gets. The
+# names input says what belongs on it: the config's ``host_objects``
+# plus ``cache``, and so not the ``ws_git``/``ws_curl`` handlers this
+# rung registers for its own terminal verbs, which exist on one rung
+# only and are not part of the import's contract.
+#
+# Nothing may write to it: an attribute set on a per-exec module would
+# be a channel from one execution to the next, and there is no such
+# thing. The class swap installs the refusal AFTER the contents land,
+# and the contents land through ``__dict__`` rather than ``setattr``.
+#
+# All names are ``__nt_``-prefixed so the runner's harvest (which drops
+# ``_*``) ignores the scaffolding.
+_HOST_PRELUDE = (
+    "import sys as __nt_sys, types as __nt_ty\n"
+    "def __nt_host_readonly(__nt_mod, __nt_attr, *__nt_rest):\n"
+    "    raise AttributeError(\n"
+    '        "Cannot set attribute \'" + __nt_attr + "\' on module '
+    f"'{HOST_MODULE}': \"\n"
+    "        'the injected objects are read-only')\n"
+    f"__nt_host = __nt_ty.ModuleType({HOST_MODULE!r})\n"
+    "__nt_host.__dict__.update(\n"
+    "    {__nt_n: globals()[__nt_n]\n"
+    f"     for __nt_n in {_HOST_NAMES_INPUT} if __nt_n in globals()}}\n"
+    ")\n"
+    f"__nt_host.__class__ = type({HOST_MODULE!r}, (__nt_ty.ModuleType,),\n"
+    "                           {'__setattr__': __nt_host_readonly,\n"
+    "                            '__delattr__': __nt_host_readonly})\n"
+    f"__nt_sys.modules[{HOST_MODULE!r}] = __nt_host\n"
+)
+
+_HOST_PRELUDE_LINES = _HOST_PRELUDE.count("\n")
+
+# dud's guest runner compiles an exec under this filename, so a frame
+# naming it is a frame in the source nontainer sent.
+_GUEST_FILE = "<session>"
+
+_GUEST_FRAME = re.compile(rf'(File "{re.escape(_GUEST_FILE)}", line )(\d+)')
+
+
+def _unshift_traceback(text: str, offset: int) -> str:
+    """Renumber a guest traceback into the coordinates of the submitted
+    code.
+
+    The prelude and the submitted code compile as one unit, so every
+    frame in it reports a line ``offset`` further down than the line
+    whoever wrote the code counted. Frames at or above the offset are in
+    the prelude itself and keep their numbers: there is no line of the
+    submitted code to name them by.
+    """
+    if not offset or not text:
+        return text
+
+    def shift(m: "re.Match[str]") -> str:
+        n = int(m.group(2))
+        return m.group(1) + (str(n - offset) if n > offset else m.group(2))
+
+    return _GUEST_FRAME.sub(shift, text)
+
 
 _VIEW_EPILOGUE = (
     "\n"
@@ -533,6 +612,7 @@ class DudExecutor:
         self._ctx = context
         self._ws_root = "" if context.root == "/" else context.root.rstrip("/")
         cfg = context.python_config
+        _refuse_reserved_host_name(cfg)
         self._packages = self._prepare_config(cfg)
         # Live host objects cross as hostcall proxies behind dud's method
         # allowlist, granted their public methods in _make_session (dud 0.3
@@ -683,6 +763,18 @@ class DudExecutor:
 
     # -- python ----------------------------------------------------------
 
+    def _host_module_names(self, ctx: ExecutionContext) -> list[str]:
+        """The guest globals the ``host`` module carries for one exec.
+
+        The config's ``host_objects`` plus ``cache`` — the same set
+        ``LocalExecutor`` builds its module from, so ``from host import
+        db`` names the same things on either rung. The ``ws_git`` and
+        ``ws_curl`` handlers this rung registers alongside them are
+        deliberately absent: they front terminal verbs that exist on one
+        rung only, and a name only one rung answers is not a contract.
+        """
+        return [*ctx.python_config.host_objects, "cache"]
+
     def exec_python(
         self,
         code: str,
@@ -712,6 +804,9 @@ class DudExecutor:
                 "(no wire support in dud v0; use terminal() — real bash "
                 "pipes into real python)"
             )
+        shadowed = _refuse_shadowed_host_module(ctx)
+        if shadowed is not None:
+            return PythonResult(stdout="", stderr="", error=shadowed)
         if view is not None:
             # The lock spans exec + harvest so a read-only view's diff
             # check can't see a concurrent call's writes.
@@ -722,13 +817,14 @@ class DudExecutor:
 
         merged = dict(self._plain)
         merged.update(inputs or {})
+        merged[_HOST_NAMES_INPUT] = self._host_module_names(ctx)
         start = time.monotonic()
         try:
             with self._lock:
                 result = self._with_recovery(
                     lambda: self._session.python(
-                        code,
-                        inputs=merged or None,
+                        _HOST_PRELUDE + code,
+                        inputs=merged,
                         timeout=ctx.python_config.timeout,
                     )
                 )
@@ -740,7 +836,15 @@ class DudExecutor:
                 "DudExecutor inputs must be json-representable data or "
                 "bytes; live resources belong in PythonConfig.host_objects."
             ) from exc
-        return self._map_result(result, ctx, time.monotonic() - start)
+        # The prelude rode in ahead of the submitted code, so the guest's
+        # line numbers run ahead of the ones whoever wrote that code
+        # counted. Hand back theirs.
+        return self._map_result(
+            result,
+            ctx,
+            time.monotonic() - start,
+            line_offset=_HOST_PRELUDE_LINES,
+        )
 
     def _exec_view(
         self,
@@ -791,7 +895,17 @@ class DudExecutor:
             except Exception:
                 imports += f"from {mod} import {', '.join(entry['names'])}\n"
                 del boot[mod]
-        full = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + code + _VIEW_EPILOGUE
+        # The host prelude runs AFTER the view prelude: plain-data host
+        # objects reach the guest inside the pickle blob, so they are
+        # globals only once it has been unpickled.
+        full = (
+            imports
+            + _VIEW_BOOTSTRAP
+            + _VIEW_PRELUDE
+            + _HOST_PRELUDE
+            + code
+            + _VIEW_EPILOGUE
+        )
         timeout = (
             view.timeout if view.timeout is not None else ctx.python_config.timeout
         )
@@ -799,7 +913,11 @@ class DudExecutor:
         result = self._with_recovery(
             lambda: self._session.python(
                 full,
-                inputs={"__nt_blob": blob, "__nt_boot": boot},
+                inputs={
+                    "__nt_blob": blob,
+                    "__nt_boot": boot,
+                    _HOST_NAMES_INPUT: self._host_module_names(ctx),
+                },
                 timeout=timeout,
                 cache_readonly=view.readonly_cache,
             )
@@ -860,13 +978,14 @@ class DudExecutor:
         ctx: ExecutionContext,
         duration: float,
         contract: tuple[type, ...] = (),
+        line_offset: int = 0,
     ) -> PythonResult:
         error = None
         if result.error is not None:
             # The guest renders its own traceback (rendering happens
             # where the objects live); errors without one (Timeout,
             # RunnerCrash) read as "Type: message".
-            tb = result.error.traceback.rstrip()
+            tb = _unshift_traceback(result.error.traceback.rstrip(), line_offset)
             error = tb or f"{result.error.etype}: {result.error.message}"
 
         namespace = dict(result.outputs)
