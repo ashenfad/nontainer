@@ -41,6 +41,18 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   is an empty log on every walk.
 - **`ws-git sparse-checkout list`, and a `view:` header in `ws-git
   status`**, so a narrowed session can ask what it was given.
+- **`from host import db`** — the injected host objects arrive as a
+  synthetic `host` module as well as bare names, so a workspace module
+  a handler imports can reach them: the import resolves at the top
+  level, in a handler and in a module alike, where a bare name reached
+  only the first two. It carries the same objects the namespace holds
+  (`cache` included, read-only under a GET), is rebuilt per execution,
+  and takes no writes. Both rungs answer it — sandtrap's per-exec
+  modules on the local one, a guest prelude on dud.
+- **`unittest.mock` in the stdlib preset** (`patch`, `MagicMock` and
+  the rest of the public API; `unittest` itself exposes nothing else),
+  so a workspace module's collaborators can be patched where they are
+  read.
 
 ### Changed
 - **The ui set is closed, and the JSON floor is gone.** A ui value is a
@@ -63,6 +75,11 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   module it imports, so a helper reading `db` as a bare name 500s with a
   `NameError`; the documented shape is `def load(db, limit)` with the
   handler passing them, which a unit test can call with a fake.
+- **`host` is a reserved name.** A host object or a module grant called
+  `host` is refused at construction, and a workspace `host.py` (or
+  `host/`) comes back as an execution error naming the rule: `import
+  host` resolves the injected objects ahead of the workspace tree, so
+  the file would never run and nothing would say why.
 
 ### Fixed
 - **A plotly spec dict is encoded the way a plotly figure is** — one

@@ -287,7 +287,10 @@ the source. A HANDLER sees the injected objects (cache, db) as bare
 names; a module it imports does NOT — a shared function naming cache
 or db free raises NameError and the request 500s. Give shared
 functions what they need as arguments — `def load(db, limit)`, called
-`load(db, 10)` from the handler.
+`load(db, 10)` from the handler: that is the shape a test can call
+with a fake. A module that genuinely wants the ambient object imports
+it instead — `from host import db` works in a module, in a handler and
+at the top level alike.
 __SCRIPT_HOSTS__
 Images, fetches, styles, and fonts may use any https host (map tiles
 work).
@@ -560,10 +563,16 @@ def _env_notes(ws: Workspace) -> str:
         lines.append(_CACHE_NOTE)
     cfg = ws.runtime.python_config
     if cfg.host_objects:
-        names = ", ".join(sorted(cfg.host_objects))
+        sorted_names = sorted(cfg.host_objects)
+        names = ", ".join(sorted_names)
+        one = sorted_names[0]
         lines.append(
             f"- injected objects available by name: {names} (live host "
-            "resources; call them directly, do not try to construct them)"
+            "resources; call them directly, do not try to construct them). "
+            "The bare names are there at the top level and in an app "
+            f"handler; in a module you import them — `from host import "
+            f"{one}`, which also works at the top level and in a handler, "
+            "so it is the spelling that is right everywhere"
         )
     from ..executor import _flatten_grants
 
