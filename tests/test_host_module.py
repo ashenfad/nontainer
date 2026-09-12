@@ -94,7 +94,7 @@ def get(req):
 """
 
 
-@pytest.fixture(params=["local"])
+@pytest.fixture(params=["local", "dud"])
 def rung_ws(request):
     """One workspace per rung, with apps enabled and a live host object
     — the conformance leg, since the two implementations differ."""
@@ -255,6 +255,58 @@ def test_bare_names_still_work_at_top_level_and_in_a_handler():
         w.close()
 
 
+# -- the dud rung ------------------------------------------------------------
+
+
+def test_dud_carries_the_proxy_plain_data_and_nothing_of_the_ferries():
+    """The guest module holds what the config declared — the hostcall
+    proxy, plain data, the cache — and not the ws-git/ws-curl handlers
+    the dud rung registers for its own terminal verbs, which exist on
+    one rung only and so are not part of the import's contract."""
+    w = _dud_ws("host-dud-names", host_objects={"db": Db(), "settings": {"n": 3}})
+    try:
+        r = w.run_python(
+            "import host\n"
+            "rows = host.db.query(2)\n"
+            "n = host.settings['n']\n"
+            "names = sorted(k for k in vars(host) if not k.startswith('__'))\n"
+        )
+        assert r.error is None, r.error
+        assert r.namespace["rows"] == ["ann", "bo"]
+        assert r.namespace["n"] == 3
+        assert r.namespace["names"] == ["cache", "db", "settings"]
+    finally:
+        w.close()
+
+
+def test_dud_get_handler_sees_the_read_only_cache_through_the_module():
+    """A GET reaches the guest's read-only cache through the module,
+    exactly as it does through the bare name."""
+    w = _dud_ws("host-dud-rocache")
+    rt = enable_apps(w)
+    w.cache["scores"] = [1, 2]
+    w.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    w.files.fs.write(
+        "/workspace/app/api/c.py",
+        b"import host\n\n\ndef get(req):\n    return {'read': host.cache['scores']}\n",
+    )
+    w.files.fs.write(
+        "/workspace/app/api/w.py",
+        b"import host\n\n\ndef get(req):\n    host.cache['x'] = 1\n    return {}\n",
+    )
+    w.commit()
+    try:
+        ok = rt.dispatch(request("GET", "/api/c"))
+        assert ok.status == 200, ok.content
+        assert json.loads(ok.content) == {"read": [1, 2]}
+
+        refused = rt.dispatch(request("GET", "/api/w"))
+        assert refused.status == 500
+        assert "x" not in w.cache
+    finally:
+        w.close()
+
+
 # -- the reserved name -------------------------------------------------------
 
 
@@ -289,5 +341,36 @@ def test_a_workspace_module_named_host_is_refused(path):
         r = w.run_python("out = 1")
         assert r.error is not None
         assert "host" in r.error
+    finally:
+        w.close()
+
+
+def test_a_host_object_named_host_is_refused_on_the_dud_rung():
+    """The name is reserved on both rungs: the module is the answer to
+    `import host` wherever the code runs."""
+    with pytest.raises(ValueError, match="host"):
+        _dud_ws("host-dud-collide", host_objects={"host": Db()})
+
+
+def test_a_workspace_module_named_host_is_refused_on_the_dud_rung():
+    w = _dud_ws("host-dud-shadow", host_objects={"db": Db()})
+    try:
+        w.files.fs.write("/workspace/host.py", b"X = 1\n")
+        r = w.run_python("out = 1")
+        assert r.error is not None
+        assert "host" in r.error
+    finally:
+        w.close()
+
+
+def test_dud_tracebacks_still_name_the_line_the_agent_wrote():
+    """The guest compiles the host prelude and the submitted code as one
+    unit, so the numbers the guest reports run ahead of the numbers the
+    agent counted. The agent's own coordinates are what comes back."""
+    w = _dud_ws("host-dud-lines")
+    try:
+        r = w.run_python("a = 1\nb = 2\nrows = []\nrows[0]\n")
+        assert r.error is not None
+        assert "line 4" in r.error, r.error
     finally:
         w.close()
