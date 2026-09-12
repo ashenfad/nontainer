@@ -374,3 +374,21 @@ def test_dud_tracebacks_still_name_the_line_the_agent_wrote():
         assert "line 4" in r.error, r.error
     finally:
         w.close()
+
+
+def test_the_module_refuses_patch_object():
+    """`patch.object(host, 'db', fake)` is a write to the module, and
+    the module takes no writes — a test patches the name its own module
+    reads, not the one the executor rebuilds each exec."""
+    w = _local_ws("host-patch", "none", host_objects={"db": Db()})
+    try:
+        r = w.run_python(
+            "import host\n"
+            "from unittest.mock import patch\n"
+            "with patch.object(host, 'db'):\n"
+            "    pass\n"
+        )
+        assert r.error is not None
+        assert "AttributeError" in r.error
+    finally:
+        w.close()
