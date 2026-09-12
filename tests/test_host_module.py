@@ -14,6 +14,7 @@ import json
 import re
 
 import pytest
+from sandtrap import IsolationUnavailable
 
 from nontainer import PythonConfig, Workspace
 from nontainer.apps import enable_apps, request
@@ -40,10 +41,21 @@ def _session(prefix, request_node):
 
 
 def _local_ws(session, isolation, **cfg):
-    return Workspace(
-        KvgitProvider.open(None, session=session),
-        python=PythonConfig(isolation=isolation, **cfg),
-    )
+    """A local-rung workspace, skipped where the rung cannot be had.
+
+    An isolation level is a property of the machine: a kernel rung needs
+    seccomp and Landlock bindings the runner may not carry, and sandtrap
+    says so by refusing to build the sandbox rather than degrading into
+    something weaker under the same name. There is nothing to assert on
+    a rung that does not exist, so the parameter skips.
+    """
+    try:
+        return Workspace(
+            KvgitProvider.open(None, session=session),
+            python=PythonConfig(isolation=isolation, **cfg),
+        )
+    except IsolationUnavailable as e:
+        pytest.skip(f"isolation={isolation!r} unavailable here: {e}")
 
 
 def _dud_ws(session, **cfg):
