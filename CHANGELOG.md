@@ -91,7 +91,8 @@ another task. Elsewhere, the `ui` set closes.
   db=fake)` builds the request dispatch would, runs the handler, and
   returns the response (liberal returns normalized, `HttpError` as a
   status, a missing required field as a 400). Dependencies are
-  substituted by keyword rather than patched, and a handler it runs is
+  substituted by keyword because a handler's injected names are not
+  module attributes for a patch to reach, and a handler it runs is
   composed into the test program so the test's own mocks are what the
   handler sees. It does not reproduce a GET's read-only filesystem —
   that stays `ws-curl`'s to enforce.

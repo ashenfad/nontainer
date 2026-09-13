@@ -25,11 +25,11 @@ handler a test names is composed into a closure over the test program,
 its line count preserved, and ``call`` invokes that.
 
 Dependencies arrive as keyword arguments (``call(..., db=fake)``)
-rather than by patching. Patching a module-level name is the one idiom
-that looks right and silently does nothing here: the sandbox's module
-loader execs a workspace module into a COPY of its dict, so the patch
-reads back changed and the module's own functions go on seeing the
-original.
+rather than by patching, because there is nothing to patch them on: a
+handler's ``db`` and ``cache`` are bound into its namespace by
+dispatch, not into the module's attributes. Everything that IS a module
+attribute patches normally — ``patch.object`` on a workspace module,
+a class or an instance reaches what the module itself reads.
 
 One asymmetry, stated rather than papered over: ``call`` does not
 reproduce the read-only filesystem a real GET runs under, because the
