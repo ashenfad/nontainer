@@ -42,6 +42,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from .apps.testing import CallError
 from .wsverb import FerrySpec, tag
 
 #: Where python tests live. ``app/`` is what publishes, so a test file
@@ -385,21 +386,38 @@ class _Program:
     """Composed line of the epilogue's locator raise."""
 
 
-def _compose(rel: str, source: str, names: list[str]) -> _Program:
-    """The program one test file runs as: the file verbatim, then the
-    calls. Verbatim matters — the file's line numbers are the
-    program's, so a frame needs no mapping at all on this rung."""
+def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
+    """The program one test file runs as: the handlers it calls, then
+    the file itself, then the calls.
+
+    Every line of workspace source keeps its own line count, and each
+    run of them is recorded as a region — so a frame anywhere in the
+    program names the file and line the agent wrote.
+    """
+    from .apps.dispatch import app_root
+    from .apps.testing import called_modules, compose, uses_call
+
     if not source.endswith("\n"):
         source += "\n"
+    if uses_call(source):
+        preamble, spans = compose(ws, called_modules(source), app_root(ws))
+    else:
+        preamble, spans = "", []
+    head = preamble.count("\n")
     body_lines = source.count("\n")
+    regions = [
+        _Region(start, start + length - 1, path, 1 - start)
+        for path, start, length in spans
+    ]
+    regions.append(_Region(head + 1, head + body_lines, rel, -head))
     pairs = ", ".join(f'("{n}", {n})' for n in names)
     if pairs:
         pairs += ","
     epilogue = _EPILOGUE.format(pairs=pairs)
     return _Program(
-        source=source + epilogue,
-        regions=(_Region(1, body_lines, rel, 0),),
-        locator=body_lines + _LOCATOR_LINE,
+        source=preamble + source + epilogue,
+        regions=tuple(regions),
+        locator=head + body_lines + _LOCATOR_LINE,
     )
 
 
@@ -729,7 +747,22 @@ def run_options(ws: Any, options: Options) -> TestReport:
         collected += len(selected)
 
         budget = 0 if not options.maxfail else max(options.maxfail - failures, 1)
-        program = _compose(rel, source, [n for n, _ in selected])
+        try:
+            program = _compose(ws, rel, source, [n for n, _ in selected])
+        except CallError as e:
+            collection_errors.append(f"{rel}\n{e}")
+            collected -= len(selected)
+            outcomes.append(
+                TestOutcome(
+                    name=rel,
+                    file=rel,
+                    line=None,
+                    status="error",
+                    message=str(e),
+                    traceback=str(e),
+                )
+            )
+            continue
         result = ws.runtime.exec_python(
             program.source,
             inputs={"nt__maxfail": budget},
@@ -840,11 +873,12 @@ def _wanted(
 def _view(ws: Any) -> Any:
     """The execution view test code runs under: the contract classes a
     handler sees, so a test can name ``Request`` / ``Response`` /
-    ``HttpError``, and the session's own budget."""
+    ``HttpError``, plus the host half of ``call``."""
     from .apps.contract import HttpError, Request, Response
+    from .apps.testing import CONTRACT
     from .protocol import ViewSpec
 
-    return ViewSpec(extra_classes=(Request, Response, HttpError))
+    return ViewSpec(extra_classes=(Request, Response, HttpError, *CONTRACT))
 
 
 def _usage_report(message: str) -> TestReport:
