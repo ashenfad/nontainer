@@ -294,6 +294,8 @@ environment layer alone, offered to someone else's loop.
   model, commit granularity, tool exposure) and what's still ahead
 - [Apps design](docs/apps.md) -- handler contract, execution model,
   test_app, serving/threat model
+- [ws-pytest](docs/testing.md) -- the agent's unit tests: discovery, the
+  flags, calling a handler with a fake
 - [agno sessions](docs/agno-sessions.md) -- keeping the agent's
   conversation in the workspace, so rewind and fork cover memory too
 - [Tour](examples/tour.py) -- the whole surface end to end with no LLM:
