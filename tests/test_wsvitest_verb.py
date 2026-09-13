@@ -268,3 +268,79 @@ def test_a_suite_that_would_not_load_is_not_counted_as_a_test(ws):
     r = ws.terminal("ws-vitest")
     assert " Test Files  1 failed | 1 passed (2)" in r.stdout, out(r)
     assert "      Tests  2 passed (2)" in r.stdout, out(r)
+
+
+# -- discovery ----------------------------------------------------------
+
+
+BESIDE = """\
+import { add } from './util.js';
+
+it('runs beside its module', () => {
+  expect(add(2, 2)).toBe(4);
+});
+"""
+
+
+def test_a_test_beside_its_module_under_app_is_collected(ws):
+    ws.files.fs.write("/workspace/app/util.test.js", BESIDE.encode())
+    ws.files.fs.write("/workspace/app/widgets/deep.test.js", b"it('deep', () => {});\n")
+    r = ws.terminal("ws-vitest")
+    assert r.exit_code == 0, out(r)
+    assert " ✓ app/util.test.js (1 test)" in r.stdout
+    assert " ✓ app/widgets/deep.test.js (1 test)" in r.stdout
+
+
+def test_a_beside_module_test_is_told_that_it_ships(ws):
+    ws.files.fs.write("/workspace/app/util.test.js", BESIDE.encode())
+    r = ws.terminal("ws-vitest")
+    assert "app/util.test.js" in r.stdout
+    note = [line for line in r.stdout.splitlines() if line.startswith("note:")]
+    assert any("publish" in line for line in note), note
+    assert any("app/" in line for line in note), note
+
+
+def test_tests_under_app_api_are_reported_as_not_runnable(ws):
+    ws.files.fs.write("/workspace/app/api/h.test.js", b"it('never', () => {});\n")
+    r = ws.terminal("ws-vitest")
+    assert r.exit_code == 0, out(r)
+    assert "app/api/h.test.js" not in r.stdout.split("note:")[0]
+    notes = "\n".join(
+        line for line in r.stdout.splitlines() if line.startswith("note:")
+    )
+    assert "app/api/h.test.js" in notes
+    assert "not runnable" in notes
+    assert "app/api/" in notes
+
+
+def test_a_workspace_with_only_a_beside_module_test_still_runs(chromium_available):
+    w = Workspace(KvgitProvider.open(None, session="wsvitest-beside"))
+    register_wsvitest(w)
+    try:
+        w.files.fs.write("/workspace/app/util.js", UTIL.encode())
+        w.files.fs.write("/workspace/app/util.test.js", BESIDE.encode())
+        r = w.terminal("ws-vitest")
+        assert r.exit_code == 0, out(r)
+        assert " Test Files  1 passed (1)" in r.stdout
+    finally:
+        w.close()
+
+
+def test_tests_lead_the_run_and_app_follows(ws):
+    ws.files.fs.write("/workspace/app/util.test.js", BESIDE.encode())
+    report = run_vitest(ws)
+    order = [o.file for o in report.outcomes]
+    assert order.index("tests/good.test.js") < order.index("app/util.test.js")
+
+
+def test_only_unrunnable_tests_reads_the_reason_not_none_found(chromium_available):
+    w = Workspace(KvgitProvider.open(None, session="wsvitest-onlyapi"))
+    register_wsvitest(w)
+    try:
+        w.files.fs.write("/workspace/app/api/h.test.js", b"it('never', () => {});\n")
+        r = w.terminal("ws-vitest")
+        assert r.exit_code == 1
+        assert "not runnable" in out(r)
+        assert "app/api/h.test.js" in out(r)
+    finally:
+        w.close()
