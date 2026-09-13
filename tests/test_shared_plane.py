@@ -286,3 +286,81 @@ def test_a_session_branch_keeps_its_own_answer(store):
         a.commit()
         with pytest.raises(WorkspaceError, match=r"/workspace/notes\.md"):
             b.commit()
+
+
+# -- mounting a plane into a session -----------------------------------------
+#
+# The plane is not the session's state, so it is not attached the way a
+# frozen ref is: `mount_shared` is a LIVE read-only window, and what
+# another writer lands on the plane shows up through it.
+
+
+def test_a_session_reads_a_plane_through_a_mount(store):
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/items/a.json", '{"id": "a"}')
+    with store.open("user-42") as ws:
+        assert ws.files.mount_shared("catalog", "/workspace/catalog") == (
+            "@store/shared/catalog"
+        )
+        assert ws.files.read("/workspace/catalog/items/a.json") == b'{"id": "a"}'
+        # the agent sees it too, at the path the embedder named
+        assert "a.json" in ws.terminal("ls /workspace/catalog/items").stdout
+        assert ws.files.attachments() == {"/workspace/catalog": "@store/shared/catalog"}
+
+
+def test_a_mounted_plane_refuses_writes(store):
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/items/a.json", "{}")
+    with store.open("user-42") as ws:
+        ws.files.mount_shared("catalog", "/workspace/catalog")
+        with pytest.raises(Exception):
+            ws.files.write("/workspace/catalog/items/b.json", "{}")
+        assert ws.terminal("echo x > /workspace/catalog/items/c.json").exit_code != 0
+    with store.shared("catalog") as plane:
+        assert sorted(plane.files.list("/workspace/items")) == [
+            "/workspace/items/a.json"
+        ]
+
+
+def test_a_mount_is_live(store):
+    """What another handle writes after the mount is visible through
+    it: a plane is a moving head, and a mount is a window on it."""
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/items/a.json", "first")
+    with store.open("user-42") as ws:
+        ws.files.mount_shared("catalog", "/workspace/catalog")
+        assert ws.files.read("/workspace/catalog/items/a.json") == b"first"
+        with store.shared("catalog") as writer:
+            writer.files.write("/workspace/items/b.json", "second")
+            writer.files.write("/workspace/items/a.json", "rewritten")
+        assert ws.files.read("/workspace/catalog/items/b.json") == b"second"
+        assert ws.files.read("/workspace/catalog/items/a.json") == b"rewritten"
+
+
+def test_a_mount_belongs_to_the_session_handle_and_not_its_state(store):
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/items/a.json", "{}")
+    with store.open("user-42") as ws:
+        ws.files.mount_shared("catalog", "/workspace/catalog")
+        ws.files.write("/workspace/own.txt", "mine")
+        ws.files.detach("/workspace/catalog")
+        assert not ws.files.fs.exists("/workspace/catalog")
+    with store.open("user-42") as again:
+        assert not again.files.fs.exists("/workspace/catalog")
+        assert again.files.read("/workspace/own.txt") == b"mine"
+
+
+def test_mount_shared_refuses_a_plane_that_is_not_there(store):
+    with store.open("user-42") as ws:
+        with pytest.raises(WorkspaceError, match="No such shared plane"):
+            ws.files.mount_shared("nope", "/workspace/catalog")
+        assert ws.files.attachments() == {}
+    assert store.shared_names() == []  # the refusal minted nothing
+
+
+def test_attach_sends_a_bare_plane_name_to_mount_shared(store):
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/items/a.json", "{}")
+    with store.open("user-42") as ws:
+        with pytest.raises(ValueError, match="mount_shared"):
+            ws.files.attach("@store/shared/catalog", "/workspace/catalog")

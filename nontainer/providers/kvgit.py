@@ -336,6 +336,33 @@ def _validate_branch(name: str) -> str:
     return validate_session_id(name)
 
 
+class _LiveFS:
+    """A filesystem that follows its branch's head rather than the
+    commit a handle was opened at.
+
+    What a read-only mount of a shared plane shows: the plane is a
+    moving head written by other handles and other processes, so every
+    call re-reads the branch when it has moved. The head check is one
+    read of the store's head key; a branch nobody moved costs that and
+    nothing more.
+
+    For a handle nothing writes through. Re-reading the branch discards
+    staged changes, so one that holds any is left exactly where it is
+    and serves what it has.
+    """
+
+    __slots__ = ("_provider",)
+
+    def __init__(self, provider: "KvgitProvider") -> None:
+        self._provider = provider
+
+    def __repr__(self) -> str:
+        return f"<live {self._provider.session!r}>"
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider._fs_at_head(), name)
+
+
 class KvgitProvider:
     """``WorkspaceProvider`` over a kvgit ``Staged`` branch.
 
@@ -576,6 +603,31 @@ class KvgitProvider:
     @property
     def head(self) -> str:
         return self._staged.current_commit
+
+    def live_fs(self) -> Any:
+        """This branch's filesystem as it is now, not as this handle
+        last read it — what a read-only mount of a shared plane shows.
+
+        A handle reads the commit it was opened at until something moves
+        it, which is right for a session (one writer, its own head) and
+        wrong for a plane many writers land on. This view re-reads the
+        branch when its head has moved, so a file another writer
+        committed a moment ago is there to read.
+        """
+        return _LiveFS(self)
+
+    def _fs_at_head(self) -> Any:
+        """The filesystem, re-read first if this branch's head moved.
+
+        Staged changes are what a re-read would discard, so a handle
+        holding any keeps the head it has: nothing this provider serves
+        is worth losing a caller's write for.
+        """
+        if not self._staged.has_changes:
+            head = self._staged.versioned.latest_head
+            if head is not None and head != self._staged.current_commit:
+                self.refresh()
+        return self.fs
 
     def commit(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged fs + kv writes atomically; returns the commit

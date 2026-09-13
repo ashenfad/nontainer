@@ -933,6 +933,23 @@ class Store:
         ws._store = self
         return ws
 
+    def _shared_mount(self, name: str, *, root: str | None = None) -> "Workspace":
+        """A handle on an existing plane, for a read-only mount.
+
+        A mount does not create the plane it names: ``shared`` is where
+        a plane comes from, and a mount of a name nothing answers to is
+        a typo whose empty tree would read as an empty catalog.
+        Autocommit is off because nothing writes through this handle —
+        a mount is read-only, and the handle exists to follow the head.
+        """
+        self._require_own_layout("mount_shared")
+        self._require_kvgit("mount_shared")
+        branch = f"{_SHARED_BRANCH_PREFIX}{_validate_shared_name(name)}"
+        self._require_shared_branch(branch)
+        return self.shared(
+            name, autocommit=False, **({"root": root} if root is not None else {})
+        )
+
     def shared_names(self) -> list[str]:
         """Every shared plane on the store, sorted, by bare name.
 

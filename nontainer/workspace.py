@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from .cache import Cache
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
-from .planes import CONVERSATION_PREFIX
+from .planes import CONVERSATION_PREFIX, SHARED_BRANCH_PREFIX
 from .protocol import (
     Capabilities,
     CommitInfo,
@@ -1030,16 +1030,70 @@ class WorkspaceFiles:
             ws._check_open()
             return ws._attach(ref, at, readonly=readonly, root=root)
 
+    def mount_shared(self, name: str, at: str, *, root: str | None = None) -> str:
+        """Mount a shared plane inside this session at ``at``,
+        read-only and LIVE; returns the branch it follows.
+
+        The optional window onto the fourth plane: a session reads a
+        team's skills directory, a shared catalog or an agent memory at
+        a path the embedder names, and nothing about what lives there is
+        nontainer's word.
+
+        Live, where :meth:`attach` is frozen, and that is the whole
+        difference between the two verbs. A plane is a moving head that
+        other sessions and other processes write, so a window pinned to
+        a commit would go stale the moment one of them committed: a read
+        through the mount sees the branch as it is, with no re-mount.
+        What a ref freezes is still frozen — ``attach("@store/shared/
+        <name>@<commit>", at)`` reads the plane at exactly that commit.
+
+        Read-only, and not negotiable: a write goes through
+        ``store.shared(name)``, which is where the plane's merge is.
+        Writing to the mount point raises.
+
+        Like an attachment and like a :class:`Mount`: NOT versioned, not
+        captured by this session's commits, not carried by a fork, and
+        gone when the session closes or :meth:`detach` releases it. The
+        plane must already exist — a mount does not create one, since an
+        empty tree would read as an empty catalog rather than as a typo.
+
+        ``at`` is workspace-absolute or relative to the root, and
+        reaches an executor that runs elsewhere only from inside the
+        root, as a mount does. An executor that runs elsewhere is handed
+        the tree when it syncs, so what it sees is the plane as of that
+        sync; an in-process executor reads the live view directly.
+
+        ``root`` is the workspace root the plane's own files live under
+        (default ``/workspace``, which is what ``store.shared(name)``
+        opens): its root is a fact about the plane, not about this
+        session.
+        """
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            return ws._mount_shared(name, at, root=root)
+
     def detach(self, at: str) -> None:
-        """Remove an attachment and release the state behind it."""
+        """Remove an attachment or a shared mount and release the
+        handle behind it."""
         ws = self._ws
         with ws._lock:
             ws._check_open()
             ws._detach(at)
 
     def attachments(self) -> dict[str, str]:
-        """What is attached, as ``{mount point: ref}``."""
-        return {at: str(snap.ref) for at, snap in self._ws._attached.items()}
+        """What is attached, as ``{mount point: ref}``.
+
+        A shared plane mounted live reports the branch it follows
+        (``@store/shared/<name>``) and no commit, because it is pinned
+        to none: the window shows whatever that branch holds when it is
+        read.
+        """
+        ws = self._ws
+        return {
+            at: (snap.session if at in ws._live_mounts else str(snap.ref))
+            for at, snap in ws._attached.items()
+        }
 
     def export(self) -> AbstractContextManager[Path]:
         """Expose the workspace at a real path for the duration of the
@@ -1388,6 +1442,11 @@ class Workspace:
         # handed ONE filesystem object when it opens, so a tree
         # attached later has to reach it through that same object.
         self._attached: dict[str, Workspace] = {}
+        # Which of those are live mounts of a shared plane rather than
+        # a state frozen at a commit: the two are released the same way
+        # and report themselves differently, a mount naming the branch
+        # it follows because it is pinned to no commit.
+        self._live_mounts: set[str] = set()
         self._fs = AttachFS(self._build_fs(viewed, normalized_mounts), self._root)
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
@@ -2486,12 +2545,18 @@ class Workspace:
                 "attach(..., readonly=True), and take what you want to "
                 "change with ws.checkout(ref, paths=[...])."
             )
-        point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
-        if point == "/" or point in self._attached:
+        text = str(ref)
+        if (
+            text.startswith(SHARED_BRANCH_PREFIX)
+            and "@" not in text[len(SHARED_BRANCH_PREFIX) :]
+        ):
             raise ValueError(
-                f"cannot attach at {at!r}: "
-                + ("the root is the session's own" if point == "/" else "already taken")
+                f"cannot attach {text!r}: a shared plane's branch is a moving "
+                "head, and an attachment is frozen at a commit. Mount it live "
+                f"with ws.files.mount_shared({text[len(SHARED_BRANCH_PREFIX) :]!r}, "
+                f"{at!r}), or name a commit on it to read exactly that state."
             )
+        point = self._mount_point(at, "attach")
         snapshot = self._resolve_snapshot(ref, root or self._root)
         try:
             # The PROVIDER's filesystem, not the snapshot workspace's:
@@ -2510,11 +2575,53 @@ class Workspace:
         self._mark_executor_stale()
         return str(snapshot.ref)
 
+    def _mount_point(self, at: str, verb: str) -> str:
+        """Where a mount lands, normalized, refusing what cannot hold
+        one: the session's own root, and a point already taken."""
+        point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
+        if point == "/" or point in self._attached:
+            raise ValueError(
+                f"cannot {verb} at {at!r}: "
+                + ("the root is the session's own" if point == "/" else "already taken")
+            )
+        return point
+
+    def _mount_shared(self, name: str, at: str, *, root: str | None = None) -> str:
+        """``ws.files.mount_shared``, under the lock. See it for the
+        contract."""
+        from monkeyfs import ReadOnlyFS
+
+        from .views import SubtreeFS
+
+        if self._store is None:
+            raise WorkspaceError(
+                "this workspace was built straight from a provider, so no "
+                "store holds the shared planes; open it through "
+                "Store.open(...) to mount one."
+            )
+        point = self._mount_point(at, "mount")
+        plane = self._store._shared_mount(name, root=root)
+        try:
+            # The plane's LIVE filesystem, not the handle's own: the
+            # branch is written by other sessions and other processes,
+            # and a window that showed the commit this handle opened at
+            # would be a snapshot wearing a mount's name.
+            live = plane._provider.live_fs()
+            self._fs.attach(point, ReadOnlyFS(SubtreeFS(live, plane.root)))
+        except BaseException:
+            plane.close()
+            raise
+        self._attached[point] = plane
+        self._live_mounts.add(point)
+        self._mark_executor_stale()
+        return plane.session
+
     def _detach(self, at: str) -> None:
         point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
         snapshot = self._attached.pop(point, None)
         if snapshot is None:
             raise ValueError(f"nothing attached at {at!r}")
+        self._live_mounts.discard(point)
         self._fs.detach(point)
         snapshot.close()
         self._mark_executor_stale()
@@ -3114,6 +3221,7 @@ class Workspace:
                     except Exception:  # noqa: BLE001 - closing the session wins
                         pass
                 self._attached.clear()
+                self._live_mounts.clear()
                 self._provider.close()
 
     def __enter__(self) -> "Workspace":
