@@ -385,10 +385,12 @@ def test_agno_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
     tk = WorkspaceTools(ws, sessions=Scripted())
     try:
         call = tk.functions["sessions"].entrypoint
-        assert "from_=" in tk.functions["sessions"].entrypoint.__doc__
+        assert "fork_from=" in tk.functions["sessions"].entrypoint.__doc__
         assert "resume=" in tk.functions["sessions"].entrypoint.__doc__
 
-        out = call(action="ask", task="what is north?", from_="rates-2026", wait=True)
+        out = call(
+            action="ask", task="what is north?", fork_from="rates-2026", wait=True
+        )
         child = tk.sessions.list()[0].name
         assert "answering: what is north?" in out
         # the next step is the same for every ask
@@ -402,7 +404,7 @@ def test_agno_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
         assert "answering: and south?" in again
         assert [j.name for j in tk.sessions.list()] == [child]  # one child, one row
 
-        assert "nothing named" in call(action="ask", task="q", from_="nope")
+        assert "nothing named" in call(action="ask", task="q", fork_from="nope")
         assert "no job named" in call(action="ask", task="q", resume="analyst.nope")
 
         # the fork point is read, never written

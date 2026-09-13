@@ -38,7 +38,7 @@ answer is collected later with :meth:`Sessions.result`. How a parent
 LEARNS that a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's, not nontainer's.
 
-An ask starts from this session unless it is told otherwise. ``from_``
+An ask starts from this session unless it is told otherwise. ``fork_from``
 names another fork point — a commit somebody else tends, spelled
 ``session@commit`` or named by a store tag — and the child is forked
 THERE instead, with a conversation of its own, since a conversation
@@ -215,7 +215,7 @@ class Sessions:
         name: str | None = None,
         paths: "Iterable[str] | str | None" = None,
         inherit: str = "fresh",
-        from_: "str | Any | None" = None,
+        fork_from: "str | Any | None" = None,
         resume: str | None = None,
         wait: bool = False,
         budget: Any = None,
@@ -236,7 +236,7 @@ class Sessions:
         along (``"fresh"`` here, where the child is starting work of
         its own, against ``fork``'s own ``"full"`` default).
 
-        ``from_`` starts the child somewhere else: a commit named by a
+        ``fork_from`` starts the child somewhere else: a commit named by a
         store tag, or spelled ``session@commit`` (a short commit id and
         a session's own tag resolve here the way they do for every
         other verb). The child is forked THERE rather than here, and
@@ -263,7 +263,7 @@ class Sessions:
         """
         self._check_open()
         started = time.time()
-        if inherit != "fresh" and (from_ is not None or resume is not None):
+        if inherit != "fresh" and (fork_from is not None or resume is not None):
             raise SessionsError(
                 "inherit must be 'fresh' here: the conversation at another fork "
                 "point is not this session's to continue, and a child resumed "
@@ -272,11 +272,11 @@ class Sessions:
             )
         previous: Job | None = None
         if resume is not None:
-            previous, origin = self._resumed(resume, from_)
+            previous, origin = self._resumed(resume, fork_from)
             child_name, base = previous.name, self._base.get(previous.name)
             child = self._reopen(child_name)
         else:
-            origin = self._origin(from_) if from_ is not None else None
+            origin = self._origin(fork_from) if fork_from is not None else None
             try:
                 child, child_name, base = self._fork(
                     name, paths=paths, inherit=inherit, at=origin[1] if origin else None
@@ -563,7 +563,7 @@ class Sessions:
         )
 
     def _resumed(
-        self, resume: str, from_: "str | Any | None"
+        self, resume: str, fork_from: "str | Any | None"
     ) -> "tuple[Job, tuple[str, str] | None]":
         """``(the job on the child, where the child was forked from)``
         for an ask that continues a child this session already has.
@@ -585,8 +585,8 @@ class Sessions:
             raise SessionsError(self._unknown(resume))
         if running:
             raise SessionsError(self._still_running(resume))
-        if from_ is not None:
-            given = str(from_).strip()
+        if fork_from is not None:
+            given = str(fork_from).strip()
             if job.origin is None:
                 raise SessionsError(
                     f"{resume!r} was forked from this session, not from "
@@ -619,7 +619,7 @@ class Sessions:
             )
         return store.open(name, root=self._ws.root)
 
-    def _origin(self, from_: "str | Any") -> "tuple[str, str]":
+    def _origin(self, fork_from: "str | Any") -> "tuple[str, str]":
         """``(the fork point as the caller spelled it, its commit)``.
 
         Two spellings, one funnel each. A ``session@commit`` ref — or a
@@ -630,7 +630,7 @@ class Sessions:
         """
         from .store import Ref
 
-        given = str(from_).strip()
+        given = str(fork_from).strip()
         if not given:
             raise SessionsError(
                 "a fork point must be named: a store tag, or a 'session@commit' "
@@ -642,7 +642,7 @@ class Sessions:
                 "commits, and a fork point is a commit; forking from elsewhere "
                 "needs a versioned provider"
             )
-        if isinstance(from_, Ref) or "@" in given:
+        if isinstance(fork_from, Ref) or "@" in given:
             parsed = Ref.parse(given)
             with self._ws.lock:
                 return given, self._ws._ref_commit(parsed.session, parsed.commit)
@@ -1033,7 +1033,7 @@ def run_action(
     name: str = "",
     paths: Any = None,
     inherit: str = "fresh",
-    from_: str = "",
+    fork_from: str = "",
     resume: str = "",
     wait: bool = False,
 ) -> str:
@@ -1054,7 +1054,7 @@ def run_action(
                 name=name or None,
                 paths=coerce_paths(paths),
                 inherit=inherit,
-                from_=from_ or None,
+                fork_from=fork_from or None,
                 resume=resume or None,
                 wait=wait,
             )

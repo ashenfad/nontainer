@@ -580,11 +580,11 @@ def test_a_job_forked_from_this_session_names_no_origin():
 
 
 def test_ask_from_a_store_tag_forks_that_state(parent, store, fork_point):
-    """from_ moves the fork point: the child holds the named state and
+    """fork_from moves the fork point: the child holds the named state and
     nothing of the asker's."""
     runner = Scripted(store, {}, text="north is 4")
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("what is north?", from_="rates-2026", wait=True)
+        answer = sessions.ask("what is north?", fork_from="rates-2026", wait=True)
 
         job = sessions.list()[0]
         assert job.origin == ("rates-2026", fork_point)
@@ -601,15 +601,15 @@ def test_ask_from_a_store_tag_forks_that_state(parent, store, fork_point):
 
 
 def test_ask_from_a_session_ref_a_short_id_and_a_ref(parent, store, fork_point):
-    """Every spelling the store hands out is one from_ takes back: the
+    """Every spelling the store hands out is one fork_from takes back: the
     funnel that resolves a ref for every other verb resolves this one."""
     from nontainer import Ref
 
     runner = Scripted(store, {}, text="answered")
     with Sessions(parent, runner) as sessions:
-        sessions.ask("whole id", from_=f"sage@{fork_point}", wait=True)
-        sessions.ask("short id", from_=f"sage@{fork_point[:7]}", wait=True)
-        sessions.ask("a Ref", from_=Ref("sage", fork_point), wait=True)
+        sessions.ask("whole id", fork_from=f"sage@{fork_point}", wait=True)
+        sessions.ask("short id", fork_from=f"sage@{fork_point[:7]}", wait=True)
+        sessions.ask("a Ref", fork_from=Ref("sage", fork_point), wait=True)
         asked = [j.origin for j in sessions.list()]
 
     assert asked == [
@@ -619,7 +619,7 @@ def test_ask_from_a_session_ref_a_short_id_and_a_ref(parent, store, fork_point):
     ]
     # a ref-spelled fork point is a ref in the chain, short id expanded
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("go", from_=f"sage@{fork_point[:7]}", wait=True)
+        answer = sessions.ask("go", fork_from=f"sage@{fork_point[:7]}", wait=True)
     assert answer.provenance["chain"][0] == f"sage@{fork_point}"
     assert answer.provenance["from"] == f"sage@{fork_point[:7]}"
 
@@ -627,11 +627,11 @@ def test_ask_from_a_session_ref_a_short_id_and_a_ref(parent, store, fork_point):
 def test_ask_from_refuses_a_fork_point_nothing_names(parent, store, fork_point):
     with Sessions(parent, Scripted(store, {})) as sessions:
         with pytest.raises(SessionsError, match="rates-2026"):
-            sessions.ask("q", from_="rates-2025")
+            sessions.ask("q", fork_from="rates-2025")
         with pytest.raises(ValueError, match="unknown session"):
-            sessions.ask("q", from_="nobody@abcdef1")
+            sessions.ask("q", fork_from="nobody@abcdef1")
         with pytest.raises(SessionsError, match="nothing to fork"):
-            sessions.ask("q", from_="sage@abcdef1")
+            sessions.ask("q", fork_from="sage@abcdef1")
 
 
 def test_ask_from_refuses_to_carry_your_conversation(parent, store, fork_point):
@@ -639,7 +639,7 @@ def test_ask_from_refuses_to_carry_your_conversation(parent, store, fork_point):
     from somewhere else starts one of its own."""
     with Sessions(parent, Scripted(store, {})) as sessions:
         with pytest.raises(SessionsError, match="fresh"):
-            sessions.ask("q", from_="rates-2026", inherit="full")
+            sessions.ask("q", fork_from="rates-2026", inherit="full")
 
 
 def test_the_source_branch_is_untouched_by_an_ask_from_it(parent, store, fork_point):
@@ -654,7 +654,7 @@ def test_the_source_branch_is_untouched_by_an_ask_from_it(parent, store, fork_po
 
     runner = Scripted(store, {"/workspace/rates.md": "north 40\n"}, text="rewritten")
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("rewrite it", from_="rates-2026", wait=True)
+        answer = sessions.ask("rewrite it", fork_from="rates-2026", wait=True)
 
     after = store.open("sage")
     try:
@@ -679,7 +679,7 @@ def test_the_runner_is_told_the_fork_point_it_was_given(parent, store, fork_poin
 
     runner = Aware(store, {}, text="ok")
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("what is north?", from_="rates-2026", wait=True)
+        answer = sessions.ask("what is north?", fork_from="rates-2026", wait=True)
         assert sessions.base(answer.branch) == fork_point
 
     assert seen["forked_at"] == fork_point
@@ -693,7 +693,7 @@ def test_a_capped_run_from_elsewhere_resolves(parent, store, fork_point):
     exception, wherever the child was forked from."""
     runner = Scripted(store, {}, text="I ran out of room", status="capped")
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("explain everything", from_="rates-2026", wait=True)
+        answer = sessions.ask("explain everything", fork_from="rates-2026", wait=True)
         assert sessions.list()[0].status == "capped"
     assert answer.status == "capped"
     assert answer.text == "I ran out of room"
@@ -709,7 +709,7 @@ def test_a_branch_forked_from_elsewhere_is_read_and_taken_like_any_other(
         store, {"/workspace/answer.md": "north is 4\n"}, text="see answer.md"
     )
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("write it down", from_="rates-2026", wait=True)
+        answer = sessions.ask("write it down", fork_from="rates-2026", wait=True)
 
     parent.files.attach(answer.branch, "/workspace/theirs")
     assert parent.files.read("/workspace/theirs/answer.md") == b"north is 4\n"
@@ -814,17 +814,17 @@ def test_resume_refuses_a_fork_point_the_child_did_not_come_from(
     from, so naming a different fork point is refused rather than
     quietly answered by the child at hand."""
     with Sessions(parent, Echo()) as sessions:
-        theirs = sessions.ask("read it", from_="rates-2026", wait=True)
+        theirs = sessions.ask("read it", fork_from="rates-2026", wait=True)
         with pytest.raises(SessionsError, match="rates-2026"):
-            sessions.ask("more", from_=f"sage@{fork_point}", resume=theirs.branch)
+            sessions.ask("more", fork_from=f"sage@{fork_point}", resume=theirs.branch)
         # the fork point it did come from, spelled the same way, continues it
-        again = sessions.ask("more", from_="rates-2026", resume=theirs.branch)
+        again = sessions.ask("more", fork_from="rates-2026", resume=theirs.branch)
         assert again.name == theirs.branch
         _settle(sessions, theirs.branch)
 
         mine = sessions.ask("polish it", wait=True)
         with pytest.raises(SessionsError, match="this session"):
-            sessions.ask("more", from_="rates-2026", resume=mine.branch)
+            sessions.ask("more", fork_from="rates-2026", resume=mine.branch)
 
 
 def test_a_resume_is_refused_while_the_run_it_continues_is_in_flight(parent, store):
@@ -928,7 +928,7 @@ def test_a_resumed_job_keeps_what_belongs_to_the_child(parent, store, fork_point
     it answers again, and it still names the fork point it was made
     from."""
     with Sessions(parent, Echo()) as sessions:
-        first = sessions.ask("read it", from_="rates-2026", wait=True)
+        first = sessions.ask("read it", fork_from="rates-2026", wait=True)
         assert sessions.keep(first.branch).kept
         sessions.ask("read it again", resume=first.branch, wait=True)
         row = sessions.list()[0]
@@ -939,14 +939,14 @@ def test_a_resumed_job_keeps_what_belongs_to_the_child(parent, store, fork_point
     assert sessions.base(first.branch) == fork_point
 
 
-# -- the tool's half of from_ and resume ---------------------------------------
+# -- the tool's half of fork_from and resume ---------------------------------------
 
 
 def test_the_tool_asks_from_a_fork_point_and_resumes(parent, store, fork_point):
     runner = Echo()
     with Sessions(parent, runner) as sessions:
         sent = run_action(
-            sessions, "ask", task="what is north?", from_="rates-2026", wait=True
+            sessions, "ask", task="what is north?", fork_from="rates-2026", wait=True
         )
         name = sessions.list()[0].name
         assert "answering what is north?" in sent and name in sent
@@ -970,7 +970,7 @@ def test_the_tool_asks_from_a_fork_point_and_resumes(parent, store, fork_point):
 def test_a_job_sent_off_from_a_fork_point_names_it(parent, store, fork_point):
     runner = Echo()
     with Sessions(parent, runner) as sessions:
-        sent = run_action(sessions, "ask", task="read it", from_="rates-2026")
+        sent = run_action(sessions, "ask", task="read it", fork_from="rates-2026")
         sessions.close()  # joins the worker
     name = sessions.list()[0].name
     assert "rates-2026" in sent and name in sent
@@ -979,13 +979,15 @@ def test_a_job_sent_off_from_a_fork_point_names_it(parent, store, fork_point):
 
 def test_the_tool_says_what_an_ask_cannot_do(parent, store, fork_point):
     with Sessions(parent, Echo()) as sessions:
-        assert "needs a task" in run_action(sessions, "ask", from_="rates-2026")
-        assert "nothing named" in run_action(sessions, "ask", task="q", from_="nobody")
+        assert "needs a task" in run_action(sessions, "ask", fork_from="rates-2026")
+        assert "nothing named" in run_action(
+            sessions, "ask", task="q", fork_from="nobody"
+        )
         assert "no job named" in run_action(
             sessions, "ask", task="q", resume="analyst.nobody"
         )
         assert "fresh" in run_action(
-            sessions, "ask", task="q", from_="rates-2026", inherit="full"
+            sessions, "ask", task="q", fork_from="rates-2026", inherit="full"
         )
 
 
@@ -994,7 +996,7 @@ def test_every_answer_ends_with_the_same_next_step(parent, store, fork_point):
     is the same choice wherever the child was forked from."""
     runner = Scripted(store, {"/workspace/answer.md": "north is 4\n"}, text="done")
     with Sessions(parent, runner) as sessions:
-        theirs = sessions.ask("read it", from_="rates-2026", wait=True)
+        theirs = sessions.ask("read it", fork_from="rates-2026", wait=True)
         mine = sessions.ask("polish it", wait=True)
         elsewhere = run_action(sessions, "result", name=theirs.branch)
         here = run_action(sessions, "result", name=mine.branch)
@@ -1016,7 +1018,7 @@ def test_a_child_forked_from_elsewhere_merges_that_whole_tree(
         store, {"/workspace/answer.md": "north is 4\n"}, text="see answer.md"
     )
     with Sessions(parent, runner) as sessions:
-        answer = sessions.ask("write it down", from_="rates-2026", wait=True)
+        answer = sessions.ask("write it down", fork_from="rates-2026", wait=True)
 
     # what the child changed is measured from ITS fork point
     assert answer.changed == {"seed": ("/workspace/answer.md",), "elsewhere": ()}
