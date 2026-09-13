@@ -274,10 +274,10 @@ class Sessions:
                 "keeps the conversation it has. A brief is content the task "
                 "carries"
             )
-        previous: Job | None = None
+        resuming = resume is not None
         if resume is not None:
             previous, origin = self._resumed(resume, fork_from)
-            child_name, base = previous.name, self._base.get(previous.name)
+            child_name, base = previous.name, None
             child = self._reopen(child_name)
         else:
             origin = self._origin(fork_from) if fork_from is not None else None
@@ -298,22 +298,21 @@ class Sessions:
             task=task,
             status="running",
             started=started,
-            # What belongs to the CHILD and not to one run of it: a
-            # caller that keeps a branch while reading one answer has
-            # said the branch is worth keeping, and giving it another
-            # task is not a withdrawal of that.
-            kept=previous.kept if previous is not None else False,
             origin=origin,
         )
         try:
-            future = self._submit(
-                job, child, base, self._budget if budget is None else budget
+            job, future = self._submit(
+                job,
+                child,
+                base,
+                self._budget if budget is None else budget,
+                resuming=resuming,
             )
         except BaseException:
             # The branch was taken by another run between the check and
             # the reservation, or the pool is gone: the handle opened
             # for a run that will not happen is closed here.
-            if previous is not None:
+            if resuming:
                 try:
                     child.close()
                 except Exception:  # noqa: BLE001 - the refusal wins
@@ -525,10 +524,16 @@ class Sessions:
         return candidate
 
     def _submit(
-        self, job: Job, child: "Workspace", base: str | None, budget: Any
-    ) -> Future:
+        self,
+        job: Job,
+        child: "Workspace",
+        base: str | None,
+        budget: Any,
+        *,
+        resuming: bool = False,
+    ) -> "tuple[Job, Future]":
         """Reserve the job's branch, install the job, put it on a
-        worker; returns its future.
+        worker; returns the job as installed and its future.
 
         The reservation and the install are ONE critical section, which
         is what makes the handoff of a branch from one run to the next
@@ -539,12 +544,23 @@ class Sessions:
         A resumed branch keeps everything of the child's and replaces
         everything of the run's: the previous answer goes, because it
         is not the answer to this task, and ``result`` says the job is
-        running until the new one lands.
+        running until the new one lands. What the child's own row
+        holds — where it was forked from, its base, whether a caller
+        has kept it — is READ HERE, in the section that installs the
+        replacement, so a ``keep`` that lands while the resume is being
+        prepared is not overwritten by a copy taken a moment earlier.
         """
         name = job.name
         with self._lock:
             if name in self._busy:
                 raise SessionsError(self._still_running(name))
+            if resuming:
+                current = self._jobs.get(name)
+                if current is not None:
+                    job = replace(
+                        job, kept=current.kept, origin=job.origin or current.origin
+                    )
+                base = self._base.get(name, base)
             self._token += 1
             token = self._busy[name] = self._token
             self._jobs[name] = job
@@ -558,7 +574,7 @@ class Sessions:
             raise
         with self._lock:
             self._futures[name] = future
-        return future
+        return job, future
 
     def _still_running(self, name: str) -> str:
         """Why a branch cannot take a task yet."""
