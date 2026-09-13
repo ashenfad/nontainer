@@ -364,3 +364,41 @@ def test_attach_sends_a_bare_plane_name_to_mount_shared(store):
     with store.open("user-42") as ws:
         with pytest.raises(ValueError, match="mount_shared"):
             ws.files.attach("@store/shared/catalog", "/workspace/catalog")
+
+
+def test_a_commit_that_loses_the_swap_merges_onto_the_head_that_won(store, monkeypatch):
+    """The other way to lose the race. A head that has already moved
+    when the commit starts is three-way merged on the spot; one that
+    moves between the head read and the compare-and-swap fails the swap
+    instead. The staged work is untouched either way, so the next
+    attempt reads the head that won and merges onto it."""
+    from kvgit.versioned.kv import VersionedKV
+
+    with store.shared("catalog", autocommit=False) as a:
+        a.files.write("/workspace/a.txt", "A")
+        a.commit()
+
+    original = VersionedKV._cas_head
+    landed: list[bool] = []
+
+    def lose_the_swap_once(self, old, new):
+        if not landed:
+            landed.append(True)
+            with store.shared("catalog") as other:
+                other.files.write("/workspace/c.txt", "C")
+            return False
+        return original(self, old, new)
+
+    with store.shared("catalog", autocommit=False) as b:
+        b.files.write("/workspace/b.txt", "B")
+        monkeypatch.setattr(VersionedKV, "_cas_head", lose_the_swap_once)
+        b.commit()
+        monkeypatch.undo()
+    assert landed  # the race really happened
+
+    with store.shared("catalog") as after:
+        assert sorted(after.files.list("/workspace")) == [
+            "/workspace/a.txt",
+            "/workspace/b.txt",
+            "/workspace/c.txt",
+        ]

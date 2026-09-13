@@ -138,6 +138,13 @@ many write at once. Elsewhere, the `ui` set closes.
   read.
 
 ### Changed
+- **A commit that lost the head between reading it and swapping it
+  retries instead of raising.** kvgit three-way merges a head that had
+  already moved and fails the compare-and-swap for one that moves
+  underneath it; neither touches the staging buffer, so the second
+  attempt reads the head that won and merges onto it. The recovery the
+  error named — refresh and retry — is the one that would have
+  discarded the work the commit was made of.
 - **A commit that loses its CAS on one file now names the paths.** The
   raw `MergeConflict` kvgit raises is reported as a `WorkspaceError`
   saying which files contested and that nothing was committed, matching

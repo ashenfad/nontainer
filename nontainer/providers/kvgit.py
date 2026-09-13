@@ -68,6 +68,15 @@ from ..views import parse_seed
 #: committing to this session in a loop and the caller has to be told.
 _CHECKOUT_ATTEMPTS = 5
 
+#: How many times a commit will try to land before it gives up. Two,
+#: because there are two ways to lose the race and only one of them
+#: merges on the spot: a head that has already moved when the commit
+#: starts is three-way merged, while one that moves between the head
+#: read and the compare-and-swap fails the swap instead. The staged
+#: buffer is untouched by either, so the second attempt reads the head
+#: that won and merges onto it.
+_CAS_ATTEMPTS = 2
+
 #: The line a marker merge opens a conflict hunk with. Bytes that carry
 #: it may predate a merge (docs, fixtures), so it says a merge marked
 #: something only where neither side already held it.
@@ -639,18 +648,10 @@ class KvgitProvider:
         discarded. What no rule resolves raises ``WorkspaceError``
         naming the paths, with the staged work still staged.
         """
-        from kvgit import MergeConflict
-
         self._refuse_frozen("commit")
         if not self._staged.has_changes:
             return self._staged.current_commit
-        fns, prefixes = self._concurrent_rules()
-        try:
-            result = self._staged.commit(
-                info=info, merge_fns=fns, merge_prefixes=prefixes
-            )
-        except MergeConflict as e:
-            raise self._lost_cas(e) from e
+        result = self._commit_staged(info=info)
         if not result.merged:
             raise WorkspaceError(
                 f"commit failed: conflicting concurrent commit on branch "
@@ -939,20 +940,8 @@ class KvgitProvider:
             if self._staged.is_staged(row):
                 pending.add(row)
         pending.discard(VirtualFS.METADATA_KEY)
-        from kvgit import MergeConflict
-
-        fns, prefixes = self._concurrent_rules()
         try:
-            try:
-                result = self._staged.commit(
-                    keys=pending, info=info, merge_fns=fns, merge_prefixes=prefixes
-                )
-            except MergeConflict as e:
-                # kvgit three-way merges a concurrent write on other
-                # keys and raises only where both sides touched one.
-                # Either way this is the CAS story, in this layer's
-                # words: callers unwind on WorkspaceError.
-                raise self._lost_cas(e) from e
+            result = self._commit_staged(keys=pending, info=info)
             if not result.merged:
                 raise WorkspaceError(
                     f"commit failed: conflicting concurrent commit on branch "
@@ -961,6 +950,45 @@ class KvgitProvider:
         finally:
             self._invalidate_fs()
         return self._staged.current_commit
+
+    def _commit_staged(self, *, keys: set[str] | None = None, info: Any = None) -> Any:
+        """Land the staged changes, rebasing onto a head that moved.
+
+        The one commit funnel, and where losing the race is handled:
+        kvgit three-way merges a head that had already moved, and fails
+        the compare-and-swap for one that moves underneath it. Neither
+        touches the staging buffer, so a failed swap is retried against
+        the head that won rather than refreshed — a refresh is what
+        would discard the work this commit is made of.
+
+        What no merge rule resolves is not a race and is not retried:
+        it raises ``WorkspaceError`` naming the paths, with the staged
+        changes still staged.
+        """
+        from kvgit import MergeConflict
+        from kvgit.errors import ConcurrencyError
+
+        swap: Exception | None = None
+        for _ in range(_CAS_ATTEMPTS):
+            fns, prefixes = self._concurrent_rules()
+            try:
+                return self._staged.commit(
+                    keys=keys, info=info, merge_fns=fns, merge_prefixes=prefixes
+                )
+            except MergeConflict as e:
+                # kvgit merges a concurrent write on other keys and
+                # raises only where both sides touched one. This is the
+                # CAS story in this layer's words: callers unwind on
+                # WorkspaceError.
+                raise self._lost_cas(e) from e
+            except ConcurrencyError as e:
+                swap = e
+        raise WorkspaceError(
+            f"commit failed: conflicting concurrent commit on branch "
+            f"{self._session!r} (CAS) — this commit lost the head to another "
+            f"writer {_CAS_ATTEMPTS} times running ({swap}). Nothing was "
+            "committed and the staged changes are still staged."
+        ) from swap
 
     def _lost_cas(self, exc: Exception) -> WorkspaceError:
         """The CAS story in this layer's words, naming what contested.
