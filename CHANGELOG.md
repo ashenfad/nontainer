@@ -109,6 +109,17 @@ versioning section the host API alone. Elsewhere, the `ui` set closes.
   there.
 - **Adding over a live worktree names the two steps that refresh one**
   rather than "that directory is not empty", a reason with no fix in it.
+- **A frozen workspace refuses writes by every door.** The host-side
+  escape hatch took them: `snapshot.files.fs.write(...)` on a frozen
+  open (`store.tags.at`, `store.resolve`, `Publication.open`) or a
+  session snapshot (`ws.tags.at`) succeeded without a word, landed in
+  that handle's staged buffer, and died there — `commit()` refused, the
+  cache refused, a reopen and the live session read the old bytes.
+  `ws.files.fs` hands out the same read-only filesystem the executor
+  holds now, so `write`, `makedirs`, `remove`, `rename` and the rest
+  raise `PermissionError` naming the tag while every read still works.
+  The hatch bypasses the workspace's policy gates — the view rule, the
+  commit flow — never its frozenness.
 
 ## 0.6.5 - 2026-09-10
 

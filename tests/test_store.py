@@ -602,6 +602,52 @@ def test_mounts_reach_a_frozen_open_read_only(tmp_path):
 @pytest.mark.parametrize(
     "call",
     [
+        lambda st, ref, pub: st.tags.at("published"),
+        lambda st, ref, pub: st.resolve(ref),
+        lambda st, ref, pub: pub.open(),
+    ],
+)
+def test_a_frozen_open_refuses_writes_by_every_door(tmp_path, call):
+    """A frozen workspace accepts no writes from anyone. ``files.fs``
+    goes around the workspace's policy gates — the view rule, the commit
+    flow — and frozenness is not one of them, so it refuses like the
+    named verbs and the executor do, while every read still works."""
+    st = Store(tmp_path / "store")
+    ref = _snapshot_source(st)
+    with st.open("app") as ws:
+        pub = st.publish(ws, "board")
+
+    snap = call(st, ref, pub)
+    try:
+        assert b"def get" in snap.files.read("app/api/board.py")
+        for write in (
+            lambda: snap.files.fs.write("/workspace/app/api/board.py", b"nope"),
+            lambda: snap.files.fs.write("/workspace/new.txt", b"nope"),
+            lambda: snap.files.fs.remove("/workspace/app/api/board.py"),
+            lambda: snap.files.fs.makedirs("/workspace/new"),
+            lambda: snap.files.fs.rename("/workspace/app", "/workspace/gone"),
+        ):
+            with pytest.raises(PermissionError, match="frozen snapshot"):
+                write()
+        with pytest.raises(NotSupportedError, match="frozen"):
+            snap.files.write("app/api/board.py", "nope")
+        assert snap.run_python("open('/workspace/new.txt', 'w')").error is not None
+        assert b"def get" in snap.files.read("app/api/board.py")
+        assert not snap.files.exists("new.txt")
+    finally:
+        snap.close()
+
+    with st.tags.at("published") as reopened:
+        assert b"def get" in reopened.files.read("app/api/board.py")
+        assert not reopened.files.exists("new.txt")
+    with st.open("app") as live:
+        assert b"def get" in live.files.read("app/api/board.py")
+        assert not live.files.exists("new.txt")
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
         lambda st, ref, pub, m: st.tags.at("published", mounts=m),
         lambda st, ref, pub, m: st.resolve(ref, mounts=m),
         lambda st, ref, pub, m: pub.open(mounts=m),

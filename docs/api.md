@@ -544,7 +544,11 @@ perform: the single-writer lock is held for the call and the commit
 flow runs when it lands. Reads take no lock and never commit.
 `ws.files.fs` is the escape hatch below all of that — documented and
 supported, but it writes straight to the provider, so a host thread
-using it while agent calls run holds `ws.lock` itself.
+using it while agent calls run holds `ws.lock` itself. It bypasses the
+workspace's *policy* gates — the view rule, the commit flow — and never
+its frozenness: on a frozen workspace every mutating verb
+(`write`, `makedirs`, `remove`, `rename`, …) raises `PermissionError`
+naming the tag, while reads pass through.
 
 Cache key rules: str keys, no `__` prefix, no `/`; values validated
 picklable at write (`CacheError` otherwise). Cache holds **data**;
@@ -970,14 +974,15 @@ nothing and needs no bulk form.
 store — damage, not an ordinary state).
 
 **Frozen workspaces.** `ws.tags.at(name)` returns a `Workspace` over the
-tagged state that can be read but never written: `ws.frozen` is True,
-`autocommit` is forced off, `file_write` / `file_edit` / `put` /
-`commit` / `fork` / `tag` / `checkout` raise `NotSupportedError`,
-and the executor holds a read-only filesystem **and a read-only
+tagged state that can be read but never written — **by every door**:
+`ws.frozen` is True, `autocommit` is forced off, `file_write` /
+`file_edit` / `put` / `commit` / `fork` / `tag` / `checkout` raise
+`NotSupportedError`, the host-side `ws.files.fs` is read-only too, and
+the executor holds a read-only filesystem **and a read-only
 cache**, so a shell redirect, `open(..., "w")` or `cache["x"] = 1` from
 agent code fails where it happens with a message naming the tag
-(`ws.cache["x"] = 1` from the host raises `PermissionError` the same
-way). On an executor with its own substrate — a dud guest — the write
+(`ws.files.fs.write(...)` and `ws.cache["x"] = 1` from the host raise
+`PermissionError` the same way). On an executor with its own substrate — a dud guest — the write
 lands in that substrate before anything here can stop it, so the
 workspace refuses the harvest instead: nothing is absorbed, the guest
 is re-synced from the frozen tree, and the call comes back with a
