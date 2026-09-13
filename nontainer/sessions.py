@@ -191,13 +191,17 @@ class Sessions:
         self._futures: dict[str, Future] = {}
         self._children: dict[str, Workspace] = {}
         self._base: dict[str, str | None] = {}
-        #: The branches with a run in flight. A branch runs one job at
-        #: a time: the runner cannot be interrupted, so a second run on
-        #: one branch would drive the child the first is still driving
-        #: and land its answer against the other's job. Reserved when a
-        #: job is put on a worker, released when that job's answer is
-        #: recorded or its work is done.
-        self._busy: set[str] = set()
+        #: The branches with a run in flight, each held by the run that
+        #: reserved it. A branch runs one job at a time: the runner
+        #: cannot be interrupted, so a second run on one branch would
+        #: drive the child the first is still driving and land its
+        #: answer against the other's job. The value is the run's
+        #: token, because a hold belongs to ONE run: a run that has
+        #: recorded its answer still has its exit to make, and a
+        #: resume that starts in between takes the branch over — the
+        #: earlier run's exit must not then hand it away.
+        self._busy: dict[str, int] = {}
+        self._token = 0
         self._closed = False
 
     def __repr__(self) -> str:
@@ -391,6 +395,7 @@ class Sessions:
             job = replace(job, status="cancelled", finished=time.time())
             self._jobs[name] = job
             future = self._futures.get(name)
+            token = self._busy.get(name)
         if future is not None and future.cancel():
             # It bit: the worker never started, so no run will land for
             # this job and none will release what it reserved. The
@@ -399,7 +404,8 @@ class Sessions:
             # itself is untouched, as it is for a cancel that comes too
             # late.
             with self._lock:
-                self._busy.discard(name)
+                if token is not None:
+                    self._release_locked(name, token)
                 child = self._children.pop(name, None)
             if child is not None:
                 try:
@@ -539,16 +545,16 @@ class Sessions:
         with self._lock:
             if name in self._busy:
                 raise SessionsError(self._still_running(name))
-            self._busy.add(name)
+            self._token += 1
+            token = self._busy[name] = self._token
             self._jobs[name] = job
             self._answers.pop(name, None)
             self._children[name] = child
             self._base[name] = base
         try:
-            future = self._pool.submit(self._work, name, job.task, budget)
+            future = self._pool.submit(self._work, name, job.task, budget, token)
         except BaseException:
-            with self._lock:
-                self._busy.discard(name)
+            self._release(name, token)
             raise
         with self._lock:
             self._futures[name] = future
@@ -561,6 +567,22 @@ class Sessions:
             "A delegate does one task at a time, and a runner already working "
             "cannot be interrupted (sessions list shows what is outstanding)"
         )
+
+    def _release(self, name: str, token: int) -> None:
+        """Give up a branch — if this run is the one still holding it."""
+        with self._lock:
+            self._release_locked(name, token)
+
+    def _release_locked(self, name: str, token: int) -> None:
+        """:meth:`_release` for a caller already under the lock.
+
+        A run releases the branch it reserved and no other: by the time
+        a run exits, the branch may belong to the run that took it over
+        when this one's answer landed, and freeing THAT would let a
+        third run drive the same child.
+        """
+        if self._busy.get(name) == token:
+            del self._busy[name]
 
     def _resumed(
         self, resume: str, fork_from: "str | Any | None"
@@ -681,7 +703,7 @@ class Sessions:
             )
         return commit
 
-    def _work(self, name: str, task: str, budget: Any) -> Answer:
+    def _work(self, name: str, task: str, budget: Any, token: int) -> Answer:
         """The worker body: run, then land. Never raises.
 
         A job that dies with its thread is a job the caller waits on
@@ -703,7 +725,7 @@ class Sessions:
             except BaseException as exc:  # noqa: BLE001 - the job must resolve
                 answer = Answer(text=_error_text(exc), status="failed")
             try:
-                return self._land(name, task, answer)
+                return self._land(name, task, answer, token)
             except BaseException as exc:  # noqa: BLE001 - as must the landing
                 failed = replace(
                     answer,
@@ -714,21 +736,23 @@ class Sessions:
                     ),
                     branch=name,
                 )
-                self._record(name, failed)
+                self._record(name, failed, token)
                 return failed
         finally:
             # The branch is free again however this went, including the
             # ways that record no answer: a job the caller cancelled
             # releases the child when its runner finally stops, not
-            # when the cancel is asked for.
-            with self._lock:
-                self._busy.discard(name)
+            # when the cancel is asked for. Already released, and
+            # possibly taken over by a resume, when the answer landed —
+            # so this frees the branch only while it is still this
+            # run's to free.
+            self._release(name, token)
 
     def _session_of(self, name: str) -> str:
         with self._lock:
             return self._children[name].session
 
-    def _land(self, name: str, task: str, answer: Answer) -> Answer:
+    def _land(self, name: str, task: str, answer: Answer, token: int) -> Answer:
         """Describe what the delegate did and record the answer.
 
         Nothing is committed here. The runner drove the child through a
@@ -759,7 +783,7 @@ class Sessions:
                 uncommitted=self._uncommitted(child),
                 provenance=self._provenance(answer, child, name, base, commit),
             )
-            self._record(name, answer)
+            self._record(name, answer, token)
             return answer
         finally:
             try:
@@ -878,7 +902,7 @@ class Sessions:
             return commit
         return f"{self._ws.session}@{base}" if base else None
 
-    def _record(self, name: str, answer: Answer) -> None:
+    def _record(self, name: str, answer: Answer, token: int) -> None:
         """Store the answer and close the job out.
 
         Cancellation wins: a job the caller stopped caring about does
@@ -895,7 +919,7 @@ class Sessions:
             # that records it: a caller that reads a finished status
             # can give the child its next task at once, and nothing
             # after this point touches the job's table rows.
-            self._busy.discard(name)
+            self._release_locked(name, token)
             self._answers[name] = answer
             self._jobs[name] = replace(
                 job,
