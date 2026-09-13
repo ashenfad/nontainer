@@ -372,3 +372,62 @@ def test_a_future_import_still_leads_the_composed_program(ws):
     assert report.failed == 1
     assert report.outcomes[1].line == 17
     assert report.outcomes[1].frames[-1].path == "tests/test_call.py"
+
+
+def test_free_names_are_resolved_per_scope():
+    """What a handler reads from the injected namespace is a question
+    about scopes: a local in one function does not answer for a global
+    another function reads."""
+    from nontainer.apps.testing import free_names
+
+    # A helper's parameter is its own; the global `get` reads is not.
+    assert free_names(
+        "def helper(db):\n"
+        "    return db.query()\n"
+        "\n"
+        "\n"
+        "def get(req):\n"
+        "    return {'rows': helper(db)}\n"
+    ) == ("db",)
+    # Bound at module level: the module's own, not an injection.
+    assert free_names("db = connect()\n\n\ndef get(req):\n    return db.all()\n") == (
+        "connect",
+    )
+    # Bound in an enclosing function scope: a closure, not an injection.
+    assert (
+        free_names(
+            "def get(req):\n"
+            "    total = 0\n"
+            "\n"
+            "    def inner():\n"
+            "        return total\n"
+            "\n"
+            "    return inner()\n"
+        )
+        == ()
+    )
+    # A comprehension target is local to the comprehension.
+    assert free_names("def get(req):\n    return [x.id for x in db.all()]\n") == ("db",)
+
+
+def test_a_helper_with_a_local_of_the_same_name_still_takes_the_fake(ws):
+    ws.files.fs.write(
+        "/workspace/app/api/shadowed.py",
+        b"def _rows(db):\n"
+        b"    return list(db.query())\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    return {'rows': _rows(db)}\n",
+    )
+    report = run(
+        ws,
+        "from unittest.mock import MagicMock\n"
+        "\n"
+        "\n"
+        "def test_shadowed():\n"
+        "    db = MagicMock()\n"
+        "    db.query.return_value = ['ann']\n"
+        "    assert call('shadowed', db=db).json == {'rows': ['ann']}\n",
+    )
+    assert report.ok, report.outcomes
