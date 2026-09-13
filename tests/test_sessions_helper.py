@@ -1030,3 +1030,45 @@ def test_a_child_forked_from_elsewhere_merges_that_whole_tree(
         "/workspace/rates.md",  # and the whole tree it was forked from
         "/workspace/report.md",
     ]
+
+
+def test_a_finished_run_releases_only_its_own_hold_on_the_child(parent, store):
+    """A reservation belongs to ONE run. A run that has recorded its
+    answer still has its exit to make, and a resume that starts in that
+    window holds the child from then on: the earlier run's exit must
+    not hand the child away underneath it.
+
+    The window is `child.close()`, between recording the answer and the
+    worker's exit, so the test holds it there — and the helper's own
+    table is read to get at the handle and the first run's future,
+    because the race is between two of its internals.
+    """
+    closing = threading.Event()
+    first_ran = threading.Event()
+    second_ran = threading.Event()
+    runner = Echo()
+
+    with Sessions(parent, runner, max_workers=3) as sessions:
+        runner.release, runner.hold = first_ran, ("first",)
+        first = sessions.ask("first")
+        future = sessions._futures[first.name]
+        child = sessions._children[first.name]
+        real_close = child.close
+        child.close = lambda: (closing.wait(5), real_close())[1]
+
+        runner.release, runner.hold = second_ran, ("second",)
+        first_ran.set()
+        _settle(sessions, first.name)  # the answer is recorded
+
+        # a caller that sees the finished status resumes at once
+        second = sessions.ask("second", resume=first.name)
+        closing.set()
+        future.result(5)  # the first run is now fully out
+
+        # the second run still holds the child, so a third is refused
+        with pytest.raises(SessionsError, match="still finishing"):
+            sessions.ask("third", resume=first.name)
+
+        second_ran.set()
+        _settle(sessions, second.name)
+        assert sessions.result(second.name).text == "answering second"
