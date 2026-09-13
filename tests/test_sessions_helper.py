@@ -1072,3 +1072,40 @@ def test_a_finished_run_releases_only_its_own_hold_on_the_child(parent, store):
         second_ran.set()
         _settle(sessions, second.name)
         assert sessions.result(second.name).text == "answering second"
+
+
+def test_a_keep_while_a_resume_is_being_set_up_survives_it(parent, store):
+    """What belongs to the child is read where the resumed job is
+    installed, so a keep that lands while the resume is being prepared
+    is not overwritten by a copy taken a moment earlier.
+
+    The helper's own seam between the two — the look-up of the child's
+    row, then the install — is where the keep is slipped in.
+    """
+    looked_up = threading.Event()
+    kept = threading.Event()
+
+    class Hooked(Sessions):
+        def _resumed(self, resume, fork_from):
+            out = super()._resumed(resume, fork_from)
+            looked_up.set()  # the row has been read
+            kept.wait(5)  # and a keep lands before it is installed
+            return out
+
+    with Hooked(parent, Echo()) as sessions:
+        first = sessions.ask("first", wait=True)
+
+        def resume():
+            sessions.ask("second", resume=first.branch, wait=True)
+
+        worker = threading.Thread(target=resume)
+        worker.start()
+        looked_up.wait(5)
+        assert sessions.keep(first.branch).kept
+        kept.set()
+        worker.join(10)
+
+        row = sessions.list()[0]
+
+    assert row.kept is True
+    assert row.task == "second"
