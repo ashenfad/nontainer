@@ -233,76 +233,51 @@ def called_modules(source: str) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _bindings(nodes: Any) -> set[str]:
-    """Every name a run of statements binds: imports, assignments,
-    loop and with and except targets, defs, classes, parameters."""
-    bound: set[str] = set()
-
-    def targets(node: Any) -> None:
-        if isinstance(node, ast.Name):
-            bound.add(node.id)
-        elif isinstance(node, (ast.Tuple, ast.List)):
-            for item in node.elts:
-                targets(item)
-        elif isinstance(node, ast.Starred):
-            targets(node.value)
-
-    for node in nodes:
-        for inner in ast.walk(node):
-            if isinstance(inner, (ast.Import, ast.ImportFrom)):
-                for alias in inner.names:
-                    bound.add((alias.asname or alias.name).split(".")[0])
-            elif isinstance(inner, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                bound.add(inner.name)
-                args = inner.args
-                for arg in [
-                    *args.posonlyargs,
-                    *args.args,
-                    *args.kwonlyargs,
-                    args.vararg,
-                    args.kwarg,
-                ]:
-                    if arg is not None:
-                        bound.add(arg.arg)
-            elif isinstance(inner, ast.ClassDef):
-                bound.add(inner.name)
-            elif isinstance(inner, ast.Assign):
-                for target in inner.targets:
-                    targets(target)
-            elif isinstance(inner, (ast.AnnAssign, ast.AugAssign)):
-                targets(inner.target)
-            elif isinstance(inner, (ast.For, ast.AsyncFor, ast.comprehension)):
-                targets(inner.target)
-            elif isinstance(inner, ast.withitem):
-                if inner.optional_vars is not None:
-                    targets(inner.optional_vars)
-            elif isinstance(inner, ast.ExceptHandler) and inner.name:
-                bound.add(inner.name)
-            elif isinstance(inner, (ast.Global, ast.Nonlocal)):
-                bound.update(inner.names)
-    return bound
-
-
 def free_names(source: str) -> tuple[str, ...]:
     """The names a handler reads without binding them — what dispatch
-    supplies from the namespace, and therefore what a test may
+    supplies from its namespace, and therefore what a test may
     substitute.
 
-    Python's own builtins are not part of that: a handler naming
-    ``int`` is naming the language, not an injection. Everything else
-    it reads free comes from somewhere outside the file, which is
-    exactly what ``call`` has to stand in for.
+    Scope is the whole question, so Python's own scope analysis answers
+    it: a name is free when some scope in the module reads it and
+    resolves it to the module's globals, and the module itself never
+    binds it. A parameter of one function says nothing about a global
+    another function reads; a closure variable belongs to its enclosing
+    function; a comprehension target belongs to its comprehension.
+
+    Python's builtins are not part of it: a handler naming ``int`` is
+    naming the language, not an injection. Everything left comes from
+    outside the file, which is exactly what ``call`` has to stand in
+    for.
     """
     import builtins
+    import symtable
 
-    tree = ast.parse(source)
-    known = set(dir(builtins)) | _bindings(tree.body)
-    free: list[str] = []
-    for node in ast.walk(tree):
+    table = symtable.symtable(source, "<handler>", "exec")
+    bound = {
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported()
+    }
+    reads: set[str] = set()
+
+    def visit(scope: Any) -> None:
+        for symbol in scope.get_symbols():
+            if symbol.is_global() and symbol.is_referenced():
+                reads.add(symbol.get_name())
+        for child in scope.get_children():
+            visit(child)
+
+    visit(table)
+    free = reads - bound - set(dir(builtins))
+    # Source order, so a wrapper's parameters read the way the handler
+    # does rather than in whatever order a set iterates.
+    ordered: list[str] = []
+    for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-            if node.id not in known and node.id not in free:
-                free.append(node.id)
-    return tuple(free)
+            if node.id in free and node.id not in ordered:
+                ordered.append(node.id)
+    return tuple(ordered)
 
 
 def verb_names(source: str) -> tuple[str, ...]:
