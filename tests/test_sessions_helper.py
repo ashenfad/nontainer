@@ -551,3 +551,169 @@ def test_a_delegate_that_left_work_uncommitted_says_so(parent, store):
     parent.checkout(answer.branch, paths=["report.md"])
     assert parent.files.read("/workspace/report.md") == b"polished\n"
     assert "left work uncommitted" in run_action(sessions, "list")
+
+
+# -- a fork point somewhere else -----------------------------------------------
+
+
+@pytest.fixture
+def fork_point(store):
+    """State that is not this session's: one session, one commit, a
+    store tag naming it. Returns the commit.
+
+    The tree is deliberately not the parent's, so a fork of it can be
+    told apart from a fork of the asking session.
+    """
+    ws = store.open("sage")
+    ws.files.write("/workspace/rates.md", "# Rates\n\nnorth 4, south 7\n")
+    ws.index.commit("curated")
+    commit = store.tags.add(ws, "rates-2026")
+    ws.close()
+    return commit
+
+
+def test_a_job_forked_from_this_session_names_no_origin():
+    """The field is at the end with a default, so a job built the way
+    it always was is a fork of the asking session."""
+    job = Job("analyst.sleepy-otter", "polish it", "running", None, 1.0)
+    assert job.origin is None
+
+
+def test_ask_from_a_store_tag_forks_that_state(parent, store, fork_point):
+    """from_ moves the fork point: the child holds the named state and
+    nothing of the asker's."""
+    runner = Scripted(store, {}, text="north is 4")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("what is north?", from_="rates-2026", wait=True)
+
+        job = sessions.list()[0]
+        assert job.origin == ("rates-2026", fork_point)
+        assert answer.branch.startswith(f"analyst{SEPARATOR}")
+
+    child = store.open(answer.branch)
+    try:
+        assert sorted(child.files.list("/workspace")) == ["/workspace/rates.md"]
+    finally:
+        child.close()
+    # nothing landed here: an ask always leaves a branch and merging is
+    # the caller's own step
+    assert parent.files.read("/workspace/report.md").decode().endswith("south 7\n")
+
+
+def test_ask_from_a_session_ref_a_short_id_and_a_ref(parent, store, fork_point):
+    """Every spelling the store hands out is one from_ takes back: the
+    funnel that resolves a ref for every other verb resolves this one."""
+    from nontainer import Ref
+
+    runner = Scripted(store, {}, text="answered")
+    with Sessions(parent, runner) as sessions:
+        sessions.ask("whole id", from_=f"sage@{fork_point}", wait=True)
+        sessions.ask("short id", from_=f"sage@{fork_point[:7]}", wait=True)
+        sessions.ask("a Ref", from_=Ref("sage", fork_point), wait=True)
+        asked = [j.origin for j in sessions.list()]
+
+    assert asked == [
+        (f"sage@{fork_point}", fork_point),
+        (f"sage@{fork_point[:7]}", fork_point),
+        (f"sage@{fork_point}", fork_point),
+    ]
+    # a ref-spelled fork point is a ref in the chain, short id expanded
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("go", from_=f"sage@{fork_point[:7]}", wait=True)
+    assert answer.provenance["chain"][0] == f"sage@{fork_point}"
+    assert answer.provenance["from"] == f"sage@{fork_point[:7]}"
+
+
+def test_ask_from_refuses_a_fork_point_nothing_names(parent, store, fork_point):
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        with pytest.raises(SessionsError, match="rates-2026"):
+            sessions.ask("q", from_="rates-2025")
+        with pytest.raises(ValueError, match="unknown session"):
+            sessions.ask("q", from_="nobody@abcdef1")
+        with pytest.raises(SessionsError, match="nothing to fork"):
+            sessions.ask("q", from_="sage@abcdef1")
+
+
+def test_ask_from_refuses_to_carry_your_conversation(parent, store, fork_point):
+    """A conversation that is not yours cannot be continued, so a fork
+    from somewhere else starts one of its own."""
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        with pytest.raises(SessionsError, match="fresh"):
+            sessions.ask("q", from_="rates-2026", inherit="full")
+
+
+def test_the_source_branch_is_untouched_by_an_ask_from_it(parent, store, fork_point):
+    """A fork point is read, never written: the ask forks it, and the
+    child is what the runner drives."""
+    before = store.open("sage")
+    try:
+        head, virtual = before.head, before.index.head
+        commits = len(list(before.log()))
+    finally:
+        before.close()
+
+    runner = Scripted(store, {"/workspace/rates.md": "north 40\n"}, text="rewritten")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("rewrite it", from_="rates-2026", wait=True)
+
+    after = store.open("sage")
+    try:
+        assert (after.head, after.index.head) == (head, virtual)
+        assert len(list(after.log())) == commits
+        assert after.files.read("/workspace/rates.md").decode().endswith("south 7\n")
+    finally:
+        after.close()
+    assert store.tags.list()["rates-2026"] == fork_point
+    assert answer.branch != "sage"
+
+
+def test_the_runner_is_told_the_fork_point_it_was_given(parent, store, fork_point):
+    """The child's base is the commit it was forked from, wherever that
+    came from, so the header it arrives with names where it started."""
+    seen = {}
+
+    class Aware(Scripted):
+        def run(self, session, task, *, budget=None, forked_at=None):
+            seen["forked_at"] = forked_at
+            return super().run(session, task, budget=budget)
+
+    runner = Aware(store, {}, text="ok")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("what is north?", from_="rates-2026", wait=True)
+        assert sessions.base(answer.branch) == fork_point
+
+    assert seen["forked_at"] == fork_point
+    assert runner.seen[0][1] == "what is north?"
+    assert answer.provenance["chain"][0] == fork_point  # the tag names a commit
+    assert answer.provenance["chain"][-1] == answer.ref
+
+
+def test_a_capped_run_from_elsewhere_resolves(parent, store, fork_point):
+    """Running out of budget is a status the caller reads, never an
+    exception, wherever the child was forked from."""
+    runner = Scripted(store, {}, text="I ran out of room", status="capped")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("explain everything", from_="rates-2026", wait=True)
+        assert sessions.list()[0].status == "capped"
+    assert answer.status == "capped"
+    assert answer.text == "I ran out of room"
+
+
+def test_a_branch_forked_from_elsewhere_is_read_and_taken_like_any_other(
+    parent, store, fork_point
+):
+    """Nothing comes back on its own. The branch is a branch, so
+    reading it and taking from it are the verbs that read and take from
+    any branch."""
+    runner = Scripted(
+        store, {"/workspace/answer.md": "north is 4\n"}, text="see answer.md"
+    )
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("write it down", from_="rates-2026", wait=True)
+
+    parent.files.attach(answer.branch, "/workspace/theirs")
+    assert parent.files.read("/workspace/theirs/answer.md") == b"north is 4\n"
+    parent.files.detach("/workspace/theirs")
+
+    parent.checkout(answer.branch, paths=["answer.md"])
+    assert parent.files.read("/workspace/answer.md") == b"north is 4\n"
