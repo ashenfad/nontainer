@@ -157,3 +157,93 @@ def test_a_path_selector_resolves_like_every_other_verbs(template, request):
     assert out[0] == out[1], template
     assert "collected" in out[0][1], out[0][1]
     assert "not found" not in out[0][1], out[0][1]
+
+
+PATCHABLE = (
+    "LIMIT = 3\n"
+    "\n"
+    "\n"
+    "def fetch():\n"
+    "    return 'real'\n"
+    "\n"
+    "\n"
+    "def summary():\n"
+    "    return fetch() + ':' + str(LIMIT)\n"
+)
+
+PATCHING = (
+    "from unittest.mock import patch\n"
+    "\n"
+    "import app.api._patchable as lib\n"
+    "\n"
+    "\n"
+    "def test_a_patched_function_is_what_the_module_calls():\n"
+    "    with patch.object(lib, 'fetch', return_value='fake'):\n"
+    "        assert lib.summary() == 'fake:3'\n"
+    "    assert lib.summary() == 'real:3'\n"
+    "\n"
+    "\n"
+    "def test_a_patched_value_is_what_the_module_reads():\n"
+    "    with patch.object(lib, 'LIMIT', 99):\n"
+    "        assert lib.summary() == 'real:99'\n"
+)
+
+STRING_TARGET = (
+    "from unittest.mock import patch\n"
+    "\n"
+    "\n"
+    "def test_string_target():\n"
+    "    with patch('app.api._patchable.fetch', return_value='fake'):\n"
+    "        import app.api._patchable as lib\n"
+    "\n"
+    "        assert lib.summary() == 'fake:3'\n"
+)
+
+
+def _patchable(w, tests):
+    w.files.fs.write("/workspace/app/api/_patchable.py", PATCHABLE.encode())
+    w.files.fs.write("/workspace/tests/test_patching.py", tests.encode())
+    r = w.terminal("ws-pytest tests/test_patching.py")
+    return r.exit_code, _normalize(r.stdout + r.stderr)
+
+
+def test_patch_object_reaches_a_workspace_module_on_both_rungs(request):
+    """A workspace module's namespace IS its dict: patching one of its
+    functions changes what the module itself calls, and patching one of
+    its values changes what the module reads. The standard idiom, works
+    unchanged, reads the same on either rung."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", request.node.name)
+    out = []
+    for rung in ("local", "dud"):
+        w = _ws(rung, name)
+        try:
+            out.append(_patchable(w, PATCHING))
+        finally:
+            w.close()
+    assert out[0] == out[1]
+    assert out[0][0] == 0, out[0][1]
+    assert "2 passed in " in out[0][1]
+
+
+def test_a_string_patch_target_is_not_portable(request):
+    """The one spelling that is a rung's business rather than the
+    verb's: mock resolves a string target through the real importlib,
+    which has never heard of the workspace tree where imports are
+    virtual, and finds the guest's own files where they are real. The
+    portable spelling is patch.object, and the local rung says so
+    loudly rather than silently patching nothing."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", request.node.name)
+    w = _ws("local", name)
+    try:
+        code, text = _patchable(w, STRING_TARGET)
+    finally:
+        w.close()
+    assert code == 1
+    assert "ModuleNotFoundError: No module named 'app'" in text
+
+    w = _ws("dud", name)
+    try:
+        code, text = _patchable(w, STRING_TARGET)
+    finally:
+        w.close()
+    assert code == 0, text

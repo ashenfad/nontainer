@@ -100,20 +100,43 @@ it with a fake. A module that genuinely wants the ambient object
 imports it instead: `from host import db` works at the top level, in a
 handler and in a module alike.
 
-Patch **objects and classes**, never module-level names:
+Mocking is the test's job, in the standard idiom. `patch.object` works
+the way it does anywhere — on a workspace module, on a class, on an
+instance — and a patched module attribute is what the module itself
+reads:
 
 ```python
 from unittest.mock import patch
 
-with patch.object(Client, "fetch", return_value={"ok": True}):
-    ...
+import app.api._feed as feed
+
+
+def test_summary_uses_fetch():
+    with patch.object(feed, "fetch", return_value="fake"):
+        assert feed.summary() == "fake:3"     # inside the module too
+    with patch.object(feed, "LIMIT", 99):
+        assert feed.summary() == "real:99"
 ```
 
-`patch.object(module, "NAME")` is the one idiom that looks right and
-does nothing here: a workspace module is executed into a copy of its
-dict, so the patch reads back changed while the module's own functions
-go on seeing the original — a silent false pass. `patch("app.api.x.y")`
-with a string target raises instead, which is at least loud.
+Two things cannot be patched, both for reasons worth knowing:
+
+- **The `host` module is read-only.** `patch.object(host, "db", fake)`
+  is refused (`Cannot set attribute 'db' on module 'host'`), because
+  the module is rebuilt per execution and an attribute set on it would
+  be a channel from one execution to the next. Patch the name your own
+  module reads instead: `import host` at the top and `host.db` at the
+  call site, since `from host import db` binds once at import time.
+- **A handler's injected names are not module attributes.** `db` and
+  `cache` are bound into the handler's namespace by dispatch, so there
+  is nothing to patch them on — which is why `call` takes them as
+  keywords: `call("scores", db=fake)`.
+
+Use `patch.object`, not a string target. `patch("app.api._feed.fetch")`
+resolves the dotted name through the real `importlib`, which has never
+heard of the workspace tree where imports are virtual — so it raises
+`ModuleNotFoundError: No module named 'app'` rather than patching
+anything. It is the one spelling whose behaviour is the rung's business
+rather than the verb's.
 
 ## Calling a handler
 
@@ -165,9 +188,10 @@ call(module, method="GET", path=None, *, params=None, body=None,
   envelope is the point of the helper; testing a function is what a
   plain call is for.
 
-Dependencies are substituted by keyword rather than by patching for the
-reason above: a handler's collaborators are not module attributes to
-patch.
+Dependencies are substituted by keyword rather than by patching because
+a handler's injected names are not module attributes: `db` is bound
+into the handler's namespace by dispatch, so there is nothing for a
+patch to reach.
 
 One asymmetry, said plainly: **`call` does not reproduce the read-only
 filesystem a real GET runs under.** The handler runs in the test's own
