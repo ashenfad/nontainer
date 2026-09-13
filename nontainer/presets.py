@@ -20,6 +20,7 @@ effects (matplotlib's Agg backend, font-cache warm-up) must happen.
 """
 
 from __future__ import annotations
+import __future__ as future
 
 import base64
 import binascii
@@ -143,6 +144,12 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(binascii),
     ModuleGrant(uuid),
     ModuleGrant(hashlib),
+    # __future__: a compiler directive that is also a real import at
+    # run time, so the sandbox has to allow it or `from __future__
+    # import annotations` — which model-written modules carry by habit
+    # — fails at the first line. The module holds feature flags and
+    # nothing else.
+    ModuleGrant(future, name="__future__"),
     # testing: the workspace module a handler imports is the unit worth
     # testing, and patching its collaborators is how that test is
     # written. The bare package rides along so `import unittest.mock`

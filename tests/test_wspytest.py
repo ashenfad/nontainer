@@ -306,3 +306,30 @@ def test_keyword_filters_by_name(ws):
     assert run_options(ws, Options(keyword="alpha and beta")).collected == 1
     assert run_options(ws, Options(keyword="alpha and not beta")).collected == 1
     assert run_options(ws, Options(keyword="alpha or beta")).collected == 3
+
+
+def test_a_future_import_in_a_plain_test_file_runs(ws):
+    """No handler to compose, but the rule is the same: what the file
+    puts first stays first, and the sandbox allows the import."""
+    write(
+        ws,
+        "tests/test_future.py",
+        '"""A module docstring."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "\n"
+        "def test_annotated() -> None:\n"
+        "    total: int = 1\n"
+        "    assert total == 1\n"
+        "\n"
+        "\n"
+        "def test_plain() -> None:\n"
+        "    assert 1 == 2\n",
+    )
+    report = run_pytest(ws)
+    assert report.collection_error is None, report.collection_error
+    assert report.failed == 1
+    assert report.errors == 0
+    assert report.passed == 1
+    assert report.outcomes[-1].line == 12

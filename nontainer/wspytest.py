@@ -403,22 +403,47 @@ def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
         preamble, spans = compose(ws, called_modules(source), app_root(ws))
     else:
         preamble, spans = "", []
-    head = preamble.count("\n")
-    body_lines = source.count("\n")
-    regions = [
-        _Region(start, start + length - 1, path, 1 - start)
+    # A `from __future__` import must be the first statement of the
+    # module, and a docstring may precede it. Whatever the file puts
+    # there stays first; the composed handlers go in under it, so the
+    # program parses whenever the test file does.
+    lines = source.splitlines(keepends=True)
+    head = _future_header(source)
+    body_lines = len(lines)
+    shift = preamble.count("\n")
+    regions = []
+    if head:
+        regions.append(_Region(1, head, rel, 0))
+    regions.extend(
+        _Region(start + head, start + head + length - 1, path, 1 - start - head)
         for path, start, length in spans
-    ]
-    regions.append(_Region(head + 1, head + body_lines, rel, -head))
+    )
+    regions.append(_Region(head + shift + 1, shift + body_lines, rel, -shift))
     pairs = ", ".join(f'("{n}", {n})' for n in names)
     if pairs:
         pairs += ","
     epilogue = _EPILOGUE.format(pairs=pairs)
     return _Program(
-        source=preamble + source + epilogue,
+        source="".join(lines[:head]) + preamble + "".join(lines[head:]) + epilogue,
         regions=tuple(regions),
-        locator=head + body_lines + _LOCATOR_LINE,
+        locator=shift + body_lines + _LOCATOR_LINE,
     )
+
+
+def _future_header(source: str) -> int:
+    """How many leading lines of a test file must stay leading: down to
+    the last ``from __future__`` import, which Python requires to be the
+    first statement (a module docstring, which may precede it, is
+    carried along). Zero where the file has none."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return 0
+    end = 0
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "__future__":
+            end = max(end, getattr(node, "end_lineno", None) or node.lineno)
+    return end
 
 
 # --------------------------------------------------------------------
