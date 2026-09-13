@@ -37,6 +37,16 @@ Delivery is pull: :meth:`Sessions.ask` returns a :class:`Job` and the
 answer is collected later with :meth:`Sessions.result`. How a parent
 LEARNS that a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's, not nontainer's.
+
+An ask starts from this session unless it is told otherwise. ``from_``
+names another fork point — a commit somebody else tends, spelled
+``session@commit`` or named by a store tag — and the child is forked
+THERE instead, with a conversation of its own, since a conversation
+that is not the asker's cannot be continued. The branch it was forked
+from is only read: every ask forks, and the child is what the runner
+drives. What reaches the parent either way is the answer and a branch;
+merging it, taking files out of it or leaving it alone is the parent's
+own step, and nothing here takes it.
 """
 
 from __future__ import annotations
@@ -50,7 +60,12 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from .errors import JobRunning, SessionsError, WorkspaceError
+from .errors import (
+    CommitNotFoundError,
+    JobRunning,
+    SessionsError,
+    WorkspaceError,
+)
 from .protocol import SESSION_ID_RE, Answer, Job
 
 if TYPE_CHECKING:
@@ -193,6 +208,7 @@ class Sessions:
         name: str | None = None,
         paths: "Iterable[str] | str | None" = None,
         inherit: str = "fresh",
+        from_: "str | Any | None" = None,
         wait: bool = False,
         budget: Any = None,
     ) -> "Job | Answer":
@@ -212,15 +228,53 @@ class Sessions:
         along (``"fresh"`` here, where the child is starting work of
         its own, against ``fork``'s own ``"full"`` default).
 
+        ``from_`` starts the child somewhere else: a commit named by a
+        store tag, or spelled ``session@commit`` (a short commit id and
+        a session's own tag resolve here the way they do for every
+        other verb). The child is forked THERE rather than here, and
+        the branch it came from is only read. ``inherit`` must be
+        ``"fresh"`` then, because the conversation at that fork point
+        is not this session's to continue.
+
         The runner drives the child on a worker thread and its answer
         is collected with :meth:`result`. A runner that raises does not
         lose the job: it resolves as ``failed`` with the exception's
-        text as the answer.
+        text as the answer. Whatever the child does stays on its
+        branch: merging it, taking files from it or leaving it is the
+        caller's own step.
         """
         self._check_open()
         started = time.time()
-        child, child_name, base = self._fork(name, paths=paths, inherit=inherit)
-        job = Job(name=child_name, task=task, status="running", started=started)
+        origin = None
+        at = None
+        if from_ is not None:
+            if inherit != "fresh":
+                raise SessionsError(
+                    f"inherit must be 'fresh' when a fork point is given: the "
+                    f"conversation at {str(from_)!r} is not this session's to "
+                    "continue, and a brief is content the task carries"
+                )
+            origin = self._origin(from_)
+            at = origin[1]
+        try:
+            child, child_name, base = self._fork(
+                name, paths=paths, inherit=inherit, at=at
+            )
+        except CommitNotFoundError as exc:
+            # The funnel classifies the word; the store is what knows
+            # whether it holds that commit, and it says so with the
+            # commit alone.
+            raise SessionsError(
+                f"{origin[0]!r} names commit {exc}, which this store does not "
+                "hold, so there is nothing to fork"
+            ) from exc
+        job = Job(
+            name=child_name,
+            task=task,
+            status="running",
+            started=started,
+            origin=origin,
+        )
         with self._lock:
             self._jobs[child_name] = job
             self._children[child_name] = child
@@ -375,6 +429,7 @@ class Sessions:
         *,
         paths: "Iterable[str] | str | None",
         inherit: str,
+        at: str | None = None,
     ) -> "tuple[Workspace, str, str | None]":
         """``(child, its name, the fork point)``.
 
@@ -382,18 +437,25 @@ class Sessions:
         lock, so two asks racing on one session cannot pick the same
         name — and the fork itself is the authority on collision, since
         a branch may exist that no job here remembers.
+
+        ``at`` names the commit to fork FROM, for a child that starts
+        somewhere other than this session's head. It is the child's
+        base, and this session's uncommitted writes are left alone,
+        because they are no part of where that child came from.
         """
         wanted = name or pet_name()
         with self._ws.lock:
             for attempt in range(_MINT_TRIES):
                 candidate = self._scoped(wanted, attempt)
                 try:
-                    child = self._ws.fork(candidate, inherit=inherit, paths=paths)
+                    child = self._ws.fork(
+                        candidate, at=at, inherit=inherit, paths=paths
+                    )
                 except WorkspaceError as exc:
                     if "already exists" not in str(exc):
                         raise
                     continue
-                return child, candidate, self._ws.head
+                return child, candidate, self._ws.head if at is None else at
         raise SessionsError(
             f"could not mint a free name for a child of {self._ws.session!r} "
             f"in {_MINT_TRIES} tries (last: {candidate!r})"
@@ -411,6 +473,68 @@ class Sessions:
                 "session id is a branch name, so it holds no separators)"
             )
         return candidate
+
+    def _origin(self, from_: "str | Any") -> "tuple[str, str]":
+        """``(the fork point as the caller spelled it, its commit)``.
+
+        Two spellings, one funnel each. A ``session@commit`` ref — or a
+        :class:`~nontainer.Ref` — resolves the way every other
+        cross-session read does, so a short commit id and a session's
+        own tag are spellings this takes too. Anything else is a store
+        tag, the name a commit outlives its session under.
+        """
+        from .store import Ref
+
+        given = str(from_).strip()
+        if not given:
+            raise SessionsError(
+                "a fork point must be named: a store tag, or a 'session@commit' "
+                "ref. Leave it out to fork this session"
+            )
+        if not self._ws.caps.versioned:
+            raise SessionsError(
+                f"session {self._ws.session!r} is on a provider that keeps no "
+                "commits, and a fork point is a commit; forking from elsewhere "
+                "needs a versioned provider"
+            )
+        if isinstance(from_, Ref) or "@" in given:
+            parsed = Ref.parse(given)
+            with self._ws.lock:
+                return given, self._ws._ref_commit(parsed.session, parsed.commit)
+        return given, self._store_tag(given)
+
+    def _store_tag(self, name: str) -> str:
+        """The commit a store tag names.
+
+        A store tag belongs to no session and outlives the one that
+        made it, which is what lets a commit be a fork point long after
+        the session that reached it is gone.
+        """
+        from .errors import NotSupportedError
+
+        store = getattr(self._ws, "_store", None)
+        if store is None:
+            raise SessionsError(
+                f"{name!r} is not a 'session@commit' ref, and session "
+                f"{self._ws.session!r} was not opened from a store, so there "
+                "are no store tags to look it up in"
+            )
+        try:
+            tags = store.tags.list()
+        except NotSupportedError as exc:
+            raise SessionsError(
+                f"{name!r} is not a 'session@commit' ref, and this store has "
+                f"no tags to look it up in ({exc})"
+            ) from exc
+        commit = tags.get(name)
+        if commit is None:
+            known = ", ".join(sorted(tags)) or "none"
+            raise SessionsError(
+                f"nothing named {name!r} on this store (store tags: {known}). "
+                "A fork point is a commit, named by a store tag or spelled "
+                "'session@commit'"
+            )
+        return commit
 
     def _work(self, name: str, task: str, budget: Any) -> Answer:
         """The worker body: run, then land. Never raises.
@@ -557,17 +681,27 @@ class Sessions:
         """Where the answer came from. The runner's own record (model,
         turns, tokens) is kept; what only the host knows is added.
 
-        ``chain`` is the full path of refs and not the last hop: the
-        parent at the commit it delegated from, then the child at the
-        commit it answered from, behind whatever chain this session's
-        own work already carried. An answer must not be able to launder
-        its sources by passing through one more delegate.
+        ``chain`` is the full path of refs and not the last hop: where
+        the child came from, then the child at the commit it answered
+        from, behind whatever chain this session's own work already
+        carried. An answer must not be able to launder its sources by
+        passing through one more delegate.
+
+        Where the child came from is this session at the commit it
+        delegated from, or the fork point it was given instead: an
+        answer grown from somebody else's state says so rather than
+        naming the asker. A fork point named by a store tag enters the
+        chain as the bare commit, because a store tag belongs to no
+        session and ``session@commit`` has no honest session half for
+        it.
         """
         with self._lock:
             job = self._jobs[name]
-        hop = [f"{self._ws.session}@{base}"] if base else []
+        source = self._descends_from(job, base)
+        hop = [source] if source else []
         if commit:
             hop.append(f"{child.session}@{commit}")
+        extra = {"from": job.origin[0]} if job.origin else {}
         return {
             **answer.provenance,
             "session": child.session,
@@ -575,7 +709,19 @@ class Sessions:
             "started": job.started,
             "finished": time.time(),
             "chain": (*self._chain, *hop),
+            **extra,
         }
+
+    def _descends_from(self, job: Job, base: str | None) -> str | None:
+        """The ref a job's answer descends FROM."""
+        from .store import Ref
+
+        if job.origin is not None:
+            given, commit = job.origin
+            if "@" in given:
+                return str(Ref(Ref.parse(given).session, commit))
+            return commit
+        return f"{self._ws.session}@{base}" if base else None
 
     def _record(self, name: str, answer: Answer) -> None:
         """Store the answer and close the job out.

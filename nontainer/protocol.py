@@ -976,7 +976,9 @@ class Job:
     agent commit. ``None`` while the job runs."""
 
     started: float = 0.0
-    """When the fork was taken, unix epoch seconds."""
+    """When the job started, unix epoch seconds: the moment the fork
+    was taken, or the moment the task was given for a job continuing a
+    child forked earlier."""
 
     finished: float | None = None
     """When the answer landed, or ``None`` while the job runs."""
@@ -995,6 +997,14 @@ class Job:
     uncommitted: bool = False
     """The delegate left work its own ws-git head does not hold, so a
     merge of it is refused (see :attr:`Answer.uncommitted`)."""
+
+    origin: tuple[str, str] | None = None
+    """Where the child was forked from when that was not the asking
+    session: the fork point as the caller spelled it and the commit it
+    resolved to — a store tag name and its commit, or a
+    ``session@commit`` ref and the whole commit id behind a short one.
+    ``None`` for a fork of the asking session, which is where an ask
+    starts unless it is told otherwise."""
 
 
 @dataclass(frozen=True)
