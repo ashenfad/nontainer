@@ -735,13 +735,12 @@ class _Sources:
         if rel not in self._lines:
             text = ""
             try:
-                with self._ws.lock:
-                    path = _abs(self._ws, rel)
-                    fs = self._ws.files.fs
-                    if fs.exists(path) and fs.isfile(path):
-                        data = fs.read(path)
-                        if len(data) <= _MAX_ANNOTATED_BYTES:
-                            text = data.decode("utf-8", errors="replace")
+                path = _abs(self._ws, rel)
+                fs = self._ws.files.fs
+                if fs.exists(path) and fs.isfile(path):
+                    data = fs.read(path)
+                    if len(data) <= _MAX_ANNOTATED_BYTES:
+                        text = data.decode("utf-8", errors="replace")
             except Exception:  # noqa: BLE001 — a diagnostic never breaks a run
                 text = ""
             self._lines[rel] = text.splitlines()
@@ -801,6 +800,17 @@ def render_frames(frames: list[TestFrame] | tuple[TestFrame, ...]) -> str:
     return "\n".join(out)
 
 
+def _message(error: dict) -> str:
+    """One page-side error as a report message, in workspace
+    coordinates: the synthetic origin is an implementation detail of the
+    harness, and a message naming it sends the agent looking for a host
+    that does not exist."""
+    name = error.get("name") or "Error"
+    text = error.get("message")
+    text = "" if text is None else str(text)
+    return f"{name}: {text}".rstrip(": ").replace(BASE_URL, "")
+
+
 def _outcome(rel: str, record: dict, sources: "_Sources") -> TestOutcome:
     """One page-side result as a report outcome."""
     name = f"{rel} > {record['name']}"
@@ -811,9 +821,7 @@ def _outcome(rel: str, record: dict, sources: "_Sources") -> TestOutcome:
             name=name, file=rel, line=None, status="passed", duration=duration
         )
     frames = workspace_frames(error.get("stack") or "", sources)
-    message = f"{error.get('name') or 'Error'}: {error.get('message') or ''}".rstrip(
-        ": "
-    )
+    message = _message(error)
     return TestOutcome(
         name=name,
         file=rel,
@@ -835,7 +843,12 @@ def _served(ws: Any, rel: str) -> tuple[bytes, str] | None:
     """The bytes for a path under the synthetic root, or ``None`` when
     nothing there is served. ``app/api/`` is refused with everything
     else: it is backend source, and the app's own static dispatch
-    refuses that subtree too."""
+    refuses that subtree too.
+
+    Reads the workspace WITHOUT taking its lock, and must: this runs on
+    a worker thread of the browser's loop, and the run already holds the
+    lock on the thread that started it (``run_js_tests``). Acquiring an
+    RLock held by a different thread would simply hang."""
     clean = posixpath.normpath(rel)
     if clean in (".", "") or clean.startswith(".."):
         return None
@@ -844,11 +857,10 @@ def _served(ws: Any, rel: str) -> tuple[bytes, str] | None:
     if not any(clean == d or clean.startswith(d + "/") for d in SERVED_DIRS):
         return None
     path = _abs(ws, clean)
-    with ws.lock:
-        fs = ws.files.fs
-        if not fs.exists(path) or not fs.isfile(path):
-            return None
-        return fs.read(path), _content_type(clean)
+    fs = ws.files.fs
+    if not fs.exists(path) or not fs.isfile(path):
+        return None
+    return fs.read(path), _content_type(clean)
 
 
 async def _run_file(
@@ -865,6 +877,7 @@ async def _run_file(
     loop = asyncio.get_running_loop()
     console: dict[str, int] = {}
     refused: dict[str, None] = {}
+    misses: list[str] = []
     started = time.perf_counter()
 
     def _console(message: Any) -> None:
@@ -917,6 +930,12 @@ async def _run_file(
             return
         found = await loop.run_in_executor(None, _served, ws, rest)
         if found is None:
+            # Remembered, not just answered: a module import that 404s
+            # surfaces in the page as "Failed to fetch dynamically
+            # imported module" and names the IMPORTER, never the file
+            # that was missing.
+            if rest not in misses and len(misses) < 20:
+                misses.append(rest)
             await route.fulfill(
                 status=404, body=_NOT_FOUND_BODY, content_type="application/json"
             )
@@ -984,9 +1003,9 @@ async def _run_file(
             error = payload.get("error")
             if error:
                 frames = workspace_frames(error.get("stack") or "", sources)
-                message = (
-                    f"{error.get('name') or 'Error'}: {error.get('message') or ''}"
-                ).rstrip(": ")
+                message = _message(error)
+                if misses and "dynamically imported module" in message:
+                    message += " — nothing is served at " + ", ".join(misses)
                 return FileResult(
                     file=rel,
                     duration=time.perf_counter() - started,
@@ -1053,7 +1072,7 @@ def run_js_tests(
     files: Any,
     *,
     name: str | None = None,
-    bail: bool = False,
+    bail: int = 0,
     load_timeout_ms: int = 15_000,
     run_timeout_ms: int = 30_000,
 ) -> list[FileResult]:
@@ -1061,31 +1080,43 @@ def run_js_tests(
     happened, one :class:`FileResult` per file.
 
     ``name`` is the ``-t`` filter, applied in the page where the test
-    names are. ``bail`` stops after the first file that failed — the
-    files already run are returned, and the rest are not started.
+    names are. ``bail`` stops once that many files have failed — the
+    files already run are returned, and the rest are not started; 0 is
+    no limit.
     """
     from .browser import submit_job
 
     require_playwright()
     out: list[FileResult] = []
-    for rel in files:
-        try:
-            result = submit_job(
-                lambda browser, sema, rel=rel: _run_file(
-                    browser,
-                    sema,
-                    ws,
-                    rel,
-                    name=name,
-                    load_timeout_ms=load_timeout_ms,
-                    run_timeout_ms=run_timeout_ms,
+    failed = 0
+    # The workspace's single-writer lock, held for the whole run on THIS
+    # thread: the page is served from the tree as it stands, so nothing
+    # may rewrite a module between the import that loads it and the test
+    # that asserts on it. Held here rather than taken per read inside the
+    # route handler, which runs on the browser loop's worker threads —
+    # an RLock is re-entrant for its owner and a deadlock for anyone
+    # else, and the verb is typed inside an already-locked terminal call.
+    with ws.lock:
+        for rel in files:
+            try:
+                result = submit_job(
+                    lambda browser, sema, rel=rel: _run_file(
+                        browser,
+                        sema,
+                        ws,
+                        rel,
+                        name=name,
+                        load_timeout_ms=load_timeout_ms,
+                        run_timeout_ms=run_timeout_ms,
+                    )
+                ).result()
+            except Exception as e:  # noqa: BLE001 — a browser failure is a result
+                result = FileResult(
+                    file=rel, load_error=f"Playwright/Chromium unavailable: {e}"
                 )
-            ).result()
-        except Exception as e:  # noqa: BLE001 — a browser failure is a result
-            result = FileResult(
-                file=rel, load_error=f"Playwright/Chromium unavailable: {e}"
-            )
-        out.append(result)
-        if bail and result.failed:
-            break
+            out.append(result)
+            if result.failed:
+                failed += 1
+                if bail and failed >= bail:
+                    break
     return out
