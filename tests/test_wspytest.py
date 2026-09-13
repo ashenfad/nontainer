@@ -178,7 +178,7 @@ def test_a_selector_picks_one_test(ws):
 
 def test_a_missing_selector_is_a_usage_error(ws):
     report = run_pytest(ws, ["tests/nope.py"])
-    assert report.exit_code == 2
+    assert report.exit_code == 4
     assert "not found" in (report.collection_error or "")
 
 
@@ -349,3 +349,21 @@ def test_a_relative_selector_resolves_against_the_cwd(ws):
     report = run_pytest(ws, ["test_rel.py"], cwd="/workspace/tests")
     assert report.collected == 1, report.collection_error
     assert report.outcomes[0].name == "tests/test_rel.py::test_a"
+
+
+def test_a_test_name_nothing_defines_is_a_usage_error(ws):
+    write(
+        ws,
+        "tests/test_named.py",
+        "def test_a():\n    assert True\n\n\ndef test_b():\n    assert True\n",
+    )
+    report = run_pytest(ws, ["tests/test_named.py::test_c"])
+    assert report.exit_code == 4
+    assert report.collection_error == (
+        "not found: tests/test_named.py::test_c\n"
+        "(tests/test_named.py defines test_a, test_b)"
+    )
+    # A filter that matches nothing is not the same mistake.
+    from nontainer.wspytest import Options, run_options
+
+    assert run_options(ws, Options(keyword="nosuch")).exit_code == 5

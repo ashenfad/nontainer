@@ -107,20 +107,20 @@ def test_refused_flags_name_what_to_do_instead(ws):
         ("-m slow", "there are no markers here"),
     ):
         r = ws.terminal(f"ws-pytest {flag}")
-        assert r.exit_code == 2, flag
+        assert r.exit_code == 4, flag
         assert phrase in (r.stdout + r.stderr), flag
 
 
 def test_an_unknown_flag_shows_the_usage(ws):
     r = ws.terminal("ws-pytest --frobnicate")
-    assert r.exit_code == 2
+    assert r.exit_code == 4
     assert "unknown flag --frobnicate" in (r.stdout + r.stderr)
     assert "usage: ws-pytest" in (r.stdout + r.stderr)
 
 
 def test_a_missing_path_is_a_usage_error(ws):
     r = ws.terminal("ws-pytest tests/test_nope.py")
-    assert r.exit_code == 2
+    assert r.exit_code == 4
     assert "not found" in (r.stdout + r.stderr)
 
 
@@ -137,3 +137,21 @@ def test_help_names_the_layout_rule_and_the_flags(ws):
     assert "never under app/" in r.stdout
     assert "--maxfail=N" in r.stdout
     assert "no fixtures, no conftest" in r.stdout
+
+
+def test_a_selector_naming_no_such_test_is_a_usage_error(ws):
+    """A typo in a test name must not read as an empty suite: nothing
+    ran either way, and only one of them is the agent's mistake."""
+    r = ws.terminal("ws-pytest tests/test_a.py::test_typo")
+    assert r.exit_code == 4
+    said = r.stdout + r.stderr
+    assert "not found: tests/test_a.py::test_typo" in said
+    assert "test_ok" in said and "test_bad" in said
+
+
+def test_a_keyword_matching_nothing_is_still_an_empty_run(ws):
+    """-k is a filter, not a name: matching nothing collects nothing,
+    which is exit 5 rather than a usage error."""
+    r = ws.terminal("ws-pytest -k nosuchsubstring")
+    assert r.exit_code == 5
+    assert "no tests ran in " in r.stdout

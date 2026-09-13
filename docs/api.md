@@ -2014,7 +2014,8 @@ TestReport(tool, ok, collected, passed, failed, errors, skipped,
            collection_error=None, notes=())
     # bool(report) is report.ok — ws.merge(child, check=lambda t: run_pytest(t).ok)
     # exit_code is pytest's: 0 passed · 1 failures · 2 a file that would
-    #   not collect, or a bad argument · 5 nothing collected
+    #   not collect · 4 a bad argument (a flag, a path, or a test name
+    #   nothing defines) · 5 nothing collected
     # notes: what the run refused to do silently — a test file under
     #   app/ (which publishes), a conftest.py nobody reads
 
