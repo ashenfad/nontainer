@@ -93,6 +93,11 @@ another task. Elsewhere, the `ui` set closes.
   composed into the test program so the test's own mocks are what the
   handler sees. It does not reproduce a GET's read-only filesystem —
   that stays `ws-curl`'s to enforce.
+- **`__future__` in the stdlib preset** — `from __future__ import
+  annotations` is a compiler directive that is also a real import at
+  run time, so a module carrying the line agents write by habit failed
+  at its first statement. The module holds feature flags and nothing
+  else.
 - **`unittest.mock` in the stdlib preset** (`patch`, `MagicMock` and
   the rest of the public API; `unittest` itself exposes nothing else),
   so a workspace module's collaborators can be patched where they are

@@ -341,3 +341,34 @@ def test_a_mock_survives_process_isolation():
         assert report.ok, report.outcomes
     finally:
         w.close()
+
+
+def test_a_future_import_still_leads_the_composed_program(ws):
+    """The composed program is a valid module whenever the test file
+    is: a `from __future__` import (and the docstring that may precede
+    it) stays at the top, with the handlers composed in after."""
+    report = run(
+        ws,
+        '"""Tests for the scores endpoint."""\n'
+        "\n"
+        "from __future__ import annotations\n"
+        "\n"
+        "from unittest.mock import MagicMock\n"
+        "\n"
+        "\n"
+        "def test_limit() -> None:\n"
+        "    db = MagicMock()\n"
+        "    db.query.return_value = ['ann', 'bob']\n"
+        "    assert call('scores', params={'limit': '1'}, db=db).json == {\n"
+        "        'scores': ['ANN']\n"
+        "    }\n"
+        "\n"
+        "\n"
+        "def test_names_its_own_line() -> None:\n"
+        "    assert False\n",
+    )
+    assert report.collection_error is None, report.collection_error
+    assert report.passed == 1
+    assert report.failed == 1
+    assert report.outcomes[1].line == 17
+    assert report.outcomes[1].frames[-1].path == "tests/test_call.py"
