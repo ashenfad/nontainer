@@ -759,10 +759,11 @@ class AppRuntime:
 
 def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     """Wire the apps runtime into a workspace: builds the AppRuntime
-    and registers the ``ws-curl`` fetch and ``ws-pytest`` unit-test
-    terminal builtins. Returns the runtime (also the live router's
+    and registers the ``ws-curl`` fetch and the ``ws-pytest`` /
+    ``ws-vitest`` unit-test terminal builtins. Returns the runtime (also the live router's
     dispatch source)."""
     from ..wspytest import register_wspytest
+    from ..wsvitest import register_wsvitest
     from .wscurl import make_curl_command
 
     # Framework-owned: a fork/snapshot rebuilds its own runtime bound
@@ -777,9 +778,11 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
         origin = config.origin if config is not None else AppsConfig.origin
         target.runtime.env["APP_ORIGIN"] = origin
         # The unit tier, beside the wire tier: a workspace with an app
-        # gets both verbs. It registers itself on a workspace without
-        # one too, which is why this is a no-op when already there.
+        # gets all three verbs. Both register themselves on a workspace
+        # without an app too, which is why this is a no-op when already
+        # there.
         register_wspytest(target)
+        register_wsvitest(target)
         return target_runtime
 
     return _register(ws)
