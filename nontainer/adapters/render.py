@@ -151,6 +151,14 @@ _SHARED_CODE_APP = """\
   and nothing else, so a handler importing helpers/ works while you
   preview it and breaks once the app is served"""
 
+# Offered only where the verb is registered: an agent told to run a
+# command that answers "command not found" spends the turn on the
+# shell instead of on the work.
+_TEST_NOTE = """
+- checking that reusable code works: write tests/test_<name>.py with
+  plain `assert` and run `ws-pytest` in the terminal (one function per
+  behaviour, `from unittest.mock import MagicMock` for a fake)"""
+
 _CACHE_NOTE = """\
 - cache: a persistent dict for DATA (picklable values), e.g.
   cache['key'] = value; contents survive across calls and sessions"""
@@ -206,6 +214,8 @@ def python_description(
     desc = _PYTHON_TOOL_CORE.replace("__SHARED_CODE__", shared).replace(
         "__WS_ROOT__", ws.root
     )
+    if "ws-pytest" in ws.runtime.commands:
+        desc += _TEST_NOTE
     extras = _env_notes(ws)
     if extras:
         desc += "\n" + extras
@@ -416,7 +426,11 @@ def _static_assets_note(config: Any) -> str:
 _CURL_NOTE = """Test endpoints instantly with ws-curl (no server):
 ws-curl $APP_ORIGIN/api/scores?limit=3. `-f` fails the call (exit 22)
 on 4xx/5xx — without it an error status reads as a response. Pipelines
-compose: ws-curl $APP_ORIGIN/api/scores | jq ."""
+compose: ws-curl $APP_ORIGIN/api/scores | jq .
+Test the logic below a request with ws-pytest: put plain `assert` tests
+in tests/test_<name>.py beside app/ (never under app/, which publishes
+them), run `ws-pytest`, and reach a handler with call('scores',
+params={'limit': '2'}, db=fake) — `ws-pytest --help` has the flags."""
 
 _NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and the app
 answers requests only through test_app. Verify endpoints by driving

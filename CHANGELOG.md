@@ -11,9 +11,11 @@ ws-git grows the git concepts an agent reaches for: worktrees, short
 commit ids, the view it was given, `log -S`, `revert`, `cherry-pick`,
 `stash`, `merge --abort` and `tag`. The agent-facing reference moves to
 `docs/ws-git.md`, the twin of `ws-git help`, leaving `docs/api.md`'s
-versioning section the host API alone. Delegation learns where a
-delegate starts and how to give one another task. Elsewhere, the `ui`
-set closes.
+versioning section the host API alone. A third verb joins it:
+`ws-pytest`, the tier below `ws-curl` and `test_app`, where a question
+about a function is asked of the function — `docs/testing.md` is its
+page. Delegation learns where a delegate starts and how to give one
+another task. Elsewhere, the `ui` set closes.
 
 ### Added
 - **`sessions ask(fork_from=, resume=)`** — the two things about an ask
@@ -66,6 +68,31 @@ set closes.
   (`cache` included, read-only under a GET), is rebuilt per execution,
   and takes no writes. Both rungs answer it — sandtrap's per-exec
   modules on the local one, a guest prelude on dud.
+- **`ws-pytest`, the unit tier** — pytest's shape over the workspace's
+  own executor: `tests/test_*.py` (never under `app/`, which
+  publishes), every top-level `test_*` function, plain `assert`, and
+  pytest's report, flags and exit codes. Paths and `path::name`,
+  `-k EXPR`, `-x` / `--maxfail=N`, `-q` / `-v`, `--tb=short|long|no`;
+  everything else pytest has is refused with the idiom that replaces
+  it, and a `tests/conftest.py` is reported unread rather than
+  silently ignored. Tests run where the agent's code runs — in the
+  guest on a VM rung — and the report reads the same on both rungs.
+  `docs/testing.md` is the agent-facing page.
+- **`TestReport` and `render_report`** — the run as a record before it
+  is text: counts, a `TestOutcome` per test, and each failure's frames
+  with their source, so a merge policy can gate on
+  `run_pytest(ws).ok` and a UI can show the first failure without
+  parsing a summary line. Frames name the file and line the agent
+  wrote; the sandbox's own are dropped.
+- **`call(...)` in a test's namespace** — the one piece of test
+  support a handler needs: `call("scores", params={"limit": "2"},
+  db=fake)` builds the request dispatch would, runs the handler, and
+  returns the response (liberal returns normalized, `HttpError` as a
+  status, a missing required field as a 400). Dependencies are
+  substituted by keyword rather than patched, and a handler it runs is
+  composed into the test program so the test's own mocks are what the
+  handler sees. It does not reproduce a GET's read-only filesystem —
+  that stays `ws-curl`'s to enforce.
 - **`unittest.mock` in the stdlib preset** (`patch`, `MagicMock` and
   the rest of the public API; `unittest` itself exposes nothing else),
   so a workspace module's collaborators can be patched where they are

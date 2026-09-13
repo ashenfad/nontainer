@@ -1057,7 +1057,7 @@ the same workspace answers differently under a different
 | Executor | `supports_commands` | why |
 |---|---|---|
 | `LocalExecutor` | `True` | termish receives the mapping, so an injected command is a real command |
-| `DudExecutor` | `False` | a guest runs actual bash, so injected commands don't reach it — but `ws-*` verbs (ws-git, ws-curl) ferry in over hostcall |
+| `DudExecutor` | `False` | a guest runs actual bash, so injected commands don't reach it — but `ws-*` verbs (ws-git, ws-curl, ws-pytest) ferry in over hostcall |
 
 Tool descriptions gate on it — the apps primer teaches `ws-curl` only
 where it exists (injected commands, or the `ws-*` ferry on guests), since promising an agent a command that answers
@@ -1987,6 +1987,68 @@ dispatch. Logs: `/workspace/app/logs/api.log`.
 `{"goto": "about.html"}` (a page in the app, relative) ·
 `{"screenshot": true}` (→ `/workspace/app/screenshots/`) · `{"wait": ms}`.
 Viewports: `"desktop"`/`"tablet"`/`"mobile"` or `{width, height}`.
+
+## Unit tests (`ws-pytest`)
+
+Agent-facing reference: [testing.md](testing.md). The verb is pytest's
+shape over the workspace's own executor — tests run where the agent's
+code runs, under the session's python config. `enable_apps` registers
+it; a workspace without an app registers it directly.
+
+```python
+from nontainer.wspytest import register_wspytest, run_pytest, render_report
+
+register_wspytest(ws)                  # the `ws-pytest` terminal verb
+report = run_pytest(ws, argv=())       # the record; argv is the verb's own
+print(render_report(report, verbosity=0, tb="short"))   # the terminal text
+```
+
+The record is the product and the text is a rendering of it — the same
+division `TestAppResult` / `render_test_app` has, and for the same
+reason: a merge policy gating on tests reads the outcomes rather than
+parsing `3 passed, 1 failed`.
+
+```python
+TestReport(tool, ok, collected, passed, failed, errors, skipped,
+           duration, exit_code, outcomes=(), stdout="",
+           collection_error=None, notes=())
+    # bool(report) is report.ok — ws.merge(child, check=lambda t: run_pytest(t).ok)
+    # exit_code is pytest's: 0 passed · 1 failures · 2 a file that would
+    #   not collect, or a bad argument · 5 nothing collected
+    # notes: what the run refused to do silently — a test file under
+    #   app/ (which publishes), a conftest.py nobody reads
+
+TestOutcome(name, file, line, status, duration=0.0, message=None,
+            traceback=None, frames=())
+    # name is the pytest id: "tests/test_scores.py::test_limit"
+    # status: passed | failed | error
+    # traceback: pytest's short traceback, agent frames only
+    # frames: the same failure as data — TestFrame(path, line, function,
+    #   source), each carrying the enclosing function's lines, so a
+    #   report renders where the workspace that produced it is gone
+
+render_report(report, *, verbosity=0, tb="short") -> str
+    # verbosity: -1 (-q) · 0 · 1 (-v);  tb: "short" | "long" | "no"
+```
+
+A test reaches a handler through `call`, which is a bare name in the
+test's own namespace (not an import): the handler is composed into the
+test program so it runs where the test's mocks are.
+
+```python
+call(module, method="GET", path=None, *, params=None, body=None,
+     json=None, headers=None, **objects) -> TestResponse
+    # module: the name under app/api/, as a string literal
+    # **objects: substitutes what dispatch would bind (db=fake). A name
+    #   not passed binds as dispatch would; a keyword the handler never
+    #   reads is an error
+TestResponse(status, content, content_type, headers)
+    .text · .json · .ok
+```
+
+`call` does not reproduce the read-only filesystem a real GET runs
+under — a GET that writes passes there and 500s under `ws-curl`, which
+is where structural REST is enforced.
 
 Serving (frozen snapshots — read-only, concurrent):
 

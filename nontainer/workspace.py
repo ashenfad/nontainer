@@ -3371,7 +3371,7 @@ class Workspace:
 
     def _absorb_before_verb(self, verb: str) -> dict | None:
         """Harvest + absorb guest writes before a hostcall-dispatched
-        verb (ws-git, ws-curl): the guest tree may hold writes this
+        verb (ws-git, ws-curl, ws-pytest): the guest tree may hold writes this
         script made before invoking the verb, and the provider doesn't
         see them until harvest (which runs after exec returns).
 

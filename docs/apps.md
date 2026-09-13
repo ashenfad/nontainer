@@ -14,8 +14,10 @@ forks and checks out with the session.
 ## Scope
 
 Supported: the dispatch core, the handler contract, a `ws-curl` terminal
-builtin, `test_app` via Playwright, a Starlette `APIRouter` for live
-serving, and embedder-supplied static assets served alongside the app
+builtin, a `ws-pytest` one ([testing.md](testing.md) — the unit tier
+below a request, where a handler is reached with `call(...)`),
+`test_app` via Playwright, a Starlette `APIRouter` for live serving, and
+embedder-supplied static assets served alongside the app
 (`AppsConfig.static_assets` — vendored libraries, fonts; the air-gap
 path).
 
@@ -75,7 +77,9 @@ recommendation for code you want to test — a function that takes `db` is
 called with a fake, while a module that imports it is patched at the
 name the module itself reads (`import host` at the top of the module,
 then `host.db` at the call site, since `from host import db` binds once
-at import time).
+at import time). A test for either shape runs with `ws-pytest`, which
+also reaches a handler itself: `call("scores", params={"limit": "2"},
+db=fake)` — see [testing.md](testing.md).
 
 ## Handler contract
 

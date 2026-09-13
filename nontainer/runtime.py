@@ -173,13 +173,13 @@ class Runtime:
         if prefixed:
             raise ValueError(
                 f"Reserved terminal command prefix: {prefixed} — the 'ws-' "
-                "prefix names framework verbs (ws-git, ws-curl); "
+                "prefix names framework verbs (ws-git, ws-curl, ws-pytest); "
                 "rename yours."
             )
         user_commands["python"] = self._python_command
         user_commands["python3"] = self._python_command  # the reflex spelling
         self._commands = user_commands
-        # Framework-owned commands (ws-git, ws-curl) and how to re-bind
+        # Framework-owned commands (ws-git, ws-curl, ws-pytest) and how to re-bind
         # them: a command closure captures the workspace it was built
         # for, so a fork/snapshot that merely copied the mapping would
         # dispatch into its parent — the fork-bleed. fork()/at_tag()
@@ -454,7 +454,7 @@ class Runtime:
         if name.startswith("ws-") and rebind is None:
             raise ValueError(
                 f"Reserved terminal command prefix: {name!r} — the 'ws-' "
-                "prefix names framework verbs (ws-git, ws-curl); "
+                "prefix names framework verbs (ws-git, ws-curl, ws-pytest); "
                 "rename yours."
             )
         if name in self._commands:
