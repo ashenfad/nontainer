@@ -42,6 +42,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from .wsverb import FerrySpec, tag
+
 #: Where python tests live. ``app/`` is what publishes, so a test file
 #: under it would ship in every deployment and be fetchable from the
 #: served app; ``tests/`` sits outside the published subtree, which is
@@ -559,16 +561,94 @@ def _rewrite(
 # --------------------------------------------------------------------
 
 
+#: Flags pytest has that this verb refuses, each with the idiom that
+#: replaces it. A refusal is a one-line answer naming what to do
+#: instead; silence would cost the agent a run it thinks it filtered.
+REFUSED = {
+    "-s": "there is no capture to disable — a test's stdout is already in the report",
+    "--capture": "there is no capture to disable — a test's stdout is in the report",
+    "--lf": "nothing here outlives the call to remember a last run — name the "
+    "test instead: ws-pytest tests/test_x.py::test_y",
+    "--last-failed": "nothing here outlives the call to remember a last run — "
+    "name the test instead: ws-pytest tests/test_x.py::test_y",
+    "-p": "there are no plugins here",
+    "--co": "use -q with a path to see what would run",
+    "--collect-only": "use -q with a path to see what would run",
+    "-m": "there are no markers here — select with -k EXPR, or name the test",
+    "--markers": "there are no markers here — select with -k EXPR, or name the test",
+    "--fixtures": "there are no fixtures and no conftest here — build what a "
+    "test needs in the test itself, and pass a handler's dependencies to "
+    "call(..., db=fake)",
+    "--pdb": "there is no interactive debugger in a sandbox — print, or assert "
+    "on the value",
+    "--cov": "there is no coverage plugin here",
+}
+
+_TB_STYLES = ("short", "long", "no")
+
+USAGE = (
+    "usage: ws-pytest [paths] [-k EXPR] [-x | --maxfail=N] [-q | -v] "
+    "[--tb=short|long|no]"
+)
+
+
 def parse_argv(argv: Any = ()) -> Options:
-    """A ``ws-pytest`` argv as options. Positional arguments select;
-    everything else is a flag this verb honours or refuses by name."""
+    """A ``ws-pytest`` argv as options.
+
+    Positional arguments select (``tests/test_x.py``, or
+    ``tests/test_x.py::test_one``); the flags are the named subset;
+    anything else is refused by name with the idiom that replaces it.
+    """
     select: list[tuple[str, str | None]] = []
-    for word in list(argv):
-        if word.startswith("-"):
-            raise UsageError(f"unrecognized argument: {word}")
-        path, sep, name = word.partition("::")
-        select.append((path, name if sep else None))
-    return Options(select=tuple(select))
+    keyword: str | None = None
+    maxfail = 0
+    verbosity = 0
+    tb = "short"
+    words = [str(w) for w in argv]
+    i = 0
+
+    def value(flag: str) -> str:
+        nonlocal i
+        i += 1
+        if i >= len(words):
+            raise UsageError(f"{flag} needs a value")
+        return words[i]
+
+    while i < len(words):
+        word = words[i]
+        head = word.split("=", 1)[0]
+        if head in REFUSED:
+            raise UsageError(f"{head} is not supported here: {REFUSED[head]}")
+        if not word.startswith("-"):
+            path, sep, name = word.partition("::")
+            select.append((path, name if sep else None))
+        elif head in ("-k",):
+            keyword = word.split("=", 1)[1] if "=" in word else value("-k")
+        elif word in ("-x", "--exitfirst"):
+            maxfail = 1
+        elif head == "--maxfail":
+            raw = word.split("=", 1)[1] if "=" in word else value("--maxfail")
+            if not raw.isdigit():
+                raise UsageError(f"--maxfail takes a number, not {raw!r}")
+            maxfail = int(raw)
+        elif word in ("-v", "--verbose", "-vv"):
+            verbosity = 1
+        elif word in ("-q", "--quiet"):
+            verbosity = -1
+        elif head == "--tb":
+            tb = word.split("=", 1)[1] if "=" in word else value("--tb")
+            if tb not in _TB_STYLES:
+                raise UsageError(f"--tb takes {' | '.join(_TB_STYLES)}, not {tb!r}")
+        else:
+            raise UsageError(f"unknown flag {word}\n{USAGE}")
+        i += 1
+    return Options(
+        select=tuple(select),
+        keyword=keyword,
+        maxfail=maxfail,
+        verbosity=verbosity,
+        tb=tb,
+    )
 
 
 def run_pytest(ws: Any, argv: Any = ()) -> TestReport:
@@ -643,8 +723,9 @@ def run_options(ws: Any, options: Options) -> TestReport:
                     traceback=why,
                 )
             )
-        if not selected:
-            continue
+        # A file with nothing selected still runs: importing it IS
+        # collecting it, and a file that raises at module level is a
+        # collection error whether or not anything in it was wanted.
         collected += len(selected)
 
         budget = 0 if not options.maxfail else max(options.maxfail - failures, 1)
@@ -946,3 +1027,111 @@ def render_report(report: TestReport, *, verbosity: int = 0, tb: str = "short") 
         )
     out.append(_summary(report))
     return "\n".join(out) + "\n"
+
+
+# --------------------------------------------------------------------
+# the terminal verb
+# --------------------------------------------------------------------
+
+_HELP = """\
+ws-pytest — run this workspace's unit tests
+
+usage: ws-pytest [paths] [-k EXPR] [-x | --maxfail=N] [-q | -v]
+                 [--tb=short|long|no]
+
+Collects tests/test_*.py and runs every top-level test_* function
+through the same executor your python code runs in, so a test imports
+your workspace modules exactly as your app does.
+
+  <path>            run one file, or every test file under a directory
+  <path>::<name>    run one test
+  -k EXPR           run tests whose name matches: a substring, joined
+                    with and / or / not and parentheses
+  -x                stop after the first failure
+  --maxfail=N       stop after the Nth failure
+  -q                counts only
+  -v                one line per test
+  --tb=short|long|no
+                    how much of a failure to show (short by default)
+
+Exit codes are pytest's: 0 all passed, 1 failures, 2 a file that would
+not collect or an argument that makes no sense, 5 nothing collected.
+
+Tests live in tests/, never under app/: app/ is what publishes, so a
+test there ships with the app and is fetchable from it.
+
+A test is plain Python — `assert`, and `from unittest.mock import
+MagicMock` where it needs a fake. Give a shared function its
+dependencies as arguments (`def load(db, limit)`) and a test can call
+it with one. There are no fixtures, no conftest, no plugins and no
+markers here: setup is the test's own code, written in the test."""
+
+#: The ferry spec: a positional argument is a path in the tree, and the
+#: only free-text value in the surface is the ``-k`` expression.
+#: stderr carries the ``"ws-pytest: "`` prefix termish's shell layer
+#: adds on the local rung, so both rungs read identically.
+FERRY = FerrySpec(
+    verb="ws-pytest",
+    map_bare_paths=True,
+    opaque_flags=("-k",),
+    stderr_prefix=True,
+)
+
+
+def make_wspytest_command(ws: Any) -> Any:
+    """Build the ``ws-pytest`` command closure over a workspace."""
+
+    def wspytest(ctx: Any) -> Any:
+        from termish import CommandResult
+
+        args = list(ctx.args)
+        if args and args[0] in ("-h", "--help", "help"):
+            ctx.stdout.write(_HELP + "\n")
+            return None
+        try:
+            options = parse_argv(args)
+        except UsageError as e:
+            return CommandResult(exit_code=2, stderr=str(e))
+        report = run_options(ws, options)
+        if report.collection_error is not None and not report.outcomes:
+            # Nothing ran and nothing was collected: the answer is the
+            # refusal itself, on stderr, not an empty report.
+            return CommandResult(
+                exit_code=report.exit_code, stderr=report.collection_error
+            )
+        ctx.stdout.write(
+            render_report(report, verbosity=options.verbosity, tb=options.tb)
+        )
+        if report.exit_code:
+            return CommandResult(exit_code=report.exit_code)
+        return None
+
+    wspytest.__doc__ = (
+        "Run this workspace's unit tests: ws-pytest [paths] [-k EXPR] "
+        "[-x] [-q|-v] [--tb=short|long|no] (ws-pytest --help for the rest)"
+    )
+    return wspytest
+
+
+def register_wspytest(ws: Any) -> None:
+    """Register the ``ws-pytest`` terminal verb on a workspace.
+
+    Two doors lead here — ``enable_apps`` wires it in with the rest of
+    the app loop, and a workspace with no app registers it directly —
+    so a second call is a no-op rather than a duplicate-name error.
+    No-op as well where the executor neither runs injected commands nor
+    ferries ws-* verbs into a guest: the gate doubles as the primer
+    gate, since an agent on such an executor is never told the verb
+    exists.
+    """
+    rt = ws.runtime
+    if not rt.supports_commands and not rt.supports_ws_verbs:
+        return
+    if "ws-pytest" in rt.commands:
+        return
+    # Tags OUR registration and carries the ferry spec; framework-owned,
+    # so a fork/snapshot rebuilds the command bound to itself instead of
+    # inheriting the parent-bound closure.
+    rt.register_command(
+        "ws-pytest", tag(make_wspytest_command(ws), FERRY), rebind=register_wspytest
+    )
