@@ -1003,3 +1003,28 @@ def test_every_answer_ends_with_the_same_next_step(parent, store, fork_point):
         assert f"ws-git diff {job.branch}" in text
         assert f"ws-git merge {job.branch}" in text
         assert f"ws-git checkout {job.branch} -- <paths>" in text
+
+
+def test_a_child_forked_from_elsewhere_merges_that_whole_tree(
+    parent, store, fork_point
+):
+    """It shares no history with the asker, so its branch holds the
+    other state's whole tree and a merge brings all of it — which is
+    why the docs say to take files from such a child unless bringing
+    that state in is what you meant."""
+    runner = Scripted(
+        store, {"/workspace/answer.md": "north is 4\n"}, text="see answer.md"
+    )
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("write it down", from_="rates-2026", wait=True)
+
+    # what the child changed is measured from ITS fork point
+    assert answer.changed == {"seed": ("/workspace/answer.md",), "elsewhere": ()}
+
+    assert parent.merge(answer.branch).merged
+    assert sorted(parent.files.list("/workspace")) == [
+        "/workspace/answer.md",  # what the child wrote
+        "/workspace/main.py",  # what was already here
+        "/workspace/rates.md",  # and the whole tree it was forked from
+        "/workspace/report.md",
+    ]

@@ -519,6 +519,12 @@ order of commitment:
 A commit there may be spelled as that session's own tag,
 `<name>@<tag>`.
 
+A delegate forked from another session's state, rather than from
+yours, shares no history with you: its branch holds that whole tree,
+so a merge brings all of it back and not only what the delegate wrote.
+Read it, or take the files you want; merge it only if bringing the
+other state in is what you meant.
+
 `ws-git diff <name>` groups its changes by the view the delegate was
 given:
 

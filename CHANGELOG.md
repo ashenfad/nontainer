@@ -11,9 +11,26 @@ ws-git grows the git concepts an agent reaches for: worktrees, short
 commit ids, the view it was given, `log -S`, `revert`, `cherry-pick`,
 `stash`, `merge --abort` and `tag`. The agent-facing reference moves to
 `docs/ws-git.md`, the twin of `ws-git help`, leaving `docs/api.md`'s
-versioning section the host API alone. Elsewhere, the `ui` set closes.
+versioning section the host API alone. Delegation learns where a
+delegate starts and how to give one another task. Elsewhere, the `ui`
+set closes.
 
 ### Added
+- **`sessions ask(from_=, resume=)`** — the two things about an ask
+  that are not its task. `from_` starts the delegate from another fork
+  point, a commit named by a store tag or spelled `session@commit`
+  (short ids and a session's own tags resolve as everywhere else); the
+  branch it came from is only read, and `inherit` must be `"fresh"`,
+  a conversation elsewhere being no one else's to continue. `resume`
+  gives a new task to a delegate you already have, its conversation
+  kept and its branch reused, carrying what belongs to the child (its
+  fork point, its base, its `keep` flag) and replacing only the run. A
+  child does one task at a time: a run still in flight refuses the
+  next, and a cancelled run holds its child until the runner it cannot
+  interrupt stops. `Job` gains `origin`. Both are on the `sessions`
+  tool, and nothing about what follows an answer changes — an ask
+  leaves a branch, and merging it, taking from it or leaving it is the
+  caller's step.
 - **`ws-git worktree add <dir> <session>[@<commit>]` / `list` /
   `remove <dir>`** — `ws.files.attach` / `attachments` / `detach` in
   the terminal, read-only and pinned at a commit; remove and re-add to
