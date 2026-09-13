@@ -73,6 +73,11 @@ class TestFrame:
     line: int
     function: str = ""
     source: tuple[tuple[int, str], ...] = ()
+    column: int = 0
+    """The column within ``line``, 1-based, or 0 where the language's
+    frames carry none. A Python traceback names a line; a JavaScript
+    stack names a line and a column, and a report in vitest's shape
+    prints both."""
 
 
 @dataclass(frozen=True)
