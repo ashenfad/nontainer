@@ -641,17 +641,18 @@ class DudExecutor:
                 self._plain[name] = obj
             else:
                 live[name] = obj
-        # Framework host object fronting ws-git (PR 4): registered
-        # unconditionally when a workspace is bound, refused at call
-        # time when ws-git isn't registered there — so post-open
-        # register_wsgit and fork-carried registration both work with
-        # no lifecycle coupling. A user object under the same name
-        # fails closed (like RESERVED_COMMANDS) rather than shadowing
-        # either way. Without a bound workspace there is nothing to
-        # front, and the guest function is unoffered with it.
+        # One framework host object fronts every ``ws-*`` verb:
+        # registered unconditionally when a workspace is bound, refused
+        # at call time for a verb not registered there — so a post-open
+        # registration (enable_apps on a live workspace) and a
+        # fork-rebound runtime both work with no lifecycle coupling. A
+        # user object under the same name fails closed (like
+        # RESERVED_COMMANDS) rather than shadowing either way. Without a
+        # bound workspace there is nothing to front, and the guest
+        # functions are unoffered with it.
         ws = context.workspace
         if ws is not None:
-            from .wsgit import DUD_OBJECT, DudHostHandler
+            from .wsverb import DUD_OBJECT, WsVerbHostHandler
 
             # Pre-split names: a plain-data object under the same name
             # rides ``_plain``, not ``live`` — checking only ``live``
@@ -660,22 +661,9 @@ class DudExecutor:
             if DUD_OBJECT in cfg.host_objects:
                 raise ValueError(
                     f"Reserved host object name: {DUD_OBJECT!r} fronts "
-                    f"the ws-git terminal command — rename yours."
+                    f"the ws-* terminal verbs — rename yours."
                 )
-            live[DUD_OBJECT] = DudHostHandler(ws, context.commands)
-            # Same ferry for ws-curl (Phase 2): the handler dispatches
-            # the live workspace command, so post-open enable_apps and
-            # fork-rebound runtimes work with no lifecycle coupling —
-            # nothing to snapshot here.
-            from .wscurl import DUD_OBJECT as CURL_OBJECT
-            from .wscurl import WsCurlHostHandler
-
-            if CURL_OBJECT in cfg.host_objects:
-                raise ValueError(
-                    f"Reserved host object name: {CURL_OBJECT!r} fronts "
-                    f"the ws-curl terminal command — rename yours."
-                )
-            live[CURL_OBJECT] = WsCurlHostHandler(ws, context.commands)
+            live[DUD_OBJECT] = WsVerbHostHandler(ws, context.commands)
         self._live = live
         self._cache = _KvBytesCache(context.kv)
         self._session = self._make_session(live, self._cache)
@@ -1042,24 +1030,17 @@ class DudExecutor:
         nonzero exit with everything in the merged transcript. Exit
         codes carry through untouched (127 for not-found, etc.)."""
         ctx = self._require_ctx()
-        # ws-git as a guest shell function (PR 4): prepended per exec,
-        # so registration is read live — post-open register_wsgit and
-        # fork-carried registration both take effect with no session
-        # rebuild. Only the framework registration counts (a user's own
-        # ws-git command stays a local-rung creature); otherwise the
-        # name is simply absent, as on any unoffered rung.
-        if getattr(ctx.commands.get("ws-git"), "_nontainer_wsgit", False):
-            from .wsgit import SHELL_FUNCTION
+        # The ws-* verbs as guest shell functions, prepended per exec,
+        # so registration is read live — a post-open registration and a
+        # fork-carried one both take effect with no session rebuild.
+        # Only framework registrations count (a user's own command under
+        # such a name stays a local-rung creature); otherwise the name is
+        # simply absent, as on any rung that does not carry the verb.
+        # Bare names (`curl`, `git`) are deliberately NOT ferried — in a
+        # real shell those mean the machine's own.
+        from .wsverb import shell_functions
 
-            script = SHELL_FUNCTION + script
-        # ws-curl rides the same ferry (Phase 2): the ws-* name is
-        # reservation-guaranteed framework, so presence plus the tag is
-        # the gate. Bare `curl` is deliberately NOT ferried — in a real
-        # shell that name means the machine's own curl.
-        if getattr(ctx.commands.get("ws-curl"), "_nontainer_wscurl", False):
-            from .wscurl import SHELL_FUNCTION as CURL_FUNCTION
-
-            script = CURL_FUNCTION + script
+        script = shell_functions(ctx.commands) + script
         # The runtime's shell environment, exported per call (a
         # snapshot: guest `export` cannot leak back into the workspace).
         env = dict(ctx.shell_env or {})

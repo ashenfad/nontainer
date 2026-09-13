@@ -16,7 +16,8 @@ import pytest
 
 from nontainer import Workspace
 from nontainer.providers import KvgitProvider
-from nontainer.wsgit import DudHostHandler, register_wsgit
+from nontainer.wsgit import register_wsgit
+from nontainer.wsverb import WsVerbHostHandler
 
 pytest.importorskip("dud")
 
@@ -102,9 +103,9 @@ def test_dud_unregistered_name_absent(bare_ws):
 
 
 def test_dud_handler_refuses_unregistered_direct_call(bare_ws):
-    handler = bare_ws.runtime.executor._live["ws_git"]
-    assert isinstance(handler, DudHostHandler)
-    out = handler.run("/workspace", "status")
+    handler = bare_ws.runtime.executor._live["ws_verb"]
+    assert isinstance(handler, WsVerbHostHandler)
+    out = handler.run("ws-git", "/workspace", "status")
     assert out == {
         "stdout": "",
         "stderr": "ws-git: not registered on this workspace",
@@ -124,8 +125,8 @@ def test_dud_handler_fronts_framework_only(ws):
     try:
         r = ws.terminal("ws-git status")
         assert r.exit_code == 127
-        handler = ws.runtime.executor._live["ws_git"]
-        out = handler.run("/workspace", "status")
+        handler = ws.runtime.executor._live["ws_verb"]
+        out = handler.run("ws-git", "/workspace", "status")
         assert out["exit_code"] == 1
         assert "custom command owns that name" in out["stderr"]
     finally:
@@ -279,8 +280,8 @@ def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypat
         w.close()
 
 
-def test_plain_data_ws_git_name_refused():
-    """A plain-data host object named ``ws_git`` fails closed like a
+def test_plain_data_ferry_name_refused():
+    """A plain-data host object named ``ws_verb`` fails closed like a
     live one: it rides ``_plain`` past a live-only check, so the guard
     reads the pre-split config names."""
     from nontainer import PythonConfig
@@ -290,24 +291,29 @@ def test_plain_data_ws_git_name_refused():
         Workspace(
             provider,
             executor=DudExecutor(backend="subprocess"),
-            python=PythonConfig(host_objects={"ws_git": {"key": "value"}}),
+            python=PythonConfig(host_objects={"ws_verb": {"key": "value"}}),
         )
 
 
 def test_map_argv_leaves_message_text_alone():
-    from nontainer.wsgit import DudHostHandler as H
+    from functools import partial
 
-    assert H._map_argv(None, ["commit", "-m", "hi"]) == ["commit", "-m", "hi"]
-    assert H._map_argv(lambda p: "/HOST" + p, ["stage", "/workspace/a.txt"]) == [
+    from nontainer.wsgit import FERRY
+    from nontainer.wsverb import map_argv
+
+    m = partial(map_argv, spec=FERRY)
+
+    assert m(None, ["commit", "-m", "hi"]) == ["commit", "-m", "hi"]
+    assert m(lambda p: "/HOST" + p, ["stage", "/workspace/a.txt"]) == [
         "stage",
         "/HOST/workspace/a.txt",
     ]
-    assert H._map_argv(lambda p: "/HOST" + p, ["commit", "-m", "/not/a/path"]) == [
+    assert m(lambda p: "/HOST" + p, ["commit", "-m", "/not/a/path"]) == [
         "commit",
         "-m",
         "/not/a/path",
     ]
-    assert H._map_argv(lambda p: None, ["stage", "/workspace/a.txt"]) == [
+    assert m(lambda p: None, ["stage", "/workspace/a.txt"]) == [
         "stage",
         "/workspace/a.txt",
     ]

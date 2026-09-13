@@ -224,24 +224,29 @@ def test_the_guest_ferry_reads_the_registry_it_was_given(ws):
     registry of the runtime whose executor ferried them, not through
     the workspace. Reading the workspace's own mapping is what broke
     both ferries when the registry moved to Runtime."""
-    from nontainer.wscurl import WsCurlHostHandler
-    from nontainer.wsgit import DudHostHandler, register_wsgit
+    from nontainer.wsgit import register_wsgit
+    from nontainer.wsverb import WsVerbHostHandler
 
     register_wsgit(ws)  # lands on the workspace's primary runtime
     assert "ws-git" in ws.runtime.commands
 
-    handled = DudHostHandler(ws, ws.runtime.commands).run("/workspace", "status")
+    handler = WsVerbHostHandler(ws, ws.runtime.commands)
+    handled = handler.run("ws-git", "/workspace", "status")
     assert handled["exit_code"] == 0, handled["stderr"]
 
     second = Runtime(ws)
     try:
         # the verb is registered on the primary runtime, not this one
-        refused = DudHostHandler(ws, second.commands).run("/workspace", "status")
+        refused = WsVerbHostHandler(ws, second.commands).run(
+            "ws-git", "/workspace", "status"
+        )
         assert refused["exit_code"] == 1
         assert "not registered on this workspace" in refused["stderr"]
     finally:
         second.close()
 
-    curl = WsCurlHostHandler(ws, {}).run("/workspace", "http://app.local/api/x")
+    curl = WsVerbHostHandler(ws, {}).run(
+        "ws-curl", "/workspace", "http://app.local/api/x"
+    )
     assert curl["exit_code"] == 1
     assert "not registered on this workspace" in curl["stderr"]
