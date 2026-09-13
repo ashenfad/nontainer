@@ -1868,8 +1868,9 @@ afterwards through the surface any extension may use —
 and `ws.lock` where its work mutates. `tests/test_apps_surface.py`
 enforces that mechanically: no private attribute of `Workspace` is
 reachable from `nontainer/apps/`. The one deliberate exception is
-`nontainer/wscurl.py`, the dud-rung ferry, which lives in core beside
-`wsgit.py` precisely so `apps/` never has to reach for internals.
+ws-curl's ferry spec in `nontainer/wscurl.py`, which lives in core
+beside the relay every `ws-*` verb shares (`nontainer/wsverb.py`)
+precisely so `apps/` never has to reach for internals.
 
 ```python
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime

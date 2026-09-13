@@ -21,6 +21,8 @@ from __future__ import annotations
 import posixpath
 from typing import TYPE_CHECKING, Any
 
+from ..wscurl import FERRY
+from ..wsverb import tag
 from .contract import make_request
 
 if TYPE_CHECKING:
@@ -310,7 +312,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
         "ws-curl [-X METHOD] [-d BODY] [-i] [-o FILE] [-w '%{http_code}'] URL "
         "(e.g. ws-curl $APP_ORIGIN/api/scores?limit=3)"
     )
-    # Tags OUR registrations: like ws-git's tag, the dud ferry only
-    # fronts the framework command under this name.
-    curl._nontainer_wscurl = True
-    return curl
+    # Tags OUR registration and carries the ferry spec: the dud relay
+    # fronts only the framework command under this name, and reads from
+    # the spec which of these arguments are paths.
+    return tag(curl, FERRY)

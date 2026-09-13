@@ -92,6 +92,13 @@ set closes.
   module it imports, so a helper reading `db` as a bare name 500s with a
   `NameError`; the documented shape is `def load(db, limit)` with the
   handler passing them, which a unit test can call with a fake.
+- **One relay carries every `ws-*` verb into a guest**, where each verb
+  used to hand-write its own guest shell function, host object, argv
+  mapper and tag. A verb declares a `FerrySpec` — which of its flags
+  carry paths, which carry free text, whether its bare arguments are
+  paths — and registering it is all the dud rung needs. The reserved
+  host-object name on that rung is `ws_verb` (one, for all of them),
+  where it was `ws_git` and `ws_curl`.
 - **`host` is a reserved name.** A host object or a module grant called
   `host` is refused at construction, and a workspace `host.py` (or
   `host/`) comes back as an execution error naming the rule: `import
