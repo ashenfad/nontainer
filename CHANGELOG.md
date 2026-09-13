@@ -13,8 +13,10 @@ commit ids, the view it was given, `log -S`, `revert`, `cherry-pick`,
 `docs/ws-git.md`, the twin of `ws-git help`, leaving `docs/api.md`'s
 versioning section the host API alone. A third verb joins it:
 `ws-pytest`, the tier below `ws-curl` and `test_app`, where a question
-about a function is asked of the function — `docs/testing.md` is its
-page. Delegation learns where a delegate starts and how to give one
+about a function is asked of the function — and `ws-vitest`, the same
+tier for the other language, where a frontend module runs in a browser
+page that reaches nothing but the files under test. `docs/testing.md` is
+their page. Delegation learns where a delegate starts and how to give one
 another task. Elsewhere, the `ui` set closes.
 
 ### Added
@@ -80,12 +82,42 @@ another task. Elsewhere, the `ui` set closes.
   is rather than as an empty suite. Tests run where the agent's code runs — in the
   guest on a VM rung — and the report reads the same on both rungs.
   `docs/testing.md` is the agent-facing page.
+- **`ws-vitest`, the unit tier for JavaScript** — vitest's shape, which
+  is jest's surface, with no vitest and no `node_modules`: the harness
+  is nontainer's own JavaScript, served to a headless Chromium page by
+  a driver beside `test_app`'s. `tests/**/*.test.js` leads the run and
+  `*.test.js` beside a module under `app/` follows it — the co-located
+  convention an agent writes without being asked, and the run says
+  plainly that those files ship with a publication. `app/api/` is
+  reported as not runnable rather than skipped. `app/` and `tests/` are
+  served as siblings under one synthetic root, which is what makes
+  `import { add } from '../app/util.js'` resolve; `describe`, `it`,
+  `beforeEach`, `expect`, `vi` and `jest` are globals and also resolve
+  from `'vitest'` and `'@jest/globals'` through an import map. `run`
+  (ignored), path filters, `-t NAME`, `--reporter=default|verbose` and
+  `--bail`; `--coverage`, `--ui`, `--config` and `--watch` are refused
+  with what to do instead, as are `vi.mock`, snapshot matchers and
+  `expect.extend`. Exit codes are 0 and 1, vitest's own, so the message
+  is what separates a refused flag from a failing test.
+- **A hermetic run, and mocking at the fetch boundary** — `ws-vitest`
+  brings up no api routes, reaches no other host, and serves its page
+  under a policy stricter than the app's (`connect-src 'self'`, where a
+  served app gets `'self' https:`; `AppsConfig.csp_extend` only ever
+  adds sources, so the unit tier writes its own). A forgotten mock
+  fails on the fetch instead of passing for the wrong reason, and
+  `vi.stubFetch({"api/scores": {...}})` — keyed by exact path, so a
+  pattern cannot match more than the test meant — is the repair. The
+  browser is on the host on every rung, the asymmetry `test_app`
+  already has, and every report says so.
 - **`TestReport` and `render_report`** — the run as a record before it
   is text: counts, a `TestOutcome` per test, and each failure's frames
   with their source, so a merge policy can gate on
   `run_pytest(ws).ok` and a UI can show the first failure without
   parsing a summary line. Frames name the file and line the agent
-  wrote; the sandbox's own are dropped.
+  wrote; the sandbox's own are dropped. One record for both verbs —
+  `run_vitest` fills the same one, `tool` tells them apart, and
+  `TestFrame` carries a `column` for the language whose stacks have
+  one.
 - **`call(...)` in a test's namespace** — the one piece of test
   support a handler needs: `call("scores", params={"limit": "2"},
   db=fake)` builds the request dispatch would, runs the handler, and

@@ -1,28 +1,54 @@
-# ws-pytest
+# Unit tests: `ws-pytest` and `ws-vitest`
 
-`ws-pytest` runs the workspace's unit tests. It is a terminal builtin,
-so an agent types it in the shell next to `cat` and `grep`, and the
-tests run through the same executor its `python` calls run in.
+Two terminal builtins, one per language, for the tier below a request.
+`ws-curl` asks one request of the app and `test_app` drives a page; these
+two ask a question of a *function* and answer with the assertion that
+failed.
 
-This page is the human-readable twin of `ws-pytest --help`. The host's
-half is `run_pytest(ws)`, which returns a
-[`TestReport`](api.md#unit-tests-ws-pytest) — the record a merge policy
-gates on, and the thing the terminal text is a rendering of.
+```
+ws-pytest   a function, in the sandbox your code runs in
+ws-vitest   a module, in a browser page with nothing else reachable
+ws-curl     one request, through the real dispatch path
+test_app    a browser, a page, the app's own fetches
+```
+
+This page is the human-readable twin of `ws-pytest --help` and
+`ws-vitest --help`. The host's half is `run_pytest(ws)` /
+`run_vitest(ws)`, each returning a
+[`TestReport`](api.md#unit-tests-ws-pytest-and-ws-vitest) — the record a
+merge policy gates on, and the thing the terminal text is a rendering
+of. The two verbs produce the same record, with `report.tool` telling
+them apart, so one `check=` hook and one UI consume either.
 
 ```python
 from nontainer.wspytest import register_wspytest
+from nontainer.wsvitest import register_wsvitest
 
 register_wspytest(ws)     # now the shell answers `ws-pytest`
+register_wsvitest(ws)     # ... and `ws-vitest`
 ```
 
-`enable_apps(ws)` already calls it, so a workspace with an app has the
-verb with no second step; a workspace without one registers it
-directly. Until someone does, the agent gets `ws-pytest: command not
-found`.
+`enable_apps(ws)` already calls both, so a workspace with an app has the
+verbs with no second step; a workspace without one registers them
+directly. Until someone does, the agent gets `command not found`.
 
-It is pytest's **shape**, not pytest: the discovery rule, the report,
-the exit codes, and the flags worth having. Everything else is refused
-with a message naming what to do instead.
+Both are the tool's **shape**, not the tool: the discovery rule, the
+report, the exit codes, and the flags worth having. Everything else is
+refused with a message naming what to do instead.
+
+**Where each one runs.** Python tests run *where your code runs*: in the
+sandbox on a local rung, in the guest on a VM rung, under the session's
+own python config. JavaScript tests run in a browser **on the host on
+every rung**, against the files this workspace holds — the same
+asymmetry `test_app` has. The report says so on every run.
+
+---
+
+# `ws-pytest`
+
+`ws-pytest` runs the workspace's Python unit tests through the same
+executor its `python` calls run in, so a test imports workspace modules
+exactly as the app does.
 
 ## Where tests live
 
@@ -197,13 +223,7 @@ One asymmetry, said plainly: **`call` does not reproduce the read-only
 filesystem a real GET runs under.** The handler runs in the test's own
 sandbox, so a GET that writes passes here and 500s under `ws-curl`.
 That is the price of the mock being visible to the handler at all, and
-the wire tier is where structural REST is enforced:
-
-```
-ws-pytest   a function, in the sandbox your code runs in
-ws-curl     one request, through the real dispatch path
-test_app    a browser, a page, the app's own fetches
-```
+the wire tier is where structural REST is enforced.
 
 A handler that `global`s a module-level name cannot be composed into a
 test program, and `ws-pytest` says so instead of running something that
@@ -233,3 +253,215 @@ Python tests run **where your code runs**: in the sandbox on a local
 rung, in the guest on a VM rung, under the session's own python config
 either way. The report reads identically on both — a conformance corpus
 asserts it byte for byte.
+
+---
+
+# `ws-vitest`
+
+`ws-vitest` runs the workspace's JavaScript unit tests. Each test file
+is loaded as page JavaScript in a headless Chromium, on a harness page
+nontainer serves.
+
+It is vitest's shape, which is jest's surface — and vitest is not
+installed, nor is anything else: the harness is nontainer's own
+JavaScript, served inline from the workspace's synthetic origin. There
+is no `node_modules`, no build step and no config file.
+
+## Where tests live
+
+```
+/workspace/tests/util.test.js       ← collected, and the preferred home
+/workspace/tests/dom/card.test.js   ← collected (any depth under tests/)
+/workspace/app/util.js              ← the module under test
+/workspace/app/util.test.js         ← collected, beside its module
+/workspace/app/api/scores.py        ← a handler; never a JavaScript test
+```
+
+`tests/**/*.test.js` leads the run and `app/**/*.test.js` follows it. A
+test beside the module it tests is what the ecosystem does and what an
+agent writes without being asked, so it is allowed — and **it ships with
+the app**, because `app/` is what a publication carries. The run says so
+in a note naming the files; move one to `tests/` if that is not what you
+want.
+
+`app/api/` is neither home. A `.test.js` there is reported as **not
+runnable**, by name and with the reason: the harness refuses that
+subtree the way the served app's static dispatch does, so the page could
+not load the file even if it were collected — and handlers are Python,
+which `ws-pytest` tests from `tests/`.
+
+## The layout that makes imports work
+
+`app/` and `tests/` are served as **siblings** under one synthetic root:
+
+```
+https://nontainer.test/apps/t-unit/app/util.js
+https://nontainer.test/apps/t-unit/tests/util.test.js
+```
+
+so the import you would write anyway resolves:
+
+```js
+// tests/util.test.js
+import { add } from '../app/util.js';
+
+describe('add', () => {
+  it('adds two numbers', () => {
+    expect(add(1, 2)).toBe(3);
+  });
+});
+```
+
+and a test beside its module imports `'./util.js'`. Nothing else has a
+URL — not the workspace root, not `helpers/`, not `app/api/`.
+
+## The flags
+
+| ws-vitest | what it does here |
+|---|---|
+| `run` | accepted and ignored (nothing here watches for edits) |
+| `<path>` | run only files whose path contains this word |
+| `-t NAME` | run only tests whose name contains NAME |
+| `--reporter=default\|verbose` | counts per file / one line per test |
+| `--bail[=N]` | stop after the first (or Nth) failing file |
+
+Exit codes are `0` for a green run and `1` for anything else. vitest has
+no separate exit code for a usage error, so a refused flag, a filter
+that matched nothing and a failing test all exit `1`, and the message is
+what tells them apart.
+
+Refused, each with what to do instead: `--coverage` (no instrumentation
+here), `--ui` (the report is the answer; `--reporter=verbose` is one
+line per test), `--config` (the layout *is* the configuration),
+`--watch`, `--browser`, `--environment`.
+
+A positional word is matched as a substring of a file's path, the way
+vitest matches one. A word that names an absolute path is resolved
+against the shell's cwd first, so `ws-vitest /workspace/tests/util.test.js`
+means the file it names on either rung.
+
+## The harness surface
+
+`describe`, `it`/`test`, `beforeEach`/`afterEach`, `expect`, `vi` and
+`jest` are globals on the page, and the same names resolve through an
+import map:
+
+```js
+import { describe, it, expect, vi } from 'vitest';   // or '@jest/globals'
+```
+
+`expect` covers `toBe`, `toEqual`, `toStrictEqual`, `toContain`,
+`toHaveLength`, `toBeTruthy`/`toBeFalsy`,
+`toBeNull`/`toBeUndefined`/`toBeDefined`, `toThrow`, `toMatch`,
+`toBeGreaterThan`/`toBeGreaterThanOrEqual`/`toBeLessThan`/`toBeLessThanOrEqual`,
+`toBeCloseTo`, `toHaveBeenCalled`/`toHaveBeenCalledTimes`/`toHaveBeenCalledWith`,
+`.not`, and `resolves`/`rejects`.
+
+`vi` supplies `fn`, `spyOn`, `stubGlobal`, `stubFetch`,
+`unstubAllGlobals` and the `clearAllMocks` family; `jest` is the same
+object under its other name. An `async` test is awaited, and
+`beforeEach` declared below an `it()` in the same block still applies to
+it — the block is collected before anything runs.
+
+Refused with a message naming the replacement:
+
+- **`vi.mock`** — module mocking needs a loader hook a browser does not
+  have. Pass the dependency in as an argument, spy on an object your own
+  code owns, or stub the boundary.
+- **snapshot matchers** (`toMatchSnapshot` and friends) — there is no
+  snapshot plane; assert the value with `toEqual`.
+- **`expect.extend`** — the matcher set is fixed; write a helper
+  function your test calls.
+- **`it.only` / `it.skip`** and the `describe` equivalents — choose what
+  runs from the command line, with a path filter or `-t NAME`.
+- **`beforeAll` / `afterAll`** — each test file is one page of its own,
+  so build shared state at module scope.
+
+**A module's exports are read-only in a browser**, so `vi.spyOn(mod,
+'fn')` on something you imported cannot replace anything. The harness
+says that rather than failing silently. Spy on an object your own code
+owns, or take the dependency as an argument — which is the same rule
+`_lib.py` follows on the Python side, for the same reason.
+
+## Mock at the fetch boundary
+
+A run is **hermetic**: no api routes come up, no other host is
+reachable, and the policy on the wire is stricter than the app's own
+(`connect-src 'self'`, where a served app gets `'self' https:`). A unit
+test that silently reaches the network passes for the wrong reason and
+fails in production, so a forgotten stub fails here — which is the
+outcome that teaches.
+
+The boundary a frontend module has is `fetch`, so that is what you stub:
+
+```js
+it('renders the scores it fetched', async () => {
+  vi.stubFetch({'api/scores': {scores: ['ann', 'bob']}});
+  const el = await renderScores();
+  expect(el.querySelectorAll('li')).toHaveLength(2);
+});
+```
+
+`vi.stubFetch` is keyed by **exact path**, not by a pattern: a pattern
+invites a mock that matches more than the test meant. A leading `/` and
+the page's own prefix are both tolerated, so `'api/scores'` and
+`'/api/scores'` are the same key. A fetch to a route the table does not
+name throws, naming the route and the keys that *were* stubbed.
+
+The value is the JSON body. For anything else — a status, a header, a
+text body — hand it a `Response`:
+
+```js
+vi.stubFetch({'api/scores': new Response('', {status: 503})});
+```
+
+`vi.stubGlobal('fetch', myFake)` is there too, and is what `stubFetch`
+is built on; `vi.unstubAllGlobals()` puts the real one back.
+
+With no stub at all, a `fetch('api/scores')` gets a 404 whose JSON body
+says there are no api routes and names `vi.stubFetch`. A fetch to any
+other host is refused by the policy before a request is made, and the
+run's notes name the directive that refused it.
+
+## Reading a failure
+
+```
+ ✓ tests/util.test.js (2 tests) 1ms
+ ❯ tests/scores.test.js (2 tests | 1 failed) 3ms
+   × renders the scores it fetched
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  tests/scores.test.js > renders the scores it fetched
+AssertionError: expected 1 to be 2 // Object.is equality
+ ❯ tests/scores.test.js:7:44
+   7|   expect(el.querySelectorAll('li').length).toBe(2);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 3 passed (4)
+   Duration  0.31s
+```
+
+Every frame names a file you wrote — `tests/...` or `app/...` — at the
+line and column you wrote it on, with that line quoted. The harness's
+own frames and the page's entry are dropped. A file that throws before
+any test runs (a bad import, a `vi.mock` at module scope) is a **failed
+suite** rather than a failed test: it contributes no tests to the
+counts, and when the cause was a module that 404'd, the message names
+the path nothing was served at.
+
+A run is bounded: a page that will not load and a test that returns a
+promise which never settles both end as a failure with a message, not as
+a hang.
+
+## Both rungs
+
+`ws-vitest` runs **host-side on every rung**. Chromium lives on the
+host; on a VM rung the guest never sees the test file, and the workspace
+filesystem is read by the driver. That is the asymmetry `test_app`
+already has, and it sits right next to `ws-pytest`'s guest execution, so
+every report ends with a note saying which is which. The report reads
+identically on both rungs — a conformance corpus asserts it, including
+a test file written by real bash in a guest.
