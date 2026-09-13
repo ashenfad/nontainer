@@ -369,12 +369,19 @@ class WorkspaceTools(Toolkit):
             # same reason test_app's actions are — models send lists as
             # JSON strings, and pydantic would reject one on the
             # annotation before coerce_paths got its chance.
+            # ``from_`` carries its underscore into the tool schema:
+            # a JSON argument's name is the python parameter's name in
+            # both adapters, and ``from`` is a python keyword, so the
+            # one spelling that is the same in the host API, the tool
+            # and the docs is this one.
             def sessions_tool(
                 action: str,
                 task: str = "",
                 name: str = "",
                 paths: "list[str] | str | None" = None,
                 inherit: str = "fresh",
+                from_: str = "",
+                resume: str = "",
                 wait: bool = False,
             ) -> str:
                 """Delegate to a fork of this session, and read it back."""
@@ -390,6 +397,8 @@ class WorkspaceTools(Toolkit):
                     name=name,
                     paths=paths,
                     inherit=inherit,
+                    from_=from_,
+                    resume=resume,
                     wait=wait,
                 )
 

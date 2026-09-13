@@ -265,3 +265,65 @@ async def test_mcp_sessions_tool_round_trips_a_delegate(tmp_path):
         helper.close()
         ws.close()
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
+    from nontainer import Store
+    from nontainer.sessions import Sessions
+
+    store = Store(tmp_path / "store")
+    ws = store.open("analyst")
+    ws.files.write("/workspace/report.md", "draft\n")
+    ws.index.commit("seed")
+
+    sage = store.open("sage")
+    sage.files.write("/workspace/rates.md", "north 4, south 7\n")
+    sage.index.commit("curated")
+    store.tags.add(sage, "rates-2026")
+    head = sage.head
+    sage.close()
+
+    class Scripted:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/answer.md", "north is 4\n")
+            finally:
+                child.close()
+            return f"answering: {task}"
+
+    helper = Sessions(ws, Scripted())
+    server = build_server(ws, sessions=helper)
+    try:
+        descs = {t.name: t.description for t in await server.list_tools()}
+        assert "from_=" in descs["sessions"] and "resume=" in descs["sessions"]
+        schema = {t.name: t.inputSchema for t in await server.list_tools()}["sessions"]
+        assert {"from_", "resume"} <= set(schema["properties"])
+
+        async def call(**args) -> str:
+            out = await server.call_tool("sessions", args)
+            blocks = out[0] if isinstance(out, tuple) else out
+            return blocks[0].text
+
+        text = await call(
+            action="ask", task="what is north?", from_="rates-2026", wait=True
+        )
+        child = helper.list()[0].name
+        assert "answering: what is north?" in text
+        assert f"ws-git merge {child}" in text
+        assert "rates-2026" in await call(action="list")
+
+        again = await call(action="ask", task="and south?", resume=child, wait=True)
+        assert "answering: and south?" in again
+        assert [j.name for j in helper.list()] == [child]
+
+        sage = store.open("sage")
+        try:
+            assert sage.head == head
+        finally:
+            sage.close()
+    finally:
+        helper.close()
+        ws.close()
+        store.close()

@@ -523,6 +523,7 @@ SESSIONS_DESCRIPTION = """\
 Delegate work to a fork of this session — an agent with its own copy of
 the whole workspace — and collect its answer on a later turn.
   action="ask"     task="..." [name=] [paths=] [inherit=] [wait=]
+                   [from_="<session@commit or tag>"] [resume="<name>"]
   action="list"    your jobs: name, status, what you asked for
   action="result"  name="..." — the answer, once the job is done
   action="cancel"  name="..."     action="keep"  name="..."
@@ -538,6 +539,12 @@ over these files; "full" continues yours — your conversation, never
 your staged work, since a delegate starts its own commits and not
 halfway through yours. A brief, a summary, the context it needs — that
 goes IN the task, which is the only thing it is told.
+
+from_= starts the delegate from another session's state, or a tag's,
+instead of yours — it gets a fresh conversation there, since a
+conversation that is not yours cannot be continued. resume=<name>
+gives a new task to a delegate you already have, conversation kept;
+it does one task at a time, so resume it after its answer arrives.
 
 An answer names what the delegate LANDED: its branch head if it never
 used ws-git, its last ws-git commit if it did. If it committed and then

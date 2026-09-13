@@ -354,3 +354,64 @@ def test_agno_sessions_tool_takes_a_prebuilt_helper(tmp_path):
         helper.close()
         ws.close()
         store.close()
+
+
+def test_agno_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
+    """The delegate can start from state that is not this session's,
+    and a delegate you already have can be given another task."""
+    from nontainer import Store
+
+    store = Store(tmp_path / "store")
+    ws = store.open("analyst")
+    ws.files.write("/workspace/report.md", "draft\n")
+    ws.index.commit("seed")
+
+    sage = store.open("sage")
+    sage.files.write("/workspace/rates.md", "north 4, south 7\n")
+    sage.index.commit("curated")
+    store.tags.add(sage, "rates-2026")
+    head = sage.head
+    sage.close()
+
+    class Scripted:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/answer.md", "north is 4\n")
+            finally:
+                child.close()
+            return f"answering: {task}"
+
+    tk = WorkspaceTools(ws, sessions=Scripted())
+    try:
+        call = tk.functions["sessions"].entrypoint
+        assert "from_=" in tk.functions["sessions"].entrypoint.__doc__
+        assert "resume=" in tk.functions["sessions"].entrypoint.__doc__
+
+        out = call(action="ask", task="what is north?", from_="rates-2026", wait=True)
+        child = tk.sessions.list()[0].name
+        assert "answering: what is north?" in out
+        # the next step is the same for every ask
+        assert f"ws-git merge {child}" in out
+        assert f"ws-git checkout {child} -- <paths>" in out
+
+        listed = call(action="list")
+        assert "rates-2026" in listed and child in listed
+
+        again = call(action="ask", task="and south?", resume=child, wait=True)
+        assert "answering: and south?" in again
+        assert [j.name for j in tk.sessions.list()] == [child]  # one child, one row
+
+        assert "nothing named" in call(action="ask", task="q", from_="nope")
+        assert "no job named" in call(action="ask", task="q", resume="analyst.nope")
+
+        # the fork point is read, never written
+        sage = store.open("sage")
+        try:
+            assert sage.head == head
+        finally:
+            sage.close()
+    finally:
+        tk.sessions.close()
+        ws.close()
+        store.close()
