@@ -333,3 +333,19 @@ def test_a_future_import_in_a_plain_test_file_runs(ws):
     assert report.errors == 0
     assert report.passed == 1
     assert report.outcomes[-1].line == 12
+
+
+def test_an_absolute_selector_names_the_file_it_says(ws):
+    write(ws, "tests/test_abs.py", "def test_a():\n    assert True\n")
+    report = run_pytest(ws, ["/workspace/tests/test_abs.py"])
+    assert report.collected == 1, report.collection_error
+    assert report.outcomes[0].name == "tests/test_abs.py::test_a"
+    report = run_pytest(ws, ["/workspace/tests/test_abs.py::test_a"])
+    assert report.collected == 1, report.collection_error
+
+
+def test_a_relative_selector_resolves_against_the_cwd(ws):
+    write(ws, "tests/test_rel.py", "def test_a():\n    assert True\n")
+    report = run_pytest(ws, ["test_rel.py"], cwd="/workspace/tests")
+    assert report.collected == 1, report.collection_error
+    assert report.outcomes[0].name == "tests/test_rel.py::test_a"

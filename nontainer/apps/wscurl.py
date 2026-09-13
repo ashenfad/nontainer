@@ -18,11 +18,10 @@ flag surface by silent failure.
 
 from __future__ import annotations
 
-import posixpath
 from typing import TYPE_CHECKING, Any
 
 from ..wscurl import FERRY
-from ..wsverb import tag
+from ..wsverb import abspath, tag
 from .contract import make_request
 
 if TYPE_CHECKING:
@@ -273,9 +272,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
 
         if out_file is not None:
             path = out_file
-            if not path.startswith("/"):
-                path = posixpath.normpath(posixpath.join(ctx.fs.getcwd(), path))
-            ctx.fs.write(path, resp.content)
+            ctx.fs.write(abspath(ctx.fs.getcwd(), path), resp.content)
         else:
             ctx.stdout.write(resp.text)
             if resp.text and not resp.text.endswith("\n"):
