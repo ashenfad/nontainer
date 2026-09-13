@@ -118,3 +118,171 @@ def test_a_ref_into_a_plane_that_is_gone_is_refused(store):
     store.unshare("catalog", min_age=0)
     with pytest.raises(WorkspaceError, match="No such shared plane"):
         store.resolve(ref)
+
+
+# -- two writers -------------------------------------------------------------
+#
+# A plane many sessions write is a plane two of them write at once. The
+# loser of the CAS three-way merges onto the head that won rather than
+# raising, so nothing has to serialize writers that were never told
+# about each other.
+
+
+def _writer(store_path, name, path, body):
+    """A second PROCESS writing the plane, as an embedder's other
+    worker would."""
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent(f"""
+        from nontainer import Store
+        with Store({str(store_path)!r}) as st:
+            with st.shared({name!r}) as plane:
+                plane.files.write({path!r}, {body!r})
+    """)
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+    return done
+
+
+def test_disjoint_writes_from_two_handles_both_land(store):
+    with store.shared("catalog", autocommit=False) as a:
+        a.files.write("/workspace/seed.txt", "seed")
+        a.commit()
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        a.files.write("/workspace/a.txt", "A")
+        b.files.write("/workspace/b.txt", "B")
+        a.commit()
+        b.commit()  # loses the CAS, three-way merges onto a's head
+    with store.shared("catalog") as after:
+        assert after.files.read("/workspace/a.txt") == b"A"
+        assert after.files.read("/workspace/b.txt") == b"B"
+        assert after.files.read("/workspace/seed.txt") == b"seed"
+
+
+def test_one_file_edited_on_both_sides_three_way_merges(store):
+    with store.shared("catalog", autocommit=False) as a:
+        a.files.write("/workspace/notes.md", "one\ntwo\nthree\n")
+        a.commit()
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        a.files.write("/workspace/notes.md", "ONE-FROM-A\ntwo\nthree\n")
+        b.files.write("/workspace/notes.md", "one\ntwo\nTHREE-FROM-B\n")
+        a.commit()
+        b.commit()
+    with store.shared("catalog") as after:
+        body = after.files.read("/workspace/notes.md")
+        assert body == b"ONE-FROM-A\ntwo\nTHREE-FROM-B\n"  # both edits, no markers
+        # ...and the row beside the blob describes the merged bytes
+        assert after.files.fs.stat("/workspace/notes.md").size == len(body)
+
+
+def test_an_overlapping_edit_is_refused_and_names_the_path(store):
+    with store.shared("catalog", autocommit=False) as a:
+        a.files.write("/workspace/notes.md", "one\ntwo\nthree\n")
+        a.commit()
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        a.files.write("/workspace/notes.md", "one\nMINE\nthree\n")
+        b.files.write("/workspace/notes.md", "one\nYOURS\nthree\n")
+        a.commit()
+        with pytest.raises(WorkspaceError, match=r"/workspace/notes\.md"):
+            b.commit()
+        # the loser keeps its work: the commit changed nothing
+        assert b.files.read("/workspace/notes.md") == b"one\nYOURS\nthree\n"
+    with store.shared("catalog") as after:
+        # ...and no markers landed on the plane
+        assert after.files.read("/workspace/notes.md") == b"one\nMINE\nthree\n"
+
+
+def test_one_file_per_item_never_conflicts(store):
+    """The convention that makes a plane multi-writer by construction:
+    one file per item, so two writers never name one key."""
+    handles = [store.shared("catalog", autocommit=False) for _ in range(4)]
+    try:
+        for n, plane in enumerate(handles):
+            plane.files.write(f"/workspace/items/{n}.json", f'{{"id": {n}}}')
+        for plane in handles:
+            plane.commit()
+    finally:
+        for plane in handles:
+            plane.close()
+    with store.shared("catalog") as after:
+        assert sorted(after.files.list("/workspace/items")) == [
+            "/workspace/items/0.json",
+            "/workspace/items/1.json",
+            "/workspace/items/2.json",
+            "/workspace/items/3.json",
+        ]
+
+
+def test_autocommit_writes_race_without_losing_either(store):
+    """The commit an embedder never types: ws.files.write with
+    autocommit on is the same CAS, one write at a time."""
+    with store.shared("catalog") as a, store.shared("catalog") as b:
+        a.files.write("/workspace/a.txt", "A")
+        b.files.write("/workspace/b.txt", "B")
+        a.files.write("/workspace/a2.txt", "A2")
+        b.files.write("/workspace/b2.txt", "B2")
+    with store.shared("catalog") as after:
+        assert sorted(after.files.list("/workspace")) == [
+            "/workspace/a.txt",
+            "/workspace/a2.txt",
+            "/workspace/b.txt",
+            "/workspace/b2.txt",
+        ]
+
+
+def test_a_second_process_writes_the_same_plane(store):
+    with store.shared("catalog", autocommit=False) as mine:
+        mine.files.write("/workspace/mine.txt", "mine")
+        _writer(store.path, "catalog", "/workspace/theirs.txt", "theirs")
+        mine.commit()  # onto a head another PROCESS moved
+    with store.shared("catalog") as after:
+        assert after.files.read("/workspace/mine.txt") == b"mine"
+        assert after.files.read("/workspace/theirs.txt") == b"theirs"
+
+
+def test_the_planes_own_cache_survives_the_other_handle(store):
+    """A second handle on a plane is not another session: its cache and
+    its stored conversation belong to the plane, so a lost CAS merges
+    them instead of taking one side whole."""
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        a.cache["from-a"] = 1
+        b.cache["from-b"] = 2
+        a.commit()
+        b.commit()
+    with store.shared("catalog") as after:
+        assert after.cache["from-a"] == 1
+        assert after.cache["from-b"] == 2
+
+
+def test_a_session_branch_keeps_its_own_answer(store):
+    """The plane's file merge is the plane's. Two handles on one SESSION
+    that write one file still refuse — a session is one agent's world,
+    and a file merged under it was never asked for."""
+    with store.open("user-42", autocommit=False) as a:
+        a.files.write("/workspace/notes.md", "one\ntwo\nthree\n")
+        a.commit()
+    with (
+        store.open("user-42", autocommit=False) as a,
+        store.open("user-42", autocommit=False) as b,
+    ):
+        a.files.write("/workspace/notes.md", "ONE\ntwo\nthree\n")
+        b.files.write("/workspace/notes.md", "one\ntwo\nTHREE\n")
+        a.commit()
+        with pytest.raises(WorkspaceError, match=r"/workspace/notes\.md"):
+            b.commit()

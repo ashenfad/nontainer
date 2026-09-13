@@ -48,7 +48,7 @@ from typing import Any
 
 from ..agentgit import BLOB_KEY as _WS_BLOB_KEY
 from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
-from ..planes import CACHE_PREFIX, CONVERSATION_PREFIX
+from ..planes import CACHE_PREFIX, CONVERSATION_PREFIX, SHARED_BRANCH_PREFIX
 from ..protocol import (
     SHORT_ID_RE,
     Capabilities,
@@ -67,6 +67,11 @@ from ..views import parse_seed
 #: concurrent writer losing a race with it. Past that, something is
 #: committing to this session in a loop and the caller has to be told.
 _CHECKOUT_ATTEMPTS = 5
+
+#: The line a marker merge opens a conflict hunk with. Bytes that carry
+#: it may predate a merge (docs, fixtures), so it says a merge marked
+#: something only where neither side already held it.
+_MARKER = b"<<<<<<< "
 
 _KVGIT_CAPS = Capabilities(
     versioned=True,
@@ -175,6 +180,32 @@ def _merge_metadata_row(
     ).encode()
 
 
+def _merge_shared_file(old: Any, ours: Any, theirs: Any) -> bytes:
+    """Three-way content merge for one file on a shared plane, refusing
+    an overlap rather than marking it.
+
+    A plane is written by many and read by whatever the embedder points
+    at it. Disjoint edits to one file merge as text, which is what lets
+    two writers that never heard of each other both land. Where both
+    changed the same lines there is nobody driving the file to a
+    resolution, so markers would be a corrupted item nothing reports:
+    ``CantMark`` files the path as a hard conflict instead, which leaves
+    the whole commit untouched and the losing writer's work staged.
+
+    Marker-like bytes already present in a side are not this merge's
+    doing, and a file that holds them stays mergeable.
+    """
+    from kvgit.merges import CantMark
+    from kvgit.merges import text as text_merge
+
+    merged = text_merge(old, ours, theirs)
+    if _MARKER in merged and not any(
+        isinstance(side, bytes) and _MARKER in side for side in (ours, theirs)
+    ):
+        raise CantMark("both sides changed the same lines")
+    return merged
+
+
 def _merge_legacy_metadata_table(old: Any, ours: Any, theirs: Any) -> Any:
     """Field-aware merge for the pre-row ``__vfs_metadata__`` table.
 
@@ -280,6 +311,16 @@ STORE_SCOPE = "store"
 _STORE_PREFIX = "@store/"
 
 
+def _is_shared_branch(name: str) -> bool:
+    """Whether a branch is a shared plane rather than a session.
+
+    The plane is many writers on one branch, and that is what its
+    concurrent-commit merge is for; everything else here is one
+    session's.
+    """
+    return isinstance(name, str) and name.startswith(SHARED_BRANCH_PREFIX)
+
+
 def _validate_branch(name: str) -> str:
     """A session id, or one of the store's own reserved branches.
 
@@ -341,6 +382,16 @@ class KvgitProvider:
             register(_LEGACY_CWD_KEY, MergeChoice.OURS)
             if callable(register_prefix):
                 register_prefix(VirtualFS.META_PREFIX, _merge_metadata_row)
+                if _is_shared_branch(session):
+                    # A shared plane is multi-writer by construction, so
+                    # its FILES merge on a lost CAS too: disjoint edits
+                    # to one file land as text and an overlap is refused
+                    # by path. A session branch keeps its own answer —
+                    # one agent's world, where a file merged with
+                    # nobody asking is a surprise. The row prefix is
+                    # longer and so still governs the rows; the cwd and
+                    # the legacy table are exact keys and outrank both.
+                    register_prefix(VirtualFS.PREFIX, _merge_shared_file)
 
     @classmethod
     def open(
@@ -528,11 +579,26 @@ class KvgitProvider:
 
     def commit(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged fs + kv writes atomically; returns the commit
-        hash. No staged changes → no new commit (returns current)."""
+        hash. No staged changes → no new commit (returns current).
+
+        A commit whose CAS is lost to another handle on this branch
+        three-way merges onto the head that won, by the registered
+        rules, rather than failing: the staged changes are rebased, not
+        discarded. What no rule resolves raises ``WorkspaceError``
+        naming the paths, with the staged work still staged.
+        """
+        from kvgit import MergeConflict
+
         self._refuse_frozen("commit")
         if not self._staged.has_changes:
             return self._staged.current_commit
-        result = self._staged.commit(info=info)
+        fns, prefixes = self._concurrent_rules()
+        try:
+            result = self._staged.commit(
+                info=info, merge_fns=fns, merge_prefixes=prefixes
+            )
+        except MergeConflict as e:
+            raise self._lost_cas(e) from e
         if not result.merged:
             raise WorkspaceError(
                 f"commit failed: conflicting concurrent commit on branch "
@@ -823,18 +889,18 @@ class KvgitProvider:
         pending.discard(VirtualFS.METADATA_KEY)
         from kvgit import MergeConflict
 
+        fns, prefixes = self._concurrent_rules()
         try:
             try:
-                result = self._staged.commit(keys=pending, info=info)
+                result = self._staged.commit(
+                    keys=pending, info=info, merge_fns=fns, merge_prefixes=prefixes
+                )
             except MergeConflict as e:
                 # kvgit three-way merges a concurrent write on other
                 # keys and raises only where both sides touched one.
                 # Either way this is the CAS story, in this layer's
                 # words: callers unwind on WorkspaceError.
-                raise WorkspaceError(
-                    f"commit failed: conflicting concurrent commit on branch "
-                    f"{self._session!r} (CAS): {e}"
-                ) from e
+                raise self._lost_cas(e) from e
             if not result.merged:
                 raise WorkspaceError(
                     f"commit failed: conflicting concurrent commit on branch "
@@ -843,6 +909,60 @@ class KvgitProvider:
         finally:
             self._invalidate_fs()
         return self._staged.current_commit
+
+    def _lost_cas(self, exc: Exception) -> WorkspaceError:
+        """The CAS story in this layer's words, naming what contested.
+
+        kvgit names keys; a caller wrote paths. The keys that describe
+        one file fold onto that file, so the report is the list of
+        places to look rather than the encoding of them.
+        """
+        named = sorted(self._display_conflicts(exc))
+        where = f": {', '.join(named)}" if named else f" ({exc})"
+        return WorkspaceError(
+            f"commit failed: conflicting concurrent commit on branch "
+            f"{self._session!r} (CAS) — another writer changed what this "
+            f"commit changes, and no merge rule resolves it{where}. Nothing "
+            "was committed and the staged changes are still staged."
+        )
+
+    def _concurrent_rules(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The merge rules for a commit whose head has already moved.
+
+        Empty when this branch's head is where this handle left it (the
+        commit fast-forwards and merges nothing) and on a session
+        branch, whose registered rules are the whole policy. On a shared
+        plane with a moved head the commit is about to three-way merge,
+        and the rules are bound per key the way the merge verb binds
+        them: a file's metadata row carries the size of the MERGED
+        bytes, which a rule registered under a prefix cannot know
+        because it is handed values and not the key it was registered
+        for.
+
+        The plane policy is deliberately absent. Another handle on this
+        branch is not another session: its cache and its stored
+        conversation are the plane's own, and a whole-prefix OURS would
+        drop them.
+
+        A head that moves between this and the commit falls back to the
+        registered rules, which resolve the same keys the same way and
+        differ only in the row sizes they can prove.
+        """
+        if not _is_shared_branch(self._session):
+            return {}, {}
+        head = self._staged.versioned.latest_head
+        ours = self._staged.current_commit
+        if head is None or ours is None or head == ours:
+            return {}, {}
+        other = self._staged.checkout(head)
+        base = self._merge_base(ours, head)
+        at_base = self._staged.checkout(base) if base is not None else None
+        merge_fns, merge_prefixes = self._three_way_rules(
+            other, at_base, file_merge=_merge_shared_file
+        )
+        merge_prefixes.pop(CACHE_PREFIX, None)
+        merge_prefixes.pop(CONVERSATION_PREFIX, None)
+        return merge_fns, merge_prefixes
 
     def _resolve_keys(self, keys: Iterable[str]) -> set[str]:
         """Caller-named state as store keys.
@@ -1097,7 +1217,7 @@ class KvgitProvider:
         )
 
     def _three_way_rules(
-        self, other: Any, at_base: Any
+        self, other: Any, at_base: Any, *, file_merge: Any = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """The rules a three-way over this session resolves by.
 
@@ -1116,7 +1236,9 @@ class KvgitProvider:
           the key it was registered for, so a blanket default would
           marker-merge cache blobs. Enumerated from ours and theirs;
           the union is harmless, since an uncontested key never
-          consults a function.
+          consults a function. ``file_merge`` names another rule for
+          file content — what a shared plane resolves a concurrent
+          commit by, where an overlap is refused rather than marked.
         - a file's metadata row merges field-aware beside its blob,
           carrying the size of the merged bytes. Bound per key for the
           same reason: the function has to know which file it describes.
@@ -1156,7 +1278,8 @@ class KvgitProvider:
             keys = list(handle.keys())
             file_keys.update(self._file_keys(keys).keys())
             row_keys.update(k for k in keys if VirtualFS.is_metadata_key(k))
-        merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
+        content = text_merge if file_merge is None else file_merge
+        merge_fns: dict[str, Any] = {key: content for key in file_keys}
         for key in row_keys:
             merge_fns[key] = self._row_merge_fn(key, other, at_base)
         merge_fns[VirtualFS.METADATA_KEY] = _merge_legacy_metadata_table
@@ -1560,13 +1683,13 @@ class KvgitProvider:
         if key is None:
             return False
         value = self._staged.get(key)
-        if not isinstance(value, bytes) or b"<<<<<<< " not in value:
+        if not isinstance(value, bytes) or _MARKER not in value:
             return False
         for handle in (at_base, other):
             if handle is None:
                 continue
             parent = handle.get(key)
-            if isinstance(parent, bytes) and b"<<<<<<< " in parent:
+            if isinstance(parent, bytes) and _MARKER in parent:
                 return False
         return True
 
