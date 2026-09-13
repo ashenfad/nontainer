@@ -14,8 +14,9 @@ forks and checks out with the session.
 ## Scope
 
 Supported: the dispatch core, the handler contract, a `ws-curl` terminal
-builtin, a `ws-pytest` one ([testing.md](testing.md) — the unit tier
-below a request, where a handler is reached with `call(...)`),
+builtin, `ws-pytest` and `ws-vitest` ones ([testing.md](testing.md) —
+the unit tier below a request, where a handler is reached with
+`call(...)` and a frontend module runs in a browser page of its own),
 `test_app` via Playwright, a Starlette `APIRouter` for live serving, and
 embedder-supplied static assets served alongside the app
 (`AppsConfig.static_assets` — vendored libraries, fonts; the air-gap

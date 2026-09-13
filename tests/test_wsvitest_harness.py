@@ -370,3 +370,19 @@ def test_spying_on_a_modules_export_says_what_the_browser_refuses(ws):
     assert o.status == "failed"
     assert "read-only" in o.message
     assert "vi.stubFetch" in o.message or "argument" in o.message
+
+
+def test_a_hook_below_its_test_still_applies(ws):
+    """A block is collected before anything in it runs, so a beforeEach
+    written under an it() is still that test's hook."""
+    result = run(
+        ws,
+        "tests/latehook.test.js",
+        """
+        describe('order', () => {
+          it('sees the hook below it', () => { expect(globalThis.__n).toBe(1); });
+          beforeEach(() => { globalThis.__n = 1; });
+        });
+        """,
+    )
+    assert outcome(result, "sees the hook below it").status == "passed"

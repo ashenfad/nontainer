@@ -1988,12 +1988,15 @@ dispatch. Logs: `/workspace/app/logs/api.log`.
 `{"screenshot": true}` (→ `/workspace/app/screenshots/`) · `{"wait": ms}`.
 Viewports: `"desktop"`/`"tablet"`/`"mobile"` or `{width, height}`.
 
-## Unit tests (`ws-pytest`)
+## Unit tests (`ws-pytest` and `ws-vitest`)
 
-Agent-facing reference: [testing.md](testing.md). The verb is pytest's
-shape over the workspace's own executor — tests run where the agent's
-code runs, under the session's python config. `enable_apps` registers
-it; a workspace without an app registers it directly.
+Agent-facing reference: [testing.md](testing.md). One verb per language,
+each the tool's shape rather than the tool. `ws-pytest` runs Python
+through the workspace's own executor — tests run where the agent's code
+runs, under the session's python config. `ws-vitest` runs JavaScript as
+page code in a headless Chromium, host-side on every rung, against the
+files the workspace holds (the asymmetry `test_app` has). `enable_apps`
+registers both; a workspace without an app registers them directly.
 
 ```python
 from nontainer.wspytest import register_wspytest, run_pytest, render_report
@@ -2002,6 +2005,18 @@ register_wspytest(ws)                  # the `ws-pytest` terminal verb
 report = run_pytest(ws, argv=())       # the record; argv is the verb's own
 print(render_report(report, verbosity=0, tb="short"))   # the terminal text
 ```
+
+```python
+from nontainer.wsvitest import register_wsvitest, run_vitest, render_report
+
+register_wsvitest(ws)                  # the `ws-vitest` terminal verb
+report = run_vitest(ws, argv=())       # the same record, tool="vitest"
+print(render_report(report, verbose=False))             # vitest's shape
+```
+
+`ws-vitest` needs the `[apps]` extra plus `playwright install chromium`,
+the same browser `test_app` drives. A missing browser comes back as a
+failing report rather than an exception.
 
 The record is the product and the text is a rendering of it — the same
 division `TestAppResult` / `render_test_app` has, and for the same
@@ -2013,23 +2028,36 @@ TestReport(tool, ok, collected, passed, failed, errors, skipped,
            duration, exit_code, outcomes=(), stdout="",
            collection_error=None, notes=())
     # bool(report) is report.ok — ws.merge(child, check=lambda t: run_pytest(t).ok)
-    # exit_code is pytest's: 0 passed · 1 failures · 2 a file that would
-    #   not collect · 4 a bad argument (a flag, a path, or a test name
-    #   nothing defines) · 5 nothing collected
+    # tool: "pytest" | "vitest" — one record, so one check= hook and one
+    #   UI consume either
+    # exit_code for pytest is pytest's: 0 passed · 1 failures · 2 a file
+    #   that would not collect · 4 a bad argument (a flag, a path, or a
+    #   test name nothing defines) · 5 nothing collected. For vitest it
+    #   is 0 or 1, as vitest's is: a refused flag, a filter that matched
+    #   nothing and a failing test all exit 1
     # notes: what the run refused to do silently — a test file under
-    #   app/ (which publishes), a conftest.py nobody reads
+    #   app/ (which publishes), a conftest.py nobody reads, a .test.js
+    #   under app/api/ that could not load, a blocked request. Every
+    #   vitest run ends with the note that its browser is host-side
+    # stdout: handler stdout (pytest) · the page console (vitest)
 
 TestOutcome(name, file, line, status, duration=0.0, message=None,
             traceback=None, frames=())
-    # name is the pytest id: "tests/test_scores.py::test_limit"
+    # name is the test's id: "tests/test_scores.py::test_limit" for
+    #   pytest, "tests/util.test.js > add > adds" for vitest
     # status: passed | failed | error
-    # traceback: pytest's short traceback, agent frames only
+    # traceback: pytest's short traceback / vitest's stack, agent frames
+    #   only
     # frames: the same failure as data — TestFrame(path, line, function,
-    #   source), each carrying the enclosing function's lines, so a
-    #   report renders where the workspace that produced it is gone
+    #   source, column), each carrying the source it shows, so a report
+    #   renders where the workspace that produced it is gone. column is
+    #   0 where the language's frames carry none, as Python's do
 
-render_report(report, *, verbosity=0, tb="short") -> str
+render_report(report, *, verbosity=0, tb="short") -> str     # wspytest
     # verbosity: -1 (-q) · 0 · 1 (-v);  tb: "short" | "long" | "no"
+
+render_report(report, *, verbose=False) -> str               # wsvitest
+    # verbose: --reporter=verbose, a line per test rather than per file
 ```
 
 A test reaches a handler through `call`, which is a bare name in the

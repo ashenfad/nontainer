@@ -159,6 +159,12 @@ _TEST_NOTE = """
   plain `assert` and run `ws-pytest` in the terminal (one function per
   behaviour, `from unittest.mock import MagicMock` for a fake)"""
 
+_JS_TEST_NOTE = """
+- checking a frontend module the same way: tests/<name>.test.js with
+  describe/it/expect, then `ws-vitest` (it runs in a browser, reaches
+  nothing but your files, and `vi.stubFetch({'api/x': {...}})` is how a
+  test fakes a request)"""
+
 _CACHE_NOTE = """\
 - cache: a persistent dict for DATA (picklable values), e.g.
   cache['key'] = value; contents survive across calls and sessions"""
@@ -216,6 +222,8 @@ def python_description(
     )
     if "ws-pytest" in ws.runtime.commands:
         desc += _TEST_NOTE
+    if "ws-vitest" in ws.runtime.commands:
+        desc += _JS_TEST_NOTE
     extras = _env_notes(ws)
     if extras:
         desc += "\n" + extras
@@ -430,7 +438,11 @@ compose: ws-curl $APP_ORIGIN/api/scores | jq .
 Test the logic below a request with ws-pytest: put plain `assert` tests
 in tests/test_<name>.py beside app/ (never under app/, which publishes
 them), run `ws-pytest`, and reach a handler with call('scores',
-params={'limit': '2'}, db=fake) — `ws-pytest --help` has the flags."""
+params={'limit': '2'}, db=fake) — `ws-pytest --help` has the flags.
+Frontend modules get the same tier from ws-vitest: tests/<name>.test.js
+(or <name>.test.js beside the module, which then ships with the app),
+describe/it/expect and vi, and a run that reaches nothing but your own
+files — so fake a request with vi.stubFetch({'api/scores': {...}})."""
 
 _NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and the app
 answers requests only through test_app. Verify endpoints by driving
