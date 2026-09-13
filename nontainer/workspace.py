@@ -1398,8 +1398,18 @@ class Workspace:
         # Host-side writes move provider state behind a remote
         # executor's back; the public ``fs`` hands out a wrapper that
         # flags the runtime, and the next execution syncs (see
-        # _SyncingFS).
-        self._public_fs = _SyncingFS(self._fs, self._mark_executor_stale)
+        # _SyncingFS). A frozen workspace hands out the same read-only
+        # filesystem the executor gets instead: ``files.fs`` is the
+        # escape hatch around the workspace's POLICY gates — the view
+        # rule, the commit flow — and frozenness is not one of them.
+        # A write through it could never be committed, so it is refused
+        # where it happens rather than landing in a staged buffer that
+        # dies with the handle.
+        self._public_fs = (
+            _frozen_fs(self._fs, self._frozen_at)
+            if self._frozen
+            else _SyncingFS(self._fs, self._mark_executor_stale)
+        )
 
         # -- execution: bound behind the Executor seam (protocol.py),
         # and owned by the Runtime this workspace builds below.

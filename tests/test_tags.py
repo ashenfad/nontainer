@@ -270,6 +270,31 @@ def test_frozen_workspace_refuses_tool_writes(snapshot):
     assert not snapshot.files.fs.exists("/workspace/c.txt")
 
 
+def test_frozen_workspace_refuses_the_escape_hatch(snapshot, kv_ws):
+    """``ws.files.fs`` goes around the workspace's policy gates — the
+    view rule, the commit flow — and frozenness is not one of them: a
+    write through it is refused where it happens, the frozen tree is
+    what a reopen reads, and the live session is untouched."""
+    for write in (
+        lambda: snapshot.files.fs.write("/workspace/c.txt", b"nope"),
+        lambda: snapshot.files.fs.write("/workspace/a.txt", b"nope"),
+        lambda: snapshot.files.fs.remove("/workspace/a.txt"),
+        lambda: snapshot.files.fs.makedirs("/workspace/d"),
+        lambda: snapshot.files.fs.rename("/workspace/a.txt", "/workspace/z.txt"),
+    ):
+        with pytest.raises(PermissionError, match="frozen snapshot at tag 'v1'"):
+            write()
+
+    assert snapshot.files.read("a.txt").decode().strip() == "one"
+    assert not snapshot.files.fs.exists("/workspace/c.txt")
+    assert not snapshot.uncommitted
+
+    with kv_ws.tags.at("v1") as reopened:
+        assert reopened.files.read("a.txt").decode().strip() == "one"
+        assert not reopened.files.exists("c.txt")
+    assert kv_ws.files.read("a.txt").decode().strip() == "two"
+
+
 def test_frozen_workspace_refuses_history_writes(snapshot):
     for call in (
         lambda: snapshot.commit(),
