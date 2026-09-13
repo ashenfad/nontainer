@@ -58,9 +58,10 @@ that silently never runs is worse than one that says why.
 | `--tb=short\|long\|no` | how much of a failure to show; `short` by default |
 
 Exit codes are pytest's: `0` all passed, `1` failures, `2` a file that
-would not collect or an argument that makes no sense, `5` nothing
-collected. So `ws-pytest && ws-curl $APP_ORIGIN/api/scores` does what
-it looks like.
+would not collect, `4` an argument that makes no sense — a flag, a
+path, or a test name nothing defines — `5` nothing collected. So
+`ws-pytest && ws-curl $APP_ORIGIN/api/scores` does what it looks like.
+A `-k` that matches nothing is `5`, not `4`: a filter is not a name.
 
 Refused, each with the idiom that replaces it: `-s` (there is no
 capture to disable — a test's stdout is already in the report), `--lf`

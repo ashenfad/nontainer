@@ -642,6 +642,11 @@ REFUSED = {
 
 _TB_STYLES = ("short", "long", "no")
 
+#: pytest's exit code for a call that was wrong before anything ran: a
+#: flag it does not have, a path that is not there, a name no file
+#: defines.
+USAGE_ERROR = 4
+
 USAGE = (
     "usage: ws-pytest [paths] [-k EXPR] [-x | --maxfail=N] [-q | -v] "
     "[--tb=short|long|no]"
@@ -738,6 +743,24 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
     names_by_file = {p: {n for q, n in selection if q == p and n} for p in wanted}
 
     sources = _Sources(ws)
+    # Before anything runs: a name the selector pins and the file does
+    # not define. Left alone it would collect nothing and exit 5, where
+    # an empty suite and a typo have to read differently.
+    for rel, pinned in names_by_file.items():
+        try:
+            runnable, refused = _enumerate("\n".join(sources.lines(rel)) + "\n")
+        except SyntaxError:
+            continue  # the run reports it as the collection error it is
+        known = {n for n, _ in runnable} | {n for n, _, _ in refused}
+        missing = sorted(pinned - known)
+        if missing:
+            defines = ", ".join(sorted(known)) or "no tests"
+            return _usage_report(
+                "not found: "
+                + ", ".join(f"{rel}::{name}" for name in missing)
+                + f"\n({rel} defines {defines})"
+            )
+
     outcomes: list[TestOutcome] = []
     collection_errors: list[str] = []
     stdout: list[str] = []
@@ -925,8 +948,10 @@ def _view(ws: Any) -> Any:
 
 
 def _usage_report(message: str) -> TestReport:
-    """pytest's exit code 4 is a usage error; this verb folds it into
-    2, the code the terminal already means by 'this call was wrong'."""
+    """A call that was wrong before anything ran: pytest's exit code 4,
+    which is what `pytest tests/test_x.py::test_typo` and an
+    unrecognized flag both answer with. 2 is a different thing — a run
+    interrupted by a file that would not collect."""
     return TestReport(
         tool="pytest",
         ok=False,
@@ -936,7 +961,7 @@ def _usage_report(message: str) -> TestReport:
         errors=0,
         skipped=0,
         duration=0.0,
-        exit_code=2,
+        exit_code=USAGE_ERROR,
         collection_error=message,
     )
 
@@ -1032,7 +1057,7 @@ def render_report(report: TestReport, *, verbosity: int = 0, tb: str = "short") 
     ``verbosity`` is -1 (``-q``), 0 or 1 (``-v``); ``tb`` is ``short``,
     ``long`` or ``no``.
     """
-    if report.exit_code == 2 and not report.outcomes and report.collection_error:
+    if report.exit_code == USAGE_ERROR and report.collection_error:
         return f"ERROR: {report.collection_error}\n"
 
     out: list[str] = []
@@ -1132,7 +1157,8 @@ your workspace modules exactly as your app does.
                     how much of a failure to show (short by default)
 
 Exit codes are pytest's: 0 all passed, 1 failures, 2 a file that would
-not collect or an argument that makes no sense, 5 nothing collected.
+not collect, 4 an argument that makes no sense (a flag, a path, or a
+test name nothing defines), 5 nothing collected.
 
 Tests live in tests/, never under app/: app/ is what publishes, so a
 test there ships with the app and is fetchable from it.
@@ -1168,7 +1194,7 @@ def make_wspytest_command(ws: Any) -> Any:
         try:
             options = parse_argv(args)
         except UsageError as e:
-            return CommandResult(exit_code=2, stderr=str(e))
+            return CommandResult(exit_code=USAGE_ERROR, stderr=str(e))
         report = run_options(ws, options, ctx.fs.getcwd())
         if report.collection_error is not None and not report.outcomes:
             # Nothing ran and nothing was collected: the answer is the

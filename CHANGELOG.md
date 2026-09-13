@@ -75,7 +75,9 @@ another task. Elsewhere, the `ui` set closes.
   `-k EXPR`, `-x` / `--maxfail=N`, `-q` / `-v`, `--tb=short|long|no`;
   everything else pytest has is refused with the idiom that replaces
   it, and a `tests/conftest.py` is reported unread rather than
-  silently ignored. Tests run where the agent's code runs — in the
+  silently ignored. Exit codes are pytest's own, 4 for a bad argument
+  included — so `tests/test_x.py::test_typo` reads as the mistake it
+  is rather than as an empty suite. Tests run where the agent's code runs — in the
   guest on a VM rung — and the report reads the same on both rungs.
   `docs/testing.md` is the agent-facing page.
 - **`TestReport` and `render_report`** — the run as a record before it
