@@ -37,6 +37,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import NotSupportedError, WorkspaceError
+from .planes import SHARED_BRANCH_PREFIX
 from .protocol import (
     SESSION_ID_RE,
     SHORT_ID_RE,
@@ -60,6 +61,9 @@ _RESERVED_BRANCH_PREFIXES = ("refs/tags/", "@")
 # Where a publication's tree lives: one reserved branch per version,
 # under the store's own "@" namespace so no session can spell it.
 _PUB_BRANCH_PREFIX = "@store/pub/"
+# Where a shared plane lives: one reserved branch per name, in the same
+# namespace and for the same reason.
+_SHARED_BRANCH_PREFIX = SHARED_BRANCH_PREFIX
 # The store's own branch, in the same namespace: what a store-scoped
 # read anchors on when the store holds no session and no publication.
 # It carries one commit and that commit is empty, so it names a place
@@ -81,6 +85,22 @@ _RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from", "paths")
 # attempt's work. Nothing the store did not publish is ever removed on
 # the strength of its name alone.
 _PUBLISH_IDENTITY_KEYS = _RESERVED_INFO_KEYS
+
+# The construction keywords :meth:`Store.open` takes, which is what
+# every entry point that opens a LIVE workspace accepts: a shared plane
+# is an ordinary writable workspace, so it takes them all, ``autocommit``
+# included. ``tests/test_store.py`` asserts this tuple and
+# ``Store.open``'s signature stay in step.
+_OPEN_SETTINGS = (
+    "python",
+    "mounts",
+    "commands",
+    "cache",
+    "autocommit",
+    "max_observation",
+    "executor_factory",
+    "root",
+)
 
 # The construction keywords a frozen open takes. Exactly
 # :meth:`Store.open`'s, minus ``autocommit``: a frozen provider commits
@@ -125,6 +145,22 @@ def _check_frozen_settings(
             raise TypeError(
                 f"{caller} got an unexpected keyword argument {name!r} — a "
                 f"frozen open takes {', '.join(accepts)}"
+            )
+
+
+def _check_open_settings(caller: str, settings: Mapping[str, Any]) -> None:
+    """Refuse a keyword a live open does not take.
+
+    The same job :func:`_check_frozen_settings` does one rung up: an
+    entry point that collects ``**kwargs`` accepts anything, so a typo
+    would open a workspace missing the very config it was passed.
+    """
+    for name in settings:
+        if name not in _OPEN_SETTINGS:
+            raise TypeError(
+                f"{caller} got an unexpected keyword argument {name!r} — it "
+                f"takes Store.open's construction keywords: "
+                f"{', '.join(_OPEN_SETTINGS)}"
             )
 
 
@@ -646,9 +682,9 @@ class Store:
 
         Reserved names are not sessions and never appear: kvgit's
         ``refs/tags/`` tag refs, anything under the ``@`` store
-        namespace (a publication's branch, the store's own read
-        anchor), and the ``__void__`` branch older versions minted
-        during teardown. Anything else that is shaped like a
+        namespace (a publication's branch, a shared plane's branch, the
+        store's own read anchor), and the ``__void__`` branch older
+        versions minted during teardown. Anything else that is shaped like a
         session id is one — including branches a caller made itself
         (a published snapshot, say), because from the store's side
         that is exactly what they are.
@@ -710,9 +746,11 @@ class Store:
         before any of them reaches the backend, so one rule covers
         every branch the store keeps for itself: no session id may
         begin with ``@``, so nothing under ``@store/`` — a
-        publication's branch, the read anchor — can be named here. A
-        publication is removed with :meth:`unpublish`, which drops its
-        tag and its branch together and keeps the registry in step.
+        publication's branch, a shared plane's branch, the read anchor —
+        can be named here. A publication is removed with
+        :meth:`unpublish`, which drops its tag and its branch together
+        and keeps the registry in step; a shared plane with
+        :meth:`unshare`.
 
         ``min_age`` is the orphan sweep's grace period in seconds
         (kvgit only): commits younger than this are left alone, so a
@@ -810,7 +848,9 @@ class Store:
                 f"The {self._backend!r} backend is not versioned, so it has no "
                 "commits to resolve a ref against. Use the kvgit backend."
             )
-        if not self._is_publication_branch(parsed.session):
+        if self._is_shared_branch(parsed.session):
+            self._require_shared_branch(parsed.session)
+        elif not self._is_publication_branch(parsed.session):
             if parsed.session not in set(self._branches()):
                 raise WorkspaceError(
                     f"No such session on this store: {parsed.session!r} "
@@ -845,19 +885,106 @@ class Store:
         return StoreTags(self)
 
     # ------------------------------------------------------------------
-    # not yet: the shared plane (see scratch/api-v2.md)
+    # the shared plane
     # ------------------------------------------------------------------
 
-    def shared(self, name: str) -> "Workspace":
-        """The shared plane: a multi-writer workspace on
-        ``@store/shared/<name>``, visible to every session.
+    def shared(self, name: str, **open_kwargs: Any) -> "Workspace":
+        """Open (or create) a shared plane: a writable workspace on
+        ``@store/shared/<name>`` that belongs to no session.
 
-        Planned; see the api-v2 spec. Not implemented.
+        Everything else the store versions is one session's. A shared
+        plane is the fourth plane beside the cache, the conversation and
+        the files of a session: it outlives every session, any of them
+        can open it, and many can write it at once. Two sessions — or
+        two processes — each calling ``store.shared("catalog")`` get a
+        handle on the same branch, and a commit that loses its CAS to
+        the other three-way merges instead of failing.
+
+        It is an ordinary :class:`Workspace` in every other way:
+        created empty on first open the way a session is, versioned,
+        with the same verbs and the same :attr:`Workspace.caps`.
+        ``ws.session`` names the branch, because that is where the state
+        lives — a shared plane belongs to no session, so there is no
+        session id to give it.
+
+        ``name`` is session-id shaped: it is a branch segment, so the
+        characters that would make one ambiguous are the ones a session
+        id already forbids. ``open_kwargs`` are :meth:`open`'s
+        construction keywords — ``python``, ``mounts``, ``commands``,
+        ``cache``, ``autocommit``, ``max_observation``,
+        ``executor_factory``, ``root`` — applied to the workspace this
+        returns.
+
+        nontainer supplies the branch, the workspace and the merge. What
+        lives on the plane is the embedder's word: a team's skills
+        directory, a shared catalog, an agent memory.
         """
-        raise NotImplementedError(
-            "Store.shared is not implemented yet — see the api-v2 spec for "
-            "the shared plane."
+        from .workspace import Workspace
+
+        self._require_own_layout("shared")
+        self._require_kvgit("shared")
+        _check_open_settings("Store.shared()", open_kwargs)
+        from .providers.kvgit import KvgitProvider
+
+        branch = f"{_SHARED_BRANCH_PREFIX}{_validate_shared_name(name)}"
+        ws = Workspace(
+            KvgitProvider.open(self._kvgit_path(), session=branch), **open_kwargs
         )
+        ws._store = self
+        return ws
+
+    def shared_names(self) -> list[str]:
+        """Every shared plane on the store, sorted, by bare name.
+
+        A method beside :meth:`shared` and :meth:`unshare` rather than a
+        ``store.shared`` namespace object: the three read as the
+        publication verbs do (``publish`` / ``publications`` /
+        ``unpublish``), and folding them into a namespace would make
+        ``store.shared("catalog")`` — opening one, the call that matters
+        — the odd one out.
+
+        The names come from the branches, because that is where a plane
+        lives: there is no registry row to fall out of step with the
+        store, and a plane exists exactly while its branch does.
+        """
+        self._require_own_layout("shared_names")
+        self._require_kvgit("shared_names")
+        return sorted(
+            b[len(_SHARED_BRANCH_PREFIX) :]
+            for b in self._branches()
+            if self._is_shared_branch(b)
+        )
+
+    def unshare(self, name: str, *, min_age: float = 3600) -> None:
+        """Remove a shared plane: its branch, and the tags it owns.
+
+        The sanctioned teardown, as :meth:`unpublish` is for a
+        publication: :meth:`delete` takes sessions only and no session
+        id can spell ``@store/``, so this is the one way the store
+        removes a plane.
+
+        A name no plane answers to raises rather than passing quietly.
+        There is no registry row to reconcile, so a silent no-op would
+        only ever mean a typo — and the plane the caller meant to remove
+        would still be there.
+
+        ``min_age`` is the orphan sweep's grace period in seconds, as
+        for :meth:`delete`: commits younger than it are left alone, so a
+        concurrent writer mid-commit is never swept out from under.
+
+        Store-level, not live-session: close any open :class:`Workspace`
+        on the plane first.
+        """
+        from .providers.kvgit import KvgitProvider
+
+        self._require_own_layout("unshare")
+        self._require_kvgit("unshare")
+        branch = f"{_SHARED_BRANCH_PREFIX}{_validate_shared_name(name)}"
+        if branch not in set(self._branches()):
+            raise ValueError(
+                f"No such shared plane: {name!r} — store.shared_names() lists them."
+            )
+        KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
 
     # ------------------------------------------------------------------
     # publications
@@ -1337,9 +1464,9 @@ class Store:
             f"Store.delete deletes sessions, and {named} is not a session id "
             f"(must match {SESSION_ID_RE.pattern}). The store's own branches "
             "live under '@store/', which no session id can reach: remove a "
-            "publication with store.unpublish(name, version), and leave the "
-            "read anchor where it is — it holds an empty commit and costs "
-            "the store nothing."
+            "publication with store.unpublish(name, version) and a shared "
+            "plane with store.unshare(name), and leave the read anchor where "
+            "it is — it holds an empty commit and costs the store nothing."
         )
 
     def _require_own_layout(self, op: str) -> None:
@@ -1368,6 +1495,31 @@ class Store:
         and the publication registry is what says it may be read."""
         return name.startswith(_PUB_BRANCH_PREFIX)
 
+    @staticmethod
+    def _is_shared_branch(name: str) -> bool:
+        """A shared plane's own reserved branch, which is not a session
+        either: it fails session-id validation and ``sessions()`` never
+        lists it. Unlike a publication there is no registry to consult —
+        the branch IS the plane."""
+        return name.startswith(_SHARED_BRANCH_PREFIX)
+
+    def _require_shared_branch(self, branch: str) -> None:
+        """A shared ref names a plane this store still holds.
+
+        kvgit CREATES a branch opened by a name it does not know, so a
+        ref into a plane that was unshared has to be refused before
+        anything opens it, or the read mints an empty plane of that
+        name and ``shared_names()`` lists it.
+        """
+        if branch in set(self._branches()):
+            return
+        raise WorkspaceError(
+            f"No such shared plane on this store: "
+            f"{branch[len(_SHARED_BRANCH_PREFIX) :]!r} (reading {branch!r}). "
+            "Opening the branch would create it, so the read is refused "
+            "instead; store.shared_names() lists the planes."
+        )
+
     @contextmanager
     def _ref_source_held(self, ref: Ref, op: str) -> "Iterator[Ref]":
         """Check the source a ref names, hold it still for the body, and
@@ -1389,7 +1541,12 @@ class Store:
         published version as unpublished.
 
         A ref naming a session takes no lock: a session's branch is
-        not the registry's to remove.
+        not the registry's to remove. Neither does one naming a shared
+        plane, and for the same reason — a plane has no registry row, so
+        there is nothing to hold still. What keeps a stale shared ref
+        from minting the branch an ``unshare`` removed is the existence
+        check the read makes first, exactly as a ref into a deleted
+        session is kept from minting that branch.
         """
         if not self._is_publication_branch(ref.session):
             yield self._expanded_ref(ref)
@@ -1436,9 +1593,11 @@ class Store:
         """A provider open on the branch a ref names, and that ref with
         its commit spelled whole, for the body.
 
-        Two kinds of branch answer to a ref. A session opens through
-        the store's own session resolution. A publication's own
-        reserved branch opens the way :meth:`resolve` reads one: the
+        Three kinds of branch answer to a ref. A session opens through
+        the store's own session resolution. A shared plane's reserved
+        branch opens directly, checked to be there first, because
+        opening one kvgit does not know would mint it. A publication's
+        own reserved branch opens the way :meth:`resolve` reads one: the
         registry says whether that version is still published, and the
         branch is opened only when it is already there. The handle
         that comes back reads — a publication's branch takes no
@@ -1450,6 +1609,15 @@ class Store:
         handle happens on a version the registry still holds.
         """
         with self._ref_source_held(ref, op) as source:
+            if self._is_shared_branch(source.session):
+                from .providers.kvgit import KvgitProvider
+
+                self._require_shared_branch(source.session)
+                yield (
+                    KvgitProvider.open(self._kvgit_path(), session=source.session),
+                    source,
+                )
+                return
             if not self._is_publication_branch(source.session):
                 yield self._session_provider(source.session), source
                 return
@@ -2236,6 +2404,24 @@ def _validate_publication_name(name: str) -> str:
     if not isinstance(name, str) or not SESSION_ID_RE.match(name):
         raise ValueError(
             f"Invalid publication name {name!r}: must match "
+            f"{SESSION_ID_RE.pattern} (no slashes, no leading dot)"
+        )
+    return name
+
+
+def _validate_shared_name(name: str) -> str:
+    """A shared plane's name is session-id shaped.
+
+    It becomes a branch segment (``@store/shared/<name>``), so the
+    characters that would make one ambiguous — a slash, a ``%``, a
+    leading dot, a leading ``@`` — are the ones a session id already
+    forbids. The plane is not a session, but its name is spelled like
+    one, which is what keeps ``@store/shared/`` one segment deep and
+    ``shared_names()`` able to give the bare name back.
+    """
+    if not isinstance(name, str) or not SESSION_ID_RE.match(name):
+        raise ValueError(
+            f"Invalid shared plane name {name!r}: must match "
             f"{SESSION_ID_RE.pattern} (no slashes, no leading dot)"
         )
     return name

@@ -409,17 +409,6 @@ def test_provider_factory_refuses_the_store_level_verbs():
             call()
 
 
-# -- planned surface ---------------------------------------------------------
-
-
-def test_shared_is_declared_not_half_built(tmp_path):
-    """`publish` landed (tests/test_publish.py); the shared plane has
-    not."""
-    st = Store(tmp_path)
-    with pytest.raises(NotImplementedError):
-        st.shared("notes")
-
-
 def test_store_is_a_context_manager(tmp_path):
     with Store(tmp_path) as st:
         with st.open("s"):
@@ -521,16 +510,18 @@ def test_the_frozen_settings_are_store_opens_settings(tmp_path):
     nothing to switch."""
     import inspect
 
-    from nontainer.store import _FROZEN_SETTINGS
+    from nontainer.store import _FROZEN_SETTINGS, _OPEN_SETTINGS
 
     live = {
         name
         for name, p in inspect.signature(Store.open).parameters.items()
         if p.kind is inspect.Parameter.KEYWORD_ONLY
     }
+    assert set(_OPEN_SETTINGS) == live
     assert set(_FROZEN_SETTINGS) == live - {"autocommit"}
     # and each one is really a Workspace construction argument
     built = inspect.signature(Workspace.__init__).parameters
+    assert set(_OPEN_SETTINGS) <= set(built)
     assert set(_FROZEN_SETTINGS) <= set(built)
 
 
