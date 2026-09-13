@@ -717,3 +717,223 @@ def test_a_branch_forked_from_elsewhere_is_read_and_taken_like_any_other(
 
     parent.checkout(answer.branch, paths=["answer.md"])
     assert parent.files.read("/workspace/answer.md") == b"north is 4\n"
+
+
+# -- resume: a child you already have ------------------------------------------
+
+
+class Echo:
+    """A runner that answers with the task, gated so a test can hold a
+    run open while it tries to start another."""
+
+    def __init__(self, release=None, hold=()):
+        self.release = release
+        self.hold = hold
+        self.seen: list[tuple[str, str, object]] = []
+
+    def run(self, session, task, *, budget=None):
+        self.seen.append((session, task, budget))
+        if self.release is not None and (not self.hold or task in self.hold):
+            self.release.wait(5)
+        return f"answering {task}"
+
+
+def _settle(sessions, name, timeout=5):
+    """Wait for a job to leave `running`, the way a caller polling
+    `sessions list` across turns would."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = next(j for j in sessions.list() if j.name == name)
+        if job.status != "running":
+            return job
+        time.sleep(0.01)
+    raise AssertionError(f"{name} never finished")
+
+
+def test_resume_continues_the_child(parent, store):
+    """A second task for a delegate you already have goes to the branch
+    it has: its conversation kept, no second fork."""
+
+    class Chatty(Echo):
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                turns = child._provider.kv.get("__agno__/turns") or b""
+                child._provider.kv["__agno__/turns"] = turns + task.encode() + b"|"
+                child._provider.commit({"tool": "test"})
+            finally:
+                child.close()
+            return super().run(session, task, budget=budget)
+
+    runner = Chatty()
+    with Sessions(parent, runner) as sessions:
+        first = sessions.ask("polish the report", wait=True)
+        branches = set(store.sessions())
+        second = sessions.ask("now the summary", resume=first.branch, wait=True)
+        rows = sessions.list()
+
+    assert second.branch == first.branch
+    assert second.text == "answering now the summary"
+    assert set(store.sessions()) == branches  # nothing new was forked
+    assert [(s, t) for s, t, _ in runner.seen] == [
+        (first.branch, "polish the report"),
+        (first.branch, "now the summary"),
+    ]
+    # one child, one row: the new task replaces the one it was given
+    assert [(j.name, j.task) for j in rows] == [(first.branch, "now the summary")]
+
+    child = store.open(first.branch)
+    try:
+        assert (
+            child._provider.kv.get("__agno__/turns")
+            == b"polish the report|now the summary|"
+        )
+    finally:
+        child.close()
+
+
+def test_resume_refuses_a_branch_this_session_has_no_job_for(parent, store):
+    with Sessions(parent, Echo()) as sessions:
+        with pytest.raises(SessionsError, match="no job named"):
+            sessions.ask("q", resume="analyst.nobody")
+
+
+def test_resume_refuses_to_carry_your_conversation(parent, store):
+    """A delegate resumed keeps the conversation it has; nothing here
+    can hand it yours instead."""
+    with Sessions(parent, Echo()) as sessions:
+        first = sessions.ask("polish it", wait=True)
+        with pytest.raises(SessionsError, match="fresh"):
+            sessions.ask("more", resume=first.branch, inherit="full")
+
+
+def test_resume_refuses_a_fork_point_the_child_did_not_come_from(
+    parent, store, fork_point
+):
+    """A child carries the conversation of the state it was forked
+    from, so naming a different fork point is refused rather than
+    quietly answered by the child at hand."""
+    with Sessions(parent, Echo()) as sessions:
+        theirs = sessions.ask("read it", from_="rates-2026", wait=True)
+        with pytest.raises(SessionsError, match="rates-2026"):
+            sessions.ask("more", from_=f"sage@{fork_point}", resume=theirs.branch)
+        # the fork point it did come from, spelled the same way, continues it
+        again = sessions.ask("more", from_="rates-2026", resume=theirs.branch)
+        assert again.name == theirs.branch
+        _settle(sessions, theirs.branch)
+
+        mine = sessions.ask("polish it", wait=True)
+        with pytest.raises(SessionsError, match="this session"):
+            sessions.ask("more", from_="rates-2026", resume=mine.branch)
+
+
+def test_a_resume_is_refused_while_the_run_it_continues_is_in_flight(parent, store):
+    """A child runs one task at a time. The runner cannot be
+    interrupted, so a second run on the same branch would drive the
+    child the first is still driving and land against the wrong job."""
+    release = threading.Event()
+    runner = Echo(release, hold=("polish the report",))
+    with Sessions(parent, runner) as sessions:
+        first = sessions.ask("polish the report")
+        while not runner.seen:
+            time.sleep(0.01)
+
+        with pytest.raises(SessionsError, match="still finishing"):
+            sessions.ask("now the summary", resume=first.name)
+
+        release.set()
+        _settle(sessions, first.name)
+
+        # once it is done the resume proceeds, and the answer that
+        # lands under the child's name is the one to the new task
+        answer = sessions.ask("now the summary", resume=first.name, wait=True)
+
+    assert answer.text == "answering now the summary"
+    assert sessions.result(first.name).text == "answering now the summary"
+    assert [j.task for j in sessions.list()] == ["now the summary"]
+
+
+def test_a_cancelled_run_still_holds_its_child_until_the_runner_is_done(parent, store):
+    """Cancel discards the answer; it cannot stop the runner. The child
+    is still being driven, so it is not free for another task until the
+    run it was cancelled from is over."""
+    release = threading.Event()
+    runner = Echo(release)
+    with Sessions(parent, runner) as sessions:
+        first = sessions.ask("polish the report")
+        while not runner.seen:
+            time.sleep(0.01)
+        assert sessions.cancel(first.name).status == "cancelled"
+
+        with pytest.raises(SessionsError, match="still finishing"):
+            sessions.ask("now the summary", resume=first.name)
+
+        release.set()
+        sessions.close()
+
+
+def test_two_resumes_of_one_child_yield_one_run(parent, store):
+    """The check that the branch is free and the reservation of it are
+    one critical section, so two callers cannot both pass it."""
+    release = threading.Event()
+    runner = Echo(release, hold=("a", "b"))
+    out: list[tuple[str, object]] = []
+    with Sessions(parent, runner, max_workers=3) as sessions:
+        first = sessions.ask("polish the report", wait=True)
+        gate = threading.Barrier(2, timeout=10)
+
+        def go(task):
+            gate.wait()
+            try:
+                out.append(("ok", sessions.ask(task, resume=first.branch)))
+            except SessionsError as exc:
+                out.append(("refused", str(exc)))
+
+        threads = [threading.Thread(target=go, args=(t,)) for t in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        release.set()
+        sessions.close()
+
+    assert sorted(kind for kind, _ in out) == ["ok", "refused"]
+    assert "still finishing" in next(text for kind, text in out if kind == "refused")
+    tasks = [task for _, task, _ in runner.seen]
+    assert tasks.count("a") + tasks.count("b") == 1
+
+
+def test_a_job_cancelled_before_it_ran_frees_its_child(parent, store):
+    """A cancel that bites before the runner starts means no run will
+    land for that job and nothing will release what it reserved, so the
+    cancel releases it."""
+    release = threading.Event()
+    runner = Echo(release, hold=("hold the worker",))
+    with Sessions(parent, runner, max_workers=1) as sessions:
+        sessions.ask("hold the worker")
+        while not runner.seen:
+            time.sleep(0.01)
+        queued = sessions.ask("polish the report")
+        assert sessions.cancel(queued.name).status == "cancelled"
+        release.set()
+
+        answer = sessions.ask("now the summary", resume=queued.name, wait=True)
+
+    assert answer.text == "answering now the summary"
+
+
+def test_a_resumed_job_keeps_what_belongs_to_the_child(parent, store, fork_point):
+    """Retention and where the child came from belong to the branch,
+    not to one run of it: a child the caller kept is still kept after
+    it answers again, and it still names the fork point it was made
+    from."""
+    with Sessions(parent, Echo()) as sessions:
+        first = sessions.ask("read it", from_="rates-2026", wait=True)
+        assert sessions.keep(first.branch).kept
+        sessions.ask("read it again", resume=first.branch, wait=True)
+        row = sessions.list()[0]
+
+    assert row.kept is True
+    assert row.task == "read it again"
+    assert row.origin == ("rates-2026", fork_point)
+    assert sessions.base(first.branch) == fork_point

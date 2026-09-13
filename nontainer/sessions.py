@@ -191,6 +191,13 @@ class Sessions:
         self._futures: dict[str, Future] = {}
         self._children: dict[str, Workspace] = {}
         self._base: dict[str, str | None] = {}
+        #: The branches with a run in flight. A branch runs one job at
+        #: a time: the runner cannot be interrupted, so a second run on
+        #: one branch would drive the child the first is still driving
+        #: and land its answer against the other's job. Reserved when a
+        #: job is put on a worker, released when that job's answer is
+        #: recorded or its work is done.
+        self._busy: set[str] = set()
         self._closed = False
 
     def __repr__(self) -> str:
@@ -209,6 +216,7 @@ class Sessions:
         paths: "Iterable[str] | str | None" = None,
         inherit: str = "fresh",
         from_: "str | Any | None" = None,
+        resume: str | None = None,
         wait: bool = False,
         budget: Any = None,
     ) -> "Job | Answer":
@@ -236,6 +244,16 @@ class Sessions:
         ``"fresh"`` then, because the conversation at that fork point
         is not this session's to continue.
 
+        ``resume`` gives a new task to a child this session already
+        has: the same branch with its conversation kept, and no second
+        fork. Everything that belongs to the CHILD carries over — where
+        it was forked from, its base, whether it is kept — and only the
+        run is new. A child answers ONE task at a time: a run still in
+        flight refuses the next one rather than sharing the child with
+        it, and a cancelled run is in flight until its runner stops,
+        since cancel discards an answer without interrupting the
+        embedder's loop.
+
         The runner drives the child on a worker thread and its answer
         is collected with :meth:`result`. A runner that raises does not
         lose the job: it resolves as ``failed`` with the exception's
@@ -245,45 +263,58 @@ class Sessions:
         """
         self._check_open()
         started = time.time()
-        origin = None
-        at = None
-        if from_ is not None:
-            if inherit != "fresh":
-                raise SessionsError(
-                    f"inherit must be 'fresh' when a fork point is given: the "
-                    f"conversation at {str(from_)!r} is not this session's to "
-                    "continue, and a brief is content the task carries"
-                )
-            origin = self._origin(from_)
-            at = origin[1]
-        try:
-            child, child_name, base = self._fork(
-                name, paths=paths, inherit=inherit, at=at
-            )
-        except CommitNotFoundError as exc:
-            # The funnel classifies the word; the store is what knows
-            # whether it holds that commit, and it says so with the
-            # commit alone.
+        if inherit != "fresh" and (from_ is not None or resume is not None):
             raise SessionsError(
-                f"{origin[0]!r} names commit {exc}, which this store does not "
-                "hold, so there is nothing to fork"
-            ) from exc
+                "inherit must be 'fresh' here: the conversation at another fork "
+                "point is not this session's to continue, and a child resumed "
+                "keeps the conversation it has. A brief is content the task "
+                "carries"
+            )
+        previous: Job | None = None
+        if resume is not None:
+            previous, origin = self._resumed(resume, from_)
+            child_name, base = previous.name, self._base.get(previous.name)
+            child = self._reopen(child_name)
+        else:
+            origin = self._origin(from_) if from_ is not None else None
+            try:
+                child, child_name, base = self._fork(
+                    name, paths=paths, inherit=inherit, at=origin[1] if origin else None
+                )
+            except CommitNotFoundError as exc:
+                # The funnel classifies the word; the store is what
+                # knows whether it holds that commit, and it says so
+                # with the commit alone.
+                raise SessionsError(
+                    f"{origin[0]!r} names commit {exc}, which this store does "
+                    "not hold, so there is nothing to fork"
+                ) from exc
         job = Job(
             name=child_name,
             task=task,
             status="running",
             started=started,
+            # What belongs to the CHILD and not to one run of it: a
+            # caller that keeps a branch while reading one answer has
+            # said the branch is worth keeping, and giving it another
+            # task is not a withdrawal of that.
+            kept=previous.kept if previous is not None else False,
             origin=origin,
         )
-        with self._lock:
-            self._jobs[child_name] = job
-            self._children[child_name] = child
-            self._base[child_name] = base
-        future = self._pool.submit(
-            self._work, child_name, task, self._budget if budget is None else budget
-        )
-        with self._lock:
-            self._futures[child_name] = future
+        try:
+            future = self._submit(
+                job, child, base, self._budget if budget is None else budget
+            )
+        except BaseException:
+            # The branch was taken by another run between the check and
+            # the reservation, or the pool is gone: the handle opened
+            # for a run that will not happen is closed here.
+            if previous is not None:
+                try:
+                    child.close()
+                except Exception:  # noqa: BLE001 - the refusal wins
+                    pass
+            raise
         if wait:
             future.result()  # _work resolves every failure into an Answer
             return self.result(child_name)
@@ -360,8 +391,21 @@ class Sessions:
             job = replace(job, status="cancelled", finished=time.time())
             self._jobs[name] = job
             future = self._futures.get(name)
-        if future is not None:
-            future.cancel()  # only bites if the worker has not started
+        if future is not None and future.cancel():
+            # It bit: the worker never started, so no run will land for
+            # this job and none will release what it reserved. The
+            # branch is free for another task, and the handle taken for
+            # the run that will not happen is closed here — the branch
+            # itself is untouched, as it is for a cancel that comes too
+            # late.
+            with self._lock:
+                self._busy.discard(name)
+                child = self._children.pop(name, None)
+            if child is not None:
+                try:
+                    child.close()
+                except Exception:  # noqa: BLE001 - the cancel wins
+                    pass
         return job
 
     def keep(self, name: str) -> Job:
@@ -474,6 +518,107 @@ class Sessions:
             )
         return candidate
 
+    def _submit(
+        self, job: Job, child: "Workspace", base: str | None, budget: Any
+    ) -> Future:
+        """Reserve the job's branch, install the job, put it on a
+        worker; returns its future.
+
+        The reservation and the install are ONE critical section, which
+        is what makes the handoff of a branch from one run to the next
+        atomic: two callers resuming one child cannot both find it
+        free, because the one that finds it free takes it in the same
+        breath. The loser is refused rather than sharing the child.
+
+        A resumed branch keeps everything of the child's and replaces
+        everything of the run's: the previous answer goes, because it
+        is not the answer to this task, and ``result`` says the job is
+        running until the new one lands.
+        """
+        name = job.name
+        with self._lock:
+            if name in self._busy:
+                raise SessionsError(self._still_running(name))
+            self._busy.add(name)
+            self._jobs[name] = job
+            self._answers.pop(name, None)
+            self._children[name] = child
+            self._base[name] = base
+        try:
+            future = self._pool.submit(self._work, name, job.task, budget)
+        except BaseException:
+            with self._lock:
+                self._busy.discard(name)
+            raise
+        with self._lock:
+            self._futures[name] = future
+        return future
+
+    def _still_running(self, name: str) -> str:
+        """Why a branch cannot take a task yet."""
+        return (
+            f"a run on {name!r} is still finishing; ask again on a later turn. "
+            "A delegate does one task at a time, and a runner already working "
+            "cannot be interrupted (sessions list shows what is outstanding)"
+        )
+
+    def _resumed(
+        self, resume: str, from_: "str | Any | None"
+    ) -> "tuple[Job, tuple[str, str] | None]":
+        """``(the job on the child, where the child was forked from)``
+        for an ask that continues a child this session already has.
+
+        The job comes back whole because what belongs to the CHILD
+        rather than to one run of it carries over to the run that
+        continues it. A child carries the conversation of the state it
+        was forked from, so it answers from there and nowhere else:
+        naming a different fork point is refused rather than quietly
+        answered by the child at hand.
+        """
+        with self._lock:
+            job = self._jobs.get(resume)
+            # Whether a run is in flight, which is not what the job's
+            # status says: ``cancel`` marks a job cancelled at once and
+            # the runner it cannot interrupt goes on driving the child.
+            running = resume in self._busy
+        if job is None:
+            raise SessionsError(self._unknown(resume))
+        if running:
+            raise SessionsError(self._still_running(resume))
+        if from_ is not None:
+            given = str(from_).strip()
+            if job.origin is None:
+                raise SessionsError(
+                    f"{resume!r} was forked from this session, not from "
+                    f"{given!r}: leave the fork point out to continue it, or "
+                    f"ask afresh from {given!r}"
+                )
+            if given != job.origin[0]:
+                raise SessionsError(
+                    f"{resume!r} was forked from {job.origin[0]!r} and carries "
+                    f"that state's conversation, so it cannot answer from "
+                    f"{given!r}: leave the fork point out to continue it, or "
+                    f"ask afresh from {given!r}"
+                )
+        return job, job.origin
+
+    def _reopen(self, name: str) -> "Workspace":
+        """A second handle on a branch this session forked earlier.
+
+        The handle taken at the fork is closed once its answer lands —
+        a job holds no store open between turns — so continuing a child
+        opens the branch again. Reads only: the runner drives the child
+        through a handle of its own, and this one reports what the
+        branch holds afterwards.
+        """
+        store = getattr(self._ws, "_store", None)
+        if store is None:
+            raise SessionsError(
+                f"cannot continue {name!r}: session {self._ws.session!r} was not "
+                "opened from a store, so its branches cannot be opened again"
+            )
+        return store.open(name, root=self._ws.root)
+
     def _origin(self, from_: "str | Any") -> "tuple[str, str]":
         """``(the fork point as the caller spelled it, its commit)``.
 
@@ -550,24 +695,34 @@ class Sessions:
         with self._lock:
             extra = {"forked_at": self._base.get(name)} if self._forked_at_ok else {}
         try:
-            out = self._runner.run(self._session_of(name), task, budget=budget, **extra)
-            answer = out if isinstance(out, Answer) else Answer(text=str(out))
-        except BaseException as exc:  # noqa: BLE001 - the job must resolve
-            answer = Answer(text=_error_text(exc), status="failed")
-        try:
-            return self._land(name, task, answer)
-        except BaseException as exc:  # noqa: BLE001 - as must the landing
-            failed = replace(
-                answer,
-                status="failed",
-                text=(
-                    f"{answer.text}\n\n[the delegate answered, and its work "
-                    f"could not be landed: {_error_text(exc)}]"
-                ),
-                branch=name,
-            )
-            self._record(name, failed)
-            return failed
+            try:
+                out = self._runner.run(
+                    self._session_of(name), task, budget=budget, **extra
+                )
+                answer = out if isinstance(out, Answer) else Answer(text=str(out))
+            except BaseException as exc:  # noqa: BLE001 - the job must resolve
+                answer = Answer(text=_error_text(exc), status="failed")
+            try:
+                return self._land(name, task, answer)
+            except BaseException as exc:  # noqa: BLE001 - as must the landing
+                failed = replace(
+                    answer,
+                    status="failed",
+                    text=(
+                        f"{answer.text}\n\n[the delegate answered, and its work "
+                        f"could not be landed: {_error_text(exc)}]"
+                    ),
+                    branch=name,
+                )
+                self._record(name, failed)
+                return failed
+        finally:
+            # The branch is free again however this went, including the
+            # ways that record no answer: a job the caller cancelled
+            # releases the child when its runner finally stops, not
+            # when the cancel is asked for.
+            with self._lock:
+                self._busy.discard(name)
 
     def _session_of(self, name: str) -> str:
         with self._lock:
@@ -736,6 +891,11 @@ class Sessions:
             job = self._jobs[name]
             if job.status == "cancelled":
                 return
+            # Released with the answer, in the same critical section
+            # that records it: a caller that reads a finished status
+            # can give the child its next task at once, and nothing
+            # after this point touches the job's table rows.
+            self._busy.discard(name)
             self._answers[name] = answer
             self._jobs[name] = replace(
                 job,
