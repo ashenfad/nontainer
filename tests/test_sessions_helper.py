@@ -937,3 +937,69 @@ def test_a_resumed_job_keeps_what_belongs_to_the_child(parent, store, fork_point
     assert row.task == "read it again"
     assert row.origin == ("rates-2026", fork_point)
     assert sessions.base(first.branch) == fork_point
+
+
+# -- the tool's half of from_ and resume ---------------------------------------
+
+
+def test_the_tool_asks_from_a_fork_point_and_resumes(parent, store, fork_point):
+    runner = Echo()
+    with Sessions(parent, runner) as sessions:
+        sent = run_action(
+            sessions, "ask", task="what is north?", from_="rates-2026", wait=True
+        )
+        name = sessions.list()[0].name
+        assert "answering what is north?" in sent and name in sent
+
+        again = run_action(sessions, "ask", task="and south?", resume=name, wait=True)
+        assert "answering and south?" in again and name in again
+        assert [session for session, _, _ in runner.seen] == [name, name]
+
+        # a listing marks where a child came from when it is not here
+        listed = run_action(sessions, "list")
+        assert name in listed and "rates-2026" in listed and "and south?" in listed
+        mine = sessions.ask("polish it", wait=True)
+        both = run_action(sessions, "list").splitlines()
+
+    # one row per child, and only the one forked elsewhere is marked
+    assert len(both) == 3
+    assert "rates-2026" in next(line for line in both if name in line)
+    assert "rates-2026" not in next(line for line in both if mine.branch in line)
+
+
+def test_a_job_sent_off_from_a_fork_point_names_it(parent, store, fork_point):
+    runner = Echo()
+    with Sessions(parent, runner) as sessions:
+        sent = run_action(sessions, "ask", task="read it", from_="rates-2026")
+        sessions.close()  # joins the worker
+    name = sessions.list()[0].name
+    assert "rates-2026" in sent and name in sent
+    assert "later turn" in sent
+
+
+def test_the_tool_says_what_an_ask_cannot_do(parent, store, fork_point):
+    with Sessions(parent, Echo()) as sessions:
+        assert "needs a task" in run_action(sessions, "ask", from_="rates-2026")
+        assert "nothing named" in run_action(sessions, "ask", task="q", from_="nobody")
+        assert "no job named" in run_action(
+            sessions, "ask", task="q", resume="analyst.nobody"
+        )
+        assert "fresh" in run_action(
+            sessions, "ask", task="q", from_="rates-2026", inherit="full"
+        )
+
+
+def test_every_answer_ends_with_the_same_next_step(parent, store, fork_point):
+    """An ask always leaves a branch, and what the parent does with it
+    is the same choice wherever the child was forked from."""
+    runner = Scripted(store, {"/workspace/answer.md": "north is 4\n"}, text="done")
+    with Sessions(parent, runner) as sessions:
+        theirs = sessions.ask("read it", from_="rates-2026", wait=True)
+        mine = sessions.ask("polish it", wait=True)
+        elsewhere = run_action(sessions, "result", name=theirs.branch)
+        here = run_action(sessions, "result", name=mine.branch)
+
+    for text, job in ((elsewhere, theirs), (here, mine)):
+        assert f"ws-git diff {job.branch}" in text
+        assert f"ws-git merge {job.branch}" in text
+        assert f"ws-git checkout {job.branch} -- <paths>" in text

@@ -953,8 +953,9 @@ def _summary(task: str) -> str:
 
 def render_job(job: Job) -> str:
     """The line a caller reads when a delegate is sent off."""
+    where = f", forked from {job.origin[0]}" if job.origin else ""
     return (
-        f"delegated to {job.name}: {_summary(job.task)}\n"
+        f"delegated to {job.name}{where}: {_summary(job.task)}\n"
         "the answer arrives on a later turn; `sessions list` shows progress "
         f"and `sessions result {job.name}` collects it."
     )
@@ -977,6 +978,8 @@ def render_jobs(jobs: "list[Job]") -> str:
             line += f"  ({paths} path(s); sessions result {job.name})"
             if job.uncommitted:
                 line += " [left work uncommitted]"
+        if job.origin:
+            line += f" [from {job.origin[0]}]"
         if job.kept:
             line += " [kept]"
         lines.append(line)
@@ -1030,6 +1033,8 @@ def run_action(
     name: str = "",
     paths: Any = None,
     inherit: str = "fresh",
+    from_: str = "",
+    resume: str = "",
     wait: bool = False,
 ) -> str:
     """Dispatch one ``sessions`` tool call and render its result.
@@ -1049,6 +1054,8 @@ def run_action(
                 name=name or None,
                 paths=coerce_paths(paths),
                 inherit=inherit,
+                from_=from_ or None,
+                resume=resume or None,
                 wait=wait,
             )
             return render_answer(out) if isinstance(out, Answer) else render_job(out)

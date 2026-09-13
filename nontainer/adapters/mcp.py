@@ -252,12 +252,19 @@ def build_server(
         # the same dispatch the agno adapter calls — so the two surfaces
         # cannot drift into saying different things about one job.
         @server.tool(name="sessions", description=SESSIONS_DESCRIPTION)
+        # ``from_`` carries its underscore into the tool schema: a
+        # JSON argument's name is the python parameter's name in both
+        # adapters, and ``from`` is a python keyword, so the one
+        # spelling that is the same in the host API, the tool and the
+        # docs is this one.
         def sessions_tool(
             action: str,
             task: str = "",
             name: str = "",
             paths: "list[str] | str | None" = None,
             inherit: str = "fresh",
+            from_: str = "",
+            resume: str = "",
             wait: bool = False,
         ) -> str:
             # No adapter fence: the helper serializes its own job table
@@ -271,6 +278,8 @@ def build_server(
                 name=name,
                 paths=paths,
                 inherit=inherit,
+                from_=from_,
+                resume=resume,
                 wait=wait,
             )
 
