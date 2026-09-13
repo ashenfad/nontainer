@@ -1367,7 +1367,7 @@ from nontainer.sessions import Sessions
 
 sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=())
 sessions.ask(task, *, name=None, paths=None, inherit="fresh",
-             wait=False, budget=None) -> Job | Answer
+             from_=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
 sessions.cancel(name) -> Job
@@ -1384,6 +1384,59 @@ SEES without narrowing its branch; `inherit` (`"fresh"` here, against
 `fork`'s own `"full"`) decides only whether the conversation comes
 along — a brief or a summary is content the task carries. `wait=True`
 blocks and returns the `Answer` instead.
+
+**Nothing lands here on its own.** An ask always leaves a branch, and
+what becomes of it is the caller's own step: read it (`ws.diff`,
+`ws.files.attach`), merge it, take some of its files
+(`ws.checkout(branch, paths=)`), take one of its commits, or leave it
+where it is. The helper commits nothing for the child and merges
+nothing for the parent.
+
+### Asking from somewhere else, and asking again
+
+Two options move the two things that are not the task: where the child
+starts, and whether it starts a conversation.
+
+```python
+sessions.ask("what is north?", from_="rates-2026", wait=True)
+answer = sessions.ask("read it", from_="sage@a3f9c2e", wait=True)
+sessions.ask("and south?", resume=answer.branch, wait=True)
+```
+
+`from_` names another fork point: a commit named by a **store tag**
+(`store.tags.add(ws, "rates-2026")` — a name that belongs to no
+session and outlives the one that made it), or one spelled
+`session@commit`. The ref resolves the way every other cross-session
+read resolves one, so a short commit id and a session's own ws-git tag
+are spellings this takes too; anything with no `@` in it is a store
+tag. The child is forked THERE rather than here, and the branch it
+came from is only read: every ask forks, and the child is what the
+runner drives. `inherit` must be `"fresh"` with a fork point, and says
+so when it is not — a conversation at somebody else's commit is not
+this session's to continue.
+
+A child forked from elsewhere shares no history with the asker, so its
+branch holds that other state's whole tree. A merge of it brings all
+of that back, not only what the child wrote (`answer.changed` is
+measured against the fork point, which is the honest answer about the
+child and not about your tree). Take its files, or read it in place,
+unless bringing the other state in is what you meant.
+
+`resume` gives a new task to a child this session already has: the
+same branch with its conversation kept, and no second fork. Everything
+that belongs to the CHILD carries over — where it was forked from, its
+base, whether it is `keep`-flagged — and only the run is new: the
+task, the status, the answer, the timings. A fork point that the child
+did not come from is refused, since a child answers from the state
+whose conversation it carries, and `inherit` must stay `"fresh"` for
+the same reason.
+
+A child does **one task at a time**. A run still in flight refuses the
+next one, and it is in flight until its runner stops — `cancel`
+discards an answer, it cannot interrupt the embedder's loop, so a
+cancelled run holds its child until the runner is done with it. The
+check that a branch is free and the reservation of it are one critical
+section, so two callers resuming one child cannot both pass.
 
 **The helper never commits for the delegate.** A delegate is the
 author of its own commits, and the answer names what it *landed*:
@@ -1452,8 +1505,11 @@ boundaries where a handle does not — the job's `name` is the
 serialization format every later verb takes.
 
 ```python
-Job(name, task, status, ref, started, finished, changed, kept, uncommitted)
+Job(name, task, status, ref, started, finished, changed, kept, uncommitted,
+    origin)
 # status: running | answered | declined | capped | cancelled | failed
+# origin: (the fork point as spelled, its commit) — None when the
+#         child was forked from the asking session
 
 Answer(text, status, ref, branch, changed, artifacts, provenance, uncommitted)
 str(answer) == answer.text            # printing one yields prose
@@ -1492,6 +1548,13 @@ what it changed, then the next step spelled for the terminal:
 ```
 ws-git diff <name> | ws-git merge <name> | ws-git checkout <name> -- <paths>
 ```
+
+`ask` takes `from_` and `resume` as the host verb does, and a listing
+marks where a child came from when it was not forked here. The tool
+argument keeps the underscore: a JSON argument's name is the python
+parameter's name in both adapters, and `from` is a python keyword, so
+`from_` is the one spelling that is the same in the host API, the tool
+and these docs.
 
 Refusals come back as tool text rather than exceptions, and the
 description tells the agent an answer is evidence rather than an
