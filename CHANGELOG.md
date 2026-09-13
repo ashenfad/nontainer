@@ -16,8 +16,8 @@ delegate starts and how to give one another task. Elsewhere, the `ui`
 set closes.
 
 ### Added
-- **`sessions ask(from_=, resume=)`** — the two things about an ask
-  that are not its task. `from_` starts the delegate from another fork
+- **`sessions ask(fork_from=, resume=)`** — the two things about an ask
+  that are not its task. `fork_from` starts the delegate from another fork
   point, a commit named by a store tag or spelled `session@commit`
   (short ids and a session's own tags resolve as everywhere else); the
   branch it came from is only read, and `inherit` must be `"fresh"`,

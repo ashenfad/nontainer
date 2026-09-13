@@ -297,9 +297,9 @@ async def test_mcp_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
     server = build_server(ws, sessions=helper)
     try:
         descs = {t.name: t.description for t in await server.list_tools()}
-        assert "from_=" in descs["sessions"] and "resume=" in descs["sessions"]
+        assert "fork_from=" in descs["sessions"] and "resume=" in descs["sessions"]
         schema = {t.name: t.inputSchema for t in await server.list_tools()}["sessions"]
-        assert {"from_", "resume"} <= set(schema["properties"])
+        assert {"fork_from", "resume"} <= set(schema["properties"])
 
         async def call(**args) -> str:
             out = await server.call_tool("sessions", args)
@@ -307,7 +307,7 @@ async def test_mcp_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
             return blocks[0].text
 
         text = await call(
-            action="ask", task="what is north?", from_="rates-2026", wait=True
+            action="ask", task="what is north?", fork_from="rates-2026", wait=True
         )
         child = helper.list()[0].name
         assert "answering: what is north?" in text

@@ -1367,7 +1367,7 @@ from nontainer.sessions import Sessions
 
 sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=())
 sessions.ask(task, *, name=None, paths=None, inherit="fresh",
-             from_=None, resume=None, wait=False, budget=None) -> Job | Answer
+             fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
 sessions.cancel(name) -> Job
@@ -1398,12 +1398,12 @@ Two options move the two things that are not the task: where the child
 starts, and whether it starts a conversation.
 
 ```python
-sessions.ask("what is north?", from_="rates-2026", wait=True)
-answer = sessions.ask("read it", from_="sage@a3f9c2e", wait=True)
+sessions.ask("what is north?", fork_from="rates-2026", wait=True)
+answer = sessions.ask("read it", fork_from="sage@a3f9c2e", wait=True)
 sessions.ask("and south?", resume=answer.branch, wait=True)
 ```
 
-`from_` names another fork point: a commit named by a **store tag**
+`fork_from` names another fork point: a commit named by a **store tag**
 (`store.tags.add(ws, "rates-2026")` — a name that belongs to no
 session and outlives the one that made it), or one spelled
 `session@commit`. The ref resolves the way every other cross-session
@@ -1549,12 +1549,12 @@ what it changed, then the next step spelled for the terminal:
 ws-git diff <name> | ws-git merge <name> | ws-git checkout <name> -- <paths>
 ```
 
-`ask` takes `from_` and `resume` as the host verb does, and a listing
-marks where a child came from when it was not forked here. The tool
-argument keeps the underscore: a JSON argument's name is the python
-parameter's name in both adapters, and `from` is a python keyword, so
-`from_` is the one spelling that is the same in the host API, the tool
-and these docs.
+`ask` takes `fork_from` and `resume` as the host verb does, and a
+listing marks where a child came from when it was not forked here. The
+word is `fork_from` rather than `from` because a JSON argument's name
+is the python parameter's name in both adapters and `from` is a python
+keyword — so one spelling serves the host API, both tool schemas and
+these docs.
 
 Refusals come back as tool text rather than exceptions, and the
 description tells the agent an answer is evidence rather than an
