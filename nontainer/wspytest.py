@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .apps.testing import CallError
-from .wsverb import FerrySpec, tag
+from .wsverb import FerrySpec, abspath, tag
 
 #: Where python tests live. ``app/`` is what publishes, so a test file
 #: under it would ship in every deployment and be fetchable from the
@@ -153,8 +153,19 @@ def _rel(ws: Any, path: str) -> str:
 
 
 def _abs(ws: Any, rel: str) -> str:
+    """A workspace-relative path (a region's, a frame's) as an absolute
+    one. Not for an argument the agent typed: that is a path argument,
+    and :func:`nontainer.wsverb.abspath` is how every ws-* verb reads
+    one."""
     root = "" if ws.root == "/" else ws.root.rstrip("/")
     return f"{root}/{rel.lstrip('/')}"
+
+
+def _selection(ws: Any, options: Options, cwd: str) -> list[tuple[str, str | None]]:
+    """The positional selectors as ``(workspace-relative path, test
+    name or None)``: absolute kept, relative resolved against the
+    terminal's cwd, the way every ws-* verb reads a path argument."""
+    return [(_rel(ws, abspath(cwd, path)), name) for path, name in options.select]
 
 
 def _walk(fs: Any, base: str, skip: str) -> list[str]:
@@ -173,7 +184,9 @@ def _walk(fs: Any, base: str, skip: str) -> list[str]:
     return sorted(out)
 
 
-def _discover(ws: Any, options: Options) -> tuple[list[str], list[str]]:
+def _discover(
+    ws: Any, selection: list[tuple[str, str | None]]
+) -> tuple[list[str], list[str]]:
     """``(test files, notes)`` for this run, workspace-relative.
 
     With no positional selector the whole tree is walked except
@@ -183,9 +196,9 @@ def _discover(ws: Any, options: Options) -> tuple[list[str], list[str]]:
     fs = ws.files.fs
     root = "" if ws.root == "/" else ws.root.rstrip("/")
     notes: list[str] = []
-    if options.select:
+    if selection:
         files: list[str] = []
-        for path, _ in options.select:
+        for path, _ in selection:
             target = _abs(ws, path)
             if fs.exists(target) and fs.isdir(target):
                 files.extend(_walk(fs, target, f"{root}/{APP_DIR}"))
@@ -694,7 +707,7 @@ def parse_argv(argv: Any = ()) -> Options:
     )
 
 
-def run_pytest(ws: Any, argv: Any = ()) -> TestReport:
+def run_pytest(ws: Any, argv: Any = (), *, cwd: str | None = None) -> TestReport:
     """Run the workspace's tests and report what happened.
 
     The report is data: ``report.ok`` is what a merge policy gates on,
@@ -705,19 +718,24 @@ def run_pytest(ws: Any, argv: Any = ()) -> TestReport:
         options = parse_argv(argv)
     except UsageError as e:
         return _usage_report(str(e))
-    return run_options(ws, options)
+    return run_options(ws, options, cwd)
 
 
-def run_options(ws: Any, options: Options) -> TestReport:
-    """``run_pytest`` with an argv already parsed."""
+def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport:
+    """``run_pytest`` with an argv already parsed. ``cwd`` is what a
+    relative selector resolves against — the terminal's, when the verb
+    is what called."""
     started = time.perf_counter()
+    if cwd is None:
+        cwd = ws.files.fs.getcwd()
+    selection = _selection(ws, options, cwd)
     try:
-        files, notes = _discover(ws, options)
+        files, notes = _discover(ws, selection)
     except UsageError as e:
         return _usage_report(str(e))
 
-    wanted = {p for p, n in options.select if n}
-    names_by_file = {p: {n for q, n in options.select if q == p and n} for p in wanted}
+    wanted = {p for p, n in selection if n}
+    names_by_file = {p: {n for q, n in selection if q == p and n} for p in wanted}
 
     sources = _Sources(ws)
     outcomes: list[TestOutcome] = []
@@ -1151,7 +1169,7 @@ def make_wspytest_command(ws: Any) -> Any:
             options = parse_argv(args)
         except UsageError as e:
             return CommandResult(exit_code=2, stderr=str(e))
-        report = run_options(ws, options)
+        report = run_options(ws, options, ctx.fs.getcwd())
         if report.collection_error is not None and not report.outcomes:
             # Nothing ran and nothing was collected: the answer is the
             # refusal itself, on stderr, not an empty report.

@@ -22,6 +22,7 @@ modules; this one only ferries them.
 
 from __future__ import annotations
 
+import posixpath
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from io import StringIO
@@ -80,6 +81,16 @@ class FerrySpec:
     over_budget: Callable[..., dict] | None = field(default=None, compare=False)
     """``(ws, stdout, landed, result) -> triple`` for an answer past
     the budget. Required when ``budget`` is set."""
+
+
+def abspath(cwd: str, arg: str) -> str:
+    """A path argument as a workspace-absolute path: an absolute one
+    normalized, a relative one resolved against the cwd. Every ws-*
+    verb reads its path arguments this way, so ``ws-git stage f.txt``
+    and ``ws-pytest f.py`` mean the same directory."""
+    if arg.startswith("/"):
+        return posixpath.normpath(arg)
+    return posixpath.normpath(posixpath.join(cwd or "/", arg))
 
 
 def tag(fn: Any, spec: FerrySpec) -> Any:

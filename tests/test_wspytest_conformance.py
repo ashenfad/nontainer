@@ -125,3 +125,35 @@ def test_a_test_reaching_a_workspace_module_names_that_file_on_both_rungs(reques
         code, text = _run(rung, name, "ws-pytest -k helper")
         assert code == 1, text
         assert "app/api/_lib.py:2: in load" in text, (rung, text)
+
+
+def _root(w):
+    """The absolute path an agent on this rung would type: the guest
+    names its own tree, and the ferry is what brings it home."""
+    return getattr(w.runtime.executor, "_work", "") or "/workspace"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "ws-pytest {root}/tests/test_mixed.py",
+        "ws-pytest {root}/tests/test_mixed.py::test_upper",
+        "ws-pytest {root}/tests",
+        "cd tests; ws-pytest test_mixed.py::test_upper",
+    ],
+)
+def test_a_path_selector_resolves_like_every_other_verbs(template, request):
+    """A selector is a path argument: absolute kept, relative resolved
+    against the cwd — the rule every ws-* verb reads its paths by."""
+    name = re.sub(r"[^A-Za-z0-9_.-]", "-", request.node.name)
+    out = []
+    for rung in ("local", "dud"):
+        w = _ws(rung, name)
+        try:
+            r = w.terminal(template.format(root=_root(w)))
+            out.append((r.exit_code, _normalize(r.stdout + r.stderr)))
+        finally:
+            w.close()
+    assert out[0] == out[1], template
+    assert "collected" in out[0][1], out[0][1]
+    assert "not found" not in out[0][1], out[0][1]

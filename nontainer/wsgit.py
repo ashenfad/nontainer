@@ -75,14 +75,13 @@ stable-contract alias it is in git.
 from __future__ import annotations
 
 import difflib
-import posixpath
 import re
 from collections.abc import Mapping
 from typing import Any
 
 from .agentgit import HASH_RE, MERGE_TOOL, PICK_TOOL, AgentGit
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
-from .wsverb import FerrySpec, tag
+from .wsverb import FerrySpec, abspath, tag
 
 _VERBS = (
     "stage",
@@ -355,9 +354,7 @@ def _merge_hash(git: AgentGit, source: str) -> str | None:
 
 def _abspath(ctx: Any, arg: str) -> str:
     """Shell spelling → workspace-absolute path (resolves against cwd)."""
-    if arg.startswith("/"):
-        return posixpath.normpath(arg)
-    return posixpath.normpath(posixpath.join(ctx.fs.getcwd(), arg))
+    return abspath(ctx.fs.getcwd(), arg)
 
 
 def _show(ws: Any, path: str) -> str:
