@@ -23,6 +23,9 @@ store.exists(session) -> bool
 store.delete(sessions, *, min_age=3600) -> None
 store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at session@commit
 store.clean(*, min_age=3600) -> int       # sweep unreachable commits
+store.shared(name, **open kwargs) -> Workspace   # the shared plane (below)
+store.shared_names() -> list[str]         # the planes on the store
+store.unshare(name, *, min_age=3600) -> None
 store.tags -> StoreTags                   # store-scoped tags (below)
 store.close() -> None                     # also a context manager
 ```
@@ -35,15 +38,16 @@ substrate); the store-level verbs then refuse, because the layout is
 the factory's and guessing it would be worse than saying so.
 
 `sessions()` lists session ids only: kvgit's `refs/tags/` tag refs,
-the `@` store namespace (where the publication branches and the store's
-own read anchor live), and the legacy `__void__` branch are reserved
-names, not sessions.
+the `@` store namespace (where the publication branches, the shared
+planes and the store's own read anchor live), and the legacy `__void__`
+branch are reserved names, not sessions.
 
 **`store.delete(sessions, *, min_age=3600)`** drops a session's entire
 stored state — sessions only: every name must be a session id, checked
 before any of them reaches the backend, so the `@store/` branches (a
-publication's, the read anchor) cannot be named for teardown; a
-publication goes with `unpublish`. It dispatches by backend to the
+publication's, a shared plane's, the read anchor) cannot be named for
+teardown; a publication goes with `unpublish`, a shared plane with
+`unshare`. It dispatches by backend to the
 layout `open` built —
 `kvgit` deletes the named branches from `<path>/kvgit`, and with each
 branch the session-scoped tags it owns, leaving store-scoped ones
@@ -73,6 +77,73 @@ ws-git line prints — expands against that session's whole history, the
 framework's commits included. An ambiguous prefix raises `ValueError`
 naming the commits it could mean; one nothing matches raises
 `CommitNotFoundError`, exactly as a whole id nothing matches does.
+
+**`store.shared(name, **open_kwargs)`** — the shared plane: a
+`Workspace` on `@store/shared/<name>` that belongs to no session.
+
+Everything else the store versions is one session's. A shared plane is
+the fourth plane beside a session's files, cache and conversation: it
+outlives every session, any of them can open it, and **many can write
+it at once**. Two sessions — or two processes — each calling
+`store.shared("catalog")` get a handle on the same branch, and a commit
+that loses its CAS to the other three-way merges onto the head that won
+instead of failing.
+
+```python
+plane = store.shared("catalog")            # created empty on first open
+plane.files.write("/workspace/items/a.json", body)
+store.shared_names()                       # ['catalog']
+store.unshare("catalog", min_age=3600)     # the sanctioned teardown
+```
+
+It is an ordinary writable workspace in every other way: versioned,
+with the same verbs, the same `ws.caps`, and `Store.open`'s
+construction keywords (`python`, `mounts`, `commands`, `cache`,
+`autocommit`, `max_observation`, `executor_factory`, `root`).
+`ws.session` names the branch, because that is where the state lives —
+a plane belongs to no session, so there is no session id to give it.
+`name` is session-id shaped, since it is a branch segment. Three
+methods rather than a `store.shared` namespace object, so they read as
+the publication verbs do (`publish` / `publications` / `unpublish`).
+
+The branch is the store's, not a session's: `sessions()` never lists
+it, `delete` refuses it (no session id may begin with `@`), and
+`unshare` is the one way to remove it — with the tags it owns, and a
+name no plane answers to raising rather than passing quietly, because
+there is no registry row to reconcile and a silent no-op would only
+ever mean a typo.
+
+**How two writers merge.** Nothing locks. A commit whose CAS is lost
+rebases its staged changes onto the moved head by the same rules a
+merge resolves by:
+
+| keys | rule |
+|---|---|
+| different files | both land — a merge function is consulted only where both sides changed a key |
+| one file, different lines | three-way text merge; the metadata row beside it carries the size of the merged bytes |
+| one file, the same lines | refused: nothing is committed, the staged work is still staged, and `WorkspaceError` names the paths |
+| the plane's own cache, conversation and bookkeeping keys | merged per key — a second handle on the plane is not another session |
+
+The refusal is the deliberate half. A session's merge lands conflict
+markers because an agent is there to resolve them; a plane is read by
+whatever the embedder points at it, so markers would be a corrupted
+item nothing reports. **One file per item** (`items/<id>.json`, a file
+per memory, a file per skill) is the convention that makes the plane
+multi-writer by construction: two writers never name one key, so
+nothing ever contests.
+
+`@store/shared/<name>@<commit>` is a ref like any other —
+`store.resolve` and `ws.files.attach` take it, and read exactly that
+commit. It is checked against the branches first: opening a branch
+kvgit does not know would mint it, so a ref into a plane that was
+unshared is refused rather than reviving it. No lock is involved, since
+a plane has no registry row to hold still.
+
+**`ws.files.mount_shared(name, at, *, root=None)`** mounts a plane into
+a session at a path the embedder names, read-only and **live**: see the
+file surface below. What lives on a plane is the embedder's word —
+a team's skills directory, a shared catalog, an agent memory. nontainer
+supplies the branch, the workspace, the merge and the mount.
 
 **`store.tags`** — the store-scoped half of tags, the names that
 deliberately outlive the session that made them:
@@ -412,7 +483,7 @@ says which seam it belongs to:
 
 | | holds | |
 |---|---|---|
-| `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
+| `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / attach / mount_shared / detach / attachments / export / fs |
 | `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout / tags / tag / delete_tag |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
 | `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
@@ -779,6 +850,30 @@ sees it — the contract a `Mount` outside the root already has. And as
 with a mount, while anything is attached the working directory belongs
 to the composition, so a session committed in that state reopens at its
 root rather than where its agent was standing.
+
+**`ws.files.mount_shared(name, at, *, root=None)`** mounts a shared
+plane inside this session at `at`, read-only and **live**; it returns
+the branch it follows, `detach(at)` releases it, and `attachments()`
+lists it by that branch and no commit, because it is pinned to none.
+
+Live is the whole difference from `attach`. A plane is a moving head
+that other sessions and other processes write, so a window frozen at a
+commit would go stale the moment one of them committed: a read through
+the mount sees the branch as it is, with no re-mount. What a ref
+freezes is still frozen — `attach("@store/shared/<name>@<commit>", at)`
+reads exactly that state — and attaching the bare branch is refused,
+naming this verb. Read-only is not negotiable: a write goes through
+`store.shared(name)`, which is where the plane's merge is.
+
+Otherwise it is an attachment: not versioned, not captured by this
+session's commits, not carried by a fork, gone when the session closes.
+The plane must already exist, since a mount that created one would read
+an empty tree as an empty catalog rather than as a typo. `root` is the
+workspace root the plane's own files live under (default `/workspace`)
+— a fact about the plane, not about this session. A point inside this
+session's root reaches every rung; an executor that runs elsewhere is
+handed the tree when it syncs, so it sees the plane as of that sync,
+while an in-process executor reads the live view directly.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s

@@ -22,6 +22,9 @@ Durable state lives in three planes instead, each with one job:
 - **the filesystem** holds **artifacts** — everything else the agent
   writes.
 
+A fourth plane sits beside them and belongs to no session: see *The
+shared plane* below.
+
 This is deliberate and it matches [agex](https://github.com/ashenfad/agex),
 so an agent's mental model transfers verbatim. The alternative — a
 resident REPL whose namespace *is* the state — couples "what the agent
@@ -326,6 +329,14 @@ merge verb. An ordinary commit that loses its CAS to a second handle on
 the SAME session must still take that handle's conversation, which is
 this session's own.
 
+An ordinary commit resolves the framework's keys by these same rules,
+so two handles on one session merge clean. Its FILES are the one place
+the two differ by branch: on a session they are not merged — one
+agent's world, where a file reconciled with nobody asking is a surprise
+— and a lost CAS over one raises, naming the paths. On a shared plane
+they merge three-way, because two writers landing at once is what the
+plane is for.
+
 **Judgment to the LLM, bytes to the machine.** The merge is
 mechanical: child-only changes apply, disjoint two-sided changes union,
 identical bytes on both sides are not a conflict, and overlapping edits
@@ -365,6 +376,56 @@ view hides is not its business.
 `fork` and `merge` by name until it has a merge engine — a fork you
 cannot merge back is a trap, not a rung — while `diff` and take still
 work. The `dir` backend refuses both.
+
+## The shared plane
+
+The three planes above are one session's, and so is everything else the
+store versions: a branch per session, and the only thing that outlives
+one is a store tag, which is frozen. The fourth plane is the one that
+does not belong to a session. A **shared plane** is a `Workspace` on a
+reserved branch, `@store/shared/<name>` — versioned, writable, readable
+from any session, and multi-writer by construction.
+
+Two properties define it, and they are the two a session's plane does
+not have: it **outlives every session**, and **many write it at once**.
+A session id cannot begin with `@`, so the namespace is the store's
+alone — the branch is not a session, `sessions()` never lists it, and
+`delete` cannot name it; `unshare` is its teardown, as `unpublish` is a
+publication's.
+
+**nontainer does not say what lives there.** It supplies the branch,
+the workspace over it, the merge two concurrent writers land through,
+and an optional read-only mount into a session at a path the embedder
+names. Memory, a team's skills directory, a shared data catalog: every
+one of those is an embedder's word for what it decided to keep on a
+plane, and nontainer has no opinion about any of them.
+
+**The merge is what makes it multi-writer.** Nothing locks. A commit
+whose CAS is lost to another handle three-way merges onto the head that
+won: disjoint files both land, one file edited on different lines
+merges as text, and the metadata row beside it carries the size of the
+merged bytes. Where both sides changed the same lines the commit is
+refused whole — nothing committed, the staged work still staged, and
+the paths named. That is the deliberate deviation from the merge verb,
+which lands `<<<<<<<` markers because an agent is standing there to
+resolve them: a plane is read by whatever the embedder points at it, so
+a marked file would be a corrupted item nothing reports. The
+convention that makes conflicts rare is one file per item — a file per
+memory, a file per skill, `items/<id>.json` — so two writers never name
+one key.
+
+The plane's own cache and stored conversation merge per key rather than
+taking a side whole. A second handle on the plane is not another
+session: what it wrote there is the plane's, and the whole-prefix
+"ours" that keeps a delegate's conversation out of its caller would
+drop it.
+
+**A mount is a window, not a copy.** `ws.files.mount_shared(name, at)`
+shows the plane inside a session, read-only and live: the branch is a
+moving head that other processes write, so a window frozen at a commit
+would go stale the moment one of them committed. A ref into the plane
+(`@store/shared/<name>@<commit>`) is the frozen reading, and `attach`
+takes it like any other ref.
 
 ## Tags have two scopes, and nontainer picks them
 
@@ -525,9 +586,6 @@ pitch; the pitch is the *workspace*.
 - **AgentFS commit/restore** via whole-file snapshots. The provider
   spike is unversioned today; wiring snapshots as commits is future
   work.
-- **Merge-fn presets** for concurrent sessions over one branch. kvgit
-  has the CAS + three-way-merge machinery; shipping opinionated
-  defaults doesn't yet.
 - **Idle TTL for view workers.** `PythonConfig.warm_view_workers` bounds how
   many resident workers a view may have, but residency only ever
   *rises* toward that bound — it never decays. A burst of N concurrent

@@ -15,9 +15,40 @@ versioning section the host API alone. A third verb joins it:
 `ws-pytest`, the tier below `ws-curl` and `test_app`, where a question
 about a function is asked of the function — `docs/testing.md` is its
 page. Delegation learns where a delegate starts and how to give one
-another task. Elsewhere, the `ui` set closes.
+another task. A fourth plane arrives beside a session's files, cache
+and conversation: the shared plane, a workspace no session owns and
+many write at once. Elsewhere, the `ui` set closes.
 
 ### Added
+- **The shared plane** — `store.shared(name)` opens a writable
+  `Workspace` on `@store/shared/<name>`, created empty on first open
+  the way a session is and belonging to no session: it outlives every
+  one of them, any of them can open it, and two sessions or two
+  processes can write it at once. `store.shared_names()` lists the
+  planes and `store.unshare(name, *, min_age=)` removes one, the
+  sanctioned teardown that `Store.delete` (sessions only) refuses to
+  be. The branch joins the store's own `@store/` namespace: not a
+  session, never in `sessions()`, and `@store/shared/<name>@<commit>`
+  is a ref `store.resolve` and `ws.files.attach` take like any other.
+  nontainer supplies the branch, the workspace, the merge and the
+  mount; what lives on a plane is the embedder's word.
+- **A lost CAS on a shared branch three-way merges.** Disjoint files
+  both land, one file edited on different lines merges as text with the
+  metadata row carrying the size of the merged bytes, and one file
+  edited on the same lines is refused whole — nothing committed, the
+  staged work still staged, and `WorkspaceError` naming the paths
+  rather than an encoded key. A plane is read by machines and has
+  nobody driving a marked file to a resolution, which is why it refuses
+  where the merge verb marks. One file per item (`items/<id>.json`) is
+  the convention that makes a plane multi-writer by construction.
+- **`ws.files.mount_shared(name, at, *, root=None)`** mounts a plane
+  into a session read-only and LIVE, at a path the embedder names: a
+  plane is a moving head other processes write, so what they commit is
+  there to read with no re-mount. `detach(at)` releases it and
+  `attachments()` lists it by the branch it follows, being pinned to no
+  commit. Attaching the bare branch is refused with this verb named;
+  attaching `@store/shared/<name>@<commit>` still reads exactly that
+  commit.
 - **`sessions ask(fork_from=, resume=)`** — the two things about an ask
   that are not its task. `fork_from` starts the delegate from another fork
   point, a commit named by a store tag or spelled `session@commit`
@@ -107,6 +138,10 @@ another task. Elsewhere, the `ui` set closes.
   read.
 
 ### Changed
+- **A commit that loses its CAS on one file now names the paths.** The
+  raw `MergeConflict` kvgit raises is reported as a `WorkspaceError`
+  saying which files contested and that nothing was committed, matching
+  what the selective-commit path already did.
 - **The ui set is closed, and the JSON floor is gone.** A ui value is a
   plotly figure, a pandas DataFrame, a matplotlib figure, an image, a
   list of card rows, or a string naming a workspace file. Anything else
