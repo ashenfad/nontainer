@@ -40,8 +40,20 @@ from typing import Any
 from .wspytest import TestOutcome, TestReport, UsageError
 from .wsverb import FerrySpec, abspath, tag
 
-#: Where JavaScript tests live, recursively.
+#: Where JavaScript tests live, recursively. The preferred home: it
+#: sits outside the subtree a publication carries.
 TESTS_DIR = "tests"
+
+#: The published subtree, which is also where the modules under test
+#: live — so a test may sit beside its module here, and ships when the
+#: app does.
+APP_DIR = "app"
+
+#: Backend source. A ``.test.js`` here is not runnable: the harness
+#: refuses that subtree the way the app's own static dispatch does, so
+#: the page could not load the file even if it were collected — and
+#: handlers are Python anyway.
+API_DIR = "app/api"
 
 #: What a test file is called. The ecosystem's convention, and what an
 #: agent writes without being asked.
@@ -83,11 +95,50 @@ def _walk(fs: Any, base: str) -> list[str]:
 
 
 def discover(ws: Any) -> tuple[list[str], list[str]]:
-    """``(test files, notes)`` for this workspace, workspace-relative."""
+    """``(test files, notes)`` for this workspace, workspace-relative.
+
+    Two homes, ``tests/`` first and ``app/`` after it. A ``.test.js``
+    beside the module it tests is what the ecosystem does and what an
+    agent writes without being asked, and the module it tests is under
+    ``app/`` by definition — so it is collected, and the run says
+    plainly that it ships with a publication. ``app/api/`` is neither:
+    the harness refuses that subtree, so a test there is reported as not
+    runnable rather than silently skipped.
+    """
     fs = ws.files.fs
     root = "" if ws.root == "/" else ws.root.rstrip("/")
-    files = _walk(fs, f"{root}/{TESTS_DIR}")
-    return [_rel(ws, p) for p in files], []
+    api_root = f"{root}/{API_DIR}"
+    tests = [_rel(ws, p) for p in _walk(fs, f"{root}/{TESTS_DIR}")]
+    beside: list[str] = []
+    unreachable: list[str] = []
+    for path in _walk(fs, f"{root}/{APP_DIR}"):
+        target = (
+            unreachable
+            if path == api_root or path.startswith(api_root + "/")
+            else beside
+        )
+        target.append(_rel(ws, path))
+
+    notes: list[str] = []
+    if beside:
+        notes.append(
+            f"{_files(beside)} beside a module under {APP_DIR}/ "
+            f"({', '.join(beside)}). {APP_DIR}/ is what publishes, so these "
+            "ship with the app and are fetchable from it. Move a test to "
+            f"{TESTS_DIR}/ if that is not what you want."
+        )
+    if unreachable:
+        notes.append(
+            f"{_files(unreachable)} under {API_DIR}/ not runnable "
+            f"({', '.join(unreachable)}): the harness refuses that subtree the "
+            "way the served app does, so the page could not load them — and "
+            f"handlers are Python, which ws-pytest runs from {TESTS_DIR}/."
+        )
+    return [*tests, *beside], notes
+
+
+def _files(paths: list[str]) -> str:
+    return f"{len(paths)} test file" + ("" if len(paths) == 1 else "s")
 
 
 def _filter_key(ws: Any, cwd: str, word: str) -> str:
@@ -232,9 +283,17 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
         cwd = ws.files.fs.getcwd()
     files, notes = discover(ws)
     if not files:
+        # The notes ride along: a workspace whose only test files sit
+        # where they cannot run must read the reason, not "none found".
         return _usage_report(
-            f"no test files found. JavaScript tests are {TESTS_DIR}/*{SUFFIX}, "
-            f"or *{SUFFIX} beside the module they test under app/."
+            "\n".join(
+                [
+                    f"no test files found. JavaScript tests are "
+                    f"{TESTS_DIR}/*{SUFFIX}, or *{SUFFIX} beside the module "
+                    f"they test under {APP_DIR}/.",
+                    *notes,
+                ]
+            )
         )
     if options.filters:
         keys = [_filter_key(ws, cwd, word) for word in options.filters]
