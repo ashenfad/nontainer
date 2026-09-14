@@ -77,11 +77,11 @@ from .executor import (
     StagedDiff,
     ViewSpec,
     _apply_diff,
-    _flatten_grants,
     _is_plain_data,
     _refuse_reserved_host_name,
     _refuse_shadowed_host_module,
     _truncate,
+    flatten_grants,
 )
 from .workspace import PythonResult, TerminalResult
 
@@ -611,7 +611,7 @@ class DudExecutor:
                 "stdlib=False on a VM rung: a guest's Python carries its whole "
                 "standard library and cannot withhold it."
             )
-        grants = _flatten_grants(cfg)
+        grants = flatten_grants(cfg)
         for grant in grants:
             if getattr(grant, "network", False):
                 name = getattr(getattr(grant, "module", None), "__name__", "?")
