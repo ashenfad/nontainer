@@ -516,7 +516,16 @@ function spyOn(obj, key) {
 }
 
 function stubGlobal(name, value) {
-  stubbedGlobals.push([name, name in globalThis ? globalThis[name] : undefined]);
+  // Whether the property EXISTED, not just what it held. A stub for an
+  // API this browser does not have is the common case — restoring it as
+  // `undefined` would leave `'IntersectionObserver' in globalThis` true,
+  // and the next test's feature check would reach for one that is not
+  // there.
+  stubbedGlobals.push([
+    name,
+    Object.prototype.hasOwnProperty.call(globalThis, name),
+    globalThis[name],
+  ]);
   globalThis[name] = value;
   return vi;
 }
@@ -524,7 +533,8 @@ function stubGlobal(name, value) {
 function unstubAllGlobals() {
   while (stubbedGlobals.length) {
     const entry = stubbedGlobals.pop();
-    globalThis[entry[0]] = entry[1];
+    if (entry[1]) globalThis[entry[0]] = entry[2];
+    else delete globalThis[entry[0]];
   }
   return vi;
 }

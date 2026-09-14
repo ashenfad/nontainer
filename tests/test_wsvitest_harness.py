@@ -603,3 +603,32 @@ def test_every_teardown_hook_runs_even_after_one_throws(ws):
     assert outcome(result, "outer cleanup still ran").status == "passed", outcome(
         result, "outer cleanup still ran"
     ).message
+
+
+def test_unstubbing_an_absent_global_removes_it_again(ws):
+    """Restoration restores existence, not just value: a stub for an
+    API the browser does not have must leave `in globalThis` false, or
+    a later test's feature check sees one that is not there."""
+    result = run(
+        ws,
+        "tests/absent.test.js",
+        """
+        it('stubs an API this browser does not have', () => {
+          expect('__ntAbsentApi' in globalThis).toBe(false);
+          vi.stubGlobal('__ntAbsentApi', () => 'stubbed');
+          expect(globalThis.__ntAbsentApi()).toBe('stubbed');
+          vi.unstubAllGlobals();
+          expect('__ntAbsentApi' in globalThis).toBe(false);
+        });
+        it('restores a global that did exist', () => {
+          const real = globalThis.fetch;
+          vi.stubGlobal('fetch', vi.fn());
+          expect(globalThis.fetch).not.toBe(real);
+          vi.unstubAllGlobals();
+          expect(globalThis.fetch).toBe(real);
+        });
+        """,
+    )
+    assert [o.status for o in result.outcomes] == ["passed", "passed"], [
+        (o.name, o.message) for o in result.outcomes
+    ]
