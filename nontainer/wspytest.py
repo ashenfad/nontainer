@@ -601,8 +601,7 @@ def _rewrite(
     it.
     """
     raw, exc = _parse_frames(text)
-    mapper = getattr(getattr(ws, "runtime", None), "executor", None)
-    to_host = getattr(mapper, "_guest_to_host", None)
+    to_host = getattr(getattr(ws, "runtime", None), "guest_to_host", None)
     frames: list[TestFrame] = []
     for path, line, fn in raw:
         if _UNIT_RE.match(path):
