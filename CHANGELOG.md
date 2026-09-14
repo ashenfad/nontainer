@@ -7,284 +7,218 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-ws-git grows the git concepts an agent reaches for: worktrees, short
-commit ids, the view it was given, `log -S`, `revert`, `cherry-pick`,
-`stash`, `merge --abort` and `tag`. The agent-facing reference moves to
-`docs/ws-git.md`, the twin of `ws-git help`, leaving `docs/api.md`'s
-versioning section the host API alone. A third verb joins it:
-`ws-pytest`, the tier below `ws-curl` and `test_app`, where a question
-about a function is asked of the function — and `ws-vitest`, the same
-tier for the other language, where a frontend module runs in a browser
-page that reaches nothing but the files under test. `docs/testing.md` is
-their page. Delegation learns where a delegate starts, how to give one
-another task, and what becomes of its branch afterwards: branches age
-out on an idle TTL the embedder sweeps. Elsewhere, the `ui` set
-closes.
+**The agent's own tools.** ws-git grows the git concepts an agent
+reaches for — worktrees, short commit ids, the view it was given, `log
+-S`, `revert`, `cherry-pick`, `stash`, `merge --abort` and `tag` — and
+two verbs join it a tier below `ws-curl` and `test_app`, where a
+question about a function is asked of the function: `ws-pytest` where
+the agent's code runs, `ws-vitest` in a browser page reaching nothing
+but the files under test. Delegation learns where a delegate starts,
+how to give one another task, and what becomes of its branch — an idle
+TTL the embedder sweeps. The seams have public names, one relay carries
+every `ws-*` verb into a guest, a test holds the package's layering, the
+`ui` set closes, and the docs are re-cut by audience.
 
 ### Added
-- **`sessions.sweep(idle=)`, `Job.touched` and the `expired` status** —
-  retention for a delegate's branch, which `keep` had been recording a
-  flag for since it landed. It is idle TTL with touch on read: a job
-  carries when its caller last dealt with it, `result` and `keep` move
-  that forward, and the sweep takes the branch of every finished,
-  unheld, unkept job that has gone untouched for longer — so a delegate
-  read every turn is in use however long ago its run ended. The
-  embedder schedules it beside `store.clean()`; no verb sweeps on the
-  way past, which would make one delegate's retention depend on how
-  often another is asked for. The job's row survives: the status is
-  `expired`, the answer is dropped, `base` still answers, and `result`
-  / `keep` / a resuming `ask` raise the new `BranchExpired` naming the
-  way forward. The sweep takes only the names in its own job table — a
-  delegate's own delegates belong to the helper that asked for them,
-  and a human may create `foo.notes` beside `foo`.
-- **`sessions ask(fork_from=, resume=)`** — the two things about an ask
-  that are not its task. `fork_from` starts the delegate from another fork
-  point, a commit named by a store tag or spelled `session@commit`
-  (short ids and a session's own tags resolve as everywhere else); the
-  branch it came from is only read, and `inherit` must be `"fresh"`,
-  a conversation elsewhere being no one else's to continue. `resume`
-  gives a new task to a delegate you already have, its conversation
-  kept and its branch reused, carrying what belongs to the child (its
-  fork point, its base, its `keep` flag) and replacing only the run. A
-  child does one task at a time: a run still in flight refuses the
-  next, and a cancelled run holds its child until the runner it cannot
-  interrupt stops. `Job` gains `origin`. Both are on the `sessions`
-  tool, and nothing about what follows an answer changes — an ask
-  leaves a branch, and merging it, taking from it or leaving it is the
-  caller's step.
-- **`ws-git worktree add <dir> <session>[@<commit>]` / `list` /
-  `remove <dir>`** — `ws.files.attach` / `attachments` / `detach` in
-  the terminal, read-only and pinned at a commit; remove and re-add to
-  see newer work. `ws-git status` ends with a `worktrees:` block.
-- **`ws-git revert <commit>` and `ws-git cherry-pick
-  <session>@<commit>`**, with `ws.revert` / `ws.cherry_pick` over
-  `KvgitProvider.apply(base, theirs, info=)`: one commit's change
-  against the tree as it stands, appended, conflicting as a merge does
-  — so neither verb has a `--continue`.
-- **`ws-git stash`**, replacing the refusal that said a fork is a
-  stash: it forks the modified set to `<session>.stash-N` and restores
-  the tree, with `list`, `pop` (kept when it conflicts), `drop`, `show`.
-- **`ws-git merge --abort`** restores the tree to the commit a
-  conflicted merge landed on and clears it; the merge itself stays in
-  the history, since the restore is a new appended commit.
-- **`ws-git tag`** — the agent's own bookmark, a ref wherever a ref is
-  taken, `<session>@<tag>` for another session's, decorating `ws-git
-  log`. It pins nothing and no fork or merge carries one; the host half
-  is `ws.index.tags()` / `tag()` / `delete_tag()`.
+- **ws-git's new verbs.** Git's spelling on the left, what it does here
+  on the right; `ws-git help` and `docs/ws-git.md` carry the rest.
+
+  | ws-git | what it does here |
+  |---|---|
+  | `worktree add <dir> <session>[@<commit>]`, `worktree list`, `worktree remove <dir>` | another session's tree under a directory, read-only and pinned at a commit — `ws.files.attach` / `attachments` / `detach` in the terminal. Refreshing one is taking it down and putting it up again, which is what adding over a live one says |
+  | `revert <commit>` | a new commit undoing one commit's change |
+  | `cherry-pick <session>@<commit>` | a new commit applying one change from another session, whose history must reach it |
+  | `stash [push [-m MSG]]`, `stash list`, `stash pop`, `stash drop`, `stash show` | fork everything modified to `<session>.stash-N` and restore the tree; a pop is a three-way merge and keeps the stash when it conflicts |
+  | `merge --abort` | restore the tree to the commit a conflicted merge landed on and clear it, the merge itself staying in the history |
+  | `tag [-f] <name> [<commit>]`, `tag`, `tag -d <name>` | the agent's own bookmark: a ref wherever a ref is taken, `<session>@<tag>` from elsewhere, decorating `ws-git log`. It pins nothing, a fork starts with none, a merge brings none over, and a name spelled like a commit id is refused |
+  | `log -S <string>` | git's pickaxe, with `+` or `-` after the id for appeared or vanished |
+  | `log --all` | every commit the session holds, bookkeeping included; `-n 0` is an empty log on every walk |
+  | `sparse-checkout list` | the paths this session was given to see, or `(full)`, also a `view:` header in `ws-git status` |
+
+  A revert and a cherry-pick are one commit's change against the tree as
+  it stands, appended and conflicting as a merge does, so neither has a
+  `--continue`; `ws.revert(commit)` / `ws.cherry_pick(ref)` are the host
+  half over `provider.apply(base, theirs, info=)` and both count as
+  agent commits in `ws.index.log()`. A stash is an ordinary session that
+  `store.sessions()` lists and `Store.delete` drops; the bookmarks' host
+  half is `ws.index.tags()` / `tag()` / `delete_tag()`; `status` ends
+  with a `worktrees:` block; `rebase` still refuses.
 - **A short commit id is a ref everywhere** — a unique prefix of seven
   hex characters or more, in `store.resolve`, `ws.checkout`,
-  `ws.fork(at=)`, `ws.files.attach` and the ws-git verbs.
-- **`ws-git log -S <string>`**, git's pickaxe with `+` or `-` after the
-  id, and `--all` (every commit the session holds) on its own; `-n 0`
-  is an empty log on every walk.
-- **`ws-git sparse-checkout list`, and a `view:` header in `ws-git
-  status`**, so a narrowed session can ask what it was given.
-- **`from host import db`** — the injected host objects arrive as a
-  synthetic `host` module as well as bare names, so a workspace module
-  a handler imports can reach them: the import resolves at the top
-  level, in a handler and in a module alike, where a bare name reached
-  only the first two. It carries the same objects the namespace holds
-  (`cache` included, read-only under a GET), is rebuilt per execution,
-  and takes no writes. Both rungs answer it — sandtrap's per-exec
-  modules on the local one, a guest prelude on dud.
-- **`ws-pytest`, the unit tier** — pytest's shape over the workspace's
-  own executor: `tests/test_*.py` (never under `app/`, which
-  publishes), every top-level `test_*` function, plain `assert`, and
-  pytest's report, flags and exit codes. Paths and `path::name`,
-  `-k EXPR`, `-x` / `--maxfail=N`, `-q` / `-v`, `--tb=short|long|no`;
-  everything else pytest has is refused with the idiom that replaces
-  it, and a `tests/conftest.py` is reported unread rather than
-  silently ignored. Exit codes are pytest's own, 4 for a bad argument
-  included — so `tests/test_x.py::test_typo` reads as the mistake it
-  is rather than as an empty suite. Tests run where the agent's code runs — in the
-  guest on a VM rung — and the report reads the same on both rungs.
-  `docs/testing.md` is the agent-facing page.
-- **`ws-vitest`, the unit tier for JavaScript** — vitest's shape, which
-  is jest's surface, with no vitest and no `node_modules`: the harness
-  is nontainer's own JavaScript, served to a headless Chromium page by
-  a driver beside `test_app`'s. `tests/**/*.test.js` leads the run and
-  `*.test.js` beside a module under `app/` follows it — the co-located
-  convention an agent writes without being asked, and the run says
-  plainly that those files ship with a publication. `app/api/` is
-  reported as not runnable rather than skipped. `app/` and `tests/` are
-  served as siblings under one synthetic root, which is what makes
-  `import { add } from '../app/util.js'` resolve; `describe`, `it`,
-  `beforeEach`, `expect`, `vi` and `jest` are globals and also resolve
-  from `'vitest'` and `'@jest/globals'` through an import map. `run`
-  (ignored), path filters, `-t NAME`, `--reporter=default|verbose` and
-  `--bail`; `--coverage`, `--ui`, `--config` and `--watch` are refused
-  with what to do instead, as are `vi.mock`, snapshot matchers and
-  `expect.extend`. Exit codes are 0 and 1, vitest's own, so the message
-  is what separates a refused flag from a failing test.
-- **A hermetic run, and mocking at the fetch boundary** — `ws-vitest`
-  brings up no api routes, reaches no other host, and serves its page
-  under a policy stricter than the app's (`connect-src 'self'`, where a
-  served app gets `'self' https:`; `AppsConfig.csp_extend` only ever
-  adds sources, so the unit tier writes its own). A forgotten mock
-  fails on the fetch instead of passing for the wrong reason, and
-  `vi.stubFetch({"api/scores": {...}})` — keyed by exact path, so a
-  pattern cannot match more than the test meant — is the repair. The
-  browser is on the host on every rung, the asymmetry `test_app`
-  already has, and every report says so.
+  `ws.fork(at=)`, `ws.files.attach` and the ws-git verbs, one that could
+  mean two commits refused naming them.
+- **Two unit-test verbs, a tier below a request.** `ws-pytest` is
+  pytest's shape over the workspace's own executor: `test_*.py` at any
+  depth but under `app/`, which publishes; every top-level `test_*`
+  taking no arguments; plain `assert`; a test wanting a fixture is an
+  error rather than a skip, and a `tests/conftest.py` is reported
+  unread. `ws-vitest` is vitest's shape, which is jest's surface, with
+  no vitest and no `node_modules`: nontainer's own harness on a headless
+  Chromium page, driven beside `test_app`'s and wanting the `[apps]`
+  extra. There `tests/**/*.test.js` leads the run and `*.test.js` beside
+  a module under `app/` follows it, the run saying those ship with a
+  publication and reporting one under `app/api/` as not runnable; `app/`
+  and `tests/` are siblings under one synthetic root, so `import { add }
+  from '../app/util.js'` resolves; `describe`, `it`, `beforeEach`,
+  `expect`, `vi` and `jest` are globals and resolve from `'vitest'` and
+  `'@jest/globals'`; unawaited work fails the test that started it, and
+  every teardown hook runs.
+
+  | | takes | exit codes |
+  |---|---|---|
+  | `ws-pytest` | paths and `path::name`, `-k EXPR`, `-x` / `--maxfail=N`, `-q` / `-v`, `--tb=short\|long\|no` | pytest's own, 4 for a bad argument included |
+  | `ws-vitest` | `run` (ignored), path filters, `-t NAME`, `--reporter=default\|verbose`, `--bail`; refuses `--coverage`, `--ui`, `--config`, `--watch`, `--browser`, `--environment`, `vi.mock`, snapshot matchers, `expect.extend`, `it.only` / `it.skip`, `beforeAll` / `afterAll` | 0 and 1, vitest's own, so the message separates a refused flag from a failing test |
+
+  Each is the tool's shape and not the tool, so what is not there is
+  refused with the idiom that replaces it. Python tests run where the
+  agent's code runs, in the guest on a VM rung; the browser is on the
+  host on every rung, and every report says which. Both read the same on
+  both rungs.
+- **A `ws-vitest` run is hermetic, and mocks at the fetch boundary** —
+  no api routes, no other host, and a page policy stricter than the
+  app's (`connect-src 'self'`, where a served app gets `'self' https:`;
+  `AppsConfig.csp_extend` only ever adds sources), so a forgotten mock
+  fails on the fetch. `vi.stubFetch({"api/scores": {...}})` is the
+  repair, keyed by exact path.
 - **`TestReport` and `render_report`** — the run as a record before it
-  is text: counts, a `TestOutcome` per test, and each failure's frames
-  with their source, so a UI can show the first failure and a caller
-  can branch on `run_pytest(ws).ok` without parsing a summary line. Frames name the file and line the agent
-  wrote; the sandbox's own are dropped. `str(report)` is the count line
-  on its own — `2 failed, 8 passed in 0.31s` — for a caller that has to
-  quote the outcome in one line. One record for both verbs —
-  `run_vitest` fills the same one, `tool` tells them apart, and
-  `TestFrame` carries a `column` for the language whose stacks have
-  one.
-- **`call(...)` in a test's namespace** — the one piece of test
-  support a handler needs: `call("scores", params={"limit": "2"},
-  db=fake)` builds the request dispatch would, runs the handler, and
-  returns the response (liberal returns normalized, `HttpError` as a
-  status, a missing required field as a 400). Dependencies are
-  substituted by keyword because a handler's injected names are not
-  module attributes for a patch to reach, and a handler it runs is
-  composed into the test program so the test's own mocks are what the
-  handler sees. It does not reproduce a GET's read-only filesystem —
+  is text: counts, a `TestOutcome` per test, each failure's frames with
+  their source, `notes` for what the run refused to do silently. A
+  caller branches on `run_pytest(ws).ok` rather than parsing a summary
+  line, `str(report)` is the count line alone, and frames name what the
+  agent wrote, never the sandbox's own. `run_vitest` fills the same
+  record, `tool` tells them apart, `TestFrame` has a `column`.
+- **`call(...)` in a test's namespace** — `call("scores",
+  params={"limit": "2"}, db=fake)` builds the request dispatch would,
+  runs the handler and returns the response: liberal returns normalized,
+  `HttpError` as a status, a missing required field as a 400.
+  Dependencies are substituted by keyword, a handler's injected names
+  being no module attribute a patch could reach, and the module name has
+  to be a literal. It does not reproduce a GET's read-only filesystem —
   that stays `ws-curl`'s to enforce.
-- **`__future__` in the stdlib preset** — `from __future__ import
-  annotations` is a compiler directive that is also a real import at
-  run time, so a module carrying the line agents write by habit failed
-  at its first statement. The module holds feature flags and nothing
-  else.
-- **`unittest.mock` in the stdlib preset** (`patch`, `MagicMock` and
-  the rest of the public API; `unittest` itself exposes nothing else),
-  so a workspace module's collaborators can be patched where they are
-  read.
-- **`ws.store` and `ws.provider`** — the store a session was opened
-  from (`None` for a workspace built straight from a provider, which is
-  what makes a sweep or a continue unavailable) and the substrate under
-  it, for callers that know which one they have and want its own
-  surface: kvgit's `kv`, a `refresh()` after another handle committed.
-  The workspace's own verbs remain the portable half.
-- **`ws.expand_ref(ref) -> Ref`** — the commit half of a
-  `session@commit` spelled whole: a short id, a whole one, or that
-  session's own ws-git tag, with any `:/path` carried through. What
-  comes back names one exact state, ready for `store.resolve`. A
-  workspace verb because answering needs the session's substrate, and
-  the session half is checked first, so a ref into a session the store
-  never held says that rather than reporting on a commit nothing could
-  hold.
-- **`nontainer.executor.flatten_grants(cfg)`** — what a `PythonConfig`
-  flattens to, the way the thing registering the grants reads it. It
-  was already the one honest answer to "what may this code import";
-  now anything describing a sandbox from outside can ask instead of
-  re-deriving the rules.
-- **`ws.runtime.guest_to_host(path)`** — a guest-absolute path as the
-  host spells it, `None` where there is nothing to map. The same probe
-  `supports_ws_verbs` reports, said out loud for the callers that turn
-  a guest's answer into workspace paths.
+- **`from host import db`** — the injected host objects arrive as a
+  synthetic `host` module as well as bare names, resolving at the top
+  level, in a handler and in a module alike, where a bare name reached
+  only the first two. It holds what the namespace holds (`cache`
+  included, read-only under a GET), is rebuilt per execution, and takes
+  no writes by any door — `patch.object(host, "db", fake)` is refused.
+  Both rungs answer it: sandtrap's per-exec modules, a dud prelude.
+- **`__future__` and `unittest.mock` in the stdlib preset** — the
+  first so a module carrying the `from __future__ import annotations`
+  line agents write by habit runs (it holds feature flags and nothing
+  else), the second bringing `patch`, `MagicMock` and the rest of its
+  public API, where `unittest` itself exposes nothing else.
+- **`sessions ask(fork_from=, resume=)`** — the two things about an ask
+  that are not its task. `fork_from` starts the delegate from another
+  fork point, a commit named by a store tag or spelled `session@commit`;
+  the branch it came from is only read, `inherit` must be `"fresh"`, and
+  such a child shares no history with the asker, so its branch holds
+  that whole tree and the way back is a take rather than a merge.
+  `resume` gives a new task to a delegate you already have, its
+  conversation kept and its branch reused, carrying what belongs to the
+  child (fork point, base, `keep` flag) and replacing only the run. A
+  child does one task at a time, a cancelled run holding it until its
+  runner stops. `Job` gains `origin`; both are on the `sessions` tool.
+- **`sessions.sweep(idle, *, min_age=3600)`, `Job.touched` and the
+  `expired` status** — retention for a delegate's branch, which `keep`
+  had been recording a flag for since it landed. It is idle TTL with
+  touch on read: a job carries when its caller last dealt with it,
+  `result` and `keep` move that forward, and the sweep takes the branch
+  of every finished, unheld, unkept job untouched for longer, returning
+  the names. The embedder schedules it beside `store.clean()`, no verb
+  sweeps on the way past, and it takes only the names in its own job
+  table. The row survives: the status is `expired`, the answer dropped,
+  `base` still answering, `result` / `keep` / a resuming `ask` raising
+  the new `BranchExpired`.
+- **The seams have public names.** `ws.store` is the store a session
+  was opened from (`None` for a workspace built straight from a
+  provider, which is what makes a sweep or a continue unavailable),
+  `ws.provider` the substrate under it, and `ws.expand_ref(ref) -> Ref`
+  a `session@commit` spelled whole from a short id, a whole one or that
+  session's own ws-git tag, `:/path` carried through, for
+  `store.resolve`. `nontainer.executor.flatten_grants(cfg)` is what a
+  `PythonConfig` flattens to, and `ws.runtime.guest_to_host(path)` a
+  guest-absolute path as the host spells it, `None` where nothing maps.
 
 ### Changed
-- **The docs are re-cut by audience.** `docs/api.md` was writing for
-  embedders, seam implementers and maintainers at once, and the README
-  had grown a second quick start on top of the first. Now: two new
-  pages, `docs/sessions.md` (delegation for embedders — the `Sessions`
-  helper, `Job` / `Answer`, `fork_from` / `resume`, retention, the
-  `sessions` tool) and `docs/extending.md` (the three seams for
-  implementers — `WorkspaceProvider`, `Executor` with its view spec,
-  guest ferry and host prelude, `SessionRunner`, and the conformance
-  suites an implementation should pass). `docs/api.md` is the embedder
-  reference alone: its Delegation section moved to `sessions.md` behind
-  a pointer, its provider protocol listing to `extending.md`, its layer
-  rule and named tests to `docs/design.md`, and its historical notes
-  here. The README keeps identity — the pitch, the three concerns, the
-  sandbox position, one example — and its API tour, substrates,
-  executors and app-handler sections moved into `docs/quick-start.md`;
-  its documentation map is now grouped by who each page is for. No
-  behaviour changed.
+- **The docs are re-cut by audience.** Four new pages: `docs/ws-git.md`
+  and `docs/testing.md` for the agent's verbs, twins of `ws-git help`
+  and `--help`; `docs/sessions.md` for delegation; `docs/extending.md`
+  for the three seams (`WorkspaceProvider`, `Executor`, `SessionRunner`)
+  with the conformance suites an implementation should pass.
+  `docs/api.md` is the embedder reference alone, its layer rule and
+  named tests moved to `docs/design.md`; the README keeps identity, and
+  its API tour, substrates, executors and app-handler sections move into
+  `docs/quick-start.md`.
 - **The ui set is closed, and the JSON floor is gone.** A ui value is a
   plotly figure, a pandas DataFrame, a matplotlib figure, an image, a
   list of card rows, or a string naming a workspace file. Anything else
   — scalars and plain dicts included — yields a `ui_problems` note and
   no file, where the data tier wrote a `.json` or a capped `repr`.
-- **The ws-git blob is layout 3**, holding `tags`, `pre_merge` and the
-  stash record; a layout 2 blob is read as it stands, not discarded.
-- **Every fork lands its `ws-git.fork` commit**, one whose parent never
-  used ws-git included: it is the child's fork POINT, and without it
-  every file a delegate inherited read as one it added.
-- **`ws-git.revert` and `ws-git.cherry-pick` count as agent commits**,
-  as `ws-git.merge` does, so `ws.index.log()` shows them.
-- **A stash is an ordinary session on the store**: `store.sessions()`
-  lists `<session>.stash-N`, and dropping one is `Store.delete` by name.
+- **One relay carries every `ws-*` verb into a guest**, where each verb
+  hand-wrote its own guest shell function, host object, argv mapper and
+  tag. A verb declares a `FerrySpec` — which of its flags carry paths,
+  which carry free text, whether its bare arguments are paths — and the
+  reserved host-object name on that rung is `ws_verb`, one for all of
+  them, where it was `ws_git` and `ws_curl`.
+- **`host` is a reserved name.** A host object or a module grant called
+  `host` is refused at construction, and a workspace `host.py` (or
+  `host/`) comes back as an execution error naming the rule: `import
+  host` resolves the injected objects ahead of the workspace tree.
+- **`materialize_ui` lives in core**, at `nontainer.ui`, beside the
+  guest-side half of the same job. Nothing outside the package imported
+  `nontainer.adapters.render`'s copy, so there is no shim; the adapter
+  keeps `PYTHON_UI_NOTE`, how the convention is described to the model.
+- **The layering rule is held by a test.** nontainer is one package in
+  five layers — core, sessions, apps, the testing verbs, the adapters —
+  and core imports nothing from the other four. `tests/test_layering.py`
+  walks every module with `ast`, counts lazy function-local imports as
+  dependencies, and reports any underscore attribute a layer above core
+  reads; the reach-ins it found have public names now.
 - **Shared backend code takes its dependencies as arguments.**
   `docs/apps.md` and the apps primer now say that injected host objects
   are bound into the handler's namespace and not into the globals of a
   module it imports, so a helper reading `db` as a bare name 500s with a
-  `NameError`; the documented shape is `def load(db, limit)` with the
-  handler passing them, which a unit test can call with a fake.
-- **One relay carries every `ws-*` verb into a guest**, where each verb
-  used to hand-write its own guest shell function, host object, argv
-  mapper and tag. A verb declares a `FerrySpec` — which of its flags
-  carry paths, which carry free text, whether its bare arguments are
-  paths — and registering it is all the dud rung needs. The reserved
-  host-object name on that rung is `ws_verb` (one, for all of them),
-  where it was `ws_git` and `ws_curl`.
-- **`host` is a reserved name.** A host object or a module grant called
-  `host` is refused at construction, and a workspace `host.py` (or
-  `host/`) comes back as an execution error naming the rule: `import
-  host` resolves the injected objects ahead of the workspace tree, so
-  the file would never run and nothing would say why.
-- **`materialize_ui` lives in core**, at `nontainer.ui`, beside the
-  artifact vocabulary and the guest-side half of the same job. It was
-  in `nontainer.adapters.render`, which meant `Workspace.run_python`
-  had to import upward to reach it: what a `ui` value becomes on disk
-  is the same on every rung, so it is not an adapter's call. Nothing
-  outside the package imported the old path, so there is no shim; what
-  stays in the adapter is `PYTHON_UI_NOTE`, which is how the convention
-  is described to the model.
-- **The layering rule is held by a test.** nontainer is one package in
-  five layers — core, sessions, apps, the testing verbs, the adapters —
-  and core imports nothing from the other four, which run on core's
-  public API. `tests/test_layering.py` walks every module with `ast`,
-  counting lazy function-local imports as the dependencies they are,
-  and reports any underscore attribute a layer above core reads. The
-  reach-ins it found have public names now, so if the package is ever
-  split the split is a repackaging rather than a redesign.
+  `NameError`. The documented shape is `def load(db, limit)`, which a
+  unit test can call with a fake.
+- **The ws-git blob is layout 3**, holding `tags`, `pre_merge` and the
+  stash record; a layout 2 blob is read as it stands, not discarded.
+  **Every fork lands its `ws-git.fork` commit**, one whose parent never
+  used ws-git included: it is the child's fork POINT, and without it
+  every file a delegate inherited read as one it added.
 
 ### Fixed
-- **A plotly spec dict is encoded the way a plotly figure is** — one
-  from `fig.to_dict()` holds NumPy arrays and timestamps, fell to the
-  repr floor, and a chart quietly stopped being one. It lands on
-  `ui/<name>.plotly.json` now.
+- **A plotly spec dict is encoded the way a plotly figure is.** Both
+  spellings go through plotly's own encoder, landing on
+  `ui/<name>.plotly.json`, where one from `fig.to_dict()` holds NumPy
+  arrays and timestamps and fell to the repr floor.
 - **A merged metadata row describes the bytes that landed**, where a
   one-sided row kept a size the conflicted content beside it never had.
-- **Nothing moves the tree while a merge is outstanding.** The guard
-  `stash`, `revert` and `cherry-pick` took was missing from `merge` and
-  from `checkout` in both its forms, so a second merge — or a checkout,
-  of the merge commit itself most of all — recorded its own context
-  over the first's and left a clean `ws-git status` over a tree that
-  still held the markers. All of them refuse now, naming the two ways
-  out: commit the resolution, or `ws-git merge --abort`.
-- **A bad `<session>@<x>` says what was looked up and where.** `ws-git
-  worktree add review polish@nosuch` answered `ws-git: nosuch`, echoing
-  the word back with nothing about where it had been looked for. The
-  one funnel that resolves a ref's commit half refuses it now —
-  `nosuch is not a commit, a short id or a tag on session 'polish'
-  (ws-git log polish, where its commits and its tags both show)` — so
-  every verb taking that shape
-  says the same thing, and a well-formed id nobody holds names its
-  session too. The session half is checked first, so a typo in the
-  name earns `unknown session 'typo' (ws-git branch lists them)`
-  rather than a report about the commits of a session that is not
-  there.
-- **Adding over a live worktree names the two steps that refresh one**
-  rather than "that directory is not empty", a reason with no fix in it.
-- **A frozen workspace refuses writes by every door.** The host-side
-  escape hatch took them: `snapshot.files.fs.write(...)` on a frozen
-  open (`store.tags.at`, `store.resolve`, `Publication.open`) or a
-  session snapshot (`ws.tags.at`) succeeded without a word, landed in
-  that handle's staged buffer, and died there — `commit()` refused, the
-  cache refused, a reopen and the live session read the old bytes.
-  `ws.files.fs` hands out the same read-only filesystem the executor
-  holds now, so `write`, `makedirs`, `remove`, `rename` and the rest
-  raise `PermissionError` naming the tag while every read still works.
-  The hatch bypasses the workspace's policy gates — the view rule, the
-  commit flow — never its frozenness.
+- **Nothing moves the tree while a merge is outstanding.** `merge` and
+  `checkout` in both its forms refuse until the markers are gone, as
+  `stash`, `revert` and `cherry-pick` do, and every refusal names the
+  two ways out: commit the resolution, or `ws-git merge --abort`. So no
+  second merge, and no checkout of the merge commit itself, can leave a
+  clean `ws-git status` over a tree that still holds markers.
+- **A bad `<session>@<x>` says what was looked up and where**, instead
+  of echoing the word back. One funnel resolves a ref's commit half, and
+  its refusal names the word, the three spellings it was not, the
+  session it was looked for on and the verbs that list what is there; a
+  well-formed id nobody holds names its session too. The session half is
+  checked first, so a typo earns `unknown session 'typo' (ws-git branch
+  lists them)`.
+- **A frozen workspace refuses writes by every door.** `ws.files.fs` on
+  a frozen open (`store.tags.at`, `store.resolve`, `Publication.open`)
+  or on a session snapshot (`ws.tags.at`) is the same read-only
+  filesystem the executor holds, so `write`, `makedirs`, `remove`,
+  `rename` and the rest raise `PermissionError` naming the tag while
+  every read still works — where the host-side escape hatch had taken
+  them silently into a buffer nothing could commit. The hatch bypasses
+  the workspace's policy gates, never its frozenness.
+
+### Dependencies
+- Floor: `sandtrap>=0.3.6` — per-exec modules (`Sandbox.exec(modules=)`),
+  which the `host` module is built on.
+
 
 ## 0.6.5 - 2026-09-10
 
