@@ -1849,8 +1849,7 @@ class Workspace:
         rich = {k: v for k, v in ui.items() if is_rich(v)}
         if not rich:
             return result
-        # Lazy: adapters.render imports Workspace at module scope.
-        from .adapters.render import materialize_ui
+        from .ui import materialize_ui
 
         claims: dict[Any, Any] = {}
         problems: list[str] = []

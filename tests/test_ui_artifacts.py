@@ -14,10 +14,10 @@ from nontainer import Workspace
 from nontainer.adapters.render import (
     artifact_kind,
     artifacts_note,
-    materialize_ui,
     parse_artifacts_note,
 )
 from nontainer.providers import KvgitProvider
+from nontainer.ui import materialize_ui
 
 
 @pytest.fixture
@@ -83,7 +83,7 @@ def test_column_types_are_omitted_rather_than_raised():
     """Metadata is a nicety: a frame whose dtypes can't be read still
     renders, just without the hint. The a2ui boundary treats a missing
     columnTypes as unknown, so omission is always safe."""
-    from nontainer.adapters.render import _column_types
+    from nontainer.ui import _column_types
 
     class NoDtypes:
         @property

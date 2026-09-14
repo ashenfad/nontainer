@@ -264,7 +264,8 @@ class WorkspaceTools(Toolkit):
 
             def run_python(code: str) -> str:
                 """Run Python in the sandboxed workspace environment."""
-                from .render import artifacts_note, materialize_ui, ui_root
+                from ..ui import materialize_ui, ui_root
+                from .render import artifacts_note
 
                 with self._lock:
                     ui_dir = ui_root(self._ws)
