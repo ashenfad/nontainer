@@ -58,10 +58,10 @@ RUN_PREFIX = CONVERSATION_PREFIX + "runs/"
 def _kv(ws: Workspace) -> Any:
     """The provider's small-value mapping — the same store the files,
     the cache and the cwd live in, which is what makes one commit
-    cover all of them. Not on ``Workspace``'s public surface; the
-    ``__`` prefix on these keys is what keeps them out of the agent's
-    ``cache`` view."""
-    return ws._provider.kv
+    cover all of them. Reached through ``ws.provider`` because it is
+    the substrate's surface, not the workspace's; the ``__`` prefix on
+    these keys is what keeps them out of the agent's ``cache`` view."""
+    return ws.provider.kv
 
 
 def _commit_framework(ws: Workspace, info: dict) -> str | None:

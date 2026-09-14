@@ -83,7 +83,7 @@ if TYPE_CHECKING:
     from .editing import EditOutcome
     from .protocol import Executor
     from .runtime import Runtime
-    from .store import Ref
+    from .store import Ref, Store
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -1297,7 +1297,7 @@ class Workspace:
         # would write to that store and leave this one empty. None for
         # a workspace built straight from a provider: no store claims
         # it, and none may act on its behalf.
-        self._store: Any = None
+        self._store: "Store | None" = None
         python_config = python or PythonConfig()
         self._cache_enabled = cache
         self._max_observation = max_observation
@@ -1595,6 +1595,33 @@ class Workspace:
         ``ws.runtime.supports_ws_verbs``, ``ws.runtime.cache_enabled``):
         they belong to the executor, not the substrate."""
         return self._provider.caps
+
+    @property
+    def store(self) -> "Store | None":
+        """The :class:`~nontainer.store.Store` this session was opened
+        from, or None.
+
+        What a caller does with it is store-level work on this
+        session's neighbours: open a sibling session, resolve a ref to
+        a frozen workspace, list or delete branches, read store-scoped
+        tags. None means the workspace was built straight from a
+        provider — no store claims it, so none of those verbs are
+        available and a caller that needs one has to say which store
+        it means.
+        """
+        return self._store
+
+    @property
+    def provider(self) -> WorkspaceProvider:
+        """The substrate under this session.
+
+        For callers that know which provider they have and want
+        something only it offers — kvgit's ``kv`` mapping, a refresh
+        after another handle committed. The workspace's own verbs are
+        the portable surface: anything expressible through them works
+        on every substrate, and this does not.
+        """
+        return self._provider
 
     @property
     def files(self) -> WorkspaceFiles:
@@ -2126,6 +2153,35 @@ class Workspace:
         if expand is None:
             return commit
         return expand(commit, session=session)
+
+    def expand_ref(self, ref: "str | Ref") -> "Ref":
+        """``session@x`` with its commit half spelled whole.
+
+        ``x`` may be a commit id typed short, a whole one, or that
+        session's own ws-git tag — the three spellings every verb
+        reading one exact state accepts. What comes back names one
+        exact state and is ready for :meth:`Store.resolve`, a diff, a
+        merge; any ``:/path`` on the way in is carried through.
+
+        A workspace verb rather than a store one because answering
+        needs this session's substrate: a ws-git tag is a name in the
+        named session's own blob, read through this provider, and a
+        short id is expanded against that session's history — neither
+        is a question a store can answer on its own.
+
+        The session half is checked first, so a ref into a session
+        this store never held says so rather than reporting on a
+        commit nothing could hold: ``ValueError`` for that, and
+        :class:`~nontainer.errors.CommitNotFoundError` for a word that
+        is neither a tag nor a commit of that session.
+        """
+        from .store import Ref
+
+        parsed = Ref.parse(ref)
+        with self._lock:
+            self._check_open()
+            commit = self._ref_commit(parsed.session, parsed.commit)
+        return Ref(parsed.session, commit, parsed.path)
 
     def _ref_commit(self, session: str, commit: str) -> str:
         """The commit half of a ``session@x`` ref → a commit id.
