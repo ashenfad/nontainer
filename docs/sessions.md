@@ -117,18 +117,17 @@ author of its own commits, and the answer names what it *landed*:
 | used ws-git | its last ws-git commit | take that commit |
 | used ws-git, then wrote past it | its last ws-git commit | **refused**; `answer.uncommitted` is True |
 
-The third row is the one worth reading twice. What the delegate
-committed is what it submitted, and a merge refuses such a source
-rather than bringing back a state it has moved on from, so the answer
-reports the rest as left out instead of hiding it — the caller takes
-paths, or asks again. Committing on the delegate's behalf would destroy
-that signal and put a commit nobody wrote in its log.
+What the delegate committed is what it submitted, so the third row
+refuses rather than bringing back a state the delegate has moved on
+from, and the answer reports the rest as left out instead of hiding
+it — the caller takes paths, or asks again. Committing on the
+delegate's behalf would destroy that signal and put a commit nobody
+wrote in its log.
 
 The first row works because **a fork starts with a fresh ws-git state**
-(see `ws.fork` in the [API reference](api.md)): no head, nothing staged, no inherited merge context,
-for `inherit="full"` as much as `"fresh"`. A branch carries the
-workspace; an index is a composition in progress, and a delegate does
-not start halfway through somebody else's.
+(see `ws.fork` in the [API reference](api.md)): no head, nothing
+staged, no inherited merge context, for `inherit="full"` as much as
+`"fresh"`.
 
 Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
 parent learns a delegate finished — a dot in a rail, a message injected
