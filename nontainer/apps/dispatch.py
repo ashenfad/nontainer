@@ -404,6 +404,13 @@ class AppRuntime:
         ``apps_primer`` from here to build tool descriptions."""
         return self._config
 
+    @property
+    def workspace(self) -> Workspace:
+        """The workspace this runtime serves handlers from. What
+        ``test_app`` reads sources and writes screenshots through: the
+        same session, under the same lock."""
+        return self._ws
+
     def close(self) -> None:
         """No-op, retained for API stability (embedders call it): the
         runtime no longer holds long-lived sandbox workers — each
