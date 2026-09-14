@@ -379,7 +379,6 @@ workspace(
     max_observation: int = 32_000,
     executor_factory: Callable[[], Executor] | None = None,
     root: str = "/workspace",
-    merge_check: Callable[[Workspace], Any] | None = None,  # the merge gate
 ) -> Workspace
 ```
 
@@ -577,7 +576,7 @@ ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
                                          # (a named directory is mirrored)
 ws.log(limit=None, kind="work"|"agent"|"all") -> Iterable[CommitInfo]
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
-ws.merge(source: str, *, check=None) -> MergeOutcome  # needs caps.merge
+ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
 ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
 ws.discard() -> None                             # drop staged writes
@@ -839,46 +838,6 @@ bookkeeping commit that records it as the agent's, which is what
 leaves a clean workspace behind a merge. `MergeOutcome.auto_merged` is
 the other half of `conflicts`: the paths the merge changed and settled
 on its own, so the two together are everything the merge touched.
-
-**`check=` is the gate on a merge**, and `merge_check=` on
-`Store.open` / `Workspace(...)` is that same gate as the session's
-standing policy. A check is a callable handed a **frozen** workspace
-over the source at exactly the commit this merge would take — its last
-agent commit, or its branch head where there is no index — run after
-the refusals above and before anything is merged:
-
-```python
-from nontainer.wspytest import run_pytest
-
-ws.merge("analyst.sleepy-otter", check=run_pytest)  # this merge
-store.open("analyst", merge_check=run_pytest)       # every merge, the agent's too
-```
-
-A truthy verdict merges. A falsy one raises `MergeRefused`, with
-nothing merged and nothing recorded: `err.verdict` is what the check
-returned, whole, and the message carries its one-line rendering —
-`merge of 'sleepy-otter' at 3f9c2a1 refused by its check: 2 failed, 8
-passed in 0.31s`. `TestReport` is truthy when it is green and prints
-that count line, so `check=run_pytest` is the whole of "the delegate's
-tests pass". A check that *raises* is the embedder's bug rather than a
-refusal, and its exception propagates untouched; the frozen workspace
-is closed either way.
-
-The frozen source is built with this session's own construction
-settings and terminal commands, so what a check runs against is the
-tree the source's own agent works in. Reading a commit is the store's
-verb, so a check needs a workspace opened from a store.
-
-`merge_check` is a construction setting like the rest: forks inherit
-it, and it is what gates the AGENT's `ws-git merge <name>` in the
-terminal, where the refusal is the verb's error text
-([ws-git.md](ws-git.md#bringing-a-delegates-work-back)). Naming
-`check=` at the call overrides it for that call; leaving it out is
-what asks for the session's, so a session with a policy has no
-per-call way around it. Only `merge` is
-gated — `merge --abort`, `revert`, `cherry_pick` and `checkout` take
-no check, because each of them is how a caller recovers from a merge
-it should not have made.
 
 **`ws.revert(commit)` and `ws.cherry_pick(ref)`** apply ONE commit's
 change to the tree as it stands (`caps.merge`). They are one operation
@@ -1510,6 +1469,31 @@ the embedder's loop and cannot be interrupted, and nothing the helper
 does writes to the child's branch, so there is nothing to undo either.
 A job that has already answered comes back unchanged.
 
+### Gating a merge on a delegate's tests
+
+"Its tests pass before I take its work" is a script the host writes
+with the verbs it already has, because the answer names the commit:
+
+```python
+answer = sessions.result(name)
+with store.resolve(answer.ref, python=PY, root=ws.root) as src:
+    if run_pytest(src):
+        ws.merge(answer.branch)
+```
+
+`answer.ref` is the child at **exactly** the commit `merge` will take:
+a merge refuses a source whose delegate wrote past its last ws-git
+commit, so what the tests run against and what the merge brings home
+cannot differ. `store.resolve` opens that commit frozen — nothing the
+run can do edits the branch into passing — under the settings the
+session was opened with (`PY` is that session's `PythonConfig`), which
+is what makes the tree the one the delegate's own agent worked in. And
+a `TestReport` is truthy when it is green, so the gate is the `if`.
+
+A red branch is still a branch: send the delegate back to it with
+`ask(resume=...)`, or take the files that are good
+(`ws.checkout(name, paths=[...])`) and fix them here.
+
 ### Retention: an idle TTL the embedder sweeps
 
 A delegate leaves a branch behind, and a delegating session accumulates
@@ -1651,8 +1635,7 @@ instruction.
 
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
 `SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
-`MergeRefused` (a merge's check said no; `.verdict` is what it
-returned) · `SessionsError` (no such job) · `JobRunning` (not yet) ·
+`SessionsError` (no such job) · `JobRunning` (not yet) ·
 `BranchExpired` (the job's branch was swept) · `CacheError`.
 
 ## Adapters
@@ -2116,10 +2099,10 @@ parsing `3 passed, 1 failed`.
 TestReport(tool, ok, collected, passed, failed, errors, skipped,
            duration, exit_code, outcomes=(), stdout="",
            collection_error=None, notes=())
-    # bool(report) is report.ok — ws.merge(child, check=run_pytest)
+    # bool(report) is report.ok — `if run_pytest(src): ws.merge(...)`
     # str(report) is the count line: "2 failed, 8 passed in 0.31s",
-    #   which is what a MergeRefused quotes
-    # tool: "pytest" | "vitest" — one record, so one check= hook and one
+    #   for a caller that has to say how a run went in one line
+    # tool: "pytest" | "vitest" — one record, so one gate and one
     #   UI consume either
     # exit_code for pytest is pytest's: 0 passed · 1 failures · 2 a file
     #   that would not collect · 4 a bad argument (a flag, a path, or a
