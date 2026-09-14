@@ -30,7 +30,7 @@ measured:
   neither the tests nor the workspace are dropped.
 
 The record is the product; the terminal text is a rendering of it
-(``render_report``). A merge policy gating on tests reads
+(``render_report``). A caller that acts on a run reads
 ``TestReport.ok`` and the outcomes, not ``3 passed, 1 failed``.
 """
 
@@ -107,7 +107,7 @@ class TestOutcome:
 @dataclass(frozen=True)
 class TestReport:
     """A whole run, as data. ``render_report`` is the only thing that
-    turns it into text: a merge policy or a UI reads the counts and the
+    turns it into text: a UI or a script reads the counts and the
     outcomes instead of parsing a summary line."""
 
     tool: str

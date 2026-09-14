@@ -15,15 +15,13 @@ test_app    a browser, a page, the app's own fetches
 This page is the human-readable twin of `ws-pytest --help` and
 `ws-vitest --help`. The host's half is `run_pytest(ws)` /
 `run_vitest(ws)`, each returning a
-[`TestReport`](api.md#unit-tests-ws-pytest-and-ws-vitest) — the record a
-host gates on, and the thing the terminal text is a rendering of. The
-two verbs produce the same record, with `report.tool` telling them
-apart, so one gate and one UI consume either.
+[`TestReport`](api.md#unit-tests-ws-pytest-and-ws-vitest) — the run as
+a record, and the thing the terminal text is a rendering of. The two
+verbs produce the same record, with `report.tool` telling them apart,
+so one consumer reads either.
 
-A report is truthy when it is green, which is what makes
-["its tests pass before I take its work"](api.md#gating-a-merge-on-a-delegates-tests)
-a four-line script over a delegate's branch — and it prints its own
-count line, for a caller that has to say how a run went in one line.
+A report is truthy when it is green, and it prints its own count line,
+for a caller that has to say how a run went in one line.
 
 ```python
 from nontainer.wspytest import register_wspytest

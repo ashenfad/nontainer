@@ -1469,31 +1469,6 @@ the embedder's loop and cannot be interrupted, and nothing the helper
 does writes to the child's branch, so there is nothing to undo either.
 A job that has already answered comes back unchanged.
 
-### Gating a merge on a delegate's tests
-
-"Its tests pass before I take its work" is a script the host writes
-with the verbs it already has, because the answer names the commit:
-
-```python
-answer = sessions.result(name)
-with store.resolve(answer.ref, python=PY, root=ws.root) as src:
-    if run_pytest(src):
-        ws.merge(answer.branch)
-```
-
-`answer.ref` is the child at **exactly** the commit `merge` will take:
-a merge refuses a source whose delegate wrote past its last ws-git
-commit, so what the tests run against and what the merge brings home
-cannot differ. `store.resolve` opens that commit frozen — nothing the
-run can do edits the branch into passing — under the settings the
-session was opened with (`PY` is that session's `PythonConfig`), which
-is what makes the tree the one the delegate's own agent worked in. And
-a `TestReport` is truthy when it is green, so the gate is the `if`.
-
-A red branch is still a branch: send the delegate back to it with
-`ask(resume=...)`, or take the files that are good
-(`ws.checkout(name, paths=[...])`) and fix them here.
-
 ### Retention: an idle TTL the embedder sweeps
 
 A delegate leaves a branch behind, and a delegating session accumulates
@@ -2092,18 +2067,18 @@ failing report rather than an exception.
 
 The record is the product and the text is a rendering of it — the same
 division `TestAppResult` / `render_test_app` has, and for the same
-reason: a merge policy gating on tests reads the outcomes rather than
+reason: a UI or a script reads the counts and the outcomes rather than
 parsing `3 passed, 1 failed`.
 
 ```python
 TestReport(tool, ok, collected, passed, failed, errors, skipped,
            duration, exit_code, outcomes=(), stdout="",
            collection_error=None, notes=())
-    # bool(report) is report.ok — `if run_pytest(src): ws.merge(...)`
+    # bool(report) is report.ok: truthy when the run was green
     # str(report) is the count line: "2 failed, 8 passed in 0.31s",
     #   for a caller that has to say how a run went in one line
-    # tool: "pytest" | "vitest" — one record, so one gate and one
-    #   UI consume either
+    # tool: "pytest" | "vitest" — one record, so one consumer
+    #   reads either
     # exit_code for pytest is pytest's: 0 passed · 1 failures · 2 a file
     #   that would not collect · 4 a bad argument (a flag, a path, or a
     #   test name nothing defines) · 5 nothing collected. For vitest it
