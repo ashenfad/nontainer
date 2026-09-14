@@ -337,13 +337,12 @@ workspace — files, cache, cwd, and with `inherit="full"` the
 conversation — but never the agent's index, head, outstanding merge or
 tags. That reset is what lets the merge rule reach a delegate at all,
 since it is what gives the delegate a graph of its own to be measured
-against. A delegate is the author of its own
-commits — nothing composes one on its behalf, because a commit nobody
-wrote is a worse answer than an honest refusal, and a delegate that
-committed and then wrote past it is refused with what it left out
-reported. Before its first commit a delegate reads the way a repo does
-before its first: everything it can see is modified, and what its view
-hides is not its business.
+against. A delegate is the author of its own commits — nothing composes
+one on its behalf, because a commit nobody wrote is a worse answer than
+an honest refusal, and a delegate that committed and then wrote past it
+is refused with what it left out reported. Before its first commit a
+delegate reads the way a repo does before its first: everything it can
+see is modified, and what its view hides is not its business.
 
 **Providers degrade honestly.** kvgit does all of it. AgentFS refuses
 `fork` and `merge` by name until it has a merge engine — a fork you
