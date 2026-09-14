@@ -287,11 +287,9 @@ caller sent.
 `Runtime` reports both to callers that must gate on them:
 `ws.runtime.supports_ws_verbs` is True for a guest-bridging executor
 even though `supports_commands` is False there, and tool descriptions
-offer the portable verbs where either flag holds.
-`ws.runtime.guest_to_host(path)` maps a guest-absolute path back to the
-host's spelling — for the paths an answer carries, a traceback frame or
-a shell's idea of cwd — and returns `None` where there is nothing to
-map.
+offer the portable verbs where either flag holds. A guest's own path
+space is the executor's to map back, which is what
+`ws.runtime.guest_to_host(path)` answers with.
 
 ## `SessionRunner` — the agent loop
 
