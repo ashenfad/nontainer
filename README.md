@@ -90,7 +90,7 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https:
 
 **Using it**
 
-- [Quick Start](docs/quick-start.md) -- first workspace, sandbox config, backends, executors, adapters, the apps loop
+- [Quick Start](docs/quick-start.md) -- first workspace, sandbox config, backends, picking an executor rung, adapters, the apps loop
 - [API Reference](docs/api.md) -- every class, method, and flag
 - [Delegation](docs/sessions.md) -- subagents as branches: ask, read the answer, decide what to merge
 - [Apps](docs/apps.md) -- handler contract, execution model, test_app, serving and threat model

@@ -18,7 +18,8 @@ to import it from:
 | `nontainer.wsgit.register_wsgit(ws)` | installs the `ws-git` terminal verb on a workspace |
 | `nontainer.wspytest.register_wspytest(ws)` | installs `ws-pytest` (also wired in by `enable_apps`) |
 | `nontainer.wsvitest.register_wsvitest(ws)` | installs `ws-vitest`, the browser-side twin |
-| `nontainer.executor_dud.DudExecutor` | the executor over a dud backend — a host process or a real microVM |
+| `nontainer.executor.LocalExecutor` | the default executor, in-process ([Executors](#executors)) |
+| `nontainer.executor_dud.DudExecutor` | the executor over a dud backend — a host process or a real microVM ([Executors](#executors)) |
 | `nontainer.ui.materialize_ui(ws, ui)` | turns an agent's `ui = {...}` values into workspace artifacts |
 | `nontainer.executor.flatten_grants(cfg)` | what a `PythonConfig`'s modules flatten to |
 | `nontainer.apps.contract.filter_headers(raw)` | the allowlisted request headers a handler may see |
@@ -1179,6 +1180,132 @@ runtime keeps running. Closing it releases only its executor.
 `mounts=` here are this runtime's alone. Mount composition otherwise
 belongs to the workspace, so that `ws.files.fs` and execution see the same
 tree.
+
+## Executors
+
+The provider decides where state *lives*; the executor decides where
+code *runs* against it. Two ship:
+
+| executor | isolation | fidelity |
+|---|---|---|
+| `LocalExecutor` (default) | sandtrap's walled garden; optional process/kernel defense-in-depth | emulated shell + filesystem |
+| `DudExecutor()` — i.e. `backend="vm"` | a disposable microVM — vfkit on macOS, firecracker on Linux/KVM | real machine |
+| `DudExecutor(backend="subprocess")` | **none** — host process | real bash, real files |
+
+```python
+from nontainer.executor import LocalExecutor         # the default
+from nontainer.executor_dud import DudExecutor       # the [dud] extra
+
+LocalExecutor()                                      # takes no arguments
+DudExecutor(*, root=None, backend="vm", vm=None)
+
+workspace("user-42", executor_factory=lambda: DudExecutor())
+store.open("user-42", executor_factory=lambda: DudExecutor())
+Workspace(..., executor=DudExecutor())               # this session only
+```
+
+**Two injection shapes, because an executor is stateful.** One may own
+a guest VM, so an instance is bound to one session and cannot be
+shared. `executor_factory` is a zero-arg builder: it builds this
+session's executor and is carried into `ws.fork()`, so a whole lineage
+runs on the same kind. A ready `executor=` instance serves the
+workspace it is handed to and nothing else — its forks fall back to the
+factory — which is why `Store.open` and the frozen opens take the
+factory and refuse the instance. With neither, a session gets a
+`LocalExecutor`.
+
+**`LocalExecutor()` takes no arguments.** Everything about how it runs
+code is the session's `PythonConfig`: the grants, the isolation rung,
+the timeout and tick budget, `warm_view_workers`, `preload_grants`.
+`isolation="kernel"` on a platform that cannot apply the kernel
+mechanisms raises sandtrap's `IsolationUnavailable` when the worker
+spawns, rather than running agent code with no kernel restrictions.
+
+### `DudExecutor` — a real machine (the `[dud]` extra)
+
+`pip install nontainer[dud]`, which needs Python 3.11+: the extra
+carries a `python_version >= "3.11"` marker, so on 3.10 it installs
+nothing.
+
+- **`backend`** — `"vm"` (the default) resolves per host: vfkit on
+  macOS, firecracker on Linux/KVM. Prefer it to naming one, since
+  config written against `"vm"` survives new rungs landing; `"vfkit"`
+  and `"firecracker"` pin one. A rung the host cannot provide fails
+  closed with dud's `IsolationUnavailable` rather than degrading
+  quietly. `"subprocess"` is the guest runtime as an ordinary host
+  process.
+- **`root`** — the guest scratch directory, on the subprocess rung
+  only.
+- **`vm`** — passed through to the dud session on the VM rungs:
+  `image`, `kernel`, `memory_mib`, `cpus`, `packages`, and the rest of
+  the backend's own constructor. The defaults boot `python:3.12-slim`
+  with the kernel resolved from `$DUD_KERNEL` / `~/.dud`, and the guest
+  mounts its workspace at this session's `root`, so an absolute path
+  means the same file on both rungs. A session parks its VM in dud's
+  warm pool and reuses a warm one instead of booting — a parked VM
+  still holding this exact tree resumes with no push at all;
+  `vm={"pooled": False}` opts out.
+
+Everything above the transport is the same: the same `terminal` /
+`run_python` tools, the same commits, the same O(1) forks.
+[dud](https://github.com/ashenfad/dud) receives a tree, executes
+against a real filesystem and returns a diff, which the provider
+commits exactly as it commits a local one. What you buy is fidelity —
+C extensions, real subprocesses, sqlite on real files, memory-mapped
+parquet, the workloads the in-process emulation serves worst.
+
+**Policy is honoured or refused, never narrowed.** A VM guest has no
+network interface at all, so `network=False` holds by construction and
+`network=True` — on the config or on a `ModuleGrant` — raises
+`NotSupportedError` at open rather than pretending; `stdlib=False`
+raises for the same reason, a guest's Python carrying its whole
+standard library and unable to withhold it; and anything `isolation`
+asks for, a VM already exceeds. The subprocess rung enforces none of
+it — agent code runs as you, with your network and your files — and
+refuses only an explicit `isolation` above `"none"`, which is an ask
+for containment it cannot give. It buys fidelity, not a boundary,
+which is why it is opt-in: it is the only rung that needs no
+hypervisor, and so the dev/CI floor. For policy gating, crash
+containment or kernel defense-in-depth without a VM, use
+`LocalExecutor`.
+
+**Module grants become the guest's package list** on a VM rung: each
+granted module's distribution, pinned to the host's installed version,
+in grant order — so what the agent may import is the same set on both
+rungs, plus the guest's stdlib and those packages' own dependencies. A
+granted module with no installed distribution (a local helper) cannot
+be layered in and raises `NotSupportedError` naming the two ways
+round: `vm={"packages": [...]}` for an image that carries it, or
+`vm={"packages_from_grants": False}` for a custom image that already
+does. An explicit `vm={"packages": [...]}` is merged either way, and
+its pin wins for a distribution the derivation also named.
+
+What does not cross is a `ModuleGrant`'s `include` / `exclude` member
+patterns: an installed package has no member granularity to enforce
+them at, so a package granted in part locally is granted whole here.
+The grants still decide WHICH packages exist, so a module left
+ungranted is absent rather than narrowed — but code relying on the
+patterns to withhold part of a package it otherwise grants gets the
+whole of it on a guest.
+
+**What a real machine changes rather than restricts:**
+
+| | on a guest rung |
+|---|---|
+| `stderr` | merged into stdout, the way a real terminal produces one transcript — `TerminalResult.stderr` / `PythonResult.stderr` stay empty (timeout notices excepted) |
+| `PythonResult.ticks` | always 0: there is no tick machinery, and the wall-clock timeout is the enforced budget |
+| `result.namespace` | values cross as dud's codec (json, bytes, file refs); live Python objects do not leave the guest |
+| `ws.cache` | the guest pickles and the host stores the bytes without ever unpickling them, so a read of a guest-written key returns `bytes` |
+| injected `commands` | absent — real bash has no hook for them, which is what `supports_commands` False says; the `ws-*` verbs ferry in over hostcall instead |
+
+`host_objects` survive either rung: a live object becomes a hostcall
+proxy behind dud's allowlist, granted its public methods so the
+reachable surface matches what `LocalExecutor` bridges, and plain data
+rides into each call as inputs. What a workspace's executor can do is
+readable on the runtime — `supports_commands`, `supports_ws_verbs` and
+`guest_to_host(path)` are under [Introspection](#introspection).
+Writing an executor of your own is
+[extending.md](extending.md#executor--where-code-runs).
 
 ## `PythonConfig`
 

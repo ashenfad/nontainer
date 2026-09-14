@@ -228,24 +228,17 @@ Pick kvgit for fork/undo/history, `dir` when agent code needs real files,
 The backend decides where state *lives*; the executor decides where
 code *runs*, and the two are independent, because the versioning
 semantics were always properties of the state layer and not of the
-machine.
-
-| executor | isolation | fidelity |
-|---|---|---|
-| `LocalExecutor` (default) | sandtrap's walled garden; optional process/kernel defense-in-depth | emulated shell + filesystem |
-| `DudExecutor()` — i.e. `backend="vm"` | a disposable microVM — vfkit on macOS, firecracker on Linux/KVM | real machine |
-| `DudExecutor(backend="subprocess")` | **none** — host process | real bash, real files |
+machine. The default is in-process. To run on a real machine instead,
+hand the session a factory:
 
 ```python
 from nontainer.executor_dud import DudExecutor
 
 ws = workspace("user-42", executor_factory=lambda: DudExecutor())
-```
 
-The default `"vm"` picks the right hypervisor for the host; name
-`"vfkit"` or `"firecracker"` directly if you need to pin one. Asking
-for one the host can't provide fails closed (`IsolationUnavailable`)
-rather than quietly degrading.
+# ... or the rung that needs no hypervisor, for dev and CI:
+ws = workspace("user-42", executor_factory=lambda: DudExecutor(backend="subprocess"))
+```
 
 Same `terminal` / `run_python` tools, same commits, same O(1)
 forks — [dud](https://github.com/ashenfad/dud) receives a tree,
@@ -255,30 +248,18 @@ fidelity: C extensions, real subprocesses, sqlite on real files,
 memory-mapped parquet — the workloads the in-process emulation serves
 worst.
 
-`PythonConfig` is honoured or refused on a VM rung, never narrowed.
-The guest has **no network interface at all**, so `network=False` holds
-by construction and `network=True` (on the config or a `ModuleGrant`)
-raises at open rather than pretending; `stdlib=False` raises for the
-same reason, and any `isolation` is exceeded by the VM. Module grants
-become the guest image's package list, pinned to the host's installed
-versions, so what the agent may import is the same set on both rungs
-(plus the guest's stdlib and those packages' own dependencies); a
-granted local module with no distribution raises, and
-`vm={"packages_from_grants": False}` opts a custom image out. What a
-real machine changes rather than restricts — stderr merged into
-stdout, no tick counts, results crossing as data rather than live
-objects, cache reads of guest-written keys as bytes, no injected
-builtins in real bash — is listed in the executor's docstring.
+What you give up is the local rung's policy gating. A VM honours or
+refuses a `PythonConfig`, never narrows it — a guest has no network
+interface, so `network=True` raises at open rather than pretending —
+and `backend="subprocess"` enforces none of it: real bash and real
+Python with **no containment at all**, agent code running as you, with
+your network and your files. It buys fidelity, not a boundary, which is
+why it is opt-in. If you want policy gating, crash containment or
+kernel defense-in-depth without a VM, use `LocalExecutor`, which is
+what you already have.
 
-The last row, `backend="subprocess"`, is real bash and real Python with
-**no containment at all** — agent code runs as you, with your
-network and your files. It enforces none of `PythonConfig`'s policy and
-refuses only an explicit `isolation` above `"none"`, which is an ask
-for containment it cannot give. It buys fidelity, not a boundary, so it's
-opt-in rather than the default: it's the only backend that needs no
-hypervisor, which makes it the dev/CI floor. If you want policy gating,
-crash containment, or kernel defense-in-depth without a VM, use
-`LocalExecutor`, not this.
+The rungs, the constructors, what a VM refuses and what it quietly
+changes are in the [API reference](api.md#executors).
 
 ## Hooking up an agent
 
