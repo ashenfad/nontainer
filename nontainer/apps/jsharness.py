@@ -46,7 +46,7 @@ import posixpath
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from ..wspytest import TestFrame, TestOutcome
 from .dispatch import _content_type
@@ -891,7 +891,7 @@ def workspace_frames(stack: str, sources: "_Sources") -> list[TestFrame]:
         url = frame.url
         if not url.startswith(BASE_URL):
             continue
-        rel = url[len(BASE_URL) :].split("?", 1)[0].split("#", 1)[0]
+        rel = unquote(url[len(BASE_URL) :].split("?", 1)[0].split("#", 1)[0])
         if not any(rel == d or rel.startswith(d + "/") for d in SERVED_DIRS):
             continue
         out.append(
@@ -1054,7 +1054,12 @@ async def _run_file(
                 status=404, body=_HERMETIC_BODY, content_type="application/json"
             )
             return
-        rest = parts.path[len(_PREFIX) + 1 :]
+        # Percent-DECODED before anything looks it up: a space, a `#`
+        # or a non-ASCII character rides the wire encoded, and matching
+        # the encoded spelling against a filename reports a file that is
+        # right there as missing. `_served` normalizes and confines what
+        # comes out, so a decoded separator cannot escape the two trees.
+        rest = unquote(parts.path[len(_PREFIX) + 1 :])
         if rest in ("", "index.html"):
             await route.fulfill(
                 status=200,

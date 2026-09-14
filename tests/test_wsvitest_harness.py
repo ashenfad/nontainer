@@ -551,3 +551,29 @@ def test_an_error_with_no_test_running_fails_the_file(ws):
     assert unhandled, [(x.name, x.status) for x in result.outcomes]
     assert "at module scope" in unhandled[0].message
     assert result.failed
+
+
+def test_a_path_with_a_space_or_a_hash_is_served(ws):
+    """A URL carries a space, a `#` and a non-ASCII character
+    percent-encoded, so a lookup against the literal encoded name
+    reports a file that is right there as missing."""
+    ws.files.fs.write(
+        "/workspace/app/my util.js", b"export const add = (a, b) => a + b;\n"
+    )
+    result = run(
+        ws,
+        "tests/a spaced ünïcode #1.test.js",
+        """
+        import { add } from '../app/my util.js';
+        it('runs from an encoded path', () => { expect(add(1, 2)).toBe(3); });
+        it('names the encoded path in a frame', () => { expect(1).toBe(2); });
+        """,
+    )
+    assert result.collection_error is None, result.collection_error
+    o = outcome(result, "runs from an encoded path")
+    assert o.status == "passed", o.message
+    assert o.file == "tests/a spaced ünïcode #1.test.js"
+    failed = outcome(result, "names the encoded path in a frame")
+    assert failed.status == "failed"
+    assert failed.frames[0].path == "tests/a spaced ünïcode #1.test.js"
+    assert "%20" not in failed.traceback
