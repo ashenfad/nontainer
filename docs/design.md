@@ -288,9 +288,7 @@ create a new path anywhere (it merges as an addition, and a delegate
 needs somewhere to put notes), and a created path joins its view so it
 can read back what it made; modifying or deleting a path that exists
 outside the view is refused at write time, naming the view. You cannot
-overwrite what you cannot see — and since a link is a second name for
-a file, the view is drawn around the file: a link whose target it
-hides cannot be made, and one that already exists reads as absent. The provider knows the full keyset, so
+overwrite what you cannot see. The provider knows the full keyset, so
 the check is cheap, and a guest rung applies the same rule to the
 write harvest — the only way a guest can reach a hidden path is by
 recreating it by name.
@@ -337,10 +335,9 @@ can check out, and there is no working tree to leave things in.
 **A fork starts with a fresh ws-git state.** A branch carries the
 workspace — files, cache, cwd, and with `inherit="full"` the
 conversation — but never the agent's index, head, outstanding merge or
-tags: an index is a composition in progress, and a delegate does not
-start halfway through somebody else's. That is what lets the merge rule
-reach a delegate at all, since it is what gives the delegate a graph of
-its own to be measured against. A delegate is the author of its own
+tags. That reset is what lets the merge rule reach a delegate at all,
+since it is what gives the delegate a graph of its own to be measured
+against. A delegate is the author of its own
 commits — nothing composes one on its behalf, because a commit nobody
 wrote is a worse answer than an honest refusal, and a delegate that
 committed and then wrote past it is refused with what it left out
@@ -467,9 +464,9 @@ and each is a real object rather than an internal detail:
 - **`Executor`** — how code *runs* against that state: the python
   sandbox, the shell, worker lifecycle, result rendering. `Runtime`
   (`ws.runtime`) is the workspace-side face of it.
-- **`SessionRunner`** — how an *agent turn* runs. Declared, not yet
-  used; the embedder owns the model and the loop, so nontainer names
-  the seam rather than implementing one.
+- **`SessionRunner`** — how an *agent turn* runs. The embedder owns the
+  model and the loop, so nontainer names the seam and the delegation
+  helper calls it.
 
 The split that matters at runtime is the second one, and it has a
 direction: executors never commit. A runtime produces results (and, on
@@ -552,26 +549,19 @@ pitch; the pitch is the *workspace*.
 - **Merge-fn presets** for concurrent sessions over one branch. kvgit
   has the CAS + three-way-merge machinery; shipping opinionated
   defaults doesn't yet.
-- **Idle TTL for view workers.** `PythonConfig.warm_view_workers` bounds how
-  many resident workers a view may have, but residency only ever
-  *rises* toward that bound — it never decays. A burst of N concurrent
-  app requests leaves `min(N, warm_view_workers)` workers held for the
-  executor's life; the calls past the cap run in transient sandboxes
-  that are reaped when they finish. Measured, a resident worker is
-  ~113MB on a pandas/plotly policy.
-
-  So the cap is not a ceiling you approach and retreat from — it is a
-  floor you fill and then keep paying for, per distinct view, per
-  workspace. At the default of 1 that is a small bill. It matters for
-  exactly the embedders we tell to raise it (see `docs/apps.md`:
-  anyone serving concurrent app traffic), and in a multi-user host
-  with many open workspaces it multiplies.
+- **Idle TTL for view workers.** A view's resident workers only ever
+  *rise* toward `PythonConfig.warm_view_workers` and never decay, so
+  the cap is a floor you fill and then keep paying for — per distinct
+  view, per workspace, and ~113MB apiece on a pandas/plotly policy. At
+  the default of 1 that is a small bill. It matters for exactly the
+  embedders we tell to raise it (see `docs/apps.md`: anyone serving
+  concurrent app traffic), and in a multi-user host with many open
+  workspaces it multiplies.
 
   Reaping an idle worker is semantically free, which is what makes this
-  attractive: `run_python` is a fresh execution per call (see "Script
-  model" above), so a rebuilt worker loses nothing the contract offers
-  — only warm imports, which cost time on the next call, not
-  correctness.
+  attractive: a `run_python` call is a fresh execution, so a rebuilt
+  worker loses nothing the contract offers — only warm imports, which
+  cost time on the next call, not correctness.
 
   The design constraint worth recording, because it is not obvious:
   **lazy expiry on checkout does not work.** It fires only when there is
