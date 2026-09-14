@@ -510,3 +510,38 @@ def test_a_marker_example_survives_a_clean_merge(store):
         assert "status: live" in body and "owner: me" in body
         assert body.count("<<<<<<< ") == 1  # the example is still there
         assert after.files.fs.stat("/workspace/notes.md").size == len(body)
+
+
+def test_the_tree_a_merge_brought_in_is_readable_at_once(store):
+    """A commit that merged another writer's work changed the tree by
+    more than this handle wrote, so the filesystem's own caches are
+    dropped: the same workspace lists what landed without reopening."""
+    with store.shared("catalog", autocommit=False) as seed:
+        seed.files.write("/workspace/seed.txt", "seed")
+        seed.commit()
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        b.files.write("/workspace/b.txt", "B")
+        # warm every lazy cache with the answers as they are NOW
+        assert sorted(b.files.list("/workspace")) == [
+            "/workspace/b.txt",
+            "/workspace/seed.txt",
+        ]
+        assert not b.files.exists("/workspace/a.txt")
+        assert not b.files.fs.isdir("/workspace/items")
+        a.files.write("/workspace/a.txt", "A")
+        a.files.write("/workspace/items/x.json", "{}")
+        a.commit()
+        b.commit()
+        assert sorted(b.files.list("/workspace")) == [
+            "/workspace/a.txt",
+            "/workspace/b.txt",
+            "/workspace/items",
+            "/workspace/seed.txt",
+        ]
+        assert b.files.exists("/workspace/a.txt")
+        assert b.files.fs.isdir("/workspace/items")
+        assert b.files.read("/workspace/a.txt") == b"A"
+        assert b.files.fs.stat("/workspace/a.txt").size == 1

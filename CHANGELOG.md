@@ -138,6 +138,11 @@ many write at once. Elsewhere, the `ui` set closes.
   read.
 
 ### Changed
+- **A commit that merged drops the filesystem's caches.** A commit
+  whose CAS was lost changes the tree by more than the handle wrote, so
+  a directory another writer created — or a path this handle asked
+  about while it was still absent — no longer reads as it did before
+  the merge brought it in.
 - **A plane asks the merge whether it marked something, not the
   bytes.** A file that carries marker lines of its own — a document
   showing what a conflict looks like — no longer buys an overlapping

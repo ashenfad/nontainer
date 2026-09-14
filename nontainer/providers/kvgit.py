@@ -77,6 +77,12 @@ _CHECKOUT_ATTEMPTS = 5
 #: that won and merges onto it.
 _CAS_ATTEMPTS = 2
 
+#: kvgit's name for the commit strategy that reconciled another
+#: writer's work with ours, as against appending to a head nobody
+#: moved. The one result that means this handle's tree gained state it
+#: did not write.
+_MERGED = "three_way"
+
 #: The line a marker merge opens a conflict hunk with. Bytes that carry
 #: it may predate a merge (docs, fixtures), so it says a merge marked
 #: something only where neither side already held it.
@@ -1002,6 +1008,12 @@ class KvgitProvider:
         What no merge rule resolves is not a race and is not retried:
         it raises ``WorkspaceError`` naming the paths, with the staged
         changes still staged.
+
+        A commit that merged changed the tree by more than this handle
+        wrote, so the filesystem's lazy caches are dropped: a directory
+        another writer created, or a path this handle asked about while
+        it was still absent, would otherwise read as it did before the
+        merge brought it in.
         """
         from kvgit import MergeConflict
         from kvgit.errors import ConcurrencyError
@@ -1010,7 +1022,7 @@ class KvgitProvider:
         for _ in range(_CAS_ATTEMPTS):
             fns, prefixes = self._concurrent_rules()
             try:
-                return self._staged.commit(
+                result = self._staged.commit(
                     keys=keys, info=info, merge_fns=fns, merge_prefixes=prefixes
                 )
             except MergeConflict as e:
@@ -1021,6 +1033,10 @@ class KvgitProvider:
                 raise self._lost_cas(e) from e
             except ConcurrencyError as e:
                 swap = e
+                continue
+            if result.strategy == _MERGED:
+                self._invalidate_fs()
+            return result
         raise WorkspaceError(
             f"commit failed: conflicting concurrent commit on branch "
             f"{self._session!r} (CAS) — this commit lost the head to another "
