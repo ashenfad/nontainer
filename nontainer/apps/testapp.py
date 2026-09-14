@@ -549,7 +549,7 @@ def _line_reader(runtime: "AppRuntime") -> Any:
     workspace lock, which the route dispatch also holds."""
 
     def read_line(rel: str, lineno: int) -> str | None:
-        ws = runtime._ws
+        ws = runtime.workspace
         path = f"{runtime._app_root}/{rel}"
         try:
             with ws.lock:
@@ -633,7 +633,7 @@ def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
     under the workspace's single-writer lock, since ``ws.files.fs`` is shared
     with the executor-hopped route dispatch (which serializes under the
     same lock inside ``AppRuntime.dispatch``)."""
-    ws = runtime._ws
+    ws = runtime.workspace
     with ws.lock:
         ws.files.fs.makedirs(f"{runtime._app_root}/screenshots", exist_ok=True)
         ws.files.fs.write(path, png)

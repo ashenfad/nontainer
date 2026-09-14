@@ -22,8 +22,10 @@ apps-shaped commands, apps may call a testing verb, and adapters sit on
 top of everything because that is what an adapter is.
 
 Every import counts -- module-level and function-local, ``import x``
-and ``from x import y``, relative and absolute. A lazy import inside a
-function is still a dependency; it is only a deferred one.
+and ``from x import y``, relative and absolute, and a submodule pulled
+in by name (``from . import sessions``) as much as one named in the
+``from`` clause. A lazy import inside a function is still a dependency;
+it is only a deferred one.
 """
 
 from __future__ import annotations
@@ -50,17 +52,26 @@ def _module_name(path: pathlib.Path) -> str:
     return name[: -len(".__init__")] if name.endswith(".__init__") else name
 
 
-def _imports(path: pathlib.Path) -> set[tuple[str, int]]:
-    """Every ``nontainer.*`` module this file imports, with line numbers.
+def _package_of(module: str, is_init: bool) -> str:
+    """The package a module's relative imports resolve against."""
+    return module if is_init else module.rsplit(".", 1)[0]
 
-    Relative imports are resolved against the importing module's own
-    package, so ``from ..executor import x`` in an adapter reads as
-    ``nontainer.executor`` like the absolute spelling would.
+
+def _parse_imports(tree: ast.AST, package: str) -> set[tuple[str, int]]:
+    """Every ``nontainer.*`` module ``tree`` imports, with line numbers.
+
+    Relative imports are resolved against ``package``, so ``from
+    ..executor import x`` in an adapter reads as ``nontainer.executor``
+    like the absolute spelling would. A ``from`` clause that names a
+    package records each imported name as a candidate submodule too:
+    ``from . import sessions`` in a core module IS an import of
+    ``nontainer.sessions``, and recording only the package it was
+    pulled from would let that dependency through unread. A name that
+    is not a submodule (``from nontainer import Workspace``) becomes a
+    candidate nothing classifies, which is harmless.
     """
-    module = _module_name(path)
-    package = module if path.name == "__init__.py" else module.rsplit(".", 1)[0]
     found: set[tuple[str, int]] = set()
-    for node in ast.walk(ast.parse(path.read_text())):
+    for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith("nontainer"):
@@ -73,9 +84,19 @@ def _imports(path: pathlib.Path) -> set[tuple[str, int]]:
                 target = f"{base}.{node.module}" if node.module else base
             else:
                 target = node.module or ""
-            if target.startswith("nontainer"):
-                found.add((target, node.lineno))
+            if not target.startswith("nontainer"):
+                continue
+            found.add((target, node.lineno))
+            for alias in node.names:
+                if alias.name != "*":
+                    found.add((f"{target}.{alias.name}", node.lineno))
     return found
+
+
+def _imports(path: pathlib.Path) -> set[tuple[str, int]]:
+    module = _module_name(path)
+    package = _package_of(module, path.name == "__init__.py")
+    return _parse_imports(ast.parse(path.read_text()), package)
 
 
 def _modules() -> list[tuple[str, pathlib.Path]]:
@@ -110,6 +131,16 @@ def _offenders(pick, allowed: tuple[str, ...]) -> list[str]:
             rel = path.resolve().relative_to(PKG.parent)
             out.append(f"{rel}:{lineno}: {module} -> {target}")
     return sorted(out)
+
+
+def test_import_of_a_submodule_by_name_is_an_import_of_it():
+    """``from . import sessions`` and ``from nontainer import apps``
+    name the submodule in the import list rather than the ``from``
+    clause; the walk must read them as the dependency they are."""
+    tree = ast.parse("from . import sessions\nfrom nontainer import apps, Workspace\n")
+    found = {target for target, _ in _parse_imports(tree, "nontainer")}
+    assert "nontainer.sessions" in found
+    assert "nontainer.apps" in found
 
 
 def test_core_imports_nothing_above_it():
@@ -157,23 +188,24 @@ def test_apps_imports_only_core_and_testing_verbs():
 # ---------------------------------------------------------------------------
 
 
-#: Private attributes read on objects that are not nontainer's, where
-#: an AST walk cannot see the type and the layering rule has nothing to
-#: say. ``module:attr`` -> why.
-_FOREIGN = {
-    "nontainer.adapters.mcp:_resource_manager": "FastMCP server internals",
-    "nontainer.adapters.mcp:_templates": "FastMCP server internals",
+#: Reads of a core-defined private name that are NOT reach-ins, keyed
+#: by ``(module, receiver as spelled, attribute)`` so an exemption names
+#: the one object it is about and covers no other receiver of the same
+#: attribute. Two kinds: a layer's own object that happens to share a
+#: private name with a core class, and a third-party object an AST walk
+#: cannot type.
+_EXEMPT: dict[tuple[str, str, str], str] = {
+    ("nontainer.adapters.mcp", "server", "_resource_manager"): "FastMCP internals",
+    ("nontainer.adapters.mcp", "server._resource_manager", "_templates"): (
+        "FastMCP internals"
+    ),
 }
 
 
-def _layer_private_attrs(paths: list[pathlib.Path]) -> set[str]:
-    """The private attribute names a layer defines on its own classes.
-
-    A layer reading its own object's ``_x`` is intra-layer structure,
-    not a reach-in, and one apps module handing another an ``AppRuntime``
-    is the ordinary case. Collected across the whole layer because that
-    is the scope the attribute belongs to.
-    """
+def _class_private_names(paths: list[pathlib.Path]) -> set[str]:
+    """The private attribute names the classes in ``paths`` define:
+    ``self._x`` / ``cls._x`` writes and reads, methods, and class-level
+    assignments. For core this is the set a reach-in could name."""
     names: set[str] = set()
     for path in paths:
         for node in ast.walk(ast.parse(path.read_text())):
@@ -196,7 +228,7 @@ def _layer_private_attrs(paths: list[pathlib.Path]) -> set[str]:
                     for target in sub.targets:
                         if isinstance(target, ast.Name):
                             names.add(target.id)
-    return names
+    return {n for n in names if n.startswith("_") and not n.startswith("__")}
 
 
 def _private_read(node: ast.AST) -> tuple[ast.expr, str] | None:
@@ -220,42 +252,80 @@ def _private_read(node: ast.AST) -> tuple[ast.expr, str] | None:
     return receiver, attr
 
 
+def _reach_ins(
+    sources: dict[str, str],
+    core_private: set[str],
+    exempt: dict[tuple[str, str, str], str],
+) -> list[str]:
+    """``module:line: receiver._attr`` for every read, in ``sources``
+    (module name -> source text), of a private name core defines on a
+    receiver other than ``self``/``cls``.
+
+    The receiver is what decides, not the name. A layer defining
+    ``self._store`` on a class of its own does not make ``ws._store``
+    in that layer its own business: the names most likely to collide
+    are exactly the ones core keeps its state under, so an exemption
+    has to say which object it is about. Anything the walk cannot
+    type -- a third-party object -- is exempted by receiver spelling in
+    ``exempt`` rather than by name.
+    """
+    out: list[str] = []
+    for module, source in sources.items():
+        for node in ast.walk(ast.parse(source)):
+            read = _private_read(node)
+            if read is None:
+                continue
+            receiver, attr = read
+            if isinstance(receiver, ast.Name) and receiver.id in ("self", "cls"):
+                continue
+            if attr not in core_private:
+                continue
+            spelled = ast.unparse(receiver)
+            if (module, spelled, attr) in exempt:
+                continue
+            out.append(f"{module}:{node.lineno}: {spelled}.{attr}")
+    return sorted(out)
+
+
+def test_a_reach_in_is_reported_whatever_the_layer_defines():
+    """A layer that keeps a ``_store`` of its own still may not read a
+    workspace's; the exemption is by receiver, so ``self._store`` is
+    the layer's and ``ws._store`` is the reach-in."""
+    source = (
+        "class Own:\n"
+        "    def __init__(self):\n"
+        "        self._store = 1\n"
+        "\n"
+        "def f(ws):\n"
+        "    return ws._store, getattr(ws, '_provider', None)\n"
+    )
+    found = _reach_ins({"nontainer.adapters.x": source}, {"_store", "_provider"}, {})
+    assert found == [
+        "nontainer.adapters.x:6: ws._provider",
+        "nontainer.adapters.x:6: ws._store",
+    ]
+    exempt = {("nontainer.adapters.x", "ws", "_store"): "for the test"}
+    assert _reach_ins({"nontainer.adapters.x": source}, {"_store"}, exempt) == []
+
+
 def test_no_layer_reads_a_core_private_attribute():
     """Nothing above core reads a core object's underscore attribute.
 
     A private name is the package's to change; the moment a layer above
     reads one, core cannot move without breaking it, which is the
     coupling the layering rule exists to prevent. So every ``obj._x``
-    outside core is reported unless ``obj`` is ``self``/``cls``, the
-    name is one the layer defines on its own classes, or it belongs to
-    a third-party object this walk cannot type. ``getattr(obj, "_x")``
-    is the same reach-in spelled as a call, so it is read too.
+    outside core, where ``_x`` is a name a core class defines and
+    ``obj`` is not ``self``/``cls``, is reported unless an entry in
+    ``_EXEMPT`` names that receiver. ``getattr(obj, "_x")`` is the same
+    reach-in spelled as a call, so it is read too.
     """
-    layers = {
-        SESSIONS: [PKG / "sessions.py"],
-        APPS: sorted((PKG / "apps").rglob("*.py")),
-        ADAPTERS: sorted((PKG / "adapters").rglob("*.py")),
-        "testing verbs": [
-            PKG / f"{name.rsplit('.', 1)[1]}.py" for name in TESTING_VERBS
-        ],
+    core_paths = [path for module, path in _modules() if _is_core(module)]
+    core_private = _class_private_names(core_paths)
+    sources = {
+        module: path.read_text() for module, path in _modules() if not _is_core(module)
     }
-    offenders: list[str] = []
-    for paths in layers.values():
-        own = _layer_private_attrs(paths)
-        for path in paths:
-            module = _module_name(path)
-            for node in ast.walk(ast.parse(path.read_text())):
-                read = _private_read(node)
-                if read is None:
-                    continue
-                receiver, attr = read
-                if isinstance(receiver, ast.Name) and receiver.id in ("self", "cls"):
-                    continue
-                if attr in own or f"{module}:{attr}" in _FOREIGN:
-                    continue
-                rel = path.resolve().relative_to(PKG.parent)
-                offenders.append(f"{rel}:{node.lineno}: .{attr}")
+    offenders = _reach_ins(sources, core_private, _EXEMPT)
     assert not offenders, (
         "a layer above core reads a private attribute (use the public "
-        "name, or add one):\n" + "\n".join(sorted(offenders))
+        "name, or add one):\n" + "\n".join(offenders)
     )
