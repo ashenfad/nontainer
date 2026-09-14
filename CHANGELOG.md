@@ -128,9 +128,8 @@ closes.
   already has, and every report says so.
 - **`TestReport` and `render_report`** — the run as a record before it
   is text: counts, a `TestOutcome` per test, and each failure's frames
-  with their source, so a merge policy can gate on
-  `run_pytest(ws).ok` and a UI can show the first failure without
-  parsing a summary line. Frames name the file and line the agent
+  with their source, so a UI can show the first failure and a caller
+  can branch on `run_pytest(ws).ok` without parsing a summary line. Frames name the file and line the agent
   wrote; the sandbox's own are dropped. `str(report)` is the count line
   on its own — `2 failed, 8 passed in 0.31s` — for a caller that has to
   quote the outcome in one line. One record for both verbs —
