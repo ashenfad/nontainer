@@ -44,6 +44,27 @@ class BookkeepingLost(WorkspaceError):
     """
 
 
+class MergeRefused(WorkspaceError):
+    """A merge's check said no, so nothing was merged.
+
+    A session may carry a merge policy (``merge_check=``), and a
+    caller may pass one for the call (``ws.merge(src, check=...)``):
+    the check is run against the source at exactly the commit the
+    merge would take, and a falsy verdict stops the merge before
+    anything moves. :attr:`verdict` is what the check returned, whole,
+    because the interesting half of "the tests failed" is which ones —
+    the message carries only its one-line rendering.
+
+    A check that RAISES does not produce this: a broken check says
+    nothing about the branch, and its exception propagates so it
+    cannot be read as a refusal.
+    """
+
+    def __init__(self, message: str, verdict: object = False) -> None:
+        super().__init__(message)
+        self.verdict = verdict
+
+
 class SessionsError(WorkspaceError):
     """A delegation verb was given something it cannot act on.
 
