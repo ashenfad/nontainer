@@ -135,7 +135,9 @@ the parent store base for dir/agentfs (they resolve `<session>/` and
 
 `WorkspaceProvider` says where state *lives*; `Executor` says how code
 *runs* against it. The contract has one capability flag, two lifecycle
-methods, two execution methods and two staging methods.
+methods, two execution methods and two staging methods. Choosing and
+configuring one of the two that ship is the embedder's side, in the
+[API reference](api.md#executors).
 
 ```python
 supports_commands: bool
