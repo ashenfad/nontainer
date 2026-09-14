@@ -386,3 +386,117 @@ def test_a_hook_below_its_test_still_applies(ws):
         """,
     )
     assert outcome(result, "sees the hook below it").status == "passed"
+
+
+# -- deep equality over the built-in collection types --------------------
+
+
+def test_maps_compare_by_their_entries(ws):
+    result = run(
+        ws,
+        "tests/eqmap.test.js",
+        """
+        it('compares maps', () => {
+          expect(new Map([['a', 1]])).toEqual(new Map([['a', 1]]));
+          expect(new Map([['b', 2], ['a', 1]])).toEqual(new Map([['a', 1], ['b', 2]]));
+          expect(new Map([['a', {x: 1}]])).toEqual(new Map([['a', {x: 1}]]));
+          expect(new Map([['a', 1]])).not.toEqual(new Map([['a', 2]]));
+          expect(new Map([['a', 1]])).not.toEqual(new Map([['b', 1]]));
+          expect(new Map([['a', 1]])).not.toEqual(new Map());
+          expect(new Map([['a', {x: 1}]])).not.toEqual(new Map([['a', {x: 2}]]));
+        });
+        """,
+    )
+    o = outcome(result, "compares maps")
+    assert o.status == "passed", o.message
+
+
+def test_sets_compare_by_their_members(ws):
+    result = run(
+        ws,
+        "tests/eqset.test.js",
+        """
+        it('compares sets', () => {
+          expect(new Set([1, 2])).toEqual(new Set([2, 1]));
+          expect(new Set([{x: 1}])).toEqual(new Set([{x: 1}]));
+          expect(new Set([1, 2])).not.toEqual(new Set([1, 3]));
+          expect(new Set([1])).not.toEqual(new Set([1, 2]));
+          expect(new Set([{x: 1}])).not.toEqual(new Set([{x: 2}]));
+        });
+        """,
+    )
+    o = outcome(result, "compares sets")
+    assert o.status == "passed", o.message
+
+
+def test_regexps_compare_by_source_and_flags(ws):
+    result = run(
+        ws,
+        "tests/eqre.test.js",
+        """
+        it('compares regexps', () => {
+          expect(/ab+/gi).toEqual(/ab+/gi);
+          expect(/ab+/g).not.toEqual(/ab+/i);
+          expect(/ab+/g).not.toEqual(/ac+/g);
+        });
+        """,
+    )
+    o = outcome(result, "compares regexps")
+    assert o.status == "passed", o.message
+
+
+def test_dates_and_typed_arrays_compare_by_value(ws):
+    result = run(
+        ws,
+        "tests/eqbin.test.js",
+        """
+        it('compares dates and typed arrays', () => {
+          expect(new Date(5)).toEqual(new Date(5));
+          expect(new Date(5)).not.toEqual(new Date(6));
+          expect(new Uint8Array([1, 2])).toEqual(new Uint8Array([1, 2]));
+          expect(new Uint8Array([1, 2])).not.toEqual(new Uint8Array([1, 3]));
+          expect(new Uint8Array([1, 2])).not.toEqual(new Uint8Array([1]));
+          expect(new Float64Array([1.5])).not.toEqual(new Float64Array([2.5]));
+        });
+        """,
+    )
+    o = outcome(result, "compares dates and typed arrays")
+    assert o.status == "passed", o.message
+
+
+def test_an_unequal_collection_argument_fails_a_call_assertion(ws):
+    result = run(
+        ws,
+        "tests/eqcall.test.js",
+        """
+        it('sees the difference in a call argument', () => {
+          const f = vi.fn();
+          f(new Map([['a', 1]]));
+          expect(f).toHaveBeenCalledWith(new Map([['a', 1]]));
+          expect(f).not.toHaveBeenCalledWith(new Map([['a', 2]]));
+        });
+        it('names the values it compared', () => {
+          expect(new Map([['a', 1]])).toEqual(new Map([['a', 2]]));
+        });
+        """,
+    )
+    assert outcome(result, "sees the difference in a call argument").status == "passed"
+    failed = outcome(result, "names the values it compared")
+    assert failed.status == "failed"
+    assert "Map" in failed.message, failed.message
+    assert '"a"' in failed.message, failed.message
+
+
+def test_an_array_of_a_different_length_is_not_equal(ws):
+    result = run(
+        ws,
+        "tests/eqarr.test.js",
+        """
+        it('compares arrays by length too', () => {
+          expect([1]).not.toEqual([1, undefined]);
+          expect([1, 2]).toEqual([1, 2]);
+        });
+        """,
+    )
+    o = outcome(result, "compares arrays by length too")
+    assert o.status == "passed", o.message

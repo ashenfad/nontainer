@@ -148,6 +148,23 @@ function fmt(v, depth) {
   if (Array.isArray(v)) {
     return v.length ? '[ ' + v.map((x) => fmt(x, depth + 1)).join(', ') + ' ]' : '[]';
   }
+  if (v instanceof Map) {
+    const entries = Array.from(v.entries(), (e) =>
+      fmt(e[0], depth + 1) + ' => ' + fmt(e[1], depth + 1)
+    );
+    return 'Map { ' + (entries.join(', ') || '') + ' }';
+  }
+  if (v instanceof Set) {
+    return 'Set { ' + Array.from(v, (x) => fmt(x, depth + 1)).join(', ') + ' }';
+  }
+  if (ArrayBuffer.isView(v) && !(v instanceof DataView)) {
+    return (
+      v.constructor.name +
+      ' [ ' +
+      Array.from(v, (x) => String(x)).join(', ') +
+      ' ]'
+    );
+  }
   const keys = Object.keys(v);
   if (!keys.length) return '{}';
   return '{ ' + keys.map((k) => k + ': ' + fmt(v[k], depth + 1)).join(', ') + ' }';
@@ -155,17 +172,79 @@ function fmt(v, depth) {
 
 /* ---- equality ---- */
 
+function kind(v) {
+  return Object.prototype.toString.call(v);
+}
+
+/* Own enumerable keys are all a Map, a Set, a RegExp or a typed array
+ * has — which is none — so comparing those by keys alone calls every
+ * pair of them equal. Each built-in below is compared by what it
+ * actually holds, and only a plain object or an array falls through to
+ * its keys. */
+
+function pairsEqual(mine, theirs, strict) {
+  // Order-insensitive, and matched on key AND value together so a
+  // duplicate deep-equal key cannot be paired with the wrong value.
+  const rest = theirs.slice();
+  for (const [k, v] of mine) {
+    const i = rest.findIndex(
+      (entry) => equals(entry[0], k, strict) && equals(entry[1], v, strict)
+    );
+    if (i < 0) return false;
+    rest.splice(i, 1);
+  }
+  return true;
+}
+
+function elementsEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
+  return true;
+}
+
+function bytesOf(v) {
+  return v instanceof ArrayBuffer
+    ? new Uint8Array(v)
+    : new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+}
+
 function equals(a, b, strict) {
   if (Object.is(a, b)) return true;
   if (a === null || b === null) return false;
   if (typeof a !== 'object' || typeof b !== 'object') return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (a instanceof Date || b instanceof Date) {
-    return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  const type = kind(a);
+  // An Array is never a plain object, a Map is never a Set, and a
+  // Uint8Array is never a Float64Array.
+  if (type !== kind(b)) return false;
+  if (type === '[object Date]') return a.getTime() === b.getTime();
+  if (type === '[object RegExp]') {
+    return a.source === b.source && a.flags === b.flags;
   }
   if (strict && Object.getPrototypeOf(a) !== Object.getPrototypeOf(b)) return false;
-  const pick = (o) =>
-    Object.keys(o).filter((k) => strict || o[k] !== undefined);
+  if (type === '[object Map]') {
+    return (
+      a.size === b.size &&
+      pairsEqual(Array.from(a.entries()), Array.from(b.entries()), strict)
+    );
+  }
+  if (type === '[object Set]') {
+    return (
+      a.size === b.size &&
+      pairsEqual(
+        Array.from(a, (v) => [v, v]),
+        Array.from(b, (v) => [v, v]),
+        strict
+      )
+    );
+  }
+  if (type === '[object ArrayBuffer]' || type === '[object DataView]') {
+    return elementsEqual(bytesOf(a), bytesOf(b));
+  }
+  if (ArrayBuffer.isView(a)) return elementsEqual(a, b);
+  // An array's length is not an enumerable key, so without this
+  // [1] and [1, undefined] would compare equal under toEqual.
+  if (Array.isArray(a) && a.length !== b.length) return false;
+  const pick = (o) => Object.keys(o).filter((k) => strict || o[k] !== undefined);
   const ka = pick(a);
   const kb = pick(b);
   if (ka.length !== kb.length) return false;
