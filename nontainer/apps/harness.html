@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ws-vitest</title>
+<script type="importmap">
+{"imports": {
+  "vitest": "./__nt/harness.js",
+  "vitest/globals": "./__nt/harness.js",
+  "@jest/globals": "./__nt/harness.js"
+}}
+</script>
+<body>
+<script type="module">
+import { __run } from './__nt/harness.js';
+window.__nt_done = __run(() => import('./__SPEC__'), __OPTS__);
+</script>
+</body>

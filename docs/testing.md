@@ -264,8 +264,9 @@ nontainer serves.
 
 It is vitest's shape, which is jest's surface — and vitest is not
 installed, nor is anything else: the harness is nontainer's own
-JavaScript, served inline from the workspace's synthetic origin. There
-is no `node_modules`, no build step and no config file.
+JavaScript, shipped with the package and served from the workspace's
+synthetic origin rather than fetched from a CDN. There is no
+`node_modules`, no build step and no config file.
 
 ## Where tests live
 
