@@ -68,6 +68,40 @@ calls `import`, and data it carries forward lands in `cache` — rather
 than a REPL namespace surviving between calls. See the
 [design notes](design.md) for why that shape.
 
+The session's own verbs are on the object; the rest are grouped by the
+seam they belong to — `ws.files` (read/write/edit/put/get/export),
+`ws.index` (the staged set), `ws.tags` (this session's names), and
+`ws.runtime` (how code runs: the executor, commands, shell variables).
+
+Files live under the **workspace root** — `/workspace` by default
+(`workspace(..., root=)`) — and cwd starts there, so relative paths
+just work. The root is the one absolute-path contract shared across
+executors: a dud VM mounts its guest workspace at the same path, so
+`/workspace/data/in.csv` names the same file whether agent code runs
+in the local sandbox or a real machine.
+
+## The store: what outlives one session
+
+A `Workspace` is one session. The `Store` is the place those sessions
+live in, and it owns the verbs about the *set* of them —
+`workspace(...)` is sugar for opening one out of it:
+
+```python
+import nontainer
+
+store = nontainer.store()            # default ~/.nontainer
+ws = store.open("user-42")           # what workspace("user-42") does
+
+store.sessions()                     # every session on the store
+store.delete("user-42")              # drop one, storage and all
+store.tags.add(ws, "v1")             # a name that outlives the session
+snap = store.tags.at("v1")           # a frozen workspace at that name
+```
+
+A tag is session-scoped by default and dies with the session;
+`store.tags` is the store-scoped half — a publication that outlives it,
+readable from any session on the store.
+
 ## Fork, edit, merge
 
 Delegation is a branch operation, not a VM operation. A fork is O(1), a
@@ -186,7 +220,65 @@ Or from the terminal: `tar -czf out.tgz out` then `ws.files.get("out.tgz", ...)`
 
 Pick kvgit for fork/undo/history, `dir` when agent code needs real files,
 `agentfs` for the one-file-artifact + SQL-audit story. Or implement
-`WorkspaceProvider` and bring your own.
+`WorkspaceProvider` and bring your own — the protocol is in
+[extending.md](extending.md).
+
+## Where code runs (the `[dud]` extra)
+
+The backend decides where state *lives*; the executor decides where
+code *runs*, and the two are independent, because the versioning
+semantics were always properties of the state layer and not of the
+machine.
+
+| executor | isolation | fidelity |
+|---|---|---|
+| `LocalExecutor` (default) | sandtrap's walled garden; optional process/kernel defense-in-depth | emulated shell + filesystem |
+| `DudExecutor()` — i.e. `backend="vm"` | a disposable microVM — vfkit on macOS, firecracker on Linux/KVM | real machine |
+| `DudExecutor(backend="subprocess")` | **none** — host process | real bash, real files |
+
+```python
+from nontainer.executor_dud import DudExecutor
+
+ws = workspace("user-42", executor_factory=lambda: DudExecutor())
+```
+
+The default `"vm"` picks the right hypervisor for the host; name
+`"vfkit"` or `"firecracker"` directly if you need to pin one. Asking
+for one the host can't provide fails closed (`IsolationUnavailable`)
+rather than quietly degrading.
+
+Same `terminal` / `run_python` tools, same commits, same O(1)
+forks — [dud](https://github.com/ashenfad/dud) receives a tree,
+executes against a real filesystem, and returns a diff, which the
+provider commits exactly as it commits a local one. What you buy is
+fidelity: C extensions, real subprocesses, sqlite on real files,
+memory-mapped parquet — the workloads the in-process emulation serves
+worst.
+
+`PythonConfig` is honoured or refused on a VM rung, never narrowed.
+The guest has **no network interface at all**, so `network=False` holds
+by construction and `network=True` (on the config or a `ModuleGrant`)
+raises at open rather than pretending; `stdlib=False` raises for the
+same reason, and any `isolation` is exceeded by the VM. Module grants
+become the guest image's package list, pinned to the host's installed
+versions, so what the agent may import is the same set on both rungs
+(plus the guest's stdlib and those packages' own dependencies); a
+granted local module with no distribution raises, and
+`vm={"packages_from_grants": False}` opts a custom image out. What a
+real machine changes rather than restricts — stderr merged into
+stdout, no tick counts, results crossing as data rather than live
+objects, cache reads of guest-written keys as bytes, no injected
+builtins in real bash — is listed in the executor's docstring.
+
+Note the last row: `backend="subprocess"` is real bash and real Python
+with **no containment at all** — agent code runs as you, with your
+network and your files. It enforces none of `PythonConfig`'s policy and
+refuses only an explicit `isolation` above `"none"`, which is an ask
+for containment it cannot give. It buys fidelity, not a boundary, so it's
+opt-in rather than the default: it's the only backend that needs no
+hypervisor, which makes it the dev/CI floor. If you want policy gating,
+crash containment, or kernel defense-in-depth without a VM, use
+`LocalExecutor`, not this.
 
 ## Hooking up an agent
 
@@ -241,12 +333,26 @@ past-sessions tool, AgentOS, its own `fork_session` — use
 The reasoning is in [agno-sessions.md](agno-sessions.md); the shapes
 are in the [API reference](api.md).
 
+Values an agent wants *shown* go in a `ui` dict: anything that can
+cross as data stays as it is, and a live object that cannot — a plotly
+figure, a DataFrame, a matplotlib figure, a PIL image — is written to
+`<root>/ui/<name>.<ext>` and the binding names where it went. The
+adapters append one line to the tool result naming what was written,
+so the agent can embed it in its reply. The full contract —
+`ArtifactPath`, `read_artifact`, the note grammar — is in
+[api.md](api.md).
+
 Tool exposure is automatic: a plain python environment gets ONE
 `terminal` tool (with a `python` builtin); an augmented one (cache or
 host objects) gets a separate `run_python` tool whose description
 explains the magic. Override with `tools="terminal"` / `"split"`.
 
 ## Apps: the agent builds and verifies a web app
+
+Agents author full-stack apps: a no-build frontend plus **request
+handlers** — serverless semantics, not resident servers. A file's path
+is its route (`/workspace/app/api/scores.py` → `/api/scores`), and its
+exported `get` / `post` are the verbs.
 
 ```python
 from nontainer import store
@@ -312,8 +418,13 @@ omitted, so a mismatch stays invisible until you customize one.
 `AppsConfig()` is where the app becomes the embedder's rather than the
 library's — which frontend the agent reaches for, which asset bytes are
 served beside the app without entering the workspace, and the CSP both
-walls enforce. Every field is in [api.md](api.md); why each one exists
-is in [apps.md](apps.md).
+walls enforce. `frontend_notes` states the approach and the libraries
+and `static_assets` serves the bytes alongside the app; together they
+are what a house design system rides on, and what makes an
+**air-gapped** deployment work with no CDN in reach. Leave both unset
+and agents get the built-in guidance — plain DOM first, Preact and
+plotly from the CDN allowlist. Every field is in [api.md](api.md); why
+each one exists is in [apps.md](apps.md).
 
 Serving is read-only and concurrent. Mutable app state does **not** go
 in the workspace — it goes to an external store (a sqlite/postgres
