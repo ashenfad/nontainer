@@ -106,6 +106,12 @@ a plane belongs to no session, so there is no session id to give it.
 methods rather than a `store.shared` namespace object, so they read as
 the publication verbs do (`publish` / `publications` / `unpublish`).
 
+A plane's own tags are the plane's: they are stored outside the store
+scope, so `store.tags` neither lists nor deletes one, and `unshare`
+takes them with the plane without touching a store tag whose name
+merely reads the same way (`shared/catalog/release` is a name somebody
+can tag by hand, and it survives).
+
 The branch is the store's, not a session's: `sessions()` never lists
 it, `delete` refuses it (no session id may begin with `@`), and
 `unshare` is the one way to remove it — with the tags it owns, and a

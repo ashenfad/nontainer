@@ -318,6 +318,14 @@ STORE_SCOPE = "store"
 # Leading "@": session ids cannot start with one (SESSION_ID_RE), so no
 # session's tag namespace can ever be the store's.
 _STORE_PREFIX = "@store/"
+# Where a shared plane's own tags live. NOT under the branch name the
+# way a session's are: a plane's branch is itself under ``@store/``, so
+# tags beneath it would be store tags — listed, read and deleted as
+# such — and a plane's teardown would sweep every store tag whose name
+# happened to begin the same way. A session id cannot begin with ``@``
+# and the store scope does not reach outside its own prefix, so this
+# namespace is the plane's alone.
+_SHARED_TAG_PREFIX = "@shared/"
 
 
 def _is_shared_branch(name: str) -> bool:
@@ -328,6 +336,20 @@ def _is_shared_branch(name: str) -> bool:
     session's.
     """
     return isinstance(name, str) and name.startswith(SHARED_BRANCH_PREFIX)
+
+
+def _session_tag_prefix(branch: str) -> str:
+    """Where a branch's own tags are stored, given its name.
+
+    A session's are under its id, which is the whole story for every
+    branch a session id can spell. A shared plane's go under
+    ``@shared/<name>/``, which is neither the store scope nor any
+    session's — the one place its bookmarks belong to the plane and to
+    nothing else.
+    """
+    if _is_shared_branch(branch):
+        return f"{_SHARED_TAG_PREFIX}{branch[len(SHARED_BRANCH_PREFIX) :]}/"
+    return f"{branch}/"
 
 
 def _validate_branch(name: str) -> str:
@@ -481,10 +503,13 @@ class KvgitProvider:
         id, which is what keeps the ``@store/`` branches out of reach
         of a teardown.
 
-        A session's own tags go with it: every tag stored under
-        ``<name>/`` is deleted alongside the branch, because a
-        session-scoped tag belongs to that session. Store-scoped tags
-        (``@store/``) are left exactly where they are — that scope exists
+        A branch's own tags go with it: every tag stored under its own
+        prefix is deleted alongside it, because a session-scoped tag
+        belongs to the branch that made it — ``<name>/`` for a session,
+        ``@shared/<name>/`` for a shared plane, whose branch name is
+        itself under the store scope and would otherwise sweep store
+        tags with it. Store-scoped tags (``@store/``) are left exactly
+        where they are — that scope exists
         so a publication can outlive the session that made it, and
         teardown is where that promise is kept; no session id can spell
         that prefix, so no name passed here can reach them. Removing a
@@ -542,7 +567,7 @@ class KvgitProvider:
         from kvgit.kv.disk import Disk
         from kvgit.versioned.kv import tags as store_tags
 
-        prefixes = tuple(f"{s}/" for s in sessions)
+        prefixes = tuple(_session_tag_prefix(s) for s in sessions)
         if not prefixes:
             return
         backend = Disk(str(path))
@@ -1074,7 +1099,9 @@ class KvgitProvider:
             raise ValueError("Tag name must be a non-empty string")
         if "%" in name:
             raise ValueError(f"Tag name must not contain '%': {name!r}")
-        if name.startswith(_STORE_PREFIX) or name.startswith(f"{self._session}/"):
+        if name.startswith(_STORE_PREFIX) or name.startswith(
+            _session_tag_prefix(self._session)
+        ):
             raise ValueError(
                 f"Tag name {name!r} starts with a scope prefix; pass the bare "
                 "name and say scope='store' or scope='session' instead"
@@ -1085,7 +1112,7 @@ class KvgitProvider:
         if scope == STORE_SCOPE:
             return _STORE_PREFIX
         if scope == SESSION_SCOPE:
-            return f"{self._session}/"
+            return _session_tag_prefix(self._session)
         raise ValueError(
             f"Unknown tag scope {scope!r}: expected "
             f"{SESSION_SCOPE!r} or {STORE_SCOPE!r}"

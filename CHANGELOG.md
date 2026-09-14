@@ -138,6 +138,13 @@ many write at once. Elsewhere, the `ui` set closes.
   read.
 
 ### Changed
+- **A shared plane's own tags live outside the store scope.** A
+  plane's branch is itself under `@store/`, so a tag under the branch
+  name would BE a store tag — listed, read and deleted as one — and the
+  plane's teardown would sweep every store tag whose name began the
+  same way, `shared/catalog/release` included. They are stored under
+  `@shared/<name>/` instead, which neither the store scope nor any
+  session id reaches.
 - **A commit that lost the head between reading it and swapping it
   retries instead of raising.** kvgit three-way merges a head that had
   already moved and fails the compare-and-swap for one that moves

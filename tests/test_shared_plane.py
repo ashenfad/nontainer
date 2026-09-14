@@ -402,3 +402,42 @@ def test_a_commit_that_loses_the_swap_merges_onto_the_head_that_won(store, monke
             "/workspace/b.txt",
             "/workspace/c.txt",
         ]
+
+
+# -- a plane's tags are its own ----------------------------------------------
+
+
+def test_unshare_leaves_a_store_tag_that_merely_looks_like_the_planes(store):
+    """A store tag may hold slashes, so ``shared/catalog/release`` is a
+    name somebody can tag by hand. A plane's teardown removes the plane
+    and nothing that merely reads like it."""
+    with store.open("user-42") as ws:
+        ws.files.write("/workspace/a.txt", "a")
+        commit = store.tags.add(ws, "shared/catalog/release")
+        store.shared("catalog").close()
+        store.unshare("catalog", min_age=0)
+        assert store.tags.list() == {"shared/catalog/release": commit}
+    with store.tags.at("shared/catalog/release") as snap:
+        assert snap.files.read("/workspace/a.txt") == b"a"
+
+
+def test_a_planes_own_tags_are_not_store_tags(store):
+    """The plane's tag scope is the plane's. A name it bookmarks is not
+    a store tag, and a store tag is not a name it can read or delete."""
+    with store.open("user-42") as ws:
+        ws.files.write("/workspace/a.txt", "a")
+        store.tags.add(ws, "shared/catalog/release")
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/x.json", "{}")
+        plane.tags.add("v1")
+        assert sorted(plane.tags.list()) == ["v1"]
+        assert sorted(store.tags.list()) == ["shared/catalog/release"]
+
+
+def test_a_planes_own_tags_go_with_the_plane(store):
+    with store.shared("catalog") as plane:
+        plane.files.write("/workspace/x.json", "{}")
+        plane.tags.add("v1")
+    store.unshare("catalog", min_age=0)
+    with store.shared("catalog") as again:
+        assert again.tags.list() == {}
