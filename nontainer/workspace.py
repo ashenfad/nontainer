@@ -1437,19 +1437,20 @@ class Workspace:
         if executor is None and executor_factory is not None:
             executor = executor_factory()
 
+        # -- the session's merge policy: what ``merge`` runs against a
+        # source when the call names no check of its own. A
+        # construction setting rather than a mutable attribute, because
+        # it is the embedder's rule for this session and every fork of
+        # it, and a policy the agent's own tool calls could retarget
+        # mid-session would not be one.
+        self._merge_check = merge_check
+
         # -- what a fork replays. Captured from the NORMALIZED values,
         # not the raw arguments, so a fork starts from the state this
         # workspace resolved to: ``root`` collapsed by segment, mount
         # points validated and their sources resolved. Mutable-after-
         # construction settings are deliberately NOT here (see
         # :class:`_Settings`); fork() reads those live.
-        # The session's merge policy: what ``merge`` runs against a
-        # source when the call names no check of its own. A
-        # construction setting rather than a mutable attribute,
-        # because it is the embedder's rule for the session and every
-        # fork of it, and a policy an agent's own tool call could
-        # retarget mid-session would not be one.
-        self._merge_check = merge_check
         self._settings = _Settings(
             python=python_config,
             mounts=normalized_mounts,
@@ -2744,8 +2745,9 @@ class Workspace:
         # would dress a flag up as a reason, and an empty string would
         # leave a dangling colon. Anything else renders, which is how a
         # TestReport's count line reaches the message.
-        reason = "" if isinstance(verdict, bool) or verdict is None else str(verdict)
-        detail = f": {reason.strip()}" if reason.strip() else ""
+        bare = isinstance(verdict, bool) or verdict is None
+        reason = "" if bare else str(verdict).strip()
+        detail = f": {reason}" if reason else ""
         raise MergeRefused(
             f"merge of {source!r} at {commit[:7]} refused by its check{detail}",
             verdict,
