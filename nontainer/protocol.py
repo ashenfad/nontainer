@@ -949,7 +949,9 @@ class Executor(Protocol):
 #: verdicts (a delegate that would not do the work, and one that ran
 #: out of budget, both RESOLVE — neither raises); ``cancelled`` is the
 #: caller's; ``failed`` means the runner itself raised.
-JobStatus = Literal["running", "answered", "declined", "capped", "cancelled", "failed"]
+JobStatus = Literal[
+    "running", "answered", "declined", "capped", "cancelled", "failed", "expired"
+]
 
 
 @dataclass(frozen=True)
@@ -981,7 +983,17 @@ class Job:
     child forked earlier."""
 
     finished: float | None = None
-    """When the answer landed, or ``None`` while the job runs."""
+    """When the answer landed, or ``None`` while the job runs. A job
+    whose branch was later swept keeps the time its run ended: that is
+    still when it finished."""
+
+    touched: float = 0.0
+    """When the caller last dealt with this job, unix epoch seconds:
+    the moment it was given its task, moved forward by reading its
+    answer or keeping it. Retention for a delegate's branch is an idle
+    TTL, so what the sweep measures is time since this rather than
+    time since the job ended — a delegate read every turn is in use,
+    however long ago its run finished."""
 
     changed: dict[str, tuple[str, ...]] = field(default_factory=dict)
     """``{"seed": [...], "elsewhere": [...]}`` once the job is done:

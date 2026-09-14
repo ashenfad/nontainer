@@ -62,3 +62,15 @@ class JobRunning(SessionsError):
     to wait can say so (``ask(..., wait=True)``) and one that did not
     gets its turn back.
     """
+
+
+class BranchExpired(SessionsError):
+    """The job's branch was swept, so there is nothing left to read.
+
+    A delegate's branch is retained on an idle TTL: the sweep the
+    embedder schedules deletes the branch of a finished job that has
+    gone unread for long enough and nobody asked to keep. The job's
+    row stays — the sweep is not a deletion of the record — so the
+    verbs that need the branch say what happened and name the way
+    forward, which is to ask again and keep the next one.
+    """
