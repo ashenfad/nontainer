@@ -83,9 +83,8 @@ _RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from", "paths")
 _PUBLISH_IDENTITY_KEYS = _RESERVED_INFO_KEYS
 
 # The construction keywords a frozen open takes. Exactly
-# :meth:`Store.open`'s, minus ``autocommit`` and ``merge_check``: a
-# frozen provider commits nothing, so the flag has nothing to switch,
-# and it merges nothing, so a merge policy has nothing to gate. ``provider`` and
+# :meth:`Store.open`'s, minus ``autocommit``: a frozen provider commits
+# nothing, so the flag has nothing to switch. ``provider`` and
 # ``executor`` are absent for the reason they are absent from
 # ``Store.open`` — the store builds the provider, and an executor
 # instance is bound to one session, so a caller hands over the
@@ -567,7 +566,6 @@ class Store:
         max_observation: int = 32_000,
         executor_factory: "Callable[[], Executor] | None" = None,
         root: str = "/workspace",
-        merge_check: "Callable[[Workspace], Any] | None" = None,
     ) -> "Workspace":
         """Open (or create) a session's :class:`Workspace`.
 
@@ -585,14 +583,6 @@ class Store:
         ``root`` is the workspace root — the absolute VFS path agent
         code sees its files under (default ``/workspace``). One value
         per session, inherited by forks.
-
-        ``merge_check`` is the session's merge policy: a callable
-        handed the source frozen at the commit a merge would take,
-        whose falsy verdict refuses that merge
-        (:class:`~nontainer.MergeRefused`). It gates the agent's own
-        ``ws-git merge`` as much as the host's ``ws.merge``, and forks
-        inherit it — ``merge_check=run_pytest`` is "no branch comes
-        home red", for this session and every delegate it spawns.
         """
         from .workspace import Workspace
 
@@ -606,7 +596,6 @@ class Store:
             max_observation=max_observation,
             executor_factory=executor_factory,
             root=root,
-            merge_check=merge_check,
         )
         ws._store = self
         return ws

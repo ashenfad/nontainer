@@ -20,8 +20,8 @@ Public surface:
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
-            CommitNotFoundError, BookkeepingLost, MergeRefused,
-            SessionsError, JobRunning, BranchExpired
+            CommitNotFoundError, BookkeepingLost, SessionsError,
+            JobRunning, BranchExpired
 
 Extension surfaces (built by the embedder, never assumed present):
 
@@ -42,7 +42,6 @@ from .errors import (
     BranchExpired,
     CommitNotFoundError,
     JobRunning,
-    MergeRefused,
     NotSupportedError,
     SessionIdError,
     SessionsError,
@@ -119,5 +118,4 @@ __all__ = [
     "SessionsError",
     "JobRunning",
     "BranchExpired",
-    "MergeRefused",
 ]

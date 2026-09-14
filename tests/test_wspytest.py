@@ -370,12 +370,12 @@ def test_a_test_name_nothing_defines_is_a_usage_error(ws):
 
 
 def test_a_report_prints_its_own_summary_line(ws):
-    """``str(report)`` is the line a refusal quotes.
+    """``str(report)`` is the count line, on its own.
 
-    A merge check hands its verdict to the error that refuses the
-    merge, and the useful half of a report is the count line — so the
-    report renders it itself rather than making every caller reach for
-    ``render_report`` and slice the last line off it.
+    A caller that has to say how a run went in one line wants the
+    counts and nothing else, so the report renders them itself rather
+    than making every such caller reach for ``render_report`` and
+    slice the last line off it.
     """
     write(
         ws,

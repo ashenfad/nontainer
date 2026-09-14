@@ -27,8 +27,8 @@ wrong reason.
 
 The record is the product; the terminal text is a rendering of it
 (:func:`render_report`). It is the same ``TestReport`` ``ws-pytest``
-produces, with ``tool`` telling the two apart, so one merge ``check=``
-hook and one UI consume either.
+produces, with ``tool`` telling the two apart, so one gate on a merge
+and one UI consume either.
 """
 
 from __future__ import annotations
