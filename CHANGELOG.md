@@ -16,10 +16,43 @@ versioning section the host API alone. A third verb joins it:
 about a function is asked of the function — and `ws-vitest`, the same
 tier for the other language, where a frontend module runs in a browser
 page that reaches nothing but the files under test. `docs/testing.md` is
-their page. Delegation learns where a delegate starts and how to give one
-another task. Elsewhere, the `ui` set closes.
+their page. Delegation learns where a delegate starts, how to give one
+another task, and what becomes of its branch afterwards: branches age
+out on an idle TTL the embedder sweeps, and a merge can be gated on the
+source — the delegate's own tests, run against the commit the merge
+would take. Elsewhere, the `ui` set closes.
 
 ### Added
+- **`ws.merge(source, check=)` and `merge_check=` on the open** — a
+  merge can be gated on the source itself. The check is handed a frozen
+  workspace over that branch at exactly the commit the merge would
+  take, runs after the existing refusals and before anything moves, and
+  a falsy verdict raises `MergeRefused` with nothing merged, nothing
+  marked and nothing to abort. `TestReport` is truthy when it is green
+  and now prints its own count line, so `check=run_pytest` is the whole
+  of "the delegate's tests pass before I take its work", and
+  `MergeRefused` quotes it: `merge of 'sleepy-otter' at 3f9c2a1 refused
+  by its check: 2 failed, 8 passed in 0.31s`. As a construction setting
+  it becomes the session's policy, inherited by forks and applied to
+  the AGENT's own `ws-git merge`, where it reads as the verb's error
+  text and the recovery is the branch the agent already has. A check
+  that raises propagates untouched: a broken check says nothing about
+  the delegate.
+- **`sessions.sweep(idle=)`, `Job.touched` and the `expired` status** —
+  retention for a delegate's branch, which `keep` had been recording a
+  flag for since it landed. It is idle TTL with touch on read: a job
+  carries when its caller last dealt with it, `result` and `keep` move
+  that forward, and the sweep takes the branch of every finished,
+  unheld, unkept job that has gone untouched for longer — so a delegate
+  read every turn is in use however long ago its run ended. The
+  embedder schedules it beside `store.clean()`; no verb sweeps on the
+  way past, which would make one delegate's retention depend on how
+  often another is asked for. The job's row survives: the status is
+  `expired`, the answer is dropped, `base` still answers, and `result`
+  / `keep` / a resuming `ask` raise the new `BranchExpired` naming the
+  way forward. The sweep takes only the names in its own job table — a
+  delegate's own delegates belong to the helper that asked for them,
+  and a human may create `foo.notes` beside `foo`.
 - **`sessions ask(fork_from=, resume=)`** — the two things about an ask
   that are not its task. `fork_from` starts the delegate from another fork
   point, a commit named by a store tag or spelled `session@commit`

@@ -576,7 +576,7 @@ ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
                                          # (a named directory is mirrored)
 ws.log(limit=None, kind="work"|"agent"|"all") -> Iterable[CommitInfo]
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
-ws.merge(source: str) -> MergeOutcome            # needs caps.merge
+ws.merge(source: str, *, check=None) -> MergeOutcome  # needs caps.merge
 ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
 ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
 ws.discard() -> None                             # drop staged writes
@@ -838,6 +838,44 @@ bookkeeping commit that records it as the agent's, which is what
 leaves a clean workspace behind a merge. `MergeOutcome.auto_merged` is
 the other half of `conflicts`: the paths the merge changed and settled
 on its own, so the two together are everything the merge touched.
+
+**`check=` is the gate on a merge**, and `merge_check=` on
+`Store.open` / `Workspace(...)` is the same gate as a session's
+policy. A check is a callable handed a **frozen** workspace over the
+source at exactly the commit this merge would take — its last agent
+commit, or its branch head where there is no index — run after the
+refusals above and before anything is merged:
+
+```python
+from nontainer.wspytest import run_pytest
+
+ws.merge("analyst.sleepy-otter", check=run_pytest)   # red branches stay out
+ws = store.open("analyst", merge_check=run_pytest)   # ... for every merge
+```
+
+A truthy verdict merges. A falsy one raises `MergeRefused`, with
+nothing merged and nothing recorded: `err.verdict` is what the check
+returned, whole, and the message carries its one-line rendering —
+`merge of 'sleepy-otter' at 3f9c2a1 refused by its check: 2 failed, 8
+passed in 0.31s`. `TestReport` is truthy when it is green and prints
+that count line, so `check=run_pytest` is the whole of "the delegate's
+tests pass". A check that *raises* is the embedder's bug rather than a
+refusal, and its exception propagates untouched; the frozen workspace
+is closed either way.
+
+The frozen source is built with this session's own construction
+settings and terminal commands, so what a check runs against is the
+tree the source's own agent works in. Reading a commit is the store's
+verb, so a check needs a workspace opened from a store.
+
+`merge_check` is a construction setting like the rest: forks inherit
+it, and it is what gates the AGENT's `ws-git merge <name>` in the
+terminal, where the refusal is the verb's error text
+([ws-git.md](ws-git.md#bringing-a-delegates-work-back)). Naming
+`check=` at the call overrides it for that call. Only `merge` is
+gated — `merge --abort`, `revert`, `cherry_pick` and `checkout` take
+no check, because each of them is how a caller recovers from a merge
+it should not have made.
 
 **`ws.revert(commit)` and `ws.cherry_pick(ref)`** apply ONE commit's
 change to the tree as it stands (`caps.merge`). They are one operation
@@ -1371,8 +1409,9 @@ sessions.ask(task, *, name=None, paths=None, inherit="fresh",
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
 sessions.cancel(name) -> Job
-sessions.keep(name) -> Job
+sessions.keep(name) -> Job           # out of the retention sweep, for good
 sessions.base(name) -> str | None    # the commit it was forked from
+sessions.sweep(idle, *, min_age=3600) -> list[str]   # the branches it took
 sessions.close()                     # joins the workers; the branches stay
 ```
 
@@ -1466,8 +1505,43 @@ into the next turn — is the embedder's. `cancel` means the answer will
 be discarded and the branch left as it is: a runner already working is
 the embedder's loop and cannot be interrupted, and nothing the helper
 does writes to the child's branch, so there is nothing to undo either.
-A job that has already answered comes back unchanged. `keep` records a
-flag on the job for a retention sweep to honor; nothing sweeps yet.
+A job that has already answered comes back unchanged.
+
+### Retention: an idle TTL the embedder sweeps
+
+A delegate leaves a branch behind, and a delegating session accumulates
+them. `sessions.sweep(idle)` deletes the branch of every job that has
+finished, is held by no run, was not `keep`-flagged, and has gone
+untouched for `idle` seconds:
+
+```python
+sessions.sweep(idle=24 * 3600)        # beside store.clean(), on a timer
+```
+
+It is a verb the embedder **schedules** — the `reap_idle` pattern —
+and nothing calls it on the way past: an `ask` or a `list` that swept
+would make one delegate's retention depend on how often another is
+asked for.
+
+`Job.touched` is what it measures: when the caller last dealt with the
+job, set when the task is given and moved forward by `result` (**touch
+on read**) and by `keep`. A delegate whose answer is read every turn is
+in use, however long ago its run ended — which is what an age measured
+from `finished` would get wrong.
+
+The job's row survives its branch. Its status becomes `expired`, it
+keeps the time its run finished, and its answer is dropped, since what
+the answer describes is gone. The three verbs that need the branch —
+`result`, `keep`, and an `ask(resume=...)` — raise `BranchExpired`
+naming the way forward, which is to ask again and `keep` the next one.
+`base(name)` still answers: the fork point is recorded in the job
+table, not read off the branch.
+
+**The sweep takes only this helper's own jobs.** A delegate's own
+delegates (`analyst.otter.finch`) belong to the helper the runner built
+for that child, and are that embedder's to sweep. Ownership is what an
+embedder recorded, never what a name looks like — a human may create
+`analyst.notes` beside `analyst`, and a sweep by prefix would take it.
 
 ### `SessionRunner` (the loop seam)
 
@@ -1505,9 +1579,11 @@ boundaries where a handle does not — the job's `name` is the
 serialization format every later verb takes.
 
 ```python
-Job(name, task, status, ref, started, finished, changed, kept, uncommitted,
-    origin)
+Job(name, task, status, ref, started, finished, touched, changed, kept,
+    uncommitted, origin)
 # status: running | answered | declined | capped | cancelled | failed
+#         | expired (its branch was swept)
+# touched: when the caller last dealt with it — what sweep() measures
 # origin: (the fork point as spelled, its commit) — None when the
 #         child was forked from the asking session
 
@@ -1526,8 +1602,9 @@ a file the delegate created is *elsewhere* even though it can read it
 back — which is exactly the change the caller has not seen before.
 
 Declining and running out of budget **resolve**: the caller reads a
-status, never catches an exception. `JobRunning` and `SessionsError`
-are the two that do raise (not yet, and no such job).
+status, never catches an exception. `JobRunning`, `BranchExpired` and
+`SessionsError` are the three that do raise (not yet, swept, and no
+such job).
 
 ### The `sessions` tool
 
@@ -1550,7 +1627,11 @@ ws-git diff <name> | ws-git merge <name> | ws-git checkout <name> -- <paths>
 ```
 
 `ask` takes `fork_from` and `resume` as the host verb does, and a
-listing marks where a child came from when it was not forked here. The
+listing marks where a child came from when it was not forked here; a
+job whose branch the retention sweep has taken lists as `expired`, and
+`result` on one reads as a refusal naming the way forward. `sweep`
+itself is not an action: retention is the embedder's schedule, not
+something a model decides mid-turn. The
 word is `fork_from` rather than `from` because a JSON argument's name
 is the python parameter's name in both adapters and `from` is a python
 keyword — so one spelling serves the host API, both tool schemas and
@@ -1564,7 +1645,9 @@ instruction.
 
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
 `SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
-`SessionsError` (no such job) · `JobRunning` (not yet) · `CacheError`.
+`MergeRefused` (a merge's check said no; `.verdict` is what it
+returned) · `SessionsError` (no such job) · `JobRunning` (not yet) ·
+`BranchExpired` (the job's branch was swept) · `CacheError`.
 
 ## Adapters
 
@@ -2027,7 +2110,9 @@ parsing `3 passed, 1 failed`.
 TestReport(tool, ok, collected, passed, failed, errors, skipped,
            duration, exit_code, outcomes=(), stdout="",
            collection_error=None, notes=())
-    # bool(report) is report.ok — ws.merge(child, check=lambda t: run_pytest(t).ok)
+    # bool(report) is report.ok — ws.merge(child, check=run_pytest)
+    # str(report) is the count line: "2 failed, 8 passed in 0.31s",
+    #   which is what a MergeRefused quotes
     # tool: "pytest" | "vitest" — one record, so one check= hook and one
     #   UI consume either
     # exit_code for pytest is pytest's: 0 passed · 1 failures · 2 a file
