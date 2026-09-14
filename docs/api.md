@@ -426,8 +426,9 @@ cwd starts there, VFS module imports resolve from it, skills install
 to `<root>/skills`, the app tree is `<root>/app` — and a VM executor
 (dud) mounts its guest workspace at this exact path, so an absolute
 path in agent code names the same file on every executor. Forks
-inherit it. `root="/"` selects the flat pre-0.2 layout (no VM path
-parity — a guest can't mount at the fs root).
+inherit it. `root="/"` selects the flat layout, with agent files at the
+filesystem root and no VM path parity — a guest can't mount at the fs
+root.
 
 ## `Workspace`
 
