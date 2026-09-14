@@ -256,14 +256,8 @@ cwd, the conversation. Forking one is O(1) and kvgit already three-way
 merges branches, so delegating to a subagent, spawning a fresh worker
 and consulting another session need no new primitives. They need a
 calling convention over the ones that exist, plus a sparse view.
-
-**Three scenarios, two mechanisms.**
-
-| scenario | ancestry | result path |
-|---|---|---|
-| fork yourself | the fork point is the common ancestor | `merge` |
-| fork an external session | the child shares ancestry with *them* | merge back into them is real; into you it is `checkout(ref, paths=)` |
-| spawn fresh | a fork with a narrowed view and no conversation; ancestry intact | `merge` |
+The convention itself — the helper, the records, the runner seam — is
+in [sessions.md](sessions.md); this section is why it has that shape.
 
 **Consult is not a merge.** Two unrelated sessions share only the
 store's initial empty commit, so a three-way merge from there sees
@@ -339,27 +333,19 @@ appends that restore. A deliberate deviation from git, which leaves
 conflicts uncommitted: here the conflicted state is itself a commit you
 can check out, and there is no working tree to leave things in.
 
-**Merge takes only what is agent-committed, on both sides.** The
-target refuses while it has anything modified against its own last
-ws-git commit; the source is merged at *its* last agent commit and is
-refused when it has written since. A session that never used ws-git has
-no agent commit to differ from and merges at its store head, which is
-the honest answer for it.
-
-**A fork starts with a fresh ws-git state**, and that is what lets the
-last rule reach delegates. A branch carries the workspace — files,
-cache, cwd, and with `inherit="full"` the conversation — but never the
-agent's index, head, outstanding merge or tags: an index is a composition in
-progress, and a delegate does not start halfway through somebody
-else's. So a delegate that never touched ws-git merges at its branch
-head, where autocommit put every write; one that committed is taken at
-its own last commit; and one that committed and then wrote past it is
-refused, with what it left out reported rather than committed for it.
-A delegate is the author of its own commits — nothing composes one on
-its behalf, because a commit nobody wrote is a worse answer than an
-honest refusal. Before its first commit a delegate reads the way a repo
-does before its first: everything it can see is modified, and what its
-view hides is not its business.
+**A fork starts with a fresh ws-git state.** A branch carries the
+workspace — files, cache, cwd, and with `inherit="full"` the
+conversation — but never the agent's index, head, outstanding merge or
+tags: an index is a composition in progress, and a delegate does not
+start halfway through somebody else's. That is what lets the merge rule
+reach a delegate at all, since it is what gives the delegate a graph of
+its own to be measured against. A delegate is the author of its own
+commits — nothing composes one on its behalf, because a commit nobody
+wrote is a worse answer than an honest refusal, and a delegate that
+committed and then wrote past it is refused with what it left out
+reported. Before its first commit a delegate reads the way a repo does
+before its first: everything it can see is modified, and what its view
+hides is not its business.
 
 **Providers degrade honestly.** kvgit does all of it. AgentFS refuses
 `fork` and `merge` by name until it has a merge engine — a fork you
