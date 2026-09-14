@@ -83,10 +83,8 @@ makes the bare names sugar for the two places the code is a REPL, and
 the import the one spelling that is always right. Arguments stay the
 recommendation for code you want to test — a function that takes `db` is
 called with a fake, while a module that imports it is patched at the
-name the module itself reads (`import host` at the top of the module,
-then `host.db` at the call site, since `from host import db` binds once
-at import time). How to fake either shape — and a handler itself, which
-`ws-pytest` reaches with `call("scores", db=fake)` — is in
+name the module itself reads. How to fake either shape — and a handler
+itself, which `ws-pytest` reaches with `call("scores", db=fake)` — is in
 [testing.md](testing.md).
 
 ## Handler contract

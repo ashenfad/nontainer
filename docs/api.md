@@ -248,12 +248,12 @@ frozen record: the mapping holds whatever JSON the caller passed, and
 that is not hashable.
 
 `Version.info` and `Publication.meta` both read as **read-only views
-all the way down**: nested mappings are read-only too, and a JSON
-array reads as a tuple. A record describes what the store holds, so
-the way to change metadata is `set_meta`, where the lock and the
-validation are. A view read off a record is
-accepted straight back, so `store.set_meta(name, {**pub.meta, "title":
-"New"})` is how one key changes.
+all the way down**: nested mappings are read-only too, and a JSON array
+reads as a tuple. A record describes what the store holds, so the way to
+change metadata is `set_meta`, where the lock and the validation are. A
+view read off a record is accepted straight back, so
+`store.set_meta(name, {**pub.meta, "title": "New"})` is how one key
+changes.
 
 `info` may not set `tool`, `name`, `version`, `published_from` or
 `paths`: those are what publish writes into the commit, and the commit is where a
@@ -692,10 +692,10 @@ commit here is refused with a message naming `ws.fork(name)` and
 returned id is a *new* commit and everything committed since the target
 is still in `ws.log()`. Nothing leaves the branch and `store.clean()`
 has nothing to collect. A checkout onto state the workspace already
-holds writes nothing and returns the current head.
-The agent's git rewinds with the tree — its head and graph live in a
-key the checkout restores like any other — so after a checkout to a
-commit made when `ws.index.head` was X, it is X again.
+holds writes nothing and returns the current head. The agent's git
+rewinds with the tree — its head and graph live in a key the checkout
+restores like any other — so after a checkout to a commit made when
+`ws.index.head` was X, it is X again.
 
 Going back is by identity, not by position: name the commit from
 `ws.log()`. That is also what makes an undo redo-able — a checkout
