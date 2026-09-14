@@ -130,9 +130,8 @@ UU shared.md
 ```
 
 The rows are measured against **your last ws-git commit**, never the
-store's head. The workspace commits on its own as you work, and none of
-those commits disturbs a composition: they land in the store and leave
-your index and your modified files exactly where they were.
+store's head, so the commits the workspace makes as you work leave your
+index and your modified files exactly where they were.
 
 `--porcelain` is accepted and changes nothing: the porcelain shape is
 the only shape, so the flag is there for an agent that types it out of
@@ -222,14 +221,13 @@ your index and your commit graph, in your session:
   you made is reachable from your head, so there is nothing for a tag
   to hold in place — which is what the host's tags are for.
 - It is gone when the session is.
-- A fork starts with none. A name you chose points into your log, and
-  your log is not the one the delegate has.
-- A merge brings none over. Merging a session brings its files, never
-  its names for its own commits.
+- A fork starts with none, and a merge brings none over. A name you
+  chose points into your log, and your log is not the one the delegate
+  has.
 
-Two names it will not take: one that is already a tag here, and one
-spelled like a commit id (seven or more hex characters). The second is
-what lets a tag be read before a hash with nothing ambiguous about it.
+One name it will not take beyond a name already in use: one spelled
+like a commit id (seven or more hex characters), which is what lets a
+tag be read before a hash with nothing ambiguous about it.
 
 Another session's bookmarks are readable as `<session>@<tag>`, which
 is that session's name for one exact state:
@@ -430,8 +428,7 @@ $ ws-git worktree add review polish
 worktree review: polish@a3b4203 (read-only)
 ```
 
-Adding over a worktree that is still up refuses and says the same
-thing, since what is pinned stays pinned:
+Adding over a worktree that is still up refuses, and says so:
 
 ```
 $ ws-git worktree add review polish
@@ -500,8 +497,7 @@ A merge commit reverts to **ours** — the side it was made from, the way
 
 Where the change is already in your tree, nothing is committed and the
 verb says so. Both verbs refuse work you have not committed, and refuse
-while a merge is still outstanding, since a second change over a
-conflicted merge would mark files that merge already marked.
+while a merge is still outstanding.
 
 ## Bringing a delegate's work back
 
