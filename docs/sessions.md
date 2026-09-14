@@ -85,12 +85,15 @@ runner drives. `inherit` must be `"fresh"` with a fork point, and says
 so when it is not — a conversation at somebody else's commit is not
 this session's to continue.
 
-A child forked from elsewhere shares no history with the asker, so its
-branch holds that other state's whole tree. A merge of it brings all
-of that back, not only what the child wrote (`answer.changed` is
-measured against the fork point, which is the honest answer about the
-child and not about your tree). Take its files, or read it in place,
-unless bringing the other state in is what you meant.
+A fork point outside the asker's own history shares none with it, so
+that child's branch holds the other state's whole tree, and a merge of
+it brings all of that back, not only what the child wrote
+(`answer.changed` is measured against the fork point, which is the
+honest answer about the child and not about your tree). Take its
+files, or read it in place, unless bringing the other state in is what
+you meant. A fork point inside the asker's history — a store tag of
+one of its own commits, say — is an ordinary ancestor, and the child
+merges back as any fork does.
 
 `resume` gives a new task to a child this session already has: the
 same branch with its conversation kept, and no second fork. Everything
