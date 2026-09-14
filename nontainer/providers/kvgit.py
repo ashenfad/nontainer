@@ -153,6 +153,16 @@ def _row(value: Any) -> dict | None:
     return parsed
 
 
+def _row_or_none(value: Any) -> dict | None:
+    """One file's metadata row as a dict, or ``None`` for anything that
+    is not one. The reading a repair takes: a row it cannot parse is a
+    row it has no business rewriting."""
+    try:
+        return _row(value)
+    except Exception:  # noqa: BLE001 - unparseable is an answer, not a failure
+        return None
+
+
 def _merge_metadata_row(
     old: Any, ours: Any, theirs: Any, size: int | None = None
 ) -> bytes:
@@ -995,7 +1005,9 @@ class KvgitProvider:
             self._invalidate_fs()
         return self._staged.current_commit
 
-    def _commit_staged(self, *, keys: set[str] | None = None, info: Any = None) -> Any:
+    def _commit_staged(
+        self, *, keys: set[str] | None = None, info: Any = None, repair: bool = True
+    ) -> Any:
         """Land the staged changes, rebasing onto a head that moved.
 
         The one commit funnel, and where losing the race is handled:
@@ -1013,7 +1025,10 @@ class KvgitProvider:
         wrote, so the filesystem's lazy caches are dropped: a directory
         another writer created, or a path this handle asked about while
         it was still absent, would otherwise read as it did before the
-        merge brought it in.
+        merge brought it in. ``repair`` is what keeps the row repair
+        from repairing itself: the correction it commits is a commit
+        like any other, and checking its own rows again would be one
+        pass with nothing left to find.
         """
         from kvgit import MergeConflict
         from kvgit.errors import ConcurrencyError
@@ -1036,6 +1051,8 @@ class KvgitProvider:
                 continue
             if result.strategy == _MERGED:
                 self._invalidate_fs()
+                if repair:
+                    self._repair_merged_rows(result)
             return result
         raise WorkspaceError(
             f"commit failed: conflicting concurrent commit on branch "
@@ -1043,6 +1060,44 @@ class KvgitProvider:
             f"writer {_CAS_ATTEMPTS} times running ({swap}). Nothing was "
             "committed and the staged changes are still staged."
         ) from swap
+
+    def _repair_merged_rows(self, result: Any) -> None:
+        """Make every row a merge resolved describe the bytes beside it.
+
+        A row's size is computed before the commit, against the head
+        this handle could see. A writer landing between that read and
+        the merge moves the bytes without moving what the row was told
+        about them, and a row that reports a length nothing holds makes
+        ``stat`` disagree with ``read``. So the sizes the merge produced
+        are checked against the tree it produced, and the ones that
+        disagree are corrected.
+
+        Its own commit, because a merge is atomic and cannot be
+        reopened, and plumbing: it carries no message and takes no place
+        in the agent's graph. In the ordinary case — the rules bound
+        against the head the merge used — it finds nothing and commits
+        nothing.
+        """
+        vfs = self.fs
+        fixed: set[str] = set()
+        for key, path in self._file_keys(
+            getattr(result, "auto_merged_keys", ()) or ()
+        ).items():
+            value = self._staged.get(key)
+            if not isinstance(value, bytes):
+                continue
+            row_key = vfs.metadata_key(path)
+            row = _row_or_none(self._staged.get(row_key))
+            if row is None or row.get("size") == len(value):
+                continue
+            row["size"] = len(value)
+            self._staged[row_key] = json.dumps(row, sort_keys=True).encode()
+            fixed.add(row_key)
+        if fixed:
+            self._commit_staged(
+                keys=fixed, info={"tool": "nontainer.row-size"}, repair=False
+            )
+            self._invalidate_fs()
 
     def _lost_cas(self, exc: Exception) -> WorkspaceError:
         """The CAS story in this layer's words, naming what contested.

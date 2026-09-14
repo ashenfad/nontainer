@@ -545,3 +545,40 @@ def test_the_tree_a_merge_brought_in_is_readable_at_once(store):
         assert b.files.fs.isdir("/workspace/items")
         assert b.files.read("/workspace/a.txt") == b"A"
         assert b.files.fs.stat("/workspace/a.txt").size == 1
+
+
+def test_a_row_describes_the_merged_bytes_when_the_head_moves_late(store, monkeypatch):
+    """The sizes a merge's rows carry are computed against the head the
+    committing handle could see. A writer that lands between that read
+    and the merge itself moves the bytes; the row still has to describe
+    them."""
+    from kvgit.versioned.kv import VersionedKV
+
+    with store.shared("catalog", autocommit=False) as seed:
+        seed.files.write("/workspace/notes.md", "one\ntwo\nthree\n")
+        seed.commit()
+
+    original = VersionedKV.latest_head
+    landed: list[bool] = []
+
+    def move_after_the_read(self):
+        # the value this read sees is the head as it is BEFORE the other
+        # writer lands; the read kvgit makes next sees it after.
+        value = original.fget(self)
+        if not landed:
+            landed.append(True)
+            with store.shared("catalog") as other:
+                other.files.write("/workspace/notes.md", "one\ntwo\nTHREE-FROM-OTHER\n")
+        return value
+
+    with store.shared("catalog", autocommit=False) as mine:
+        mine.files.write("/workspace/notes.md", "ONE-FROM-ME\ntwo\nthree\n")
+        monkeypatch.setattr(VersionedKV, "latest_head", property(move_after_the_read))
+        mine.commit()
+        monkeypatch.undo()
+    assert landed  # the window really opened
+
+    with store.shared("catalog") as after:
+        body = after.files.read("/workspace/notes.md")
+        assert body == b"ONE-FROM-ME\ntwo\nTHREE-FROM-OTHER\n"
+        assert after.files.fs.stat("/workspace/notes.md").size == len(body)

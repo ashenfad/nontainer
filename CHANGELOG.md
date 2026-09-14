@@ -138,6 +138,13 @@ many write at once. Elsewhere, the `ui` set closes.
   read.
 
 ### Changed
+- **A merged row describes the merged bytes on every path.** The size
+  a row carries is worked out before the commit, against the head the
+  committing handle could see; a writer landing between that read and
+  the merge moves the bytes without moving what the row was told about
+  them. Those sizes are now checked against the tree the merge produced
+  and corrected where they differ, so `stat` never disagrees with
+  `read`. In the ordinary case it finds nothing and commits nothing.
 - **A commit that merged drops the filesystem's caches.** A commit
   whose CAS was lost changes the tree by more than the handle wrote, so
   a directory another writer created — or a path this handle asked
