@@ -285,6 +285,20 @@ class Runtime:
         """
         return hasattr(self._executor, "_guest_to_host")
 
+    def guest_to_host(self, guest_path: str) -> str | None:
+        """A guest-absolute path as the HOST spells it, or None.
+
+        On a rung that runs code inside a guest, the paths an answer
+        carries — a traceback frame, a shell's idea of cwd — are the
+        guest's, and naming a workspace file means mapping one back.
+        None where there is nothing to map: an in-process executor has
+        one spelling, and a path outside the workspace has no host
+        twin, which a caller passes through unchanged rather than
+        guessing at. Same probe :attr:`supports_ws_verbs` reports.
+        """
+        mapper = getattr(self._executor, "_guest_to_host", None)
+        return mapper(guest_path) if mapper is not None else None
+
     # ------------------------------------------------------------------
     # execution
     # ------------------------------------------------------------------

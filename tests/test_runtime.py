@@ -250,3 +250,38 @@ def test_the_guest_ferry_reads_the_registry_it_was_given(ws):
     )
     assert curl["exit_code"] == 1
     assert "not registered on this workspace" in curl["stderr"]
+
+
+# -- guest paths -------------------------------------------------------------
+
+
+def test_guest_to_host_is_none_where_there_is_one_spelling(ws):
+    """An in-process executor runs against the workspace fs directly,
+    so a path has no second spelling to map back from."""
+    assert ws.runtime.supports_ws_verbs is False
+    assert ws.runtime.guest_to_host("/workspace/notes.md") is None
+
+
+def test_guest_to_host_maps_a_path_back_from_a_guest():
+    """On a guest rung the paths a traceback or a shell answer carries
+    are the guest's, and naming a workspace file means mapping one
+    back. The same probe `supports_ws_verbs` reports."""
+
+    class Guest:
+        def open(self, ctx):
+            pass
+
+        def close(self):
+            pass
+
+        def _guest_to_host(self, guest_path: str) -> str | None:
+            return f"/host{guest_path}" if guest_path.startswith("/work") else None
+
+    w = Workspace(KvgitProvider.open(None, session="guest"), executor=Guest())
+    try:
+        assert w.runtime.supports_ws_verbs is True
+        assert w.runtime.guest_to_host("/work/app/api.py") == "/host/work/app/api.py"
+        # outside the workspace: no host twin, said honestly
+        assert w.runtime.guest_to_host("/etc/hosts") is None
+    finally:
+        w.close()
