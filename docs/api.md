@@ -1365,48 +1365,18 @@ the importable modules stays true to what the sandbox actually allows.
 
 ## Providers (`nontainer.providers`)
 
-All satisfy the `WorkspaceProvider` protocol (`nontainer.protocol`):
-`session`, `caps`, `fs`, `kv`, `dirty`, `head`, `commit/checkout/history/
-fork/discard/merge/apply/commit_at`, `commit_keys/files_at/working_files`,
-`tag/check_tag/tags/tag_info/delete_tag/at_tag/diff`, `mount`, `close`. The
-provider keeps two commit primitives — `commit` takes everything and
-`commit_keys` takes exactly the keys it is given — plus two read views
-(`files_at`, `working_files`) over which the agent's git is built. It
-holds no index of its own: that is metadata, and `ws.index` owns it.
+Which substrate a store uses is `backend=` on `Store` /
+`nontainer.workspace`, or a `provider_factory` for one of your own.
+Three ship:
 
-```python
-KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store
-KvgitProvider(staged, *, session)                        # bring your own Staged
-    .staged            # the kvgit Staged (host-side power tool)
-KvgitProvider.delete(path, sessions)   # drop branches (path = the store dir)
+| backend | what it is | pick it for |
+|---|---|---|
+| `kvgit` (default) | one shared store, a branch per session | fork, undo, history, merge, tags |
+| `dir` | a plain real directory per session | agent code that needs real files — C extensions, subprocesses, sqlite, mmap |
+| `agentfs` | one SQLite file per session ([Turso AgentFS](https://github.com/tursodatabase/agentfs)), the `[agentfs]` extra | the one-file-artifact and SQL-audit story |
 
-DirProvider(root, *, session)
-    .root              # the real directory
-DirProvider.delete(path, sessions)     # rmtree dirs (path = the store base)
-
-AgentFSProvider(db_path, *, session)                     # [agentfs] extra
-    .db_path           # the SQLite artifact
-AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
-```
-
-Each `delete(path, sessions)` is the store-level teardown primitive
-`Store.delete` dispatches to — plural, idempotent, and validating
-session ids first where a bad name could escape the store root (dir,
-agentfs). Kvgit's goes through `kvgit.delete_branches`, which is anchor-free:
-it works on the store rather than through a branch handle, so even the
-last session on a store deletes cleanly. Older nontainer versions minted
-a hidden `__void__` branch to sit on instead; that name is now only ever
-swept — folded into every delete, and excluded from `Store.sessions()` —
-so stores written back then end up clean. `path` is the store directory — the same `store/kvgit` that
-`open` takes for kvgit; the parent store base for dir/agentfs (they
-resolve `<session>/` and `<session>.db` under it).
-
-Capabilities at a glance:
-
-`caps.merge` gates three verbs, not one: `merge`, and the `apply`
-primitive behind `ws.revert` / `ws.cherry_pick` (a three-way with the
-base named rather than found, plus the `commit_at` lookup that names
-the commits it resolves between).
+They declare what they can do rather than pretending equivalence, and
+`ws.caps` is that declaration:
 
 | | versioned | staging | cheap_fork | merge | tags | sql_audit |
 |---|---|---|---|---|---|---|
@@ -1414,8 +1384,17 @@ the commits it resolves between).
 | Dir | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | AgentFS | ❌ (spike) | ❌ | ❌ | ❌ | ❌ | ✅ |
 
+A verb a backend lacks raises `NotSupportedError` naming the
+capability, so a narrower substrate is a smaller surface rather than a
+worse emulation. `caps.merge` gates three verbs, not one: `merge`, and
+the `apply` primitive behind `ws.revert` / `ws.cherry_pick`.
+
 `codecs="scientific"` on kvgit enables numpy/pandas chunk dedup
 (requires `kvgit[scientific]`).
+
+Writing a provider of your own — the protocol, the two commit
+primitives, the read views, each bundled provider's constructor and
+`delete` — is in [extending.md](extending.md).
 
 ## Delegation (`nontainer.sessions`)
 
