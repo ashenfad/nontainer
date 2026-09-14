@@ -363,6 +363,15 @@ object under its other name. An `async` test is awaited, and
 `beforeEach` declared below an `it()` in the same block still applies to
 it — the block is collected before anything runs.
 
+**Async work you forget to await still fails the test.** A rejected
+promise nobody handled, and an error thrown from a `setTimeout`, are
+charged to the test that started them — the one outcome a runner must
+never invent is a pass. An error that fires with no test running (at
+module scope, say) is the file's, and is reported under **Unhandled
+Errors** without disturbing the tests that did run. Every teardown hook
+runs even when an earlier one throws; the first error is the test's
+failure and the rest are named beneath it.
+
 Refused with a message naming the replacement:
 
 - **`vi.mock`** — module mocking needs a loader hook a browser does not
@@ -450,7 +459,9 @@ own frames and the page's entry are dropped. A file that throws before
 any test runs (a bad import, a `vi.mock` at module scope) is a **failed
 suite** rather than a failed test: it contributes no tests to the
 counts, and when the cause was a module that 404'd, the message names
-the path nothing was served at.
+the path nothing was served at. An **unhandled error** is the other
+half: the file failed, its tests still count, and both sections say
+which file.
 
 A run is bounded: a page that will not load and a test that returns a
 promise which never settles both end as a failure with a message, not as

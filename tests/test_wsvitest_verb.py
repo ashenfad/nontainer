@@ -344,3 +344,18 @@ def test_only_unrunnable_tests_reads_the_reason_not_none_found(chromium_availabl
         assert "app/api/h.test.js" in out(r)
     finally:
         w.close()
+
+
+def test_an_unhandled_error_fails_the_file_without_hiding_its_tests(ws):
+    ws.files.fs.write(
+        "/workspace/tests/stray.test.js",
+        b"Promise.reject(new Error('at module scope'));\n"
+        b"it('still runs', () => { expect(1).toBe(1); });\n",
+    )
+    r = ws.terminal("ws-vitest tests/stray.test.js")
+    assert r.exit_code == 1, out(r)
+    assert " ❯ tests/stray.test.js (1 test)" in r.stdout, out(r)
+    assert "Unhandled Errors 1" in r.stdout, out(r)
+    assert "at module scope" in r.stdout
+    assert "      Tests  1 passed (1)" in r.stdout
+    assert " Test Files  1 failed (1)" in r.stdout
