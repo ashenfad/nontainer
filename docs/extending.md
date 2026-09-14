@@ -160,9 +160,8 @@ never touches the versioning semantics. Agent-code failure is a result
 shell. `LocalExecutor` runs termish and hands it the mapping, so an
 injected builtin is a real command; `DudExecutor` runs actual bash in a
 guest, which has no such hook, and declares `False`. Tool descriptions
-are built against the flag, because teaching an agent a command that
-answers `command not found` costs it turns. An executor predating the
-flag reads as `True`.
+are built against the flag. An executor predating the flag reads as
+`True`.
 
 **`open(context)`** binds to one session's state and starts any
 resident machinery — `LocalExecutor` builds the default sandbox and
@@ -309,23 +308,15 @@ class MyRunner:
         ...
 ```
 
-One method, synchronous — the delegation helper calls it on a worker
-thread of its own, so a runner with an async loop blocks on its own
-future inside it. `session` names the workspace the turn runs against,
-`task` is the instruction, `budget` caps the work and its
-interpretation is the runner's (turns, tokens, seconds), and
-`forked_at` is the parent's commit the child was forked from. A plain
-`str` return means an `answered` answer with that text; an `Answer`
-says more, and either way the caller fills in what only the host knows
-— the child's ref, its branch, the paths it changed — so a runner that
-returns them is not required to get them right.
-
-`forked_at` is optional in the signature as well as in value: the
-helper reads `run`'s signature once per runner and passes the fork
-point only where it is accepted, by name or through `**kwargs`, so a
-runner written without the parameter keeps working. The full contract
-the helper holds up around this — what an answer names, what retention
-does, what refuses — is in [sessions.md](sessions.md).
+`session` names the workspace the turn runs against, `task` is the
+instruction, `budget` caps the work and its interpretation is the
+runner's (turns, tokens, seconds), and `forked_at` is the parent's
+commit the child was forked from — optional in the signature as well as
+in value. Whatever a runner returns, the caller fills in what only the
+host knows — the child's ref, its branch, the paths it changed — so a
+runner that returns them is not required to get them right. How the
+helper calls it, what an answer names, what retention does and what
+refuses are all in [sessions.md](sessions.md).
 
 **`HostObjectFactory`** decides which host objects a child session's
 code may reach. Host objects are live host resources, so a child cannot
