@@ -1520,6 +1520,9 @@ untouched for `idle` seconds:
 sessions.sweep(idle=24 * 3600)        # beside store.clean(), on a timer
 ```
 
+It returns the names it took, sorted; `min_age` is `store.delete`'s
+grace period for the orphan commits a deleted branch leaves behind.
+
 It is a verb the embedder **schedules** — the `reap_idle` pattern —
 and nothing calls it on the way past: an `ask` or a `list` that swept
 would make one delegate's retention depend on how often another is
