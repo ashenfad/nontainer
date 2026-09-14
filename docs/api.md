@@ -840,17 +840,17 @@ the other half of `conflicts`: the paths the merge changed and settled
 on its own, so the two together are everything the merge touched.
 
 **`check=` is the gate on a merge**, and `merge_check=` on
-`Store.open` / `Workspace(...)` is the same gate as a session's
-policy. A check is a callable handed a **frozen** workspace over the
-source at exactly the commit this merge would take — its last agent
-commit, or its branch head where there is no index — run after the
-refusals above and before anything is merged:
+`Store.open` / `Workspace(...)` is that same gate as the session's
+standing policy. A check is a callable handed a **frozen** workspace
+over the source at exactly the commit this merge would take — its last
+agent commit, or its branch head where there is no index — run after
+the refusals above and before anything is merged:
 
 ```python
 from nontainer.wspytest import run_pytest
 
-ws.merge("analyst.sleepy-otter", check=run_pytest)   # red branches stay out
-ws = store.open("analyst", merge_check=run_pytest)   # ... for every merge
+ws.merge("analyst.sleepy-otter", check=run_pytest)  # this merge
+store.open("analyst", merge_check=run_pytest)       # every merge, the agent's too
 ```
 
 A truthy verdict merges. A falsy one raises `MergeRefused`, with
@@ -872,7 +872,9 @@ verb, so a check needs a workspace opened from a store.
 it, and it is what gates the AGENT's `ws-git merge <name>` in the
 terminal, where the refusal is the verb's error text
 ([ws-git.md](ws-git.md#bringing-a-delegates-work-back)). Naming
-`check=` at the call overrides it for that call. Only `merge` is
+`check=` at the call overrides it for that call; leaving it out is
+what asks for the session's, so a session with a policy has no
+per-call way around it. Only `merge` is
 gated — `merge --abort`, `revert`, `cherry_pick` and `checkout` take
 no check, because each of them is how a caller recovers from a merge
 it should not have made.
