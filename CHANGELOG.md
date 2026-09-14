@@ -180,6 +180,23 @@ closes.
   a guest's answer into workspace paths.
 
 ### Changed
+- **The docs are re-cut by audience.** `docs/api.md` was writing for
+  embedders, seam implementers and maintainers at once, and the README
+  had grown a second quick start on top of the first. Now: two new
+  pages, `docs/sessions.md` (delegation for embedders — the `Sessions`
+  helper, `Job` / `Answer`, `fork_from` / `resume`, retention, the
+  `sessions` tool) and `docs/extending.md` (the three seams for
+  implementers — `WorkspaceProvider`, `Executor` with its view spec,
+  guest ferry and host prelude, `SessionRunner`, and the conformance
+  suites an implementation should pass). `docs/api.md` is the embedder
+  reference alone: its Delegation section moved to `sessions.md` behind
+  a pointer, its provider protocol listing to `extending.md`, its layer
+  rule and named tests to `docs/design.md`, and its historical notes
+  here. The README keeps identity — the pitch, the three concerns, the
+  sandbox position, one example — and its API tour, substrates,
+  executors and app-handler sections moved into `docs/quick-start.md`;
+  its documentation map is now grouped by who each page is for. No
+  behaviour changed.
 - **The ui set is closed, and the JSON floor is gone.** A ui value is a
   plotly figure, a pandas DataFrame, a matplotlib figure, an image, a
   list of card rows, or a string naming a workspace file. Anything else
