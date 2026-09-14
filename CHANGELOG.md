@@ -138,6 +138,12 @@ many write at once. Elsewhere, the `ui` set closes.
   read.
 
 ### Changed
+- **A plane asks the merge whether it marked something, not the
+  bytes.** A file that carries marker lines of its own — a document
+  showing what a conflict looks like — no longer buys an overlapping
+  edit a pass into the plane: the merge runs twice under two different
+  conflict labels, and content reading identically under both is what
+  says it wrote no hunk.
 - **A shared plane's own tags live outside the store scope.** A
   plane's branch is itself under `@store/`, so a tag under the branch
   name would BE a store tag — listed, read and deleted as one — and the

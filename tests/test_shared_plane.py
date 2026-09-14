@@ -441,3 +441,72 @@ def test_a_planes_own_tags_go_with_the_plane(store):
     store.unshare("catalog", min_age=0)
     with store.shared("catalog") as again:
         assert again.tags.list() == {}
+
+
+# -- a file that carries marker lines of its own -----------------------------
+
+_WITH_EXAMPLE = """\
+notes on merging
+
+a conflict looks like this:
+<<<<<<< ours
+one answer
+=======
+another
+>>>>>>> theirs
+
+status: draft
+owner: nobody
+"""
+
+
+def test_a_marker_example_does_not_buy_an_overlapping_edit_a_pass(store):
+    """Whether the merge marked anything is asked of the merge, not of
+    the bytes: a file may carry marker lines of its own, and they are
+    not a licence to publish the ones a merge just wrote."""
+    with store.shared("catalog", autocommit=False) as a:
+        a.files.write("/workspace/notes.md", _WITH_EXAMPLE)
+        a.commit()
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        a.files.write(
+            "/workspace/notes.md",
+            _WITH_EXAMPLE.replace("status: draft", "status: mine"),
+        )
+        b.files.write(
+            "/workspace/notes.md",
+            _WITH_EXAMPLE.replace("status: draft", "status: yours"),
+        )
+        a.commit()
+        with pytest.raises(WorkspaceError, match=r"/workspace/notes\.md"):
+            b.commit()
+    with store.shared("catalog") as after:
+        body = after.files.read("/workspace/notes.md").decode()
+        assert body == _WITH_EXAMPLE.replace("status: draft", "status: mine")
+        assert body.count("<<<<<<< ") == 1  # the example, and nothing new
+
+
+def test_a_marker_example_survives_a_clean_merge(store):
+    with store.shared("catalog", autocommit=False) as a:
+        a.files.write("/workspace/notes.md", _WITH_EXAMPLE)
+        a.commit()
+    with (
+        store.shared("catalog", autocommit=False) as a,
+        store.shared("catalog", autocommit=False) as b,
+    ):
+        a.files.write(
+            "/workspace/notes.md",
+            _WITH_EXAMPLE.replace("status: draft", "status: live"),
+        )
+        b.files.write(
+            "/workspace/notes.md", _WITH_EXAMPLE.replace("owner: nobody", "owner: me")
+        )
+        a.commit()
+        b.commit()
+    with store.shared("catalog") as after:
+        body = after.files.read("/workspace/notes.md").decode()
+        assert "status: live" in body and "owner: me" in body
+        assert body.count("<<<<<<< ") == 1  # the example is still there
+        assert after.files.fs.stat("/workspace/notes.md").size == len(body)

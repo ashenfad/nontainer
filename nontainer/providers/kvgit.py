@@ -82,6 +82,14 @@ _CAS_ATTEMPTS = 2
 #: something only where neither side already held it.
 _MARKER = b"<<<<<<< "
 
+#: Conflict labels for the second reading of a merge whose first
+#: reading used the default ones. Any labels differing from those do:
+#: what they are for is to make a line the merge WROTE differ from the
+#: same line written under other labels, while content — marker-shaped
+#: or not — reads identically under both.
+_PROBE_OURS = "ours (probe)"
+_PROBE_THEIRS = "theirs (probe)"
+
 _KVGIT_CAPS = Capabilities(
     versioned=True,
     staging=True,
@@ -201,16 +209,21 @@ def _merge_shared_file(old: Any, ours: Any, theirs: Any) -> bytes:
     ``CantMark`` files the path as a hard conflict instead, which leaves
     the whole commit untouched and the losing writer's work staged.
 
-    Marker-like bytes already present in a side are not this merge's
-    doing, and a file that holds them stays mergeable.
+    Whether the merge MARKED anything is asked of the merge, not of the
+    bytes. A file may carry marker lines of its own — a document showing
+    what a conflict looks like — and no count of them tells those apart
+    from the ones a merge just wrote. Merging twice under two different
+    conflict labels does: content is copied through verbatim either way,
+    and every line a hunk introduces carries a label, so the two results
+    differ exactly when the merge marked something.
     """
-    from kvgit.merges import CantMark
-    from kvgit.merges import text as text_merge
+    from kvgit.merges import CantMark, make_text_merge
 
-    merged = text_merge(old, ours, theirs)
-    if _MARKER in merged and not any(
-        isinstance(side, bytes) and _MARKER in side for side in (ours, theirs)
-    ):
+    merged = make_text_merge()(old, ours, theirs)
+    relabelled = make_text_merge(ours_label=_PROBE_OURS, theirs_label=_PROBE_THEIRS)(
+        old, ours, theirs
+    )
+    if merged != relabelled:
         raise CantMark("both sides changed the same lines")
     return merged
 
