@@ -1142,13 +1142,17 @@ class SessionRunner(Protocol):
 
 @runtime_checkable
 class HostObjectFactory(Protocol):
-    """Decides which host objects a child session's code may reach.
+    """The shape for deciding which host objects a child session's
+    code may reach. Declared, and not yet asked by anything.
 
     Host objects are live host resources (a db handle, an HTTP client),
-    so a child session cannot simply inherit the parent's set by
-    default in every embedding — a per-user db handle belongs to the
-    user whose turn opened it. The factory is asked once per child,
-    and the default implementation shares the parent's mapping.
+    so a child session cannot simply inherit the parent's set in every
+    embedding — a per-user db handle belongs to the user whose turn
+    opened it. Today a fork replays the parent's ``PythonConfig``, host
+    objects included, and a delegate's runner may open the child with a
+    config of its own; there is no default implementation and the
+    sessions helper takes no factory. When one does, it is asked once
+    per child.
 
     ``kind`` names why the child exists (a fork, a review, a
     sub-task); an embedder that scopes resources by purpose keys on it.

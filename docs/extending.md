@@ -318,14 +318,16 @@ runner that returns them is not required to get them right. How the
 helper calls it, what an answer names, what retention does and what
 refuses are all in [sessions.md](sessions.md).
 
-**`HostObjectFactory`** decides which host objects a child session's
-code may reach. Host objects are live host resources, so a child cannot
-simply inherit the parent's set in every embedding — a per-user db
-handle belongs to the user whose turn opened it. The factory is asked
-once per child with `(parent_session, child_session, kind)`, where
-`kind` names why the child exists, for an embedder that scopes
-resources by purpose; the default implementation shares the parent's
-mapping.
+**`HostObjectFactory`** is a declared seam that nothing calls yet.
+It names the shape for deciding which host objects a child session's
+code may reach — asked once per child with `(parent_session,
+child_session, kind)`, `kind` saying why the child exists — because
+host objects are live resources and a per-user db handle belongs to
+the user whose turn opened it. Today a fork replays the parent's
+`PythonConfig`, host objects included, and a delegate's runner may
+open the child with a config of its own; an implementation of this
+protocol is not asked by anything, so write one only when a release
+says the helper takes it.
 
 ## Conformance
 
