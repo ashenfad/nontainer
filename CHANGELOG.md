@@ -155,6 +155,29 @@ closes.
   the rest of the public API; `unittest` itself exposes nothing else),
   so a workspace module's collaborators can be patched where they are
   read.
+- **`ws.store` and `ws.provider`** — the store a session was opened
+  from (`None` for a workspace built straight from a provider, which is
+  what makes a sweep or a continue unavailable) and the substrate under
+  it, for callers that know which one they have and want its own
+  surface: kvgit's `kv`, a `refresh()` after another handle committed.
+  The workspace's own verbs remain the portable half.
+- **`ws.expand_ref(ref) -> Ref`** — the commit half of a
+  `session@commit` spelled whole: a short id, a whole one, or that
+  session's own ws-git tag, with any `:/path` carried through. What
+  comes back names one exact state, ready for `store.resolve`. A
+  workspace verb because answering needs the session's substrate, and
+  the session half is checked first, so a ref into a session the store
+  never held says that rather than reporting on a commit nothing could
+  hold.
+- **`nontainer.executor.flatten_grants(cfg)`** — what a `PythonConfig`
+  flattens to, the way the thing registering the grants reads it. It
+  was already the one honest answer to "what may this code import";
+  now anything describing a sandbox from outside can ask instead of
+  re-deriving the rules.
+- **`ws.runtime.guest_to_host(path)`** — a guest-absolute path as the
+  host spells it, `None` where there is nothing to map. The same probe
+  `supports_ws_verbs` reports, said out loud for the callers that turn
+  a guest's answer into workspace paths.
 
 ### Changed
 - **The ui set is closed, and the JSON floor is gone.** A ui value is a
@@ -189,6 +212,22 @@ closes.
   `host/`) comes back as an execution error naming the rule: `import
   host` resolves the injected objects ahead of the workspace tree, so
   the file would never run and nothing would say why.
+- **`materialize_ui` lives in core**, at `nontainer.ui`, beside the
+  artifact vocabulary and the guest-side half of the same job. It was
+  in `nontainer.adapters.render`, which meant `Workspace.run_python`
+  had to import upward to reach it: what a `ui` value becomes on disk
+  is the same on every rung, so it is not an adapter's call. Nothing
+  outside the package imported the old path, so there is no shim; what
+  stays in the adapter is `PYTHON_UI_NOTE`, which is how the convention
+  is described to the model.
+- **The layering rule is held by a test.** nontainer is one package in
+  five layers — core, sessions, apps, the testing verbs, the adapters —
+  and core imports nothing from the other four, which run on core's
+  public API. `tests/test_layering.py` walks every module with `ast`,
+  counting lazy function-local imports as the dependencies they are,
+  and reports any underscore attribute a layer above core reads. The
+  reach-ins it found have public names now, so if the package is ever
+  split the split is a repackaging rather than a redesign.
 
 ### Fixed
 - **A plotly spec dict is encoded the way a plotly figure is** — one

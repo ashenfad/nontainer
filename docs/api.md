@@ -3,6 +3,30 @@
 Everything importable from `nontainer`, `nontainer.providers`,
 `nontainer.adapters.*`, and `nontainer.apps`.
 
+## Where things live
+
+The package is one distribution in five layers: **core** (`Store`,
+`Workspace`, `Runtime`, the providers, the executors, the ws-git
+fiction, the `ws-*` verb ferry), **sessions**, **apps**, the **testing
+verbs**, and the **adapters**. Core imports nothing from the other
+four; the other four run on core's public API, and a test holds that.
+
+Most of what an embedder wants is importable straight from
+`nontainer`. These are the ones that are not, each named by the path
+to import it from:
+
+| import path | what it is |
+|---|---|
+| `nontainer.wsgit.register_wsgit(ws)` | installs the `ws-git` terminal verb on a workspace |
+| `nontainer.wspytest.register_wspytest(ws)` | installs `ws-pytest` (also wired in by `enable_apps`) |
+| `nontainer.wsvitest.register_wsvitest(ws)` | installs `ws-vitest`, the browser-side twin |
+| `nontainer.executor_dud.DudExecutor` | the executor over a dud backend — a host process or a real microVM |
+| `nontainer.ui.materialize_ui(ws, ui)` | turns an agent's `ui = {...}` values into workspace artifacts |
+| `nontainer.executor.flatten_grants(cfg)` | what a `PythonConfig`'s modules flatten to |
+| `nontainer.apps.contract.filter_headers(raw)` | the allowlisted request headers a handler may see |
+| `nontainer.adapters.render.apps_notes(config)` | the apps section of a terminal tool description |
+| `nontainer.adapters.agno_db` | `KvgitStoreDb`, `fork_session` — agno session storage over a store |
+
 ## `nontainer.Store` — where sessions live
 
 A `Workspace` is one session's world. A `Store` is the place those
@@ -73,6 +97,17 @@ ws-git line prints — expands against that session's whole history, the
 framework's commits included. An ambiguous prefix raises `ValueError`
 naming the commits it could mean; one nothing matches raises
 `CommitNotFoundError`, exactly as a whole id nothing matches does.
+
+**`ws.expand_ref(ref) -> Ref`** spells that commit half whole up
+front: a short id, a whole one, or that session's own ws-git tag, and
+what comes back names one exact state — ready for `store.resolve`, a
+diff, a merge, with any `:/path` carried through. It is a workspace
+verb rather than a store one because answering needs the session's
+substrate: a tag is a name in the named session's own blob, and a
+short id expands against that session's history. The session half is
+checked first, so a ref into a session the store never held says so
+(`ValueError`) instead of reporting on a commit nothing could hold;
+a word that is neither tag nor commit raises `CommitNotFoundError`.
 
 **`store.tags`** — the store-scoped half of tags, the names that
 deliberately outlive the session that made them:
@@ -1036,12 +1071,35 @@ ws.session: str
 ws.caps: Capabilities         # what the PROVIDER can do
 ws.root: str                  # the workspace root (see the factory)
 ws.frozen: bool               # a read-only snapshot at a tag (tags.at)
+ws.store: Store | None        # the store this session was opened from
+ws.provider: WorkspaceProvider   # the substrate under it
 ws.runtime: Runtime           # how code runs against this state (below)
 ws.runtime.supports_commands: bool    # executor capability, below
 ws.runtime.supports_ws_verbs: bool
 ws.runtime.cache_enabled: bool
 ws.runtime.python_config: PythonConfig
+ws.runtime.guest_to_host(path) -> str | None   # a guest path, host-spelled
 ```
+
+**`ws.store`** is what makes store-level work on this session's
+neighbours possible from a workspace in hand: open a sibling session,
+resolve a ref, delete branches, read store-scoped tags. It is `None`
+for a workspace built straight from a provider — nothing claims it, so
+those verbs are unavailable and a caller that needs one has to say
+which store it means. `nontainer.sessions` branches on exactly this to
+explain why a sweep or a continue cannot run.
+
+**`ws.provider`** is the substrate, for callers that know which one
+they have and want something only it offers (kvgit's `kv` mapping, a
+`refresh()` after another handle committed). The workspace's own verbs
+are the portable surface: what they express works on every substrate,
+and this does not.
+
+**`ws.runtime.guest_to_host(path)`** maps a guest-absolute path back to
+the host's spelling, for answers that carry the guest's paths (a
+traceback frame, a shell's cwd). `None` where there is nothing to map:
+an in-process executor has one spelling, and a path outside the
+workspace has no host twin.
 
 `ws.caps` describes the substrate: versioning, staging, cheap forks,
 merge, tags, the index. Execution capabilities are the runtime's,
@@ -1296,6 +1354,14 @@ dataframes()              # numpy + pandas (ImportError if missing)
 plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
                           # plotly: None=if installed, True=required, False=skip
 ```
+
+**`nontainer.executor.flatten_grants(cfg) -> list[ModuleGrant]`** is
+the other direction: a whole `PythonConfig` read the way the thing
+registering the grants reads it — the stdlib set first when enabled,
+then the config's own entries, preset lists flattened one level and
+bare modules wrapped, with a later grant of the same name winning. Ask
+it rather than re-deriving the rules; that is how a tool primer naming
+the importable modules stays true to what the sandbox actually allows.
 
 ## Providers (`nontainer.providers`)
 
