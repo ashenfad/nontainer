@@ -20,6 +20,18 @@ merge policy gates on, and the thing the terminal text is a rendering
 of. The two verbs produce the same record, with `report.tool` telling
 them apart, so one `check=` hook and one UI consume either.
 
+That hook is [`ws.merge(source, check=)`](api.md#versioning-gated-by-wscaps):
+a report is truthy when it is green and prints its own count line, so
+
+```python
+ws.merge("analyst.sleepy-otter", check=run_pytest)
+store.open("analyst", merge_check=run_pytest)   # every merge, the agent's too
+```
+
+is the whole of "the delegate's tests pass before I take its work". A
+red branch is refused with `MergeRefused`, quoting the line the
+terminal would have printed: `2 failed, 8 passed in 0.31s`.
+
 ```python
 from nontainer.wspytest import register_wspytest
 from nontainer.wsvitest import register_wsvitest
