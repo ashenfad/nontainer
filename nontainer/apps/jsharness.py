@@ -726,12 +726,24 @@ export async function __run(load, options) {
     } catch (e) {
       if (!state.error) state.error = serialize(e);
     }
-    try {
-      for (const frame of t.after.slice().reverse()) {
-        for (const hook of frame.slice().reverse()) await hook();
+    // Every teardown runs. Letting one throw out of both loops would
+    // skip the rest of the file's cleanup — the outer suite's included —
+    // and the leaked state would surface as a later test failing for a
+    // reason nothing in it explains. The first error is the failure;
+    // the rest are named beneath it.
+    const teardown = [];
+    for (const frame of t.after.slice().reverse()) {
+      for (const hook of frame.slice().reverse()) {
+        try {
+          await hook();
+        } catch (e) {
+          teardown.push(serialize(e));
+        }
       }
-    } catch (e) {
-      if (!state.error) state.error = serialize(e);
+    }
+    if (teardown.length) {
+      if (!state.error) state.error = teardown.shift();
+      if (teardown.length) state.error.also = teardown;
     }
     await drain();
     running = null;
@@ -923,11 +935,17 @@ def _message(error: dict) -> str:
     """One page-side error as a report message, in workspace
     coordinates: the synthetic origin is an implementation detail of the
     harness, and a message naming it sends the agent looking for a host
-    that does not exist."""
+    that does not exist.
+
+    ``also`` carries the errors a failure stood in front of — the
+    teardown hooks that ran after the one that failed and threw too.
+    They are named under it rather than dropped, since each is its own
+    repair."""
     name = error.get("name") or "Error"
     text = error.get("message")
     text = "" if text is None else str(text)
-    return f"{name}: {text}".rstrip(": ").replace(BASE_URL, "")
+    head = f"{name}: {text}".rstrip(": ").replace(BASE_URL, "")
+    return "\n".join([head, *(f"also: {_message(e)}" for e in error.get("also") or ())])
 
 
 def _unhandled(rel: str, error: dict, sources: "_Sources") -> TestOutcome:
