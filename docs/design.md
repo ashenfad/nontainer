@@ -196,10 +196,9 @@ landed on. The rules below are the whole model:
   verb landing a change of its own would mark files the merge already
   marked, with no way to tell whose conflict is whose; one moving the
   tree elsewhere would carry the markers along and drop the record of
-  them, leaving a clean status over a tree full of them — which is
-  what a checkout of the merge commit itself would do. So `merge`,
-  `checkout` in both its forms, `stash push`, `stash pop`, `revert` and
-  `cherry-pick` refuse until the markers are gone, and the message
+  them, leaving a clean status over a tree full of them — which is what
+  a checkout of the merge commit itself would do. So every verb that
+  moves this tree refuses until the markers are gone, and the message
   names the two ways out: commit the resolution, or
   `ws-git merge --abort`.
 - **A tag is the agent's bookmark, not a store tag.** A name in the
