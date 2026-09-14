@@ -367,3 +367,24 @@ def test_a_test_name_nothing_defines_is_a_usage_error(ws):
     from nontainer.wspytest import Options, run_options
 
     assert run_options(ws, Options(keyword="nosuch")).exit_code == 5
+
+
+def test_a_report_prints_its_own_summary_line(ws):
+    """``str(report)`` is the line a refusal quotes.
+
+    A merge check hands its verdict to the error that refuses the
+    merge, and the useful half of a report is the count line — so the
+    report renders it itself rather than making every caller reach for
+    ``render_report`` and slice the last line off it.
+    """
+    write(
+        ws,
+        "tests/test_mixed.py",
+        "def test_ok():\n    assert True\n\n\ndef test_bad():\n    assert False\n",
+    )
+    report = run_pytest(ws)
+
+    assert str(report).startswith("1 failed, 1 passed in ")
+    assert "=" not in str(report)  # the bare line, not the separator
+    # and the terminal's rendering still centres that same line
+    assert str(report) in render_report(report)
