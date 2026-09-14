@@ -3523,6 +3523,7 @@ def workspace(
     max_observation: int = 32_000,
     executor_factory: "Callable[[], Executor] | None" = None,
     root: str = "/workspace",
+    merge_check: "Callable[[Workspace], Any] | None" = None,
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
 
@@ -3554,6 +3555,15 @@ def workspace(
     sees its files under (default ``/workspace``; see
     :attr:`Workspace.root`). One value per session, inherited by
     forks.
+
+    ``merge_check`` is the session's merge policy, run against a
+    source frozen at the commit a merge would take; a falsy verdict
+    refuses the merge (:class:`~nontainer.MergeRefused`). Inherited
+    by forks, and gating ``ws-git merge`` as much as ``ws.merge``.
+
+    Every keyword :meth:`Store.open` takes is taken here and forwarded
+    on both paths, so a setting is never reachable only by switching
+    construction APIs; a test holds the two signatures together.
     """
     from .protocol import validate_session_id
     from .store import Store
@@ -3569,6 +3579,7 @@ def workspace(
             max_observation=max_observation,
             executor_factory=executor_factory,
             root=root,
+            merge_check=merge_check,
         )
     # A ready provider is one session's substrate, already built. It
     # goes in as the factory's answer for every id, and the id is
@@ -3585,4 +3596,5 @@ def workspace(
         max_observation=max_observation,
         executor_factory=executor_factory,
         root=root,
+        merge_check=merge_check,
     )
