@@ -71,9 +71,9 @@ through it lands in that branch.
 - `delete_session` clears the keys; `rename_session` rewrites the
   session key.
 
-One thing to know about every refusal above: agno's run loop wraps
-its storage calls in a catch-all that logs a warning and carries on.
-Calling the db directly raises; driving it through an `Agent` shows
+Every refusal here lands softly: agno's run loop wraps its storage
+calls in a catch-all that logs a warning and carries on. Calling the db
+directly raises; driving it through an `Agent` shows
 a warning and the observable effect is that nothing was written. In
 per-turn mode a refused or failed upsert also means no commit fired,
 so the turn's staged files ride into the next turn's commit. That is
