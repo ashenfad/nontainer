@@ -731,7 +731,7 @@ def parse_argv(argv: Any = ()) -> Options:
 def run_pytest(ws: Any, argv: Any = (), *, cwd: str | None = None) -> TestReport:
     """Run the workspace's tests and report what happened.
 
-    The report is data: ``report.ok`` is what a merge policy gates on,
+    The report is data: ``report.ok`` is what a caller branches on,
     ``report.outcomes`` is what a UI shows, and ``render_report`` is
     what the terminal prints.
     """
