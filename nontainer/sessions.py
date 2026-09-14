@@ -492,7 +492,7 @@ class Sessions:
         ``min_age`` is :meth:`Store.delete`'s grace period for the
         orphan commits a deleted branch leaves behind.
         """
-        store = getattr(self._ws, "_store", None)
+        store = self._ws.store
         if store is None:
             raise SessionsError(
                 f"cannot sweep the branches of {self._ws.session!r}: that "
@@ -747,7 +747,7 @@ class Sessions:
         through a handle of its own, and this one reports what the
         branch holds afterwards.
         """
-        store = getattr(self._ws, "_store", None)
+        store = self._ws.store
         if store is None:
             raise SessionsError(
                 f"cannot continue {name!r}: session {self._ws.session!r} was not "
@@ -779,9 +779,8 @@ class Sessions:
                 "needs a versioned provider"
             )
         if isinstance(fork_from, Ref) or "@" in given:
-            parsed = Ref.parse(given)
             with self._ws.lock:
-                return given, self._ws._ref_commit(parsed.session, parsed.commit)
+                return given, self._ws.expand_ref(fork_from).commit
         return given, self._store_tag(given)
 
     def _store_tag(self, name: str) -> str:
@@ -793,7 +792,7 @@ class Sessions:
         """
         from .errors import NotSupportedError
 
-        store = getattr(self._ws, "_store", None)
+        store = self._ws.store
         if store is None:
             raise SessionsError(
                 f"{name!r} is not a 'session@commit' ref, and session "
@@ -920,7 +919,7 @@ class Sessions:
         The runner used a handle of its own, so the branch is re-read
         before any of it is asked.
         """
-        refresh = getattr(child._provider, "refresh", None)
+        refresh = getattr(child.provider, "refresh", None)
         if refresh is not None and child.caps.versioned:
             refresh()
         if not child.caps.index:
