@@ -1,15 +1,13 @@
 # API Reference
 
-Everything importable from `nontainer`, `nontainer.providers`,
-`nontainer.adapters.*`, and `nontainer.apps`.
+Every class, method and flag an embedder calls, across `nontainer`,
+`nontainer.providers`, `nontainer.adapters.*` and `nontainer.apps`.
+Delegation has a page of its own ([sessions.md](sessions.md)), the
+seams an implementer writes against are in
+[extending.md](extending.md), and why any of this is shaped the way it
+is belongs to the [design notes](design.md).
 
 ## Where things live
-
-The package is one distribution in five layers: **core** (`Store`,
-`Workspace`, `Runtime`, the providers, the executors, the ws-git
-fiction, the `ws-*` verb ferry), **sessions**, **apps**, the **testing
-verbs**, and the **adapters**. Core imports nothing from the other
-four; the other four run on core's public API, and a test holds that.
 
 Most of what an embedder wants is importable straight from
 `nontainer`. These are the ones that are not, each named by the path
@@ -338,10 +336,6 @@ One publish writes three things:
   other's record. On a platform without `fcntl` the in-process lock is
   the whole guarantee, and two processes publishing to one store can
   still lose a record.
-
-Blobs are copied into the derived commit rather than pointed at. That
-is fine at app sizes, and content addressing under kvgit would make the
-copy free.
 
 A `Publication` is a **snapshot of the registry**, not a capability:
 `open()` re-reads it and refuses a version that has since been
@@ -721,9 +715,7 @@ one of the agent's own `ws.index` tags.
 
 **A fork point is always a commit.** Uncommitted writes here are landed
 first, under `{"tool": "fork", "child": name}`, and that commit is the
-child's base and the merge base for the way back. Forking a copy of the
-staging buffer would give the child a state that never existed in
-history and a merge base predating this session's own edits. With `at`
+child's base and the merge base for the way back. With `at`
 nothing is committed: the buffer belongs to this session's present, not
 to the past the fork branches from.
 
@@ -1119,8 +1111,7 @@ the same workspace answers differently under a different
 
 Tool descriptions gate on it — the apps primer teaches `ws-curl` only
 where it exists (injected commands, or the `ws-*` ferry on guests), since promising an agent a command that answers
-`command not found` costs it turns. An executor that predates the flag
-reads as `True`, keeping its historical behavior.
+`command not found` costs it turns.
 
 On an executor without it, `test_app` is the verification path. Note
 that importing a handler module and calling its verb by hand is *not*
@@ -1287,13 +1278,10 @@ class PythonConfig:
   session sandbox, whose worker is created once at workspace
   construction and held for its life — already warm.
 
-  It is a **latency optimization, not a safety mechanism**. It used to
-  be both, when a view sandbox was forked per request from a live ASGI
-  server; sandtrap >= 0.3 creates workers from a forkserver broker, so
-  that hazard is gone at its source. What remains is worker start —
-  which forkserver made *more* expensive, since a worker re-imports the
-  granted stack rather than inheriting it: ~18ms and ~23MB on a stdlib
-  policy, ~235ms and ~113MB with pandas/numpy/plotly granted.
+  It is a **latency optimization, not a safety mechanism**. What it
+  buys is worker start, which a worker pays by re-importing the granted
+  stack rather than inheriting it: ~18ms and ~23MB on a stdlib policy,
+  ~235ms and ~113MB with pandas/numpy/plotly granted.
 
   The default of `1` keeps the app-iteration loop warm (edit,
   `test_app`, preview — essentially sequential) while holding one
@@ -1708,12 +1696,9 @@ nothing about handlers; `enable_apps(ws, config)` wires everything in
 afterwards through the surface any extension may use —
 `ws.runtime.register_command` for `ws-curl`, `ws.runtime.env` for
 `$APP_ORIGIN`, `ws.runtime.exec_python(view=...)` for handler dispatch,
-and `ws.lock` where its work mutates. `tests/test_apps_surface.py`
-enforces that mechanically: no private attribute of `Workspace` is
-reachable from `nontainer/apps/`. The one deliberate exception is
-ws-curl's ferry spec in `nontainer/wscurl.py`, which lives in core
-beside the relay every `ws-*` verb shares (`nontainer/wsverb.py`)
-precisely so `apps/` never has to reach for internals.
+and `ws.lock` where its work mutates. No private attribute of
+`Workspace` is reachable from `nontainer/apps/`, which is what makes
+that surface the one an extension of your own can build on too.
 
 ```python
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
