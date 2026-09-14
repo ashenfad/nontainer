@@ -4,7 +4,11 @@ boundary, and what to do with an answer too big for the guest frame.
 The relay itself is generic (:mod:`nontainer.wsverb`); what is
 ws-curl's own is that its bare arguments are URLs rather than paths,
 that only ``-o`` names a file, and that a response body can be larger
-than a guest round trip holds. The command itself stays in
+than a guest round trip holds.
+
+Core, like the relay it configures: this is read on the way home from
+a guest, underneath whoever registered the verb. The command that
+answers — the one apps builds around its own dispatch — stays in
 apps/wscurl.py.
 """
 
