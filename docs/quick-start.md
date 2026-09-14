@@ -143,7 +143,7 @@ To read another session's tree in place without copying it:
 ### Giving the agent the versioning verbs
 
 The agent's half of this is `ws-git`, a terminal builtin the embedder
-registers — like apps, it is opt-in, and no adapter turns it on for you:
+registers:
 
 ```python
 from nontainer.wsgit import register_wsgit
@@ -156,8 +156,9 @@ ws.terminal("ws-git merge polish")      # ws-git help lists the rest
 The rule: `ws.index` is the host's half and needs no switch — every
 workspace whose backend has `caps.index` (kvgit does) has it. The
 terminal `ws-git` exists only where `register_wsgit(ws)` has been
-called; until then the agent gets `ws-git: command not found`. Both
-drive the same index, so host and agent see one composition.
+called, which no adapter does for you; until then the agent gets
+`ws-git: command not found`. Both drive the same index, so host and
+agent see one composition.
 [ws-git.md](ws-git.md) is the reference for the agent's half — every
 verb, what it prints, and what it refuses.
 
@@ -270,8 +271,8 @@ stdout, no tick counts, results crossing as data rather than live
 objects, cache reads of guest-written keys as bytes, no injected
 builtins in real bash — is listed in the executor's docstring.
 
-Note the last row: `backend="subprocess"` is real bash and real Python
-with **no containment at all** — agent code runs as you, with your
+The last row, `backend="subprocess"`, is real bash and real Python with
+**no containment at all** — agent code runs as you, with your
 network and your files. It enforces none of `PythonConfig`'s policy and
 refuses only an explicit `isolation` above `"none"`, which is an ask
 for containment it cannot give. It buys fidelity, not a boundary, so it's
@@ -385,10 +386,7 @@ to vision models AND persist at `/workspace/app/screenshots/`.
 > The tool description gates on `Executor.supports_commands` /
 > `supports_ws_verbs` and simply won't teach it where it's absent;
 > there, `test_app` is the verification path. Bare `curl` in a guest
-> means the machine's own curl, not the workspace app. Don't reach for importing a handler and calling its verb
-> directly as a substitute: that skips routing and runs GET without
-> its read-only filesystem, so it can pass on code the real request
-> path rejects.
+> means the machine's own curl, not the workspace app.
 
 To share an app, publish a **frozen snapshot** and mount the router:
 
@@ -430,10 +428,9 @@ Serving is read-only and concurrent. Mutable app state does **not** go
 in the workspace — it goes to an external store (a sqlite/postgres
 client) injected via `host_objects`, and you tell the agent about it
 with a `python_primer`. A publication carries the tree and nothing
-else — a live sqlite handle is not a file — so you hand the objects
-over when you open it: `pub.open(python=PythonConfig(host_objects={"db":
-db}))`, and the same keywords on `store.tags.at` and `store.resolve`.
-See the `webapp` example for the full pattern.
+else, and a live sqlite handle is not a file, so the objects are handed
+over at the open as above; the same keywords work on `store.tags.at`
+and `store.resolve`. See the `webapp` example for the full pattern.
 
 See [apps.md](apps.md) for the full design (handler contract, frozen
 serving, threat model) and [api.md](api.md) for every signature.
