@@ -610,7 +610,7 @@ def _env_notes(ws: Workspace) -> str:
             f"{one}`, which also works at the top level and in a handler, "
             "so it is the spelling that is right everywhere"
         )
-    from ..executor import _flatten_grants
+    from ..executor import flatten_grants
 
     stdlib_names = set()
     if cfg.stdlib:
@@ -620,12 +620,12 @@ def _env_notes(ws: Workspace) -> str:
     extra_names = sorted(
         {
             (g.name or g.module.__name__)
-            for g in _flatten_grants(cfg)
+            for g in flatten_grants(cfg)
             if (g.name or g.module.__name__) not in stdlib_names
         }
     )
     network_mods = sorted(
-        (g.name or g.module.__name__) for g in _flatten_grants(cfg) if g.network
+        (g.name or g.module.__name__) for g in flatten_grants(cfg) if g.network
     )
     if cfg.network:
         lines.append("- network: enabled for sandboxed code")

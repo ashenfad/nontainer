@@ -258,7 +258,7 @@ def _refuse_reserved_host_name(cfg: PythonConfig) -> None:
             "injected objects are imported from (`from host import db`) — "
             "rename yours."
         )
-    for grant in _flatten_grants(cfg):
+    for grant in flatten_grants(cfg):
         if (grant.name or grant.module.__name__) == HOST_MODULE:
             raise ValueError(
                 f"Reserved module grant name: {HOST_MODULE!r} is the module "
@@ -291,12 +291,20 @@ def _refuse_shadowed_host_module(ctx: ExecutionContext) -> str | None:
     return None
 
 
-def _flatten_grants(cfg: PythonConfig) -> list[ModuleGrant]:
+def flatten_grants(cfg: PythonConfig) -> list[ModuleGrant]:
     """Normalize ``cfg.modules`` to a flat ModuleGrant list: the stdlib
     set first (when enabled), then user entries — nested sequences
     (preset grant lists) flatten one level, bare modules wrap. A later
     registration of the same module name wins in sandtrap, so explicit
-    user grants override the stdlib set's."""
+    user grants override the stdlib set's.
+
+    Public and here rather than in ``presets``: presets BUILDS grant
+    lists, while this reads a whole :class:`PythonConfig` the way the
+    thing that registers the grants reads it. So it is the one honest
+    answer to "what may this code import", and anything describing a
+    sandbox from the outside — a tool primer naming the importable
+    modules — asks it instead of re-deriving the rules and drifting.
+    """
     from collections.abc import Sequence
 
     entries: list[ModuleType | ModuleGrant] = []
@@ -710,7 +718,7 @@ class LocalExecutor:
 
         ctx = self._require_ctx()
         cfg = ctx.python_config
-        grants = _flatten_grants(cfg)
+        grants = flatten_grants(cfg)
         if cfg.policy is not None:
             # An embedder-supplied policy is theirs wholesale — including
             # module_root, which they must align with the workspace root

@@ -486,3 +486,38 @@ def test_mock_internals_stay_behind_the_default_exclude():
     r = ws.run_python("import unittest.mock as m\nout = m._patch\n")
     assert not r
     ws.close()
+
+
+# -- what a config's modules flatten to --------------------------------------
+
+
+def test_flatten_grants_is_public_and_includes_the_stdlib_set():
+    """The one honest answer to "what may this code import": a primer
+    that names the importable modules asks this rather than re-deriving
+    the rules."""
+    import json as json_mod
+
+    from nontainer.executor import flatten_grants
+
+    names = {
+        g.name or g.module.__name__
+        for g in flatten_grants(PythonConfig(stdlib=True, modules=[json_mod]))
+    }
+    assert "json" in names and "math" in names
+
+    bare = flatten_grants(PythonConfig(stdlib=False, modules=[json_mod]))
+    assert [g.module for g in bare] == [json_mod]
+
+
+def test_flatten_grants_flattens_a_preset_list_one_level():
+    """A preset (`presets.dataframes()`) is a LIST of grants and a
+    config holds it as one entry; the flat list is what an executor
+    registers."""
+    import json as json_mod
+    import math as math_mod
+
+    from nontainer.executor import flatten_grants
+
+    preset = [json_mod, math_mod]
+    grants = flatten_grants(PythonConfig(stdlib=False, modules=[preset]))
+    assert [g.module for g in grants] == [json_mod, math_mod]
