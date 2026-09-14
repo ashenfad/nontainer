@@ -507,6 +507,37 @@ which is which by where the verb is.
 `Store(...).open(session)`: the one-session case is the common one and
 should not get longer.
 
+## Five layers, one direction
+
+The package is one distribution, and inside it the modules sit in five
+layers:
+
+| layer | modules | what it is |
+|---|---|---|
+| core | `store`, `workspace`, `runtime`, `protocol`, `executor*`, `providers/`, `agentgit`/`wsgit`, `wsverb`/`wscurl`, `artifacts`/`ui`/`dud_outputs`, ... | the fake little computer, and the seams above |
+| sessions | `sessions` | delegation: a child session, a job, an answer |
+| apps | `apps/` | the request loop over a workspace tree |
+| testing verbs | `wspytest`, `wsvitest` | `ws-pytest` and `ws-vitest` |
+| adapters | `adapters/` | agno, MCP, a2ui, observation rendering |
+
+The rule is that **core imports nothing from the other four, and the
+other four run on core's public API**. One direction, no exceptions,
+including the lazy import inside a function that looks harmless
+because it defers rather than removes the dependency.
+
+This buys two things. An embedder can take core and sessions without
+apps, an adapter, or a browser; and every feature above core is proof
+that core's public surface is enough to build on — the moment one of
+them needs a private attribute, the answer is a public name, not a
+reach-in. The rule is not a convention anybody has to remember:
+`tests/test_layering.py` walks the package with `ast` and fails on the
+first import or underscore attribute that crosses the wrong way.
+
+Whether nontainer is ever split into separate distributions is a
+question for the day someone actually wants `nontainer-core` on its
+own. Holding the seam now means that day is a repackaging rather than
+a redesign.
+
 ## Sandbox honesty
 
 In-process mode (`isolation="none"`) is a walled garden for cooperative
