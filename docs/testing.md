@@ -151,7 +151,7 @@ def test_summary_uses_fetch():
         assert feed.summary() == "real:99"
 ```
 
-Two things cannot be patched, both for reasons worth knowing:
+Two things cannot be patched:
 
 - **The `host` module is read-only.** `patch.object(host, "db", fake)`
   is refused (`Cannot set attribute 'db' on module 'host'`), because
@@ -221,12 +221,7 @@ call(module, method="GET", path=None, *, params=None, body=None,
   envelope is the point of the helper; testing a function is what a
   plain call is for.
 
-Dependencies are substituted by keyword rather than by patching because
-a handler's injected names are not module attributes: `db` is bound
-into the handler's namespace by dispatch, so there is nothing for a
-patch to reach.
-
-One asymmetry, said plainly: **`call` does not reproduce the read-only
+One asymmetry: **`call` does not reproduce the read-only
 filesystem a real GET runs under.** The handler runs in the test's own
 sandbox, so a GET that writes passes here and 500s under `ws-curl`.
 That is the price of the mock being visible to the handler at all, and
@@ -256,10 +251,8 @@ source with the failing line marked, as pytest's does.
 
 ## Both rungs
 
-Python tests run **where your code runs**: in the sandbox on a local
-rung, in the guest on a VM rung, under the session's own python config
-either way. The report reads identically on both — a conformance corpus
-asserts it byte for byte.
+The report reads identically on a local rung and a VM rung — a
+conformance corpus asserts it byte for byte.
 
 ---
 
