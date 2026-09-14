@@ -129,6 +129,16 @@ class TestReport:
     def __bool__(self) -> bool:
         return self.ok
 
+    def __str__(self) -> str:
+        """The count line: ``2 failed, 8 passed in 0.31s``.
+
+        The same text the terminal centres at the foot of a run, with
+        no separator around it, so a caller that has to quote the
+        outcome in one line — a merge refusal naming why it refused —
+        has it without rendering the whole report and slicing.
+        """
+        return _summary_text(self)
+
 
 @dataclass(frozen=True)
 class Options:
@@ -1040,7 +1050,8 @@ def _traceback_text(outcome: TestOutcome, tb: str) -> str:
     return _render_frames(list(outcome.frames), outcome.message or "", tb) or ""
 
 
-def _summary(report: TestReport) -> str:
+def _summary_text(report: TestReport) -> str:
+    """The counts and the duration on one line, unadorned."""
     parts = []
     if report.failed:
         parts.append(f"{report.failed} failed")
@@ -1051,8 +1062,13 @@ def _summary(report: TestReport) -> str:
     if report.errors:
         parts.append(f"{report.errors} error" + ("s" if report.errors > 1 else ""))
     if not parts:
-        return _sep(f"no tests ran in {report.duration:.2f}s")
-    return _sep(", ".join(parts) + f" in {report.duration:.2f}s")
+        return f"no tests ran in {report.duration:.2f}s"
+    return ", ".join(parts) + f" in {report.duration:.2f}s"
+
+
+def _summary(report: TestReport) -> str:
+    """The count line as the terminal prints it: centred in a rule."""
+    return _sep(_summary_text(report))
 
 
 def render_report(report: TestReport, *, verbosity: int = 0, tb: str = "short") -> str:
