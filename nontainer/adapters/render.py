@@ -572,6 +572,11 @@ conversation that is not yours cannot be continued. resume=<name>
 gives a new task to a delegate you already have, conversation kept;
 it does one task at a time, so resume it after its answer arrives.
 
+A delegate's branch does not live forever: one that has gone unread
+long enough is swept, and its job then reads `expired` with nothing
+left to read. action="keep" exempts one for good — say so while you
+are reading the answer, if that branch should still be there later.
+
 An answer names what the delegate LANDED: its branch head if it never
 used ws-git, its last ws-git commit if it did. If it committed and then
 went on writing, the answer says so and a merge of it is refused — take
