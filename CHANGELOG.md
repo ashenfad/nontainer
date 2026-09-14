@@ -93,8 +93,11 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   `HttpError` as a status, a missing required field as a 400.
   Dependencies are substituted by keyword, a handler's injected names
   being no module attribute a patch could reach, and the module name has
-  to be a literal. It does not reproduce a GET's read-only filesystem —
-  that stays `ws-curl`'s to enforce.
+  to be a literal. Which names a handler reads from its namespace is
+  Python's own answer (`symtable`, per scope), so a `db` that only a
+  helper beside the handler reads still takes the fake. It does not
+  reproduce a GET's read-only filesystem — that stays `ws-curl`'s to
+  enforce.
 - **`from host import db`** — the injected host objects arrive as a
   synthetic `host` module as well as bare names, resolving at the top
   level, in a handler and in a module alike, where a bare name reached
@@ -206,6 +209,11 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   well-formed id nobody holds names its session too. The session half is
   checked first, so a typo earns `unknown session 'typo' (ws-git branch
   lists them)`.
+- **A handler traceback on dud names the handler's own line.** A view
+  exec compiles scaffolding ahead of the handler, and the guest counted
+  from the top of that unit, so `api.log` pointed a repair at a line
+  the agent never wrote; the view path now measures its prefix and
+  hands the result the offset, the way plain python already did.
 - **A frozen workspace refuses writes by every door.** `ws.files.fs` on
   a frozen open (`store.tags.at`, `store.resolve`, `Publication.open`)
   or on a session snapshot (`ws.tags.at`) is the same read-only
