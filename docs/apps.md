@@ -1,5 +1,12 @@
 # App handlers (the `[apps]` extra)
 
+Three readers share this page: the agent, whose handler contract and
+`test_app` DSL are here; the embedder, who configures and verifies the
+loop; and whoever hosts the result. The surrounding pages are the
+[quick start](quick-start.md) for wiring it up, the
+[API reference](api.md) for every signature, and
+[testing.md](testing.md) for the unit tier below a request.
+
 The optional `[apps]` extra lets an agent author a full-stack app inside
 its workspace — a no-build frontend plus Python request handlers — **verify
 it headlessly** before any human sees it, and (optionally) serve it live.

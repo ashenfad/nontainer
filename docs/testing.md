@@ -1,5 +1,9 @@
 # Unit tests: `ws-pytest` and `ws-vitest`
 
+What the agent types, and the host-side record behind it. The request
+tier above these is [apps.md](apps.md); every signature named here is
+in the [API reference](api.md).
+
 Two terminal builtins, one per language, for the tier below a request.
 `ws-curl` asks one request of the app and `test_app` drives a page; these
 two ask a question of a *function* and answer with the assertion that

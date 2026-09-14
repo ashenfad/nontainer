@@ -3,7 +3,8 @@
 Why nontainer is shaped the way it is. This is the rationale doc — for
 *using* nontainer, see [quick-start](quick-start.md) and the
 [API reference](api.md); for the verbs the agent types, [ws-git.md](ws-git.md);
-for the apps extra, [apps.md](apps.md).
+for the apps extra, [apps.md](apps.md); for writing against the seams,
+[extending.md](extending.md).
 
 ## Script model, not a persistent REPL
 

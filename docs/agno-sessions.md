@@ -1,5 +1,10 @@
 # agno sessions in the workspace
 
+For an embedder running an [agno](https://github.com/agno-agi/agno)
+agent who wants a rewind or a fork to carry the conversation too. The
+shapes are in the [API reference](api.md); the commit model they ride
+on is in the [design notes](design.md).
+
 Status: implemented. Ships under the `[agno]` extra as
 `nontainer.adapters.agno_db` (`KvgitSessionDb`, `fork_session`); the
 API reference has the usage shape.
