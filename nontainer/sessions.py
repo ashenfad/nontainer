@@ -472,9 +472,9 @@ class Sessions:
         delegate depend on how often another is asked for.
 
         A branch goes when all of this holds: its job has finished (a
-        run still driving it is not idle, whatever the clock says),
-        nobody has :meth:`keep` it, and ``Job.touched`` — the moment
-        the caller last dealt with it, moved by :meth:`result` and
+        run still driving it is not idle, whatever the clock says), no
+        caller has asked to :meth:`keep` it, and ``Job.touched`` — the
+        moment the caller last dealt with it, moved by :meth:`result` and
         :meth:`keep` — is at least ``idle`` seconds ago. The job's row
         stays and its status becomes ``expired``, keeping the time its
         run finished; its answer is dropped, since the branch the
