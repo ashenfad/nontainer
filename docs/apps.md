@@ -85,9 +85,9 @@ recommendation for code you want to test — a function that takes `db` is
 called with a fake, while a module that imports it is patched at the
 name the module itself reads (`import host` at the top of the module,
 then `host.db` at the call site, since `from host import db` binds once
-at import time). A test for either shape runs with `ws-pytest`, which
-also reaches a handler itself: `call("scores", params={"limit": "2"},
-db=fake)` — see [testing.md](testing.md).
+at import time). How to fake either shape — and a handler itself, which
+`ws-pytest` reaches with `call("scores", db=fake)` — is in
+[testing.md](testing.md).
 
 ## Handler contract
 
@@ -221,9 +221,8 @@ prefer, which is why the list is no longer phrased as a ranking.
    Two things about (3) are measured rather than assumed, because the
    obvious approach fails in a way nothing reports. `@babel/standalone`
    is ~3.1MB, and its `transformScriptTags` entry point compiles to a
-   **Blob** loaded as a module script — which the served CSP refuses
-   (`script-src` has no `blob:`), *silently*, since a refused script
-   does not throw. Inject the compiled source INLINE instead. And a
+   **Blob** the served CSP refuses — the case *Script hosts* below is
+   written around; inject the compiled source INLINE instead. And a
    line-preserving transpiler (sucrase, ~200KB) keeps `Error.stack`
    pointing at the agent's own JSX line, which test_app then quotes;
    add `//# sourceURL=app.jsx` so the frame names the file at all
@@ -244,11 +243,9 @@ The insight: agents don't need build *tooling*, they need build
 *semantics* — and at agent-app scale the browser supplies those
 itself.
 
-test_app used to be indifferent to how that happened, and is not any
-more: it sends the served CSP, so an approach that only works without
-one now fails verification instead of passing and breaking published.
-That is the point, and it is why the blob caveat above is a blocker
-rather than a preference.
+test_app sends the served CSP, so an approach that only works without
+one fails verification instead of passing and breaking published. That
+is why the blob caveat above is a blocker rather than a preference.
 
 ### Vendored assets: files served with the app, absent from the workspace
 
@@ -465,9 +462,9 @@ next. And the `x-*` allowance is not blanket — that namespace also
 carries commands a server in front *executes* rather than forwards, so
 `x-accel-*` (nginx), `x-sendfile` and `x-lighttpd-send-file` are
 refused; without that, a handler could reach an internal location
-through the proxy. That list covers the conventions that exist rather
-than every one that could, which leaves an obligation on whoever
-deploys this — see **Hosting for real (the embedder's half)**.
+through the proxy. That list is not exhaustive, which leaves an
+obligation on whoever deploys this — see **Hosting for real (the
+embedder's half)**.
 
 A violation is reported in `[rejected requests]` phrased as the fix, and
 an external script the allowlist doesn't cover keeps the allowlist
@@ -607,9 +604,8 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   failure, and so is a relocatability bug — the harness 404s an absolute
   path with a JSON body, so an app that calls `.json()` without checking
   `.ok` renders as if fine while being broken in production.
-- **`read` and `eval` both settle before observing.** They are the two
-  expectation-free observations, and a stale answer from either is a
-  false green the agent cannot catch.
+- **`read` and `eval` both settle before observing** — they are the two
+  expectation-free observations.
 - **A failed action captures the page.** The run stops there, so it is
   the last look available; without it the agent re-runs the whole test
   to add a screenshot. A selector that missed also gets the ids and
@@ -656,8 +652,7 @@ says which and why. Composable paths that already exist with no new API:
 `host_objects` and CSP rather than a new one: the assets live on the
 host, not in the snapshot, so a `tar -czf app.tgz app` export does not
 contain them and a served snapshot needs the router configured with the
-same `AppsConfig`. An app that verifies green against assets the serving
-side never declared is the one failure `test_app` cannot catch.
+same `AppsConfig`.
 
 The ONE delivery opinion nontainer owns, because it must be baked
 into authoring: **apps are relocatable**. They are served under an
@@ -704,7 +699,7 @@ snapshot = store.publication("scoreboard").open(   # frozen Workspace
 )
 ```
 
-Two rules make that snapshot worth serving:
+Three rules make that snapshot worth serving:
 
 - **The app, not the session.** The published commit holds the files
   under `paths` (`("app/",)` by default) and the filesystem rows that
@@ -722,8 +717,7 @@ Two rules make that snapshot worth serving:
   a frozen open starts with an empty cache however full the session's
   was. Data an app needs precomputed belongs in a file under the
   published paths — write it out, commit it, publish it, and the
-  handler reads it back. Live, mutable state still belongs in an
-  external store reached through `host_objects`.
+  handler reads it back.
 - **Provenance is a soft reference.** The session a version came from
   is recorded in the commit's info as `published_from`, not as a parent
   pointer. So a version pins none of that session's history alive, the
@@ -966,9 +960,8 @@ fetching **any HTTPS endpoint**, deliberately, because data apps need map
 tiles, remote imagery and third-party APIs and handlers have no network
 to proxy through. It is a supply-chain control, not an egress control.
 If the app must not phone home, say so explicitly with
-`AppsConfig(csp=...)`. Declare it on the config rather than on
-`build_router` so `test_app` verifies against the policy that will
-actually ship.
+`AppsConfig(csp=...)` — on the config, so `test_app` verifies against
+the policy that will actually ship.
 
 ### If something sits in front
 
