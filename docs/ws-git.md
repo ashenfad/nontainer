@@ -9,7 +9,8 @@ This page is the human-readable twin of `ws-git help`. The host's half
 of the same machinery is `ws.index` in the
 [API reference](api.md#versioning-gated-by-wscaps) — one implementation
 with two spellings, so the host and the agent see one index and one
-graph. Registration is the embedder's call:
+graph; sending work to another session is [sessions.md](sessions.md).
+Registration is the embedder's call:
 
 ```python
 from nontainer.wsgit import register_wsgit
