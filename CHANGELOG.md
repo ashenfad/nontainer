@@ -113,9 +113,11 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
 - **`sessions ask(fork_from=, resume=)`** — the two things about an ask
   that are not its task. `fork_from` starts the delegate from another
   fork point, a commit named by a store tag or spelled `session@commit`;
-  the branch it came from is only read, `inherit` must be `"fresh"`, and
-  such a child shares no history with the asker, so its branch holds
-  that whole tree and the way back is a take rather than a merge.
+  the branch it came from is only read, and `inherit` must be
+  `"fresh"`. A fork point outside the asker's own history shares none
+  with it, so that child's branch holds the other state's whole tree
+  and the way back is a take rather than a merge; a tag of the asker's
+  own commit is an ordinary ancestor and merges as any fork does.
   `resume` gives a new task to a delegate you already have, its
   conversation kept and its branch reused, carrying what belongs to the
   child (fork point, base, `keep` flag) and replacing only the run. A
