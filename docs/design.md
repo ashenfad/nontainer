@@ -517,7 +517,13 @@ that core's public surface is enough to build on — the moment one of
 them needs a private attribute, the answer is a public name, not a
 reach-in. The rule is not a convention anybody has to remember:
 `tests/test_layering.py` walks the package with `ast` and fails on the
-first import or underscore attribute that crosses the wrong way.
+first import or underscore attribute that crosses the wrong way, and
+`tests/test_apps_surface.py` holds the tighter version of it for the
+apps extra: no private attribute of `Workspace` is reachable from
+`nontainer/apps/`. The one deliberate exception is ws-curl's ferry
+spec, which lives in core (`nontainer/wscurl.py`) beside the relay
+every `ws-*` verb shares (`nontainer/wsverb.py`) precisely so `apps/`
+never has to reach for internals.
 
 Whether nontainer is ever split into separate distributions is a
 question for the day someone actually wants `nontainer-core` on its
