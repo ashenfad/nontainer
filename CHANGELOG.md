@@ -18,26 +18,10 @@ tier for the other language, where a frontend module runs in a browser
 page that reaches nothing but the files under test. `docs/testing.md` is
 their page. Delegation learns where a delegate starts, how to give one
 another task, and what becomes of its branch afterwards: branches age
-out on an idle TTL the embedder sweeps, and a merge can be gated on the
-source — the delegate's own tests, run against the commit the merge
-would take. Elsewhere, the `ui` set closes.
+out on an idle TTL the embedder sweeps. Elsewhere, the `ui` set
+closes.
 
 ### Added
-- **`ws.merge(source, check=)` and `merge_check=` on the open** — a
-  merge can be gated on the source itself. The check is handed a frozen
-  workspace over that branch at exactly the commit the merge would
-  take, runs after the existing refusals and before anything moves, and
-  a falsy verdict raises `MergeRefused` with nothing merged, nothing
-  marked and nothing to abort. `TestReport` is truthy when it is green
-  and now prints its own count line, so `check=run_pytest` is the whole
-  of "the delegate's tests pass before I take its work", and
-  `MergeRefused` quotes it: `merge of 'sleepy-otter' at 3f9c2a1 refused
-  by its check: 2 failed, 8 passed in 0.31s`. As a construction setting
-  it becomes the session's policy, inherited by forks and applied to
-  the AGENT's own `ws-git merge`, where it reads as the verb's error
-  text and the recovery is the branch the agent already has. A check
-  that raises propagates untouched: a broken check says nothing about
-  the delegate.
 - **`sessions.sweep(idle=)`, `Job.touched` and the `expired` status** —
   retention for a delegate's branch, which `keep` had been recording a
   flag for since it landed. It is idle TTL with touch on read: a job
@@ -147,7 +131,9 @@ would take. Elsewhere, the `ui` set closes.
   with their source, so a merge policy can gate on
   `run_pytest(ws).ok` and a UI can show the first failure without
   parsing a summary line. Frames name the file and line the agent
-  wrote; the sandbox's own are dropped. One record for both verbs —
+  wrote; the sandbox's own are dropped. `str(report)` is the count line
+  on its own — `2 failed, 8 passed in 0.31s` — for a caller that has to
+  quote the outcome in one line. One record for both verbs —
   `run_vitest` fills the same one, `tool` tells them apart, and
   `TestFrame` carries a `column` for the language whose stacks have
   one.

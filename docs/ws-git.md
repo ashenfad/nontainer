@@ -570,25 +570,6 @@ name the same two fixes: commit the work, or check out the last commit
 to drop it. A session that has never made a ws-git commit has no such
 commit to differ from, so there only an open index refuses.
 
-**A session may carry a merge check**, and then `merge` is the one verb
-that can be refused for a reason that is not about your tree or the
-source's. The embedder sets it when it opens the session — "the
-delegate's tests pass", typically — it runs against the source at the
-commit the merge would take, and it refuses before anything moves:
-
-```
-$ ws-git merge sleepy-otter
-ws-git: merge of 'sleepy-otter' at 3f9c2a1 refused by its check: 2 failed, 8 passed in 0.31s
-```
-
-Nothing is merged, nothing is marked, and `status` reads exactly as it
-did — there is no merge to abort. The way forward is the branch: send
-the delegate back to it, or take the files you want
-(`ws-git checkout <name> -- <paths>`) and fix them here, then merge
-again. `merge --abort`, `revert`, `cherry-pick` and `checkout` carry no
-check, because each of them is how you recover from a merge rather than
-make one.
-
 `ws-git branch <name> --paths <paths>` is the other direction: forking a
 session and narrowing what it can **see**, not what its branch holds.
 
