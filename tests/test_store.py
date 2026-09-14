@@ -64,6 +64,37 @@ def test_workspace_still_takes_an_explicit_provider(tmp_path):
         assert ws.terminal("cat x.txt").stdout.strip() == "byo"
 
 
+def test_workspace_takes_every_keyword_store_open_takes():
+    """The factory is sugar for Store.open, so a keyword the store
+    takes and the sugar does not is a setting a caller on the
+    one-liner cannot reach. When this fails, add the parameter to
+    workspace() and forward it on both of its paths."""
+    import inspect
+
+    factory = set(inspect.signature(workspace).parameters)
+    opened = set(inspect.signature(Store.open).parameters) - {"self", "session"}
+    missing = opened - factory
+    assert not missing, f"workspace() does not forward: {sorted(missing)}"
+
+
+def test_workspace_forwards_merge_check_on_both_paths(tmp_path):
+    """A merge policy given to the one-liner reaches the session and
+    every fork of it, whether the store built the provider or the
+    caller brought one."""
+
+    def refuse(src):
+        return False
+
+    with workspace("policed", store=tmp_path, merge_check=refuse) as ws:
+        assert ws._merge_check is refuse
+        with ws.fork("policed-child") as child:
+            assert child._merge_check is refuse
+
+    provider = KvgitProvider.open(None, session="byo-policed")
+    with workspace("byo-policed", provider=provider, merge_check=refuse) as ws:
+        assert ws._merge_check is refuse
+
+
 def test_store_open_passes_construction_settings_through(tmp_path):
     with store(tmp_path).open("rooted", root="/data", max_observation=99) as ws:
         assert ws.root == "/data"

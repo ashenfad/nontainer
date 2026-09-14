@@ -379,6 +379,7 @@ workspace(
     max_observation: int = 32_000,
     executor_factory: Callable[[], Executor] | None = None,
     root: str = "/workspace",
+    merge_check: Callable[[Workspace], Any] | None = None,  # the merge gate
 ) -> Workspace
 ```
 
