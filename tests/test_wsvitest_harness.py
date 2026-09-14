@@ -577,3 +577,29 @@ def test_a_path_with_a_space_or_a_hash_is_served(ws):
     assert failed.status == "failed"
     assert failed.frames[0].path == "tests/a spaced ünïcode #1.test.js"
     assert "%20" not in failed.traceback
+
+
+def test_every_teardown_hook_runs_even_after_one_throws(ws):
+    """A throwing afterEach used to exit both hook loops, so the outer
+    suite's cleanup never ran and the next test saw leaked state."""
+    result = run(
+        ws,
+        "tests/teardown.test.js",
+        """
+        let closed = 0;
+        afterEach(() => { closed += 1; });
+        describe('inner', () => {
+          afterEach(() => { throw new Error('second teardown'); });
+          afterEach(() => { throw new Error('first teardown'); });
+          it('one', () => { expect(1).toBe(1); });
+        });
+        it('outer cleanup still ran', () => { expect(closed).toBe(1); });
+        """,
+    )
+    one = outcome(result, "one")
+    assert one.status == "failed"
+    assert "first teardown" in one.message
+    assert "second teardown" in one.message, one.message
+    assert outcome(result, "outer cleanup still ran").status == "passed", outcome(
+        result, "outer cleanup still ran"
+    ).message
