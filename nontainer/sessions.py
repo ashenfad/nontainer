@@ -61,6 +61,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from .errors import (
+    BranchExpired,
     CommitNotFoundError,
     JobRunning,
     SessionsError,
@@ -298,6 +299,7 @@ class Sessions:
             task=task,
             status="running",
             started=started,
+            touched=started,
             origin=origin,
         )
         try:
@@ -333,27 +335,44 @@ class Sessions:
 
         Raises :class:`~nontainer.JobRunning` while the delegate is
         still working — delivery is pull, so an unfinished job gives
-        the turn back rather than blocking it — and
+        the turn back rather than blocking it —
+        :class:`~nontainer.BranchExpired` for a job whose branch
+        :meth:`sweep` has taken, and
         :class:`~nontainer.SessionsError` for a name no job has, or a
         job whose answer was discarded by :meth:`cancel`.
+
+        Reading an answer TOUCHES the job. Retention for a delegate's
+        branch is an idle TTL, and collecting the answer is the caller
+        dealing with the job, so the branch of a delegate whose answer
+        is read every turn is never idle however long ago its run
+        ended.
         """
         with self._lock:
             job = self._jobs.get(name)
+            if job is None:
+                raise SessionsError(self._unknown(name))
+            if job.status == "running":
+                raise JobRunning(
+                    f"job {name!r} is still running; ask again on a later turn "
+                    "(sessions list shows what is outstanding)"
+                )
+            if job.status == "expired":
+                raise BranchExpired(
+                    f"job {name!r} expired: its branch was swept after going "
+                    "unread long enough for the retention sweep to take it, so "
+                    "there is nothing left to read. Ask again (sessions ask), "
+                    "and keep the next one (sessions keep) if it should "
+                    "outlive that."
+                )
             answer = self._answers.get(name)
-        if job is None:
-            raise SessionsError(self._unknown(name))
-        if job.status == "running":
-            raise JobRunning(
-                f"job {name!r} is still running; ask again on a later turn "
-                "(sessions list shows what is outstanding)"
-            )
-        if answer is None:
-            raise SessionsError(
-                f"job {name!r} was cancelled, so its answer was discarded. "
-                f"The branch is still there as the delegate left it: "
-                f"ws-git diff {name} shows what it had done."
-            )
-        return answer
+            if answer is None:
+                raise SessionsError(
+                    f"job {name!r} was cancelled, so its answer was discarded. "
+                    f"The branch is still there as the delegate left it: "
+                    f"ws-git diff {name} shows what it had done."
+                )
+            self._jobs[name] = replace(job, touched=time.time())
+            return answer
 
     def base(self, name: str) -> str | None:
         """The commit job ``name`` was forked from.
@@ -414,22 +433,94 @@ class Sessions:
         return job
 
     def keep(self, name: str) -> Job:
-        """Mark job ``name`` as worth keeping; returns the job.
+        """Promote job ``name`` out of the retention sweep; returns it.
 
-        A delegate's branch is meant to be swept once it has gone
-        unread for long enough. Nothing sweeps yet, and this records
-        the flag the sweep will honor, so a caller that wants to keep a
-        child around can say so at the moment it decides — which is
-        while it is reading the answer, not whenever a sweep is
-        eventually scheduled.
+        :meth:`sweep` deletes the branch of a finished job that has
+        gone unread for long enough; this is the flag that exempts one
+        from it, for good. A caller says so at the moment it decides —
+        while it is reading the answer — rather than whenever a sweep
+        happens to be scheduled, and the job is touched here too,
+        because asking to keep a delegate is dealing with it.
+
+        Raises :class:`~nontainer.BranchExpired` for a job the sweep
+        has already taken: its branch is gone, and recording a flag
+        over nothing would read as a promise this cannot make.
         """
         with self._lock:
             job = self._jobs.get(name)
             if job is None:
                 raise SessionsError(self._unknown(name))
-            job = replace(job, kept=True)
+            if job.status == "expired":
+                raise BranchExpired(
+                    f"job {name!r} expired: its branch was already swept, so "
+                    "there is nothing to keep. Ask again (sessions ask) and "
+                    "keep the new job while its answer is fresh."
+                )
+            job = replace(job, kept=True, touched=time.time())
             self._jobs[name] = job
             return job
+
+    def sweep(self, idle: float, *, min_age: float = 3600) -> list[str]:
+        """Delete the branches of jobs idle for ``idle`` seconds;
+        returns the names swept, sorted.
+
+        Retention for a delegate's branch is an idle TTL, and this is
+        the reaper the embedder schedules for it — a
+        ``sessions.sweep(idle=24 * 3600)`` beside ``store.clean()`` and
+        whatever else it sweeps on a timer. Nothing calls it for the
+        embedder: an ask that swept would make the retention of one
+        delegate depend on how often another is asked for.
+
+        A branch goes when all of this holds: its job has finished (a
+        run still driving it is not idle, whatever the clock says),
+        nobody has :meth:`keep` it, and ``Job.touched`` — the moment
+        the caller last dealt with it, moved by :meth:`result` and
+        :meth:`keep` — is at least ``idle`` seconds ago. The job's row
+        stays and its status becomes ``expired``, keeping the time its
+        run finished; its answer is dropped, since the branch the
+        answer describes is gone. :meth:`base` still answers, because
+        the fork point is recorded here rather than read off the
+        branch.
+
+        **Only this helper's own jobs.** A delegate's own delegates —
+        ``<child>.<pet>`` — belong to the helper the runner built for
+        that child, and are that embedder's to sweep. Ownership is
+        recorded by the embedder that asked, never inferred from the
+        dot in a name: a human may create ``foo.notes`` beside ``foo``,
+        and a sweep that deleted by prefix would take it.
+
+        ``min_age`` is :meth:`Store.delete`'s grace period for the
+        orphan commits a deleted branch leaves behind.
+        """
+        store = getattr(self._ws, "_store", None)
+        if store is None:
+            raise SessionsError(
+                f"cannot sweep the branches of {self._ws.session!r}: that "
+                "session was not opened from a store, so there is no store to "
+                "delete them from"
+            )
+        cutoff = time.time() - idle
+        # One critical section for the whole sweep, deletion included:
+        # the branches are chosen, taken and marked without the table
+        # being read or written in between, so a resume cannot start on
+        # a branch this is about to delete and then be recorded over as
+        # expired.
+        with self._lock:
+            names = sorted(
+                name
+                for name, job in self._jobs.items()
+                if job.status not in ("running", "expired")
+                and name not in self._busy
+                and not job.kept
+                and job.touched <= cutoff
+            )
+            if not names:
+                return []
+            store.delete(names, min_age=min_age)
+            for name in names:
+                self._answers.pop(name, None)
+                self._jobs[name] = replace(self._jobs[name], status="expired")
+            return names
 
     # -- lifecycle -----------------------------------------------------
 
@@ -621,6 +712,13 @@ class Sessions:
             running = resume in self._busy
         if job is None:
             raise SessionsError(self._unknown(resume))
+        if job.status == "expired":
+            raise BranchExpired(
+                f"{resume!r} expired: its branch was swept, so there is "
+                "nothing to resume — a resume continues a child, and the "
+                "child is the branch. Ask afresh (sessions ask), and keep "
+                "the next one (sessions keep) if it should outlive the sweep."
+            )
         if running:
             raise SessionsError(self._still_running(resume))
         if fork_from is not None:
@@ -1013,6 +1111,10 @@ def render_jobs(jobs: "list[Job]") -> str:
         line = f"  {job.name}  {job.status}  {_summary(job.task)}"
         if job.status == "running":
             line += "  (no answer yet)"
+        elif job.status == "expired":
+            # Pointing at `sessions result` here would name a verb that
+            # refuses: the answer went with the branch.
+            line += "  (branch swept; sessions ask to run it again)"
         else:
             paths = sum(len(v) for v in job.changed.values())
             line += f"  ({paths} path(s); sessions result {job.name})"
@@ -1117,7 +1219,10 @@ def run_action(
                     "already working cannot be interrupted, and its branch is "
                     f"left as it is (ws-git diff {name})."
                 )
-            return f"{name} kept: it will not be swept away while it is unread."
+            return (
+                f"{name} kept: the retention sweep will leave its branch "
+                "alone from now on."
+            )
         return (
             f"unknown action {action!r} — sessions takes ask, list, result, "
             "cancel or keep."

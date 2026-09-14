@@ -21,7 +21,7 @@ Public surface:
     MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CommitNotFoundError, BookkeepingLost, SessionsError,
-            JobRunning
+            JobRunning, BranchExpired
 
 Extension surfaces (built by the embedder, never assumed present):
 
@@ -39,6 +39,7 @@ from .cache import Cache, CacheError
 from .editing import EditOutcome
 from .errors import (
     BookkeepingLost,
+    BranchExpired,
     CommitNotFoundError,
     JobRunning,
     NotSupportedError,
@@ -116,4 +117,5 @@ __all__ = [
     "BookkeepingLost",
     "SessionsError",
     "JobRunning",
+    "BranchExpired",
 ]
