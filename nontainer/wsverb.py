@@ -12,11 +12,14 @@ are paths at all. Everything else — the guest function, the hostcall
 object, the live registry lookup, the sync-on-verb, the answer triple —
 is the same for every verb and lives here.
 
-Lives in core rather than apps/ on purpose: the handler reads workspace
-internals (live command mapping, guest path math, provider staging for
-oversized captures, executor staleness) that the apps↔workspace
-extension surface deliberately withholds — see
-tests/test_apps_surface.py. The commands themselves stay in their own
+Lives in core rather than apps/ on purpose, for two reasons that point
+the same way. The handler reads workspace internals (live command
+mapping, guest path math, provider staging for oversized captures,
+executor staleness) that the apps↔workspace extension surface
+deliberately withholds — see tests/test_apps_surface.py. And the
+executor relays through it: a guest executor imports this to carry a
+``ws-`` name home, so it has to sit BELOW everything that registers a
+verb, never above it. The commands themselves stay in their own
 modules; this one only ferries them.
 """
 
