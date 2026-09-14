@@ -77,24 +77,6 @@ def test_workspace_takes_every_keyword_store_open_takes():
     assert not missing, f"workspace() does not forward: {sorted(missing)}"
 
 
-def test_workspace_forwards_merge_check_on_both_paths(tmp_path):
-    """A merge policy given to the one-liner reaches the session and
-    every fork of it, whether the store built the provider or the
-    caller brought one."""
-
-    def refuse(src):
-        return False
-
-    with workspace("policed", store=tmp_path, merge_check=refuse) as ws:
-        assert ws._merge_check is refuse
-        with ws.fork("policed-child") as child:
-            assert child._merge_check is refuse
-
-    provider = KvgitProvider.open(None, session="byo-policed")
-    with workspace("byo-policed", provider=provider, merge_check=refuse) as ws:
-        assert ws._merge_check is refuse
-
-
 def test_store_open_passes_construction_settings_through(tmp_path):
     with store(tmp_path).open("rooted", root="/data", max_observation=99) as ws:
         assert ws.root == "/data"
@@ -548,9 +530,8 @@ def _snapshot_source(st, session="app"):
 def test_the_frozen_settings_are_store_opens_settings(tmp_path):
     """The two surfaces are hand-written lists, so they can drift. A
     frozen open takes every construction keyword ``Store.open`` takes
-    except two: ``autocommit``, which a provider that commits nothing
-    has nothing to switch, and ``merge_check``, which gates a merge a
-    frozen workspace cannot make."""
+    except ``autocommit``, which a provider that commits nothing has
+    nothing to switch."""
     import inspect
 
     from nontainer.store import _FROZEN_SETTINGS
@@ -560,7 +541,7 @@ def test_the_frozen_settings_are_store_opens_settings(tmp_path):
         for name, p in inspect.signature(Store.open).parameters.items()
         if p.kind is inspect.Parameter.KEYWORD_ONLY
     }
-    assert set(_FROZEN_SETTINGS) == live - {"autocommit", "merge_check"}
+    assert set(_FROZEN_SETTINGS) == live - {"autocommit"}
     # and each one is really a Workspace construction argument
     built = inspect.signature(Workspace.__init__).parameters
     assert set(_FROZEN_SETTINGS) <= set(built)

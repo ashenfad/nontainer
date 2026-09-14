@@ -134,8 +134,9 @@ class TestReport:
 
         The same text the terminal centres at the foot of a run, with
         no separator around it, so a caller that has to quote the
-        outcome in one line — a merge refusal naming why it refused —
-        has it without rendering the whole report and slicing.
+        outcome in one line — a log line, a message saying why a branch
+        was not taken — has it without rendering the whole report and
+        slicing the last line off.
         """
         return _summary_text(self)
 

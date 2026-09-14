@@ -57,12 +57,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 from .cache import Cache
-from .errors import (
-    CommitNotFoundError,
-    MergeRefused,
-    NotSupportedError,
-    WorkspaceError,
-)
+from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 from .planes import CONVERSATION_PREFIX
 from .protocol import (
     Capabilities,
@@ -773,7 +768,6 @@ class _Settings:
     max_observation: int
     executor_factory: "Callable[[], Executor] | None"
     root: str
-    merge_check: "Callable[[Workspace], Any] | None"
 
     def as_kwargs(self) -> dict[str, Any]:
         """Shallow field mapping for ``Workspace(**...)``. Deliberately
@@ -1294,7 +1288,6 @@ class Workspace:
         executor: "Executor | None" = None,
         executor_factory: "Callable[[], Executor] | None" = None,
         root: str = "/workspace",
-        merge_check: "Callable[[Workspace], Any] | None" = None,
     ) -> None:
         self._provider = provider
         # Which Store opened this workspace, when one did. Stamped by
@@ -1437,14 +1430,6 @@ class Workspace:
         if executor is None and executor_factory is not None:
             executor = executor_factory()
 
-        # -- the session's merge policy: what ``merge`` runs against a
-        # source when the call names no check of its own. A
-        # construction setting rather than a mutable attribute, because
-        # it is the embedder's rule for this session and every fork of
-        # it, and a policy the agent's own tool calls could retarget
-        # mid-session would not be one.
-        self._merge_check = merge_check
-
         # -- what a fork replays. Captured from the NORMALIZED values,
         # not the raw arguments, so a fork starts from the state this
         # workspace resolved to: ``root`` collapsed by segment, mount
@@ -1458,7 +1443,6 @@ class Workspace:
             max_observation=self._max_observation,
             executor_factory=self._executor_factory,
             root=self._root,
-            merge_check=merge_check,
         )
 
         # -- versioned initialization baseline: root + cwd belong to
@@ -2591,12 +2575,7 @@ class Workspace:
             new_ws.close()
             raise
 
-    def merge(
-        self,
-        source: str,
-        *,
-        check: "Callable[[Workspace], Any] | None" = None,
-    ) -> MergeOutcome:
+    def merge(self, source: str) -> MergeOutcome:
         """Merge another session's committed state into this one.
 
         A merge takes only what has been COMMITTED, on both sides, and
@@ -2622,24 +2601,6 @@ class Workspace:
         File conflicts land as conflict markers IN the merge commit and
         are reported in the outcome rather than blocking it — resolve
         them with ordinary edits and commit. Requires ``caps.merge``.
-
-        ``check`` is the gate: a callable handed a FROZEN workspace
-        over ``source`` at exactly the commit this merge would take,
-        run after the refusals above and before anything is merged.
-        Truthy and the merge proceeds; falsy and
-        :class:`~nontainer.MergeRefused` is raised carrying the value
-        as ``verdict``, with nothing merged and nothing recorded. So
-        "the delegate's tests pass before I take its work" is
-        ``ws.merge(name, check=run_pytest)`` — a ``TestReport`` is
-        truthy when it is green. A check that raises is the embedder's
-        bug rather than a refusal, and its exception propagates
-        untouched. Reading the source at a commit is the store's verb,
-        so a check needs a workspace opened from one.
-
-        Left out, the SESSION's ``merge_check`` applies — the
-        construction keyword forks inherit, and what gates the agent's
-        own ``ws-git merge`` in the terminal. Naming ``check`` here
-        overrides it for this call.
         """
         if not self._provider.caps.merge:
             raise NotSupportedError(
@@ -2669,9 +2630,6 @@ class Workspace:
                 parents = [head] if head is not None else []
                 self._require_source_clean(git, source)
                 at = git.source_commit(source)
-            gate = self._merge_check if check is None else check
-            if gate is not None:
-                self._run_merge_check(source, at, gate)
             outcome = self._provider.merge(
                 source, at=at, info={"virtual_parents": parents}
             )
@@ -2682,76 +2640,6 @@ class Workspace:
             # provider state moved under the executor: flag its view.
             self._mark_executor_stale()
             return outcome
-
-    def _run_merge_check(
-        self,
-        source: str,
-        at: str | None,
-        check: "Callable[[Workspace], Any]",
-    ) -> None:
-        """Run the gate against ``source`` at the merge commit; raise
-        :class:`~nontainer.MergeRefused` on a falsy verdict.
-
-        The check is given a frozen workspace at the exact commit the
-        merge would take — the source's last agent commit where there
-        is an index, its branch head otherwise — so what it judges and
-        what the merge takes cannot differ, and it cannot edit the
-        branch into passing on the way past. It is built with this
-        workspace's own construction settings and terminal commands,
-        because a check is host code of the embedder's and a tree with
-        none of the session's python config or verbs is not the tree
-        the source's own agent works in.
-
-        The frozen workspace is closed however the check goes,
-        including when it raises: it holds an executor and a store
-        handle of its own, and the merge is what opened it. A check
-        that raises propagates — a broken check says nothing about the
-        branch, and reading it as a refusal would report a bug in the
-        embedder's code as a fault of the delegate's.
-        """
-        if self._store is None:
-            raise WorkspaceError(
-                f"merging {source!r} with a check needs the store the source "
-                "lives in: the check reads that branch frozen at the commit "
-                "the merge would take, and this workspace was built straight "
-                "from a provider. Open it through Store.open(...) to check a "
-                "merge."
-            )
-        commit = at if at is not None else self._provider.branch_head(source)
-        settings = {
-            name: value
-            for name, value in self._settings.as_kwargs().items()
-            # The frozen source is a tree to read, never one to merge
-            # from, and a frozen open refuses the keyword outright.
-            if name != "merge_check"
-        }
-        frozen = self._store.resolve(
-            f"{source}@{commit}",
-            commands=self._runtime.forkable_commands(),
-            **settings,
-        )
-        try:
-            frozen.runtime.env.update(self._runtime.env)
-            self._adopt_commands(frozen)
-            verdict = check(frozen)
-        finally:
-            try:
-                frozen.close()
-            except Exception:  # noqa: BLE001 - the verdict wins
-                pass
-        if verdict:
-            return
-        # A bare no has nothing to quote: "refused by its check: False"
-        # would dress a flag up as a reason, and an empty string would
-        # leave a dangling colon. Anything else renders, which is how a
-        # TestReport's count line reaches the message.
-        bare = isinstance(verdict, bool) or verdict is None
-        reason = "" if bare else str(verdict).strip()
-        detail = f": {reason}" if reason else ""
-        raise MergeRefused(
-            f"merge of {source!r} at {commit[:7]} refused by its check{detail}",
-            verdict,
-        )
 
     @staticmethod
     def _require_agent_clean(git: "AgentGit", verb: str = "merge") -> None:
@@ -3523,7 +3411,6 @@ def workspace(
     max_observation: int = 32_000,
     executor_factory: "Callable[[], Executor] | None" = None,
     root: str = "/workspace",
-    merge_check: "Callable[[Workspace], Any] | None" = None,
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
 
@@ -3556,11 +3443,6 @@ def workspace(
     :attr:`Workspace.root`). One value per session, inherited by
     forks.
 
-    ``merge_check`` is the session's merge policy, run against a
-    source frozen at the commit a merge would take; a falsy verdict
-    refuses the merge (:class:`~nontainer.MergeRefused`). Inherited
-    by forks, and gating ``ws-git merge`` as much as ``ws.merge``.
-
     Every keyword :meth:`Store.open` takes is taken here and forwarded
     on both paths, so a setting is never reachable only by switching
     construction APIs; a test holds the two signatures together.
@@ -3579,7 +3461,6 @@ def workspace(
             max_observation=max_observation,
             executor_factory=executor_factory,
             root=root,
-            merge_check=merge_check,
         )
     # A ready provider is one session's substrate, already built. It
     # goes in as the factory's answer for every id, and the id is
@@ -3596,5 +3477,4 @@ def workspace(
         max_observation=max_observation,
         executor_factory=executor_factory,
         root=root,
-        merge_check=merge_check,
     )
