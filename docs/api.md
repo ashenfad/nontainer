@@ -251,8 +251,7 @@ that is not hashable.
 all the way down**: nested mappings are read-only too, and a JSON
 array reads as a tuple. A record describes what the store holds, so
 the way to change metadata is `set_meta`, where the lock and the
-validation are — and there is no version of it that edits a version's
-`info`, which is immutable by design. A view read off a record is
+validation are. A view read off a record is
 accepted straight back, so `store.set_meta(name, {**pub.meta, "title":
 "New"})` is how one key changes.
 
@@ -360,9 +359,8 @@ mapping, and so does a row written before the field existed.
 `publish` leaves `meta` where it is on an existing publication and
 starts a new lineage with none; the last `unpublish` takes the row and
 its `meta` with it, so republishing the name starts empty. A
-`Publication` is a record of the registry as it was read, not a live
-view: a snapshot fetched before a `set_meta` keeps the old `meta`, and
-re-reading it is what shows the new one.
+`Publication` fetched before a `set_meta` keeps the old one; re-reading
+it is what shows the new one.
 
 `set_current` is the mutable half: it moves the pointer, and moves it
 back as easily. That is true for **code**. Data a version's handlers
@@ -474,10 +472,7 @@ just `run_in_executor` wrappers, so CPU-bound sandbox work never
 blocks your loop. A workspace is single-writer and enforces it:
 mutating calls hold an internal lock, so parallel calls to one
 workspace serialize safely (each atomic + committed) instead of
-corrupting staged state. Read-only accessors don't take the lock —
-and neither do the host-side escape hatches (`ws.files.fs` writes, `ws.cache`
-mutation), so a host thread using those while agent calls run holds
-`ws.lock` itself (see the extension surface below).
+corrupting staged state. Read-only accessors don't take the lock.
 `run_in_threadpool(ws.run_python, code)` from Starlette works too if
 you'd rather not use the facade.
 
@@ -653,8 +648,7 @@ calls and no adapter calls for it. [ws-git.md](ws-git.md) is the
 reference for every verb, its output and its refusals.
 
 `WorkspaceStatus` carries `branch` (the session), `staged` and
-`unstaged` (workspace paths, both measured against the agent's last
-commit rather than the store's head), and the live merge context:
+`unstaged` (workspace paths), and the live merge context:
 `merge_source`, the session an outstanding merge came from or `None`,
 and `merge_unresolved`, the paths that merge left still carrying
 markers.
@@ -696,17 +690,17 @@ commit here is refused with a message naming `ws.fork(name)` and
 
 **It appends.** The restored state is written and committed, so the
 returned id is a *new* commit and everything committed since the target
-is still in `ws.log()`. Nothing leaves the branch, `store.clean()` has
-nothing to collect, and an undo is redo-able. A checkout onto state the
-workspace already holds writes nothing and returns the current head.
+is still in `ws.log()`. Nothing leaves the branch and `store.clean()`
+has nothing to collect. A checkout onto state the workspace already
+holds writes nothing and returns the current head.
 The agent's git rewinds with the tree — its head and graph live in a
 key the checkout restores like any other — so after a checkout to a
 commit made when `ws.index.head` was X, it is X again.
 
 Going back is by identity, not by position: name the commit from
-`ws.log()`. That also makes the redo obvious — a checkout appends, so
-the commit it stepped off is still one entry back in the log, and
-checking it out returns you to it.
+`ws.log()`. That is also what makes an undo redo-able — a checkout
+appends, so the commit it stepped off is still one entry back in the
+log, and checking it out returns you to it.
 
 **`ws.fork(name, *, at=None, inherit="full", paths=None)`** branches
 this session into a new one and opens it.
@@ -899,13 +893,9 @@ commit removes the files it introduced. A merge commit reverts to
 ours, the side it was made from, as git's `-m 1` does.
 
 Both refuse work the agent has not committed (the rule `ws.merge`
-takes, naming the verb that refuses) and a merge still outstanding,
-since a second change over a conflicted merge would mark files that
-merge already marked. Conflicts are spelled exactly as a merge's are:
-markers land IN the commit, the paths come back in
-`MergeOutcome.conflicts`, `ws-git status` shows them as `UU` under a
-`## merging` line naming what was applied, and the next commit that
-removes the markers ends it. Where the change is already in this tree,
+takes, naming the verb that refuses) and a merge still outstanding.
+Conflicts are spelled exactly as a merge's are, under a `## merging`
+line naming what was applied. Where the change is already in this tree,
 nothing is committed: `merged` False, `commit` None, and no conflicts.
 The commit records where the change came from (`reverted`,
 `picked_from`) as a soft reference, never as a parent — applying one
@@ -1101,9 +1091,9 @@ the same workspace answers differently under a different
 `executor_factory`.
 
 **`ws.runtime.supports_commands`** — whether injected terminal commands
-(`commands=`, `ws.runtime.register_command`) actually reach the shell. It's an
-`Executor` capability, in the same declare-the-difference spirit as
-`ws.caps` for providers:
+(`commands=`, `ws.runtime.register_command`) actually reach the shell —
+an `Executor` capability, declared the way `ws.caps` declares a
+provider's:
 
 | Executor | `supports_commands` | why |
 |---|---|---|
@@ -1114,9 +1104,9 @@ Tool descriptions gate on it — the apps primer teaches `ws-curl` only
 where it exists (injected commands, or the `ws-*` ferry on guests), since promising an agent a command that answers
 `command not found` costs it turns.
 
-On an executor without it, `test_app` is the verification path. Note
-that importing a handler module and calling its verb by hand is *not*
-an equivalent substitute: it skips routing and runs GET without its
+On an executor without it, `test_app` is the verification path.
+Importing a handler module and calling its verb by hand is *not* an
+equivalent substitute: it skips routing and runs GET without its
 read-only filesystem, so it can pass on code the real request path
 rejects.
 
