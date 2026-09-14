@@ -1250,9 +1250,7 @@ Everything above the transport is the same: the same `terminal` /
 `run_python` tools, the same commits, the same O(1) forks.
 [dud](https://github.com/ashenfad/dud) receives a tree, executes
 against a real filesystem and returns a diff, which the provider
-commits exactly as it commits a local one. What you buy is fidelity —
-C extensions, real subprocesses, sqlite on real files, memory-mapped
-parquet, the workloads the in-process emulation serves worst.
+commits exactly as it commits a local one.
 
 **Policy is honoured or refused, never narrowed.** A VM guest has no
 network interface at all, so `network=False` holds by construction and
@@ -1263,11 +1261,8 @@ standard library and unable to withhold it; and anything `isolation`
 asks for, a VM already exceeds. The subprocess rung enforces none of
 it — agent code runs as you, with your network and your files — and
 refuses only an explicit `isolation` above `"none"`, which is an ask
-for containment it cannot give. It buys fidelity, not a boundary,
-which is why it is opt-in: it is the only rung that needs no
-hypervisor, and so the dev/CI floor. For policy gating, crash
-containment or kernel defense-in-depth without a VM, use
-`LocalExecutor`.
+for containment it cannot give. It is the only rung that needs no
+hypervisor, which is what makes it the dev/CI floor.
 
 **Module grants become the guest's package list** on a VM rung: each
 granted module's distribution, pinned to the host's installed version,
