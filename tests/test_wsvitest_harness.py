@@ -500,3 +500,54 @@ def test_an_array_of_a_different_length_is_not_equal(ws):
     )
     o = outcome(result, "compares arrays by length too")
     assert o.status == "passed", o.message
+
+
+# -- errors nothing in the test observed ---------------------------------
+
+
+def test_a_forgotten_await_fails_the_test_that_started_it(ws):
+    result = run(
+        ws,
+        "tests/forgotten.test.js",
+        """
+        it('forgets to await', () => {
+          Promise.reject(new Error('lost'));
+        });
+        it('is unaffected', () => { expect(1).toBe(1); });
+        """,
+    )
+    o = outcome(result, "forgets to await")
+    assert o.status == "failed", [(x.name, x.status) for x in result.outcomes]
+    assert "lost" in o.message
+    assert outcome(result, "is unaffected").status == "passed"
+
+
+def test_an_error_thrown_from_a_timer_fails_the_test_that_scheduled_it(ws):
+    result = run(
+        ws,
+        "tests/timer.test.js",
+        """
+        it('throws later', () => {
+          setTimeout(() => { throw new Error('later'); }, 0);
+        });
+        """,
+    )
+    o = outcome(result, "throws later")
+    assert o.status == "failed"
+    assert "later" in o.message
+
+
+def test_an_error_with_no_test_running_fails_the_file(ws):
+    result = run(
+        ws,
+        "tests/stray.test.js",
+        """
+        Promise.reject(new Error('at module scope'));
+        it('still runs', () => { expect(1).toBe(1); });
+        """,
+    )
+    assert outcome(result, "still runs").status == "passed"
+    unhandled = [o for o in result.outcomes if o.status == "error"]
+    assert unhandled, [(x.name, x.status) for x in result.outcomes]
+    assert "at module scope" in unhandled[0].message
+    assert result.failed

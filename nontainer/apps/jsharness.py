@@ -664,6 +664,38 @@ function serialize(e) {
   };
 }
 
+/* A test that starts async work and neither returns nor awaits it —
+ * the forgotten `await` — throws where no `try` can see it, and a
+ * timer that throws does too. Left alone both are recorded as a pass,
+ * which is the one outcome a test framework must never invent. So the
+ * page listens, and whatever fires is charged to the test that was
+ * running; what fires with none running is the file's. */
+
+let running = null;
+const stray = [];
+
+function observed(value) {
+  const record = serialize(value);
+  if (running) {
+    if (!running.error) running.error = record;
+  } else if (stray.length < 20) {
+    stray.push(record);
+  }
+}
+
+addEventListener('unhandledrejection', (e) => observed(e.reason));
+addEventListener('error', (e) => observed(e.error || e.message));
+
+/* Two task boundaries, which is what it takes. An unhandled rejection
+ * is reported only after the task the promise was rejected in has
+ * ended and nothing has handled it — one boundary later than a timer
+ * that throws. Measured in Chromium: with one turn a forgotten `await`
+ * is charged to whatever ran next; with two it is charged to the test
+ * that started it. */
+function drain() {
+  return new Promise((resolve) => setTimeout(() => setTimeout(resolve, 0), 0));
+}
+
 export async function __run(load, options) {
   const opts = options || {};
   let loadError = null;
@@ -672,13 +704,19 @@ export async function __run(load, options) {
   } catch (e) {
     loadError = serialize(e);
   }
-  if (loadError) return { results: [], collected: 0, error: loadError };
+  // Before the first test, so a module-scope failure is the file's
+  // rather than the first test's.
+  await drain();
+  if (loadError) {
+    return { results: [], collected: 0, error: loadError, stray: stray };
+  }
 
   const wanted = tests.filter((t) => !opts.name || t.name.includes(opts.name));
   const results = [];
   for (const t of wanted) {
     const started = performance.now();
-    let error = null;
+    const state = { error: null };
+    running = state;
     try {
       for (const frame of t.before) for (const hook of frame) await hook();
       // Called through a comma expression, not as t.fn(): a method call
@@ -686,23 +724,25 @@ export async function __run(load, options) {
       // every stack frame the agent reads.
       await (0, t.fn)();
     } catch (e) {
-      error = serialize(e);
+      if (!state.error) state.error = serialize(e);
     }
     try {
       for (const frame of t.after.slice().reverse()) {
         for (const hook of frame.slice().reverse()) await hook();
       }
     } catch (e) {
-      if (!error) error = serialize(e);
+      if (!state.error) state.error = serialize(e);
     }
+    await drain();
+    running = null;
     results.push({
       name: t.name,
-      ok: error === null,
+      ok: state.error === null,
       ms: performance.now() - started,
-      error: error,
+      error: state.error,
     });
   }
-  return { results: results, collected: tests.length, error: null };
+  return { results: results, collected: tests.length, error: null, stray: stray };
 }
 
 Object.assign(globalThis, {
@@ -890,6 +930,23 @@ def _message(error: dict) -> str:
     return f"{name}: {text}".rstrip(": ").replace(BASE_URL, "")
 
 
+def _unhandled(rel: str, error: dict, sources: "_Sources") -> TestOutcome:
+    """An error no test was running to be charged with. It is the
+    file's, not a test's — naming it after whichever test happened to be
+    next would send the repair to the wrong place."""
+    frames = workspace_frames(error.get("stack") or "", sources)
+    message = _message(error)
+    return TestOutcome(
+        name=f"{rel} > (unhandled error)",
+        file=rel,
+        line=frames[0].line if frames else None,
+        status="error",
+        message=message,
+        traceback=render_frames(frames) or message,
+        frames=tuple(frames),
+    )
+
+
 def _outcome(rel: str, record: dict, sources: "_Sources") -> TestOutcome:
     """One page-side result as a report outcome."""
     name = f"{rel} > {record['name']}"
@@ -957,7 +1014,18 @@ async def _run_file(
     console: dict[str, int] = {}
     refused: dict[str, None] = {}
     misses: list[str] = []
+    page_errors: list[dict] = []
     started = time.perf_counter()
+
+    def _page_error(e: Any) -> None:
+        if len(page_errors) < 20:
+            page_errors.append(
+                {
+                    "name": getattr(e, "name", "") or "Error",
+                    "message": getattr(e, "message", None) or str(e),
+                    "stack": getattr(e, "stack", "") or "",
+                }
+            )
 
     def _console(message: Any) -> None:
         line = f"[{message.type}] {message.text}"
@@ -1034,6 +1102,7 @@ async def _run_file(
             )
             page = await context.new_page()
             page.on("console", _console)
+            page.on("pageerror", _page_error)
             await context.route("**/*", route_handler)
             try:
                 await page.goto(BASE_URL, timeout=load_timeout_ms)
@@ -1093,11 +1162,20 @@ async def _run_file(
                     collection_error=message,
                     frames=tuple(frames),
                 )
+            outcomes = [_outcome(rel, record, sources) for record in payload["results"]]
+            # What no test was running to be charged with: a module-scope
+            # rejection, a timer that outlived the test that set it.
+            # Playwright's own pageerror is the backstop for anything the
+            # page's listeners could not attribute, and is used only when
+            # the harness accounted for nothing — otherwise the same
+            # failure would be reported twice.
+            unattributed = list(payload.get("stray") or ())
+            if not unattributed and not any(o.status != "passed" for o in outcomes):
+                unattributed = page_errors
+            outcomes.extend(_unhandled(rel, record, sources) for record in unattributed)
             return FileResult(
                 file=rel,
-                outcomes=tuple(
-                    _outcome(rel, record, sources) for record in payload["results"]
-                ),
+                outcomes=tuple(outcomes),
                 duration=time.perf_counter() - started,
                 collected=int(payload.get("collected") or 0),
                 console=_lines(console),

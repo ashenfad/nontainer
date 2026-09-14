@@ -437,34 +437,43 @@ def render_report(report: TestReport, *, verbose: bool = False) -> str:
 
     out: list[str] = []
     for path, group in _by_file(report):
-        suite = [o for o in group if o.status == "error"]
+        broken = [o for o in group if o.status == "error"]
         tests = [o for o in group if o.status != "error"]
         bad = [o for o in tests if o.status == "failed"]
         duration = _ms(sum(o.duration for o in group))
-        if suite:
-            out.append(f" ❯ {path} (0 tests) {duration}")
-            continue
+        mark = "✓" if not bad and not broken else "❯"
+        # A file that ran tests AND carried an error reports both: an
+        # unhandled rejection does not un-run what already passed, and a
+        # "(0 tests)" line there would hide work that was done.
         counts = f"{len(tests)} test{'' if len(tests) == 1 else 's'}"
         if bad:
-            out.append(f" ❯ {path} ({counts} | {len(bad)} failed) {duration}")
-        else:
-            out.append(f" ✓ {path} ({counts}) {duration}")
+            counts += f" | {len(bad)} failed"
+        out.append(f" {mark} {path} ({counts}) {duration}")
         for o in tests:
             if verbose:
-                mark = "✓" if o.status == "passed" else "×"
-                out.append(f"   {mark} {_short(o)} {_ms(o.duration)}")
+                out.append(
+                    f"   {'✓' if o.status == 'passed' else '×'} "
+                    f"{_short(o)} {_ms(o.duration)}"
+                )
             elif o.status == "failed":
                 out.append(f"   × {_short(o)}")
 
-    suites = [o for o in report.outcomes if o.status == "error"]
-    if suites:
+    # A file that would not load at all, and an error no test was
+    # running to be charged with, are different repairs — the first is
+    # the file's own code, the second is work a test started and left
+    # behind — so they are not one list.
+    suites = [o for o in report.outcomes if o.status == "error" and o.name == o.file]
+    unhandled = [o for o in report.outcomes if o.status == "error" and o.name != o.file]
+    for title, group in (("Failed Suites", suites), ("Unhandled Errors", unhandled)):
+        if not group:
+            continue
         out.append("")
-        out.append(_sep(f"Failed Suites {len(suites)}"))
-        for o in suites:
+        out.append(_sep(f"{title} {len(group)}"))
+        for o in group:
             out.append("")
             out.append(f" FAIL  {o.file}")
             out.append(o.message or "")
-            if o.traceback:
+            if o.traceback and o.traceback != o.message:
                 out.append(o.traceback)
         out.append("")
         out.append(_sep(""))
