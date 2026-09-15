@@ -243,17 +243,20 @@ class Sessions:
         collision there is settled with a numeric suffix.
         ``paths`` narrows what the child's filesystem shows without
         narrowing its branch, and
-        ``inherit`` decides whether this session's conversation comes
-        along (``"fresh"`` here, where the child is starting work of
-        its own, against ``fork``'s own ``"full"`` default).
+        ``inherit`` decides whether the conversation at the fork point
+        comes along (``"fresh"`` here, where the child is starting work
+        of its own, against ``fork``'s own ``"full"`` default).
 
         ``fork_from`` starts the child somewhere else: a commit named by a
         store tag, or spelled ``session@commit`` (a short commit id and
         a session's own tag resolve here the way they do for every
         other verb). The child is forked THERE rather than here, and
-        the branch it came from is only read. ``inherit`` must be
-        ``"fresh"`` then, because the conversation at that fork point
-        is not this session's to continue.
+        the branch it came from is only read. ``inherit`` decides what
+        the child arrives with: ``"fresh"`` gives it a conversation of
+        its own over that state, and ``"full"`` gives it the
+        conversation the fork point holds — the delegate is then the
+        agent that was there, as of that commit, and the task is its
+        next turn.
 
         ``resume`` gives a new task to a child this session already
         has: the same branch with its conversation kept, and no second
@@ -274,12 +277,11 @@ class Sessions:
         """
         self._check_open()
         started = time.time()
-        if inherit != "fresh" and (fork_from is not None or resume is not None):
+        if inherit != "fresh" and resume is not None:
             raise SessionsError(
-                "inherit must be 'fresh' here: the conversation at another fork "
-                "point is not this session's to continue, and a child resumed "
-                "keeps the conversation it has. A brief is content the task "
-                "carries"
+                "inherit must be 'fresh' when resuming: a child resumed keeps "
+                "the conversation it already has, and there is no second fork "
+                "to seed. A brief is content the task carries"
             )
         resuming = resume is not None
         if resume is not None:

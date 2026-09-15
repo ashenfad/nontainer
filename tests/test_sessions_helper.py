@@ -22,6 +22,7 @@ from nontainer import (
     Store,
     WorkspaceError,
 )
+from nontainer.planes import CONVERSATION_PREFIX
 from nontainer.sessions import (
     SEPARATOR,
     Sessions,
@@ -583,14 +584,27 @@ def fork_point(store):
     store tag naming it. Returns the commit.
 
     The tree is deliberately not the parent's, so a fork of it can be
-    told apart from a fork of the asking session.
+    told apart from a fork of the asking session, and the session
+    carries a conversation of its own, so a fork can be asked to
+    continue one that was never the asker's.
     """
     ws = store.open("sage")
     ws.files.write("/workspace/rates.md", "# Rates\n\nnorth 4, south 7\n")
+    ws._provider.kv[f"{CONVERSATION_PREFIX}runs/1"] = b"what are the rates?"
     ws.index.commit("curated")
     commit = store.tags.add(ws, "rates-2026")
     ws.close()
     return commit
+
+
+def _conversation(store, session):
+    """The conversation keys stored on a branch, by key."""
+    ws = store.open(session)
+    try:
+        kv = ws._provider.kv
+        return {k: kv[k] for k in kv if k.startswith(CONVERSATION_PREFIX)}
+    finally:
+        ws.close()
 
 
 def test_a_job_forked_from_this_session_names_no_origin():
@@ -655,12 +669,105 @@ def test_ask_from_refuses_a_fork_point_nothing_names(parent, store, fork_point):
             sessions.ask("q", fork_from="sage@abcdef1")
 
 
-def test_ask_from_refuses_to_carry_your_conversation(parent, store, fork_point):
-    """A conversation that is not yours cannot be continued, so a fork
-    from somewhere else starts one of its own."""
+def test_ask_from_elsewhere_starts_a_fresh_conversation_by_default(
+    parent, store, fork_point
+):
+    """The default is a delegate that starts a chat of its own over
+    that state: the conversation stored at the fork point is dropped on
+    the child's first commit."""
     with Sessions(parent, Scripted(store, {})) as sessions:
-        with pytest.raises(SessionsError, match="fresh"):
-            sessions.ask("q", fork_from="rates-2026", inherit="full")
+        answer = sessions.ask("what is north?", fork_from="rates-2026", wait=True)
+
+    assert _conversation(store, answer.branch) == {}
+
+
+def test_ask_from_elsewhere_can_continue_that_conversation(parent, store, fork_point):
+    """``inherit="full"`` with a fork point makes the delegate the agent
+    that was there as of that commit: the conversation the fork point
+    holds comes with the branch, and the task is its next turn."""
+    runner = Scripted(store, {}, text="south is 7")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask(
+            "and south?", fork_from="rates-2026", inherit="full", wait=True
+        )
+
+    assert _conversation(store, answer.branch) == {
+        f"{CONVERSATION_PREFIX}runs/1": b"what are the rates?"
+    }
+    assert answer.text == "south is 7"
+
+
+def test_a_full_inherit_from_a_session_ref_carries_that_commit(
+    parent, store, fork_point
+):
+    """The conversation is the one stored AT the fork point, whichever
+    spelling named it."""
+    later = store.open("sage")
+    later._provider.kv[f"{CONVERSATION_PREFIX}runs/2"] = b"said after the tag"
+    later.files.write("/workspace/rates.md", "# Rates\n\nnorth 9, south 7\n")
+    later.index.commit("kept talking")
+    later.close()
+
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask(
+            "and south?", fork_from=f"sage@{fork_point}", inherit="full", wait=True
+        )
+
+    assert _conversation(store, answer.branch) == {
+        f"{CONVERSATION_PREFIX}runs/1": b"what are the rates?"
+    }
+
+
+def test_a_full_inherit_reads_a_fork_point_whose_session_is_gone(
+    parent, store, fork_point
+):
+    """A store tag holds its commit, so the agent that was there can be
+    cloned long after its session is deleted — the reason a publication
+    tags the state it came from."""
+    store.delete("sage")
+    assert "sage" not in store.sessions()
+
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask(
+            "and south?", fork_from="rates-2026", inherit="full", wait=True
+        )
+
+    assert _conversation(store, answer.branch) == {
+        f"{CONVERSATION_PREFIX}runs/1": b"what are the rates?"
+    }
+    child = store.open(answer.branch)
+    try:
+        assert child.files.read("/workspace/rates.md").decode().endswith("south 7\n")
+    finally:
+        child.close()
+
+
+def test_resume_refuses_a_conversation_it_would_replace(parent, store):
+    """A resumed child keeps the conversation it has: there is no
+    second fork to seed, so the refusal names resume."""
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask("one", wait=True)
+        with pytest.raises(SessionsError, match="when resuming"):
+            sessions.ask("two", resume=answer.branch, inherit="full")
+
+
+def test_the_tool_asks_from_elsewhere_with_the_conversation(parent, store, fork_point):
+    """The tool path takes the pair the host verb takes."""
+    with Sessions(parent, Scripted(store, {}, text="south is 7")) as sessions:
+        out = run_action(
+            sessions,
+            "ask",
+            task="and south?",
+            fork_from="rates-2026",
+            inherit="full",
+            wait=True,
+        )
+        branch = sessions.list()[0].name
+
+    assert "south is 7" in out
+    assert _conversation(store, branch) == {
+        f"{CONVERSATION_PREFIX}runs/1": b"what are the rates?"
+    }
 
 
 def test_the_source_branch_is_untouched_by_an_ask_from_it(parent, store, fork_point):
@@ -1023,8 +1130,8 @@ def test_the_tool_says_what_an_ask_cannot_do(parent, store, fork_point):
         assert "no job named" in run_action(
             sessions, "ask", task="q", resume="analyst.nobody"
         )
-        assert "fresh" in run_action(
-            sessions, "ask", task="q", fork_from="rates-2026", inherit="full"
+        assert "when resuming" in run_action(
+            sessions, "ask", task="q", resume="analyst.nobody", inherit="full"
         )
 
 

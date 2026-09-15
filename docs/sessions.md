@@ -79,6 +79,7 @@ starts, and whether it starts a conversation.
 ```python
 sessions.ask("what is north?", fork_from="rates-2026", wait=True)
 answer = sessions.ask("read it", fork_from="sage@a3f9c2e", wait=True)
+sessions.ask("one like it", fork_from="myapp/v1", inherit="full", wait=True)
 sessions.ask("and south?", resume=answer.branch, wait=True)
 ```
 
@@ -90,9 +91,18 @@ read resolves one, so a short commit id and a session's own ws-git tag
 are spellings this takes too; anything with no `@` in it is a store
 tag. The child is forked THERE rather than here, and the branch it
 came from is only read: every ask forks, and the child is what the
-runner drives. `inherit` must be `"fresh"` with a fork point, and says
-so when it is not — a conversation at somebody else's commit is not
-this session's to continue.
+runner drives.
+
+`inherit` says what the child arrives with, and both values mean
+something with a fork point. `"fresh"`, the default, is a delegate
+that starts a chat of its own over that state. `"full"` keeps the
+conversation the fork point holds: the delegate is then the agent that
+was there, as of that commit, and the task is its next turn — which is
+how you ask the author of a published app for another one like it,
+long after the session that built it is gone (the commit is readable
+for as long as a store tag names it). What a fork inherits is the
+conversation at the FORK POINT, not this session's, so a full inherit
+from elsewhere carries none of yours.
 
 A fork point outside the asker's own history shares none with it, so
 that child's branch holds the other state's whole tree, and a merge of
@@ -110,8 +120,9 @@ that belongs to the CHILD carries over — where it was forked from, its
 base, whether it is `keep`-flagged — and only the run is new: the
 task, the status, the answer, the timings. A fork point that the child
 did not come from is refused, since a child answers from the state
-whose conversation it carries, and `inherit` must stay `"fresh"` for
-the same reason.
+whose conversation it carries, and `inherit` must stay `"fresh"`
+there: a resumed child keeps the conversation it has, and there is no
+second fork to seed.
 
 A child does **one task at a time**. A run still in flight refuses the
 next one, and it is in flight until its runner stops — `cancel`
