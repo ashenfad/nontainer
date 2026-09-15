@@ -2,8 +2,11 @@
 
 ``WorkspaceProvider`` (below) is the substrate seam; ``Executor``
 (further down) is the execution seam. ``SessionRunner`` and
-``HostObjectFactory`` are the loop seam — declared here, unused until
-the sessions verbs land.
+``HostObjectFactory`` are the loop seam: ``SessionRunner`` is what
+``nontainer.sessions`` hands each delegation to, so an embedder's agent
+loop is the implementation; ``HostObjectFactory`` names the shape for
+deciding which host objects a child may reach and is called by nothing
+yet.
 
 A provider supplies three things:
 
@@ -21,15 +24,15 @@ Providers are session-scoped: one provider instance == one session's
 world. Session resolution (e.g. "kvgit branch per session id") happens
 in the factory that builds the provider, not here.
 
-Planned implementations:
+The three that ship, under ``nontainer.providers``:
 
 - ``KvgitProvider``   (default) — kvgit ``Staged`` per session branch.
-  staging=True, cheap_fork=True, merge=True, tags=True.
+  staging=True, cheap_fork=True, merge=True, tags=True, index=True.
 - ``DirProvider``     — a real directory via monkeyfs ``IsolatedFS``.
   versioned=False; the tools work, the time-travel verbs raise.
-- ``AgentFSProvider`` (spike) — Turso AgentFS via its Python SDK.
-  sql_audit=True, fuse=True (opt-in mount); fork by file copy
-  (cheap_fork=False).
+- ``AgentFSProvider`` (spike, the ``[agentfs]`` extra) — Turso AgentFS
+  via its Python SDK. sql_audit=True, fuse_mount=True (opt-in);
+  versioning is not wired, so the commit verbs raise there too.
 
 Concurrency note: providers are NOT thread-safe, and don't need to
 be — ``Workspace`` owns the single-writer invariant: its mutating

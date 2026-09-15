@@ -1747,7 +1747,7 @@ class Workspace:
         read-only call observed, since reads never move it. ``None``
         for unversioned providers. Caveat: staged-but-uncommitted
         changes (turn mode, manual ``ws.files.fs`` writes) are NOT in the
-        head — check :attr:`dirty`; the pin is exact iff clean."""
+        head — check :attr:`uncommitted`; the pin is exact iff clean."""
         if not self._provider.caps.versioned:
             return None
         return self._provider.head
@@ -1760,7 +1760,7 @@ class Workspace:
         from; a session id alone names a moving head. The ref is the
         pair, and it is what a snapshot, a publication or a
         cross-session read quotes. Exact iff clean — staged changes are
-        in no commit, so check :attr:`dirty` first."""
+        in no commit, so check :attr:`uncommitted` first."""
         from .store import Ref
 
         head = self.head
@@ -3234,7 +3234,7 @@ class Workspace:
         spelling and a published store tag needs no extra argument — or
         a commit id, or a :class:`~nontainer.store.Ref`, whose commit is
         used. The comparison ends at the current head, so
-        staged-but-uncommitted work is not in it (check :attr:`dirty`).
+        staged-but-uncommitted work is not in it (check :attr:`uncommitted`).
 
         A provider that versions without naming commits answers this
         too: the name lookup is what ``caps.tags`` gates, and without
