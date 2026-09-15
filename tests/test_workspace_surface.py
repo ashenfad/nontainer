@@ -143,3 +143,26 @@ def test_factory_workspace_has_a_store(tmp_path):
     assert isinstance(ws.store, Store)
     assert ws.store.sessions() == ["solo"]
     ws.close()
+
+
+def test_ws_log_is_a_list():
+    """``ws.log()`` and ``ws.index.log()`` are one shape: a caller
+    counts entries, indexes them and reads them twice without
+    remembering which one hands back a generator."""
+    ws = Workspace(KvgitProvider.open(None, session="logs"))
+    try:
+        ws.files.write("a.txt", "one")
+        ws.index.commit("first")
+        ws.files.write("b.txt", "two")
+        for kind in ("work", "agent", "all"):
+            entries = ws.log(kind=kind)
+            assert isinstance(entries, list), kind
+            assert len(entries) == len(list(entries)), kind  # reads twice
+        assert len(ws.log(limit=1)) == 1
+        assert ws.log(limit=0) == []
+        assert ws.log(kind="all", limit=0) == []
+        # what one consumer already writes, which a list answers the same
+        assert next(iter(ws.log(limit=1)), None) == ws.log(limit=1)[0]
+        assert ws.log()[0].id == ws.head
+    finally:
+        ws.close()

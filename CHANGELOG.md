@@ -211,6 +211,11 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **`ws.log()` is a list**, the shape `ws.index.log()` already had, so
+  `len()` works, an entry can be indexed and the same log reads twice.
+  It was a generator, which meant the two logs on one workspace
+  answered differently and a caller had to remember which. With no
+  `limit` it is the whole branch, read and held.
 - **A plotly spec dict is encoded the way a plotly figure is.** Both
   spellings go through plotly's own encoder, landing on
   `ui/<name>.plotly.json`, where one from `fig.to_dict()` holds NumPy
