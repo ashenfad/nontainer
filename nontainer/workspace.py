@@ -302,6 +302,30 @@ class WriteOutcome:
 
 
 @dataclass(frozen=True)
+class RemoveOutcome:
+    """Outcome of ``files.remove``.
+
+    Its own record rather than a ``WriteOutcome`` with the fields
+    inverted: a removal writes no bytes and creates nothing, and a
+    ``size`` documented as "bytes written" would be describing the
+    opposite of what happened.
+    """
+
+    path: str
+    """Workspace path removed."""
+
+    size: int
+    """Bytes the file held."""
+
+    commit: str | None = None
+    """Commit created by this call's autocommit (``None`` when
+    nothing was committed) — see ``TerminalResult.commit``."""
+
+    def __str__(self) -> str:  # f"removed {outcome}" reads as the path
+        return self.path
+
+
+@dataclass(frozen=True)
 class PythonConfig:
     """What sandboxed code may touch. Frozen at workspace construction.
 
@@ -948,6 +972,49 @@ class WorkspaceFiles:
                 if cp:
                     outcome = replace(outcome, commit=cp)
             return outcome
+
+    def remove(self, path: str) -> RemoveOutcome:
+        """Delete a file. Committed, like a write.
+
+        The same operation ``write`` is, spelled the other way: the
+        workspace's single-writer lock is held for the call, the view
+        rule refuses a path this session cannot see, and the commit
+        flow runs when it lands — so a deletion is a commit of its own
+        and the outcome names it, rather than sitting in the tree until
+        something else commits.
+
+        One FILE. A path naming a directory is refused with
+        ``IsADirectoryError``: a directory here is the shape of the
+        files under it, so removing one means removing them, which is
+        the shell's ``rm -r`` or a ``ws.checkout(ref, paths=)`` that
+        mirrors the directory as the ref has it. A path holding
+        nothing raises ``FileNotFoundError``, the way ``read`` does —
+        absence is the caller's to check with ``exists``.
+        """
+        ws = self._ws
+        with ws._lock:
+            ws._check_open()
+            ws._check_writable("file_remove")
+            if ws._fs.isdir(path):
+                raise IsADirectoryError(
+                    f"{path!r} is a directory: files.remove takes one file. "
+                    "A directory is the shape of the files under it, so "
+                    "emptying one is 'rm -r' in the terminal, or "
+                    "ws.checkout(ref, paths=[...]) to make it match a ref."
+                )
+            if not ws._fs.exists(path):
+                raise FileNotFoundError(path)
+            ws._refuse_hidden([path])
+            size = len(ws._fs.read(path))
+            ws._fs.remove(path)
+            # host-side write behind the executor's back: flag it, and
+            # the next execution syncs (no-op for LocalExecutor)
+            ws._mark_executor_stale()
+            return RemoveOutcome(
+                path=path,
+                size=size,
+                commit=ws._maybe_commit("file_remove"),
+            )
 
     def put(self, src: str | Path, dest: str | None = None) -> WriteOutcome:
         """Copy a host file INTO the workspace ("upload").

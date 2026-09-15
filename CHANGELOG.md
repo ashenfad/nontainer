@@ -211,6 +211,18 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **`ws.files.remove(path)`.** The file surface could write, edit and
+  put, and the only way to delete was `ws.files.fs.remove`, which
+  bypasses the lock, the view rule and the commit flow — so a host-side
+  deletion sat in the tree until something else happened to commit, and
+  nothing refused it on a frozen workspace by name. `remove` is
+  `write`'s other half: one file, the lock held, a path the session
+  cannot see refused, and a `RemoveOutcome` naming the commit it made.
+  Its own record rather than a `WriteOutcome`, whose `size` means bytes
+  written. A directory is refused — a directory here is the shape of
+  the files under it, so emptying one is `rm -r` or a checkout that
+  mirrors it — and a path holding nothing raises `FileNotFoundError`,
+  the way `read` does.
 - **`register_wsgit(ws)` says whether the agent can type `ws-git`.**
   It returned `None` whether it had installed the verb or quietly
   declined to, so an embedder building a primer around the verb had to

@@ -10,6 +10,13 @@ def make_ws(**kwargs) -> Workspace:
     return Workspace(KvgitProvider.open(None, session="s1"), **kwargs)
 
 
+@pytest.fixture
+def kv_ws():
+    ws = make_ws()
+    yield ws
+    ws.close()
+
+
 def test_workspace_write_and_edit_file():
     ws = make_ws()
     ws.files.write("src/app.py", "def main():\n    return 1\n")
@@ -123,3 +130,59 @@ def test_files_export_is_the_providers_mount(monkeypatch):
             assert real == Path("/tmp/exported")
     finally:
         ws.close()
+
+
+# -- remove ------------------------------------------------------------------
+
+
+def test_remove_deletes_a_file_and_commits(kv_ws):
+    ws = kv_ws
+    ws.files.write("notes/a.txt", "one")
+    before = ws.head
+    outcome = ws.files.remove("notes/a.txt")
+    assert outcome.path == "notes/a.txt"
+    assert outcome.size == 3
+    assert str(outcome) == "notes/a.txt"
+    assert outcome.commit and outcome.commit != before
+    assert not ws.files.exists("notes/a.txt")
+    # the removal is in the commit the outcome names, not only in the tree
+    assert "/workspace/notes/a.txt" in ws.diff(before, outcome.commit).removed
+
+
+def test_remove_is_visible_to_the_tools(kv_ws):
+    ws = kv_ws
+    ws.files.write("gone.txt", "x")
+    ws.files.remove("gone.txt")
+    assert ws.terminal("cat gone.txt").exit_code != 0
+    assert (
+        ws.run_python("import os; ok = os.path.exists('gone.txt')").namespace["ok"]
+        is False
+    )
+
+
+def test_remove_refuses_a_missing_path(kv_ws):
+    with pytest.raises(FileNotFoundError):
+        kv_ws.files.remove("never.txt")
+
+
+def test_remove_refuses_a_directory(kv_ws):
+    ws = kv_ws
+    ws.files.write("pkg/a.py", "x")
+    with pytest.raises(IsADirectoryError):
+        ws.files.remove("pkg")
+    assert ws.files.exists("pkg/a.py")
+
+
+def test_remove_is_refused_on_a_frozen_workspace(kv_ws):
+    from nontainer import NotSupportedError
+
+    ws = kv_ws
+    ws.files.write("a.txt", "one")
+    ws.tags.add("v1")
+    snap = ws.tags.at("v1")
+    try:
+        with pytest.raises(NotSupportedError):
+            snap.files.remove("a.txt")
+        assert snap.files.exists("a.txt")
+    finally:
+        snap.close()

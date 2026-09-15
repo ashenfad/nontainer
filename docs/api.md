@@ -441,7 +441,7 @@ says which seam it belongs to:
 
 | | holds | |
 |---|---|---|
-| `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
+| `ws.files` | the file surface | read / write / edit / remove / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
 | `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout |
 | `ws.index.tags` | the agent's own bookmarks | add / list / info / delete |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
@@ -521,6 +521,11 @@ class PythonResult:
 class WriteOutcome:                     # from files.write / files.put
     path: str; size: int; created: bool
     commit: str | None = None
+
+@dataclass(frozen=True)
+class RemoveOutcome:                    # from files.remove
+    path: str; size: int               # the bytes the file HELD
+    commit: str | None = None
 ```
 
 Every mutating call's result pins the commit its autocommit
@@ -558,6 +563,11 @@ ws.files.edit(path, old, new, replace_all=False) -> EditOutcome
     # Unique-match-or-replace_all; WorkspaceError with a "did you mean
     # these lines?" snippet otherwise. Carries `commit` when the
     # edit committed.
+ws.files.remove(path) -> RemoveOutcome        # delete one file (committed)
+    # the view rule and the commit flow that `write` gets, spelled the
+    # other way. A directory is refused (IsADirectoryError) — emptying
+    # one is `rm -r` in the terminal or a checkout that mirrors it; a
+    # path holding nothing raises FileNotFoundError, as `read` does.
 ws.files.put(src, dest=None) -> WriteOutcome # host file → workspace (committed)
 ws.files.get(src, dest=None) -> bytes        # workspace → host (never commits)
 ws.files.read_artifact(path) -> bytes | None # unreadable IS the answer
