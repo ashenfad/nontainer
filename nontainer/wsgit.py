@@ -238,17 +238,22 @@ FERRY = FerrySpec(
 def register_wsgit(ws: Any) -> None:
     """Register the ``ws-git`` terminal builtin on a workspace.
 
-    Follows the ``enable_apps``/``register_command`` pattern. No-op
-    where the executor cannot run commands (the gate doubles as the
-    primer gate: agents on such executors are never told about
-    terminal builtins). A dud-backed executor reports
-    ``supports_commands`` False (real bash has no registry) yet
-    ferries the verbs to the guest another way — detected by the
-    capability flags, not by importing the executor (which would
-    cycle).
+    Follows the ``enable_apps``/``register_command`` pattern. Two doors
+    lead here — an embedder wiring a workspace, and the rebind a
+    fork/snapshot runs to rebuild the verb bound to itself — so a
+    second call is a no-op rather than a duplicate-name error.
+
+    No-op as well where the executor cannot run commands (the gate
+    doubles as the primer gate: agents on such executors are never told
+    about terminal builtins). A dud-backed executor reports
+    ``supports_commands`` False (real bash has no registry) yet ferries
+    the verbs to the guest another way — detected by the capability
+    flags, not by importing the executor (which would cycle).
     """
     rt = ws.runtime
     if not rt.supports_commands and not rt.supports_ws_verbs:
+        return
+    if "ws-git" in rt.commands:
         return
     # Tags OUR registration and carries the ferry spec: the dud relay
     # must not front a user's own ``ws-git`` command (the ws-* prefix

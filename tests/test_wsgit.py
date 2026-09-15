@@ -614,7 +614,11 @@ def test_register_gated_on_supports_commands():
         supports_commands = True
         supports_ws_verbs = False
 
+        def __init__(self):
+            self.commands = {}
+
         def register_command(self, name, fn, *, rebind=None):
+            self.commands[name] = fn
             seen.append((name, fn, rebind))
 
     class FakeWs:
@@ -623,10 +627,14 @@ def test_register_gated_on_supports_commands():
         def __init__(self):
             self.runtime = FakeRuntime()
 
-    register_wsgit(FakeWs())
+    ws = FakeWs()
+    register_wsgit(ws)
     assert [name for name, _, _ in seen] == ["ws-git"]
     # Framework-owned: the rebind factory travels with the registration.
     assert [rebind for _, _, rebind in seen] == [register_wsgit]
+    # A second call finds the verb already there and adds nothing.
+    register_wsgit(ws)
+    assert [name for name, _, _ in seen] == ["ws-git"]
 
     class DeafWs(FakeWs):
         def __init__(self):

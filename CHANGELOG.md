@@ -211,6 +211,17 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **Wiring a workspace twice is a no-op, and a fork counts as wired.**
+  `enable_apps` and `register_wsgit` refused a second call with
+  `Terminal command already registered`, which a fork walked straight
+  into: a child rebuilds the app loop and the ws-git verb bound to
+  itself as part of the fork, so `enable_apps(ws.fork("c"), cfg)` — the
+  obvious way to give a delegate an app — raised. Both are no-ops now
+  where the command is already there, `enable_apps` hands back the
+  runtime the workspace already carries rather than dropping it for a
+  second one, and `nontainer.apps.app_runtime(ws)` answers what a
+  workspace is wired with. The config of the first wiring is the one
+  that stands.
 - **One `except` clause holds the package.** `CacheError` and
   `HarvestLost` were a bare `ValueError` and a bare `RuntimeError`, so
   an embedder catching `WorkspaceError` missed a cache write it could
