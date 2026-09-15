@@ -23,11 +23,10 @@ import json
 import posixpath
 import re
 import time
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from weakref import WeakKeyDictionary
 
 from ..executor import ViewSpec
 from ..workspace import Workspace
@@ -765,21 +764,20 @@ class AppRuntime:
                 )
 
 
-#: The app runtime each workspace is wired with, so a second
-#: ``enable_apps`` finds it instead of colliding with its own
-#: ``ws-curl``. Weak-keyed: a workspace that goes away takes its entry
-#: with it, and the runtime holds the workspace, never the other way
-#: about.
-_RUNTIMES: "MutableMapping[Workspace, AppRuntime]" = WeakKeyDictionary()
-
-
 def app_runtime(ws: Workspace) -> "AppRuntime | None":
     """The app runtime this workspace is wired with, or ``None``.
 
-    A fork rebuilds the loop bound to itself, so a child has one
-    without anybody having called ``enable_apps`` on it.
+    Read off the ``ws-curl`` command registered on the workspace's
+    runtime, which is where the association lives: the command closure
+    holds the runtime, the workspace holds its commands, and nothing
+    else holds either. So a workspace dropped by its embedder takes its
+    runtime with it, where a registry keyed on workspaces would keep
+    both alive through the runtime's own reference back. A fork
+    rebuilds the loop bound to itself, so a child has one without
+    anybody having called ``enable_apps`` on it.
     """
-    return _RUNTIMES.get(ws)
+    command = ws.runtime.commands.get("ws-curl")
+    return getattr(command, "app_runtime", None)
 
 
 def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
@@ -803,14 +801,13 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     # Framework-owned: a fork/snapshot rebuilds its own runtime bound
     # to itself instead of inheriting the parent-bound closure.
     def _register(target: Workspace) -> AppRuntime:
-        existing = _RUNTIMES.get(target)
+        existing = app_runtime(target)
         if existing is not None:
             return existing
         target_runtime = AppRuntime(target, config)
-        _RUNTIMES[target] = target_runtime
-        target.runtime.register_command(
-            "ws-curl", make_curl_command(target_runtime), rebind=_register
-        )
+        curl = make_curl_command(target_runtime)
+        curl.app_runtime = target_runtime
+        target.runtime.register_command("ws-curl", curl, rebind=_register)
         # The canonical origin form needs the value in the shell, on
         # every rung: termish expands it, dud guests get it exported.
         origin = config.origin if config is not None else AppsConfig.origin
