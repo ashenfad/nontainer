@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A store tag is a ref.** The verbs that read one take a store tag
+  wherever they take `<session>@<commit>`: `ws-git worktree add <dir>
+  <tag>`, `checkout <tag> -- <paths>`, `diff <tag>`, `log <tag>`,
+  `show <tag>`, and on the host `ws.expand_ref`, `ws.files.attach`,
+  `ws.checkout(tag, paths=[...])` and `store.resolve`. Such a ref names
+  a commit and no session — it carries the tag where a session would go
+  and reads frozen — so a tagged state is still mountable, takeable and
+  diffable after the session that reached it is deleted, which is what
+  tagging one is for. A bare name is a session first and a store tag
+  second; the verbs that write to a named branch (`merge`,
+  `cherry-pick`) take none, since a tag has no branch to come from.
 ## 0.7.1 - 2026-09-15
 
 ### Fixed

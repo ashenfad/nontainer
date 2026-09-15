@@ -45,6 +45,14 @@ wherever cheap; each deviation carries a recorded reason:
   the session's history is append-only and reaches every commit the
   agent made, so there is nothing for a tag to pin. It dies with the
   session, a fork starts with none, and a merge brings none over.
+- A **store tag** is a ref the read verbs take (``diff``, ``log``,
+  ``show``, ``checkout <ref> -- <paths>``, ``worktree add``). It names
+  a commit and no branch, so it reads frozen and goes on reading after
+  the session that reached that commit is deleted — which is why one
+  is made. The verbs that write take none: there is nothing for
+  ``merge`` to come from, for ``cherry-pick`` to name a session with,
+  or for a stash to land on. A bare name is a session first and a
+  store tag second, since a session is what ``ws-git branch`` lists.
 - ``stash`` is a fork and a checkout: the work goes to a branch of its
   own (``<session>.stash-N``, forked at the head so the branch holds
   the CHANGE) and the tree is restored to the head. A pop is the merge
@@ -119,7 +127,8 @@ _SUPPORTED = (
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge (<session> | --abort) | revert <commit> | "
     "cherry-pick <session>@<commit> | "
-    "worktree (add <dir> <session>[@<commit>] | list | remove <dir>) | "
+    "worktree (add <dir> <session>[@<commit>] | <tag> | list | "
+    "remove <dir>) | "
     "sparse-checkout [list] | help"
 )
 # Movie-set edge: name the missing corner in git's own terms plus the
@@ -134,7 +143,7 @@ _EDGE = {
 }
 
 #: The three forms, printed by a bare ``ws-git worktree``.
-_WORKTREE_FORMS = """usage: ws-git worktree add <dir> <session>[@<commit>]
+_WORKTREE_FORMS = """usage: ws-git worktree add <dir> (<session>[@<commit>] | <tag>)
        ws-git worktree list
        ws-git worktree remove <dir>"""
 
@@ -155,19 +164,23 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     XY columns, then a worktrees: block
   diff [<session>] [--cached] [--check] [paths...]
                     unified diff against your last commit; --cached the
-                    staged set; a session name diffs against that
-                    session; --check finds leftover conflict markers
+                    staged set; a session name or a store tag diffs
+                    against that state; --check finds leftover conflict
+                    markers
   log [<session>] [-n N] [--all] [-S <string>]
                     your own commits, newest first; a session name
-                    shows that session's; --all every commit the
-                    selected session holds; -S the commits where
-                    <string> appeared (+) or vanished (-)
-  show <ref>        one commit: its message and its diff
+                    shows that session's and a store tag the tagged
+                    state's; --all every commit the selected session
+                    holds; -S the commits where <string> appeared (+)
+                    or vanished (-)
+  show <ref>        one commit: its message and its diff. A store tag
+                    shows the commit it names
   checkout <ref>    restore the tree to a commit of yours (the restore
                     is a new commit)
   checkout <ref> -- <paths>
                     make just those paths match that ref, which may
-                    name another session. A directory is mirrored
+                    name another session or a store tag. A directory is
+                    mirrored
   tag               your bookmarks, one "name -> commit" per line
   tag [-f] <name> [<commit>]
                     bookmark a commit of yours, your head by default.
@@ -199,11 +212,11 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   cherry-pick <session>@<commit>
                     a new commit applying one commit's change from
                     another session
-  worktree add <dir> <session>[@<commit>]
-                    check another session's tree out under <dir>,
-                    read-only, and read it with cat, ls and grep. It is
-                    pinned at a commit: to see newer work, remove it
-                    and add it again
+  worktree add <dir> (<session>[@<commit>] | <tag>)
+                    check another session's tree, or a tagged state,
+                    out under <dir>, read-only, and read it with cat,
+                    ls and grep. It is pinned at a commit: to see newer
+                    work, remove it and add it again
   worktree list     the worktrees here, one line each
   worktree remove <dir>
                     take one down
@@ -212,7 +225,10 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   help              this text
 
 A ref is HEAD, a commit id of seven hex characters or more, a session
-name, <session>@<commit>, or a tag of yours.
+name, <session>@<commit>, a tag of yours, or a store tag — a name the
+host gave a commit so that it outlives its session. A store tag reads
+frozen at that commit, and the verbs that read take one: diff, log,
+show, checkout <ref> -- <paths>, worktree add.
 
 While a merge is outstanding nothing else moves the tree: resolve the
 markers and commit, or ws-git merge --abort.
@@ -514,13 +530,32 @@ def _is_session(ws: Any, name: str) -> bool:
     return True
 
 
+def _store_tag_ref(ws: Any, word: str) -> Any:
+    """The ref a word names as a STORE TAG, or ``None``.
+
+    The second reading of a bare name, after a session: the two
+    namespaces may share one, and the session wins, since it is what
+    ``ws-git branch`` lists. A word with an ``@`` in it is a
+    ``<session>@<commit>`` and is never read as a tag.
+
+    Only the verbs that READ a ref take one. A store tag names a commit
+    and no branch, so there is nothing for a merge to come from, a
+    branch verb to delete, or a stash to land on.
+    """
+    if "@" in word or _is_session(ws, word):
+        return None
+    return ws._store_tag_ref(word)
+
+
 def _other_session(ws: Any, name: str) -> Any:
-    """A read handle on another session, opened for one verb.
+    """A read handle on another session, or on the frozen state a store
+    tag names, opened for one verb.
 
     Opened through the store rather than reached through this
     session's provider: a session is a workspace, and the verbs that
     read one (``log``) want the whole fiction over it, not a branch
-    handle. The caller closes it.
+    handle. A store tag has no branch at all, and opens as the frozen
+    snapshot it names. The caller closes it either way.
 
     At THIS session's root, because a lineage shares one: opening a
     session at a root it does not use creates that directory and can
@@ -532,6 +567,12 @@ def _other_session(ws: Any, name: str) -> Any:
         raise ValueError(
             f"cannot reach {name!r}: this session was not opened from a store"
         )
+    if _store_tag_ref(ws, name) is not None:
+        return store.tags.at(name, root=ws.root)
+    # A bare word was looked for in both namespaces, so the refusal
+    # names both; anything else is judged as the session it must be.
+    if "@" not in name and not _is_session(ws, name):
+        raise ValueError(ws._no_such_ref(name))
     ws._require_session(name, to_open=True)
     return store.open(name, root=ws.root)
 
@@ -1050,7 +1091,8 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
 
     if len(rest) != 2 or any(a.startswith("-") for a in rest):
         return _usage_error(
-            "worktree add takes a directory and a session (ws-git branch lists them)."
+            "worktree add takes a directory and a session (ws-git branch "
+            "lists them) or a store tag."
         )
     where, ref = rest
     point = _abspath(ctx, where)
@@ -1063,9 +1105,11 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 "another session, and this one is already your own tree."
             ),
         )
-    # The session before anything about the commit or the directory: a
-    # name nothing holds is the answer, not what it does not hold.
-    ws._require_session(session)  # a worktree reads, so a branch is enough
+    # What is being read before anything about the directory: a name
+    # nothing holds is the answer, not what it does not hold. A worktree
+    # reads, so a branch is enough — and a store tag needs none, which
+    # is what lets a tagged state be mounted after its session is gone.
+    wanted = ws._snapshot_ref(ref)
     held_here = ws.files.attachments()
     if point in held_here:
         # Adding over a live worktree cannot refresh it: what is pinned
@@ -1104,7 +1148,7 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 exit_code=1,
                 stderr=f"cannot add a worktree at {where!r}: {reason}.",
             )
-    landed = ws.files.attach(ref, point)
+    landed = ws.files.attach(wanted, point)
     ctx.stdout.write(f"worktree {_show(ws, point)}: {_short_ref(landed)} (read-only)\n")
     return None
 
@@ -1185,6 +1229,15 @@ def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
 
     if len(rest) != 1 or rest[0].startswith("-"):
         return _usage_error("show takes one ref (a commit from ws-git log).")
+    word = rest[0]
+    # This session's own spellings first, as the take form reads them:
+    # HEAD, a hash and a bookmark of this session's are states of its
+    # own, and a store tag that shared one of those names would take a
+    # verb about your history somewhere else entirely.
+    if word != "HEAD" and not HASH_RE.fullmatch(word) and word not in git.tags():
+        tagged = _store_tag_ref(ws, word)
+        if tagged is not None:
+            return _show_tagged(ws, ctx, word, tagged.commit)
     commit = git.resolve(rest[0])
     entry = git.entry(commit)
     if entry is None:
@@ -1203,6 +1256,40 @@ def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     lines.append("")
     ctx.stdout.write("\n".join(lines) + "\n")
     body = _render_diff(ws, sorted(want), old, new)
+    if body:
+        ctx.stdout.write("\n".join(body) + "\n")
+    return None
+
+
+def _show_tagged(ws: Any, ctx: Any, name: str, commit: str) -> Any:
+    """The commit a store tag names: its message and what it changed.
+
+    What shows is the ws-git commit the tagged state stands on, which
+    is what ``log`` of the same tag leads with. A tag may name a
+    commit of the framework's — it commits as work is written, for
+    durability — and such a commit holds the agent's last one and adds
+    nothing to it, so showing it would print an empty diff for a state
+    that has plenty in it.
+
+    The change is read the way ``cherry-pick`` reads one, against the
+    state the commit was composed on: the commit is on nobody's graph
+    here, and this session's history does not hold it.
+    """
+    from .agentgit import BLOB_KEY, parse_blob
+
+    head = parse_blob(ws._provider.key_at(commit, BLOB_KEY))["head"] or commit
+    entry = ws._change_commit(head)
+    base = ws._change_base(entry)
+    new = ws._provider.files_at(entry.id)
+    old = ws._provider.files_at(base) if base else {}
+    lines = [f"commit {entry.id} (tag: {name})"]
+    message = entry.info.get("message")
+    if message:
+        lines.append("")
+        lines.append(f"    {message}")
+    lines.append("")
+    ctx.stdout.write("\n".join(lines) + "\n")
+    body = _render_diff(ws, sorted(set(old) | set(new)), old, new)
     if body:
         ctx.stdout.write("\n".join(body) + "\n")
     return None
@@ -1271,8 +1358,9 @@ def _is_dir(ws: Any, path: str) -> bool:
 def _unknown_pathspec(
     git: AgentGit, ws: Any, words: list[str], paths: list[str]
 ) -> Any:
-    """Refuse a word that names neither a session nor anything in the
-    tree, instead of reading it as a pathspec that matches nothing.
+    """Refuse a word that names neither a session, nor a store tag, nor
+    anything in the tree, instead of reading it as a pathspec that
+    matches nothing.
 
     Silence means "no differences" here, and a mistyped session name
     would earn it — an agent asking about a delegate would read "no
@@ -1286,9 +1374,9 @@ def _unknown_pathspec(
         return CommandResult(
             exit_code=1,
             stderr=(
-                f"ambiguous argument {word!r}: unknown session or path. "
-                "ws-git branch lists the sessions; a pathspec has to name "
-                "something in your tree."
+                f"ambiguous argument {word!r}: unknown session, store tag "
+                "or path. ws-git branch lists the sessions; a pathspec has "
+                "to name something in your tree."
             ),
         )
     return None
@@ -1313,13 +1401,15 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     # two collide (name the file, not the branch), and the diff of
     # another session is always reachable as `ws-git diff <name>` from
     # a session that has no such file.
-    if words and not _names_a_path(git, ws, paths[0]) and _is_session(ws, words[0]):
-        if len(words) > 1 or cached or check:
-            return _usage_error(
-                "diff <session> takes no other argument (no pathspec, "
-                "--cached or --check against another session)."
-            )
-        return _diff_branch(git, ws, ctx, words[0])
+    if words and not _names_a_path(git, ws, paths[0]):
+        tagged = _store_tag_ref(ws, words[0])
+        if tagged is not None or _is_session(ws, words[0]):
+            if len(words) > 1 or cached or check:
+                return _usage_error(
+                    "diff <session> takes no other argument (no pathspec, "
+                    "--cached or --check against another session)."
+                )
+            return _diff_branch(git, ws, ctx, words[0], tagged)
     if paths:
         unknown = _unknown_pathspec(git, ws, words, paths)
         if unknown is not None:
@@ -1400,8 +1490,11 @@ def _diff_check(
     return None
 
 
-def _diff_branch(git: AgentGit, ws: Any, ctx: Any, name: str) -> Any:
-    """This session against another session's last commit.
+def _diff_branch(
+    git: AgentGit, ws: Any, ctx: Any, name: str, tagged: Any = None
+) -> Any:
+    """This session against another session's last commit, or against
+    the commit a store tag names.
 
     Grouped by the OTHER session's view when it has one: what a
     delegate was sent to do, then what else it touched. The merge takes
@@ -1410,7 +1503,7 @@ def _diff_branch(git: AgentGit, ws: Any, ctx: Any, name: str) -> Any:
     from .views import VIEW_KEY, parse_seed
 
     provider = ws._provider
-    theirs = git.source_commit(name)
+    theirs = tagged.commit if tagged is not None else git.source_commit(name)
     ours = git.head or provider.head
     old = provider.files_at(ours)
     new = provider.files_at(theirs)
