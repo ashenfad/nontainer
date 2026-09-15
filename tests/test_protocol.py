@@ -2,9 +2,12 @@ import pytest
 
 from nontainer import (
     Answer,
+    Capabilities,
     Job,
     SessionIdError,
     SessionRunner,
+    Workspace,
+    WorkspaceProvider,
     validate_session_id,
 )
 
@@ -83,3 +86,106 @@ def test_a_runner_returning_a_string_satisfies_the_protocol():
             return "done"
 
     assert isinstance(Scripted(), SessionRunner)
+
+
+# -- the substrate seam --------------------------------------------------------
+
+
+class _MinimalProvider:
+    """Every member ``WorkspaceProvider`` declares, and nothing else.
+
+    A third-party substrate written against the contract alone: if this
+    stops satisfying the protocol, the contract grew a member the
+    document did not mention.
+    """
+
+    session = "s"
+    caps = Capabilities()
+    fs = None
+    kv: dict = {}
+    dirty = False
+    head = "c0"
+    frozen = False
+    frozen_at = None
+
+    def commit(self, info=None): ...
+    def checkout(self, commit_id, *, info=None): ...
+    def history(self, *, limit=None): ...
+    def fork(self, name, *, at=None): ...
+    def discard(self): ...
+    def tag(self, name, *, at=None, info=None, scope="session"): ...
+    def check_tag(self, name, *, scope="session"): ...
+    def tags(self, *, scope="session"): ...
+    def tag_info(self, name, *, scope="session"): ...
+    def delete_tag(self, name, *, scope="session"): ...
+    def at_tag(self, name, *, scope="session"): ...
+    def diff(self, a, b): ...
+    def merge(self, source, *, at=None, info=None): ...
+    def apply(self, base, theirs, *, info=None): ...
+    def commit_at(self, commit, *, session=None): ...
+    def commit_keys(self, info=None, *, keys=()): ...
+    def files_at(self, commit): ...
+    def working_files(self): ...
+    def key_at(self, commit, key): ...
+    def branch_head(self, session): ...
+    def expand_commit(self, commit, *, session=None): ...
+    def mount(self): ...
+    def close(self): ...
+
+
+def test_a_minimal_provider_satisfies_the_protocol():
+    assert isinstance(_MinimalProvider(), WorkspaceProvider)
+
+
+@pytest.mark.parametrize(
+    "member",
+    ["branch_head", "key_at", "expand_commit", "frozen", "frozen_at", "commit_at"],
+)
+def test_the_protocol_names_every_member_core_calls(member):
+    """Core calls these without a getattr guard, so a provider missing
+    one is not a provider the framework can drive."""
+    assert member in WorkspaceProvider.__protocol_attrs__
+    body = {
+        k: v
+        for k, v in vars(_MinimalProvider).items()
+        if k != member and not k.startswith("__")
+    }
+    partial = type("Partial", (), body)
+    assert not isinstance(partial(), WorkspaceProvider)
+
+
+def test_the_bundled_providers_satisfy_the_protocol(tmp_path):
+    from nontainer.providers.dir import DirProvider
+    from nontainer.providers.kvgit import KvgitProvider
+
+    kv = KvgitProvider.open(None, session="s")
+    try:
+        assert isinstance(kv, WorkspaceProvider)
+    finally:
+        kv.close()
+    d = DirProvider(tmp_path / "dir", session="s")
+    try:
+        assert isinstance(d, WorkspaceProvider)
+    finally:
+        d.close()
+
+
+def test_an_unversioned_provider_is_honestly_not_frozen(tmp_path):
+    """``frozen`` is a real attribute on every bundled provider, so a
+    workspace reads it rather than defaulting it — and a substrate that
+    has no tags to freeze at answers False rather than raising."""
+    from nontainer.providers.dir import DirProvider
+
+    provider = DirProvider(tmp_path / "dir", session="s")
+    try:
+        assert provider.frozen is False
+        assert provider.frozen_at is None
+        ws = Workspace(provider)
+        try:
+            assert ws.frozen is False
+            ws.files.write("a.txt", "hello")
+            assert ws.files.read("a.txt") == b"hello"
+        finally:
+            ws.close()
+    finally:
+        provider.close()

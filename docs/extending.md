@@ -23,12 +23,21 @@ provider, not in the provider. Providers are not thread-safe and do not
 need to be: `Workspace` owns the single-writer invariant.
 
 ```
-session · caps · fs · kv · dirty · head
+session · caps · fs · kv · dirty · head · frozen · frozen_at
 commit / checkout / history / fork / discard / merge / apply / commit_at
-commit_keys / files_at / working_files
+commit_keys / files_at / working_files / key_at
+branch_head / expand_commit
 tag / check_tag / tags / tag_info / delete_tag / at_tag / diff
 mount · close
 ```
+
+Every one of those is called without a guard, so a provider that omits
+one is not a provider a workspace can drive; a provider without the
+capability a member needs raises `NotSupportedError` there rather than
+leaving the attribute off. One member is optional and probed for:
+`refresh()` — re-read the branch head, discarding uncommitted writes —
+which delegation calls where it exists, to re-apply work against a head
+that won a race.
 
 Three surfaces carry the state:
 
@@ -82,9 +91,21 @@ graph — and both are recorded as soft references, never as parents.
 `at_tag` returns a **frozen** provider: reads see the tagged state,
 `commit` / `checkout` / `fork` / `tag` / `delete_tag` raise
 `NotSupportedError`, and writes may stage (so `dirty` can become True)
-but have nowhere to land. Such a provider reports `frozen` True; one
-without the attribute reads as not frozen, which is what a workspace
-over a third-party provider assumes.
+but have nowhere to land. Such a provider reports `frozen` True and
+`frozen_at` the name it was opened at; every other handle answers False
+and `None`, including one on a substrate with no tags to freeze at — a
+provider with nothing to snapshot is not frozen, it is ordinary.
+
+**Reading across sessions.** `branch_head(session)` is another
+session's current commit, for the verbs that are about a branch that is
+not this one — merging it, cherry-picking from it, attaching its tree,
+resolving a bare session name as a ref. `key_at(commit, key)` is the
+non-file half of `files_at`: it reads the framework's own planes, the
+ws-git blob and the seed a session was given, out of a commit without
+materializing a tree. `expand_commit(commit, session=)` turns the seven
+characters every ws-git line prints back into a whole id, and hands
+back anything it cannot expand unchanged — a prefix nothing matches
+included — so the read that follows refuses it in its own words.
 
 ### What each capability gates
 

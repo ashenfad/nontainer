@@ -486,6 +486,16 @@ class AgentFSProvider:
     def dirty(self) -> bool:
         return False  # no staging: writes are durable immediately
 
+    @property
+    def frozen(self) -> bool:
+        """Never. A snapshot is what ``at_tag`` hands back, and there
+        are no tags here to open one at."""
+        return False
+
+    @property
+    def frozen_at(self) -> str | None:
+        return None
+
     # -- versioning: not in the spike ------------------------------------
 
     def _unsupported(self, op: str) -> NotSupportedError:
@@ -558,6 +568,24 @@ class AgentFSProvider:
 
     def diff(self, a: str, b: str) -> "WorkspaceDiff":
         raise self._unsupported("diff")
+
+    # -- reading across sessions: unsupported --------------------------
+
+    def commit_at(
+        self, commit: str, *, session: str | None = None
+    ) -> "CommitInfo | None":
+        raise self._unsupported("commit_at")
+
+    def key_at(self, commit: str, key: str) -> Any:
+        raise self._unsupported("key_at")
+
+    def branch_head(self, session: str) -> str:
+        raise self._unsupported("branch_head")
+
+    def expand_commit(self, commit: str, *, session: str | None = None) -> str:
+        """The text unchanged: the spike holds no commit ids, so
+        there is no prefix here to expand and nothing to refuse."""
+        return commit
 
     def mount(self) -> Any:
         raise NotSupportedError(
