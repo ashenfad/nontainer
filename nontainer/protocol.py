@@ -317,7 +317,20 @@ class WorkspaceStatus:
 
 @runtime_checkable
 class WorkspaceProvider(Protocol):
-    """Substrate contract. See module docstring for the three surfaces."""
+    """Substrate contract. See module docstring for the three surfaces.
+
+    Every member below is one the framework calls without a guard, so a
+    provider that omits one is not a provider a workspace can drive;
+    the capability a member needs is named in its own docstring, and a
+    provider without that capability raises ``NotSupportedError`` there
+    rather than leaving the attribute off.
+
+    One member is OPTIONAL and probed for: ``refresh()`` — re-read the
+    branch head, discarding uncommitted writes — which the delegation
+    helper calls where it exists, to re-apply work against a head that
+    won a race. A provider that cannot re-read a head simply does not
+    offer it, and callers fall back to leaving the handle as it is.
+    """
 
     # -- identity ------------------------------------------------------
 
@@ -326,6 +339,28 @@ class WorkspaceProvider(Protocol):
 
     @property
     def caps(self) -> Capabilities: ...
+
+    @property
+    def frozen(self) -> bool:
+        """This handle is a snapshot: reads work, nothing commits.
+
+        True only for what :meth:`at_tag` (or a store-level frozen
+        open) returns. Every other handle answers False, including one
+        on a substrate that has no tags to freeze at — a provider with
+        nothing to snapshot is not frozen, it is ordinary.
+        """
+        ...
+
+    @property
+    def frozen_at(self) -> str | None:
+        """The tag this snapshot was opened at, or ``None``.
+
+        ``None`` whenever :attr:`frozen` is False, and also for a
+        snapshot opened at a bare commit rather than at a name — the
+        attribute says which NAME was asked for, not which state is
+        held.
+        """
+        ...
 
     # -- surfaces ------------------------------------------------------
 
@@ -481,9 +516,8 @@ class WorkspaceProvider(Protocol):
         ``NotSupportedError``; writes may stage (so ``dirty`` can become
         True) but have nowhere to land, and ``discard`` drops them.
 
-        Such a provider reports ``frozen`` True; a provider without the
-        attribute reads as not frozen, which is what a workspace over a
-        third-party provider assumes.
+        Such a provider reports :attr:`frozen` True and
+        :attr:`frozen_at` the name it was opened at.
         """
         ...
 
@@ -612,6 +646,54 @@ class WorkspaceProvider(Protocol):
         """The live working tree's files, by workspace path (requires
         ``caps.index``) — uncommitted writes included, uncommitted
         deletions excluded."""
+        ...
+
+    def key_at(self, commit: str, key: str) -> Any:
+        """One store key's value at a commit, or ``None`` if absent
+        (requires ``caps.index``).
+
+        The non-file half of :meth:`files_at`: what reads the
+        framework's own planes — the ws-git blob, the view a session
+        was seeded with — out of a commit without materializing a
+        tree. ``key`` is a provider key as stored, not a workspace
+        path. Unknown commits raise ``CommitNotFoundError``.
+        """
+        ...
+
+    # -- reading across sessions ---------------------------------------
+
+    def branch_head(self, session: str) -> str:
+        """Another session's current commit on this substrate.
+
+        A session is a branch, and several verbs are about a branch
+        that is not this one: merging it, cherry-picking from it,
+        attaching its tree, resolving a bare session name as a ref. A
+        name the substrate does not hold raises ``ValueError``. An
+        unversioned provider has no branches and raises
+        ``NotSupportedError``.
+        """
+        ...
+
+    def expand_commit(self, commit: str, *, session: str | None = None) -> str:
+        """A commit id typed SHORT → the whole one it names.
+
+        Every ref spelling nontainer prints is one it accepts back, and
+        what it prints is seven characters of a commit id. A unique
+        prefix of seven hex characters or more expands here, against
+        the full history of the session that holds it — the framework's
+        commits included, since a ref names a state and takes no place
+        in anyone's graph.
+
+        An ambiguous prefix raises ``ValueError`` naming the commits it
+        could mean. Anything this provider cannot expand — a prefix
+        nothing matches, a whole id, a name, anything on a substrate
+        with no commit ids at all — comes back UNCHANGED, so the read
+        that follows refuses it with the same not-found error a whole
+        id nothing matches earns. Never raises for "no such commit".
+
+        ``session`` names whose history to search; the default is this
+        provider's own.
+        """
         ...
 
     # -- power modes / lifecycle ---------------------------------------

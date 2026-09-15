@@ -2149,10 +2149,7 @@ class Workspace:
         with no commit prefixes to expand hands the text back as it
         came, so the read that follows judges it.
         """
-        expand = getattr(self._provider, "expand_commit", None)
-        if expand is None:
-            return commit
-        return expand(commit, session=session)
+        return self._provider.expand_commit(commit, session=session)
 
     def expand_ref(self, ref: "str | Ref") -> "Ref":
         """``session@x`` with its commit half spelled whole.
@@ -2214,12 +2211,10 @@ class Workspace:
             if commit in tags:
                 return tags[commit]
         whole = self._expand_commit(commit, session=session)
-        # Only where the substrate spells commits the way ws-git prints
-        # them: a provider with no prefixes to expand may name its
-        # commits anything, and cannot be told a word is not one.
-        if getattr(self._provider, "expand_commit", None) is not None and not (
-            HASH_RE.fullmatch(whole)
-        ):
+        # Only where the substrate spells commits at all: an unversioned
+        # provider names no commit, so a word it hands back unchanged is
+        # not evidence that the word was never a commit id.
+        if self._provider.caps.versioned and not HASH_RE.fullmatch(whole):
             raise CommitNotFoundError(self._not_a_ref(session, commit))
         return whole
 

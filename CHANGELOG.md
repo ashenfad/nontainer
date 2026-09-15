@@ -143,6 +143,16 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   `store.resolve`. `nontainer.executor.flatten_grants(cfg)` is what a
   `PythonConfig` flattens to, and `ws.runtime.guest_to_host(path)` a
   guest-absolute path as the host spells it, `None` where nothing maps.
+  And `WorkspaceProvider` declares every member the framework calls:
+  `frozen`, `frozen_at`, `key_at`, `branch_head`, `expand_commit` and
+  `commit_at` were read off the kvgit provider and guessed at with
+  `getattr` elsewhere, so a substrate written against the document
+  alone could satisfy the protocol and still not drive a workspace.
+  `DirProvider` and `AgentFSProvider` answer all six — honestly where
+  they can (a provider with no tags is not frozen; a provider with no
+  commit ids has no prefix to expand) and with `NotSupportedError`
+  where they cannot. `refresh()` is the one optional member, and the
+  contract says so.
 
 ### Changed
 - **The docs are re-cut by audience.** Four new pages: `docs/ws-git.md`
