@@ -1145,3 +1145,26 @@ def test_register_wsgit_twice_is_a_no_op():
             child.close()
     finally:
         ws.close()
+
+
+def test_a_dropped_workspace_takes_its_app_runtime_with_it(tmp_path):
+    """Wiring apps must not pin the workspace: the association lives on
+    the ws-curl command the workspace holds, so once the embedder drops
+    the workspace and the runtime it was handed, both are collected. A
+    registry keyed on workspaces kept them alive through the runtime's
+    own reference back, one entry per session for the life of the
+    process."""
+    import gc
+    import weakref
+
+    from nontainer import store
+    from nontainer.apps import AppsConfig, enable_apps
+
+    st = store(tmp_path)
+    ws = st.open("leaky")
+    runtime = enable_apps(ws, AppsConfig())
+    gone = weakref.ref(ws)
+    ws.close()
+    del ws, runtime
+    gc.collect()
+    assert gone() is None
