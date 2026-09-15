@@ -208,11 +208,35 @@ which a caller passes through unchanged rather than guessing at.
 **`open(context)`** binds to one session's state and starts any
 resident machinery — `LocalExecutor` builds the default sandbox and
 forks the isolation worker; `DudExecutor` boots or resumes a guest and
-materializes the tree. The workspace calls it once, as the last step of
-its own construction, so no construction failure after that point can
-orphan a worker. It is not re-entrant. `close()` must be best-effort
-and idempotent and **must not raise**: the workspace closes its
-provider next regardless.
+materializes the tree. `Runtime.__init__` calls it once, as the last
+step of its own construction, so no construction failure after that
+point can orphan a worker. A workspace builds exactly one runtime for
+itself, and a frozen open or a fork builds another for the workspace it
+returns. It is not re-entrant. `close()` must be best-effort and
+idempotent and **must not raise**: the workspace closes its provider
+next regardless.
+
+### Concurrency
+
+**`exec_python(view=)` may be called concurrently, and the rest may
+not.** `terminal`, `run_python` and every mutating workspace verb run
+under the workspace's single-writer `RLock`, so an executor sees them
+one at a time whatever the host does with threads. Serving an app from
+a frozen snapshot takes no such lock — there is nothing to write, and
+one request must not queue behind another — so view calls arrive in
+parallel and **a view exec must be reentrant**. Each executor answers
+that its own way: `LocalExecutor` draws a resident worker per call from
+a pool, `DudExecutor` has one guest channel and serializes internally.
+Authoring dispatch (a mutable workspace) is an ordinary mutating call
+and takes the lock like one.
+
+**`diff()` and `sync()` are called around execs, never during one.**
+The workspace calls `diff` after every mutating exec, holding the lock,
+before its commit flow; it marks the executor stale whenever it moves
+provider state behind its back and calls `sync` once, lazily, before
+the next execution rather than at the moment of the change. So an
+executor is never asked to harvest a call that is still running, and
+never asked to re-materialize a tree it is mid-exec against.
 
 **`exec_python(view=)`** is where an executor is asked for a
 restricted, budgeted execution — the apps extra's handler dispatch is

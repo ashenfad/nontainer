@@ -962,9 +962,11 @@ class Executor(Protocol):
         (LocalExecutor: build the default sandbox, fork the isolation
         worker; a VM executor: boot/resume and materialize the tree).
 
-        Called once, by ``Workspace.__init__``, as its LAST step — so
-        no construction failure after this point can orphan a worker.
-        Not re-entrant."""
+        Called once, by ``Runtime.__init__``, as its LAST step — so no
+        construction failure after this point can orphan a worker. A
+        workspace builds one runtime for itself, and a fork or a frozen
+        open builds another for the workspace it returns. Not
+        re-entrant."""
         ...
 
     def close(self) -> None:
@@ -999,6 +1001,12 @@ class Executor(Protocol):
         budget, contract classes in scope. It is executor-neutral: no
         sandbox object crosses the seam (see :class:`ViewSpec`). The
         default (``None``) is the executor's standard environment.
+
+        A view call MUST be reentrant. Every other execution runs under
+        the workspace's single-writer lock and so arrives one at a
+        time, but an app served from a frozen snapshot takes no lock —
+        there is nothing to write, and one request must not queue
+        behind another — so view calls arrive in parallel.
 
         The result's ``commit`` is ``None``: executors never
         commit; the workspace stamps commits."""
