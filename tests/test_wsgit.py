@@ -1001,7 +1001,7 @@ def test_worktree_bare_prints_the_forms(peer_ws):
     r = peer_ws.terminal("ws-git worktree")
     assert r.exit_code == 0
     assert r.stdout == _WORKTREE_FORMS + "\n"
-    assert "worktree add <dir> <session>[@<commit>]" in r.stdout
+    assert "worktree add <dir> (<session>[@<commit>] | <tag>)" in r.stdout
 
 
 def test_status_ends_with_the_worktrees(peer_ws):
@@ -1625,11 +1625,22 @@ def test_an_unknown_session_in_a_ref_says_the_session_is_unknown(peer_ws):
         "ws-git worktree add review typo@nosuch",
         "ws-git cherry-pick typo@nosuch",
         "ws-git worktree add review typo@deadbeef1234",
-        "ws-git worktree add review typo",
     ):
         r = peer_ws.terminal(cmd)
         assert r.exit_code == 1, (cmd, r.stdout)
         assert r.stderr == want, (cmd, r.stderr)
+
+    # A BARE name is read as a session and then as a store tag, so the
+    # refusal accounts for both rather than sending a reader to one
+    # listing.
+    r = peer_ws.terminal("ws-git worktree add review typo")
+    assert r.exit_code == 1
+    assert r.stderr == (
+        "ws-git: unknown session or store tag 'typo': this store holds no "
+        "session and no store tag of that name (ws-git branch lists the "
+        "sessions; a store tag is a name given to a commit so that it "
+        "outlives its session)"
+    )
 
 
 def test_a_bad_ref_says_what_was_looked_up_and_where(peer_ws, store):
@@ -1757,3 +1768,111 @@ def test_register_wsgit_says_whether_the_verb_is_there():
         runtime = DeafRuntime()
 
     assert register_wsgit(DeafWs()) is False
+
+
+# -- store tags: a ref with no session behind it -------------------------------
+
+
+@pytest.fixture
+def tagged(store):
+    """A committed state under a store tag, and the session that made
+    it left in place — the shape a published app's origin has."""
+    origin = store.open("origin")
+    register_wsgit(origin)
+    origin.files.fs.write("/workspace/app.py", b"print('one')\n")
+    origin.terminal("ws-git commit -m shipped")
+    commit = store.tags.add(origin, "myapp/v1")
+    origin.close()
+    return commit
+
+
+def test_a_store_tag_is_a_ref_for_the_verbs_that_read(peer_ws, tagged):
+    """Mount it, take from it, diff it, log it, show it: one name for a
+    commit, taken wherever a read verb takes a ref."""
+    r = peer_ws.terminal("ws-git worktree add old myapp/v1")
+    assert r.exit_code == 0, r.stderr
+    assert re.fullmatch(
+        rf"worktree old: @store/tag/myapp/v1@{SHORT} \(read-only\)\n", r.stdout
+    ), r.stdout
+    assert peer_ws.terminal("ws-git worktree list").stdout == r.stdout
+    assert peer_ws.files.read("/workspace/old/app.py") == b"print('one')\n"
+
+    r = peer_ws.terminal("ws-git diff myapp/v1")
+    assert r.exit_code == 0, r.stderr
+    assert "diff --git a/app.py b/app.py" in r.stdout
+
+    r = peer_ws.terminal("ws-git log myapp/v1")
+    assert r.exit_code == 0, r.stderr
+    assert re.fullmatch(rf"{SHORT} shipped\n", r.stdout), r.stdout
+
+    # what shows is the ws-git commit the tagged state stands on, the
+    # one ws-git log of the same tag leads with
+    r = peer_ws.terminal("ws-git show myapp/v1")
+    assert r.exit_code == 0, r.stderr
+    assert re.match(
+        r"commit [0-9a-f]{40} \(tag: myapp/v1\)\n\n    shipped\n", r.stdout
+    ), r.stdout
+    assert "+print('one')" in r.stdout
+
+    r = peer_ws.terminal("ws-git checkout myapp/v1 -- app.py")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "Updated 1 path from myapp/v1\n"
+    assert peer_ws.files.read("/workspace/app.py") == b"print('one')\n"
+
+
+def test_a_store_tag_reads_after_its_session_is_deleted(peer_ws, store, tagged):
+    """The whole reason to tag a commit: the tag holds it, so the state
+    is still there to mount, take from and diff when the session that
+    reached it is gone."""
+    store.delete("origin")
+    assert "origin" not in store.sessions()
+
+    assert peer_ws.terminal("ws-git worktree add old myapp/v1").exit_code == 0
+    assert peer_ws.files.read("/workspace/old/app.py") == b"print('one')\n"
+    assert "diff --git a/app.py" in peer_ws.terminal("ws-git diff myapp/v1").stdout
+    assert peer_ws.terminal("ws-git log myapp/v1").stdout.endswith(" shipped\n")
+    assert peer_ws.terminal("ws-git checkout myapp/v1 -- app.py").exit_code == 0
+    assert peer_ws.files.read("/workspace/app.py") == b"print('one')\n"
+
+
+def test_a_session_is_read_before_a_store_tag_of_the_same_name(peer_ws, store):
+    """The two namespaces can share a name, and the session wins: it is
+    what ws-git branch lists."""
+    origin = store.open("origin")
+    origin.files.fs.write("/workspace/tagged.md", b"the tag's\n")
+    store.tags.add(origin, "peer")
+    origin.close()
+
+    assert peer_ws.terminal("ws-git worktree add peek peer").exit_code == 0
+    assert peer_ws.files.list("/workspace/peek") == ["/workspace/peek/note.md"]
+
+
+def test_the_verbs_that_write_to_a_branch_take_no_store_tag(peer_ws, tagged):
+    """A store tag names a commit and no branch, so there is nothing
+    for a merge to come from or a cherry-pick to name a session with."""
+    r = peer_ws.terminal("ws-git merge myapp/v1")
+    assert r.exit_code == 1
+    assert r.stderr == "ws-git: unknown branch 'myapp/v1'"
+
+    r = peer_ws.terminal("ws-git cherry-pick myapp/v1")
+    assert r.exit_code == 2
+    assert "spelled <session>@<commit>" in r.stderr
+
+
+def test_your_own_spellings_are_read_before_a_store_tag(peer_ws, store):
+    """HEAD, a hash and a bookmark of yours name states of your own, so
+    a store tag sharing one of those names takes no verb about your own
+    history somewhere else."""
+    peer_ws.files.fs.write("/workspace/mine.md", b"mine\n")
+    peer_ws.terminal("ws-git commit -m mine")
+    peer_ws.terminal("ws-git tag shipped")
+
+    origin = store.open("origin")
+    origin.files.fs.write("/workspace/theirs.md", b"theirs\n")
+    store.tags.add(origin, "shipped")
+    origin.close()
+
+    r = peer_ws.terminal("ws-git show shipped")
+    assert r.exit_code == 0, r.stderr
+    assert "+mine" in r.stdout
+    assert "theirs" not in r.stdout

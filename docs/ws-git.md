@@ -38,11 +38,13 @@ Git's spelling is on the left, what it does here on the right.
 | `status [--porcelain]` | what is staged, what is modified, what a merge left marked |
 | `diff [--cached] [--check] [paths...]` | unified diff against your last commit |
 | `diff <session>` | your tree against another session's last commit, grouped by what that session was sent to do |
+| `diff <tag>` | your tree against the commit a store tag names |
 | `log [-n N] [--all] [-S <string>]` | your own commits, newest first |
 | `log <session>` | another session's commits |
-| `show <ref>` | one commit: its message and its diff |
+| `log <tag>` | the commits the tagged state holds |
+| `show <ref>` | one commit: its message and its diff. A store tag shows the commit it names |
 | `checkout <ref>` | restore your tree to one of your commits |
-| `checkout <ref> -- <paths>` | make just those paths match that ref, which may name another session |
+| `checkout <ref> -- <paths>` | make just those paths match that ref, which may name another session or a store tag |
 | `tag` | your bookmarks, one `name -> commit` per line |
 | `tag [-f] <name> [<commit>]` | bookmark a commit of yours by name. `-f` moves a name that is taken |
 | `tag -d <name>` | drop a bookmark. The commit stays where it is |
@@ -57,7 +59,7 @@ Git's spelling is on the left, what it does here on the right.
 | `merge --abort` | restore the tree to the commit an outstanding merge landed on, and clear it |
 | `revert <commit>` | a new commit undoing one commit's change |
 | `cherry-pick <session>@<commit>` | a new commit applying one change from another session |
-| `worktree add <dir> <session>[@<commit>]` | check another session's tree out under a directory, read-only |
+| `worktree add <dir> <session>[@<commit>] \| <tag>` | check another session's tree, or a tagged state, out under a directory, read-only |
 | `worktree list` / `worktree remove <dir>` | the worktrees here; take one down |
 | `sparse-checkout list` | the paths this session was given to see |
 | `help` | the whole surface in one screen |
@@ -142,7 +144,7 @@ habit.
 
 ## Refs and short ids
 
-Five things can be a ref, and which of them a verb takes is the verb's
+Six things can be a ref, and which of them a verb takes is the verb's
 business:
 
 - **`HEAD`** — your last ws-git commit. Unborn before your first one,
@@ -166,6 +168,16 @@ business:
   its commits. These are not the host's tags (`ws.tags`, `store.tags`),
   which name states for the code around the workspace; a ws-git tag is
   yours, and the [Tags](#tags) section says what that means.
+- **a store tag** — a name the host gave a commit so that it outlives
+  the session that reached it. It names one commit and no branch, so it
+  reads frozen at that commit and goes on reading when that session has
+  been deleted — which is what it is for. The verbs that READ take one:
+  `diff <tag>`, `log <tag>`, `show <tag>`,
+  `checkout <tag> -- <paths>`, `worktree add <dir> <tag>`. The verbs
+  that write to a named branch do not, because a tag has no branch for
+  `merge` to come from or a stash to land on. A bare name is a session
+  first and a store tag second: the two namespaces can share a name,
+  and the session is the one `ws-git branch` lists.
 
 Every spelling ws-git prints, it accepts back. Commit lines print seven
 characters of an id; worktree lines print `session@<seven characters>`;
@@ -181,6 +193,14 @@ verbs that list what is there:
 ```
 $ ws-git worktree add review polish@nosuch
 ws-git: nosuch is not a commit, a short id or a tag on session 'polish' (ws-git log polish, where its commits and its tags both show)
+```
+
+A bare word is looked for as a session and then as a store tag, so a
+word that is neither is refused with both readings named:
+
+```
+$ ws-git worktree add review typo
+ws-git: unknown session or store tag 'typo': this store holds no session and no store tag of that name (ws-git branch lists the sessions; a store tag is a name given to a commit so that it outlives its session)
 ```
 
 `ws-git tag` lists the bookmarks of the session it is typed in, so the
@@ -445,6 +465,18 @@ ws-git: there is already a worktree at 'review': it is pinned at a commit, so se
 
 To pin a state deliberately rather than take a head, name the commit
 with `<session>@<commit>`.
+
+A **store tag** mounts the same way and needs no session at all:
+
+```
+$ ws-git worktree add old myapp/v1
+worktree old: @store/tag/myapp/v1@dd906ff (read-only)
+```
+
+The tag holds its commit, so the state is still there to mount, take
+from and diff after the session that reached it is gone. That is how
+work starts from a state somebody published: mount it, read it,
+`ws-git checkout <tag> -- <paths>` the files worth keeping.
 
 What lands is the source's **whole branch**, not what its own session
 can see — a delegate given a narrow view is exactly the one worth
