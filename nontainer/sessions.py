@@ -234,9 +234,15 @@ class Sessions:
         The child is a fork under a pet name scoped to this session
         (``parent.sleepy-otter``), taken at a real commit: uncommitted
         writes here land first and THAT commit is the merge base.
-        ``name`` asks for a particular pet name and a numeric suffix
-        settles a collision either way. ``paths`` narrows what the
-        child's filesystem shows without narrowing its branch, and
+        ``name`` asks for a particular name, and one whose branch is
+        already taken is REFUSED — a caller naming the child it means
+        to address would otherwise be handed a different branch and
+        send every later verb to the wrong one; the refusal says which
+        branch, and that ``resume=`` is how the existing child gets its
+        next task. A minted pet name carries no such intent, so a
+        collision there is settled with a numeric suffix.
+        ``paths`` narrows what the child's filesystem shows without
+        narrowing its branch, and
         ``inherit`` decides whether this session's conversation comes
         along (``"fresh"`` here, where the child is starting work of
         its own, against ``fork``'s own ``"full"`` default).
@@ -582,10 +588,18 @@ class Sessions:
         somewhere other than this session's head. It is the child's
         base, and this session's uncommitted writes are left alone,
         because they are no part of where that child came from.
+
+        A name the CALLER gave is refused when its branch is taken,
+        rather than suffixed: the caller is naming the child it means to
+        address, and handing back a different branch sends every later
+        verb to the wrong one. A minted pet name has no such meaning, so
+        a collision there is settled with a suffix and reported to
+        nobody.
         """
+        minted = name is None
         wanted = name or pet_name()
         with self._ws.lock:
-            for attempt in range(_MINT_TRIES):
+            for attempt in range(_MINT_TRIES if minted else 1):
                 candidate = self._scoped(wanted, attempt)
                 try:
                     child = self._ws.fork(
@@ -594,6 +608,15 @@ class Sessions:
                 except WorkspaceError as exc:
                     if "already exists" not in str(exc):
                         raise
+                    if not minted:
+                        raise SessionsError(
+                            f"session {candidate!r} already exists, so "
+                            f"name={wanted!r} cannot start a new child there. "
+                            f"To give that child its next task, "
+                            f"resume={wanted!r}; to start another one, ask "
+                            f"under a different name or leave name off and "
+                            f"take a minted one."
+                        ) from exc
                     continue
                 return child, candidate, self._ws.head if at is None else at
         raise SessionsError(
@@ -602,7 +625,7 @@ class Sessions:
         )
 
     def _scoped(self, wanted: str, attempt: int) -> str:
-        """``parent.pet`` — plus ``.2``, ``.3`` … on collision."""
+        """``parent.pet`` — plus ``.2``, ``.3`` … past attempt zero."""
         candidate = f"{self._ws.session}{SEPARATOR}{wanted}"
         if attempt:
             candidate = f"{candidate}{SEPARATOR}{attempt + 1}"

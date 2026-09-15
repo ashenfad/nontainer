@@ -101,16 +101,37 @@ def test_a_child_is_scoped_under_its_parent(parent, store):
     assert name in store.sessions()
 
 
-def test_two_concurrent_asks_get_distinct_names(parent, store):
+def test_a_minted_name_is_suffixed_past_a_collision(parent, store, monkeypatch):
+    """A pet name is the helper's own invention, so a second one that
+    lands on the same words is settled rather than reported."""
+    monkeypatch.setattr("nontainer.sessions.pet_name", lambda: "twin")
     runner = Scripted(store, {"/workspace/notes.md": "note\n"})
     with Sessions(parent, runner, max_workers=2) as sessions:
-        jobs = [sessions.ask("one", name="twin"), sessions.ask("two", name="twin")]
+        jobs = [sessions.ask("one"), sessions.ask("two")]
         names = {j.name for j in jobs}
         sessions.close()
 
     assert len(names) == 2
     assert f"analyst{SEPARATOR}twin" in names
     assert f"analyst{SEPARATOR}twin{SEPARATOR}2" in names
+
+
+def test_an_asked_for_name_that_is_taken_is_refused(parent, store):
+    """``name=`` names the child's branch, so a collision is the
+    caller's to settle: a silent suffix hands back a branch that is not
+    the one asked for, and the next verb goes to the wrong child."""
+    runner = Scripted(store, {"/workspace/notes.md": "note\n"})
+    with Sessions(parent, runner, max_workers=2) as sessions:
+        first = sessions.ask("one", name="twin", wait=True)
+        with pytest.raises(SessionsError, match="already") as exc:
+            sessions.ask("two", name="twin")
+        message = str(exc.value)
+        assert f"analyst{SEPARATOR}twin" in message
+        assert "resume=" in message
+        sessions.close()
+
+    assert first.branch == f"analyst{SEPARATOR}twin"
+    assert f"analyst{SEPARATOR}twin{SEPARATOR}2" not in store.sessions()
 
 
 def test_a_name_that_cannot_be_a_session_id_is_refused(parent, store):
