@@ -48,10 +48,13 @@ from agno.db.json import JsonDb
 from agno.session import AgentSession, Session
 
 from ..errors import NotSupportedError, WorkspaceError
-from ..planes import CONVERSATION_PREFIX
+from ..planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from ..workspace import Workspace
 
-SESSION_KEY = CONVERSATION_PREFIX + "session"
+# The session record's key is core's too: a fork rebinds that record to
+# the session it makes, so there is one name for it rather than two
+# that could drift apart.
+SESSION_KEY = CONVERSATION_SESSION_KEY
 RUN_PREFIX = CONVERSATION_PREFIX + "runs/"
 
 
@@ -575,19 +578,19 @@ def fork_session(
     """Branch the files, the cache, the cwd AND the conversation.
 
     Forking is a workspace verb here, not an agno one. ``ws.fork(name)``
-    gives the new branch every key; this then rewrites
-    ``__agno__/session`` so the fork carries its own ``session_id``
-    (the branch name) and records the parent in
-    ``session_data["forked_from_session_id"]``, where agno keeps fork
-    lineage, and commits that rewrite so the fork's head is
-    consistent.
+    gives the new branch every key and rebinds ``__agno__/session``, so
+    the fork carries its own ``session_id`` (the branch name) and
+    records the parent in ``session_data["forked_from_session_id"]``,
+    where agno keeps fork lineage, in a commit of the fork's own — its
+    head is consistent from the start.
 
     ``conversation="inherit"`` keeps the parent's runs — the branch is
     the same chat over its own files from here on. ``"fresh"`` deletes
     the run keys and clears ``run_ids``: a clean chat over the forked
-    files. Run ids are left alone; agno mints fresh ones on its own
-    fork only to avoid collisions inside a shared db, and branches
-    never share one.
+    files, which is not ``ws.fork(inherit="fresh")`` — that drops the
+    record too, and this keeps a session there to write into. Run ids
+    are left alone; agno mints fresh ones on its own fork only to
+    avoid collisions inside a shared db, and branches never share one.
 
     ``at`` branches from an earlier commit of this session — files
     and conversation as they stood there — without rewinding this
@@ -598,30 +601,18 @@ def fork_session(
     if conversation not in ("inherit", "fresh"):
         raise ValueError(f"conversation must be 'inherit' or 'fresh': {conversation!r}")
 
-    # The parent is this workspace's session. Read from the head's
-    # record it could be missing — a conversation deleted after the
-    # commit being forked from — while the id is a fact about the
-    # branch, not about what its head currently holds.
-    parent_id = ws.session
-
-    child = ws.fork(name, at=at)
+    child = ws.fork(name, at=at, inherit="full")
+    if conversation == "inherit":
+        # The fork itself carried and rebound the record, in its own
+        # commit; there is nothing left to write and nothing to commit.
+        return child
     with child.lock:
         kv = _kv(child)
+        for key in _run_keys(kv):
+            del kv[key]
         record = kv.get(SESSION_KEY)
         if isinstance(record, dict):
-            record = dict(record)
-            record["session_id"] = name
-            if parent_id:
-                # Where agno keeps fork lineage, so agno's own readers
-                # find it and the field rides along on every upsert.
-                session_data = dict(record.get("session_data") or {})
-                session_data["forked_from_session_id"] = parent_id
-                record["session_data"] = session_data
-            if conversation == "fresh":
-                for key in _run_keys(kv):
-                    del kv[key]
-                record["run_ids"] = []
-            kv[SESSION_KEY] = record
+            kv[SESSION_KEY] = dict(record) | {"run_ids": []}
     _commit_framework(child, {"tool": "fork_session", "conversation": conversation})
     return child
 
