@@ -133,8 +133,41 @@ class _MinimalProvider:
     def close(self): ...
 
 
+def _members(proto) -> set[str]:
+    """The names a protocol declares: annotated attributes plus the
+    methods and properties defined on the class itself. Computed here
+    rather than read off ``__protocol_attrs__``, which only Python 3.12
+    grows, so the check is the same on every version the package
+    supports."""
+    names = set(getattr(proto, "__annotations__", {}))
+    for name, value in vars(proto).items():
+        if name.startswith("_"):
+            continue
+        if callable(value) or isinstance(value, property):
+            names.add(name)
+    return names
+
+
+def _missing(obj, proto) -> set[str]:
+    """The protocol members ``obj`` lacks, looked up statically.
+
+    ``isinstance`` against a runtime-checkable protocol evaluates
+    properties on Python before 3.12, and a provider whose ``head`` is a
+    property that refuses on an unversioned substrate would raise out
+    of the check rather than fail it. A static lookup asks whether the
+    name is defined, which is the question."""
+    import inspect
+
+    sentinel = object()
+    return {
+        name
+        for name in _members(proto)
+        if inspect.getattr_static(obj, name, sentinel) is sentinel
+    }
+
+
 def test_a_minimal_provider_satisfies_the_protocol():
-    assert isinstance(_MinimalProvider(), WorkspaceProvider)
+    assert _missing(_MinimalProvider(), WorkspaceProvider) == set()
 
 
 @pytest.mark.parametrize(
@@ -144,14 +177,14 @@ def test_a_minimal_provider_satisfies_the_protocol():
 def test_the_protocol_names_every_member_core_calls(member):
     """Core calls these without a getattr guard, so a provider missing
     one is not a provider the framework can drive."""
-    assert member in WorkspaceProvider.__protocol_attrs__
+    assert member in _members(WorkspaceProvider)
     body = {
         k: v
         for k, v in vars(_MinimalProvider).items()
         if k != member and not k.startswith("__")
     }
     partial = type("Partial", (), body)
-    assert not isinstance(partial(), WorkspaceProvider)
+    assert _missing(partial(), WorkspaceProvider) == {member}
 
 
 def test_the_bundled_providers_satisfy_the_protocol(tmp_path):
@@ -160,12 +193,12 @@ def test_the_bundled_providers_satisfy_the_protocol(tmp_path):
 
     kv = KvgitProvider.open(None, session="s")
     try:
-        assert isinstance(kv, WorkspaceProvider)
+        assert _missing(kv, WorkspaceProvider) == set()
     finally:
         kv.close()
     d = DirProvider(tmp_path / "dir", session="s")
     try:
-        assert isinstance(d, WorkspaceProvider)
+        assert _missing(d, WorkspaceProvider) == set()
     finally:
         d.close()
 

@@ -324,7 +324,6 @@ class WorkspaceStatus:
     shows progress."""
 
 
-@runtime_checkable
 class WorkspaceProvider(Protocol):
     """Substrate contract. See module docstring for the three surfaces.
 
