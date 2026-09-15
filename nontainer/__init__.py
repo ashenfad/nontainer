@@ -12,7 +12,7 @@ Public surface:
                            versioned; ws.files / ws.index / ws.tags
     Runtime             -- ws.runtime: how code runs against that state
     PythonConfig        -- what sandboxed code may touch
-    TerminalResult, PythonResult, WriteOutcome, EditOutcome
+    TerminalResult, PythonResult, WriteOutcome, RemoveOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
     ExecutionContext, StagedDiff, ViewSpec -- what its methods speak
@@ -78,6 +78,7 @@ from .workspace import (
     Mount,
     PythonConfig,
     PythonResult,
+    RemoveOutcome,
     TerminalResult,
     Workspace,
     WriteOutcome,
@@ -101,6 +102,7 @@ __all__ = [
     "TerminalResult",
     "PythonResult",
     "WriteOutcome",
+    "RemoveOutcome",
     "EditOutcome",
     "WorkspaceProvider",
     "Executor",
