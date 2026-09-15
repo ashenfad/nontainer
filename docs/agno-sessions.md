@@ -205,13 +205,15 @@ from nontainer.adapters.agno_db import fork_session
 child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
 ```
 
-which does `ws.fork(name)` and then, in the fork, rewrites one key:
-`__agno__/session` gets `session_id = name` and
-`session_data["forked_from_session_id"] = <parent session id>`,
-which is where agno keeps fork lineage, so agno's own readers find
-it and it rides along on every later upsert. With
-`conversation="fresh"` the run keys are deleted and `run_ids`
-cleared, giving a clean chat over the forked files. Run ids are
+which does `ws.fork(name)`. A fork that carries the conversation
+rebinds one key as it takes it: `__agno__/session` gets `session_id
+= name` and `session_data["forked_from_session_id"] = <the session
+the conversation came from>`, which is where agno keeps fork
+lineage, so agno's own readers find it and it rides along on every
+later upsert. A branch holds one session's conversation, and the
+fork is a new session. With `conversation="fresh"` the run keys are
+deleted and `run_ids` cleared, giving a clean chat over the forked
+files under a session the db can write to. Run ids are
 left as they are: agno mints fresh ones on its own fork only to
 avoid collisions inside a shared db, and branches never share one.
 
