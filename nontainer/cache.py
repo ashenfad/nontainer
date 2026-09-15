@@ -19,11 +19,19 @@ import pickle
 from collections.abc import Iterator, MutableMapping
 from typing import Any
 
+from .errors import WorkspaceError
 from .planes import CACHE_PREFIX as PREFIX
 
 
-class CacheError(ValueError):
-    """Raised when a cache operation cannot complete (e.g. unpicklable value)."""
+class CacheError(WorkspaceError, ValueError):
+    """Raised when a cache operation cannot complete (e.g. unpicklable
+    value).
+
+    A ``WorkspaceError`` like everything else nontainer raises, so one
+    ``except`` clause holds the package; ``ValueError`` stays a base
+    because an unpicklable value IS a bad argument, and code that
+    caught it as one keeps working.
+    """
 
 
 class Cache(MutableMapping[str, Any]):

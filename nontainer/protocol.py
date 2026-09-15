@@ -48,6 +48,8 @@ from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
+from .errors import WorkspaceError
+
 if TYPE_CHECKING:
     from .workspace import PythonConfig, PythonResult, TerminalResult
 
@@ -729,7 +731,7 @@ class WorkspaceProvider(Protocol):
 # string, so the TYPE_CHECKING import is enough.
 
 
-class HarvestLost(RuntimeError):
+class HarvestLost(WorkspaceError, RuntimeError):
     """A remote executor lost its guest between a successful exec and
     the write harvest. The call is TORN, not cleanly absent: dud
     applies cache write-backs inside the successful exec, but fs
@@ -739,7 +741,10 @@ class HarvestLost(RuntimeError):
     (after recovering a fresh session) so the workspace can surface an
     errored result and unwind the staged half — an empty diff here
     would report success for a call whose fs effects silently
-    vanished."""
+    vanished.
+
+    A ``WorkspaceError``, so an embedder's one clause catches it;
+    ``RuntimeError`` stays a base for code written against that."""
 
 
 @dataclass(frozen=True)

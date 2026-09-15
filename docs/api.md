@@ -1520,10 +1520,17 @@ in [sessions.md](sessions.md).
 
 ## Errors (`nontainer`)
 
+Everything nontainer raises is a `WorkspaceError`, so one `except`
+clause holds the package:
+
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
 `SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
 `SessionsError` (no such job) · `JobRunning` (not yet) ·
-`BranchExpired` (the job's branch was swept) · `CacheError`.
+`BranchExpired` (the job's branch was swept) · `CacheError` (a cache
+write that cannot complete — also a `ValueError`) · `HarvestLost` (a
+remote executor lost its guest between a successful exec and the write
+harvest, so the call is torn rather than absent — also a
+`RuntimeError`).
 
 ## Adapters
 

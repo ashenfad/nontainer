@@ -211,6 +211,13 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **One `except` clause holds the package.** `CacheError` and
+  `HarvestLost` were a bare `ValueError` and a bare `RuntimeError`, so
+  an embedder catching `WorkspaceError` missed a cache write it could
+  not encode and a torn remote call. Both are `WorkspaceError` now and
+  both keep the builtin they were caught as. `HarvestLost` is exported
+  beside `ExecutionContext`, `StagedDiff` and `ViewSpec` — the types
+  `Executor`'s methods speak, which was exported without them.
 - **`ws.log()` is a list**, the shape `ws.index.log()` already had, so
   `len()` works, an entry can be indexed and the same log reads twice.
   It was a generator, which meant the two logs on one workspace
