@@ -285,3 +285,57 @@ def test_guest_to_host_maps_a_path_back_from_a_guest():
         assert w.runtime.guest_to_host("/etc/hosts") is None
     finally:
         w.close()
+
+
+# -- the guest-verb half of the executor contract -----------------------------
+
+
+def _bare_runtime(executor):
+    """A runtime around an executor and nothing else — the capability
+    probes read the executor, never the workspace."""
+    rt = Runtime.__new__(Runtime)
+    rt._executor = executor
+    return rt
+
+
+def test_the_local_executor_declares_no_guest_verbs():
+    """``supports_ws_verbs`` and ``guest_to_host`` are contract members,
+    so the in-process executor answers them rather than being detected
+    by the absence of a private name."""
+    from nontainer.protocol import Executor
+
+    ex = LocalExecutor()
+    assert ex.supports_ws_verbs is False
+    assert ex.guest_to_host("/workspace/a.py") is None
+    assert isinstance(ex, Executor)
+    assert _bare_runtime(ex).supports_ws_verbs is False
+    assert _bare_runtime(ex).guest_to_host("/workspace/a.py") is None
+
+
+def test_the_dud_executor_declares_guest_verbs_publicly():
+    from nontainer.executor_dud import DudExecutor
+
+    assert DudExecutor.supports_ws_verbs is True
+    assert DudExecutor.guest_to_host is DudExecutor._guest_to_host
+
+
+def test_an_executor_predating_the_members_is_probed_for_the_private_one():
+    """A third-party guest executor written before the contract named
+    these still ferries: the runtime falls back to the private mapper."""
+
+    class OldGuestExecutor:
+        def _guest_to_host(self, guest_path):
+            return "/host" + guest_path
+
+    rt = _bare_runtime(OldGuestExecutor())
+    assert rt.supports_ws_verbs is True
+    assert rt.guest_to_host("/work/a.py") == "/host/work/a.py"
+
+
+def test_an_executor_with_neither_name_ferries_nothing():
+    class OldExecutor:
+        pass
+
+    rt = _bare_runtime(OldExecutor())
+    assert rt.supports_ws_verbs is False
+    assert rt.guest_to_host("/work/a.py") is None

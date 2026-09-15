@@ -263,7 +263,9 @@ class WsVerbHostHandler:
             if err is not None:
                 return err
             executor = getattr(getattr(ws, "runtime", None), "executor", None)
-            mapper = getattr(executor, "_guest_to_host", None)
+            mapper = getattr(executor, "guest_to_host", None) or getattr(
+                executor, "_guest_to_host", None
+            )
             unmapper = getattr(executor, "_host_to_guest", None)
             host_cwd = (mapper(cwd) if mapper else None) or cwd
             captured: dict[str, bytes] = {}

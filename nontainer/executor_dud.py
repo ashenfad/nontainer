@@ -468,6 +468,11 @@ class DudExecutor:
     # (dud DESIGN.md, "The apps loop"); agents use test_app meanwhile.
     supports_commands = False
 
+    # The verbs still reach the agent: nontainer.wsverb emits a guest
+    # shell function per registered ws-* verb and relays each call home
+    # over the hostcall channel.
+    supports_ws_verbs = True
+
     def __init__(
         self,
         *,
@@ -1175,7 +1180,7 @@ class DudExecutor:
         if rel:
             self._session.shell(f"cd {shlex.quote(rel)}", timeout=10.0)
 
-    def _guest_to_host(self, guest_path: str) -> str | None:
+    def guest_to_host(self, guest_path: str) -> str | None:
         """A guest-absolute path to its host-absolute twin (the ws-git
         verb handler's cwd and absolute argv spellings).
 
@@ -1201,6 +1206,10 @@ class DudExecutor:
                 base = self._ws_root
                 return f"{base}/{rel}" if rel else (base or "/")
         return None
+
+    #: The spelling this mapper had before the Executor contract named
+    #: it, kept so an existing caller reaching for it still lands here.
+    _guest_to_host = guest_to_host
 
     def _host_to_guest(self, host_path: str) -> str | None:
         """The inverse mapping (the ws-curl ``-o`` write-back): a
@@ -1238,7 +1247,7 @@ class DudExecutor:
         ctx = self._require_ctx()
         if not self._work:
             return
-        host = self._guest_to_host(guest_cwd)
+        host = self.guest_to_host(guest_cwd)
         if host is None:
             return
         try:

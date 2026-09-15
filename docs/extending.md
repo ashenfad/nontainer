@@ -155,13 +155,14 @@ the parent store base for dir/agentfs (they resolve `<session>/` and
 ## `Executor` — where code runs
 
 `WorkspaceProvider` says where state *lives*; `Executor` says how code
-*runs* against it. The contract has one capability flag, two lifecycle
-methods, two execution methods and two staging methods. Choosing and
-configuring one of the two that ship is the embedder's side, in the
-[API reference](api.md#executors).
+*runs* against it. The contract has two capability flags, two lifecycle
+methods, two execution methods, two staging methods and one path
+mapper. Choosing and configuring one of the two that ship is the
+embedder's side, in the [API reference](api.md#executors).
 
 ```python
 supports_commands: bool
+supports_ws_verbs: bool
 
 def open(self, context: ExecutionContext) -> None
 def close(self) -> None
@@ -170,6 +171,7 @@ def exec_python(code, *, inputs=None, stdin=None, argv=None,
 def exec_shell(script: str) -> TerminalResult
 def diff(self) -> StagedDiff | None
 def sync(self) -> None
+def guest_to_host(self, guest_path: str) -> str | None
 ```
 
 **Executors never commit.** Both execution methods return a result
@@ -185,6 +187,23 @@ injected builtin is a real command; `DudExecutor` runs actual bash in a
 guest, which has no such hook, and declares `False`. Tool descriptions
 are built against the flag. An executor predating the flag reads as
 `True`.
+
+**`supports_ws_verbs`** — whether the `ws-*` verbs reach that shell
+some other way. They are the agent's own tools and must work wherever
+the agent's code runs, so an executor with no command registry
+declares this True and carries them across itself; `DudExecutor` does,
+`LocalExecutor` declares `False` because its commands are already
+reachable. The framework registers and advertises a verb where either
+flag holds. Default `False`, so an executor that declares neither is
+read as in-process — except that one written before these members were
+named is recognized by the private `_guest_to_host` it would carry.
+
+**`guest_to_host(path)`** — a guest-absolute path as the host spells
+it, or `None` where nothing maps. A traceback frame, the shell's idea
+of cwd and a verb's argv all arrive in the guest's spelling, and naming
+a workspace file means mapping one back; `None` is the honest answer
+for an in-process executor and for a guest path outside the workspace,
+which a caller passes through unchanged rather than guessing at.
 
 **`open(context)`** binds to one session's state and starts any
 resident machinery — `LocalExecutor` builds the default sandbox and
@@ -307,12 +326,11 @@ The prelude shifts the submitted code's line numbers, and the executor
 renumbers guest tracebacks back into the coordinates of the code the
 caller sent.
 
-`Runtime` reports both to callers that must gate on them:
-`ws.runtime.supports_ws_verbs` is True for a guest-bridging executor
-even though `supports_commands` is False there, and tool descriptions
-offer the portable verbs where either flag holds. A guest's own path
-space is the executor's to map back, which is what
-`ws.runtime.guest_to_host(path)` answers with.
+Both are declared on the executor and reported by `Runtime` for the
+callers that gate on them: `ws.runtime.supports_ws_verbs` is True for a
+guest-bridging executor even though `supports_commands` is False there,
+and `ws.runtime.guest_to_host(path)` maps a guest path back for a
+caller that has no business knowing which rung it is on.
 
 ## `SessionRunner` — the agent loop
 

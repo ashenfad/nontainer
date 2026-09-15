@@ -928,6 +928,20 @@ class Executor(Protocol):
     apps primer advertises ``ws-curl`` only where it exists.
     """
 
+    supports_ws_verbs: bool
+    """Whether ``ws-*`` verbs reach a guest shell some other way.
+
+    An executor that runs real bash has no command registry, so
+    ``supports_commands`` is False there — and yet ws-git, ws-curl and
+    the test verbs are the agent's own tools and must still work. An
+    executor that carries them across (``nontainer.wsverb``'s relay
+    over its own host channel) declares this True, and the framework
+    registers and advertises the verbs where either flag holds.
+
+    Read the way ``supports_commands`` is, so an executor that declares
+    neither is an in-process one: False is the default.
+    """
+
     # -- lifecycle -------------------------------------------------------
 
     def open(self, context: ExecutionContext) -> None:
@@ -998,6 +1012,19 @@ class Executor(Protocol):
         through), so there is nothing to harvest; ``None`` also means
         "nothing staged" from a remote executor after a read-only
         call, so the workspace's dirty check stays accurate."""
+        ...
+
+    def guest_to_host(self, guest_path: str) -> str | None:
+        """A guest-absolute path as the HOST spells it, or ``None``.
+
+        Where code runs inside a guest, the paths an answer carries — a
+        traceback frame, the shell's idea of cwd, a verb's argv — are
+        the guest's, and naming a workspace file means mapping one
+        back. ``None`` wherever there is nothing to map: an in-process
+        executor has one spelling for every path, and a guest path
+        outside the workspace has no host twin, which a caller passes
+        through unchanged rather than guessing at.
+        """
         ...
 
     def sync(self) -> None:
