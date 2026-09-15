@@ -162,6 +162,25 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   verbs by carrying a private `_guest_to_host` and the runtime had been
   detecting it with `hasattr`. One written before those names still
   ferries — the private spelling is the fallback probe.
+- **`ws.files.remove(path)`.** The file surface could write, edit and
+  put, and the only way to delete was `ws.files.fs.remove`, which
+  bypasses the lock, the view rule and the commit flow — so a host-side
+  deletion sat in the tree until something else happened to commit, and
+  nothing refused it on a frozen workspace by name. `remove` is
+  `write`'s other half: one file, the lock held, a path the session
+  cannot see refused, and a `RemoveOutcome` naming the commit it made.
+  Its own record rather than a `WriteOutcome`, whose `size` means bytes
+  written. A directory is refused — a directory here is the shape of
+  the files under it, so emptying one is `rm -r` or a checkout that
+  mirrors it — and a path holding nothing raises `FileNotFoundError`,
+  the way `read` does.
+- **`JobStatus` and `AnswerStatus` are exported and annotated.**
+  `Job.status` and `Answer.status` were plain `str` with the vocabulary
+  spelled only in prose, so a caller branching on one got no help and
+  no check. An answer takes fewer words than a job — it exists only
+  once the run is over, so it is never running, cancelled or expired —
+  and the two literals say which is which. `inherit` is
+  `Literal["full", "fresh"]` on `Workspace.fork` and `Sessions.ask`.
 
 ### Changed
 - **The docs are re-cut by audience.** Four new pages: `docs/ws-git.md`
@@ -209,20 +228,6 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   **Every fork lands its `ws-git.fork` commit**, one whose parent never
   used ws-git included: it is the child's fork POINT, and without it
   every file a delegate inherited read as one it added.
-
-### Fixed
-- **`ws.files.remove(path)`.** The file surface could write, edit and
-  put, and the only way to delete was `ws.files.fs.remove`, which
-  bypasses the lock, the view rule and the commit flow — so a host-side
-  deletion sat in the tree until something else happened to commit, and
-  nothing refused it on a frozen workspace by name. `remove` is
-  `write`'s other half: one file, the lock held, a path the session
-  cannot see refused, and a `RemoveOutcome` naming the commit it made.
-  Its own record rather than a `WriteOutcome`, whose `size` means bytes
-  written. A directory is refused — a directory here is the shape of
-  the files under it, so emptying one is `rm -r` or a checkout that
-  mirrors it — and a path holding nothing raises `FileNotFoundError`,
-  the way `read` does.
 - **`register_wsgit(ws)` says whether the agent can type `ws-git`.**
   It returned `None` whether it had installed the verb or quietly
   declined to, so an embedder building a primer around the verb had to
@@ -230,13 +235,8 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   True when it installed the verb and True when the verb was already
   there — both answer the question that was asked — and False only
   where the executor can carry no terminal builtin at all.
-- **`JobStatus` and `AnswerStatus` are exported and annotated.**
-  `Job.status` and `Answer.status` were plain `str` with the vocabulary
-  spelled only in prose, so a caller branching on one got no help and
-  no check. An answer takes fewer words than a job — it exists only
-  once the run is over, so it is never running, cancelled or expired —
-  and the two literals say which is which. `inherit` is
-  `Literal["full", "fresh"]` on `Workspace.fork` and `Sessions.ask`.
+
+### Fixed
 - **A delegate name you give is refused when it is taken.**
   `sessions.ask(name="editor")` on a session that already had an
   `editor` child quietly forked `editor.2` and handed that back, so a
