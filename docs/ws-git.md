@@ -42,7 +42,7 @@ Git's spelling is on the left, what it does here on the right.
 | `log [-n N] [--all] [-S <string>]` | your own commits, newest first |
 | `log <session>` | another session's commits |
 | `log <tag>` | the commits the tagged state holds |
-| `show <ref>` | one commit: its message and its diff. A store tag shows the commit it names |
+| `show <ref>` | one commit: its message and its diff. A store tag shows the state it names: the commit it stands on, then whatever landed after it |
 | `checkout <ref>` | restore your tree to one of your commits |
 | `checkout <ref> -- <paths>` | make just those paths match that ref, which may name another session or a store tag |
 | `tag` | your bookmarks, one `name -> commit` per line |
@@ -173,9 +173,13 @@ business:
   reads frozen at that commit and goes on reading when that session has
   been deleted — which is what it is for. The verbs that READ take one:
   `diff <tag>`, `log <tag>`, `show <tag>`,
-  `checkout <tag> -- <paths>`, `worktree add <dir> <tag>`. The verbs
-  that write to a named branch do not, because a tag has no branch for
-  `merge` to come from or a stash to land on. A bare name is a session
+  `checkout <tag> -- <paths>`, `worktree add <dir> <tag>`. `show
+  <tag>` reads the state whole: the ws-git commit the tag stands on,
+  then, under a heading of its own, anything the tag holds that landed
+  after that commit — the framework commits as work is written, so a
+  tag rarely falls on a ws-git commit. The verbs that write to a named
+  branch do not, because a tag has no branch for `merge` to come from
+  or a stash to land on. A bare name is a session
   first and a store tag second: the two namespaces can share a name,
   and the session is the one `ws-git branch` lists.
 

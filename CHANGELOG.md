@@ -11,7 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A store tag is a ref.** The verbs that read one take a store tag
   wherever they take `<session>@<commit>`: `ws-git worktree add <dir>
   <tag>`, `checkout <tag> -- <paths>`, `diff <tag>`, `log <tag>`,
-  `show <tag>`, and on the host `ws.expand_ref`, `ws.files.attach`,
+  `show <tag>` (which reads the tagged state whole: the ws-git commit
+  it stands on, then anything that landed after it), and on the host `ws.expand_ref`, `ws.files.attach`,
   `ws.checkout(tag, paths=[...])` and `store.resolve`. Such a ref names
   a commit and no session — it carries the tag where a session would go
   and reads frozen — so a tagged state is still mountable, takeable and
