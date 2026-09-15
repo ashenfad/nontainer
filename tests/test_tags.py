@@ -692,3 +692,29 @@ def test_a_tag_ref_refuses_a_name_repointed_since(tmp_path):
         s.resolve(kept)
     ws.close()
     s.close()
+
+
+def test_a_store_tag_name_may_not_hold_a_ref_delimiter(tmp_path):
+    """A store tag is a ref, so a name holding '@' or ':' could be
+    stored and never addressed; a session tag is reached by name alone
+    and takes no such rule."""
+    from nontainer import Store
+
+    s = Store(tmp_path / "store")
+    ws = s.open("alpha")
+    ws.files.write("/workspace/a.txt", "one")
+
+    for name in ("release@candidate", "a:b"):
+        with pytest.raises(ValueError, match="session@commit"):
+            s.tags.add(ws, name)
+        assert name not in s.tags.list()
+
+    # what a publication is named: slashes are no part of the grammar
+    assert s.tags.add(ws, "myapp/v1")
+    assert "myapp/v1" in s.tags.list()
+    # the session scope is not a ref and keeps the looser rule
+    assert ws.tags.add("a:b")
+    assert "a:b" in ws.tags.list()
+
+    ws.close()
+    s.close()

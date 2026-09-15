@@ -21,7 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cherry-pick`) take none, since a tag has no branch to come from.
   Such a ref stays exact: `store.resolve` refuses one whose tag has
   since been deleted and added again, naming both commits, because a
-  repointed name is a different state under the same word.
+  repointed name is a different state under the same word. A new
+  store-scoped tag name may hold neither `@` nor `:`, the delimiters
+  the ref grammar owns — slashes stay fine, so a publication's
+  `<name>/<version>` is unaffected — and a store already holding a
+  name with one of those keeps it: it lists and opens by name as
+  before, and only cannot be spelled as a ref.
 - **`inherit="full"` with `fork_from`.** A delegate forked from another
   fork point can be given the conversation stored there: it is then the
   agent that was at that commit, and the task is its next turn — how an

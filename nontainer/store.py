@@ -397,6 +397,16 @@ class StoreTags:
     ``ws.tags.list``, ``ws.tags.at``): they belong to a session and go
     when it does.
 
+    A store tag is also a REF — it is spelled where
+    ``session@commit[:/path]`` is spelled — so a new name may hold
+    neither ``@`` nor ``:``, the two delimiters that grammar owns; a
+    name holding either could be stored and never addressed. Slashes
+    are fine, which is what makes a publication's ``<name>/<version>``
+    one of these. The rule is asked of a name being created: a tag
+    already on a store keeps working by name whatever it is called.
+    Session-scoped tags are reached by name alone and take no such
+    rule.
+
     Reached as ``store.tags``; kvgit only, since it is the one backend
     with tags.
     """

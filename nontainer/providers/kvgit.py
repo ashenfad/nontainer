@@ -869,6 +869,9 @@ class KvgitProvider:
         session tag, or its own session's namespace from the store
         scope. Beyond that the rule is kvgit's: any non-empty name
         without ``%``.
+
+        Reading a tag applies the same rules as writing one, minus what
+        only a new name has to answer for (:meth:`_refuse_unaddressable`).
         """
         if not isinstance(name, str) or not name:
             raise ValueError("Tag name must be a non-empty string")
@@ -891,9 +894,32 @@ class KvgitProvider:
             f"{SESSION_SCOPE!r} or {STORE_SCOPE!r}"
         )
 
+    @staticmethod
+    def _refuse_unaddressable(name: str, scope: str) -> None:
+        """Refuse a STORE tag name no ref could spell.
+
+        A store tag is a ref: it is written where
+        ``session@commit[:/path]`` is written, and those two delimiters
+        belong to the grammar, so a name holding either could be stored
+        and never addressed. A session tag is reached by name alone
+        (``ws.tags.at``) and takes no such rule.
+
+        Asked of a name being created, not of one being read: a tag
+        already on a store is a fact, and it stays listable and
+        openable by name whatever it is called.
+        """
+        if scope == STORE_SCOPE and ("@" in name or ":" in name):
+            raise ValueError(
+                f"Store tag name must not contain '@' or ':': {name!r} — a "
+                "ref spells session@commit[:/path], so a store tag holding "
+                "either delimiter could be stored and never addressed as "
+                "one."
+            )
+
     def check_tag(self, name: str, *, scope: str = SESSION_SCOPE) -> None:
         """Apply the name and scope rules without writing anything."""
         self._scoped(name, scope)
+        self._refuse_unaddressable(name, scope)
 
     def tag(
         self,
@@ -910,6 +936,7 @@ class KvgitProvider:
         """
         self._refuse_frozen("tag")
         stored = self._scoped(name, scope)
+        self._refuse_unaddressable(name, scope)
         try:
             return self._staged.tag(stored, at=at, info=info)
         except ValueError as e:
