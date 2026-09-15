@@ -1690,3 +1690,39 @@ def test_branch_at_takes_a_tag_and_a_short_id(peer_ws, store):
             assert child.files.read("/workspace/a.txt") == b"one\n"
         finally:
             child.close()
+
+
+def test_the_index_tags_namespace_speaks_the_stores_vocabulary(ws):
+    """``ws.index.tags`` and ``ws.tags`` are two scopes of one idea, so
+    they take the same four verbs and the same ``at=``: an embedder
+    learns the vocabulary once."""
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    first = ws.index.commit("first")
+    ws.files.fs.write("/workspace/b.txt", b"two\n")
+    second = ws.index.commit("second")
+
+    assert ws.index.tags.add("v1", at=first) == first
+    assert ws.index.tags.list() == {"v1": first}
+
+    info = ws.index.tags.info("v1")
+    assert (info.name, info.scope, info.id) == ("v1", "index", first)
+    assert ws.index.tags.info("nope") is None
+
+    with pytest.raises(ValueError):
+        ws.index.tags.add("v1")
+    assert ws.index.tags.add("v1", force=True) == second
+    assert ws.index.tags.delete("v1") == second
+    assert ws.index.tags.list() == {}
+
+
+def test_the_older_index_tag_spelling_still_works(ws):
+    """``ws.index.tags()``, ``tag()`` and ``delete_tag()`` are what
+    embedders wrote against; the namespace is reached by the same
+    attribute, so the call keeps answering with the mapping."""
+    ws.files.fs.write("/workspace/a.txt", b"one\n")
+    commit = ws.index.commit("first")
+
+    assert ws.index.tag("v1") == commit
+    assert ws.index.tags() == {"v1": commit}
+    assert ws.index.delete_tag("v1") == commit
+    assert ws.index.tags() == {}

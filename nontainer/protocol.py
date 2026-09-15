@@ -191,7 +191,9 @@ class TagInfo:
     """The name as the caller gave it — no scope prefix."""
 
     scope: str
-    """``"session"`` or ``"store"`` (see ``WorkspaceProvider.tag``)."""
+    """``"session"`` or ``"store"`` (see ``WorkspaceProvider.tag``), or
+    ``"index"`` for one of the agent's own ws-git bookmarks, which no
+    provider records — a workspace fills that one in from the blob."""
 
     id: str
     """The commit the tag names."""

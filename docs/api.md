@@ -442,7 +442,8 @@ says which seam it belongs to:
 | | holds | |
 |---|---|---|
 | `ws.files` | the file surface | read / write / edit / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
-| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout / tags / tag / delete_tag |
+| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout |
+| `ws.index.tags` | the agent's own bookmarks | add / list / info / delete |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
 | `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
 | `store.tags` | names that outlive the session | add / list / info / delete / at |
@@ -617,18 +618,28 @@ ws.index.log(limit=None) -> list[CommitInfo]     # the agent's own commits
 ws.index.head -> str | None                      # the agent's last commit
 ws.index.checkout(commit) -> str                 # restore the tree to one
                                                  # of the AGENT's commits
-ws.index.tags() -> dict[str, str]                # the agent's bookmarks
-ws.index.tag(name, ref=None, *, force=False) -> str
-ws.index.delete_tag(name) -> str                 # returns what it named
+ws.index.tags.add(name, *, at=None, force=False) -> str
+ws.index.tags.list() -> dict[str, str]           # the agent's bookmarks
+ws.index.tags.info(name) -> TagInfo | None       # scope "index"
+ws.index.tags.delete(name) -> str                # returns what it named
 ```
 
 **`ws.index` tags are the agent's own bookmarks**, not `ws.tags`. A
 name in the agent's blob, pointing at one of its commits: it pins
 nothing (the session's history is append-only and reaches every commit
 the agent made), it belongs to this session and dies with it, a fork
-starts with none, and a merge brings none over. `tags()` hands back a
+starts with none, and a merge brings none over. `list()` hands back a
 record of what they are, not a live view. `ws.tags` and `store.tags`
 are the store's, and they do pin what they name.
+
+The four verbs and the `at=` keyword are the same ones `ws.tags` and
+`store.tags` take, so the vocabulary is learned once and the namespace
+you reach through is the scope. There is no `ws.index.tags.at()`: a
+bookmark names a commit this session's history already holds, and
+standing on one is `ws.index.checkout(commit)`. The older spelling
+still answers — `ws.index.tags()` is `list()`, `ws.index.tag(name,
+ref=None, *, force=False)` is `add(name, at=ref, force=)`, and
+`ws.index.delete_tag(name)` is `delete(name)`.
 
 **`ws.index` is the agent's own git**, and a fiction over this
 session's history: the index and the agent's commit graph are metadata
@@ -990,7 +1001,9 @@ nothing and needs no bulk form.
 
 `TagInfo` carries `name`, `scope`, `id` (the commit), `tree`,
 `time`, the `info` dict, and `dangling` (the commit is not in the
-store — damage, not an ordinary state).
+store — damage, not an ordinary state). `ws.index.tags.info()` fills
+the same record with `scope="index"` and the named commit's `tree` /
+`time` / `info`, a bookmark carrying none of its own.
 
 **Frozen workspaces.** `ws.tags.at(name)` returns a `Workspace` over the
 tagged state that can be read but never written — **by every door**:

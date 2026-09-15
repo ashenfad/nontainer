@@ -1169,35 +1169,121 @@ class WorkspaceIndex:
             ws._require_unmerged(self._git, "checkout")
             return self._git.checkout(commit)
 
-    def tags(self) -> dict[str, str]:
-        """The agent's own bookmarks: tag name → commit id.
+    @property
+    def tags(self) -> "WorkspaceIndexTags":
+        """``ws.index.tags``: the agent's own bookmarks.
 
-        A record of what the tags are, not a live view — changing the
-        mapping changes no tag. These are not ``ws.tags``, which are
-        the store's: a ws-git tag is a name in the agent's own blob,
-        pins nothing against collection (the session's history is
-        append-only and reaches every commit the agent made), belongs
-        to this session, and is neither inherited by a fork nor
-        brought over by a merge.
+        The namespace, which is also callable: ``ws.index.tags()``
+        answers with the mapping, the older spelling of
+        ``ws.index.tags.list()``.
         """
-        return self._git.tags()
+        return WorkspaceIndexTags(self._ws)
 
     def tag(self, name: str, ref: str | None = None, *, force: bool = False) -> str:
-        """Bookmark one of the agent's commits by name; returns the id.
+        """The older spelling of ``ws.index.tags.add(name, at=ref)``.
 
         ``ref`` defaults to the agent's head and may be any ref the
         agent can type. A name already taken is refused unless
         ``force`` moves it, and a name that could be read as a commit
         id is refused outright.
         """
+        return self.tags.add(name, at=ref, force=force)
+
+    def delete_tag(self, name: str) -> str:
+        """The older spelling of ``ws.index.tags.delete(name)``:
+        returns the commit the bookmark named, which stays where it
+        is."""
+        return self.tags.delete(name)
+
+
+class WorkspaceIndexTags:
+    """``ws.index.tags``: the names the agent gives its own commits.
+
+    Not ``ws.tags``, which are the store's. A ws-git tag is a name in
+    the agent's own blob: it pins nothing against collection (the
+    session's history is append-only and reaches every commit the agent
+    made), it belongs to this session and dies with it, a fork starts
+    with none, and a merge brings none over.
+
+    The four verbs and the ``at=`` keyword are ``ws.tags``' and
+    ``store.tags``', so the vocabulary is learned once and the object
+    reached through says which scope it is about. There is no ``at()``
+    here: a bookmark names a commit this session's own history already
+    holds, and standing on one is ``ws.index.checkout(commit)`` rather
+    than a frozen workspace over somebody's snapshot.
+
+    Calling the namespace — ``ws.index.tags()`` — is the older spelling
+    of :meth:`list`.
+    """
+
+    __slots__ = ("_ws",)
+
+    def __init__(self, ws: "Workspace") -> None:
+        self._ws = ws
+
+    def __repr__(self) -> str:
+        return f"<index tags of session {self._ws.session!r}>"
+
+    def __call__(self) -> dict[str, str]:
+        """The older spelling of :meth:`list`."""
+        return self.list()
+
+    @property
+    def _git(self) -> "AgentGit":
+        from .agentgit import AgentGit
+
+        return AgentGit(self._ws)
+
+    def add(self, name: str, *, at: str | None = None, force: bool = False) -> str:
+        """Bookmark one of the agent's commits by name; returns the id.
+
+        ``at`` defaults to the agent's head and may be any ref the
+        agent can type — a commit of its own, a short id, another
+        bookmark. A name already taken is refused unless ``force``
+        moves it, and a name that could be read as a commit id is
+        refused outright.
+        """
         ws = self._ws
         with ws._lock:
             ws._check_open()
-            return self._git.tag(name, ref, force=force)
+            return self._git.tag(name, at, force=force)
 
-    def delete_tag(self, name: str) -> str:
+    def list(self) -> dict[str, str]:
+        """Tag name → commit id, for the agent's own bookmarks.
+
+        A record of what the tags are, not a live view — changing the
+        mapping changes no tag.
+        """
+        return self._git.tags()
+
+    def info(self, name: str) -> TagInfo | None:
+        """Describe one bookmark, or ``None`` if there is no such name.
+
+        The scope reads ``"index"``, since the name lives in the
+        agent's blob rather than in the store, and ``time``, ``tree``
+        and ``info`` are the named COMMIT's: a bookmark carries no
+        metadata of its own and no record of when it was made.
+        ``dangling`` says the commit it names is no longer one the
+        agent's own history reaches.
+        """
+        commit = self._git.tags().get(name)
+        if commit is None:
+            return None
+        entry = self._git.entry(commit)
+        return TagInfo(
+            name=name,
+            scope="index",
+            id=commit,
+            tree=entry.tree if entry else None,
+            time=entry.time if entry else None,
+            info=dict(entry.info) if entry else None,
+            dangling=entry is None,
+        )
+
+    def delete(self, name: str) -> str:
         """Drop one bookmark; returns the commit it named. The commit
-        stays where it is."""
+        stays exactly where it is — the session's own history already
+        holds it, so removing the name takes nothing with it."""
         ws = self._ws
         with ws._lock:
             ws._check_open()
