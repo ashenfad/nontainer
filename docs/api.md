@@ -44,7 +44,8 @@ store.open(session, **workspace kwargs) -> Workspace
 store.sessions() -> list[str]             # session ids on the store
 store.exists(session) -> bool
 store.delete(sessions, *, min_age=3600) -> None
-store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at session@commit
+store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at
+                                          # session@commit; close it
 store.clean(*, min_age=3600) -> int       # sweep unreachable commits
 store.tags -> StoreTags                   # store-scoped tags (below)
 store.close() -> None                     # also a context manager
@@ -117,7 +118,8 @@ store.tags.list() -> dict[str, str]                    # name -> commit id
 store.tags.info(name) -> TagInfo | None
 store.tags.list_info() -> dict[str, TagInfo]           # every tag, one open
 store.tags.delete(name) -> None
-store.tags.at(name, **settings) -> Workspace           # frozen snapshot
+store.tags.at(name, **settings) -> Workspace           # frozen snapshot;
+                                                      # close it
 ```
 
 `add` takes the workspace whose current state to name (staged changes
@@ -195,7 +197,8 @@ Publication: .name, .versions -> tuple[Version, ...], .current
              .meta -> Mapping[str, Any]      # the publication's own metadata
              .version(name) -> Version | None
              .current_version -> Version
-             .open(version=None, **settings) -> Workspace   # frozen, at that version
+             .open(version=None, **settings) -> Workspace   # frozen, at that
+                                                            # version; close it
 
 Version:     .name, .version, .tag, .ref, .published_from, .created
              .info -> Mapping[str, Any]      # the caller's publish info
@@ -451,6 +454,40 @@ says which seam it belongs to:
 The namespaces are views: they hold the workspace and no state, so
 `ws.files` is the same object every time you ask and costs nothing to
 reach.
+
+### Lifetimes
+
+**A `Workspace` owns what it closes.** `ws.close()` releases the
+runtime and its executor, closes anything attached under
+`ws.files.attach`, and then closes the provider — *including* a
+provider the embedder built and passed in. A workspace is the owner of
+its substrate, not a borrower of one, so a caller that wants the
+provider to outlive the workspace has to say so by not handing it over.
+
+**Every frozen open is a workspace to close.** `ws.tags.at(name)`,
+`store.tags.at(name)`, `store.resolve(ref)` and
+`Publication.open(version)` each return a `Workspace` of their own,
+with its own runtime and its own executor — on a VM rung, its own
+machine. Reading a snapshot and walking away leaks all of that, so
+each is a `with` block or a `try` / `finally`:
+
+```python
+with store.resolve(ref) as snap:
+    report = snap.files.read("/workspace/report.md")
+
+served = pub.open()                 # a frozen workspace, held
+try:
+    router = build_router(served, config)
+finally:
+    served.close()                  # when the app stops being served
+```
+
+**`Store.close()` and `AppRuntime.close()` are no-ops**, and are kept
+so the symmetric shape can be written. A store holds no long-lived
+handle: every verb opens what it needs and either hands ownership to
+the workspace it returns or closes it before returning. An app runtime
+holds no workers: each handler call mints and reaps its own. Neither
+one closes the workspaces it handed out — that is the caller's, above.
 
 ### The two tools
 
@@ -972,7 +1009,7 @@ ws.tags.add(name, *, at=None, info=None) -> str       # commit id
 ws.tags.list() -> dict[str, str]                      # name -> commit id
 ws.tags.info(name) -> TagInfo | None
 ws.tags.delete(name) -> None
-ws.tags.at(name) -> Workspace                         # frozen; see below
+ws.tags.at(name) -> Workspace                # frozen; close it, see below
 ws.diff(a, b) -> WorkspaceDiff                # two commit ids; needs
                                               # caps.versioned, not tags
 ws.changed_since(ref) -> WorkspaceDiff       # tag name, commit id or Ref
