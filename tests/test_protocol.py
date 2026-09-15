@@ -189,3 +189,33 @@ def test_an_unversioned_provider_is_honestly_not_frozen(tmp_path):
             ws.close()
     finally:
         provider.close()
+
+
+# -- the error hierarchy -------------------------------------------------------
+
+
+def test_every_error_the_package_raises_is_a_workspace_error():
+    """``except WorkspaceError`` is the one clause an embedder writes,
+    so nothing nontainer raises may sit outside it."""
+    import nontainer
+
+    assert issubclass(nontainer.CacheError, nontainer.WorkspaceError)
+    assert issubclass(nontainer.HarvestLost, nontainer.WorkspaceError)
+
+
+def test_the_errors_keep_the_builtin_they_were_caught_as():
+    """Code written against the old bases still catches them."""
+    import nontainer
+
+    assert issubclass(nontainer.CacheError, ValueError)
+    assert issubclass(nontainer.HarvestLost, RuntimeError)
+
+
+def test_the_executor_vocabulary_is_exported():
+    """``Executor`` is a public name, so the types its methods speak
+    are reachable without importing a module path."""
+    import nontainer
+
+    for name in ("ExecutionContext", "StagedDiff", "ViewSpec", "HarvestLost"):
+        assert name in nontainer.__all__
+        assert getattr(nontainer, name) is not None

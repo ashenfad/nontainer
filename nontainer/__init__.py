@@ -15,13 +15,14 @@ Public surface:
     TerminalResult, PythonResult, WriteOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
+    ExecutionContext, StagedDiff, ViewSpec -- what its methods speak
     SessionRunner, HostObjectFactory -- the loop seam
     Job, Answer         -- what a delegation is, and what it says back
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CommitNotFoundError, BookkeepingLost, SessionsError,
-            JobRunning, BranchExpired
+            JobRunning, BranchExpired, CacheError, HarvestLost
 
 Extension surfaces (built by the embedder, never assumed present):
 
@@ -52,12 +53,16 @@ from .protocol import (
     Answer,
     Capabilities,
     CommitInfo,
+    ExecutionContext,
     Executor,
+    HarvestLost,
     HostObjectFactory,
     Job,
     MergeOutcome,
     SessionRunner,
+    StagedDiff,
     TagInfo,
+    ViewSpec,
     WorkspaceDiff,
     WorkspaceProvider,
     WorkspaceStatus,
@@ -96,6 +101,9 @@ __all__ = [
     "EditOutcome",
     "WorkspaceProvider",
     "Executor",
+    "ExecutionContext",
+    "StagedDiff",
+    "ViewSpec",
     "SessionRunner",
     "HostObjectFactory",
     "Job",
@@ -118,4 +126,5 @@ __all__ = [
     "SessionsError",
     "JobRunning",
     "BranchExpired",
+    "HarvestLost",
 ]
