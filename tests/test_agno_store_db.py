@@ -167,18 +167,60 @@ def test_search_past_sessions_sees_the_other_sessions(registry, tmp_path):
     assert [p["session_id"] for p in previews] == ["chat-1"]
 
 
-def test_listing_ignores_branches_that_only_inherit_a_record(registry, tmp_path):
-    """A plain Workspace.fork() — a published snapshot, say — carries the
-    parent's session key under the parent's id. It is not a session and
-    must not show up as a duplicate of its parent."""
+def test_listing_ignores_a_branch_whose_record_names_another_session(
+    registry, tmp_path
+):
+    """Only a branch whose record names IT holds a session. A branch
+    carrying a record from elsewhere — copied in by hand, say — is not
+    a second copy of the session that record names."""
     db, ws, agent = build(registry, tmp_path, "chat-1")
     run_turn(agent, write_turn("a.txt", "A"))
-    snapshot = ws.fork("snapshot-1")
-    registry.live["snapshot-1"] = snapshot
+    stray = ws.fork("stray-1", inherit="fresh")
+    registry.live["stray-1"] = stray
+    kv_of(stray)[SESSION_KEY] = dict(kv_of(ws)[SESSION_KEY])
+    stray.commit(info={"tool": "test"})
 
     rows, total = db.get_sessions(deserialize=False)
     assert total == 1 and [row["session_id"] for row in rows] == ["chat-1"]
-    assert db.get_session("snapshot-1") is None
+    assert db.get_session("stray-1") is None
+
+
+def test_a_full_fork_is_the_childs_own_session(registry, tmp_path):
+    """The whole point of a full-inherit fork: the child is the agent
+    that was there. The db reads the inherited runs for the CHILD's id
+    and takes the child's next turn beside them — neither of which a
+    record still naming the parent allows."""
+    db, ws, agent = build(registry, tmp_path, "chat-1")
+    run_turn(agent, write_turn("a.txt", "A"))
+    run_turn(agent, write_turn("b.txt", "B"))
+    parent_runs = [r.run_id for r in db.get_session("chat-1").runs]
+
+    child = ws.fork("chat-1.what-if")
+    registry.live["chat-1.what-if"] = child
+
+    session = db.get_session("chat-1.what-if")
+    assert session is not None
+    assert [r.run_id for r in session.runs] == parent_runs
+    assert session.session_data["forked_from_session_id"] == "chat-1"
+
+    tk = WorkspaceTools(child, commit="turn", session_db=db)
+    child_agent = Agent(
+        model=ScriptedModel(),
+        db=db,
+        session_id="chat-1.what-if",
+        tools=[tk],
+        post_hooks=[tk.end_turn],
+        add_history_to_context=True,
+        telemetry=False,
+    )
+    run_turn(child_agent, write_turn("c.txt", "C"))
+
+    assert len(db.get_session("chat-1.what-if").runs) == 3
+    assert child.files.fs.read("c.txt") == b"C"
+    assert len(db.get_session("chat-1").runs) == 2  # the parent is untouched
+    rows, total = db.get_sessions(deserialize=False)
+    assert total == 2
+    assert {row["session_id"] for row in rows} == {"chat-1", "chat-1.what-if"}
 
 
 # -- fork ----------------------------------------------------------------------
