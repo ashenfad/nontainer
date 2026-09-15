@@ -559,16 +559,19 @@ blocks instead — worth it only for short work.
 paths narrows what the delegate SEES (["report.md", "src/"]) without
 narrowing its branch: it still holds everything, and it may create new
 files anywhere. inherit="fresh" (default) gives it a fresh conversation
-over these files; "full" continues yours — your conversation, never
-your staged work, since a delegate starts its own commits and not
-halfway through yours. A brief, a summary, the context it needs — that
-goes IN the task, which is the only thing it is told.
+over these files; "full" continues the one at the fork point — yours,
+or another session's with fork_from= — never your staged work, since a
+delegate starts its own commits and not halfway through yours. A brief,
+a summary, the context it needs — that goes IN the task, which is the
+only thing it is told.
 
 fork_from= starts the delegate from another session's state, or a tag's,
-instead of yours — it gets a fresh conversation there, since a
-conversation that is not yours cannot be continued. resume=<name>
-gives a new task to a delegate you already have, conversation kept;
-it does one task at a time, so resume it after its answer arrives.
+instead of yours. It gets a fresh conversation there by default;
+inherit="full" continues the conversation stored at that fork point, so
+the delegate IS the agent that was there as of that commit and your
+task is its next turn. resume=<name> gives a new task to a delegate you
+already have, conversation kept; it does one task at a time, so resume
+it after its answer arrives.
 
 A delegate's branch does not live forever: one that has gone unread
 long enough is swept, and its job then reads `expired` with nothing

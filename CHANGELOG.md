@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tagging one is for. A bare name is a session first and a store tag
   second; the verbs that write to a named branch (`merge`,
   `cherry-pick`) take none, since a tag has no branch to come from.
+- **`inherit="full"` with `fork_from`.** A delegate forked from another
+  fork point can be given the conversation stored there: it is then the
+  agent that was at that commit, and the task is its next turn — how an
+  agent asks the author of a published app for another one like it,
+  with the origin commit held by a store tag long after its session is
+  gone. `resume` still refuses a non-fresh inherit, because a resumed
+  child keeps the conversation it has.
+
 ## 0.7.1 - 2026-09-15
 
 ### Fixed
