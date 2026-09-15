@@ -65,6 +65,11 @@ _PUB_BRANCH_PREFIX = "@store/pub/"
 # It carries one commit and that commit is empty, so it names a place
 # to read from and nothing else.
 _ANCHOR_BRANCH = "@store/anchor"
+# The session half a ref carries when it names a STORE TAG rather than
+# a session, in the same "@" namespace: a store tag belongs to no
+# session, so there is no session for the ref to name, and no session
+# id can be spelled this way.
+_TAG_REF_PREFIX = "@store/tag/"
 # The publication registry: the mutable half (which versions exist,
 # which one is current) beside the immutable half (the tags).
 _REGISTRY_FILE = "publications.json"
@@ -182,11 +187,36 @@ class Ref:
 
     ``path`` is carried but not yet interpreted: it is the spelling a
     later sparse read (``store.resolve("a@b:/app")``) will use.
+
+    A ref may also name a STORE TAG instead of a session, and then
+    :attr:`tag` is the name and the session half is the store's own
+    reserved spelling for one. Such a ref is still one exact state —
+    the commit the tag names — and it has no branch behind it, which
+    is what lets it be read after the session that reached that commit
+    is deleted.
     """
 
     session: str
     commit: str
     path: str | None = None
+
+    @property
+    def tag(self) -> str | None:
+        """The store tag this ref names, or ``None`` when it names a
+        session.
+
+        A store tag belongs to no session, so the tag takes the place
+        of the session half. Reads of such a ref are frozen at its
+        commit, since there is no branch to follow."""
+        if self.session.startswith(_TAG_REF_PREFIX):
+            return self.session[len(_TAG_REF_PREFIX) :]
+        return None
+
+    @classmethod
+    def at_tag(cls, name: str, commit: str) -> "Ref":
+        """The ref for a store tag: the commit it names, and the tag in
+        place of a session."""
+        return cls(session=f"{_TAG_REF_PREFIX}{name}", commit=commit)
 
     @classmethod
     def parse(cls, text: "str | Ref") -> "Ref":
@@ -794,6 +824,12 @@ class Store:
 
         The session must exist: resolving a ref into a session the
         store has never held raises rather than creating the branch.
+        A ref naming a STORE TAG (``ref.tag``) needs no session at
+        all — the tag names the commit and holds it against collection,
+        so it opens the way :meth:`StoreTags.at` does, for as long as
+        the tag exists. The tag is the half that is read there: it is
+        the identity in such a ref, and a tag never moves, so the two
+        halves cannot come to disagree.
 
         ``settings`` are :meth:`open`'s remaining construction keywords
         — ``python``, ``mounts``, ``commands``, ``cache``,
@@ -809,6 +845,10 @@ class Store:
             raise NotSupportedError(
                 f"The {self._backend!r} backend is not versioned, so it has no "
                 "commits to resolve a ref against. Use the kvgit backend."
+            )
+        if parsed.tag is not None:
+            return self._frozen_workspace(
+                self._provider_at_store_tag(parsed.tag), root=root, **settings
             )
         if not self._is_publication_branch(parsed.session):
             if parsed.session not in set(self._branches()):

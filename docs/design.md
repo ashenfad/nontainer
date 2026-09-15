@@ -388,6 +388,17 @@ the files read-only down to the executor's filesystem, nothing able to
 commit — because a published snapshot that could be written to is not
 a snapshot.
 
+**A store tag is also a ref**, wherever a verb reads one: the host's
+(`ws.expand_ref`, `ws.files.attach`, `ws.checkout(tag, paths=)`) and
+the agent's (`ws-git worktree add`, `checkout <ref> -- <paths>`,
+`diff`, `log`, `show`). Such a ref carries the tag where a session
+would go and names the commit outright, so the read is frozen and
+needs no branch — which is what lets an agent mount and take from a
+state whose session was deleted months ago. The verbs that WRITE to a
+named branch take no tag: there is no branch for a merge to come from.
+A bare name is a session first and a store tag second, since a session
+is the thing a listing shows.
+
 ## Publications
 
 `store.publish(ws, name)` is the tag with the three things a served app
