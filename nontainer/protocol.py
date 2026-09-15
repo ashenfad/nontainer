@@ -1128,8 +1128,13 @@ class Job:
     """``{"seed": [...], "elsewhere": [...]}`` once the job is done:
     the paths the child changed, grouped by whether they are under
     what it was seeded with (see :class:`WorkspaceDiff`). Empty while
-    it runs, and empty under ``"elsewhere"`` for a child that saw the
-    whole tree."""
+    it runs.
+
+    A child that saw the whole tree was seeded with all of it, so
+    there is nothing outside the seed: ``"seed"`` holds every path it
+    touched and ``"elsewhere"`` is empty. The grouping answers a
+    narrowing's question, and an empty ``"elsewhere"`` never means the
+    delegate stayed inside anything."""
 
     kept: bool = False
     """The caller asked for this job to outlive the ordinary retention

@@ -249,6 +249,23 @@ and everywhere else. The seed is what it was GIVEN and never grows, so
 a file the delegate created is *elsewhere* even though it can read it
 back — which is exactly the change the caller has not seen before.
 
+A delegate asked without `paths` was seeded with the whole tree, so
+there is nothing outside it: **`changed["seed"]` holds every path it
+touched and `changed["elsewhere"]` is empty.** The grouping is a
+narrowing's answer, and an ungrouped delegate is not one that changed
+nothing.
+
+**The job table lives as long as the `Sessions` object.** It is
+process-local — nothing about a job is written to the store, so a
+restart, a second process, or a `Sessions` built fresh over the same
+workspace starts with no jobs and no answers. What survives is what
+the store holds: the child's branch, exactly as the delegate left it.
+`store.sessions()` lists it, `ws-git diff <branch>` and
+`ws.diff(...)` read it, `store.open(branch)` opens it, and `ws.merge`
+or `ws.checkout(branch, paths=)` takes the work. So the recovery after
+a restart is the branch, never the job: an embedder that needs job
+records to outlive its process writes them where its own state lives.
+
 Declining and running out of budget **resolve**: the caller reads a
 status, never catches an exception. `JobRunning`, `BranchExpired` and
 `SessionsError` are the three that do raise (not yet, swept, and no
