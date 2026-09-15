@@ -960,6 +960,22 @@ def test_a_resumed_job_keeps_what_belongs_to_the_child(parent, store, fork_point
     assert sessions.base(first.branch) == fork_point
 
 
+# -- the tool's half of keep -------------------------------------------------------
+
+
+def test_the_tool_keeps_a_job(parent, store):
+    """``sessions keep <name>`` promotes the job: what the tool says
+    and what the table records are the same fact."""
+    runner = Echo()
+    with Sessions(parent, runner) as sessions:
+        sessions.ask("hold this", wait=True)
+        name = sessions.list()[0].name
+        said = run_action(sessions, "keep", name=name)
+        assert name in said and "kept" in said
+        assert sessions.list()[0].kept is True
+        assert "no job named" in run_action(sessions, "keep", name="nobody")
+
+
 # -- the tool's half of fork_from and resume ---------------------------------------
 
 

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`sessions keep` keeps.** The tool's `keep` action reported the job
+  kept and never called the helper, so the flag the retention sweep
+  honours was never set from the tool; an agent that typed the verb had
+  its branch swept anyway. The action now promotes the job, and a test
+  holds what the tool says to what the table records.
+
 ## 0.7.0 - 2026-09-14
 
 **The agent's own tools.** ws-git grows the git concepts an agent
