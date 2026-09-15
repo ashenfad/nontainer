@@ -282,8 +282,17 @@ class Runtime:
         registry. Tool descriptions offer the portable verbs where
         either flag holds. Same probe ``register_wsgit`` gates on, in
         one place.
+
+        An executor that declares neither the flag nor its public
+        mapper is read by whether it carries the private
+        ``_guest_to_host``, which is the spelling a guest executor
+        written before the contract named these two would have.
         """
-        return hasattr(self._executor, "_guest_to_host")
+        executor = self._executor
+        declared = getattr(executor, "supports_ws_verbs", None)
+        if declared is not None:
+            return bool(declared)
+        return hasattr(executor, "_guest_to_host")
 
     def guest_to_host(self, guest_path: str) -> str | None:
         """A guest-absolute path as the HOST spells it, or None.
@@ -294,9 +303,16 @@ class Runtime:
         None where there is nothing to map: an in-process executor has
         one spelling, and a path outside the workspace has no host
         twin, which a caller passes through unchanged rather than
-        guessing at. Same probe :attr:`supports_ws_verbs` reports.
+        guessing at.
+
+        ``Executor.guest_to_host`` answers it; an executor written
+        before the contract named it is asked through the private
+        ``_guest_to_host`` instead.
         """
-        mapper = getattr(self._executor, "_guest_to_host", None)
+        executor = self._executor
+        mapper = getattr(executor, "guest_to_host", None) or getattr(
+            executor, "_guest_to_host", None
+        )
         return mapper(guest_path) if mapper is not None else None
 
     # ------------------------------------------------------------------

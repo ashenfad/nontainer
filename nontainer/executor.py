@@ -587,6 +587,10 @@ class LocalExecutor:
     # apps' curl is a real command here.
     supports_commands = True
 
+    # Nothing to ferry: the commands ARE reachable, and there is no
+    # guest whose paths would need carrying across.
+    supports_ws_verbs = False
+
     def __init__(self) -> None:
         self._ctx: ExecutionContext | None = None
         # build_sandbox memoizes built policies per parameter set (the
@@ -629,6 +633,11 @@ class LocalExecutor:
                 shutdown()
             except Exception:
                 pass  # best-effort by contract: the provider closes next
+
+    def guest_to_host(self, guest_path: str) -> str | None:
+        """Always ``None``: execution is in-process, so a path has one
+        spelling and there is nothing to map back."""
+        return None
 
     # -- python ----------------------------------------------------------
 

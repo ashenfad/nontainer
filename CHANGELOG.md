@@ -152,7 +152,12 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   they can (a provider with no tags is not frozen; a provider with no
   commit ids has no prefix to expand) and with `NotSupportedError`
   where they cannot. `refresh()` is the one optional member, and the
-  contract says so.
+  contract says so. `Executor` names the guest-verb half too:
+  `supports_ws_verbs` beside `supports_commands`, and a public
+  `guest_to_host(path)`, where an executor had been declaring it ferried
+  verbs by carrying a private `_guest_to_host` and the runtime had been
+  detecting it with `hasattr`. One written before those names still
+  ferries — the private spelling is the fallback probe.
 
 ### Changed
 - **The docs are re-cut by audience.** Four new pages: `docs/ws-git.md`
