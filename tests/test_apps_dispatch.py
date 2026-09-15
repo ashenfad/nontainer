@@ -1094,3 +1094,54 @@ def test_curl_external_url_error_names_configured_hosts():
     assert "esm.corp.internal" in r.stderr
     assert "unpkg.com" not in r.stderr
     ws.close()
+
+
+# -- wiring twice --------------------------------------------------------
+
+
+def test_enable_apps_on_a_fork_returns_the_runtime_the_fork_already_has():
+    """A fork rebuilds the app loop bound to itself, so wiring the child
+    by hand must find that runtime rather than colliding with its
+    ``ws-curl``."""
+    ws, parent_runtime = make_ws()
+    try:
+        child = ws.fork("c")
+        try:
+            assert "ws-curl" in child.runtime.commands
+            child_runtime = enable_apps(child)
+            assert isinstance(child_runtime, AppRuntime)
+            assert child_runtime is not parent_runtime
+            assert child_runtime.workspace is child
+            assert enable_apps(child) is child_runtime
+        finally:
+            child.close()
+    finally:
+        ws.close()
+
+
+def test_enable_apps_twice_is_the_same_runtime():
+    ws = Workspace(KvgitProvider.open(None, session="twice"))
+    try:
+        first = enable_apps(ws)
+        assert enable_apps(ws) is first
+    finally:
+        ws.close()
+
+
+def test_register_wsgit_twice_is_a_no_op():
+    from nontainer.wsgit import register_wsgit
+
+    ws = Workspace(KvgitProvider.open(None, session="gitwice"))
+    try:
+        register_wsgit(ws)
+        first = ws.runtime.commands["ws-git"]
+        register_wsgit(ws)
+        assert ws.runtime.commands["ws-git"] is first
+        child = ws.fork("c")
+        try:
+            register_wsgit(child)
+            assert ws.terminal("ws-git status").exit_code == 0
+        finally:
+            child.close()
+    finally:
+        ws.close()

@@ -23,10 +23,11 @@ import json
 import posixpath
 import re
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from ..executor import ViewSpec
 from ..workspace import Workspace
@@ -764,11 +765,37 @@ class AppRuntime:
                 )
 
 
+#: The app runtime each workspace is wired with, so a second
+#: ``enable_apps`` finds it instead of colliding with its own
+#: ``ws-curl``. Weak-keyed: a workspace that goes away takes its entry
+#: with it, and the runtime holds the workspace, never the other way
+#: about.
+_RUNTIMES: "MutableMapping[Workspace, AppRuntime]" = WeakKeyDictionary()
+
+
+def app_runtime(ws: Workspace) -> "AppRuntime | None":
+    """The app runtime this workspace is wired with, or ``None``.
+
+    A fork rebuilds the loop bound to itself, so a child has one
+    without anybody having called ``enable_apps`` on it.
+    """
+    return _RUNTIMES.get(ws)
+
+
 def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     """Wire the apps runtime into a workspace: builds the AppRuntime
     and registers the ``ws-curl`` fetch and the ``ws-pytest`` /
-    ``ws-vitest`` unit-test terminal builtins. Returns the runtime (also the live router's
-    dispatch source)."""
+    ``ws-vitest`` unit-test terminal builtins. Returns the runtime (also
+    the live router's dispatch source).
+
+    Idempotent, and a fork counts as already wired: the child of a
+    workspace with an app rebuilds the loop bound to itself as part of
+    the fork, so this returns that runtime rather than building a
+    second one over a ``ws-curl`` already registered. Which means the
+    ``config`` of the first wiring is the one that stands — a workspace
+    already carrying an app is not reconfigured by asking for one
+    again.
+    """
     from ..wspytest import register_wspytest
     from ..wsvitest import register_wsvitest
     from .wscurl import make_curl_command
@@ -776,7 +803,11 @@ def enable_apps(ws: Workspace, config: AppsConfig | None = None) -> AppRuntime:
     # Framework-owned: a fork/snapshot rebuilds its own runtime bound
     # to itself instead of inheriting the parent-bound closure.
     def _register(target: Workspace) -> AppRuntime:
+        existing = _RUNTIMES.get(target)
+        if existing is not None:
+            return existing
         target_runtime = AppRuntime(target, config)
+        _RUNTIMES[target] = target_runtime
         target.runtime.register_command(
             "ws-curl", make_curl_command(target_runtime), rebind=_register
         )

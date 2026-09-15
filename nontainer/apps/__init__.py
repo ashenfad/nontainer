@@ -31,6 +31,7 @@ from .dispatch import (
     DEFAULT_SCRIPT_HOSTS,
     AppRuntime,
     AppsConfig,
+    app_runtime,
     enable_apps,
     request,
 )
@@ -48,6 +49,7 @@ def __getattr__(name):
 
 __all__ = [
     "AppRuntime",
+    "app_runtime",
     "AppsConfig",
     "DEFAULT_SCRIPT_HOSTS",
     "enable_apps",

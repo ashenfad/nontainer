@@ -1839,6 +1839,11 @@ that surface the one an extension of your own can build on too.
 enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
     # builds handler sandboxes + registers the `ws-curl` terminal builtin
     # (injected commands, or the `ws-*` ferry on guests)
+    # idempotent, and a fork of a workspace with an app is already
+    # wired: the child rebuilds the loop bound to itself as part of the
+    # fork, so this hands back that runtime and the config of the first
+    # wiring is the one that stands
+app_runtime(ws) -> AppRuntime | None    # what a workspace is wired with
 
 AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            max_response_bytes=2_000_000,
