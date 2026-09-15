@@ -102,7 +102,10 @@ how you ask the author of a published app for another one like it,
 long after the session that built it is gone (the commit is readable
 for as long as a store tag names it). What a fork inherits is the
 conversation at the FORK POINT, not this session's, so a full inherit
-from elsewhere carries none of yours.
+from elsewhere carries none of yours. It arrives as the child's own: a
+branch holds one session's conversation, so the stored session record
+is rebound to the child, and the session it came from is kept as the
+child's lineage.
 
 A fork point outside the asker's own history shares none with it, so
 that child's branch holds the other state's whole tree, and a merge of

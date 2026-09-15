@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A full-inherit fork carries the conversation as the CHILD's.** The
+  stored session record is rebound to the session the fork makes, with
+  the session the conversation came from kept in
+  `session_data["forked_from_session_id"]`. The copy still named the
+  parent before, and a branch holds one session's conversation: an
+  agno embedder's child read no history for its own id and could
+  persist none of its turns, so every full-inherit delegate —
+  `sessions.ask(inherit="full")`, `ws-git branch`, `ws.fork` — started
+  with the memory it was given invisible to it. `fork_session` did the
+  rewrite itself and behaves as before.
+
 ## 0.7.2 - 2026-09-15
 
 ### Added

@@ -799,8 +799,11 @@ to the past the fork branches from.
 
 `inherit` decides whether the stored conversation comes along, and
 nothing else. `"full"` (default) keeps it — the continue-where-I-am
-fork. `"fresh"` drops every `__agno__/*` key on the child's first
-commit, for a delegate that starts a chat of its own over these files;
+fork — as the CHILD's conversation: a branch holds one session's, so
+the stored session record is rebound to the child's session id, with
+the session the conversation came from kept in
+`session_data["forked_from_session_id"]`. `"fresh"` drops every
+`__agno__/*` key on the child's first commit, for a delegate that starts a chat of its own over these files;
 it touches no file. A brief, a summary, a distilled context is content
 the caller supplies with the child's task — nothing here can write one,
 since nontainer stores the conversation and does not interpret it.
@@ -1803,12 +1806,14 @@ back only the most recent runs; the branch keeps its full list.
 child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
 ```
 
-Returns the forked `Workspace`. The fork's session key is rewritten
-with `session_id = name` and `session_data["forked_from_session_id"]
-= <parent>` (where agno keeps fork lineage), and that rewrite is
-committed, so the fork's head is consistent. Drive
-it with an agent whose `session_id` is the fork name. `"fresh"` drops
-the run keys: a clean chat over the forked files. Rewind first to
+Returns the forked `Workspace`. The fork's session key carries
+`session_id = name` and `session_data["forked_from_session_id"]
+= <parent>` (where agno keeps fork lineage), written in a commit of
+the fork's own, so its head is consistent — `ws.fork` rebinds a
+conversation it carries. Drive it with an agent whose `session_id` is
+the fork name. `"fresh"` drops the run keys and empties `run_ids`,
+leaving the record: a clean chat over the forked files, under a
+session the db can write to. Rewind first to
 branch from any commit with the conversation as it was there.
 
 Driving the fork is the same three constructions over the child:
