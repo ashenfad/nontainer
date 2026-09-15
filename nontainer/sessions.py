@@ -1241,6 +1241,7 @@ def run_action(
                     "already working cannot be interrupted, and its branch is "
                     f"left as it is (ws-git diff {name})."
                 )
+            sessions.keep(name)
             return (
                 f"{name} kept: the retention sweep will leave its branch "
                 "alone from now on."
