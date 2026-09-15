@@ -601,7 +601,9 @@ ws.checkout(ref) -> str                  # restore a commit of THIS session
                                          # (appends; returns the new commit)
 ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
                                          # (a named directory is mirrored)
-ws.log(limit=None, kind="work"|"agent"|"all") -> Iterable[CommitInfo]
+ws.log(*, limit=None, kind="work"|"agent"|"all") -> list[CommitInfo]
+                                         # newest first; no limit reads
+                                         # and holds the whole branch
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.revert(commit: str) -> MergeOutcome            # undo one commit's change

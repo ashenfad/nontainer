@@ -2377,9 +2377,7 @@ class Workspace:
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
         return f"{text}@{virtual}", self._provider.files_at(virtual)
 
-    def log(
-        self, *, limit: int | None = None, kind: str = "work"
-    ) -> Iterable[CommitInfo]:
+    def log(self, *, limit: int | None = None, kind: str = "work") -> list[CommitInfo]:
         """The session's commits, newest first.
 
         ``kind`` says whose commits, and the default hides the ones
@@ -2404,6 +2402,11 @@ class Workspace:
         negative one, which is what the provider's own history answers.
         A provider with no index makes no bookkeeping commits, so
         ``"work"`` and ``"all"`` are the same history there.
+
+        A list, the shape ``ws.index.log()`` has: countable, indexable
+        and readable twice. With no ``limit`` that is the whole branch,
+        read and held — a session with a long history is one to pass a
+        limit for.
         """
         if kind not in ("work", "agent", "all"):
             raise ValueError(
@@ -2412,8 +2415,8 @@ class Workspace:
                 "own commits) or 'all' (the store's history as kept)."
             )
         if kind == "all":
-            return self._provider.history(limit=limit)
-        return self._filtered_log(kind, limit)
+            return list(self._provider.history(limit=limit))
+        return list(self._filtered_log(kind, limit))
 
     def _filtered_log(self, kind: str, limit: int | None) -> Iterator["CommitInfo"]:
         """``log`` with the filter applied before the limit.
