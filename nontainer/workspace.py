@@ -3091,6 +3091,14 @@ class Workspace:
                 "supported. Use the kvgit backend for named commits."
             )
 
+    def _require_versioned(self, op: str) -> None:
+        if not self._provider.caps.versioned:
+            raise NotSupportedError(
+                f"{type(self._provider).__name__} is unversioned: {op}() is "
+                "not supported, since there are no commits to compare. Use "
+                "the kvgit backend for history."
+            )
+
     def _tag(
         self,
         name: str,
@@ -3209,9 +3217,13 @@ class Workspace:
         state — cache, cwd, the stored conversation — is not a file and
         never appears, and ``modified`` holds the paths whose BYTES
         differ: a file re-saved with the content it already had is not
-        a change, though the store's own key diff counts the write."""
+        a change, though the store's own key diff counts the write.
+
+        Comparing two commits is a versioning question, so this needs
+        ``caps.versioned`` and not ``caps.tags``: a name is one way to
+        reach a commit, never what makes two of them comparable."""
         with self._lock:
-            self._require_tags("diff")
+            self._require_versioned("diff")
             return self._provider.diff(a, b)
 
     def changed_since(self, ref: "str | Any") -> WorkspaceDiff:
@@ -3223,13 +3235,19 @@ class Workspace:
         a commit id, or a :class:`~nontainer.store.Ref`, whose commit is
         used. The comparison ends at the current head, so
         staged-but-uncommitted work is not in it (check :attr:`dirty`).
+
+        A provider that versions without naming commits answers this
+        too: the name lookup is what ``caps.tags`` gates, and without
+        it the ref can only be a commit.
         """
         with self._lock:
-            self._require_tags("changed_since")
+            self._require_versioned("changed_since")
             name = getattr(ref, "commit", ref)
-            info = self._provider.tag_info(name, scope="session") or (
-                self._provider.tag_info(name, scope="store")
-            )
+            info = None
+            if self._provider.caps.tags:
+                info = self._provider.tag_info(name, scope="session") or (
+                    self._provider.tag_info(name, scope="store")
+                )
             return self._provider.diff(info.id if info else name, self._provider.head)
 
     # ------------------------------------------------------------------

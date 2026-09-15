@@ -120,7 +120,7 @@ with it False, `commit` / `checkout` / `history` / `fork` all raise
 | `staging` | writes accumulate until `commit()`; `discard()` drops them. False means writes are durable immediately and `discard()` raises |
 | `cheap_fork` | fork is O(1) with shared storage. False but versioned still forks — just expensively, by copy |
 | `merge` | `merge`, the `apply` primitive behind `ws.revert` / `ws.cherry_pick`, and the `commit_at` lookup that names the commits an apply resolves between — three verbs, not one |
-| `tags` | `tag` / `tags` / `tag_info` / `delete_tag` / `at_tag` / `diff` |
+| `tags` | `tag` / `tags` / `tag_info` / `delete_tag` / `at_tag`. Not `diff`, which is versioning's: a name is one way to reach a commit, not what makes two comparable |
 | `index` | `commit_keys` and the read views, so the agent-facing git fiction is available |
 | `sql_audit` | an operation-level audit log queryable with SQL |
 | `fuse_mount` | `mount()` exposes the workspace at a real path for subprocesses and C extensions |
