@@ -18,6 +18,7 @@ Public surface:
     ExecutionContext, StagedDiff, ViewSpec -- what its methods speak
     SessionRunner, HostObjectFactory -- the loop seam
     Job, Answer         -- what a delegation is, and what it says back
+    JobStatus, AnswerStatus -- the words their ``status`` can hold
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, WorkspaceStatus
     errors: WorkspaceError, NotSupportedError, SessionIdError,
@@ -51,6 +52,7 @@ from .errors import (
 from .protocol import (
     SESSION_ID_RE,
     Answer,
+    AnswerStatus,
     Capabilities,
     CommitInfo,
     ExecutionContext,
@@ -58,6 +60,7 @@ from .protocol import (
     HarvestLost,
     HostObjectFactory,
     Job,
+    JobStatus,
     MergeOutcome,
     SessionRunner,
     StagedDiff,
@@ -108,6 +111,8 @@ __all__ = [
     "HostObjectFactory",
     "Job",
     "Answer",
+    "JobStatus",
+    "AnswerStatus",
     "Capabilities",
     "CommitInfo",
     "MergeOutcome",

@@ -226,13 +226,16 @@ serialization format every later verb takes.
 ```python
 Job(name, task, status, ref, started, finished, touched, changed, kept,
     uncommitted, origin)
-# status: running | answered | declined | capped | cancelled | failed
-#         | expired (its branch was swept)
+# status: nontainer.JobStatus — running | answered | declined | capped
+#         | cancelled | failed | expired (its branch was swept)
 # touched: when the caller last dealt with it — what sweep() measures
 # origin: (the fork point as spelled, its commit) — None when the
 #         child was forked from the asking session
 
 Answer(text, status, ref, branch, changed, artifacts, provenance, uncommitted)
+# status: nontainer.AnswerStatus — answered | declined | capped |
+#         failed. Fewer words than a job's: an answer exists only once
+#         the run is over, so it is never running, cancelled or expired
 str(answer) == answer.text            # printing one yields prose
 repr(answer)                          # one line, never the body
 answer.changed                        # {"seed": [...], "elsewhere": [...]}

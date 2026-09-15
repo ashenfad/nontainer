@@ -219,3 +219,31 @@ def test_the_executor_vocabulary_is_exported():
     for name in ("ExecutionContext", "StagedDiff", "ViewSpec", "HarvestLost"):
         assert name in nontainer.__all__
         assert getattr(nontainer, name) is not None
+
+
+def test_the_status_vocabularies_are_exported_and_annotated():
+    """A caller branching on a status wants the set spelled out, and a
+    delegate's answer can hold fewer of them than a job can: a job may
+    be running, cancelled or expired, none of which an answer is."""
+    import typing
+
+    import nontainer
+
+    assert set(typing.get_args(nontainer.AnswerStatus)) < set(
+        typing.get_args(nontainer.JobStatus)
+    )
+    assert typing.get_type_hints(Job)["status"] is nontainer.JobStatus
+    assert typing.get_type_hints(Answer)["status"] is nontainer.AnswerStatus
+
+
+def test_inherit_is_spelled_as_the_two_words_it_takes():
+    import typing
+
+    from nontainer import Workspace as WS
+    from nontainer.sessions import Sessions
+
+    for fn in (WS.fork, Sessions.ask):
+        assert typing.get_args(typing.get_type_hints(fn)["inherit"]) == (
+            "full",
+            "fresh",
+        ), fn

@@ -1072,6 +1072,13 @@ JobStatus = Literal[
     "running", "answered", "declined", "capped", "cancelled", "failed", "expired"
 ]
 
+#: What a delegate's ANSWER can be: the resolutions a runner reaches
+#: itself, which is fewer than a job's. A job can be running, can be
+#: cancelled by its caller and can have its branch swept; an answer is
+#: none of those, because an answer exists only once the run is over
+#: and says what the run came to.
+AnswerStatus = Literal["answered", "declined", "capped", "failed"]
+
 
 @dataclass(frozen=True)
 class Job:
@@ -1089,7 +1096,7 @@ class Job:
     task: str
     """The instruction the runner was given, verbatim."""
 
-    status: str = "running"
+    status: JobStatus = "running"
     """One of :data:`JobStatus`."""
 
     ref: str | None = None
@@ -1159,10 +1166,10 @@ class Answer:
     mark provenance for a reader is that embedder's format and is part
     of this string; nothing here adds or strips one."""
 
-    status: str = "answered"
-    """``answered``, ``declined``, ``capped`` or ``failed`` (see
-    :data:`JobStatus`). A delegate that declines or runs out of budget
-    still answers — the text says so — rather than raising."""
+    status: AnswerStatus = "answered"
+    """One of :data:`AnswerStatus` — ``answered``, ``declined``,
+    ``capped`` or ``failed``. A delegate that declines or runs out of
+    budget still answers, the text saying so, rather than raising."""
 
     ref: str | None = None
     """``session@commit``: the child at the commit this answer
