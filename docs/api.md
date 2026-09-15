@@ -963,7 +963,8 @@ ws.tags.list() -> dict[str, str]                      # name -> commit id
 ws.tags.info(name) -> TagInfo | None
 ws.tags.delete(name) -> None
 ws.tags.at(name) -> Workspace                         # frozen; see below
-ws.diff(a, b) -> WorkspaceDiff                        # two commit ids
+ws.diff(a, b) -> WorkspaceDiff                # two commit ids; needs
+                                              # caps.versioned, not tags
 ws.changed_since(ref) -> WorkspaceDiff       # tag name, commit id or Ref
 
 store.tags.add(ws_or_ref, name, *, info=None) -> str  # the store scope
@@ -1031,6 +1032,12 @@ The files are frozen; the host's world is not. A store-level frozen
 open (`store.tags.at`, `store.resolve`, `Publication.open`) opens a
 tree rather than a session, so it has no settings to inherit and takes
 them as keywords at the call instead.
+
+**`diff` and `changed_since` need `caps.versioned`, not `caps.tags`.**
+Comparing two commits is a versioning question; a name is one way to
+reach a commit and not what makes two of them comparable. On a provider
+that versions without naming, `changed_since` takes a commit — the name
+lookup is the half `caps.tags` gates.
 
 **`changed_since`** takes a tag name, a commit id or a `Ref`, and
 compares it with the current head. A name is looked up as this

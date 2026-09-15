@@ -211,6 +211,15 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **`ws.diff` and `ws.changed_since` need versioning, not tags.** Both
+  were gated on `caps.tags`, so a substrate that keeps history without
+  naming commits was told to "use the kvgit backend for named commits"
+  when all it asked was what changed between two of its own. Comparing
+  two commits is a versioning question — a name is one way to reach a
+  commit, not what makes two of them comparable — and the provider's
+  own diff reads its history and never a tag. `changed_since` still
+  resolves a NAME through tags, where there are tags to resolve it
+  through.
 - **Wiring a workspace twice is a no-op, and a fork counts as wired.**
   `enable_apps` and `register_wsgit` refused a second call with
   `Terminal command already registered`, which a fork walked straight

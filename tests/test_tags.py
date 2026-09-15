@@ -1,5 +1,7 @@
 """Tags: naming a commit, the two scopes, frozen snapshots, diff."""
 
+from dataclasses import replace
+
 import pytest
 
 from nontainer import (
@@ -616,3 +618,42 @@ def test_store_tags_list_info_opens_the_backend_once(tmp_path, monkeypatch):
 
 def test_store_tags_list_info_is_empty_without_a_store(tmp_path):
     assert Store(tmp_path / "never-used").tags.list_info() == {}
+
+
+def test_diff_is_gated_on_versioning_not_on_tags():
+    """Comparing two commits is a versioning question. The provider's
+    diff reads its own history and never a tag, so a substrate that
+    versions without naming commits still answers it."""
+    from nontainer import Capabilities
+
+    class Untagged(KvgitProvider):
+        @property
+        def caps(self):
+            return replace(super().caps, tags=False)
+
+    ws = Workspace(Untagged.open(None, session="untagged"))
+    try:
+        assert ws.caps.tags is False
+        ws.files.write("a.txt", "one")
+        first = ws.head
+        ws.files.write("a.txt", "two")
+        assert "/workspace/a.txt" in ws.diff(first, ws.head).modified
+        assert "/workspace/a.txt" in ws.changed_since(first).modified
+        with pytest.raises(NotSupportedError):
+            ws.tags.add("v1")
+    finally:
+        ws.close()
+    assert Capabilities().tags is False
+
+
+def test_an_unversioned_provider_refuses_diff(tmp_path):
+    from nontainer.providers.dir import DirProvider
+
+    ws = Workspace(DirProvider(tmp_path / "d", session="plain"))
+    try:
+        with pytest.raises(NotSupportedError):
+            ws.diff("a", "b")
+        with pytest.raises(NotSupportedError):
+            ws.changed_since("a")
+    finally:
+        ws.close()

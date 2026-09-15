@@ -142,8 +142,10 @@ class Capabilities:
     them: immutable references that also anchor garbage collection, so
     a named commit (and everything it descends from) is kept for as
     long as the name exists. When False, ``tag`` / ``tags`` /
-    ``tag_info`` / ``delete_tag`` / ``at_tag`` / ``diff`` raise
-    ``NotSupportedError``."""
+    ``tag_info`` / ``delete_tag`` / ``at_tag`` raise
+    ``NotSupportedError``. It does not gate ``diff``: comparing two
+    commits is a versioning question, and a name is one way to reach a
+    commit rather than what makes two of them comparable."""
 
     index: bool = False
     """Keyed commits are available, so the agent-facing git fiction is:
@@ -526,7 +528,8 @@ class WorkspaceProvider(Protocol):
         ...
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
-        """File-level changes between two commit ids."""
+        """File-level changes between two commit ids (requires
+        ``caps.versioned``, not ``caps.tags``)."""
         ...
 
     def merge(
