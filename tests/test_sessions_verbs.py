@@ -91,6 +91,38 @@ def test_inherit_fresh_drops_the_conversation_and_nothing_else(ws):
             assert not child.uncommitted
         finally:
             child.close()
+    fresh = ws.fork("child-fresh-again", inherit="fresh")
+    try:
+        assert fresh._provider.kv.get("__agno__/session") is None
+    finally:
+        fresh.close()
+
+
+def test_a_full_fork_carries_the_conversation_as_the_childs_own(ws):
+    """A branch holds one session's conversation and a fork is a new
+    session, so the record the child inherits names the child, and the
+    session it came from is kept as its lineage. A record still naming
+    the parent is one the conversation's reader refuses to answer for
+    and its writer refuses to write beside."""
+    _seed(ws, **{"a.txt": "one\n"})
+    kv = ws._provider.kv
+    kv["__agno__/session"] = {"session_id": "main", "run_ids": ["r1"]}
+    kv["__agno__/runs/r1"] = {"run_id": "r1"}
+    ws.commit(info={"tool": "test"})
+
+    child = ws.fork("child")
+    try:
+        record = child._provider.kv["__agno__/session"]
+        assert record["session_id"] == "child"
+        assert record["session_data"]["forked_from_session_id"] == "main"
+        assert record["run_ids"] == ["r1"]
+        assert child._provider.kv["__agno__/runs/r1"] == {"run_id": "r1"}
+        # the rewrite rides the child's own fork commit, so its head is
+        # consistent for anything that reopens the branch
+        assert not child.uncommitted
+    finally:
+        child.close()
+    assert kv["__agno__/session"]["session_id"] == "main"  # the parent is untouched
 
 
 def test_inherit_takes_only_its_two_words(ws):

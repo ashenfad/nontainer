@@ -697,6 +697,46 @@ def test_ask_from_elsewhere_can_continue_that_conversation(parent, store, fork_p
     assert answer.text == "south is 7"
 
 
+def test_a_full_inherit_makes_the_conversation_the_childs_own(parent, store):
+    """The delegate IS the agent that was there: the record it inherits
+    names the delegate, so its db reads that conversation for it and
+    stores its turns beside it, with the asker kept as its lineage."""
+    kv = parent._provider.kv
+    kv[f"{CONVERSATION_PREFIX}session"] = {"session_id": "analyst", "run_ids": ["1"]}
+    kv[f"{CONVERSATION_PREFIX}runs/1"] = b"what are the rates?"
+    parent.commit(info={"tool": "test"})
+
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask("and south?", inherit="full", wait=True)
+
+    record = _conversation(store, answer.branch)[f"{CONVERSATION_PREFIX}session"]
+    assert record["session_id"] == answer.branch
+    assert record["session_data"]["forked_from_session_id"] == "analyst"
+    assert kv[f"{CONVERSATION_PREFIX}session"]["session_id"] == "analyst"
+
+
+def test_a_full_inherit_from_elsewhere_names_the_session_it_came_from(parent, store):
+    """The lineage is the session whose conversation the child carries,
+    which for a fork point elsewhere is not the asker."""
+    sage = store.open("sage")
+    sage.files.write("/workspace/rates.md", "# Rates\n\nnorth 4, south 7\n")
+    kv = sage._provider.kv
+    kv[f"{CONVERSATION_PREFIX}session"] = {"session_id": "sage", "run_ids": ["1"]}
+    kv[f"{CONVERSATION_PREFIX}runs/1"] = b"what are the rates?"
+    sage.index.commit("curated")
+    store.tags.add(sage, "rates-2027")
+    sage.close()
+
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask(
+            "and south?", fork_from="rates-2027", inherit="full", wait=True
+        )
+
+    record = _conversation(store, answer.branch)[f"{CONVERSATION_PREFIX}session"]
+    assert record["session_id"] == answer.branch
+    assert record["session_data"]["forked_from_session_id"] == "sage"
+
+
 def test_a_full_inherit_from_a_session_ref_carries_that_commit(
     parent, store, fork_point
 ):
