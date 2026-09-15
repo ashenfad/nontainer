@@ -229,6 +229,11 @@ One name it will not take beyond a name already in use: one spelled
 like a commit id (seven or more hex characters), which is what lets a
 tag be read before a hash with nothing ambiguous about it.
 
+The host half is `ws.index.tags`: `add(name, *, at=None, force=False)`,
+`list()`, `info(name)` and `delete(name)` — the four verbs `ws.tags`
+and `store.tags` take, so the vocabulary is learned once and the object
+you reach through says which scope you meant.
+
 Another session's bookmarks are readable as `<session>@<tag>`, which
 is that session's name for one exact state:
 

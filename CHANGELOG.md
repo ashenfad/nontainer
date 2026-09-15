@@ -41,7 +41,11 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   half over `provider.apply(base, theirs, info=)` and both count as
   agent commits in `ws.index.log()`. A stash is an ordinary session that
   `store.sessions()` lists and `Store.delete` drops; the bookmarks' host
-  half is `ws.index.tags()` / `tag()` / `delete_tag()`; `status` ends
+  half is `ws.index.tags`, taking `add` / `list` / `info` / `delete`
+  and `at=` the way `ws.tags` and `store.tags` do — so an embedder
+  learns one vocabulary and the namespace it reaches through is the
+  scope. The older `ws.index.tags()` / `tag()` / `delete_tag()` still
+  answer, the listing because the namespace is callable; `status` ends
   with a `worktrees:` block; `rebase` still refuses.
 - **A short commit id is a ref everywhere** — a unique prefix of seven
   hex characters or more, in `store.resolve`, `ws.checkout`,
