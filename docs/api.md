@@ -101,7 +101,13 @@ naming the commits it could mean; one nothing matches raises
 **`ws.expand_ref(ref) -> Ref`** spells that commit half whole up
 front: a short id, a whole one, or that session's own ws-git tag, and
 what comes back names one exact state — ready for `store.resolve`, a
-diff, a merge, with any `:/path` carried through. It is a workspace
+diff, a merge, with any `:/path` carried through. A word with no `@` in
+it is a **store tag**, which names one commit and no session: the ref
+that comes back carries the tag where a session would go (`ref.tag`,
+spelled `@store/tag/<name>@<commit>`) and reads frozen at that commit,
+so it answers with the session that reached it deleted. A bare session
+name is not a ref in either spelling — it names a moving head rather
+than one state. It is a workspace
 verb rather than a store one because answering needs the session's
 substrate: a tag is a name in the named session's own blob, and a
 short id expands against that session's history. The session half is
@@ -140,7 +146,12 @@ can and mints one where it cannot: a session if the store has any,
 otherwise a publication's own `@store/pub/...` branch, otherwise the
 store's own `@store/anchor`, created on that first read and holding a
 single empty commit. **A store-scoped tag therefore opens for as long
-as it exists**, with every session deleted and nothing published. The
+as it exists**, with every session deleted and nothing published. It is
+also a **ref** the reading verbs take by name — `ws.expand_ref`,
+`ws.files.attach`, `ws.checkout(tag, paths=[...])`, `store.resolve` and
+the ws-git verbs that read one — so the state a tag names is mountable
+and takeable from long after its session is gone, which is why an
+embedder tags a commit it may want to start from later. The
 anchor is not a session, `sessions()` never lists it, `delete` refuses
 a name that is not a session id and so cannot reach it, and `clean()`
 keeps it: a branch head is a GC root, and the commit it holds owns
@@ -832,7 +843,8 @@ git's `restore --source=<ref> -- <paths>`: it makes those paths match
 any ref and leaves everything else alone. `ref` is a `session@commit`,
 a session name (that session's last *agent* commit — the same reading
 `merge` takes, so the two cannot disagree about what a delegate said),
-or a commit of this session. A path that names a *directory* mirrors
+a store tag (the commit it names, read frozen), or a commit of this
+session. A path that names a *directory* mirrors
 that subtree — a file it holds here and the ref does not is removed,
 so taking a delegate's `pkg/` cannot leave behind the `pkg/old.py` the
 delegate deleted — while a path that names a file moves that file and
@@ -844,7 +856,8 @@ dropped something) — a soft reference, not ancestry. Only file keys
 move, so the merge-policy question never arises.
 
 **`ws.files.attach(ref, at, *, readonly=True, root=None)`** mounts
-another session's tree, frozen at a commit, inside this one at `at`;
+another session's tree — or the state a store tag names, which needs no
+session at all — frozen at a commit, inside this one at `at`;
 `detach(at)` removes it and `attachments()` lists `{point: ref}`. For
 reading someone else's work in place — a delegate's branch while
 deciding whether to merge it — without copying it in. Explicit and

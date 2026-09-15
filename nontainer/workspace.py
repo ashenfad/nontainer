@@ -54,7 +54,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from .cache import Cache
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
@@ -744,6 +744,19 @@ def _frozen_fs(fs: Any, tag: str | None) -> Any:
     return FrozenFS(fs)
 
 
+class _Attachment(NamedTuple):
+    """One foreign state mounted in a session's tree.
+
+    The ref is kept beside the frozen workspace rather than read back
+    off it: a store tag is read through a branch borrowed for the
+    purpose, so the snapshot's own ref would name that branch and say
+    nothing about what was mounted.
+    """
+
+    ref: str
+    snapshot: "Workspace"
+
+
 @dataclass(frozen=True)
 class _Settings:
     """The construction arguments a fork replays onto its own provider —
@@ -1069,8 +1082,11 @@ class WorkspaceFiles:
         rather than a directory on the host, and it is frozen, so
         ``readonly=False`` has nothing to offer and is refused.
 
-        ``ref`` is ``session@commit`` (see :class:`~nontainer.Ref`) or
-        a session name, which means that session's current commit.
+        ``ref`` is ``session@commit`` (see :class:`~nontainer.Ref`), a
+        session name, which means that session's current commit, or a
+        store tag, which means the commit it names — and a tag holds
+        its commit, so one mounts for as long as the tag exists,
+        whatever became of the session that reached it.
         What lands at ``at`` is the source's workspace ROOT, so a file
         the delegate calls ``auth.py`` reads as ``<at>/auth.py``.
         A lineage shares one root, so that root is THIS session's;
@@ -1106,7 +1122,7 @@ class WorkspaceFiles:
 
     def attachments(self) -> dict[str, str]:
         """What is attached, as ``{mount point: ref}``."""
-        return {at: str(snap.ref) for at, snap in self._ws._attached.items()}
+        return {at: held.ref for at, held in self._ws._attached.items()}
 
     def export(self) -> AbstractContextManager[Path]:
         """Expose the workspace at a real path for the duration of the
@@ -1540,7 +1556,7 @@ class Workspace:
         # The attachment layer is always in the chain: the executor is
         # handed ONE filesystem object when it opens, so a tree
         # attached later has to reach it through that same object.
-        self._attached: dict[str, Workspace] = {}
+        self._attached: dict[str, _Attachment] = {}
         self._fs = AttachFS(self._build_fs(viewed, normalized_mounts), self._root)
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
@@ -2222,8 +2238,8 @@ class Workspace:
         accounts for every file the take touched.
 
         ``ref`` may be a ``session@commit``, a session name (that
-        session's last agent commit, as a merge would read it), or a
-        commit of this session.
+        session's last agent commit, as a merge would read it), a store
+        tag naming a commit, or a commit of this session.
         """
         wanted = normalize_view(paths, self._root)
         source, files = self._take_source(ref)
@@ -2305,13 +2321,22 @@ class Workspace:
         return self._provider.expand_commit(commit, session=session)
 
     def expand_ref(self, ref: "str | Ref") -> "Ref":
-        """``session@x`` with its commit half spelled whole.
+        """``session@x`` with its commit half spelled whole — or the
+        commit a store tag names.
 
         ``x`` may be a commit id typed short, a whole one, or that
         session's own ws-git tag — the three spellings every verb
         reading one exact state accepts. What comes back names one
         exact state and is ready for :meth:`Store.resolve`, a diff, a
         merge; any ``:/path`` on the way in is carried through.
+
+        A word with no ``@`` in it is a STORE TAG, which names one
+        commit and no session: the ref that comes back carries the tag
+        where a session would go (``ref.tag``) and reads frozen at that
+        commit, so it answers after the session that reached it is
+        deleted. A bare SESSION name is not a ref in either spelling —
+        it names a moving head rather than one state — and is refused
+        as one.
 
         A workspace verb rather than a store one because answering
         needs this session's substrate: a ws-git tag is a name in the
@@ -2325,13 +2350,49 @@ class Workspace:
         :class:`~nontainer.errors.CommitNotFoundError` for a word that
         is neither a tag nor a commit of that session.
         """
-        from .store import Ref
-
-        parsed = Ref.parse(ref)
         with self._lock:
             self._check_open()
-            commit = self._ref_commit(parsed.session, parsed.commit)
+            return self._read_ref(ref)
+
+    def _read_ref(self, ref: "str | Ref") -> "Ref":
+        """:meth:`expand_ref`, under the lock. See it for the contract."""
+        from .store import Ref
+
+        if not isinstance(ref, Ref) and "@" not in str(ref):
+            tagged = self._store_tag_ref(str(ref).strip())
+            if tagged is not None:
+                return tagged
+            raise ValueError(
+                f"Not a ref: {str(ref)!r} — expected 'session@commit' "
+                "(optionally 'session@commit:/path'), or a store tag, which "
+                "names a commit with no session half"
+            )
+        parsed = Ref.parse(ref)
+        if parsed.tag is not None:
+            return parsed
+        commit = self._ref_commit(parsed.session, parsed.commit)
         return Ref(parsed.session, commit, parsed.path)
+
+    def _store_tag_ref(self, name: str) -> "Ref | None":
+        """The ref for a store tag of this name, or ``None`` where no
+        store tag has it.
+
+        A store tag names a commit and belongs to no session, and it
+        holds that commit against collection — so the ref it makes
+        reads frozen and goes on reading after the session that reached
+        the commit is deleted, which is the whole reason to tag one. A
+        workspace built straight from a provider has no store to ask,
+        and a substrate that keeps no tags has none to find.
+        """
+        from .store import Ref
+
+        if self._store is None:
+            return None
+        try:
+            commit = self._store.tags.list().get(name)
+        except NotSupportedError:
+            return None
+        return None if commit is None else Ref.at_tag(name, commit)
 
     def _ref_commit(self, session: str, commit: str) -> str:
         """The commit half of a ``session@x`` ref → a commit id.
@@ -2425,8 +2486,14 @@ class Workspace:
         session, and what a session means is its last AGENT commit —
         the same reading :meth:`merge` takes, so "take one file from
         the delegate" and "merge the delegate" cannot disagree about
-        what the delegate said. Anything else is a commit of this
-        session.
+        what the delegate said. A name no session has is a store tag,
+        which names one commit and reads frozen at it. Anything else is
+        a commit of this session.
+
+        The files come off THIS session's provider, which reads any
+        commit the store holds: a store tag holds its commit against
+        collection, so taking from one works with the session that
+        reached it deleted.
         """
         from .agentgit import BLOB_KEY, parse_blob
         from .store import Ref
@@ -2434,13 +2501,25 @@ class Workspace:
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
             parsed = Ref.parse(text)
+            if parsed.tag is not None:
+                return str(parsed), self._provider.files_at(parsed.commit)
             commit = self._ref_commit(parsed.session, parsed.commit)
             return str(Ref(parsed.session, commit)), self._provider.files_at(commit)
         try:
             head = self._provider.branch_head(text)
         except (ValueError, NotSupportedError, AttributeError):
+            tagged = self._store_tag_ref(text)
+            if tagged is not None:
+                return str(tagged), self._provider.files_at(tagged.commit)
             commit = self._expand_commit(text)
-            return f"{self.session}@{commit}", self._provider.files_at(commit)
+            try:
+                return f"{self.session}@{commit}", self._provider.files_at(commit)
+            except CommitNotFoundError:
+                raise CommitNotFoundError(
+                    f"nothing to take from {text!r}: this store holds no "
+                    "session, no store tag and no commit of this session "
+                    "under that name."
+                ) from None
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
         return f"{text}@{virtual}", self._provider.files_at(virtual)
 
@@ -2698,7 +2777,12 @@ class Workspace:
                 f"cannot attach at {at!r}: "
                 + ("the root is the session's own" if point == "/" else "already taken")
             )
-        snapshot = self._resolve_snapshot(ref, root or self._root)
+        wanted = self._snapshot_ref(ref)
+        # Read under the caller's root unless told otherwise: a commit
+        # holds its files at whatever root the session that made them
+        # used, so resolving at the wrong one reads an empty tree, and
+        # a lineage shares one.
+        snapshot = self._store.resolve(wanted, root=root or self._root)
         try:
             # The PROVIDER's filesystem, not the snapshot workspace's:
             # a session forked with a narrow view composes one over its
@@ -2712,28 +2796,28 @@ class Workspace:
         except BaseException:
             snapshot.close()
             raise
-        self._attached[point] = snapshot
+        self._attached[point] = _Attachment(str(wanted), snapshot)
         self._mark_executor_stale()
-        return str(snapshot.ref)
+        return str(wanted)
 
     def _detach(self, at: str) -> None:
         point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
-        snapshot = self._attached.pop(point, None)
-        if snapshot is None:
+        held = self._attached.pop(point, None)
+        if held is None:
             raise ValueError(f"nothing attached at {at!r}")
         self._fs.detach(point)
-        snapshot.close()
+        held.snapshot.close()
         self._mark_executor_stale()
 
-    def _resolve_snapshot(self, ref: "str | Ref", root: str) -> "Workspace":
-        """A frozen workspace at what ``ref`` names — a
-        ``session@commit``, or a session name meaning its head — read
-        under ``root``.
+    def _snapshot_ref(self, ref: "str | Ref") -> "Ref":
+        """The one state ``ref`` names for a frozen read.
 
-        The root matters: a commit holds its files at whatever root the
-        session that made them used, so resolving at the wrong one
-        reads an empty tree. A lineage shares one, which is why the
-        caller's own is the default.
+        A ``session@commit`` names its own. A bare name is a SESSION,
+        meaning its branch head — what a reader of another session's
+        tree wants to see — and where no session has that name, a STORE
+        TAG, which names a commit and no session at all. A session
+        first, so a session and a store tag that share a name cannot
+        take a reader somewhere other than the session it can list.
         """
         from .store import Ref
 
@@ -2745,17 +2829,30 @@ class Workspace:
             )
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
-            parsed = Ref.parse(text)
-            return self._store.resolve(
-                Ref(
-                    parsed.session,
-                    self._ref_commit(parsed.session, parsed.commit),
-                    parsed.path,
-                ),
-                root=root,
-            )
-        head = self._provider.branch_head(text)
-        return self._store.resolve(Ref(session=text, commit=head), root=root)
+            return self._read_ref(ref)
+        try:
+            head = self._provider.branch_head(text)
+        except (ValueError, NotSupportedError, AttributeError):
+            tagged = self._store_tag_ref(text)
+            if tagged is None:
+                raise ValueError(self._no_such_ref(text)) from None
+            return tagged
+        return Ref(session=text, commit=head)
+
+    @staticmethod
+    def _no_such_ref(name: str) -> str:
+        """Why a bare name names no state to read.
+
+        Such a name is looked for as a session and then as a store tag,
+        so a refusal naming only one of the two would send a reader to
+        the wrong listing.
+        """
+        return (
+            f"unknown session or store tag {name!r}: this store holds no "
+            "session and no store tag of that name (ws-git branch lists the "
+            "sessions; a store tag is a name given to a commit so that it "
+            "outlives its session)"
+        )
 
     def _adopt_commands(self, new_ws: Workspace) -> None:
         """Re-bind framework-owned commands onto a fork/snapshot.
@@ -3332,9 +3429,9 @@ class Workspace:
                 self._runtime.close()
                 # The attached states are workspaces of their own, held
                 # only by this one: nothing else will close them.
-                for snapshot in self._attached.values():
+                for held in self._attached.values():
                     try:
-                        snapshot.close()
+                        held.snapshot.close()
                     except Exception:  # noqa: BLE001 - closing the session wins
                         pass
                 self._attached.clear()

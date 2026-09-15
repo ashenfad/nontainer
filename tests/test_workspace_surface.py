@@ -125,6 +125,32 @@ def test_expand_ref_needs_both_halves(two_sessions):
         ws.expand_ref("alice")
 
 
+def test_expand_ref_reads_a_store_tag_as_the_commit_it_names(two_sessions):
+    """A store tag names one exact state and no session, so it is a ref
+    spelled with no session half — and the ref that comes back says
+    which tag it was."""
+    s, ws = two_sessions
+    commit = s.tags.add(ws, "shipped/v1")
+
+    expanded = ws.expand_ref("shipped/v1")
+    assert (expanded.tag, expanded.commit) == ("shipped/v1", commit)
+    assert str(expanded) == f"@store/tag/shipped/v1@{commit}"
+    assert ws.expand_ref(expanded) == expanded
+
+    frozen = s.resolve(expanded)
+    try:
+        assert frozen.files.read("/workspace/a.txt") == b"one"
+    finally:
+        frozen.close()
+
+
+def test_expand_ref_refuses_a_name_that_is_neither_ref_nor_store_tag(two_sessions):
+    """The refusal names both spellings a bare word could have been."""
+    _, ws = two_sessions
+    with pytest.raises(ValueError, match="store tag"):
+        ws.expand_ref("shipped/v1")
+
+
 def test_expand_ref_feeds_store_resolve(two_sessions):
     """The round trip the public pair exists for: expand a ref a caller
     typed short, then read that exact state through the store."""
