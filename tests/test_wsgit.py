@@ -1813,6 +1813,8 @@ def test_a_store_tag_is_a_ref_for_the_verbs_that_read(peer_ws, tagged):
         r"commit [0-9a-f]{40} \(tag: myapp/v1\)\n\n    shipped\n", r.stdout
     ), r.stdout
     assert "+print('one')" in r.stdout
+    # the tag was taken on that commit, so there is nothing after it
+    assert "changes at the tag" not in r.stdout
 
     r = peer_ws.terminal("ws-git checkout myapp/v1 -- app.py")
     assert r.exit_code == 0, r.stderr
@@ -1876,3 +1878,28 @@ def test_your_own_spellings_are_read_before_a_store_tag(peer_ws, store):
     assert r.exit_code == 0, r.stderr
     assert "+mine" in r.stdout
     assert "theirs" not in r.stdout
+
+
+def test_show_at_a_tag_reports_what_landed_after_its_last_commit(peer_ws, store):
+    """A tag names a state, and a state is rarely a ws-git commit: the
+    framework commits as work is written. What the tag holds past that
+    commit shows under a heading of its own, so nobody reads the commit
+    as the whole of it."""
+    origin = store.open("origin")
+    register_wsgit(origin)
+    origin.files.fs.write("/workspace/app.py", b"print('one')\n")
+    origin.terminal("ws-git commit -m shipped")
+    origin.files.write("/workspace/notes.md", "written after the commit\n")
+    store.tags.add(origin, "later/v1")
+    origin.close()
+
+    r = peer_ws.terminal("ws-git show later/v1")
+    assert r.exit_code == 0, r.stderr
+    assert "    shipped\n" in r.stdout
+    assert "+print('one')" in r.stdout
+    head, _, tail = r.stdout.partition(
+        "changes at the tag after its last ws-git commit:\n"
+    )
+    assert tail, r.stdout
+    assert "notes.md" not in head
+    assert "+written after the commit" in tail

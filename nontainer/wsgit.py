@@ -174,7 +174,8 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     holds; -S the commits where <string> appeared (+)
                     or vanished (-)
   show <ref>        one commit: its message and its diff. A store tag
-                    shows the commit it names
+                    shows the state it names: the commit it stands on,
+                    then anything written after it
   checkout <ref>    restore the tree to a commit of yours (the restore
                     is a new commit)
   checkout <ref> -- <paths>
@@ -1263,18 +1264,20 @@ def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
 
 
 def _show_tagged(ws: Any, ctx: Any, name: str, commit: str) -> Any:
-    """The commit a store tag names: its message and what it changed.
+    """The state a store tag names: the ws-git commit it stands on, and
+    anything written after that commit.
 
-    What shows is the ws-git commit the tagged state stands on, which
-    is what ``log`` of the same tag leads with. A tag may name a
-    commit of the framework's — it commits as work is written, for
-    durability — and such a commit holds the agent's last one and adds
-    nothing to it, so showing it would print an empty diff for a state
-    that has plenty in it.
+    A tag names a commit in the store's history, which is rarely a
+    ws-git commit: the framework commits as work is written, for
+    durability, so the tagged state is the agent's last commit plus
+    whatever landed since. Showing the store commit alone would print
+    an empty diff for a state with plenty in it, and showing the ws-git
+    commit alone would leave out files the tag holds — so both show,
+    the second under a heading that says what it is.
 
-    The change is read the way ``cherry-pick`` reads one, against the
-    state the commit was composed on: the commit is on nobody's graph
-    here, and this session's history does not hold it.
+    What the ws-git commit changed is read the way ``cherry-pick``
+    reads one, against the state it was composed on: the commit is on
+    nobody's graph here, and this session's history does not hold it.
     """
     from .agentgit import BLOB_KEY, parse_blob
 
@@ -1293,7 +1296,33 @@ def _show_tagged(ws: Any, ctx: Any, name: str, commit: str) -> Any:
     body = _render_diff(ws, sorted(set(old) | set(new)), old, new)
     if body:
         ctx.stdout.write("\n".join(body) + "\n")
+    _show_tag_tail(ws, ctx, new, commit)
     return None
+
+
+def _show_tag_tail(
+    ws: Any, ctx: Any, committed: Mapping[str, Any], commit: str
+) -> None:
+    """What the tagged tree holds that its last ws-git commit does not.
+
+    Nothing at all where the two trees agree, which is every tag taken
+    on a ws-git commit; a labelled diff otherwise, so a reader of a
+    tagged state is never shown a commit and left to assume it is the
+    whole of it.
+    """
+    tagged = ws._provider.files_at(commit)
+    changed = sorted(
+        path
+        for path in set(committed) | set(tagged)
+        if committed.get(path) != tagged.get(path)
+    )
+    if not changed:
+        return
+    body = _render_diff(ws, changed, committed, tagged)
+    if not body:
+        return
+    ctx.stdout.write("changes at the tag after its last ws-git commit:\n")
+    ctx.stdout.write("\n".join(body) + "\n")
 
 
 def _decode(value: Any) -> bytes | None:
