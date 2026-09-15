@@ -26,3 +26,15 @@ Written by ``nontainer.adapters.agno_db``, which derives its own key
 names from this. A delegate's conversation never merges into its
 caller's — two chats that never happened together cannot be
 interleaved, and what a delegate has to say arrives as its answer."""
+
+CONVERSATION_SESSION_KEY = CONVERSATION_PREFIX + "session"
+"""The one key of that plane that holds the session record rather than
+a run. Its ``session_id`` field names the session the conversation
+belongs to and ``session_data["forked_from_session_id"]`` the session
+it came from; that shape is the adapter's, named here because forking
+is core's verb and a fork that carries the conversation has to rewrite
+both fields. A branch holds one session's conversation, and a fork is
+a new session: a record that still named the session it was copied
+from is one the adapter refuses to read for the child and refuses to
+write beside, so the child would have no memory and could not store
+its own turns."""

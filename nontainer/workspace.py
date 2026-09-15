@@ -58,7 +58,7 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from .cache import Cache
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
-from .planes import CONVERSATION_PREFIX
+from .planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from .protocol import (
     Capabilities,
     CommitInfo,
@@ -2626,9 +2626,11 @@ class Workspace:
 
         ``inherit`` decides whether the stored conversation comes
         along, and nothing else: ``"full"`` (default) keeps it — the
-        continue-where-I-am fork — and ``"fresh"`` drops it, for a
-        delegate that starts a chat of its own over these files. It
-        never touches a file. A brief, a summary, a distilled context
+        continue-where-I-am fork, carried as the CHILD's own
+        conversation, since a branch holds one session's and the child
+        is a new session — and ``"fresh"`` drops it, for a delegate
+        that starts a chat of its own over these files. It never
+        touches a file. A brief, a summary, a distilled context
         is content the caller supplies when it seeds the child's first
         turn; nothing here can write one, since the conversation is
         stored and not interpreted.
@@ -2706,7 +2708,8 @@ class Workspace:
         child is narrowed, REMOVED when it is not — a fork of a
         narrowed session that is given the whole tree must not inherit
         its parent's blinkers), the conversation, dropped whole for
-        ``inherit="fresh"``, and the ws-git state, reset for BOTH
+        ``inherit="fresh"`` and rebound to the child for
+        ``inherit="full"``, and the ws-git state, reset for BOTH
         inheritances (see ``agentgit.reset_for_fork``: a branch carries
         the workspace, never the agent's composition in progress). The
         first two land as one commit of the child's own, so its head is
@@ -2731,12 +2734,47 @@ class Workspace:
             ]:
                 del kv[key]
                 changed = True
+        elif self._rebind_conversation(kv, forked.session):
+            changed = True
         if changed and forked.caps.versioned:
             forked.commit(
                 {"tool": "fork", "parent": self.session, "inherit": inherit}
                 | ({"paths": list(seed)} if seed else {})
             )
         reset_for_fork(forked, self.session)
+
+    def _rebind_conversation(self, kv: Any, child: str) -> bool:
+        """Make an inherited conversation the CHILD's own, and say
+        whether anything was written.
+
+        A branch holds one session's conversation, and a fork is a new
+        session: a record copied over under the name of the session it
+        came from is one the reader refuses to answer for and the
+        writer refuses to write beside, so the child would start with
+        no memory and could store none of its own turns. The session
+        it came from is kept in the field the conversation's own reader
+        keeps fork lineage in (see ``planes.CONVERSATION_SESSION_KEY``
+        for the two field names).
+
+        The record's own ``session_id`` is what names that session,
+        rather than this workspace: a fork from another session's
+        commit carries THAT session's conversation, and the record is
+        what knows it. A record that names none falls back to this
+        session, the branch the fork was taken on.
+        """
+        record = kv.get(CONVERSATION_SESSION_KEY)
+        if not isinstance(record, dict):
+            return False
+        came_from = record.get("session_id")
+        if came_from == child:
+            return False
+        record = dict(record)
+        record["session_id"] = child
+        session_data = dict(record.get("session_data") or {})
+        session_data["forked_from_session_id"] = came_from or self.session
+        record["session_data"] = session_data
+        kv[CONVERSATION_SESSION_KEY] = record
+        return True
 
     def _record_view(self, paths: tuple[str, ...]) -> None:
         """Keep the branch's view record in step with what this session
