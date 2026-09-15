@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tagging one is for. A bare name is a session first and a store tag
   second; the verbs that write to a named branch (`merge`,
   `cherry-pick`) take none, since a tag has no branch to come from.
+  Such a ref stays exact: `store.resolve` refuses one whose tag has
+  since been deleted and added again, naming both commits, because a
+  repointed name is a different state under the same word.
 - **`inherit="full"` with `fork_from`.** A delegate forked from another
   fork point can be given the conversation stored there: it is then the
   agent that was at that commit, and the task is its next turn — how an

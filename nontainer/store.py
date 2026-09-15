@@ -827,9 +827,10 @@ class Store:
         A ref naming a STORE TAG (``ref.tag``) needs no session at
         all — the tag names the commit and holds it against collection,
         so it opens the way :meth:`StoreTags.at` does, for as long as
-        the tag exists. The tag is the half that is read there: it is
-        the identity in such a ref, and a tag never moves, so the two
-        halves cannot come to disagree.
+        the tag exists — and it must still name the commit the ref
+        carries. Tags never move, so the two halves disagree only where
+        the name was deleted and added again, which is a different
+        state under the same word; that is refused rather than read.
 
         ``settings`` are :meth:`open`'s remaining construction keywords
         — ``python``, ``mounts``, ``commands``, ``cache``,
@@ -847,6 +848,7 @@ class Store:
                 "commits to resolve a ref against. Use the kvgit backend."
             )
         if parsed.tag is not None:
+            self._require_tag_at(parsed.tag, parsed)
             return self._frozen_workspace(
                 self._provider_at_store_tag(parsed.tag), root=root, **settings
             )
@@ -2190,6 +2192,32 @@ class Store:
         # store exactly once. The opening provider is not closed here:
         # that would close the backend the caller is about to read.
         return KvgitProvider(handle, session=session, frozen_at=commit)
+
+    def _require_tag_at(self, tag: str, ref: Ref) -> None:
+        """Refuse a tag ref the tag no longer answers for.
+
+        A ref names one exact state, and a tag is a name that can be
+        taken away: deleting one and adding it again is how a name is
+        repointed, and what it names the second time is a different
+        state under the same word. A ref minted against the first must
+        not quietly open the second — it was kept precisely because it
+        meant one commit.
+        """
+        held = self.tags.list().get(tag)
+        if held is None:
+            raise WorkspaceError(
+                f"No such store tag: {tag!r} (resolving {str(ref)!r}). A "
+                "tag that was deleted takes its name with it, so there is "
+                "nothing here to read."
+            )
+        if held != ref.commit:
+            raise WorkspaceError(
+                f"Store tag {tag!r} names commit {held} now, and this ref "
+                f"carries {ref.commit} (resolving {str(ref)!r}). Tags never "
+                "move, so the name was deleted and added again: that is a "
+                "different state under the same word, and a ref made against "
+                "the first one is not a way to read it."
+            )
 
     def _provider_at_store_tag(self, name: str) -> WorkspaceProvider:
         from .providers.kvgit import KvgitProvider

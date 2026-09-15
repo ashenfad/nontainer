@@ -657,3 +657,38 @@ def test_an_unversioned_provider_refuses_diff(tmp_path):
             ws.changed_since("a")
     finally:
         ws.close()
+
+
+def test_a_tag_ref_refuses_a_name_repointed_since(tmp_path):
+    """A ref names one exact state. Deleting a tag and adding it again
+    is how a name is repointed, and what it names then is a different
+    state — so a ref kept from before refuses rather than opening it."""
+    from nontainer import Store, WorkspaceError
+
+    s = Store(tmp_path / "store")
+    ws = s.open("alpha")
+    ws.files.write("/workspace/a.txt", "one")
+    first = s.tags.add(ws, "shipped")
+    kept = ws.expand_ref("shipped")
+
+    ws.files.write("/workspace/a.txt", "two")
+    s.tags.delete("shipped")
+    second = s.tags.add(ws, "shipped")
+    assert second != first
+
+    with pytest.raises(WorkspaceError) as caught:
+        s.resolve(kept)
+    assert first in str(caught.value) and second in str(caught.value)
+
+    # the ref read now names the state the name holds now
+    fresh = s.resolve(ws.expand_ref("shipped"))
+    try:
+        assert fresh.files.read("/workspace/a.txt") == b"two"
+    finally:
+        fresh.close()
+
+    s.tags.delete("shipped")
+    with pytest.raises(WorkspaceError, match="No such store tag: 'shipped'"):
+        s.resolve(kept)
+    ws.close()
+    s.close()
