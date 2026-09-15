@@ -148,7 +148,7 @@ registers:
 ```python
 from nontainer.wsgit import register_wsgit
 
-register_wsgit(ws)                      # now the shell answers `ws-git`
+register_wsgit(ws)                      # -> True: the shell answers now
 ws.terminal("ws-git branch polish --paths auth.py")
 ws.terminal("ws-git merge polish")      # ws-git help lists the rest
 ```
@@ -157,7 +157,10 @@ The rule: `ws.index` is the host's half and needs no switch — every
 workspace whose backend has `caps.index` (kvgit does) has it. The
 terminal `ws-git` exists only where `register_wsgit(ws)` has been
 called, which no adapter does for you; until then the agent gets
-`ws-git: command not found`. Both drive the same index, so host and
+`ws-git: command not found`. It returns whether the agent can type the
+verb — True when it installed it and True when it was already there,
+False on an executor that neither runs injected commands nor ferries
+`ws-*` verbs into a guest, where nothing can be installed at all. Both drive the same index, so host and
 agent see one composition. [ws-git.md](ws-git.md) is the reference for
 the agent's half — every verb, what it prints, and what it refuses.
 

@@ -235,26 +235,34 @@ FERRY = FerrySpec(
 )
 
 
-def register_wsgit(ws: Any) -> None:
-    """Register the ``ws-git`` terminal builtin on a workspace.
+def register_wsgit(ws: Any) -> bool:
+    """Register the ``ws-git`` terminal builtin on a workspace; returns
+    whether the agent can type ``ws-git`` here.
+
+    True when this call installed the verb and True when it was already
+    there, because both answer the embedder's real question. False
+    where the executor neither runs injected commands nor ferries
+    ``ws-*`` verbs into a guest: nothing was installed and nothing can
+    be, so a caller that builds a tool description or a primer around
+    the verb has its answer without probing the runtime itself.
 
     Follows the ``enable_apps``/``register_command`` pattern. Two doors
     lead here — an embedder wiring a workspace, and the rebind a
     fork/snapshot runs to rebuild the verb bound to itself — so a
     second call is a no-op rather than a duplicate-name error.
 
-    No-op as well where the executor cannot run commands (the gate
-    doubles as the primer gate: agents on such executors are never told
-    about terminal builtins). A dud-backed executor reports
-    ``supports_commands`` False (real bash has no registry) yet ferries
-    the verbs to the guest another way — detected by the capability
-    flags, not by importing the executor (which would cycle).
+    The executor gate doubles as the primer gate: agents on such
+    executors are never told about terminal builtins. A dud-backed
+    executor reports ``supports_commands`` False (real bash has no
+    registry) yet ferries the verbs to the guest another way — detected
+    by the capability flags, not by importing the executor (which would
+    cycle).
     """
     rt = ws.runtime
     if not rt.supports_commands and not rt.supports_ws_verbs:
-        return
+        return False
     if "ws-git" in rt.commands:
-        return
+        return True
     # Tags OUR registration and carries the ferry spec: the dud relay
     # must not front a user's own ``ws-git`` command (the ws-* prefix
     # reservation holds for register_command, and RESERVED_COMMANDS
@@ -263,6 +271,7 @@ def register_wsgit(ws: Any) -> None:
     # Framework-owned: a fork/snapshot rebuilds this bound to itself
     # instead of inheriting the parent-bound closure (the fork-bleed).
     ws.runtime.register_command("ws-git", fn, rebind=register_wsgit)
+    return True
 
 
 def make_wsgit_command(ws: Any) -> Any:

@@ -211,6 +211,13 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **`register_wsgit(ws)` says whether the agent can type `ws-git`.**
+  It returned `None` whether it had installed the verb or quietly
+  declined to, so an embedder building a primer around the verb had to
+  probe `ws.runtime` for the same two flags the function had just read.
+  True when it installed the verb and True when the verb was already
+  there — both answer the question that was asked — and False only
+  where the executor can carry no terminal builtin at all.
 - **`JobStatus` and `AnswerStatus` are exported and annotated.**
   `Job.status` and `Answer.status` were plain `str` with the vocabulary
   spelled only in prose, so a caller branching on one got no help and

@@ -1734,3 +1734,26 @@ def test_the_older_index_tag_spelling_still_works(ws):
     assert ws.index.tags() == {"v1": commit}
     assert ws.index.delete_tag("v1") == commit
     assert ws.index.tags() == {}
+
+
+def test_register_wsgit_says_whether_the_verb_is_there():
+    """The return value answers the question an embedder has after
+    calling it: can the agent type ws-git on this workspace?"""
+    from nontainer.wsgit import register_wsgit
+
+    ws = Workspace(KvgitProvider.open(None, session="says"))
+    try:
+        assert register_wsgit(ws) is True
+        assert register_wsgit(ws) is True  # already there is still there
+    finally:
+        ws.close()
+
+    class DeafRuntime:
+        supports_commands = False
+        supports_ws_verbs = False
+        commands: dict = {}
+
+    class DeafWs:
+        runtime = DeafRuntime()
+
+    assert register_wsgit(DeafWs()) is False

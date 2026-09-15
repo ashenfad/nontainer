@@ -15,10 +15,13 @@ Registration is the embedder's call:
 ```python
 from nontainer.wsgit import register_wsgit
 
-register_wsgit(ws)        # now the shell answers `ws-git`
+register_wsgit(ws)        # -> True: the shell answers `ws-git` now
 ```
 
-Until someone calls it the agent gets `ws-git: command not found`. The
+Until someone calls it the agent gets `ws-git: command not found`. It
+answers whether the agent can type the verb, so a False means the
+executor can carry no terminal builtin at all rather than that this
+call came second. The
 verbs need a provider with `caps.index` (kvgit has it); anywhere else
 every verb refuses by name.
 
