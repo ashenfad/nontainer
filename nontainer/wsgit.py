@@ -536,7 +536,8 @@ def _store_tag_ref(ws: Any, word: str) -> Any:
     The second reading of a bare name, after a session: the two
     namespaces may share one, and the session wins, since it is what
     ``ws-git branch`` lists. A word with an ``@`` in it is a
-    ``<session>@<commit>`` and is never read as a tag.
+    ``<session>@<commit>`` and is never read as a tag — no store tag
+    can be named with one, so nothing is out of reach.
 
     Only the verbs that READ a ref take one. A store tag names a commit
     and no branch, so there is nothing for a merge to come from, a

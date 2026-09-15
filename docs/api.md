@@ -128,6 +128,17 @@ store.tags.at(name, **settings) -> Workspace           # frozen snapshot;
                                                       # close it
 ```
 
+A store tag is a **ref**, spelled where `session@commit[:/path]` is
+spelled, so a new name may hold neither `@` nor `:` — the two
+delimiters that grammar owns — and `add` refuses one that does, since
+such a name could be stored and never addressed. Slashes are fine,
+which is what makes a publication's `<name>/<version>` one of these,
+and a publication name and version are session-id shaped, so `publish`
+can mint nothing that breaks the rule. It is asked of a name being
+created: a tag already on a store stays listable and openable by name
+whatever it is called. Session-scoped tags (`ws.tags`) are reached by
+name alone and take no such rule.
+
 `add` takes the workspace whose current state to name (staged changes
 are committed first, so the name means what the caller saw) or a ref
 naming an exact commit. Any ref the store hands out is one `add` takes

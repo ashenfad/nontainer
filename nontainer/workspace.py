@@ -2334,9 +2334,10 @@ class Workspace:
         commit and no session: the ref that comes back carries the tag
         where a session would go (``ref.tag``) and reads frozen at that
         commit, so it answers after the session that reached it is
-        deleted. A bare SESSION name is not a ref in either spelling —
-        it names a moving head rather than one state — and is refused
-        as one.
+        deleted. A store tag name may hold no ``@`` and no ``:``, which
+        is what keeps the two spellings apart. A bare SESSION name is
+        not a ref in either spelling — it names a moving head rather
+        than one state — and is refused as one.
 
         A workspace verb rather than a store one because answering
         needs this session's substrate: a ws-git tag is a name in the
