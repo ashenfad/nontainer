@@ -15,7 +15,7 @@ to import it from:
 
 | import path | what it is |
 |---|---|
-| `nontainer.wsgit.register_wsgit(ws)` | installs the `ws-git` terminal verb on a workspace |
+| `nontainer.wsgit.register_wsgit(ws) -> bool` | installs the `ws-git` terminal verb on a workspace; the bool says whether the agent can type it |
 | `nontainer.wspytest.register_wspytest(ws)` | installs `ws-pytest` (also wired in by `enable_apps`) |
 | `nontainer.wsvitest.register_wsvitest(ws)` | installs `ws-vitest`, the browser-side twin |
 | `nontainer.executor.LocalExecutor` | the default executor, in-process ([Executors](#executors)) |
