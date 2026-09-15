@@ -211,6 +211,14 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **A delegate name you give is refused when it is taken.**
+  `sessions.ask(name="editor")` on a session that already had an
+  `editor` child quietly forked `editor.2` and handed that back, so a
+  caller that named the child it meant to address sent every later
+  `result` / `merge` / `diff` to a different one. It raises
+  `SessionsError` now, naming the branch and pointing at `resume=` for
+  giving the existing child its next task. A minted pet name carries no
+  such intent and is still suffixed past a collision.
 - **`ws.diff` and `ws.changed_since` need versioning, not tags.** Both
   were gated on `caps.tags`, so a substrate that keeps history without
   naming commits was told to "use the kvgit backend for named commits"

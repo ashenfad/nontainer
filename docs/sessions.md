@@ -44,6 +44,15 @@ SEES without narrowing its branch; `inherit` (`"fresh"` here, against
 along — a brief or a summary is content the task carries. `wait=True`
 blocks and returns the `Answer` instead.
 
+**A name you give is a name, not a preference.** `ask(name="editor")`
+on a session that already has an `editor` child is refused, naming the
+branch and pointing at `resume="editor"` for giving that child its next
+task. A silent `.2` would hand back a branch that is not the one asked
+for, and every later `result` / `merge` / `diff` spelled with the name
+would go to the wrong child. A minted pet name carries no such intent,
+so a collision there is settled with a numeric suffix and reported to
+nobody.
+
 **Nothing lands here on its own.** An ask always leaves a branch, and
 what becomes of it is the caller's own step: read it (`ws.diff`,
 `ws.files.attach`), merge it, take some of its files
