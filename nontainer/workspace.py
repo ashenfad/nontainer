@@ -2451,7 +2451,7 @@ class Workspace:
         name: str,
         *,
         at: str | None = None,
-        inherit: str = "full",
+        inherit: Literal["full", "fresh"] = "full",
         paths: "Iterable[str] | str | None" = None,
     ) -> "Workspace":
         """Independent session seeded from current state — or, with

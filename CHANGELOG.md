@@ -211,6 +211,13 @@ every `ws-*` verb into a guest, a test holds the package's layering, the
   every file a delegate inherited read as one it added.
 
 ### Fixed
+- **`JobStatus` and `AnswerStatus` are exported and annotated.**
+  `Job.status` and `Answer.status` were plain `str` with the vocabulary
+  spelled only in prose, so a caller branching on one got no help and
+  no check. An answer takes fewer words than a job — it exists only
+  once the run is over, so it is never running, cancelled or expired —
+  and the two literals say which is which. `inherit` is
+  `Literal["full", "fresh"]` on `Workspace.fork` and `Sessions.ask`.
 - **A delegate name you give is refused when it is taken.**
   `sessions.ask(name="editor")` on a session that already had an
   `editor` child quietly forked `editor.2` and handed that back, so a

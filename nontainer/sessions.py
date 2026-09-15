@@ -58,7 +58,7 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import (
     BranchExpired,
@@ -219,7 +219,7 @@ class Sessions:
         *,
         name: str | None = None,
         paths: "Iterable[str] | str | None" = None,
-        inherit: str = "fresh",
+        inherit: Literal["full", "fresh"] = "fresh",
         fork_from: "str | Any | None" = None,
         resume: str | None = None,
         wait: bool = False,

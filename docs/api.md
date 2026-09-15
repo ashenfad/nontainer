@@ -1606,9 +1606,9 @@ contract** — harnesses parse tool results with `parse_artifacts_note`, never
 a private regex:
 
 ```python
-from nontainer.adapters.render import (
-    artifact_kind, artifacts_note, parse_artifacts_note,
-)
+from nontainer import artifact_kind
+from nontainer.adapters.render import artifacts_note, parse_artifacts_note
+
 parse_artifacts_note(tool_result)  # -> [(name, path), ...], [] if no note
 artifact_kind("/ui/x.plotly.json")  # -> "plotly"
 ```
