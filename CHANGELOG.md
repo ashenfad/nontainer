@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it gets the ImportError a request gives it.
 
 ### Fixed
+- **The `host` module a test composes is read-only, as the real one
+  is.** A handler that assigns to `host.db` gets a 500 from a request —
+  the module is rebuilt per execution, so a write would be a channel
+  between two of them — and the stand-in `call` builds refused
+  nothing, so such a handler passed a test and failed the wire tier.
+  It now raises the same sentence.
 - **`call(db=fake)` substitutes what a handler imports, too.** A
   handler is meant to reach its dependencies with `from host import
   db`, and that was the one spelling a test could not fake: the import

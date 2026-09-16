@@ -185,10 +185,28 @@ class Host:
     rewrites ``import host`` to build one of these from the names the
     test program holds, which are the substitutions where a test made
     one and the session's own objects everywhere else.
+
+    Read-only after construction, in the same words the real module
+    refuses in: the module a request hands a handler is rebuilt per
+    execution and rejects writes, so a handler that assigns to
+    ``host.db`` has to fail here too, or a test would pass on code a
+    request refuses.
     """
 
     def __init__(self, **names: Any) -> None:
         self.__dict__.update(names)
+
+    def _refuse(self, attr: str) -> AttributeError:
+        return AttributeError(
+            f"Cannot set attribute '{attr}' on module '{HOST_MODULE}': "
+            "modules provided for this execution are read-only"
+        )
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        raise self._refuse(attr)
+
+    def __delattr__(self, attr: str) -> None:
+        raise self._refuse(attr)
 
 
 class Module:

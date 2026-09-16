@@ -867,6 +867,69 @@ def test_a_directly_imported_handler_reads_the_sessions_own_db(keyed):
     assert report.ok, report.outcomes
 
 
+def test_the_composed_host_module_refuses_writes_as_the_real_one_does(keyed):
+    """A handler that assigns to `host.db` fails in a request — the
+    module is rebuilt per execution, so a write would be a channel
+    between two of them. The stand-in a test runs against has to refuse
+    the same way, or the test passes on code the wire tier rejects."""
+    keyed.files.fs.write(
+        "/workspace/app/api/writes.py",
+        b"import host\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    host.db = 'mine'\n"
+        b"    return {'row': host.db}\n"
+        b"\n"
+        b"\n"
+        b"def post(req):\n"
+        b"    del host.db\n"
+        b"    return {}\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import call\n"
+        b"\n"
+        b"\n"
+        b"def test_a_write_is_refused():\n"
+        b"    assert call('writes').status == 500\n"
+        b"\n"
+        b"\n"
+        b"def test_a_delete_is_refused():\n"
+        b"    assert call('writes', 'POST').status == 500\n",
+    )
+    report = run_pytest(keyed)
+    # 500 is what dispatch answers; the composed call re-raises, so the
+    # message is what the test sees. Check the wording itself here.
+    assert report.failed == 2, report.outcomes
+    for outcome in report.outcomes:
+        assert "read-only" in (outcome.message or "")
+        assert "Cannot set attribute 'db' on module 'host'" in (outcome.message or "")
+
+
+def test_a_request_refuses_the_same_write_in_the_same_words():
+    """The sentence the composed module raises is the real module's."""
+    from nontainer.apps import app_runtime, request
+
+    w = Workspace(
+        KvgitProvider.open(None, session="apps-call-host-ro"),
+        python=PythonConfig(host_objects={"db": KeyedDb()}),
+    )
+    runtime = enable_apps(w)
+    try:
+        w.files.fs.write(
+            "/workspace/app/api/writes.py",
+            b"import host\n\n\ndef get(req):\n    host.db = 'mine'\n    return {}\n",
+        )
+        assert runtime.dispatch(request("GET", "/api/writes")).status == 500
+        log = w.files.fs.read("/workspace/app/logs/api.log").decode()
+        assert "Cannot set attribute 'db' on module 'host'" in log
+        assert "read-only" in log
+        assert app_runtime(w) is runtime
+    finally:
+        w.close()
+
+
 # -- asking for the helper ----------------------------------------------------
 
 
