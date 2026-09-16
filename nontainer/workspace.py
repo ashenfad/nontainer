@@ -757,6 +757,23 @@ class _Attachment(NamedTuple):
     snapshot: "Workspace"
 
 
+class _Absorbed(NamedTuple):
+    """What a remote executor's harvest did to the session.
+
+    ``refusal`` is the message for the result when part or all of the
+    harvest was refused, so the call does not read as a plain success.
+    ``landed`` says whether any of the harvest reached provider
+    staging, which is what decides whether a refused call still
+    commits: a refusal that dropped the whole harvest leaves nothing to
+    commit, while one that covers a single directory keeps the writes
+    outside it — and those are this call's work, committed under this
+    call's tool like any other write it made.
+    """
+
+    refusal: str | None = None
+    landed: bool = False
+
+
 @dataclass(frozen=True)
 class _Settings:
     """The construction arguments a fork replays onto its own provider —
@@ -1917,7 +1934,8 @@ class Workspace:
                 return TerminalResult(
                     stdout="", exit_code=1, stderr=self._refused_frozen(e)
                 )
-            torn = self._absorb_or_unwind(was_dirty)
+            absorbed = self._absorb_or_unwind(was_dirty)
+            torn = absorbed.refusal
             pending = self._pending_sync_error
             self._pending_sync_error = None
             if pending is not None:
@@ -1942,8 +1960,21 @@ class Workspace:
                 torn = pending if torn is None else f"{pending}\n{torn}"
             self._save_cwd()
             if torn is not None:
+                # A refusal is an errored RESULT, not an early exit.
+                # Whatever the harvest did land is this call's work and
+                # commits under this call's tool, exactly as it would
+                # on a call that errored on its own: returning first
+                # left an autocommit workspace dirty, so the result
+                # reported no commit while the writes sat waiting to
+                # ride a later call's — under that call's name.
+                cp = self._maybe_commit("terminal") if absorbed.landed else None
                 stderr = f"{result.stderr}\n{torn}" if result.stderr else torn
-                return replace(result, exit_code=result.exit_code or 1, stderr=stderr)
+                return replace(
+                    result,
+                    exit_code=result.exit_code or 1,
+                    stderr=stderr,
+                    commit=cp,
+                )
             cp = self._maybe_commit("terminal")
         return replace(result, commit=cp) if cp else result
 
@@ -1970,11 +2001,15 @@ class Workspace:
                 result = self._runtime.exec_python(code, inputs=inputs)
             except PermissionError as e:
                 return PythonResult(stdout="", error=self._refused_frozen(e))
-            torn = self._absorb_or_unwind(was_dirty)
+            absorbed = self._absorb_or_unwind(was_dirty)
+            torn = absorbed.refusal
             self._save_cwd()
             if torn is not None:
+                # The writes the harvest accepted belong to this call
+                # and commit under its tool — see :meth:`terminal`.
+                cp = self._maybe_commit("run_python") if absorbed.landed else None
                 error = f"{result.error}\n\n{torn}" if result.error else torn
-                return replace(result, error=error)
+                return replace(result, error=error, commit=cp)
             result = self._materialize_ui(result)
             cp = self._maybe_commit("run_python")
         return replace(result, commit=cp) if cp else result
@@ -3658,7 +3693,7 @@ class Workspace:
             return self._provider.commit(info={"tool": tool})
         return None
 
-    def _absorb_executor_diff(self) -> str | None:
+    def _absorb_executor_diff(self) -> _Absorbed:
         """Land a remote executor's staged writes in the provider,
         BEFORE the commit flow — so the normal atomic commit and
         ``result.commit`` semantics apply unchanged whichever
@@ -3674,8 +3709,9 @@ class Workspace:
         re-pushes the frozen tree over what the guest did, and the
         message comes back for the caller to put on the result — the
         same shape a torn call uses, and the same refusal the local
-        read-only filesystem raises in-process. Returns that message,
-        or None when there was nothing to refuse.
+        read-only filesystem raises in-process. The message rides back
+        on an :class:`_Absorbed`, whose ``landed`` tells the caller
+        whether anything still has to be committed.
 
         An attachment is refused here too, for the same reason and with
         one difference: it covers part of the tree rather than all of
@@ -3684,12 +3720,12 @@ class Workspace:
         """
         d = self._runtime.diff()
         if d is None:
-            return None
+            return _Absorbed()
         if self._frozen:
             if not (d.writes or d.deletes):
-                return None  # a read-only call on a snapshot: nothing to do
+                return _Absorbed()  # a read-only call on a snapshot
             self._mark_executor_stale()
-            return (
+            return _Absorbed(
                 f"{_frozen_message(self._frozen_at)}; this call's writes were "
                 "made in the executor's own tree and have been discarded"
             )
@@ -3699,12 +3735,12 @@ class Workspace:
             # whole call at once, and half-applying it would leave work
             # behind from a call that is about to read as refused.
             self._mark_executor_stale()
-            return refused
+            return _Absorbed(refused)
         writes, deletes, attached = self._attachment_refusal(d)
         from .executor import _apply_diff
 
         _apply_diff(self._fs, writes, deletes)
-        return attached
+        return _Absorbed(attached, bool(writes or deletes))
 
     def _attachment_refusal(
         self, d: Any
@@ -3786,12 +3822,12 @@ class Workspace:
                 )
         return None
 
-    def _absorb_or_unwind(self, was_dirty: bool) -> str | None:
+    def _absorb_or_unwind(self, was_dirty: bool) -> _Absorbed:
         """:meth:`_absorb_executor_diff`, honoring the torn-call
-        contract — and passing through its frozen refusal, which
-        reaches the caller by the same route (a message on an errored
-        result) because it is the same kind of news: the call did not
-        land.
+        contract — and passing through its refusals, which reach the
+        caller by the same route (a message on an errored result)
+        because they are the same kind of news: some or all of the call
+        did not land.
 
         The torn-call contract: ``HarvestLost`` means the guest died between a
         successful exec and its write harvest — the call's fs writes
@@ -3808,6 +3844,10 @@ class Workspace:
         try:
             return self._absorb_executor_diff()
         except HarvestLost as e:
+            # Nothing landed either way, so nothing of this call's is
+            # waiting for a commit: the writes died in the guest, and
+            # what entry-dirty staging holds is earlier work that is
+            # not ours to commit under this call's name.
             if not was_dirty:
                 try:
                     self._provider.discard()
@@ -3815,10 +3855,12 @@ class Workspace:
                     # cache write-backs (fs writes never arrived), and
                     # cache rides the live kv plane, not the pushed
                     # tree — the recovered guest is already consistent.
-                    return f"{e}; this call's staged changes were rolled back"
+                    return _Absorbed(
+                        f"{e}; this call's staged changes were rolled back"
+                    )
                 except Exception:
                     pass
-            return (
+            return _Absorbed(
                 f"{e}; WARNING: this call's cache write-backs may remain "
                 "staged and would ride the next commit"
             )
@@ -3837,7 +3879,7 @@ class Workspace:
         for :meth:`terminal`, which unwinds like a torn call instead.
         """
         try:
-            torn = self._absorb_or_unwind(self._provider.dirty)
+            torn = self._absorb_or_unwind(self._provider.dirty).refusal
         except Exception as e:  # noqa: BLE001 — honest triple, below
             self._mark_executor_stale()
             self._pending_sync_error = f"mid-call sync failed: {e}"
