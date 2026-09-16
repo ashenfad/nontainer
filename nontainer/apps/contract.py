@@ -211,6 +211,14 @@ class Response:
     on the serving origin."""
 
 
+#: What a handler may name without importing it. Dispatch binds these
+#: into the handler's globals for the length of a request, so a handler
+#: reads them the way it reads a builtin; every path that runs handler
+#: code outside a request has to bind the same three, or the handler
+#: means something different depending on who called it.
+HANDLER_CONTRACT = (Request, Response, HttpError)
+
+
 @dataclass(frozen=True)
 class WireResponse:
     """A normalized response: status + content bytes + content type.

@@ -416,22 +416,27 @@ class _Program:
 
 
 def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
-    """The program one test file runs as: the handlers it calls, then
-    the file itself, then the calls.
+    """The program one test file runs as: the handlers it calls, the
+    contract seeded into the handlers it imports, then the file itself,
+    then the calls.
 
     Every line of workspace source keeps its own line count, and each
     run of them is recorded as a region — so a frame anywhere in the
     program names the file and line the agent wrote.
     """
     from .apps.dispatch import app_root
-    from .apps.testing import called_modules, compose, uses_call
+    from .apps.testing import called_modules, compose, seed_contract, uses_call
 
     if not source.endswith("\n"):
         source += "\n"
+    root = app_root(ws)
     if uses_call(source):
-        preamble, spans = compose(ws, called_modules(source), app_root(ws))
+        preamble, spans = compose(ws, called_modules(source), root)
     else:
         preamble, spans = "", []
+    # After the handlers, so their recorded spans keep the composed
+    # lines they were measured at.
+    preamble += seed_contract(ws, source, root)
     # A `from __future__` import must be the first statement of the
     # module, and a docstring may precede it. Whatever the file puts
     # there stays first; the composed handlers go in under it, so the
@@ -955,11 +960,11 @@ def _view(ws: Any) -> Any:
     """The execution view test code runs under: the contract classes a
     handler sees, so a test can name ``Request`` / ``Response`` /
     ``HttpError``, plus the host half of ``call``."""
-    from .apps.contract import HttpError, Request, Response
+    from .apps.contract import HANDLER_CONTRACT
     from .apps.testing import CONTRACT
     from .protocol import ViewSpec
 
-    return ViewSpec(extra_classes=(Request, Response, HttpError, *CONTRACT))
+    return ViewSpec(extra_classes=(*HANDLER_CONTRACT, *CONTRACT))
 
 
 def _usage_report(message: str) -> TestReport:

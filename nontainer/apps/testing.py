@@ -44,7 +44,7 @@ import ast
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contract import HttpError, make_request, normalize
+from .contract import HANDLER_CONTRACT, HttpError, make_request, normalize
 
 
 class CallError(Exception):
@@ -372,3 +372,86 @@ def compose(
         " body, json, headers, objects)"
     )
     return "\n".join(lines) + "\n", spans
+
+
+#: What dispatch binds into a handler's globals, by name — the same
+#: three a directly imported handler module has to be given.
+_CONTRACT_NAMES = tuple(klass.__name__ for klass in HANDLER_CONTRACT)
+
+
+def _is_handler(name: str) -> bool:
+    """Whether a module name under the api directory is one dispatch
+    would route to: a single segment, never an underscore-prefixed one.
+    A library under api/ is not a handler and gets no contract from
+    dispatch either."""
+    return bool(name) and "." not in name and not name.startswith("_")
+
+
+def imported_handlers(source: str, package: str) -> tuple[str, ...]:
+    """The handler modules a test file imports directly, in order.
+
+    Every spelling names the same module object — ``import
+    app.api.summary``, ``... as summary``, ``from app.api.summary
+    import get``, ``from app.api import summary`` — and a function
+    imported out of a module still reads that module's globals, so the
+    module is the only thing worth finding.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ()
+    found: list[str] = []
+
+    def add(name: str) -> None:
+        if _is_handler(name) and name not in found:
+            found.append(name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(f"{package}."):
+                    add(alias.name[len(package) + 1 :])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module == package:
+                for alias in node.names:
+                    add(alias.name)
+            elif node.module.startswith(f"{package}."):
+                add(node.module[len(package) + 1 :])
+    return tuple(found)
+
+
+def seed_contract(ws: Any, source: str, app_root: str) -> str:
+    """The preamble that hands a directly imported handler the globals
+    a request hands it.
+
+    ``import app.api.summary`` reaches the file through the workspace's
+    import loader, which runs it on its own source and nothing else —
+    so ``HttpError``, which dispatch binds into the handler's globals
+    for the length of a request, is an undefined name there and every
+    sad path dies of ``NameError`` instead of meaning a status. The
+    preamble imports the module and binds the three names on it, which
+    is the state a request would have found it in; the test's own
+    import resolves to that same module object.
+
+    Guarded, because a module that raises while it executes has to
+    report at the test's own import line, not here: the loader drops a
+    module whose body raised, so the test's import runs it again and
+    raises where the agent can see it.
+    """
+    base = app_root if ws.root == "/" else app_root[len(ws.root) :]
+    package = f"{base.strip('/').replace('/', '.')}.api"
+    fs = ws.files.fs
+    names = [
+        name
+        for name in imported_handlers(source, package)
+        if fs.exists(f"{app_root}/api/{name}.py")
+    ]
+    lines: list[str] = []
+    for index, name in enumerate(names):
+        held = f"nt__seeded_{index}"
+        lines.append("try:")
+        lines.append(f"    import {package}.{name} as {held}")
+        lines.extend(f"    {held}.{attr} = {attr}" for attr in _CONTRACT_NAMES)
+        lines.append("except Exception:")
+        lines.append("    pass")
+    return "\n".join(lines) + "\n" if lines else ""
