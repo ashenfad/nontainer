@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A handler's write into a read-only point answers the request
+  instead of raising out of dispatch.** An app handler runs under the
+  same rule as any other code: in-process a write into an attachment or
+  a read-only mount raises where it happens, and dispatch turns that
+  into a 500 with the message in `app/logs/api.log`. On a rung with a
+  tree of its own the write succeeded in the guest, and the view path
+  applied its harvest straight to the workspace filesystem — so the
+  `PermissionError` came out of `dispatch()` and the request got no
+  answer at all. The mutating view now harvests through the same split
+  every other call uses: the refused paths are dropped, the handler's
+  writes beside them land as they do in-process, and the refusal
+  becomes the call's error — the same 500, the same api.log entry, and
+  the same per-request rollback the in-process rung gives.
 - **A guest write into a read-only mount is refused, not raised.** A
   read-only `Mount` is a host directory the session may only read, and
   the in-process rung refuses a write to it where the write happens. On

@@ -1125,6 +1125,117 @@ def test_both_rungs_refuse_a_read_only_mount_write_the_same_way(tmp_path):
         dud.close()
 
 
+# -- apps: a handler's write into a read-only point -------------------------
+
+
+_POINT_HANDLER = b"""
+def post(req):
+    open('sib.txt', 'w').write('s')
+    open('%s/note.md', 'w').write('x')
+    return {'ok': True}
+"""
+
+
+def _dispatch_post(ws, source):
+    """Seed ``/api/w`` with ``source``, POST to it, and return the
+    response with what the request wrote to api.log."""
+    from nontainer.apps import enable_apps, request
+
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/api/w.py", source)
+    ws.commit()
+    runtime = enable_apps(ws)
+    try:
+        resp = runtime.dispatch(request("POST", "/api/w"))
+        log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
+        return resp, log
+    finally:
+        runtime.close()
+
+
+def test_a_handler_write_into_an_attachment_is_refused_on_both_rungs(tmp_path):
+    """A mutating handler is dispatched, not called: an app request
+    returns a response, and the handler's collision with a read-only
+    point is a 500 whose message the agent reads in api.log. In-process
+    the write raises inside the handler and dispatch renders that; the
+    dud rung applied the harvest straight to the workspace filesystem
+    instead, so the ``PermissionError`` came out of ``dispatch()`` and
+    the request never got an answer at all.
+    """
+    source = _POINT_HANDLER % b"peek"
+    local_store, local = _attached(tmp_path, "local-app")
+    dud_store, dud = _attached(
+        tmp_path,
+        "dud-app",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        answers = [_dispatch_post(ws, source) for ws in (local, dud)]
+        for (resp, log), ws in zip(answers, (local, dud)):
+            assert resp.status == 500
+            assert "[w:post] ERROR:" in log
+            assert "PermissionError: Read-only filesystem" in log
+            assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+            # The write beside it went the way a failed request's writes
+            # go on either rung: back out, under dispatch's per-request
+            # atomicity.
+            assert not ws.files.fs.exists("/workspace/sib.txt")
+        assert answers[0][0].status == answers[1][0].status
+        assert answers[0][0].content == answers[1][0].content
+    finally:
+        local.close()
+        local_store.close()
+        dud.close()
+        dud_store.close()
+
+
+def test_a_handler_write_into_a_read_only_mount_is_refused_on_both_rungs(tmp_path):
+    """The other kind of point, through the same dispatch: a 500 with
+    the refusal in api.log, and the host directory untouched."""
+    source = _POINT_HANDLER % b"ro"
+    local_src, local = _mounted(tmp_path, "local-mount-app")
+    dud_src, dud = _mounted(
+        tmp_path,
+        "dud-mount-app",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        answers = [_dispatch_post(ws, source) for ws in (local, dud)]
+        for (resp, log), src in zip(answers, (local_src, dud_src)):
+            assert resp.status == 500
+            assert "[w:post] ERROR:" in log
+            assert "PermissionError: Read-only filesystem" in log
+            assert not (src / "note.md").exists()
+        assert answers[0][0].status == answers[1][0].status
+        assert answers[0][0].content == answers[1][0].content
+    finally:
+        local.close()
+        dud.close()
+
+
+def test_a_handler_write_outside_the_points_still_lands(tmp_path):
+    """The split is about the points and nothing else: a handler
+    writing beside one gets its ordinary response, and its write is in
+    the workspace filesystem afterwards, exactly as a session with
+    nothing mounted read-only would give it."""
+    src, ws = _mounted(
+        tmp_path,
+        "dud-mount-ok",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        resp, _ = _dispatch_post(
+            ws,
+            b"def post(req):\n"
+            b"    open('made.txt', 'w').write('hi')\n"
+            b"    return {'ok': True}\n",
+        )
+        assert resp.status == 200, resp.content
+        assert ws.files.fs.read("/workspace/made.txt") == b"hi"
+    finally:
+        ws.close()
+
+
 # -- backend selection -------------------------------------------------------
 #
 # Which rung to open is dud's decision, not ours: DudExecutor routes
