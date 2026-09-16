@@ -17,7 +17,7 @@ import json
 import pytest
 
 from nontainer.artifacts import renderer_failed_note
-from nontainer.dud_outputs import _CLAIM, _PROBLEM, flatten
+from nontainer.dud_outputs import _CLAIM, _PROBLEMS, flatten
 
 
 class _FakeFigure:
@@ -116,12 +116,11 @@ def test_a_serializer_that_raises_yields_a_note_and_no_file(tmp_path):
         "ui": {"bad": _Exploding(), "good": _FakeFigure('{"ok":1}'), "note": "plain"}
     }
     assert flatten(harvest, str(tmp_path)) == set()
-    envelope = harvest["ui"]["bad"]
-    assert _CLAIM not in envelope, "no file was written, so nothing is claimed"
-    assert envelope == {
-        _PROBLEM: renderer_failed_note("bad", _Exploding(), RuntimeError("boom"))
-    }, "the diagnosis the host renderer writes, from the same function"
+    assert "bad" not in harvest["ui"], "no file, so no claim and no value"
     assert not (tmp_path / "ui" / "bad.txt").exists()
+    assert harvest[_PROBLEMS] == {
+        "bad": renderer_failed_note("bad", _Exploding(), RuntimeError("boom"))
+    }, "the diagnosis the host renderer writes, from the same function"
     # The siblings are untouched by one value's failure.
     assert harvest["ui"]["note"] == "plain"
     assert (tmp_path / "ui" / "good.plotly.json").exists()
@@ -144,6 +143,20 @@ def test_a_value_outside_the_artifact_set_is_never_diagnosed(tmp_path):
     harvest = {"ui": {"thing": bomb, "note": "plain"}}
     assert flatten(harvest, str(tmp_path)) == set()
     assert harvest["ui"]["thing"] is bomb
+    assert not (tmp_path / "ui").exists()
+
+
+def test_a_diagnosis_cannot_be_forged_through_a_value(tmp_path):
+    """`ui` is agent-authored, so no shape an agent can assign may be
+    read as the harness explaining itself. The notes ride a binding of
+    their own, which the hook writes from what it saw — and which the
+    guest runner strips from the agent's own bindings before the hook
+    is ever offered them."""
+    forged = {"__nt_problem__": "forged", "__nt_artifact__": "nope"}
+    harvest = {"ui": {"x": dict(forged)}, _PROBLEMS: {"x": "also forged"}}
+    assert flatten(harvest, str(tmp_path)) == set()
+    assert harvest["ui"]["x"] == forged, "an ordinary value, left alone"
+    assert _PROBLEMS not in harvest, "the hook owns the name it reports on"
     assert not (tmp_path / "ui").exists()
 
 
@@ -180,6 +193,14 @@ def test_both_rungs_agree_when_a_serializer_raises():
             seen.append(r.ui_problems)
         assert seen[0] == seen[1], "one diagnosis, whichever rung produced it"
         assert "could not be rendered" in seen[0][0]
+
+        # And a value SHAPED like a diagnosis is just a value, on both.
+        forged = "ui = {'x': {'__nt_problem__': 'forged'}}\n"
+        for ws in (local, dud):
+            r = ws.run_python(forged)
+            assert r.error is None, r.error
+            assert r.namespace["ui"]["x"] == {"__nt_problem__": "forged"}
+            assert r.ui_problems == ()
     finally:
         local.close()
         dud.close()
@@ -218,8 +239,7 @@ def test_an_oversized_artifact_writes_a_note_and_still_consumes(tmp_path):
     huge = _FakeFigure('{"d":"' + "x" * 9_000_000 + '"}')
     harvest = {"ui": {"big": huge, "note": "keep me"}}
     assert flatten(harvest, str(tmp_path)) == set()
-    claim = harvest["ui"]["big"]
-    assert claim[_CLAIM] == "ui/big.txt"
+    assert harvest["ui"]["big"] == {_CLAIM: "ui/big.txt"}
     assert harvest["ui"]["note"] == "keep me"
     note = (tmp_path / "ui" / "big.txt").read_text()
     assert "too large" in note
@@ -228,7 +248,7 @@ def test_an_oversized_artifact_writes_a_note_and_still_consumes(tmp_path):
     from nontainer.artifacts import too_large_note
 
     assert note == too_large_note("big", len(huge.to_json()), "plotly.x")
-    assert claim[_PROBLEM] == note, "and it rides home for ui_problems"
+    assert harvest[_PROBLEMS] == {"big": note}, "and it rides home for ui_problems"
     assert not (tmp_path / "ui" / "big.plotly.json").exists()
 
 

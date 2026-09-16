@@ -57,12 +57,18 @@ from .artifacts import (
 #: knows how a guest path maps onto the host's workspace root.
 _CLAIM = "__nt_artifact__"
 
-#: Why a value did not render as intended. Rides beside a claim when a
-#: note was written in the artifact's place (the size cap), and ALONE
-#: when the rule says no file at all (a serializer that raised).
-#: Either way it is what carries the diagnosis into `ui_problems`, so
-#: the agent reads the same explanation on every rung.
-_PROBLEM = "__nt_problem__"
+#: Wire name for "these ``ui`` values did not render as intended", as
+#: ``{artifact name: note}``. A binding of its own rather than a tag on
+#: the values, because a ``ui`` value is agent-authored: any shape the
+#: host reads a diagnosis out of is a shape agent data can wear, and an
+#: agent that assigned one would have had a note of its own choosing
+#: injected into what it reads as the harness speaking.
+#:
+#: Nothing the agent binds can reach this name. The guest runner drops
+#: every underscore-prefixed binding BEFORE offering the rest to this
+#: hook, and the hook writes the name afterwards, from notes it made
+#: while inspecting the values itself.
+_PROBLEMS = "__nt_ui_problems__"
 
 #: numpy dtype kind -> the column type the shell themes on. Mirrors
 #: `render._COLUMN_KINDS`.
@@ -85,15 +91,24 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
     turning it into an artifact would be this hook inventing a
     convention nobody asked for.
 
+    Values that could not be rendered leave a note in ``_PROBLEMS``, a
+    binding this hook adds beside ``ui``: the diagnoses travel on a
+    channel of their own so that nothing an agent can assign is read as
+    the harness explaining itself.
+
     Rebinds ``ui`` to the remainder rather than mutating it in place:
     the dict handed over is the agent's own object, and editing it
     would make a hook that raised halfway leave visible damage.
     """
+    # The name is this hook's, whatever it held on the way in: the host
+    # reads diagnoses from it and nothing else may speak through it.
+    harvest.pop(_PROBLEMS, None)
     ui = harvest.get("ui")
     if not isinstance(ui, dict):
         return set()
 
     remaining: dict[Any, Any] = {}
+    problems: dict[str, str] = {}
     consumed = False
     for raw_name, value in ui.items():
         name = _safe_name(raw_name)
@@ -107,13 +122,12 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
             # holding an explanation and announced as an artifact tells
             # the agent its figure arrived.
             #
-            # The NAME is still consumed, and the envelope carries the
-            # note alone. Handing the live object back would recreate
-            # exactly the data loss this hook exists to prevent: it is
-            # the thing dud cannot encode, so the whole `ui` binding
-            # becomes unrepresentable and its plain siblings vanish
-            # with it.
-            remaining[raw_name] = {_PROBLEM: renderer_failed_note(raw_name, value, exc)}
+            # The NAME is still consumed. Handing the live object back
+            # would recreate exactly the data loss this hook exists to
+            # prevent: it is the thing dud cannot encode, so the whole
+            # `ui` binding becomes unrepresentable and its plain
+            # siblings vanish with it.
+            problems[name] = renderer_failed_note(raw_name, value, exc)
             consumed = True
             continue
         if written is None:
@@ -127,17 +141,15 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
             # what keeps this module ignorant of a namespace it cannot
             # see. `ui` therefore stays fully representable and crosses
             # as data.
-            claim = {_CLAIM: written}
+            remaining[raw_name] = {_CLAIM: written}
             if problem is not None:
-                # Carried home rather than left in the file: this text
-                # is what the agent reads to self-correct, and the host
-                # has no way to reconstruct it from a path.
-                claim[_PROBLEM] = problem
-            remaining[raw_name] = claim
+                problems[name] = problem
             consumed = True
 
     if consumed:
         harvest["ui"] = remaining
+    if problems:
+        harvest[_PROBLEMS] = problems
     return set()
 
 

@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .cache import PREFIX
+from .dud_outputs import _PROBLEMS
 from .errors import NotSupportedError
 from .executor import (
     HOST_MODULE,
@@ -99,6 +100,19 @@ from .workspace import PythonResult, TerminalResult
 #: provides pandas or plotly in the first place — without those, no
 #: value in ``ui`` can be rich enough to need flattening anyway.
 _OUTPUTS_HOOK = "nontainer.dud_outputs:flatten"
+
+
+def _ui_problems(reported: Any) -> tuple[str, ...]:
+    """The guest flattener's notes, as the result carries them.
+
+    Shaped ``{artifact name: note}`` on the wire and a plain tuple of
+    text on the result, which is what an adapter puts in front of the
+    agent. Anything else on the binding is ignored rather than
+    reported: a diagnosis nobody wrote is worse than none.
+    """
+    if not isinstance(reported, dict):
+        return ()
+    return tuple(note for note in reported.values() if isinstance(note, str))
 
 
 def _lost_exc() -> Any:
@@ -1009,6 +1023,12 @@ class DudExecutor:
             error = tb or f"{result.error.etype}: {result.error.message}"
 
         namespace = dict(result.outputs)
+        # The guest flattener's own diagnoses, on the binding it writes
+        # them to (:mod:`nontainer.dud_outputs`). Lifted off the
+        # namespace here because it is wire state, not something the
+        # agent bound — and read only from this name, so a `ui` value
+        # shaped like a diagnosis is just a value.
+        ui_problems = _ui_problems(namespace.pop(_PROBLEMS, None))
         if contract:
             namespace = {
                 k: _rebuild_dataclass(v, contract) for k, v in namespace.items()
@@ -1023,6 +1043,7 @@ class DudExecutor:
             duration=duration,
             truncated=trunc,
             namespace=namespace,
+            ui_problems=ui_problems,
         )
 
     # -- shell -----------------------------------------------------------

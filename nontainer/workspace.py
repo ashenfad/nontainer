@@ -2049,38 +2049,17 @@ class Workspace:
         # so a claim can be checked against a filesystem that has the
         # file — `ui` is agent-authored, and an ordinary dict wearing
         # the tag must not become an ArtifactPath on one rung only.
-        from .dud_outputs import _PROBLEM
-
-        claimed, claim_problems, unrendered = {}, [], set()
+        # Why a value failed travels on a binding of its own and is
+        # already on the result; nothing here reads a diagnosis out of
+        # an agent's value.
+        claimed = {}
         for key, value in ui.items():
             path = self._claimed(value)
-            if path is None:
-                note = self._claim_problem(value)
-                if note is not None:
-                    # A value whose serializer raised: the rule is a
-                    # diagnosis and NO file, so there is no claim for
-                    # the note to ride and no path to bind the name to.
-                    # The name leaves `ui` because what it held is a
-                    # live object that cannot cross — leaving the wire
-                    # envelope would show the agent a tag it never
-                    # wrote, in place of the figure it asked for.
-                    claim_problems.append(note)
-                    unrendered.add(key)
-                continue
-            claimed[key] = path
-            # The guest's own diagnosis (the size cap). Without carrying
-            # it the agent was told the rule up front and then got
-            # silence when it broke it — on this rung only, which is
-            # worse than either.
-            note = value.get(_PROBLEM)
-            if isinstance(note, str):
-                claim_problems.append(note)
-        if claimed or unrendered:
-            ui = {k: v for k, v in ui.items() if k not in unrendered}
-            ui.update(claimed)
+            if path is not None:
+                claimed[key] = path
+        if claimed:
+            ui = {**ui, **claimed}
             result = replace(result, namespace={**result.namespace, "ui": ui})
-        if claim_problems:
-            result = replace(result, ui_problems=(*result.ui_problems, *claim_problems))
         # ONLY the values that cannot cross as data. Materializing the
         # rest would replace an agent's plain string or dict with a
         # path, which is a far larger change to `ui` than swapping a
@@ -2109,7 +2088,7 @@ class Workspace:
         return replace(
             result,
             namespace={**result.namespace, "ui": {**ui, **claims}},
-            ui_problems=tuple(problems),
+            ui_problems=(*result.ui_problems, *problems),
         )
 
     # -- async host facades ---------------------------------------------
@@ -3626,13 +3605,9 @@ class Workspace:
         stays a dict, on every rung.
         """
         from .artifacts import ArtifactPath
-        from .dud_outputs import _CLAIM, _PROBLEM
+        from .dud_outputs import _CLAIM
 
-        if not (
-            isinstance(value, dict)
-            and _CLAIM in value
-            and set(value) <= {_CLAIM, _PROBLEM}
-        ):
+        if not (isinstance(value, dict) and set(value) == {_CLAIM}):
             return None
         rel = value[_CLAIM]
         if not isinstance(rel, str) or rel.startswith("/") or ".." in rel:
@@ -3645,23 +3620,6 @@ class Workspace:
         except Exception:  # noqa: BLE001 - a VFS miss just means "not a claim"
             return None
         return ArtifactPath(path)
-
-    def _claim_problem(self, value: Any) -> str | None:
-        """A guest's diagnosis for a ``ui`` value that became no file.
-
-        A value in the artifact set whose serializer raised yields a
-        problem and no artifact, so the envelope carries the text alone
-        — there is no claim to hang it on, and no file to check it
-        against the way a claim is checked. The tag is the wire's, not
-        a shape agent data falls into by accident.
-        """
-        from .dud_outputs import _PROBLEM
-
-        if isinstance(value, dict) and set(value) == {_PROBLEM}:
-            note = value[_PROBLEM]
-            if isinstance(note, str):
-                return note
-        return None
 
     @contextmanager
     def _one_commit(self):

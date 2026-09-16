@@ -14,9 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   note sitting in the artifact slot, announced as an artifact, tells the
   agent its figure arrived. The guest-side serializer wrote
   `ui/<name>.txt` anyway, so the same figure failed two different ways
-  depending on the rung. It now carries the diagnosis home alone, and
-  the diagnosis itself comes from the function the host renderer uses,
-  so an agent reads one explanation wherever the value was serialized.
+  depending on the rung. It now writes nothing and reports the value in
+  a diagnosis binding of its own, and the diagnosis comes from the
+  function the host renderer uses, so an agent reads one explanation
+  wherever the value was serialized. That binding is also the only
+  place the host reads a `ui` diagnosis from: the notes used to ride
+  the values themselves, where a dict an agent assigned could wear the
+  shape and have a note of its own choosing read back as the harness
+  speaking.
 - **A guest write into an attachment is refused, not raised.** An
   attachment is a frozen tree mounted read-only, which the in-process
   rung refuses where the write happens. A rung that runs against a tree
