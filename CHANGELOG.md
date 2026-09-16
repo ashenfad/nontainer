@@ -83,6 +83,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   next execution.
 
 ### Changed
+- **The kvgit floor is 0.3.9.** The merge base a metadata row's size is
+  recomputed against comes from kvgit's public `merge_base`, which is
+  the base its own merge uses, in place of a reach into its private
+  finder; that base is now the true lowest common ancestor in
+  merge-heavy histories. A commit that loses the fast-forward race
+  retries through the merge path instead of raising, so a lost race is
+  never reported as a conflict.
 - **The monkeyfs floor is 0.1.11.** A recursive listing of the composed
   filesystem walks into every nested mount, which is what puts a nested
   mount's files on a guest rung.

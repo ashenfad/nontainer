@@ -1493,17 +1493,12 @@ class KvgitProvider:
         It must be the base kvgit's own merge uses: the merged bytes of
         a contested file are a function of that base, and a row whose
         size was computed against a different one would describe bytes
-        nothing holds. kvgit has no public accessor for it, so this
-        reads its finder the way the commit root and time are read —
-        directly, in the one place that knows the name. ``None`` when
-        there is none to be had, and the sizes then fall back to a
-        side's own.
+        nothing holds. kvgit's ``merge_base`` is that base by contract.
+        ``None`` when there is none to be had, and the sizes then fall
+        back to a side's own.
         """
-        find = getattr(self._staged.versioned, "_find_lca", None)
-        if not callable(find):
-            return None
         try:
-            return find(ours, theirs)
+            return self._staged.versioned.merge_base(ours, theirs)
         except Exception:  # noqa: BLE001 - no base is an answer, not a failure
             return None
 
