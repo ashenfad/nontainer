@@ -75,6 +75,28 @@ def too_large_note(name: str, size: int, mod: str) -> str:
     return note + " Downsample or aggregate before assigning to `ui`."
 
 
+def renderer_failed_note(name: object, value: object, error: BaseException) -> str:
+    """Actionable diagnosis for a value in the supported set whose
+    renderer raised.
+
+    Named, with the error, because the agent has to know WHICH of its
+    assignments failed and why — a figure whose serializer blew up is a
+    fixable mistake. It goes to the problems channel and no file is
+    written: a capped repr sitting in the artifact slot, announced as
+    an artifact, reads as the figure having arrived.
+
+    One function, because both rungs hit this condition — in-process
+    where the object lives, and guest-side where it cannot leave — and
+    an agent must not have to know which one served it.
+    """
+    return (
+        f"{str(name)!r} could not be rendered: "
+        f"{type(error).__name__}: {error}. The value is a "
+        f"{type(value).__name__}; fix what it holds, or write the file "
+        f"yourself and assign its path."
+    )
+
+
 def looks_like_plotly(obj: object) -> bool:
     """Whether a decoded JSON value is a plotly figure spec: a dict with
     a ``data`` list and a ``layout`` dict.

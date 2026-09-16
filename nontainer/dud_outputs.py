@@ -45,16 +45,23 @@ import os
 import re
 from typing import Any
 
-from .artifacts import MAX_ARTIFACT_BYTES, is_rich, too_large_note
+from .artifacts import (
+    MAX_ARTIFACT_BYTES,
+    is_rich,
+    renderer_failed_note,
+    too_large_note,
+)
 
 #: Wire tag for "this value became a file at <workspace-relative path>".
 #: Read by ``DudExecutor._map_result``, which is the only place that
 #: knows how a guest path maps onto the host's workspace root.
 _CLAIM = "__nt_artifact__"
 
-#: Optional companion to a claim: why the value did not render as
-#: intended. Rides the envelope so `ui_problems` reaches the agent on
-#: this rung too -- without it the cap message existed only in-process.
+#: Why a value did not render as intended. Rides beside a claim when a
+#: note was written in the artifact's place (the size cap), and ALONE
+#: when the rule says no file at all (a serializer that raised).
+#: Either way it is what carries the diagnosis into `ui_problems`, so
+#: the agent reads the same explanation on every rung.
 _PROBLEM = "__nt_problem__"
 
 #: numpy dtype kind -> the column type the shell themes on. Mirrors
@@ -94,17 +101,21 @@ def flatten(harvest: dict, workspace: str) -> set[str]:
         try:
             written, problem = _materialize(name, value, workspace)
         except Exception as exc:  # noqa: BLE001 - serializers raise anything
-            # Handing the live object back would recreate exactly the
-            # data loss this hook exists to prevent: it is the thing
-            # dud cannot encode, so the whole `ui` binding becomes
-            # unrepresentable and its plain siblings vanish with it.
-            # Consume it and say why, as the oversized path does.
-            problem = (
-                f"ui artifact {raw_name!r} NOT rendered: "
-                f"{type(value).__name__} failed to serialize "
-                f"({type(exc).__name__}: {exc})."
-            )
-            written = _note(workspace, name, problem)
+            # A value in the set whose serializer raised: the rule is a
+            # problem note and NO file, from the same function the host
+            # renderer uses for the same condition, because a file
+            # holding an explanation and announced as an artifact tells
+            # the agent its figure arrived.
+            #
+            # The NAME is still consumed, and the envelope carries the
+            # note alone. Handing the live object back would recreate
+            # exactly the data loss this hook exists to prevent: it is
+            # the thing dud cannot encode, so the whole `ui` binding
+            # becomes unrepresentable and its plain siblings vanish
+            # with it.
+            remaining[raw_name] = {_PROBLEM: renderer_failed_note(raw_name, value, exc)}
+            consumed = True
+            continue
         if written is None:
             remaining[raw_name] = value
         else:
@@ -149,13 +160,13 @@ def _safe_name(raw_name: Any) -> str:
 
 
 def _note(workspace: str, name: str, message: str) -> str | None:
-    """Write a representable explanation in place of an artifact.
+    """Write a representable explanation in place of an artifact, for
+    the one condition whose rule is a note IN the artifact slot: a
+    value over the size cap, where the human sees why the figure is
+    missing where the figure would have been.
 
-    Consuming the name and leaving a note beats returning the live
-    object, which dud cannot encode and which therefore takes the whole
-    ``ui`` binding down with it. Returns None only if even this fails,
-    where there is nothing better left to do than let the value cross
-    and be dropped.
+    Returns None only if even this fails, where there is nothing better
+    left to do than let the value cross and be dropped.
     """
     try:
         # `.txt`, matching what the host renderer writes for the same
@@ -179,11 +190,10 @@ def _write(
 ) -> tuple[str | None, str | None]:
     """Write one artifact, or a note saying why it could not be.
 
-    Over the cap the *note* is still written and the name still
-    consumed, for the same reason a failed serializer is: returning
-    None here would leave a live object in ``ui``, which makes the
-    whole binding unrepresentable and silently takes its representable
-    siblings down with it.
+    Over the cap the *note* is written in the artifact's place and the
+    name is consumed: returning None here would leave a live object in
+    ``ui``, which makes the whole binding unrepresentable and silently
+    takes its representable siblings down with it.
     """
     if len(data) > MAX_ARTIFACT_BYTES:
         # Same text the host renderer produces for the same condition,
