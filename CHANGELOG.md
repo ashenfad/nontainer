@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CodeType` — and stays refused.
 
 ### Changed
+- **sandtrap floor is 0.3.7.** Its dunder allowlist reads `__name__`,
+  `__qualname__`, `__module__` and `__doc__` as the exact strings they
+  are, without running a host descriptor — so `type(e).__name__`, the
+  way a test says which error came back, is no longer an
+  `AttributeError`. `__class__` and `__dict__` still are.
 - **`from host import call` is how a test reaches a handler.** The
   helper was a bare name the composition put in scope, which nothing
   in the workspace announced: an agent reading `from host import db`
