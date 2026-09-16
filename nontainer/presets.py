@@ -55,6 +55,7 @@ import tarfile
 import textwrap
 import time
 import traceback
+import types
 import typing
 import unittest
 import unittest.mock
@@ -85,6 +86,13 @@ _FUNCTOOLS_INCLUDE = ("partial", "reduce", "lru_cache", "cache")
 # grant (and the project still supports those versions).
 _SHLEX_INCLUDE = ("quote", "join")
 
+# The two data-shaped types in a module that is otherwise the
+# interpreter's own machinery. SimpleNamespace is the record an agent
+# reaches for and MappingProxyType is a read-only view of a dict;
+# FunctionType, CodeType and ModuleType are how sandboxed code would
+# rebuild the objects the sandbox refuses to hand it.
+_TYPES_INCLUDE = ("SimpleNamespace", "MappingProxyType")
+
 # Representation-to-string helpers only. Agents can print the result;
 # no need to grant the stream-writing classes/functions by default.
 _PPRINT_INCLUDE = ("pformat", "saferepr", "isrecursive", "isreadable")
@@ -102,6 +110,7 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(heapq),
     ModuleGrant(bisect),
     ModuleGrant(functools, include=_FUNCTOOLS_INCLUDE),
+    ModuleGrant(types, include=_TYPES_INCLUDE),
     # dates & time
     ModuleGrant(time),
     ModuleGrant(calendar),

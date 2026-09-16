@@ -165,6 +165,27 @@ def test_a_test_asking_for_a_fixture_is_an_error(ws):
     assert "fixture(s) not found: db" in (report.outcomes[0].message or "")
 
 
+def test_a_test_imports_what_the_session_grants(ws):
+    """The test runs in the executor the app's code runs in, so the
+    grant list is the same one: SimpleNamespace builds a stand-in
+    without a class, MagicMock fakes a collaborator."""
+    write(
+        ws,
+        "tests/test_imports.py",
+        "from types import SimpleNamespace\n"
+        "from unittest.mock import MagicMock\n"
+        "\n"
+        "\n"
+        "def test_a_stand_in():\n"
+        "    row = SimpleNamespace(name='ann', score=3)\n"
+        "    db = MagicMock()\n"
+        "    db.first.return_value = row\n"
+        "    assert db.first().name == 'ann'\n",
+    )
+    report = run_pytest(ws)
+    assert report.ok, report.outcomes
+
+
 def test_a_selector_picks_one_test(ws):
     write(
         ws,
