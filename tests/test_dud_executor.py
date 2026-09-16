@@ -20,7 +20,7 @@ import json
 
 import pytest
 
-from nontainer import ArtifactPath, Workspace
+from nontainer import ArtifactPath, Mount, Workspace
 from nontainer.providers import KvgitProvider
 
 pytest.importorskip("dud")
@@ -1007,6 +1007,122 @@ def test_both_rungs_refuse_an_attachment_write_the_same_way(tmp_path):
         local_store.close()
         dud.close()
         dud_store.close()
+
+
+# -- read-only mounts: a host directory the session may only read -----------
+
+
+def _mounted(tmp_path, name, *, readonly=True, executor_factory=None, **kw):
+    """A workspace with a host directory (holding ``data.csv``) mounted
+    at ``<root>/ro``. Returns the host directory and the workspace."""
+    src = tmp_path / f"{name}-src"
+    src.mkdir()
+    (src / "data.csv").write_text("x,y\n")
+    ws = Workspace(
+        KvgitProvider.open(None, session=name),
+        mounts={"/workspace/ro": Mount(src, readonly=readonly)},
+        executor_factory=executor_factory,
+        **kw,
+    )
+    return src, ws
+
+
+def test_a_guest_write_into_a_read_only_mount_is_refused_not_raised(tmp_path):
+    """A read-only mount is the other kind of read-only point in the
+    composed filesystem, and a guest reaches it the way it reaches an
+    attachment: as a plain copy it can write. The harvest refuses it as
+    a RESULT — absorbing it raised ``PermissionError`` out of
+    ``ws.terminal()``, which never raises for command failure — and
+    names it as a mount rather than as an attachment.
+    """
+    src, ws = _mounted(
+        tmp_path,
+        "mount-refusal",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        r = ws.terminal("echo x > ro/note.md; echo sib > outside.txt")
+        assert not r
+        assert "Read-only filesystem: write() modifies the filesystem" in r.stderr
+        assert "/workspace/ro/note.md is inside the read-only mount" in r.stderr
+        # The host directory is untouched...
+        assert not (src / "note.md").exists()
+        assert (src / "data.csv").read_text() == "x,y\n"
+        # ...and so is the guest, which is re-pushed over what it wrote.
+        assert ws.terminal("ls ro").stdout.split() == ["data.csv"]
+        # The write beside it is this call's work: it lands, and it
+        # commits under this call's tool like any other write it made.
+        assert ws.files.fs.read("/workspace/outside.txt") == b"sib\n"
+        assert r.commit is not None, "the accepted writes were left staged"
+        assert not ws.uncommitted
+        entry = next(e for e in ws.log() if e.id == r.commit)
+        assert entry.info.get("tool") == "terminal"
+    finally:
+        ws.close()
+
+
+def test_a_guest_python_write_into_a_read_only_mount_is_refused(tmp_path):
+    """Guest-side Python reaches the mount the same way the shell does
+    — one harvest, one rule — and the refusal rides the errored result
+    rather than escaping the call."""
+    src, ws = _mounted(
+        tmp_path,
+        "mount-python",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        r = ws.run_python("open('ro/note.md', 'w').write('x')\nkept = 1\n")
+        assert not r
+        assert "Read-only filesystem" in r.error
+        assert "read-only mount at /workspace/ro" in r.error
+        assert not (src / "note.md").exists()
+    finally:
+        ws.close()
+
+
+def test_a_writable_mount_still_takes_guest_writes(tmp_path):
+    """The rule is about read-only points, not about mounts: a mount
+    the session may write reaches the host directory it names, from the
+    guest as from anywhere else."""
+    src, ws = _mounted(
+        tmp_path,
+        "mount-writable",
+        readonly=False,
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        r = ws.terminal("echo hi > ro/out.txt")
+        assert r, r.stderr
+        assert (src / "out.txt").read_text().strip() == "hi"
+    finally:
+        ws.close()
+
+
+def test_both_rungs_refuse_a_read_only_mount_write_the_same_way(tmp_path):
+    """The parity claim for the other kind of point: in-process the
+    read-only wrapper refuses the write where it happens, on the dud
+    rung the harvest refuses it afterwards, and the agent reads the
+    same refusal either way. Neither rung raises, and neither lets the
+    host directory change."""
+    local_src, local = _mounted(tmp_path, "local-mount")
+    dud_src, dud = _mounted(
+        tmp_path,
+        "dud-mount",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        messages = []
+        for src, ws in ((local_src, local), (dud_src, dud)):
+            r = ws.terminal("echo x > ro/note.md")
+            messages.append(r.stdout + r.stderr)
+            assert not (src / "note.md").exists()
+        assert all(
+            "Read-only filesystem: write() modifies the filesystem" in m
+            for m in messages
+        ), messages
+    finally:
+        local.close()
+        dud.close()
 
 
 # -- backend selection -------------------------------------------------------

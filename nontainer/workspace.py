@@ -666,6 +666,14 @@ class _SyncingFS:
         return f"<syncing {self._fs!r}>"
 
 
+def _point_over(path: str, points: Mapping[str, str]) -> str | None:
+    """The mount point ``path`` lies at or under, or None."""
+    for point in points:
+        if path == point or path.startswith(point + "/"):
+            return point
+    return None
+
+
 def _frozen_message(tag: str | None) -> str:
     """What a frozen workspace tells whoever tried to write to it."""
     where = f" at tag {tag!r}" if tag else ""
@@ -3671,10 +3679,11 @@ class Workspace:
         on an :class:`_Absorbed`, whose ``landed`` tells the caller
         whether anything still has to be committed.
 
-        An attachment is refused here too, for the same reason and with
-        one difference: it covers part of the tree rather than all of
-        it, so the harvest is split at its mount points instead of
-        dropped whole (see :meth:`_attachment_refusal`).
+        An attachment and a read-only mount are refused here too, for
+        the same reason and with one difference: each covers part of
+        the tree rather than all of it, so the harvest is split at
+        their points instead of dropped whole (see
+        :meth:`_readonly_refusal`).
         """
         d = self._runtime.diff()
         if d is None:
@@ -3694,70 +3703,89 @@ class Workspace:
             # behind from a call that is about to read as refused.
             self._mark_executor_stale()
             return _Absorbed(refused)
-        writes, deletes, attached = self._attachment_refusal(d)
+        writes, deletes, refusal = self._readonly_refusal(d.writes, d.deletes)
         from .executor import _apply_diff
 
         _apply_diff(self._fs, writes, deletes)
-        return _Absorbed(attached, bool(writes or deletes))
+        return _Absorbed(refusal, bool(writes or deletes))
 
-    def _attachment_refusal(
-        self, d: Any
+    def _readonly_points(self) -> dict[str, str]:
+        """Every point of the composed filesystem that refuses writes,
+        mapped to the name a refusal calls it by.
+
+        Two kinds mount read-only: an attachment (another session's
+        frozen state) and a ``Mount`` declared ``readonly`` (a host
+        directory this session may only read). A rung that executes
+        against the composed filesystem refuses a write to either
+        where the write happens; a rung that runs against a tree of
+        its own asks here instead, so one answer covers both. A
+        writable ``Mount`` is absent: writing to it is something the
+        session is allowed to do.
+        """
+        points = {point: "attachment" for point in self._attached}
+        for point, mount in self._settings.mounts.items():
+            if mount.readonly:
+                points[point] = "read-only mount"
+        return points
+
+    def _readonly_refusal(
+        self, writes: Mapping[str, bytes], deletes: Iterable[str]
     ) -> tuple[Mapping[str, bytes], tuple[str, ...], str | None]:
-        """An executor's harvest, split at the attachment points:
+        """An executor's harvest, split at the read-only points:
         ``(writes, deletes, message)``.
 
-        An attachment is a frozen state mounted read-only, so a rung
-        that executes against the workspace filesystem refuses a write
-        to it where the write happens. A rung with a tree of its own
+        An attachment is a frozen state and a read-only mount is a
+        host directory the session may only read, so a rung that
+        executes against the workspace filesystem refuses a write to
+        either where the write happens. A rung with a tree of its own
         holds an ordinary copy there and the write succeeds in the
         guest, so the rule is applied to the harvest instead: paths
-        inside an attachment are dropped and named in a message for the
-        caller to put on the result, while the rest of the call's
-        writes land — the attachment is one directory, and refusing the
-        writes beside it would punish work the rule has nothing to say
-        about. The executor is marked stale so its next execution
-        rebuilds that directory from the attachment rather than keeping
-        what the guest wrote there.
+        inside a read-only point are dropped and named in a message
+        for the caller to put on the result, while the rest of the
+        call's writes land — a point covers one directory, and
+        refusing the writes beside it would punish work the rule has
+        nothing to say about. The executor is marked stale so its next
+        execution rebuilds that directory from the attachment (or the
+        host directory) rather than keeping what the guest wrote
+        there.
         """
-        if not self._attached:
-            return d.writes, tuple(d.deletes), None
-        writes: dict[str, bytes] = {}
-        deletes: list[str] = []
-        refused: list[tuple[str, str, str]] = []
-        for rel, data in d.writes.items():
-            point = self._attachment_over("/" + rel.lstrip("/"))
+        points = self._readonly_points()
+        if not points:
+            return writes, tuple(deletes), None
+        kept: dict[str, bytes] = {}
+        kept_deletes: list[str] = []
+        refused: list[tuple[str, str, str, str]] = []
+        for rel, data in writes.items():
+            path = "/" + rel.lstrip("/")
+            point = _point_over(path, points)
             if point is None:
-                writes[rel] = data
+                kept[rel] = data
             else:
-                refused.append(("/" + rel.lstrip("/"), "write", point))
-        for rel in d.deletes:
-            point = self._attachment_over("/" + rel.lstrip("/"))
+                refused.append((path, "write", point, points[point]))
+        for rel in deletes:
+            path = "/" + rel.lstrip("/")
+            point = _point_over(path, points)
             if point is None:
-                deletes.append(rel)
+                kept_deletes.append(rel)
             else:
-                refused.append(("/" + rel.lstrip("/"), "remove", point))
+                refused.append((path, "remove", point, points[point]))
         if not refused:
-            return d.writes, tuple(d.deletes), None
+            return writes, tuple(deletes), None
         self._mark_executor_stale()
         clauses = "; ".join(
             f"{op}() modifies the filesystem, and {path} is inside the "
-            f"attachment at {point}"
-            for path, op, point in sorted(refused)
+            f"{kind} at {point}"
+            for path, op, point, kind in sorted(refused)
         )
+        kinds = {kind for _, _, _, kind in refused}
+        outside = f"the {kinds.pop()}" if len(kinds) == 1 else "them"
         return (
-            writes,
-            tuple(deletes),
+            kept,
+            tuple(kept_deletes),
             f"Read-only filesystem: {clauses}. Those changes were made in "
-            "the executor's own tree and have been discarded; writes "
-            "outside the attachment landed.",
+            f"the executor's own tree and have been discarded; writes "
+            f"outside {outside} landed.",
         )
-
-    def _attachment_over(self, path: str) -> str | None:
-        """The attachment point ``path`` lies under, or None."""
-        for point in self._attached:
-            if path == point or path.startswith(point + "/"):
-                return point
-        return None
 
     def _view_refusal(self, d: Any) -> str | None:
         """The view's write rule against an executor's harvest.

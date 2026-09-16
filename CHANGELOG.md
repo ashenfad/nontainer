@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A guest write into a read-only mount is refused, not raised.** A
+  read-only `Mount` is a host directory the session may only read, and
+  the in-process rung refuses a write to it where the write happens. On
+  a rung with a tree of its own the write succeeded in the guest and
+  the harvest carried it back into a read-only filesystem, raising
+  `PermissionError: Read-only filesystem: makedirs() modifies the
+  filesystem` out of `ws.terminal()` — the same crash an attachment
+  used to give, from the other kind of read-only point. The harvest now
+  asks one question, "which points refuse writes", and both kinds
+  answer it: create, modify, delete and makedirs under either are
+  dropped and named in the refusal the local rung gives, on an errored
+  result, and the message says which kind of point it was (`inside the
+  read-only mount at /workspace/ro` versus `inside the attachment at
+  /workspace/peek`). Writes outside the point land and commit with the
+  call as before, and a writable `Mount` still takes guest writes
+  straight through to the host directory.
 - **A `ui` value whose serializer raises writes no file on any rung.**
   The set of values that render is closed, and the rule for one that
   blows up on the way to a file is a problem note and nothing else — a
