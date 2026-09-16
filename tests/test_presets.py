@@ -117,6 +117,27 @@ def test_stdlib_functools_is_useful_but_narrow():
     ws.close()
 
 
+def test_stdlib_types_is_two_data_shapes_and_nothing_else():
+    """``SimpleNamespace`` is the record agents reach for; the rest of
+    the module is the interpreter's own machinery."""
+    ws = make_ws()
+    r = ws.run_python(
+        "from types import SimpleNamespace\n"
+        "import types\n"
+        "row = SimpleNamespace(name='ann', score=3)\n"
+        "view = types.MappingProxyType({'a': 1})\n"
+        "result = (row.name, row.score, view['a'])"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == ("ann", 3, 1)
+    for denied in (
+        ws.run_python("import types; types.FunctionType"),
+        ws.run_python("from types import CodeType"),
+    ):
+        assert not denied
+    ws.close()
+
+
 def test_stdlib_shlex_and_pprint_are_string_only():
     ws = make_ws()
     r = ws.run_python(
