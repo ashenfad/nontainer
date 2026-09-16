@@ -792,6 +792,66 @@ def test_a_fake_reaches_the_handler_whichever_way_it_reads_its_db(keyed, head, r
     assert report.ok, report.outcomes
 
 
+def test_a_module_global_of_the_same_name_leaves_the_host_module_alone(keyed):
+    """`db = "local"` is the module's own name; `host.db` is the
+    session's. A request keeps them apart, so a test has to."""
+    keyed.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"import host\n"
+        b"\n"
+        b"\n"
+        b"db = 'local'\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    return {'host': host.db.get('k'), 'own': db}\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import call\n"
+        b"from unittest.mock import MagicMock\n"
+        b"\n"
+        b"\n"
+        b"def test_the_session_object_is_still_reachable():\n"
+        b"    assert call('summary').json == {'host': {'id': 'real'}, 'own': 'local'}\n"
+        b"\n"
+        b"\n"
+        b"def test_a_fake_replaces_the_session_object_and_not_the_global():\n"
+        b"    fake = MagicMock()\n"
+        b"    fake.get.return_value = {'id': 7}\n"
+        b"    resp = call('summary', db=fake)\n"
+        b"    assert resp.json == {'host': {'id': 7}, 'own': 'local'}\n",
+    )
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes
+
+
+def test_the_host_module_shows_the_whole_session_however_late_it_is_built(keyed):
+    """The module is built from what the call resolved, not from
+    whatever the handler's own lines have bound by then."""
+    keyed.files.fs.write(
+        "/workspace/app/api/late.py",
+        b"db = 'local'\n"
+        b"\n"
+        b"\n"
+        b"import host\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    return {'host': host.db.get('k'), 'own': db}\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import call\n"
+        b"\n"
+        b"\n"
+        b"def test_late():\n"
+        b"    assert call('late').json == {'host': {'id': 'real'}, 'own': 'local'}\n",
+    )
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes
+
+
 def test_a_rewritten_import_keeps_every_line_number_behind_it(keyed):
     """The rewrite replaces the import statement's own span and nothing
     else, so a frame still names the line the agent wrote."""

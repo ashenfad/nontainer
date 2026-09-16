@@ -100,6 +100,7 @@ class Call:
     @staticmethod
     def dispatch(
         handlers: Any,
+        session: Any,
         module: str,
         method: str = "GET",
         path: str | None = None,
@@ -142,7 +143,11 @@ class Call:
             )
 
         verb = method.lower()
-        verbs = maker(**objects)
+        # What the handler's own `host` module shows: the session's
+        # names with the test's substitutions over them, handed in
+        # under a name no module can bind.
+        resolved = {**(session or {}), **objects}
+        verbs = maker(**objects, **{OBJECTS: resolved})
         fn = verbs.get(verb)
         if fn is None:
             return Call._error(405, f"{method.upper()} not supported by {module}")
@@ -294,6 +299,14 @@ CALL_NAME = "call"
 #: module shares one execution, as imports do.
 MODULES = "nt__modules"
 PACKAGE = "nt__package"
+
+#: The session's own objects by name, built once in the preamble, and
+#: the keyword every composed handler takes them under. Prefixed
+#: because a handler is free to bind ``db`` itself: the module a
+#: request gives it still reads the session's, so the name the
+#: composition builds that module from cannot be one the module owns.
+SESSION = "nt__session"
+OBJECTS = "nt__objects"
 
 
 def uses_call(source: str) -> bool:
@@ -472,7 +485,7 @@ def host_names(source: str) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-def substitute_host(source: str, names: Any) -> str:
+def substitute_host(source: str) -> str:
     """The handler's source with its ``host`` imports rewritten to read
     the composed program's own names, line for line.
 
@@ -481,7 +494,10 @@ def substitute_host(source: str, names: Any) -> str:
     reach past it to the session's real object and a test that faked
     the database would be testing the database. So ``from host import
     db`` becomes nothing — ``db`` is the wrapper's parameter by then —
-    and ``import host`` becomes a ``Host`` built from ``names``.
+    and ``import host`` becomes a ``Host`` built from the objects the
+    call resolved, which arrive under a name of the composition's own:
+    a module that binds ``db`` for itself still reads the session's
+    through ``host.db``, as it does in a request.
 
     Only the import statement's own span is replaced, and a statement
     spanning several lines leaves the rest of them blank, so every line
@@ -491,7 +507,7 @@ def substitute_host(source: str, names: Any) -> str:
         tree = ast.parse(source)
     except SyntaxError:
         return source
-    built = f"Host({', '.join(f'{name}={name}' for name in names)})"
+    built = f"Host(**{OBJECTS})"
     edits: list[tuple[ast.stmt, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import) and any(
@@ -666,15 +682,7 @@ def compose(
                 name for name in dict.fromkeys(reads) if name not in LEXICAL
             )
             verbs = verb_names(source)
-            # What the rewritten `import host` exposes: everything the
-            # handler may substitute, plus the session's other names —
-            # minus any the handler binds for itself, which would
-            # otherwise shadow the session's at the point the module is
-            # built.
-            source = substitute_host(
-                source,
-                sorted((available | set(injectable)) - bound_names(source)),
-            )
+            source = substitute_host(source)
         except SyntaxError as e:
             raise CallError(f"{rel} does not parse: {e.msg} (line {e.lineno})") from e
         # A name the session injects defaults to the session's own
@@ -685,7 +693,8 @@ def compose(
         required = tuple(name for name in injectable if name not in available)
         wrapper = f"nt__handler_{module}"
         signature = ", ".join(
-            name if name in required else f"{name}={name}" for name in injectable
+            [name if name in required else f"{name}={name}" for name in injectable]
+            + [f"{OBJECTS}=None"]
         )
         lines.append(f"def {wrapper}({signature}):")
         body = source.splitlines()
@@ -697,12 +706,15 @@ def compose(
         registry.append(f'"{module}": ({wrapper}, {injectable!r}, {required!r})')
     lines.append(f"{REGISTRY} = {{{', '.join(registry)}}}")
     lines.append(
+        f"{SESSION} = {{{', '.join(f'{name!r}: {name}' for name in sorted(available))}}}"
+    )
+    lines.append(
         f"def {CALL}(module, method='GET', path=None, *, params=None, body=None,"
         " json=None, headers=None, **objects):"
     )
     lines.append(
-        f"    return Call.dispatch({REGISTRY}, module, method, path, params,"
-        " body, json, headers, objects)"
+        f"    return Call.dispatch({REGISTRY}, {SESSION}, module, method, path,"
+        " params, body, json, headers, objects)"
     )
     # The bare name too: `from host import call` is what a test should
     # write, and a test written before that spelling existed still runs.
