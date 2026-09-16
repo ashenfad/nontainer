@@ -231,6 +231,17 @@ A handler that `global`s a module-level name cannot be composed into a
 test program, and `ws-pytest` says so instead of running something that
 means something else.
 
+## Importing a handler directly
+
+A handler module a test imports (`import app.api.summary`) is given
+`Request`, `Response` and `HttpError` in its globals — the three names
+dispatch binds at request time — so a sad path raises `HttpError`,
+catchable with `except HttpError` or `isinstance`, rather than
+`NameError`. That is all the import gets: `db` and `cache` are still
+not module attributes, and the envelope is still `call`'s. A library
+under `app/api/` (`_lib.py`) is left alone, because dispatch leaves it
+alone too — only the modules a URL can reach are handlers.
+
 ## Reading a failure
 
 ```
