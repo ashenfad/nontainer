@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..executor import HOST_MODULE
-from .contract import HANDLER_CONTRACT, HttpError, make_request, normalize
+from .contract import HttpError, make_request, normalize
 
 
 class CallError(Exception):
@@ -191,8 +191,52 @@ class Host:
         self.__dict__.update(names)
 
 
+class Module:
+    """A handler module as the test program holds it.
+
+    The module's body runs as a composed function, the way a handler
+    ``call`` reaches does — so the contract and the session's objects
+    are in scope before its first line, which is what a request gives
+    it. Its names are that function's locals by then: readable here,
+    and not writable, because an attribute set on this object would
+    change nothing the module's own functions read.
+    """
+
+    def __init__(self, name: str, names: Any) -> None:
+        # By reference: the package namespace holds the memo itself, so
+        # a module imported later shows up under a package already
+        # bound by an earlier import.
+        object.__setattr__(self, "_name", name)
+        object.__setattr__(self, "_names", names)
+
+    def __getattr__(self, attr: str) -> Any:
+        names = object.__getattribute__(self, "_names")
+        try:
+            return names[attr]
+        except KeyError:
+            name = object.__getattribute__(self, "_name")
+            raise AttributeError(f"module {name!r} has no attribute {attr!r}") from None
+
+    def _refuse(self, attr: str) -> AttributeError:
+        name = object.__getattribute__(self, "_name")
+        return AttributeError(
+            f"Cannot set attribute {attr!r} on module {name!r}: a handler "
+            "module runs as a composed function in the test program, whose "
+            "own names are what its functions read — an attribute set here "
+            "would reach none of them. Substitute through call(), which "
+            "binds what the handler reads, or patch a module the test "
+            "imports the ordinary way."
+        )
+
+    def __setattr__(self, attr: str, value: Any) -> None:
+        raise self._refuse(attr)
+
+    def __delattr__(self, attr: str) -> None:
+        raise self._refuse(attr)
+
+
 #: The contract classes a test program needs in scope for ``call``.
-CONTRACT = (Call, CallError, TestResponse, Host)
+CONTRACT = (Call, CallError, TestResponse, Host, Module)
 
 #: Names a composed handler resolves from the test program's own
 #: scope: the contract every handler may name, plus the helper itself.
@@ -208,6 +252,7 @@ LEXICAL = frozenset(
         "CallError",
         "TestResponse",
         "Host",
+        "Module",
         "call",
     }
 )
@@ -224,6 +269,13 @@ CALL = "nt__call"
 
 #: What a test imports it under.
 CALL_NAME = "call"
+
+#: Where a composed test program keeps the handler modules its test
+#: file imported, and the package namespace that reads from it — so
+#: `import app.api.summary` binds `app` and a second import of the same
+#: module shares one execution, as imports do.
+MODULES = "nt__modules"
+PACKAGE = "nt__package"
 
 
 def uses_call(source: str) -> bool:
@@ -640,27 +692,28 @@ def compose(
     return "\n".join(lines) + "\n", spans
 
 
-#: What dispatch binds into a handler's globals, by name — the same
-#: three a directly imported handler module has to be given.
-_CONTRACT_NAMES = tuple(klass.__name__ for klass in HANDLER_CONTRACT)
-
-
 def _is_handler(name: str) -> bool:
     """Whether a module name under the api directory is one dispatch
     would route to: a single segment, never an underscore-prefixed one.
-    A library under api/ is not a handler and gets no contract from
-    dispatch either."""
+    A library under api/ is not a handler — dispatch never runs one, so
+    a test must not see one run differently either."""
     return bool(name) and "." not in name and not name.startswith("_")
 
 
-def imported_handlers(source: str, package: str) -> tuple[str, ...]:
-    """The handler modules a test file imports directly, in order.
+def api_package(ws: Any, app_root: str) -> str:
+    """The dotted name the api directory is imported under. Imports
+    resolve from the workspace root, so it is the api tree's path
+    relative to that root."""
+    base = app_root if ws.root == "/" else app_root[len(ws.root) :]
+    return f"{base.strip('/').replace('/', '.')}.api"
 
-    Every spelling names the same module object — ``import
-    app.api.summary``, ``... as summary``, ``from app.api.summary
-    import get``, ``from app.api import summary`` — and a function
-    imported out of a module still reads that module's globals, so the
-    module is the only thing worth finding.
+
+def imported_handlers(source: str, package: str) -> tuple[str, ...]:
+    """The handler modules a test file imports, in source order.
+
+    Every spelling names the same module — ``import app.api.summary``,
+    ``... as summary``, ``from app.api.summary import get``, ``from
+    app.api import summary`` — and one execution is what they share.
     """
     try:
         tree = ast.parse(source)
@@ -686,38 +739,136 @@ def imported_handlers(source: str, package: str) -> tuple[str, ...]:
     return tuple(found)
 
 
-def seed_contract(ws: Any, source: str, app_root: str) -> str:
-    """The preamble that hands a directly imported handler the globals
-    a request hands it.
+def compose_modules(
+    ws: Any, source: str, app_root: str
+) -> tuple[str, list[tuple[str, int, int]], str]:
+    """The preamble for the handler modules a test file imports, the
+    regions their lines occupy in it, and the test file rewritten to
+    import them from it.
 
-    ``import app.api.summary`` reaches the file through the workspace's
-    import loader, which runs it on its own source and nothing else —
-    so ``HttpError``, which dispatch binds into the handler's globals
-    for the length of a request, is an undefined name there and every
-    sad path dies of ``NameError`` instead of meaning a status. The
-    preamble imports the module and binds the three names on it, which
-    is the state a request would have found it in; the test's own
-    import resolves to that same module object.
+    A handler module read through the workspace's import loader runs on
+    its own source and nothing else: ``HttpError`` is undefined there,
+    the session's objects are absent, and a sad path dies of NameError
+    instead of meaning a status. So the module's body is composed into
+    the test program, where the contract and the session's names are
+    already in scope — the same reason a handler ``call`` runs is
+    composed rather than dispatched.
 
-    Guarded, because a module that raises while it executes has to
-    report at the test's own import line, not here: the loader drops a
-    module whose body raised, so the test's import runs it again and
-    raises where the agent can see it.
+    The import statement is what runs it, and each one is rewritten in
+    place: the module executes where the agent wrote the import, in
+    the order the file reads, inside the function or the branch that
+    holds it. The first executed import fills the memo and every later
+    one shares that execution, as imports do. Nothing runs from the
+    preamble itself, which only defines.
     """
-    base = app_root if ws.root == "/" else app_root[len(ws.root) :]
-    package = f"{base.strip('/').replace('/', '.')}.api"
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return "", [], source
+    package = api_package(ws, app_root)
     fs = ws.files.fs
-    names = [
+    wanted = [
         name
         for name in imported_handlers(source, package)
         if fs.exists(f"{app_root}/api/{name}.py")
     ]
-    lines: list[str] = []
-    for index, name in enumerate(names):
-        held = f"nt__seeded_{index}"
-        lines.append("try:")
-        lines.append(f"    import {package}.{name} as {held}")
-        lines.extend(f"    {held}.{attr} = {attr}" for attr in _CONTRACT_NAMES)
-        lines.append("except Exception:")
-        lines.append("    pass")
-    return "\n".join(lines) + "\n" if lines else ""
+    if not wanted:
+        return "", [], source
+
+    segments = package.split(".")
+    namespace = f"Module({package!r}, {MODULES})"
+    for segment in reversed(segments[1:]):
+        parent = ".".join(segments[: segments.index(segment)])
+        namespace = f"Module({parent!r}, {{{segment!r}: {namespace}}})"
+    lines = [f"{MODULES} = {{}}", f"{PACKAGE} = {namespace}"]
+    spans: list[tuple[str, int, int]] = []
+    for name in wanted:
+        path = f"{app_root}/api/{name}.py"
+        rel = path[len(ws.root) + 1 :] if ws.root != "/" else path.lstrip("/")
+        handler = fs.read(path).decode("utf-8")
+        try:
+            _refuse_unindentable(handler, name)
+        except SyntaxError as e:
+            raise CallError(f"{rel} does not parse: {e.msg} (line {e.lineno})") from e
+        lines.append(f"def nt__body_{name}():")
+        body = handler.splitlines()
+        spans.append((rel, len(lines) + 1, len(body)))
+        for line in body:
+            lines.append(f"    {line}" if line.strip() else "")
+        # locals() is the module's namespace at the end of its body —
+        # exactly what a module object exposes, including whatever a
+        # conditional bound and whatever it did not.
+        lines.append("    return locals()")
+        lines.append(f"def nt__module_{name}():")
+        lines.append(f"    nt__mod = {MODULES}.get({name!r})")
+        lines.append("    if nt__mod is None:")
+        lines.append(
+            f"        nt__mod = Module({f'{package}.{name}'!r}, nt__body_{name}())"
+        )
+        lines.append(f"        {MODULES}[{name!r}] = nt__mod")
+        lines.append("    return nt__mod")
+    return (
+        "\n".join(lines) + "\n",
+        spans,
+        _splice(source, _module_edits(tree, package, wanted, segments[0])),
+    )
+
+
+def _module_edits(
+    tree: ast.AST, package: str, wanted: Any, top: str
+) -> list[tuple[ast.stmt, str]]:
+    """Each import of a composed handler module, rewritten to the call
+    that runs it. Anything else the statement imports stays a real
+    import of its own."""
+    edits: list[tuple[ast.stmt, str]] = []
+    for node in ast.walk(tree):
+        parts: list[str] = []
+        kept: list[Any] = []
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = (
+                    alias.name[len(package) + 1 :]
+                    if alias.name.startswith(f"{package}.")
+                    else ""
+                )
+                if name not in wanted:
+                    kept.append(alias)
+                elif alias.asname:
+                    parts.append(f"{alias.asname} = nt__module_{name}()")
+                else:
+                    # `import app.api.summary` binds the top package and
+                    # reaches the module through it, as Python does.
+                    parts.append(f"nt__module_{name}(); {top} = {PACKAGE}")
+            if parts and kept:
+                parts.insert(0, "import " + _spelled(kept))
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            if node.module == package:
+                for alias in node.names:
+                    if alias.name in wanted:
+                        held = alias.asname or alias.name
+                        parts.append(f"{held} = nt__module_{alias.name}()")
+                    else:
+                        kept.append(alias)
+                if parts and kept:
+                    parts.insert(0, f"from {package} import " + _spelled(kept))
+            elif node.module.startswith(f"{package}."):
+                name = node.module[len(package) + 1 :]
+                if name not in wanted:
+                    continue
+                if any(alias.name == "*" for alias in node.names):
+                    raise CallError(
+                        f"`from {node.module} import *` is not a spelling a "
+                        "test can use: the handler module is composed into "
+                        "the test program, so the names it defines are not "
+                        "knowable until it runs. Import the module "
+                        f"(`import {node.module} as {name}`) or name what "
+                        "you need."
+                    )
+                parts.append(f"nt__mod = nt__module_{name}()")
+                parts.extend(
+                    f"{alias.asname or alias.name} = nt__mod.{alias.name}"
+                    for alias in node.names
+                )
+        if parts:
+            edits.append((node, "; ".join(parts)))
+    return edits

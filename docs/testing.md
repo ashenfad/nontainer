@@ -261,15 +261,34 @@ means something else.
 
 ## Importing a handler directly
 
-A handler module a test imports (`import app.api.summary`) is given
-`Request`, `Response` and `HttpError` in its globals — the three names
-dispatch binds at request time — so a sad path raises `HttpError`,
-catchable with `except HttpError` or `isinstance`, rather than
-`NameError`. That is all the import gets: the module's own
-`from host import db` reads the session's real database, as it does in
-a request, and the envelope is still `call`'s. A library
-under `app/api/` (`_lib.py`) is left alone, because dispatch leaves it
-alone too — only the modules a URL can reach are handlers.
+A handler module a test imports (`import app.api.summary`, `from
+app.api.summary import get`, either with a rename) is composed into the
+test program the way a handler `call` reaches is, and the import
+statement is what runs it. So `Request`, `Response`, `HttpError` and
+the session's own names are in scope from its first line — a constant
+built at module scope (`MISSING = HttpError(400, ...)`) works, and a
+sad path raises `HttpError`, catchable with `except HttpError` or
+`isinstance`, rather than `NameError`. Its own `from host import db`
+reads the session's real database, as it does in a request; the
+envelope is still `call`'s.
+
+The import behaves as an import: it runs where it is written, in the
+order the file reads, inside the function or the branch that holds it,
+and a second import of the same module shares the first execution. Two
+things differ from a module read off the filesystem, both refused
+rather than quietly wrong:
+
+- **Setting an attribute on it.** The module's names are the composed
+  function's, so a set would reach the object the test holds and none
+  of the module's own functions. Substitute through `call`, or patch a
+  module the test imports the ordinary way.
+- **`from app.api.summary import *`.** The names a module defines are
+  not knowable before it runs. Import the module, or name what you
+  need.
+
+A library under `app/api/` (`_lib.py`) is imported the ordinary way,
+because dispatch never runs one either — only the modules a URL can
+reach are handlers.
 
 ## Reading a failure
 

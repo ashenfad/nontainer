@@ -2149,8 +2149,9 @@ TestResponse(status, content, content_type, headers)
 
 `nontainer.apps.contract.HANDLER_CONTRACT` is the tuple of names a
 handler may use without importing them (`Request`, `Response`,
-`HttpError`): dispatch binds them for a request, and `ws-pytest` binds
-them both in the test and in any handler module the test imports.
+`HttpError`): dispatch binds them for a request, and `ws-pytest` puts
+them in scope of the test and of every handler module composed into it
+— the ones a test `call`s, and the ones it imports.
 
 `call` does not reproduce the read-only filesystem a real GET runs
 under — a GET that writes passes there and 500s under `ws-curl`, which
