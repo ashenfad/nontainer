@@ -31,9 +31,9 @@ from typing import Any
 from ..executor import ViewSpec
 from ..workspace import Workspace
 from .contract import (
+    HANDLER_CONTRACT,
     HttpError,
     Request,
-    Response,
     WireResponse,
     make_request,
     normalize,
@@ -392,7 +392,7 @@ class AppRuntime:
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._shadow_notes: set[str] = set()  # asset collisions noted
         self._assets = _build_assets(self._config.static_assets)
-        self._contract = (Request, Response, HttpError)
+        self._contract = HANDLER_CONTRACT
         # Path layout, derived once from the workspace root.
         self._app_root = app_root(ws)
         self._api_root = f"{self._app_root}/api"

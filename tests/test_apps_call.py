@@ -431,3 +431,110 @@ def test_a_helper_with_a_local_of_the_same_name_still_takes_the_fake(ws):
         "    assert call('shadowed', db=db).json == {'rows': ['ann']}\n",
     )
     assert report.ok, report.outcomes
+
+
+# -- the contract a directly imported handler carries -------------------------
+
+
+def test_an_imported_handler_raises_httperror_not_nameerror(ws):
+    """``Request``/``Response``/``HttpError`` are dispatch's, bound into
+    the handler's globals for a request. A test that imports the module
+    instead of calling it gets the same three, so the sad path means a
+    status either way."""
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"def get(req):\n"
+        b"    key = req.params.get('key')\n"
+        b"    if not key:\n"
+        b"        raise HttpError(400, 'key is required')\n"
+        b"    return Response(status=200, body={'key': key})\n",
+    )
+    report = run(
+        ws,
+        "import app.api.summary as summary\n"
+        "\n"
+        "\n"
+        "def test_the_sad_path_is_catchable():\n"
+        "    req = Request('GET', '/api/summary', {}, {}, b'')\n"
+        "    try:\n"
+        "        summary.get(req)\n"
+        "    except HttpError as e:\n"
+        "        assert isinstance(e, HttpError)\n"
+        "        assert e.status == 400\n"
+        "    else:\n"
+        "        assert False, 'the handler did not raise'\n"
+        "\n"
+        "\n"
+        "def test_the_happy_path_returns_a_response():\n"
+        "    req = Request('GET', '/api/summary', {'key': 'k'}, {}, b'')\n"
+        "    assert summary.get(req).status == 200\n"
+        "\n"
+        "\n"
+        "def test_call_on_the_same_handler_still_reads_the_envelope():\n"
+        "    assert call('summary').status == 400\n",
+    )
+    assert report.ok, report.outcomes
+
+
+def test_a_library_under_api_is_not_a_handler_and_gets_nothing(ws):
+    """Dispatch runs handlers, not the modules they import: a library
+    under app/api/ has no contract in a request, so it has none here."""
+    ws.files.fs.write(
+        "/workspace/app/api/_raiser.py",
+        b"def boom():\n    raise HttpError(400, 'x')\n",
+    )
+    report = run(
+        ws,
+        "from app.api._raiser import boom\n"
+        "\n"
+        "\n"
+        "def test_a_library_sees_what_a_request_shows_it():\n"
+        "    try:\n"
+        "        boom()\n"
+        "    except NameError:\n"
+        "        return\n"
+        "    assert False, 'a library must not be seeded'\n",
+    )
+    assert report.ok, report.outcomes
+
+
+def test_a_handler_that_raises_while_importing_reports_at_the_test_line(ws):
+    """The seeding imports the module first, so it must not become the
+    place a broken module is reported: the test's own import line is
+    where the agent looks."""
+    ws.files.fs.write(
+        "/workspace/app/api/broken.py", b"raise RuntimeError('boom at import')\n"
+    )
+    report = run(ws, "import app.api.broken as broken\n")
+    assert report.exit_code == 2
+    assert "boom at import" in (report.collection_error or "")
+    assert "tests/test_call.py:1: in <module>" in (report.outcomes[0].traceback or "")
+
+
+def test_the_seeded_contract_survives_process_isolation():
+    w = Workspace(
+        KvgitProvider.open(None, session="apps-call-seed-iso"),
+        python=PythonConfig(isolation="process", host_objects={"db": FakeDb()}),
+    )
+    enable_apps(w)
+    try:
+        w.files.fs.write(
+            "/workspace/app/api/summary.py",
+            b"def get(req):\n    raise HttpError(418, 'teapot')\n",
+        )
+        report = run(
+            w,
+            "from app.api.summary import get\n"
+            "\n"
+            "\n"
+            "def test_an_imported_verb_reads_its_modules_globals():\n"
+            "    try:\n"
+            "        get(Request('GET', '/api/summary', {}, {}, b''))\n"
+            "    except HttpError as e:\n"
+            "        assert e.status == 418\n"
+            "    else:\n"
+            "        assert False, 'the handler did not raise'\n",
+        )
+        assert report.ok, report.outcomes
+    finally:
+        w.close()
