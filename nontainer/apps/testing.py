@@ -24,12 +24,16 @@ accident of shared memory and break under ``"process"``. So each
 handler a test names is composed into a closure over the test program,
 its line count preserved, and ``call`` invokes that.
 
-Dependencies arrive as keyword arguments (``call(..., db=fake)``)
-rather than by patching, because there is nothing to patch them on: a
-handler's ``db`` and ``cache`` are bound into its namespace by
-dispatch, not into the module's attributes. Everything that IS a module
-attribute patches normally — ``patch.object`` on a workspace module,
-a class or an instance reaches what the module itself reads.
+Substituting one is optional: ``call("scores")`` runs the handler
+against what the session binds, which is the point of running it at
+all. A test that must not write into the session's database, or must
+not depend on its state, passes a fake instead — as a keyword rather
+than by patching, because there is nothing to patch it on: a handler's
+``db`` and ``cache`` are bound into its namespace by dispatch, and
+``from host import db`` binds them into a module the composition
+rewrites rather than executes. Everything that IS a module attribute
+patches normally — ``patch.object`` on a workspace module, a class or
+an instance reaches what the module itself reads.
 
 One asymmetry, stated rather than papered over: ``call`` does not
 reproduce the read-only filesystem a real GET runs under, because the
@@ -44,6 +48,7 @@ import ast
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..executor import HOST_MODULE
 from .contract import HANDLER_CONTRACT, HttpError, make_request, normalize
 
 
@@ -122,9 +127,9 @@ class Call:
             named = ", ".join(f"{name}=" for name in absent)
             raise CallError(
                 f"call({module!r}) needs {named}: the handler reads "
-                f"{', '.join(absent)} free, and nothing in this session binds "
-                "that name — a request would raise NameError. Pass a fake, or "
-                "fix the name in the handler."
+                f"{', '.join(absent)}, and nothing in this session binds that "
+                "name — a request would fail on it too. Pass a fake, or fix "
+                "the name in the handler."
             )
         unknown = [name for name in objects if name not in injectable]
         if unknown:
@@ -172,8 +177,22 @@ class Call:
         return TestResponse(int(status), body, "application/json")
 
 
+class Host:
+    """The ``host`` module a composed handler imports from.
+
+    A handler reaches its dependencies by importing them, and a test's
+    fake has to arrive under that spelling too — so the composition
+    rewrites ``import host`` to build one of these from the names the
+    test program holds, which are the substitutions where a test made
+    one and the session's own objects everywhere else.
+    """
+
+    def __init__(self, **names: Any) -> None:
+        self.__dict__.update(names)
+
+
 #: The contract classes a test program needs in scope for ``call``.
-CONTRACT = (Call, CallError, TestResponse)
+CONTRACT = (Call, CallError, TestResponse, Host)
 
 #: Names a composed handler resolves from the test program's own
 #: scope: the contract every handler may name, plus the helper itself.
@@ -181,7 +200,16 @@ CONTRACT = (Call, CallError, TestResponse)
 #: substitute, and a handler that names ``Response`` is naming the
 #: contract rather than an injection.
 LEXICAL = frozenset(
-    {"Request", "Response", "HttpError", "Call", "CallError", "TestResponse", "call"}
+    {
+        "Request",
+        "Response",
+        "HttpError",
+        "Call",
+        "CallError",
+        "TestResponse",
+        "Host",
+        "call",
+    }
 )
 
 #: Bound in every composed test program; the generated ``call`` reads
@@ -233,6 +261,20 @@ def called_modules(source: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def bound_names(source: str) -> frozenset[str]:
+    """The names a handler binds at module level — assigned, defined or
+    imported. What a request would find in the module's own globals, so
+    nothing in it is a test's to substitute."""
+    import symtable
+
+    table = symtable.symtable(source, "<handler>", "exec")
+    return frozenset(
+        symbol.get_name()
+        for symbol in table.get_symbols()
+        if symbol.is_assigned() or symbol.is_imported()
+    )
+
+
 def free_names(source: str) -> tuple[str, ...]:
     """The names a handler reads without binding them — what dispatch
     supplies from its namespace, and therefore what a test may
@@ -254,11 +296,7 @@ def free_names(source: str) -> tuple[str, ...]:
     import symtable
 
     table = symtable.symtable(source, "<handler>", "exec")
-    bound = {
-        symbol.get_name()
-        for symbol in table.get_symbols()
-        if symbol.is_assigned() or symbol.is_imported()
-    }
+    bound = bound_names(source)
     reads: set[str] = set()
 
     def visit(scope: Any) -> None:
@@ -278,6 +316,123 @@ def free_names(source: str) -> tuple[str, ...]:
             if node.id in free and node.id not in ordered:
                 ordered.append(node.id)
     return tuple(ordered)
+
+
+def host_names(source: str) -> tuple[str, ...]:
+    """The dependencies a handler reaches through the ``host`` module,
+    in source order.
+
+    ``from host import db`` and ``import host`` then ``host.db`` name
+    the same object the bare ``db`` names, so a test substitutes them
+    the same way. Python's scope analysis cannot see it — the import
+    BINDS the name, and the read is an attribute rather than a name —
+    which is why this asks the question separately and why the
+    composition rewrites the import instead of leaving it to run.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ()
+    held = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+        if alias.name == HOST_MODULE
+    }
+    hits: list[tuple[tuple[int, int], str]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == HOST_MODULE
+        ):
+            hits.extend(
+                ((node.lineno, node.col_offset), alias.name)
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in held
+        ):
+            hits.append(((node.lineno, node.col_offset), node.attr))
+    ordered: list[str] = []
+    for _, name in sorted(hits):
+        if name not in ordered:
+            ordered.append(name)
+    return tuple(ordered)
+
+
+def substitute_host(source: str, names: Any) -> str:
+    """The handler's source with its ``host`` imports rewritten to read
+    the composed program's own names, line for line.
+
+    A composed handler runs inside the test program, where a
+    substitution is an ordinary name. Left alone, the import would
+    reach past it to the session's real object and a test that faked
+    the database would be testing the database. So ``from host import
+    db`` becomes nothing — ``db`` is the wrapper's parameter by then —
+    and ``import host`` becomes a ``Host`` built from ``names``.
+
+    Only the import statement's own span is replaced, and a statement
+    spanning several lines leaves the rest of them blank, so every line
+    of the handler keeps the number a traceback names it by.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    built = f"Host({', '.join(f'{name}={name}' for name in names)})"
+    edits: list[tuple[ast.stmt, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import) and any(
+            alias.name == HOST_MODULE for alias in node.names
+        ):
+            others = [alias for alias in node.names if alias.name != HOST_MODULE]
+            parts = []
+            if others:
+                spelled = ", ".join(
+                    alias.name + (f" as {alias.asname}" if alias.asname else "")
+                    for alias in others
+                )
+                parts.append(f"import {spelled}")
+            parts.extend(
+                f"{alias.asname or alias.name} = {built}"
+                for alias in node.names
+                if alias.name == HOST_MODULE
+            )
+            edits.append((node, "; ".join(parts)))
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == HOST_MODULE
+        ):
+            # An alias needs a line to land on; a plain name is already
+            # the wrapper's parameter, so the import becomes a no-op.
+            binds = "; ".join(
+                f"{alias.asname} = {alias.name}"
+                for alias in node.names
+                if alias.asname and alias.asname != alias.name
+            )
+            edits.append((node, binds or "pass"))
+    if not edits:
+        return source
+    lines = source.splitlines()
+    for node, text in sorted(
+        edits, key=lambda edit: (edit[0].lineno, edit[0].col_offset), reverse=True
+    ):
+        first, last = node.lineno - 1, (node.end_lineno or node.lineno) - 1
+        start, end = node.col_offset, node.end_col_offset or 0
+        if first == last:
+            lines[first] = lines[first][:start] + text + lines[first][end:]
+            continue
+        lines[first] = lines[first][:start] + text
+        for middle in range(first + 1, last):
+            lines[middle] = ""
+        lines[last] = lines[last][end:]
+    return "\n".join(lines) + ("\n" if source.endswith("\n") else "")
 
 
 def verb_names(source: str) -> tuple[str, ...]:
@@ -340,14 +495,26 @@ def compose(
         source = fs.read(path).decode("utf-8")
         try:
             _refuse_unindentable(source, module)
-            injectable = tuple(n for n in free_names(source) if n not in LEXICAL)
+            reads = (*free_names(source), *host_names(source))
+            injectable = tuple(
+                name for name in dict.fromkeys(reads) if name not in LEXICAL
+            )
             verbs = verb_names(source)
+            # What the rewritten `import host` exposes: everything the
+            # handler may substitute, plus the session's other names —
+            # minus any the handler binds for itself, which would
+            # otherwise shadow the session's at the point the module is
+            # built.
+            source = substitute_host(
+                source,
+                sorted((available | set(injectable)) - bound_names(source)),
+            )
         except SyntaxError as e:
             raise CallError(f"{rel} does not parse: {e.msg} (line {e.lineno})") from e
         # A name the session injects defaults to the session's own
         # object, so a test that substitutes nothing talks to the real
-        # one. A name it does not inject has no default at all: in a
-        # request that handler raises NameError, and here the test is
+        # one. A name it does not inject has no default at all: such a
+        # handler fails on that name in a request, and here the test is
         # told which fake it owes.
         required = tuple(name for name in injectable if name not in available)
         wrapper = f"nt__handler_{module}"

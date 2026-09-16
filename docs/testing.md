@@ -159,10 +159,11 @@ Two things cannot be patched:
   be a channel from one execution to the next. Patch the name your own
   module reads instead: `import host` at the top and `host.db` at the
   call site, since `from host import db` binds once at import time.
-- **A handler's injected names are not module attributes.** `db` and
-  `cache` are bound into the handler's namespace by dispatch, so there
-  is nothing to patch them on — which is why `call` takes them as
-  keywords: `call("scores", db=fake)`.
+- **A handler's dependencies are not module attributes.** `db` and
+  `cache` are bound into the handler's namespace by dispatch, and
+  `from host import db` binds them into a module `call` rewrites
+  rather than executes — so there is nothing to patch them on, which
+  is why `call` takes them as keywords: `call("scores", db=fake)`.
 
 Use `patch.object`, not a string target. `patch("app.api._feed.fetch")`
 resolves the dotted name through the real `importlib`, which has never
@@ -180,21 +181,34 @@ one helper, `call`, already in scope in every test — no import:
 
 ```python
 # tests/test_scores.py
-from unittest.mock import MagicMock
 
 
 def test_limit_is_honoured():
-    db = MagicMock()
-    db.query.return_value = ["ann", "bob", "cy"]
-    resp = call("scores", params={"limit": "2"}, db=db)
+    resp = call("scores", params={"limit": "2"})
     assert resp.status == 200
     assert resp.json["scores"] == ["ANN", "BOB"]
-    db.query.assert_called_once()
 
 
 def test_missing_name_is_a_400():
-    resp = call("scores", "POST", json={}, db=MagicMock())
+    resp = call("scores", "POST", json={})
     assert resp.status == 400
+```
+
+That call runs the handler against what the session binds — the real
+`db`, the real `cache` — which is what running it is for. Substituting
+is the option for a test that must not write into the session's
+database or depend on its state, and a fake arrives as a keyword:
+
+```python
+from unittest.mock import MagicMock
+
+
+def test_limit_is_honoured_against_a_fake():
+    db = MagicMock()
+    db.query.return_value = ["ann", "bob", "cy"]
+    resp = call("scores", params={"limit": "2"}, db=db)
+    assert resp.json["scores"] == ["ANN", "BOB"]
+    db.query.assert_called_once()
 ```
 
 ```
@@ -208,12 +222,14 @@ call(module, method="GET", path=None, *, params=None, body=None,
 - `path` defaults to `/api/<module>`; `params` becomes the query
   string, `json=` a JSON body with its content type, `body=` bytes,
   text, or a value to encode.
-- `**objects` substitutes what dispatch would bind: `db=fake`,
-  `cache=fake`. Anything not named binds as dispatch would, so a test
-  that forgets to fake `db` talks to the real one, loudly. A name the
-  session injects nothing under has no real one to fall back to, so
-  `call` asks for it; a keyword the handler never reads is an error,
-  because a fake nothing reads proves nothing.
+- `**objects` substitutes one of the handler's dependencies, under
+  either spelling it reads them by: `from host import db` — what a
+  handler should write — or the bare `db` dispatch also binds.
+  (`import host` then `host.db` works too.) Anything not named binds
+  as dispatch would, so a test that fakes nothing talks to the real
+  objects. A name the session injects nothing under has no real one to
+  fall back to, so `call` asks for it; a keyword the handler never
+  reads is an error, because a fake nothing reads proves nothing.
 - The return is the **response**, not the handler's raw return:
   `resp.status`, `resp.json`, `resp.text`, `resp.headers`, `resp.ok`.
   Liberal returns are normalized, and `raise HttpError(404, ...)` comes
@@ -237,8 +253,9 @@ A handler module a test imports (`import app.api.summary`) is given
 `Request`, `Response` and `HttpError` in its globals — the three names
 dispatch binds at request time — so a sad path raises `HttpError`,
 catchable with `except HttpError` or `isinstance`, rather than
-`NameError`. That is all the import gets: `db` and `cache` are still
-not module attributes, and the envelope is still `call`'s. A library
+`NameError`. That is all the import gets: the module's own
+`from host import db` reads the session's real database, as it does in
+a request, and the envelope is still `call`'s. A library
 under `app/api/` (`_lib.py`) is left alone, because dispatch leaves it
 alone too — only the modules a URL can reach are handlers.
 

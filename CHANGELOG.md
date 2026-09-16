@@ -26,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CodeType` — and stays refused.
 
 ### Fixed
+- **`call(db=fake)` substitutes what a handler imports, too.** A
+  handler is meant to reach its dependencies with `from host import
+  db`, and that was the one spelling a test could not fake: the import
+  binds the name, so `call` saw a handler that read nothing outside
+  itself and refused the keyword. The composed copy of a handler now
+  has its `host` imports rewritten — `from host import db` to the
+  substitution already in scope, `import host` to a `Host` built from
+  the same names — so both spellings and `host.db` read the fake,
+  line numbers unchanged. A handler that reads neither is still
+  refused a keyword, because a fake nothing reads proves nothing.
 - **A handler imported straight from a test carries the contract.**
   `import app.api.summary` reaches the module through the workspace's
   import loader, which ran the file on its own source alone: `HttpError`
