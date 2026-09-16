@@ -144,6 +144,7 @@ def test_help_states_what_a_test_gets_without_importing_it(ws):
     that types the verb: a doc it cannot read is not a source."""
     r = ws.terminal("ws-pytest --help")
     said = r.stdout
+    assert "from host import call" in said
     assert "call(module, method=" in said
     assert "params=None" in said and "**objects" in said
     assert ".status" in said and ".json" in said

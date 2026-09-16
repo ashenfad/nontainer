@@ -2122,13 +2122,18 @@ render_report(report, *, verbose=False) -> str               # wsvitest
     # verbose: --reporter=verbose, a line per test rather than per file
 ```
 
-A test reaches a handler through `call`, which is a bare name in the
-test's own namespace (not an import): the handler is composed into the
-test program so it runs where the test's mocks are. `ws-pytest --help`
-is where the agent reads this contract; the signature is repeated here
-for the host-side reader.
+A test reaches a handler through `call`, written `from host import
+call`: the handler is composed into the test program so it runs where
+the test's fakes are, and the import is rewritten to that closure
+rather than executed — there is nothing for the `host` module to hand
+out. A bare `call` with no import still resolves, and a handler that
+imports it gets the ImportError a request would give it.
+`ws-pytest --help` is where the agent reads this contract; the
+signature is repeated here for the host-side reader.
 
 ```python
+from host import call
+
 call(module, method="GET", path=None, *, params=None, body=None,
      json=None, headers=None, **objects) -> TestResponse
     # module: the name under app/api/, as a string literal
