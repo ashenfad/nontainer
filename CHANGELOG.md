@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ws-pytest --help` states what a test gets without importing it.**
+  The help now carries the whole test-side contract — `call(module,
+  method=..., params=..., **objects)` with the response it returns,
+  what a keyword may stand in for and why a keyword the handler never
+  reads is refused, `Request` / `Response` / `HttpError` as bare names,
+  and `except HttpError` as the spelling of an exception check — with a
+  handler and its test as the example. It was written down only in the
+  docs and the tool description before, so the agent that types the
+  verb had to be told about `call` by someone else or discover it by
+  accident. The tool description now defers to the help rather than
+  restating a second copy of the contract.
+- **`types` joins the default stdlib grant.** `SimpleNamespace` and
+  `MappingProxyType` only: the record shape a test reaches for when it
+  wants a stand-in without a class, and a read-only view of a dict. The
+  rest of the module is the interpreter's own machinery — `FunctionType`,
+  `CodeType` — and stays refused.
+
+### Fixed
+- **A handler imported straight from a test carries the contract.**
+  `import app.api.summary` reaches the module through the workspace's
+  import loader, which ran the file on its own source alone: `HttpError`
+  was an undefined name there, so every sad path died of `NameError`
+  inside the handler and a test had to shim the class by hand.
+  `ws-pytest` now binds `Request`, `Response` and `HttpError` into the
+  module the way dispatch binds them for a request, for the modules a
+  URL can reach and no others — a library under `app/api/` is left as
+  dispatch leaves it.
+
 ## 0.7.3 - 2026-09-15
 
 ### Fixed

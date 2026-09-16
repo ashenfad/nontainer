@@ -1421,7 +1421,8 @@ class PythonConfig:
   (`nontainer.presets.STDLIB`): math/statistics/decimal/fractions,
   random (minus global seed/state), collections/itertools,
   heapq/bisect, narrow functools (`partial`, `reduce`, `lru_cache`,
-  `cache`),
+  `cache`), narrow types (`SimpleNamespace`, `MappingProxyType` — the
+  rest of that module is the interpreter's own machinery),
   datetime/time/calendar/zoneinfo, re/string/textwrap,
   difflib, narrow shlex (`quote`, `join`),
   json/csv/struct/base64/binascii/uuid/hashlib, pprint/traceback
@@ -2115,7 +2116,9 @@ render_report(report, *, verbose=False) -> str               # wsvitest
 
 A test reaches a handler through `call`, which is a bare name in the
 test's own namespace (not an import): the handler is composed into the
-test program so it runs where the test's mocks are.
+test program so it runs where the test's mocks are. `ws-pytest --help`
+is where the agent reads this contract; the signature is repeated here
+for the host-side reader.
 
 ```python
 call(module, method="GET", path=None, *, params=None, body=None,
@@ -2127,6 +2130,11 @@ call(module, method="GET", path=None, *, params=None, body=None,
 TestResponse(status, content, content_type, headers)
     .text · .json · .ok
 ```
+
+`nontainer.apps.contract.HANDLER_CONTRACT` is the tuple of names a
+handler may use without importing them (`Request`, `Response`,
+`HttpError`): dispatch binds them for a request, and `ws-pytest` binds
+them both in the test and in any handler module the test imports.
 
 `call` does not reproduce the read-only filesystem a real GET runs
 under — a GET that writes passes there and 500s under `ws-curl`, which
