@@ -27,8 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the attachment points: paths inside one are dropped and named in the
   same `Read-only filesystem: write() modifies the filesystem` refusal
   the local rung gives, on an errored result, while the call's writes
-  outside the attachment land as usual and the guest's copy is rebuilt
-  from the attachment on its next execution.
+  outside the attachment land as usual — committed by that call, under
+  that call's tool, the way an ordinary errored call commits what it
+  wrote — and the guest's copy is rebuilt from the attachment on its
+  next execution.
 
 ## 0.7.4 - 2026-09-16
 

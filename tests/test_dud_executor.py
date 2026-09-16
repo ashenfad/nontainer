@@ -853,7 +853,7 @@ def test_host_files_outside_the_root_never_reach_the_guest(ws):
 # -- attachments: a frozen tree the guest holds an ordinary copy of ----------
 
 
-def _attached(tmp_path, name, *, executor_factory=None):
+def _attached(tmp_path, name, *, executor_factory=None, **kw):
     """A store with ``reviewer`` (holding ``note.md``) attached into a
     reader session at ``peek``."""
     from nontainer import Store
@@ -863,7 +863,7 @@ def _attached(tmp_path, name, *, executor_factory=None):
     other.files.write("/workspace/note.md", "original\n")
     other.commit(info={"tool": "test"})
     other.close()
-    reader = store.open("reader", executor_factory=executor_factory)
+    reader = store.open("reader", executor_factory=executor_factory, **kw)
     reader.files.attach("reviewer", "peek")
     return store, reader
 
@@ -930,6 +930,53 @@ def test_a_guest_python_write_into_an_attachment_is_refused(tmp_path):
         assert not r
         assert "Read-only filesystem" in r.error
         assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+    finally:
+        ws.close()
+        store.close()
+
+
+def test_the_writes_a_refusal_accepted_commit_with_the_call(tmp_path):
+    """A refusal is an errored result, not an early exit. The writes
+    outside the attachment are this call's work: under autocommit they
+    ride this call's commit, under this call's tool, and the session is
+    clean afterwards. Left staged instead, they read as a call that
+    committed nothing while a later read-only call carried them home
+    under its own name — or a close lost them."""
+    store, ws = _attached(
+        tmp_path, "store", executor_factory=lambda: DudExecutor(backend="subprocess")
+    )
+    try:
+        r = ws.terminal("echo x > peek/note.md; echo sib > outside.txt")
+        assert not r
+        assert "Read-only filesystem" in r.stderr
+        assert r.commit is not None, "the accepted writes were left staged"
+        assert not ws.uncommitted
+        entry = next(e for e in ws.log() if e.id == r.commit)
+        assert entry.info.get("tool") == "terminal"
+        assert ws.files.fs.read("/workspace/outside.txt") == b"sib\n"
+        assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+    finally:
+        ws.close()
+        store.close()
+
+
+def test_a_refusal_commits_nothing_of_its_own_without_autocommit(tmp_path):
+    """Autocommit off is the caller's commit flow: the accepted writes
+    stay staged for whoever owns the turn, exactly as an ordinary
+    call's would, and the result names no commit."""
+    store, ws = _attached(
+        tmp_path,
+        "store",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+        autocommit=False,
+    )
+    try:
+        r = ws.terminal("echo x > peek/note.md; echo sib > outside.txt")
+        assert not r
+        assert "Read-only filesystem" in r.stderr
+        assert r.commit is None
+        assert ws.uncommitted
+        assert ws.files.fs.read("/workspace/outside.txt") == b"sib\n"
     finally:
         ws.close()
         store.close()
