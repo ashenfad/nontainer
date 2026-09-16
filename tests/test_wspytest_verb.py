@@ -139,6 +139,18 @@ def test_help_names_the_layout_rule_and_the_flags(ws):
     assert "no fixtures, no conftest" in r.stdout
 
 
+def test_help_states_what_a_test_gets_without_importing_it(ws):
+    """The help is the only place the contract is written for the agent
+    that types the verb: a doc it cannot read is not a source."""
+    r = ws.terminal("ws-pytest --help")
+    said = r.stdout
+    assert "call(module, method=" in said
+    assert "params=None" in said and "**objects" in said
+    assert ".status" in said and ".json" in said
+    assert "Request, Response, HttpError" in said
+    assert "except HttpError" in said
+
+
 def test_a_selector_naming_no_such_test_is_a_usage_error(ws):
     """A typo in a test name must not read as an empty suite: nothing
     ran either way, and only one of them is the agent's mistake."""

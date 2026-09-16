@@ -1193,7 +1193,44 @@ A test is plain Python — `assert`, and `from unittest.mock import
 MagicMock` where it needs a fake. Give a shared function its
 dependencies as arguments (`def load(db, limit)`) and a test can call
 it with one. There are no fixtures, no conftest, no plugins and no
-markers here: setup is the test's own code, written in the test."""
+markers here: setup is the test's own code, written in the test.
+
+In scope in a test, with nothing to import:
+
+  call(module, method="GET", path=None, *, params=None, body=None,
+       json=None, headers=None, **objects)
+      Runs app/api/<module>.py the way a request does (module is a
+      string literal) and returns the response: .status, .json,
+      .text, .headers, .ok — a raised HttpError arrives as a status,
+      not as an exception. A keyword substitutes a name the handler
+      reads without binding — what dispatch puts in its namespace
+      (`db`, `cache`). A name you leave out binds to the session's
+      real one; a keyword the handler never reads is an error,
+      because a fake nothing reads proves nothing.
+
+  Request, Response, HttpError
+      Bare names in the test and in every handler module it imports,
+      as a request binds them — so `import app.api.summary` and then
+      `summary.get(req)` raises HttpError rather than NameError.
+
+  # app/api/summary.py — dispatch binds `db`, so a test can fake it
+  def get(req):
+      key = req.params.get("key")
+      if not key:
+          raise HttpError(400, "key is required")
+      return {"row": db.get(key)}
+
+  # tests/test_summary.py
+  def test_summary():
+      db = MagicMock()
+      db.get.return_value = {"id": 7}
+      r = call("summary", params={"key": "7"}, db=db)
+      assert r.status == 200 and r.json["row"] == {"id": 7}
+      assert call("summary", db=db).status == 400
+
+Whatever your python code may import, a test may import. In the code
+a test exercises, an exception check is spelled `except HttpError` or
+`isinstance(e, HttpError)`."""
 
 #: The ferry spec: a positional argument is a path in the tree, and the
 #: only free-text value in the surface is the ``-k`` expression.
