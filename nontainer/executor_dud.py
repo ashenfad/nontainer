@@ -948,6 +948,7 @@ class DudExecutor:
         )
         duration = time.monotonic() - start
 
+        refusal: str | None = None
         if view.readonly_fs:
             # A session lost during this check recovers to a fresh guest
             # whose diff is empty — correct for a GET: nothing was
@@ -992,19 +993,43 @@ class DudExecutor:
                     "filesystem changes were harvested; its writes are gone "
                     "(a fresh guest was recovered)",
                 )
-            _apply_diff(
-                ctx.fs,
-                {self._fs_rel(k): v for k, v in d.writes.items()},
-                tuple(self._fs_rel(k) for k in d.deletes),
-            )
+            writes: Mapping[str, bytes] = {
+                self._fs_rel(k): v for k, v in d.writes.items()
+            }
+            deletes = tuple(self._fs_rel(k) for k in d.deletes)
+            if ctx.workspace is not None:
+                # The read-only points of the composed filesystem —
+                # attachments, read-only mounts — refuse a write where
+                # it happens on a rung that executes against that
+                # filesystem, so a handler writing into one raises
+                # inside itself in-process and dispatch turns that into
+                # a 500 with the message in api.log. Here the write
+                # succeeded in the guest and arrives in the harvest, so
+                # the workspace's split is asked for the same verdict:
+                # the refused paths are dropped, the handler's writes
+                # beside them land as they would in-process, and the
+                # refusal becomes this call's error — the errored
+                # result dispatch already knows how to log, answer 500
+                # for, and discard the staged remainder of.
+                writes, deletes, refusal = ctx.workspace._readonly_refusal(
+                    writes, deletes
+                )
+            _apply_diff(ctx.fs, writes, deletes)
 
-        return self._map_result(
+        out = self._map_result(
             result,
             ctx,
             duration,
             contract=view.extra_classes,
             line_offset=line_offset,
         )
+        # A handler that raised has already said what went wrong, and
+        # in-process that is the error too: the refused writes are
+        # dropped either way, and the exception the handler did not
+        # survive is the news.
+        if refusal is not None and out.error is None:
+            out = replace(out, error=f"PermissionError: {refusal}")
+        return out
 
     def _map_result(
         self,
