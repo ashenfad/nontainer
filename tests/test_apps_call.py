@@ -538,3 +538,151 @@ def test_the_seeded_contract_survives_process_isolation():
         assert report.ok, report.outcomes
     finally:
         w.close()
+
+
+# -- the import spelling ------------------------------------------------------
+
+SUMMARY = (
+    "def get(req):\n"
+    "    key = req.params.get('key')\n"
+    "    if not key:\n"
+    "        raise HttpError(400, 'key is required')\n"
+    "    return {'row': %s.get(key)}\n"
+)
+
+FAKE_AND_REAL = (
+    "from unittest.mock import MagicMock\n"
+    "\n"
+    "\n"
+    "def test_the_fake_is_what_the_handler_reads():\n"
+    "    db = MagicMock()\n"
+    "    db.get.return_value = {'id': 7}\n"
+    "    resp = call('summary', params={'key': 'k'}, db=db)\n"
+    "    assert resp.json == {'row': {'id': 7}}\n"
+    "\n"
+    "\n"
+    "def test_substituting_nothing_reaches_the_session():\n"
+    "    resp = call('summary', params={'key': 'k'})\n"
+    "    assert resp.json == {'row': {'id': 'real'}}\n"
+)
+
+
+class KeyedDb:
+    """A session object with something to read, so the unfaked call has
+    an answer of its own."""
+
+    def get(self, key):
+        return {"id": "real"}
+
+
+@pytest.fixture
+def keyed():
+    w = Workspace(
+        KvgitProvider.open(None, session="apps-call-host"),
+        python=PythonConfig(host_objects={"db": KeyedDb()}),
+    )
+    enable_apps(w)
+    try:
+        yield w
+    finally:
+        w.close()
+
+
+@pytest.mark.parametrize(
+    ("head", "read"),
+    [
+        ("", "db"),
+        ("from host import db\n\n\n", "db"),
+        ("from host import db as store\n\n\n", "store"),
+        ("from host import (\n    db,\n)\n\n\n", "db"),
+        ("import host\n\n\n", "host.db"),
+        ("import host as h\n\n\n", "h.db"),
+    ],
+    ids=["bare", "from-host", "aliased", "parenthesized", "import-host", "import-as"],
+)
+def test_a_fake_reaches_the_handler_whichever_way_it_reads_its_db(keyed, head, read):
+    """`from host import db` is the spelling a handler should use, so a
+    test's fake has to arrive under it: the import is rewritten in the
+    composed copy, not executed, or it would reach past the fake to the
+    session's real database."""
+    keyed.files.fs.write(
+        "/workspace/app/api/summary.py", (head + SUMMARY % read).encode()
+    )
+    keyed.files.fs.write("/workspace/tests/test_host.py", FAKE_AND_REAL.encode())
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes
+
+
+def test_a_rewritten_import_keeps_every_line_number_behind_it(keyed):
+    """The rewrite replaces the import statement's own span and nothing
+    else, so a frame still names the line the agent wrote."""
+    keyed.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"from host import (\n"
+        b"    db,\n"
+        b")\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    raise ValueError('the seventh line')\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py", b"def test_boom():\n    call('summary')\n"
+    )
+    report = run_pytest(keyed)
+    assert report.failed == 1
+    assert "app/api/summary.py:7: in get" in (report.outcomes[0].traceback or "")
+
+
+def test_a_handler_importing_what_the_session_lacks_is_still_asked_for(keyed):
+    """`from host import store` cannot reach anything in a request
+    either. The test is told which fake it owes, not handed a stub."""
+    keyed.files.fs.write(
+        "/workspace/app/api/other.py",
+        b"from host import store\n\n\ndef get(req):\n    return {'rows': store.rows()}\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py", b"def test_other():\n    call('other')\n"
+    )
+    report = run_pytest(keyed)
+    assert report.failed == 1
+    assert "call('other') needs store=" in (report.outcomes[0].message or "")
+
+
+def test_a_handler_reading_nothing_still_refuses_a_fake(keyed):
+    keyed.files.fs.write(
+        "/workspace/app/api/plain.py", b"def get(req):\n    return {'ok': True}\n"
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from unittest.mock import MagicMock\n"
+        b"\n"
+        b"\n"
+        b"def test_plain():\n"
+        b"    call('plain', db=MagicMock())\n",
+    )
+    report = run_pytest(keyed)
+    assert report.failed == 1
+    assert "substitutes what the handler does not use" in (
+        report.outcomes[0].message or ""
+    )
+
+
+def test_a_directly_imported_handler_reads_the_sessions_own_db(keyed):
+    """The seeded contract is not a substitution: an import runs the
+    module, and the module's `from host import db` reaches the session
+    exactly as it does in a request."""
+    keyed.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"from host import db\n\n\ndef get(req):\n    return {'row': db.get('k')}\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"import app.api.summary as summary\n"
+        b"\n"
+        b"\n"
+        b"def test_direct():\n"
+        b"    assert summary.get(None) == {'row': {'id': 'real'}}\n",
+    )
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes

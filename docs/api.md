@@ -2124,9 +2124,12 @@ for the host-side reader.
 call(module, method="GET", path=None, *, params=None, body=None,
      json=None, headers=None, **objects) -> TestResponse
     # module: the name under app/api/, as a string literal
-    # **objects: substitutes what dispatch would bind (db=fake). A name
-    #   not passed binds as dispatch would; a keyword the handler never
-    #   reads is an error
+    # **objects: optional. A name not passed binds as dispatch would,
+    #   so a call with none runs against the session's own objects.
+    #   A keyword substitutes one of the handler's dependencies under
+    #   either spelling it reads them by — `from host import db` or
+    #   the bare `db` — and a keyword the handler never reads is an
+    #   error
 TestResponse(status, content, content_type, headers)
     .text · .json · .ok
 ```

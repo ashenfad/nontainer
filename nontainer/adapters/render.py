@@ -435,9 +435,10 @@ on 4xx/5xx — without it an error status reads as a response. Pipelines
 compose: ws-curl $APP_ORIGIN/api/scores | jq .
 Test the logic below a request with ws-pytest: put plain `assert` tests
 in tests/test_<name>.py beside app/ (never under app/, which publishes
-them) and run `ws-pytest`. A test reaches a handler, fakes what the
-handler reads and names HttpError without importing anything —
-`ws-pytest --help` is where that contract is written down.
+them) and run `ws-pytest`. A test reaches a handler and runs it
+against the session's own objects, fakes one of its dependencies when
+it must stay out of them, and names HttpError without importing
+anything — `ws-pytest --help` is where that contract is written down.
 Frontend modules get the same tier from ws-vitest: tests/<name>.test.js
 (or <name>.test.js beside the module, which then ships with the app),
 describe/it/expect and vi, and a run that reaches nothing but your own

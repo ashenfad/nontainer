@@ -1202,18 +1202,26 @@ In scope in a test, with nothing to import:
       Runs app/api/<module>.py the way a request does (module is a
       string literal) and returns the response: .status, .json,
       .text, .headers, .ok — a raised HttpError arrives as a status,
-      not as an exception. A keyword substitutes a name the handler
-      reads without binding — what dispatch puts in its namespace
-      (`db`, `cache`). A name you leave out binds to the session's
-      real one; a keyword the handler never reads is an error,
-      because a fake nothing reads proves nothing.
+      not as an exception. Called with no objects it runs against
+      what the session binds, the real `db` included: seed, call,
+      assert on the response. A keyword substitutes one of the
+      handler's dependencies instead, for a test that must not write
+      into the session's db or depend on its state — under either
+      spelling the handler reads it by, `from host import db` (what a
+      handler should write) or the bare `db` dispatch also binds. A
+      keyword the handler never reads is an error, because a fake
+      nothing reads proves nothing.
 
   Request, Response, HttpError
       Bare names in the test and in every handler module it imports,
       as a request binds them — so `import app.api.summary` and then
-      `summary.get(req)` raises HttpError rather than NameError.
+      `summary.get(req)` raises HttpError rather than NameError. Such
+      an import reads the session's real `db`; `call` is the one that
+      substitutes.
 
-  # app/api/summary.py — dispatch binds `db`, so a test can fake it
+  # app/api/summary.py
+  from host import db
+
   def get(req):
       key = req.params.get("key")
       if not key:
@@ -1222,11 +1230,11 @@ In scope in a test, with nothing to import:
 
   # tests/test_summary.py
   def test_summary():
-      db = MagicMock()
-      db.get.return_value = {"id": 7}
-      r = call("summary", params={"key": "7"}, db=db)
+      db.save({"id": 7})
+      r = call("summary", params={"key": "7"})
       assert r.status == 200 and r.json["row"] == {"id": 7}
-      assert call("summary", db=db).status == 400
+      assert call("summary").status == 400
+      assert call("summary", db=MagicMock()).status == 400  # isolated
 
 Whatever your python code may import, a test may import. In the code
 a test exercises, an exception check is spelled `except HttpError` or
