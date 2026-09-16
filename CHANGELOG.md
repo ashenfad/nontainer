@@ -65,15 +65,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same names — so both spellings and `host.db` read the fake,
   line numbers unchanged. A handler that reads neither is still
   refused a keyword, because a fake nothing reads proves nothing.
-- **A handler imported straight from a test carries the contract.**
-  `import app.api.summary` reaches the module through the workspace's
+- **A handler module a test imports runs the way a request runs it.**
+  `import app.api.summary` reached the module through the workspace's
   import loader, which ran the file on its own source alone: `HttpError`
   was an undefined name there, so every sad path died of `NameError`
-  inside the handler and a test had to shim the class by hand.
-  `ws-pytest` now binds `Request`, `Response` and `HttpError` into the
-  module the way dispatch binds them for a request, for the modules a
-  URL can reach and no others — a library under `app/api/` is left as
-  dispatch leaves it.
+  inside the handler and a test had to shim the class by hand. Such a
+  module is now composed into the test program, as a handler `call`
+  reaches already is, with the contract and the session's names in
+  scope from its first line — so a constant built at module scope
+  works too. The import statement is what runs it: where it is
+  written, in the file's order, inside the function or branch that
+  holds it, once per module however many times it is imported. Only
+  the modules a URL can reach; a library under `app/api/` is imported
+  the ordinary way, as dispatch leaves it. Two spellings are refused
+  by name rather than silently meaning less than they say: setting an
+  attribute on such a module (the set would reach nothing the module
+  reads) and `from app.api.x import *` (the names are not knowable
+  before it runs).
 
 ## 0.7.3 - 2026-09-15
 

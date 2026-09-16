@@ -433,7 +433,7 @@ def test_a_helper_with_a_local_of_the_same_name_still_takes_the_fake(ws):
     assert report.ok, report.outcomes
 
 
-# -- the contract a directly imported handler carries -------------------------
+# -- a handler module a test imports ------------------------------------------
 
 
 def test_an_imported_handler_raises_httperror_not_nameerror(ws):
@@ -476,6 +476,183 @@ def test_an_imported_handler_raises_httperror_not_nameerror(ws):
     assert report.ok, report.outcomes
 
 
+def test_the_contract_is_bound_before_the_module_runs(ws):
+    """Module scope is part of the module: a handler that builds an
+    error at import time needs HttpError then, not after."""
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"MISSING = HttpError(400, 'key is required')\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    raise MISSING\n",
+    )
+    report = run(
+        ws,
+        "import app.api.summary as summary\n"
+        "\n"
+        "\n"
+        "def test_module_scope():\n"
+        "    try:\n"
+        "        summary.get(None)\n"
+        "    except HttpError as e:\n"
+        "        assert e.status == 400\n"
+        "    else:\n"
+        "        assert False, 'the handler did not raise'\n",
+    )
+    assert report.ok, report.outcomes
+
+
+def test_a_module_runs_at_the_import_the_agent_wrote(ws):
+    """Not before it: a test that prepares state on the line above the
+    import is describing an order, and the order is the test's."""
+    ws.files.fs.write("/workspace/probe.py", b"STATE = 'fresh'\n")
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"import probe\n\n\nSEEN = probe.STATE\n\n\ndef get(req):\n    return {}\n",
+    )
+    report = run(
+        ws,
+        "import probe\n"
+        "\n"
+        "\n"
+        "def test_order():\n"
+        "    probe.STATE = 'prepared'\n"
+        "    import app.api.summary as summary\n"
+        "    assert summary.SEEN == 'prepared'\n",
+    )
+    assert report.ok, report.outcomes
+
+
+def test_an_import_inside_a_test_runs_when_that_test_does(ws):
+    """And once: the second import of the same module is the first
+    execution, as it is in Python."""
+    ws.files.fs.write("/workspace/probe.py", b"RAN = []\n")
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"import probe\n"
+        b"\n"
+        b"\n"
+        b"probe.RAN.append('summary')\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    return {}\n",
+    )
+    report = run(
+        ws,
+        "import probe\n"
+        "\n"
+        "\n"
+        "def test_nothing_has_run_yet():\n"
+        "    assert probe.RAN == []\n"
+        "\n"
+        "\n"
+        "def test_the_import_runs_it_once():\n"
+        "    import app.api.summary as summary\n"
+        "    assert probe.RAN == ['summary']\n"
+        "    import app.api.summary as again\n"
+        "    assert probe.RAN == ['summary']\n"
+        "    assert again is summary\n",
+    )
+    assert report.ok, report.outcomes
+
+
+def test_an_import_a_branch_never_reaches_never_runs(ws):
+    ws.files.fs.write("/workspace/probe.py", b"RAN = []\n")
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"import probe\n"
+        b"\n"
+        b"\n"
+        b"probe.RAN.append('summary')\n"
+        b"\n"
+        b"\n"
+        b"def get(req):\n"
+        b"    return {}\n",
+    )
+    report = run(
+        ws,
+        "import probe\n"
+        "\n"
+        "\n"
+        "if False:\n"
+        "    import app.api.summary\n"
+        "\n"
+        "\n"
+        "def test_nothing_ran():\n"
+        "    assert probe.RAN == []\n",
+    )
+    assert report.ok, report.outcomes
+
+
+@pytest.mark.parametrize(
+    ("statement", "reach"),
+    [
+        ("import app.api.summary as summary", "summary.get"),
+        ("import app.api.summary", "app.api.summary.get"),
+        ("from app.api import summary", "summary.get"),
+        ("from app.api.summary import get", "get"),
+        ("from app.api.summary import get as fetch", "fetch"),
+    ],
+    ids=["as", "dotted", "from-package", "from-module", "renamed"],
+)
+def test_every_import_spelling_reaches_the_composed_module(ws, statement, reach):
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"def get(req):\n    raise HttpError(404, 'nope')\n",
+    )
+    report = run(
+        ws,
+        f"{statement}\n"
+        "\n"
+        "\n"
+        "def test_reaches_it():\n"
+        "    try:\n"
+        f"        {reach}(None)\n"
+        "    except HttpError as e:\n"
+        "        assert e.status == 404\n"
+        "    else:\n"
+        "        assert False, 'the handler did not raise'\n",
+    )
+    assert report.ok, report.outcomes
+
+
+def test_a_star_import_of_a_handler_is_refused_by_name(ws):
+    """The names a composed module defines are not knowable before it
+    runs, so the spelling that asks for all of them is refused rather
+    than quietly given a module with no contract."""
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py", b"def get(req):\n    return {}\n"
+    )
+    report = run(ws, "from app.api.summary import *\n\n\ndef test_x():\n    pass\n")
+    assert report.exit_code == 2
+    assert "not a spelling a test can use" in (report.collection_error or "")
+
+
+def test_setting_an_attribute_on_a_composed_module_is_refused(ws):
+    """A set here would reach this object and none of the module's own
+    functions — worse than a refusal, because the test would pass."""
+    ws.files.fs.write(
+        "/workspace/app/api/summary.py",
+        b"LIMIT = 10\n\n\ndef get(req):\n    return {'limit': LIMIT}\n",
+    )
+    report = run(
+        ws,
+        "import app.api.summary as summary\n"
+        "\n"
+        "\n"
+        "def test_patching_is_refused():\n"
+        "    try:\n"
+        "        summary.LIMIT = 1\n"
+        "    except AttributeError as e:\n"
+        "        assert 'Cannot set attribute' in str(e)\n"
+        "        return\n"
+        "    assert False, 'the set was allowed'\n",
+    )
+    assert report.ok, report.outcomes
+
+
 def test_a_library_under_api_is_not_a_handler_and_gets_nothing(ws):
     """Dispatch runs handlers, not the modules they import: a library
     under app/api/ has no contract in a request, so it has none here."""
@@ -498,20 +675,22 @@ def test_a_library_under_api_is_not_a_handler_and_gets_nothing(ws):
     assert report.ok, report.outcomes
 
 
-def test_a_handler_that_raises_while_importing_reports_at_the_test_line(ws):
-    """The seeding imports the module first, so it must not become the
-    place a broken module is reported: the test's own import line is
-    where the agent looks."""
+def test_a_handler_that_raises_while_importing_reports_both_lines(ws):
+    """The module runs at the import the agent wrote, so the failure
+    names that line and the handler's own."""
     ws.files.fs.write(
-        "/workspace/app/api/broken.py", b"raise RuntimeError('boom at import')\n"
+        "/workspace/app/api/broken.py",
+        b"CONFIG = {}\n\n\nraise RuntimeError('boom at import')\n",
     )
     report = run(ws, "import app.api.broken as broken\n")
     assert report.exit_code == 2
     assert "boom at import" in (report.collection_error or "")
-    assert "tests/test_call.py:1: in <module>" in (report.outcomes[0].traceback or "")
+    traceback = report.outcomes[0].traceback or ""
+    assert "tests/test_call.py:1: in <module>" in traceback
+    assert "app/api/broken.py:4: in " in traceback
 
 
-def test_the_seeded_contract_survives_process_isolation():
+def test_an_imported_handler_survives_process_isolation():
     w = Workspace(
         KvgitProvider.open(None, session="apps-call-seed-iso"),
         python=PythonConfig(isolation="process", host_objects={"db": FakeDb()}),

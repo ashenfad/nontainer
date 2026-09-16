@@ -428,7 +428,7 @@ def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
     from .apps.testing import (
         called_modules,
         compose,
-        seed_contract,
+        compose_modules,
         substitute_call,
         uses_call,
     )
@@ -440,9 +440,13 @@ def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
         preamble, spans = compose(ws, called_modules(source), root)
     else:
         preamble, spans = "", []
-    # After the handlers, so their recorded spans keep the composed
-    # lines they were measured at.
-    preamble += seed_contract(ws, source, root)
+    # The modules the file imports, after the handlers it calls: their
+    # regions are measured in their own preamble, so they shift by
+    # whatever the first one came to.
+    modules, module_spans, source = compose_modules(ws, source, root)
+    shift = preamble.count("\n")
+    spans.extend((path, start + shift, length) for path, start, length in module_spans)
+    preamble += modules
     # `from host import call` is how a test asks for the helper, and
     # the preamble is what defines it — so the import is rewritten to
     # that name rather than run. After the reading above, which
