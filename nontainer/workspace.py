@@ -3647,6 +3647,11 @@ class Workspace:
         same shape a torn call uses, and the same refusal the local
         read-only filesystem raises in-process. Returns that message,
         or None when there was nothing to refuse.
+
+        An attachment is refused here too, for the same reason and with
+        one difference: it covers part of the tree rather than all of
+        it, so the harvest is split at its mount points instead of
+        dropped whole (see :meth:`_attachment_refusal`).
         """
         d = self._runtime.diff()
         if d is None:
@@ -3666,9 +3671,69 @@ class Workspace:
             # behind from a call that is about to read as refused.
             self._mark_executor_stale()
             return refused
+        writes, deletes, attached = self._attachment_refusal(d)
         from .executor import _apply_diff
 
-        _apply_diff(self._fs, d.writes, d.deletes)
+        _apply_diff(self._fs, writes, deletes)
+        return attached
+
+    def _attachment_refusal(
+        self, d: Any
+    ) -> tuple[Mapping[str, bytes], tuple[str, ...], str | None]:
+        """An executor's harvest, split at the attachment points:
+        ``(writes, deletes, message)``.
+
+        An attachment is a frozen state mounted read-only, so a rung
+        that executes against the workspace filesystem refuses a write
+        to it where the write happens. A rung with a tree of its own
+        holds an ordinary copy there and the write succeeds in the
+        guest, so the rule is applied to the harvest instead: paths
+        inside an attachment are dropped and named in a message for the
+        caller to put on the result, while the rest of the call's
+        writes land — the attachment is one directory, and refusing the
+        writes beside it would punish work the rule has nothing to say
+        about. The executor is marked stale so its next execution
+        rebuilds that directory from the attachment rather than keeping
+        what the guest wrote there.
+        """
+        if not self._attached:
+            return d.writes, tuple(d.deletes), None
+        writes: dict[str, bytes] = {}
+        deletes: list[str] = []
+        refused: list[tuple[str, str, str]] = []
+        for rel, data in d.writes.items():
+            point = self._attachment_over("/" + rel.lstrip("/"))
+            if point is None:
+                writes[rel] = data
+            else:
+                refused.append(("/" + rel.lstrip("/"), "write", point))
+        for rel in d.deletes:
+            point = self._attachment_over("/" + rel.lstrip("/"))
+            if point is None:
+                deletes.append(rel)
+            else:
+                refused.append(("/" + rel.lstrip("/"), "remove", point))
+        if not refused:
+            return d.writes, tuple(d.deletes), None
+        self._mark_executor_stale()
+        clauses = "; ".join(
+            f"{op}() modifies the filesystem, and {path} is inside the "
+            f"attachment at {point}"
+            for path, op, point in sorted(refused)
+        )
+        return (
+            writes,
+            tuple(deletes),
+            f"Read-only filesystem: {clauses}. Those changes were made in "
+            "the executor's own tree and have been discarded; writes "
+            "outside the attachment landed.",
+        )
+
+    def _attachment_over(self, path: str) -> str | None:
+        """The attachment point ``path`` lies under, or None."""
+        for point in self._attached:
+            if path == point or path.startswith(point + "/"):
+                return point
         return None
 
     def _view_refusal(self, d: Any) -> str | None:
