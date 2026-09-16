@@ -169,7 +169,9 @@ class CommitInfo:
     time: float
     """Unix epoch seconds."""
 
-    info: dict[str, Any] = field(default_factory=dict)
+    # A mapping field is left out of the hash: a frozen record hashes
+    # whatever its metadata holds, and a dict has no hash of its own.
+    info: dict[str, Any] = field(default_factory=dict, hash=False)
     """Caller-supplied metadata (``{"tool": "run_python", ...}``)."""
 
     tree: str | None = None
@@ -213,7 +215,7 @@ class TagInfo:
     """When the tag was made, unix epoch seconds. ``None`` when the
     provider has no record of it."""
 
-    info: dict[str, Any] | None
+    info: dict[str, Any] | None = field(hash=False)
     """Caller metadata passed to ``tag()``, or ``None``."""
 
     dangling: bool
@@ -765,7 +767,7 @@ class StagedDiff:
     constructs one: its writes land in the provider as they happen.
     """
 
-    writes: Mapping[str, bytes]
+    writes: Mapping[str, bytes] = field(hash=False)
     """Fs-root-relative path (no leading slash) -> full new content.
     Executors whose substrate roots the workspace elsewhere (dud's
     guest mount) translate to fs-root-relative before returning, so
@@ -794,10 +796,10 @@ class ExecutionContext:
     fs: Any
     """The workspace filesystem (termish protocol, mounts composed)."""
 
-    kv: MutableMapping[str, Any]
+    kv: MutableMapping[str, Any] = field(hash=False)
     """The provider's kv store; the agent-facing cache builds on it."""
 
-    commands: MutableMapping[str, Callable[..., Any]]
+    commands: MutableMapping[str, Callable[..., Any]] = field(hash=False)
     """Injected terminal commands (termish ``CommandFunc``). A LIVE
     reference: the workspace mutates it after construction
     (``register_command`` — apps' curl) — bind the mapping, don't
@@ -842,7 +844,7 @@ class ExecutionContext:
     ``"/"`` selects the pre-0.2 layout (files at the fs root — a VM
     guest can't mount there, so absolute paths diverge on VM rungs)."""
 
-    shell_env: "MutableMapping[str, str] | None" = None
+    shell_env: "MutableMapping[str, str] | None" = field(default=None, hash=False)
     """Shell variables for script executions: ``$VAR`` expansion on a
     termish rung, exported into the guest on a VM rung.
 
@@ -1131,7 +1133,7 @@ class Job:
     time since the job ended — a delegate read every turn is in use,
     however long ago its run finished."""
 
-    changed: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    changed: dict[str, tuple[str, ...]] = field(default_factory=dict, hash=False)
     """``{"seed": [...], "elsewhere": [...]}`` once the job is done:
     the paths the child changed, grouped by whether they are under
     what it was seeded with (see :class:`WorkspaceDiff`). Empty while
@@ -1194,7 +1196,7 @@ class Answer:
     """The child session's name — the handle for ``ws-git merge`` /
     ``ws-git diff`` and for a later ``result``."""
 
-    changed: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    changed: dict[str, tuple[str, ...]] = field(default_factory=dict, hash=False)
     """The child's changed paths, grouped as in :attr:`Job.changed`."""
 
     artifacts: tuple[tuple[str, str], ...] = ()
@@ -1202,7 +1204,7 @@ class Answer:
     — the same shape the ``ui = {...}`` convention produces — so the
     caller can forward or display them without re-deriving anything."""
 
-    provenance: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict, hash=False)
     """Where the answer came from: the child session and commit, when
     the work started and finished, and ``chain`` — the FULL path of
     refs behind it, not the last hop, so an answer cannot launder its
