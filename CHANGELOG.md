@@ -20,7 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every other call uses: the refused paths are dropped, the handler's
   writes beside them land as they do in-process, and the refusal
   becomes the call's error — the same 500, the same api.log entry, and
-  the same per-request rollback the in-process rung gives.
+  the same per-request rollback the in-process rung gives. The refusal
+  leads that error: in-process the handler stops at the write, while in
+  a guest it runs on and may fail again for a reason of its own, and
+  reporting the later failure instead would have the same handler fail
+  two different ways depending on the rung. The later exception is kept
+  under the refusal, so nothing is lost.
 - **A guest write into a read-only mount is refused, not raised.** A
   read-only `Mount` is a host directory the session may only read, and
   the in-process rung refuses a write to it where the write happens. On
