@@ -686,3 +686,90 @@ def test_a_directly_imported_handler_reads_the_sessions_own_db(keyed):
     )
     report = run_pytest(keyed)
     assert report.ok, report.outcomes
+
+
+# -- asking for the helper ----------------------------------------------------
+
+
+def test_a_test_imports_the_helper_the_way_a_handler_imports_its_db(keyed):
+    keyed.files.fs.write("/workspace/app/api/summary.py", (SUMMARY % "db").encode())
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import call\n"
+        b"\n"
+        b"\n"
+        b"def test_imported():\n"
+        b"    assert call('summary', params={'key': 'k'}).json == {'row': {'id': 'real'}}\n",
+    )
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes
+
+
+def test_the_helper_rides_in_a_list_with_what_the_session_binds(keyed):
+    """`from host import db, call` is one statement about two different
+    things: the session's database, and the test tier's own helper."""
+    keyed.files.fs.write("/workspace/app/api/summary.py", (SUMMARY % "db").encode())
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import db, call\n"
+        b"from unittest.mock import MagicMock\n"
+        b"\n"
+        b"\n"
+        b"def test_the_session_is_reachable_too():\n"
+        b"    assert db.get('k') == {'id': 'real'}\n"
+        b"    assert call('summary', params={'key': 'k'}).json == {'row': {'id': 'real'}}\n"
+        b"\n"
+        b"\n"
+        b"def test_a_fake_still_substitutes():\n"
+        b"    fake = MagicMock()\n"
+        b"    fake.get.return_value = {'id': 7}\n"
+        b"    resp = call('summary', params={'key': 'k'}, db=fake)\n"
+        b"    assert resp.json == {'row': {'id': 7}}\n",
+    )
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes
+
+
+def test_the_bare_name_still_reaches_the_helper(keyed):
+    """Tests written before the import existed keep running."""
+    keyed.files.fs.write("/workspace/app/api/summary.py", (SUMMARY % "db").encode())
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"def test_bare():\n    assert call('summary').status == 400\n",
+    )
+    report = run_pytest(keyed)
+    assert report.ok, report.outcomes
+
+
+def test_the_rewritten_import_keeps_the_lines_after_it(keyed):
+    keyed.files.fs.write("/workspace/app/api/summary.py", (SUMMARY % "db").encode())
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import db, call\n"
+        b"\n"
+        b"\n"
+        b"def test_line_five():\n"
+        b"    assert call('summary').status == 200\n",
+    )
+    report = run_pytest(keyed)
+    assert report.failed == 1
+    assert report.outcomes[0].line == 5
+    assert "tests/test_host.py:5: in test_line_five" in (
+        report.outcomes[0].traceback or ""
+    )
+
+
+def test_a_handler_importing_the_helper_fails_as_a_request_would(keyed):
+    """`call` is the test tier's, and a handler is not run by it in
+    production: the import has to fail here the way it fails there."""
+    keyed.files.fs.write(
+        "/workspace/app/api/bad.py",
+        b"from host import call\n\n\ndef get(req):\n    return {'x': call('summary')}\n",
+    )
+    keyed.files.fs.write(
+        "/workspace/tests/test_host.py",
+        b"from host import call\n\n\ndef test_bad():\n    call('bad')\n",
+    )
+    report = run_pytest(keyed)
+    assert report.failed == 1
+    assert "cannot import name 'call' from 'host'" in (report.outcomes[0].message or "")

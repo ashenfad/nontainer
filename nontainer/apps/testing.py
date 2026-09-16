@@ -212,13 +212,23 @@ LEXICAL = frozenset(
     }
 )
 
-#: Bound in every composed test program; the generated ``call`` reads
+#: Bound in every composed test program; the generated helper reads
 #: it. Prefixed so a test's own names never collide with it.
 REGISTRY = "nt__handlers"
 
+#: The helper as the preamble defines it, and what ``from host import
+#: call`` is rewritten to. Prefixed for the same reason: a test may
+#: bind ``call`` to whatever it likes without unbinding the helper the
+#: import asked for.
+CALL = "nt__call"
+
+#: What a test imports it under.
+CALL_NAME = "call"
+
 
 def uses_call(source: str) -> bool:
-    """Whether a test file names ``call`` at all.
+    """Whether a test file asks for ``call`` at all — by importing it
+    from ``host``, or by naming it.
 
     What decides the preamble, rather than the handlers found in it: a
     file that calls a handler by a name nobody can resolve still needs
@@ -228,9 +238,35 @@ def uses_call(source: str) -> bool:
         tree = ast.parse(source)
     except SyntaxError:
         return False
-    return any(
-        isinstance(node, ast.Name) and node.id == "call" for node in ast.walk(tree)
-    )
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == CALL_NAME:
+            return True
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == HOST_MODULE
+            and any(alias.name == CALL_NAME for alias in node.names)
+        ):
+            return True
+    return False
+
+
+def _call_bindings(tree: ast.AST) -> set[str]:
+    """The names this file means the helper by: ``call``, plus whatever
+    ``from host import call as ...`` renamed it to."""
+    names = {CALL_NAME}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module == HOST_MODULE
+        ):
+            names.update(
+                alias.asname
+                for alias in node.names
+                if alias.name == CALL_NAME and alias.asname
+            )
+    return names
 
 
 def called_modules(source: str) -> tuple[str, ...]:
@@ -245,12 +281,13 @@ def called_modules(source: str) -> tuple[str, ...]:
         tree = ast.parse(source)
     except SyntaxError:
         return ()
+    helpers = _call_bindings(tree)
     found: list[str] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         target = node.func
-        if not isinstance(target, ast.Name) or target.id != "call":
+        if not isinstance(target, ast.Name) or target.id not in helpers:
             continue
         if not node.args:
             continue
@@ -393,11 +430,7 @@ def substitute_host(source: str, names: Any) -> str:
             others = [alias for alias in node.names if alias.name != HOST_MODULE]
             parts = []
             if others:
-                spelled = ", ".join(
-                    alias.name + (f" as {alias.asname}" if alias.asname else "")
-                    for alias in others
-                )
-                parts.append(f"import {spelled}")
+                parts.append("import " + _spelled(others))
             parts.extend(
                 f"{alias.asname or alias.name} = {built}"
                 for alias in node.names
@@ -409,14 +442,77 @@ def substitute_host(source: str, names: Any) -> str:
             and node.level == 0
             and node.module == HOST_MODULE
         ):
+            # A name the contract owns is left as a real import, so it
+            # fails here the way it fails a request: `call` is the test
+            # program's, and a handler has no business importing it.
+            kept = [alias for alias in node.names if alias.name in LEXICAL]
+            parts = []
+            if kept:
+                parts.append(f"from {HOST_MODULE} import " + _spelled(kept))
             # An alias needs a line to land on; a plain name is already
             # the wrapper's parameter, so the import becomes a no-op.
-            binds = "; ".join(
+            parts.extend(
                 f"{alias.asname} = {alias.name}"
                 for alias in node.names
-                if alias.asname and alias.asname != alias.name
+                if alias not in kept and alias.asname and alias.asname != alias.name
             )
-            edits.append((node, binds or "pass"))
+            edits.append((node, "; ".join(parts) or "pass"))
+    return _splice(source, edits)
+
+
+def substitute_call(source: str) -> str:
+    """The test file's source with ``from host import call`` rewritten
+    to the helper the preamble defines, line for line.
+
+    ``call`` cannot be a real import: it closes over handlers composed
+    into this one program, so there is nothing for a module to hand
+    out. The import is how a test SAYS it wants the helper — the same
+    sentence a handler writes for its own dependencies — and the
+    composition is what makes the name mean something. Anything else
+    the statement imports stays a real import of the host module.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+    edits: list[tuple[ast.stmt, str]] = []
+    for node in ast.walk(tree):
+        if (
+            not isinstance(node, ast.ImportFrom)
+            or node.level != 0
+            or node.module != HOST_MODULE
+            or not any(alias.name == CALL_NAME for alias in node.names)
+        ):
+            continue
+        others = [alias for alias in node.names if alias.name != CALL_NAME]
+        parts = []
+        if others:
+            parts.append(f"from {HOST_MODULE} import " + _spelled(others))
+        parts.extend(
+            f"{alias.asname or alias.name} = {CALL}"
+            for alias in node.names
+            if alias.name == CALL_NAME
+        )
+        edits.append((node, "; ".join(parts)))
+    return _splice(source, edits)
+
+
+def _spelled(aliases: Any) -> str:
+    """Import targets as written: ``name`` or ``name as other``."""
+    return ", ".join(
+        alias.name + (f" as {alias.asname}" if alias.asname else "")
+        for alias in aliases
+    )
+
+
+def _splice(source: str, edits: Any) -> str:
+    """``source`` with each statement's own span replaced by its text.
+
+    Only the span, and a statement spanning several lines leaves the
+    rest of them blank: every line of the file keeps the number a
+    traceback names it by, which is the whole reason the composition
+    may rewrite anything at all.
+    """
     if not edits:
         return source
     lines = source.splitlines()
@@ -531,13 +627,16 @@ def compose(
         registry.append(f'"{module}": ({wrapper}, {injectable!r}, {required!r})')
     lines.append(f"{REGISTRY} = {{{', '.join(registry)}}}")
     lines.append(
-        "def call(module, method='GET', path=None, *, params=None, body=None,"
+        f"def {CALL}(module, method='GET', path=None, *, params=None, body=None,"
         " json=None, headers=None, **objects):"
     )
     lines.append(
         f"    return Call.dispatch({REGISTRY}, module, method, path, params,"
         " body, json, headers, objects)"
     )
+    # The bare name too: `from host import call` is what a test should
+    # write, and a test written before that spelling existed still runs.
+    lines.append(f"{CALL_NAME} = {CALL}")
     return "\n".join(lines) + "\n", spans
 
 

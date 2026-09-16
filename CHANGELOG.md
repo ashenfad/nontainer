@@ -37,6 +37,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rest of `types` is the interpreter's own machinery — `FunctionType`,
   `CodeType` — and stays refused.
 
+### Changed
+- **`from host import call` is how a test reaches a handler.** The
+  helper was a bare name the composition put in scope, which nothing
+  in the workspace announced: an agent reading `from host import db`
+  in a handler had no reason to think a test could ask for anything
+  the same way. It is now imported with the same sentence, rewritten
+  in the composed copy to the closure the preamble defines (it closes
+  over the handlers composed into that one program, so no module can
+  hand it out) on the statement's own line, so line numbers hold. A
+  bare `call` with no import still works, and a handler that imports
+  it gets the ImportError a request gives it.
+
 ### Fixed
 - **`call(db=fake)` substitutes what a handler imports, too.** A
   handler is meant to reach its dependencies with `from host import

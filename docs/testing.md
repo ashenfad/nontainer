@@ -177,10 +177,12 @@ rather than the verb's.
 A handler is the one unit ordinary Python cannot reach: importing it
 and calling `get(req)` by hand fails, because `db` and `cache` are not
 module attributes, and it would skip the envelope anyway. So there is
-one helper, `call`, already in scope in every test — no import:
+one helper, `call`, imported the way a handler imports its own
+dependencies:
 
 ```python
 # tests/test_scores.py
+from host import call
 
 
 def test_limit_is_honoured():
@@ -200,6 +202,7 @@ is the option for a test that must not write into the session's
 database or depend on its state, and a fake arrives as a keyword:
 
 ```python
+from host import call
 from unittest.mock import MagicMock
 
 
@@ -212,10 +215,19 @@ def test_limit_is_honoured_against_a_fake():
 ```
 
 ```
+from host import call
+
 call(module, method="GET", path=None, *, params=None, body=None,
      json=None, headers=None, **objects) -> TestResponse
 ```
 
+- The import is the test's way of asking for the helper, not a module
+  attribute it fetches: `call` closes over the handlers composed into
+  this one test program, so there is nothing for `host` to hand out
+  and the statement is rewritten to that closure in place. A bare
+  `call` with no import still works, for tests written before the
+  spelling existed. A handler that imports `call` gets the ImportError
+  it would get in a request — the helper is the test tier's.
 - `module` is the handler's name under `app/api/`, as a plain string.
   It has to be a literal: the handler is composed into the test program
   before the test runs, so a computed name is refused by name.

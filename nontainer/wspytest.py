@@ -425,7 +425,13 @@ def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
     program names the file and line the agent wrote.
     """
     from .apps.dispatch import app_root
-    from .apps.testing import called_modules, compose, seed_contract, uses_call
+    from .apps.testing import (
+        called_modules,
+        compose,
+        seed_contract,
+        substitute_call,
+        uses_call,
+    )
 
     if not source.endswith("\n"):
         source += "\n"
@@ -437,6 +443,11 @@ def _compose(ws: Any, rel: str, source: str, names: list[str]) -> _Program:
     # After the handlers, so their recorded spans keep the composed
     # lines they were measured at.
     preamble += seed_contract(ws, source, root)
+    # `from host import call` is how a test asks for the helper, and
+    # the preamble is what defines it — so the import is rewritten to
+    # that name rather than run. After the reading above, which
+    # answers for the file the agent wrote.
+    source = substitute_call(source)
     # A `from __future__` import must be the first statement of the
     # module, and a docstring may precede it. Whatever the file puts
     # there stays first; the composed handlers go in under it, so the
@@ -1195,10 +1206,11 @@ dependencies as arguments (`def load(db, limit)`) and a test can call
 it with one. There are no fixtures, no conftest, no plugins and no
 markers here: setup is the test's own code, written in the test.
 
-In scope in a test, with nothing to import:
+In a test, beyond plain Python:
 
-  call(module, method="GET", path=None, *, params=None, body=None,
-       json=None, headers=None, **objects)
+  from host import call
+      call(module, method="GET", path=None, *, params=None,
+           body=None, json=None, headers=None, **objects)
       Runs app/api/<module>.py the way a request does (module is a
       string literal) and returns the response: .status, .json,
       .text, .headers, .ok — a raised HttpError arrives as a status,
@@ -1213,11 +1225,11 @@ In scope in a test, with nothing to import:
       nothing reads proves nothing.
 
   Request, Response, HttpError
-      Bare names in the test and in every handler module it imports,
-      as a request binds them — so `import app.api.summary` and then
-      `summary.get(req)` raises HttpError rather than NameError. Such
-      an import reads the session's real `db`; `call` is the one that
-      substitutes.
+      Bare names, no import: in the test, and in every handler module
+      it imports, as a request binds them — so `import app.api.summary`
+      and then `summary.get(req)` raises HttpError rather than
+      NameError. Such an import reads the session's real `db`; `call`
+      is the one that substitutes.
 
   # app/api/summary.py
   from host import db
@@ -1229,6 +1241,8 @@ In scope in a test, with nothing to import:
       return {"row": db.get(key)}
 
   # tests/test_summary.py
+  from host import call, db
+
   def test_summary():
       db.save({"id": 7})
       r = call("summary", params={"key": "7"})
