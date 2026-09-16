@@ -138,6 +138,106 @@ def test_stdlib_types_is_two_data_shapes_and_nothing_else():
     ws.close()
 
 
+def test_stdlib_typing_is_the_annotation_vocabulary():
+    """Annotations are the point; evaluating one is not. An annotation
+    a handler writes is inert text until something calls
+    ``get_type_hints`` on it, which is why the evaluators stay out."""
+    ws = make_ws()
+    r = ws.run_python(
+        "from typing import Any, Callable, ClassVar, Dict, Final, List, Literal\n"
+        "from typing import NamedTuple, Optional, Protocol, TypedDict, TypeVar\n"
+        "from typing import Type, Union, cast\n"
+        "T = TypeVar('T')\n"
+        "class Row(NamedTuple):\n"
+        "    name: str\n"
+        "    score: int = 0\n"
+        "class Shape(Protocol):\n"
+        "    def area(self) -> float: ...\n"
+        "class Conf(TypedDict):\n"
+        "    limit: int\n"
+        "def pick(xs: List[T], k: Optional[str] = None) -> Dict[str, Any]:\n"
+        "    return {'n': len(xs), 'k': cast(str, k)}\n"
+        "result = (Row('ann').score, pick([1, 2], 'x'))"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == (0, {"n": 2, "k": "x"})
+
+    for denied in (
+        ws.run_python("import typing; typing.get_type_hints"),
+        ws.run_python("from typing import ForwardRef"),
+    ):
+        assert not denied
+
+    # The escape those two would open, shown not to exist: a string
+    # annotation is never evaluated, so calling the function runs no
+    # part of what the annotation says.
+    inert = ws.run_python(
+        "def f(x: \"__import__('os').getcwd()\") -> \"__import__('os')\":\n"
+        "    return x + 1\n"
+        "result = f(1)"
+    )
+    assert inert, inert.error
+    assert inert.namespace["result"] == 2
+    ws.close()
+
+
+def test_stdlib_dataclasses_builds_records_but_not_from_strings():
+    ws = make_ws()
+    r = ws.run_python(
+        "from dataclasses import asdict, astuple, dataclass, field, fields, replace\n"
+        "@dataclass\n"
+        "class Row:\n"
+        "    name: str\n"
+        "    score: int = 0\n"
+        "    tags: list = field(default_factory=list)\n"
+        "row = Row('ann')\n"
+        "row.tags.append('x')\n"
+        "result = (\n"
+        "    asdict(row),\n"
+        "    astuple(replace(row, score=5))[:2],\n"
+        "    [f.name for f in fields(row)],\n"
+        ")"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == (
+        {"name": "ann", "score": 0, "tags": ["x"]},
+        ("ann", 5),
+        ["name", "score", "tags"],
+    )
+
+    frozen = ws.run_python(
+        "from dataclasses import FrozenInstanceError, dataclass\n"
+        "@dataclass(frozen=True)\n"
+        "class Point:\n"
+        "    x: int = 1\n"
+        "point = Point()\n"
+        "try:\n"
+        "    point.x = 2\n"
+        "    result = 'assigned'\n"
+        "except FrozenInstanceError:\n"
+        "    result = 'frozen'"
+    )
+    assert frozen, frozen.error
+    assert frozen.namespace["result"] == "frozen"
+
+    # make_dataclass interpolates field names it was handed as strings
+    # into source it exec()s host-side; the decorator reads a class
+    # body, where a name is an identifier by construction.
+    denied = ws.run_python("from dataclasses import make_dataclass")
+    assert not denied and "make_dataclass" in (denied.error or "")
+    ws.close()
+
+
+def test_a_class_annotation_dict_cannot_be_written_from_the_sandbox():
+    """What keeps the dataclass grant narrow: field names reach the
+    decorator from ``__annotations__``, and sandboxed code cannot put
+    anything but a real annotation there."""
+    ws = make_ws()
+    denied = ws.run_python("class C:\n    pass\nC.__annotations__ = {'x': int}")
+    assert not denied and "__annotations__" in (denied.error or "")
+    ws.close()
+
+
 def test_stdlib_shlex_and_pprint_are_string_only():
     ws = make_ws()
     r = ws.run_python(
