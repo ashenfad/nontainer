@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A nested mount's contents reach a dud guest.** The tree pushed to
+  the guest is the composed filesystem's recursive listing, which
+  stopped at an inner mount point, so a mount inside another mount
+  (`/workspace/data/out` under `/workspace/data`) started the guest with
+  no directory and no files. monkeyfs 0.1.11 lists what a read at each
+  path serves, however deeply the mounts nest, and the nested-mount
+  tests now read the inner files in the guest before writing beside
+  them.
 - **A handler's write into a read-only point answers the request
   instead of raising out of dispatch.** An app handler runs under the
   same rule as any other code: in-process a write into an attachment or
@@ -107,6 +115,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CodeType` — and stays refused.
 
 ### Changed
+- **The monkeyfs floor is 0.1.11.** A recursive listing of the composed
+  filesystem walks into every nested mount, which is what puts a nested
+  mount's files on a guest rung.
 - **sandtrap floor is 0.3.7.** Its dunder allowlist reads `__name__`,
   `__qualname__`, `__module__` and `__doc__` as the exact strings they
   are, without running a host descriptor — so `type(e).__name__`, the

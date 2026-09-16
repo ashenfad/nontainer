@@ -1108,6 +1108,7 @@ def _nested(tmp_path, name, *, executor_factory=None):
     (ro / "in.csv").write_text("x,y\n")
     out = tmp_path / f"{name}-out"
     out.mkdir()
+    (out / "seed.txt").write_text("seeded\n")
     ws = Workspace(
         KvgitProvider.open(None, session=name),
         mounts={
@@ -1119,11 +1120,13 @@ def _nested(tmp_path, name, *, executor_factory=None):
     return ro, out, ws
 
 
-# The guest makes the nested directory itself in these scripts: a
-# nested mount's contents do not ride the tree push (the composed
-# listing stops at the inner mount point), so the guest starts without
-# one. Where the write lands afterwards is the point being pinned.
-_NESTED_SCRIPT = "mkdir -p data/out; echo hi > data/out/r.txt; echo x > data/nope.txt"
+# The guest starts with the nested mount's contents in place, the way
+# the composed listing serves them, so the script reads before it
+# writes. Where each write lands is the point being pinned.
+_NESTED_SCRIPT = (
+    "cat data/in.csv data/out/seed.txt; "
+    "echo hi > data/out/r.txt; echo x > data/nope.txt"
+)
 
 
 def test_a_writable_mount_nested_in_a_read_only_one_still_takes_writes(tmp_path):
@@ -1142,6 +1145,8 @@ def test_a_writable_mount_nested_in_a_read_only_one_still_takes_writes(tmp_path)
     try:
         r = ws.terminal(_NESTED_SCRIPT)
         assert not r
+        # both levels of the table reached the guest
+        assert r.stdout == "x,y\nseeded\n"
         assert "/workspace/data/nope.txt is inside the read-only mount" in r.stderr
         assert "r.txt" not in r.stderr  # the writable child refuses nothing
         assert (out / "r.txt").read_text().strip() == "hi"
@@ -1168,8 +1173,9 @@ def test_a_read_only_mount_nested_in_a_writable_one_is_refused(tmp_path):
         executor_factory=lambda: DudExecutor(backend="subprocess"),
     )
     try:
-        r = ws.terminal("mkdir -p w/r; echo hi > w/ok.txt; echo x > w/r/nope.txt")
+        r = ws.terminal("cat w/r/x.txt; echo hi > w/ok.txt; echo x > w/r/nope.txt")
         assert not r
+        assert r.stdout == "keep\n"  # the nested read-only mount reached the guest
         assert "/workspace/w/r/nope.txt is inside the read-only mount" in r.stderr
         assert (src / "ok.txt").read_text().strip() == "hi"
         assert sorted(p.name for p in inner.iterdir()) == ["x.txt"]
