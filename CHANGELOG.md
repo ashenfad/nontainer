@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **A `ui` value whose serializer raises writes no file on any rung.**
+  The set of values that render is closed, and the rule for one that
+  blows up on the way to a file is a problem note and nothing else — a
+  note sitting in the artifact slot, announced as an artifact, tells the
+  agent its figure arrived. The guest-side serializer wrote
+  `ui/<name>.txt` anyway, so the same figure failed two different ways
+  depending on the rung. It now carries the diagnosis home alone, and
+  the diagnosis itself comes from the function the host renderer uses,
+  so an agent reads one explanation wherever the value was serialized.
 - **A guest write into an attachment is refused, not raised.** An
   attachment is a frozen tree mounted read-only, which the in-process
   rung refuses where the write happens. A rung that runs against a tree

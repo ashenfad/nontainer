@@ -29,6 +29,7 @@ from .artifacts import (
     MAX_ARTIFACT_BYTES,
     ArtifactPath,
     looks_like_plotly,
+    renderer_failed_note,
     too_large_note,
 )
 
@@ -193,23 +194,6 @@ def _not_an_artifact(name: object, value: object) -> str:
         f"matplotlib figure or an image (a picture), or a list of card "
         f"rows ([{{'label': ..., 'value': ...}}]). To keep it as data, "
         f"print it or write it to a file yourself."
-    )
-
-
-def _renderer_failed(name: object, value: object, error: BaseException) -> str:
-    """A value in the supported set whose renderer raised.
-
-    Named, with the error, because the agent has to know WHICH of its
-    assignments failed and why — a figure whose serializer blew up is a
-    fixable mistake, and the silence that used to stand in for it (a
-    capped repr in a .txt slot, announced as an artifact) read as
-    success.
-    """
-    return (
-        f"{str(name)!r} could not be rendered: "
-        f"{type(error).__name__}: {error}. The value is a "
-        f"{type(value).__name__}; fix what it holds, or write the file "
-        f"yourself and assign its path."
     )
 
 
@@ -486,7 +470,7 @@ def materialize_ui(
             # meant to be an artifact, so the agent is told which one
             # failed and why — a capped repr announced as an artifact
             # said a figure had arrived when none had.
-            problems.append(_renderer_failed(raw_name, value, e))
+            problems.append(renderer_failed_note(raw_name, value, e))
             continue
         out.append((name, path))
         if claims is not None:

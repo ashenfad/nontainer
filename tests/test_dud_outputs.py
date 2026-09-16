@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from nontainer.artifacts import renderer_failed_note
 from nontainer.dud_outputs import _CLAIM, _PROBLEM, flatten
 
 
@@ -88,17 +89,21 @@ def test_a_plain_ui_is_not_rewritten(tmp_path):
     assert not (tmp_path / "ui").exists()
 
 
-def test_a_serializer_that_raises_is_consumed_with_a_note(tmp_path):
-    """Third-party serializers raise anything, and handing the live
-    object back would recreate the very data loss this hook prevents:
-    it is the thing dud cannot encode, so `ui` becomes unrepresentable
-    and its plain siblings vanish too. Consume it and explain, exactly
-    as the oversized path does.
+def test_a_serializer_that_raises_yields_a_note_and_no_file(tmp_path):
+    """The closed-set rule: a value whose renderer raises gets a
+    problem note and NO file. A note written into the artifact slot and
+    announced as an artifact tells the agent its figure arrived, which
+    is the silence the note exists to break.
 
-    The first cut of this test asserted the opposite and was VACUOUS
-    either way: `__module__` set in a class body is not inherited, so
-    the subclass read as `tests.test_dud_outputs` and was never treated
-    as rich — `to_json` was never called and nothing ever raised.
+    The name is still consumed. Handing the live object back would
+    recreate the very data loss this hook prevents: it is the thing dud
+    cannot encode, so `ui` becomes unrepresentable and its plain
+    siblings vanish too.
+
+    The stand-in sets `__module__` again because a class body's
+    `__module__` is NOT inherited: without it the subclass reads as
+    `tests.test_dud_outputs`, is never treated as rich, `to_json` is
+    never called and the test passes whatever the hook does.
     """
 
     class _Exploding(_FakeFigure):
@@ -111,14 +116,73 @@ def test_a_serializer_that_raises_is_consumed_with_a_note(tmp_path):
         "ui": {"bad": _Exploding(), "good": _FakeFigure('{"ok":1}'), "note": "plain"}
     }
     assert flatten(harvest, str(tmp_path)) == set()
-    claim = harvest["ui"]["bad"]
-    assert claim[_CLAIM] == "ui/bad.txt", "a note, not the live object"
-    assert "failed to serialize" in claim[_PROBLEM], "the agent must be told"
+    envelope = harvest["ui"]["bad"]
+    assert _CLAIM not in envelope, "no file was written, so nothing is claimed"
+    assert envelope == {
+        _PROBLEM: renderer_failed_note("bad", _Exploding(), RuntimeError("boom"))
+    }, "the diagnosis the host renderer writes, from the same function"
+    assert not (tmp_path / "ui" / "bad.txt").exists()
+    # The siblings are untouched by one value's failure.
     assert harvest["ui"]["note"] == "plain"
     assert (tmp_path / "ui" / "good.plotly.json").exists()
-    written = (tmp_path / "ui" / "bad.txt").read_text()
-    assert "failed to serialize" in written
-    assert "RuntimeError: boom" in written
+
+
+def test_a_value_outside_the_artifact_set_is_never_diagnosed(tmp_path):
+    """The hook claims exactly the four types that cannot cross the
+    wire. Anything else is data: it stays itself, gets no file and gets
+    no note — the host renderer owns every shape that can cross, and a
+    second opinion here would be two implementations of one contract.
+    """
+
+    class _Bomb:
+        """Same method, ordinary module: data, not an artifact."""
+
+        def to_json(self):
+            raise RuntimeError("never called")
+
+    bomb = _Bomb()
+    harvest = {"ui": {"thing": bomb, "note": "plain"}}
+    assert flatten(harvest, str(tmp_path)) == set()
+    assert harvest["ui"]["thing"] is bomb
+    assert not (tmp_path / "ui").exists()
+
+
+def test_both_rungs_agree_when_a_serializer_raises():
+    """The parity claim on one input. A renderer that blows up is a
+    mistake the agent can fix, so what it reads must not depend on
+    where the value was serialized: the same diagnosis, from the same
+    function, and no artifact file on either rung.
+    """
+    pytest.importorskip("dud")
+    from nontainer import Workspace
+    from nontainer.executor_dud import DudExecutor
+    from nontainer.providers import KvgitProvider
+
+    code = (
+        "class Boom:\n"
+        "    __module__ = 'plotly.graph_objs._figure'\n"
+        "    def to_json(self):\n"
+        "        raise RuntimeError('boom')\n"
+        "ui = {'bad': Boom(), 'note': 'plain'}\n"
+    )
+    local = Workspace(KvgitProvider.open(None, session="raise-local"))
+    dud = Workspace(
+        KvgitProvider.open(None, session="raise-dud"),
+        executor=DudExecutor(backend="subprocess"),
+    )
+    try:
+        seen = []
+        for ws in (local, dud):
+            r = ws.run_python(code)
+            assert r.error is None, r.error
+            assert not ws.files.fs.exists("/workspace/ui/bad.txt"), "no file"
+            assert r.namespace["ui"]["note"] == "plain", "siblings survive"
+            seen.append(r.ui_problems)
+        assert seen[0] == seen[1], "one diagnosis, whichever rung produced it"
+        assert "could not be rendered" in seen[0][0]
+    finally:
+        local.close()
+        dud.close()
 
 
 def test_artifact_names_are_sanitized_like_the_host_renderer(tmp_path):
