@@ -224,17 +224,19 @@ def test_dud_fork_wsgit_binds_fork():
         w.close()
 
 
-def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypatch):
-    """A mid-call harvest the provider refuses must neither commit
-    partials nor poison the guest: the verb reads errored, the call
-    unwinds like a torn call, history holds, and the guest is flagged
-    for rematerialization on the next call.
+def test_mid_call_refusal_names_the_point_and_keeps_the_rest(tmp_path, monkeypatch):
+    """A mid-call harvest carrying a write into a read-only mount is
+    refused the way any harvest is: the verb reads errored and names
+    the path, the host directory is untouched, the writes the script
+    made outside the point are its own work and ride this call's
+    commit, and the guest is flagged for rematerialization so its copy
+    of the mount is rebuilt.
 
     The harvest shape is supplied directly: the subprocess rung runs
     against host paths, so it cannot see workspace mounts guest-side
     (a VM rung materializes them via the tree push — that end-to-end
-    half is VM-only). What this pins is the unwind/stale/pending
-    plumbing from the refused StagedDiff onward.
+    half is VM-only). What this pins is the refusal/stale plumbing
+    from the refused StagedDiff onward.
     """
     from nontainer import Mount
     from nontainer.executor import StagedDiff
@@ -265,15 +267,66 @@ def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypat
         monkeypatch.setattr(w.runtime.executor, "diff", fake_diff)
         r = w.terminal("ws-git status")
         assert r.exit_code != 0
+        # The verb's triple rides the merged dud transcript.
+        assert "Read-only filesystem" in r.stdout
+        assert "/data/evil.txt is inside the read-only mount" in r.stdout
+        assert not (src / "evil.txt").exists()
+        # The write beside the mount is the script's own work: it lands
+        # and commits under this call's tool.
+        assert w.files.fs.read("/workspace/ok.txt") == b"ok\n"
+        assert r.commit is not None
+        assert len(list(w.log())) == before + 1
+        # Guest flagged for rematerialization; the next call re-syncs.
+        assert w.runtime.stale is True
+        assert w.terminal("ws-git status").exit_code == 0
+        assert w.runtime.stale is False
+    finally:
+        w.close()
+
+
+def test_mid_call_absorb_failure_rolls_back_and_flags_repush(tmp_path, monkeypatch):
+    """A mid-call harvest that fails outright must neither commit
+    partials nor poison the guest: the verb reads errored, the call
+    unwinds like a torn call, history holds, and the guest is flagged
+    for rematerialization on the next call.
+
+    A refusal is a verdict the harvest reaches and reports; this is the
+    other thing that can happen to it — the apply itself raising, after
+    the guest baseline already advanced — so staging may hold writes
+    the post-call harvest can no longer see.
+    """
+    from nontainer import executor as executor_mod
+    from nontainer.executor import StagedDiff
+
+    provider = KvgitProvider.open(None, session=f"wsgit-boom-{tmp_path.name}")
+    w = Workspace(provider, executor=DudExecutor(backend="subprocess"))
+    register_wsgit(w)
+    try:
+        before = len(list(w.log()))
+        calls = []
+
+        def fake_diff():
+            calls.append(1)
+            if len(calls) == 1:
+                return StagedDiff(writes={"workspace/ok.txt": b"ok\n"}, deletes=())
+            return None
+
+        def boom(fs, writes, deletes):
+            raise OSError("staging is gone")
+
+        monkeypatch.setattr(w.runtime.executor, "diff", fake_diff)
+        monkeypatch.setattr(executor_mod, "_apply_diff", boom)
+        r = w.terminal("ws-git status")
+        assert r.exit_code != 0
         # The verb's triple rides the merged dud transcript...
         assert "mid-call sync failed" in r.stdout
         # ...while the outer unwind lands on the result like a torn call.
         assert "rolled back" in (r.stderr or "")
         assert len(list(w.log())) == before
         assert not w.files.fs.exists("/workspace/ok.txt")
-        assert not (src / "evil.txt").exists()
         # Guest flagged for rematerialization; the next call re-syncs.
         assert w.runtime.stale is True
+        monkeypatch.undo()
         assert w.terminal("ws-git status").exit_code == 0
         assert w.runtime.stale is False
     finally:
