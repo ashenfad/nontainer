@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A guest write into an attachment is refused, not raised.** An
+  attachment is a frozen tree mounted read-only, which the in-process
+  rung refuses where the write happens. A rung that runs against a tree
+  of its own holds an ordinary copy there, so `echo x > peek/note.md`
+  succeeded in the guest and the harvest carried it back into a
+  read-only filesystem — `PermissionError` out of `ws.terminal()`, a
+  tool that never raises for command failure. The harvest now splits at
+  the attachment points: paths inside one are dropped and named in the
+  same `Read-only filesystem: write() modifies the filesystem` refusal
+  the local rung gives, on an errored result, while the call's writes
+  outside the attachment land as usual and the guest's copy is rebuilt
+  from the attachment on its next execution.
+
 ## 0.7.4 - 2026-09-16
 
 ### Added

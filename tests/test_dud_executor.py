@@ -850,6 +850,118 @@ def test_host_files_outside_the_root_never_reach_the_guest(ws):
     assert "host-only.txt" not in r.stdout
 
 
+# -- attachments: a frozen tree the guest holds an ordinary copy of ----------
+
+
+def _attached(tmp_path, name, *, executor_factory=None):
+    """A store with ``reviewer`` (holding ``note.md``) attached into a
+    reader session at ``peek``."""
+    from nontainer import Store
+
+    store = Store(tmp_path / name)
+    other = store.open("reviewer")
+    other.files.write("/workspace/note.md", "original\n")
+    other.commit(info={"tool": "test"})
+    other.close()
+    reader = store.open("reader", executor_factory=executor_factory)
+    reader.files.attach("reviewer", "peek")
+    return store, reader
+
+
+def test_a_guest_write_into_an_attachment_is_refused_not_raised(tmp_path):
+    """An attachment reaches the guest as a plain copy, so the write
+    succeeds there and the harvest is the first thing that can refuse
+    it. It has to refuse it as a RESULT: absorbing it raised
+    ``PermissionError`` out of ``ws.terminal()``, which no caller of a
+    tool that "never raises for command failure" is watching for.
+    """
+    store, ws = _attached(
+        tmp_path, "store", executor_factory=lambda: DudExecutor(backend="subprocess")
+    )
+    try:
+        r = ws.terminal("echo x > peek/note.md; echo sib > outside.txt")
+        assert not r
+        assert "Read-only filesystem" in r.stderr
+        assert "/workspace/peek/note.md" in r.stderr
+        # The attachment is untouched on the host...
+        assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+        # ...and in the guest, which is re-pushed over what it wrote.
+        assert ws.terminal("cat peek/note.md").stdout == "original\n"
+        # The write beside it is nothing the rule has to say about.
+        assert ws.files.fs.read("/workspace/outside.txt") == b"sib\n"
+    finally:
+        ws.close()
+        store.close()
+
+
+def test_every_write_kind_into_an_attachment_is_refused(tmp_path):
+    """Create, modify, delete and makedirs all reach the harvest as
+    writes or deletes under the mount point, and each is named."""
+    store, ws = _attached(
+        tmp_path, "store", executor_factory=lambda: DudExecutor(backend="subprocess")
+    )
+    try:
+        for script, op in (
+            ("echo new > peek/fresh.md", "write"),
+            ("echo x >> peek/note.md", "write"),
+            ("rm peek/note.md", "remove"),
+            ("mkdir -p peek/sub && echo deep > peek/sub/f.txt", "write"),
+        ):
+            r = ws.terminal(script)
+            assert not r, script
+            assert f"{op}() modifies the filesystem" in r.stderr, script
+        assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+        assert not ws.files.fs.exists("/workspace/peek/fresh.md")
+        assert not ws.files.fs.exists("/workspace/peek/sub/f.txt")
+    finally:
+        ws.close()
+        store.close()
+
+
+def test_a_guest_python_write_into_an_attachment_is_refused(tmp_path):
+    """Guest-side Python reaches the attachment the same way the shell
+    does — one harvest, one rule — and the refusal rides the errored
+    result rather than escaping the call."""
+    store, ws = _attached(
+        tmp_path, "store", executor_factory=lambda: DudExecutor(backend="subprocess")
+    )
+    try:
+        r = ws.run_python("open('peek/note.md', 'w').write('x')\nkept = 1\n")
+        assert not r
+        assert "Read-only filesystem" in r.error
+        assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+    finally:
+        ws.close()
+        store.close()
+
+
+def test_both_rungs_refuse_an_attachment_write_the_same_way(tmp_path):
+    """The parity claim, asserted on one input: in-process the
+    read-only wrapper refuses the write where it happens, on the dud
+    rung the harvest refuses it afterwards, and the agent reads the
+    same refusal either way. Neither rung raises, and neither lets the
+    attachment change."""
+    local_store, local = _attached(tmp_path, "local")
+    dud_store, dud = _attached(
+        tmp_path, "dud", executor_factory=lambda: DudExecutor(backend="subprocess")
+    )
+    try:
+        messages = []
+        for ws in (local, dud):
+            r = ws.terminal("echo x > peek/note.md")
+            messages.append(r.stdout + r.stderr)
+            assert ws.files.fs.read("/workspace/peek/note.md") == b"original\n"
+        assert all(
+            "Read-only filesystem: write() modifies the filesystem" in m
+            for m in messages
+        ), messages
+    finally:
+        local.close()
+        local_store.close()
+        dud.close()
+        dud_store.close()
+
+
 # -- backend selection -------------------------------------------------------
 #
 # Which rung to open is dud's decision, not ours: DudExecutor routes
