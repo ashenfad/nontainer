@@ -117,6 +117,36 @@ def test_stdlib_functools_is_useful_but_narrow():
     ws.close()
 
 
+def test_an_objects_name_is_readable_and_its_innards_are_not():
+    """What an agent writes to report an error — `type(e).__name__` —
+    against what would walk out of the sandbox. The four readable
+    dunders resolve to exact strings without running a host
+    descriptor; `__class__` and `__dict__` hand back the object graph
+    and stay refused (sandtrap >= 0.3.7)."""
+    ws = make_ws()
+    r = ws.run_python(
+        "try:\n"
+        "    raise ValueError('bad key')\n"
+        "except Exception as e:\n"
+        "    caught = type(e).__name__\n"
+        "class Row:\n"
+        "    pass\n"
+        "def load():\n"
+        "    pass\n"
+        "result = (caught, Row.__qualname__, load.__name__)"
+    )
+    assert r, r.error
+    assert r.namespace["result"] == ("ValueError", "Row", "load")
+
+    for denied in (
+        ws.run_python("result = 'a'.__class__"),
+        ws.run_python("class C:\n    pass\nresult = C().__dict__"),
+    ):
+        assert not denied
+        assert "is not accessible" in (denied.error or "")
+    ws.close()
+
+
 def test_stdlib_types_is_two_data_shapes_and_nothing_else():
     """``SimpleNamespace`` is the record agents reach for; the rest of
     the module is the interpreter's own machinery."""

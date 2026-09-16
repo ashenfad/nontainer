@@ -193,6 +193,30 @@ def test_a_test_imports_what_the_session_grants(ws):
     assert report.ok, report.outcomes
 
 
+def test_a_test_can_name_the_exception_it_caught(ws):
+    """`type(e).__name__` is how a test says which error came back, and
+    it reads in the sandbox a test runs in (sandtrap >= 0.3.7)."""
+    write(
+        ws,
+        "tests/test_names.py",
+        "def test_the_name_of_what_was_raised():\n"
+        "    try:\n"
+        "        raise ValueError('bad key')\n"
+        "    except Exception as e:\n"
+        "        assert type(e).__name__ == 'ValueError'\n"
+        "\n"
+        "\n"
+        "class Row:\n"
+        "    pass\n"
+        "\n"
+        "\n"
+        "def test_a_class_knows_its_own_name():\n"
+        "    assert Row.__qualname__ == 'Row'\n",
+    )
+    report = run_pytest(ws)
+    assert report.ok, report.outcomes
+
+
 def test_a_selector_picks_one_test(ws):
     write(
         ws,
