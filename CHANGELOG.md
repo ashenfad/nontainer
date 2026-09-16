@@ -82,6 +82,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wrote — and the guest's copy is rebuilt from the attachment on its
   next execution.
 
+### Changed
+- **The monkeyfs floor is 0.1.11.** A recursive listing of the composed
+  filesystem walks into every nested mount, which is what puts a nested
+  mount's files on a guest rung.
+
 ## 0.7.4 - 2026-09-16
 
 ### Added
@@ -115,9 +120,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CodeType` — and stays refused.
 
 ### Changed
-- **The monkeyfs floor is 0.1.11.** A recursive listing of the composed
-  filesystem walks into every nested mount, which is what puts a nested
-  mount's files on a guest rung.
 - **sandtrap floor is 0.3.7.** Its dunder allowlist reads `__name__`,
   `__qualname__`, `__module__` and `__doc__` as the exact strings they
   are, without running a host descriptor — so `type(e).__name__`, the
