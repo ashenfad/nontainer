@@ -55,6 +55,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it gets the ImportError a request gives it.
 
 ### Fixed
+- **A frozen record hashes whatever its metadata holds.** `TagInfo`
+  raised on `hash` for any tag carrying info, since its `info` dict took
+  part in the hash; every mapping field on an exported frozen record
+  (`TagInfo`, `CommitInfo`, `Job`, `Answer`, `PythonResult`,
+  `PythonConfig`, `StagedDiff`, `ExecutionContext`) is now left out of
+  the hash and still compared, and a test pins the rule for every such
+  record the package exports.
 - **A handler's own global no longer hides the session's object from
   `host`.** `db = "local"` beside `import host` left `host.db` reading
   the module's string, or missing altogether, where a request keeps the

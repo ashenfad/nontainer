@@ -251,7 +251,7 @@ class PythonResult:
     duration: float = 0.0
     truncated: bool = False
 
-    namespace: Mapping[str, Any] = field(default_factory=dict)
+    namespace: Mapping[str, Any] = field(default_factory=dict, hash=False)
     """Top-level bindings after execution (sandtrap's result namespace)
     — for the HOST, not the model. Modules and ``_``-prefixed names
     are excluded; under process/kernel isolation, unpicklable values
@@ -357,7 +357,7 @@ class PythonConfig:
     arithmetic and read files; disable for a truly bare cell (minimal
     surface, policy audits)."""
 
-    host_objects: Mapping[str, Any] = field(default_factory=dict)
+    host_objects: Mapping[str, Any] = field(default_factory=dict, hash=False)
     """Live host resources injected into the namespace by name — the
     in-process superpower (your model, your db pool). Distinct from
     ``run_python(inputs=...)`` on purpose: inputs are per-call
