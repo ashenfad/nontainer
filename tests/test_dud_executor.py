@@ -1098,6 +1098,110 @@ def test_a_writable_mount_still_takes_guest_writes(tmp_path):
         ws.close()
 
 
+def _nested(tmp_path, name, *, executor_factory=None):
+    """A mount table that nests: a read-only host directory at
+    ``<root>/data`` with a writable one inside it at
+    ``<root>/data/out``. Returns both host directories and the
+    workspace."""
+    ro = tmp_path / f"{name}-ro"
+    ro.mkdir()
+    (ro / "in.csv").write_text("x,y\n")
+    out = tmp_path / f"{name}-out"
+    out.mkdir()
+    ws = Workspace(
+        KvgitProvider.open(None, session=name),
+        mounts={
+            "/workspace/data": Mount(ro),
+            "/workspace/data/out": Mount(out, readonly=False),
+        },
+        executor_factory=executor_factory,
+    )
+    return ro, out, ws
+
+
+# The guest makes the nested directory itself in these scripts: a
+# nested mount's contents do not ride the tree push (the composed
+# listing stops at the inner mount point), so the guest starts without
+# one. Where the write lands afterwards is the point being pinned.
+_NESTED_SCRIPT = "mkdir -p data/out; echo hi > data/out/r.txt; echo x > data/nope.txt"
+
+
+def test_a_writable_mount_nested_in_a_read_only_one_still_takes_writes(tmp_path):
+    """A mount table may nest, and the composition routes a write to
+    the MOST SPECIFIC point over it: a writable directory inside a
+    read-only one takes writes, while the tree around it does not. The
+    harvest has to route by the same point, or the dud rung discards
+    writes the filesystem itself accepts — and says it refused them
+    over a mount that was never the one in charge of that path.
+    """
+    ro, out, ws = _nested(
+        tmp_path,
+        "nested",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        r = ws.terminal(_NESTED_SCRIPT)
+        assert not r
+        assert "/workspace/data/nope.txt is inside the read-only mount" in r.stderr
+        assert "r.txt" not in r.stderr  # the writable child refuses nothing
+        assert (out / "r.txt").read_text().strip() == "hi"
+        assert sorted(p.name for p in ro.iterdir()) == ["in.csv"]
+    finally:
+        ws.close()
+
+
+def test_a_read_only_mount_nested_in_a_writable_one_is_refused(tmp_path):
+    """The nesting the other way round, decided the same way: the inner
+    read-only mount answers for what it covers, and the writable mount
+    around it keeps taking the writes beside it."""
+    src = tmp_path / "rev-w"
+    src.mkdir()
+    inner = tmp_path / "rev-r"
+    inner.mkdir()
+    (inner / "x.txt").write_text("keep\n")
+    ws = Workspace(
+        KvgitProvider.open(None, session="nested-rev"),
+        mounts={
+            "/workspace/w": Mount(src, readonly=False),
+            "/workspace/w/r": Mount(inner),
+        },
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        r = ws.terminal("mkdir -p w/r; echo hi > w/ok.txt; echo x > w/r/nope.txt")
+        assert not r
+        assert "/workspace/w/r/nope.txt is inside the read-only mount" in r.stderr
+        assert (src / "ok.txt").read_text().strip() == "hi"
+        assert sorted(p.name for p in inner.iterdir()) == ["x.txt"]
+    finally:
+        ws.close()
+
+
+def test_both_rungs_agree_on_a_nested_mount_table(tmp_path):
+    """The parity claim for a nested table: the same script over the
+    same mounts leaves the same files on the host and names the same
+    path in the same refusal, whether the write was refused where it
+    happened or at the harvest."""
+    local_ro, local_out, local = _nested(tmp_path, "local-nested")
+    dud_ro, dud_out, dud = _nested(
+        tmp_path,
+        "dud-nested",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        for out, ro, ws in ((local_out, local_ro, local), (dud_out, dud_ro, dud)):
+            r = ws.terminal(_NESTED_SCRIPT)
+            assert not r
+            assert "Read-only filesystem: write() modifies the filesystem" in (
+                r.stdout + r.stderr
+            )
+            assert (out / "r.txt").read_text().strip() == "hi"
+            assert not (ro / "nope.txt").exists()
+    finally:
+        local.close()
+        dud.close()
+
+
 def test_both_rungs_refuse_a_read_only_mount_write_the_same_way(tmp_path):
     """The parity claim for the other kind of point: in-process the
     read-only wrapper refuses the write where it happens, on the dud

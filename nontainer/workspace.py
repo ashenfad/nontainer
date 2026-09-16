@@ -666,12 +666,20 @@ class _SyncingFS:
         return f"<syncing {self._fs!r}>"
 
 
-def _point_over(path: str, points: Mapping[str, str]) -> str | None:
-    """The mount point ``path`` lies at or under, or None."""
+def _point_over(path: str, points: Mapping[str, Any]) -> str | None:
+    """The MOST SPECIFIC mount point ``path`` lies at or under, or None.
+
+    Mount points nest — a writable directory inside a read-only one,
+    an attachment inside either — and the composition routes a path to
+    the deepest point that covers it. Anything that reasons about
+    where a path lands has to pick the same one.
+    """
+    best: str | None = None
     for point in points:
         if path == point or path.startswith(point + "/"):
-            return point
-    return None
+            if best is None or len(point) > len(best):
+                best = point
+    return best
 
 
 def _frozen_message(tag: str | None) -> str:
@@ -3709,23 +3717,33 @@ class Workspace:
         _apply_diff(self._fs, writes, deletes)
         return _Absorbed(refusal, bool(writes or deletes))
 
-    def _readonly_points(self) -> dict[str, str]:
-        """Every point of the composed filesystem that refuses writes,
-        mapped to the name a refusal calls it by.
+    def _mount_points(self) -> dict[str, str | None]:
+        """Every point mounted into the composed filesystem, mapped to
+        the name a refusal calls it by — or None where the mount takes
+        writes.
 
-        Two kinds mount read-only: an attachment (another session's
-        frozen state) and a ``Mount`` declared ``readonly`` (a host
-        directory this session may only read). A rung that executes
-        against the composed filesystem refuses a write to either
-        where the write happens; a rung that runs against a tree of
-        its own asks here instead, so one answer covers both. A
-        writable ``Mount`` is absent: writing to it is something the
-        session is allowed to do.
+        Three kinds mount: an attachment (another session's frozen
+        state, read-only by definition), a ``Mount`` declared
+        ``readonly`` (a host directory this session may only read), and
+        a writable ``Mount``. A rung that executes against the composed
+        filesystem refuses a write to a read-only one where the write
+        happens; a rung that runs against a tree of its own asks here
+        instead, so one answer covers every kind.
+
+        The writable points are in the answer too, rather than left
+        out as the ones with nothing to refuse: a mount table may nest
+        a writable directory inside a read-only one, and the
+        composition routes a write by the most specific point that
+        covers it. A lookup holding only the read-only points would
+        match the parent and refuse a write the filesystem itself
+        accepts. Attachments are applied last because they compose
+        over the mounts: a path under one reaches the attachment.
         """
-        points = {point: "attachment" for point in self._attached}
-        for point, mount in self._settings.mounts.items():
-            if mount.readonly:
-                points[point] = "read-only mount"
+        points: dict[str, str | None] = {
+            point: ("read-only mount" if mount.readonly else None)
+            for point, mount in self._settings.mounts.items()
+        }
+        points.update({point: "attachment" for point in self._attached})
         return points
 
     def _readonly_refusal(
@@ -3744,31 +3762,34 @@ class Workspace:
         for the caller to put on the result, while the rest of the
         call's writes land — a point covers one directory, and
         refusing the writes beside it would punish work the rule has
-        nothing to say about. The executor is marked stale so its next
+        nothing to say about. Which point a path belongs to is the
+        most specific one over it, the one the composition would have
+        routed the write to, so a writable mount nested inside a
+        read-only one keeps taking writes. The executor is marked stale so its next
         execution rebuilds that directory from the attachment (or the
         host directory) rather than keeping what the guest wrote
         there.
         """
-        points = self._readonly_points()
-        if not points:
+        points = self._mount_points()
+        if not any(points.values()):
             return writes, tuple(deletes), None
         kept: dict[str, bytes] = {}
         kept_deletes: list[str] = []
         refused: list[tuple[str, str, str, str]] = []
         for rel, data in writes.items():
             path = "/" + rel.lstrip("/")
-            point = _point_over(path, points)
-            if point is None:
+            kind, point = self._refusing_point(path, points)
+            if kind is None:
                 kept[rel] = data
             else:
-                refused.append((path, "write", point, points[point]))
+                refused.append((path, "write", point, kind))
         for rel in deletes:
             path = "/" + rel.lstrip("/")
-            point = _point_over(path, points)
-            if point is None:
+            kind, point = self._refusing_point(path, points)
+            if kind is None:
                 kept_deletes.append(rel)
             else:
-                refused.append((path, "remove", point, points[point]))
+                refused.append((path, "remove", point, kind))
         if not refused:
             return writes, tuple(deletes), None
         self._mark_executor_stale()
@@ -3786,6 +3807,23 @@ class Workspace:
             f"the executor's own tree and have been discarded; writes "
             f"outside {outside} landed.",
         )
+
+    @staticmethod
+    def _refusing_point(
+        path: str, points: Mapping[str, str | None]
+    ) -> tuple[str | None, str]:
+        """What refuses a write to ``path``: ``(kind, point)``, with
+        ``kind`` None when nothing does.
+
+        The verdict belongs to the most specific point over the path —
+        the one the composition routes the write to — so a writable
+        mount under a read-only one answers for what it covers, and a
+        read-only point under a writable mount answers for its own.
+        """
+        point = _point_over(path, points)
+        if point is None:
+            return None, ""
+        return points[point], point
 
     def _view_refusal(self, d: Any) -> str | None:
         """The view's write rule against an executor's harvest.
