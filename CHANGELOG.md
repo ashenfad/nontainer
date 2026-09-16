@@ -55,6 +55,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it gets the ImportError a request gives it.
 
 ### Fixed
+- **A handler's own global no longer hides the session's object from
+  `host`.** `db = "local"` beside `import host` left `host.db` reading
+  the module's string, or missing altogether, where a request keeps the
+  two apart. The composed `host` module is now built from the objects
+  the call resolved — the session's, with the test's substitutions over
+  them — handed to the handler under a name no module can bind.
 - **The `host` module a test composes is read-only, as the real one
   is.** A handler that assigns to `host.db` gets a 500 from a request —
   the module is rebuilt per execution, so a write would be a channel
