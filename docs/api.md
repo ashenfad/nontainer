@@ -1422,12 +1422,20 @@ class PythonConfig:
   random (minus global seed/state), collections/itertools,
   heapq/bisect, narrow functools (`partial`, `reduce`, `lru_cache`,
   `cache`), narrow types (`SimpleNamespace`, `MappingProxyType` — the
-  rest of that module is the interpreter's own machinery),
+  rest of that module is the interpreter's own machinery), narrow
+  dataclasses (`dataclass`, `field`, `fields`, `asdict`, `astuple`,
+  `replace`, `is_dataclass`, `InitVar`, `KW_ONLY`, `MISSING`,
+  `FrozenInstanceError`; `make_dataclass` is excluded because it execs
+  source built from field names given as strings),
   datetime/time/calendar/zoneinfo, re/string/textwrap,
   difflib, narrow shlex (`quote`, `join`),
   json/csv/struct/base64/binascii/uuid/hashlib, pprint/traceback
-  formatters, typing, `unittest.mock` (the public API; `unittest`
-  itself exposes nothing else),
+  formatters, the annotation half of typing (`Any`, `Optional`,
+  `Union`, `Literal`, `Protocol`, `TypedDict`, `NamedTuple`, `cast`,
+  the container aliases, …; `get_type_hints` and `ForwardRef` are
+  excluded because they `eval` string annotations host-side),
+  `unittest.mock` (the public API; `unittest` itself exposes nothing
+  else),
   io, VFS-routed os/os.path/pathlib/glob/fnmatch, and
   gzip/zipfile/tarfile. `stdlib=False` for a truly bare cell.
 - `pickle` is intentionally excluded: deserialization executes

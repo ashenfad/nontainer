@@ -28,6 +28,7 @@ import bisect
 import calendar
 import collections
 import csv
+import dataclasses
 import datetime
 import decimal
 import difflib
@@ -86,6 +87,60 @@ _FUNCTOOLS_INCLUDE = ("partial", "reduce", "lru_cache", "cache")
 # grant (and the project still supports those versions).
 _SHLEX_INCLUDE = ("quote", "join")
 
+# The annotation vocabulary and nothing else. get_type_hints and
+# ForwardRef stay out: both eval a string annotation on the host, in
+# typing's own globals and with real builtins, which turns a string an
+# agent wrote into code the sandbox never sees. An annotation that is
+# never evaluated is inert, which is what makes the rest safe.
+_TYPING_INCLUDE = (
+    "Any",
+    "Optional",
+    "Union",
+    "List",
+    "Dict",
+    "Tuple",
+    "Set",
+    "FrozenSet",
+    "Callable",
+    "Iterable",
+    "Iterator",
+    "Sequence",
+    "Mapping",
+    "MutableMapping",
+    "Literal",
+    "TypeVar",
+    "Generic",
+    "Protocol",
+    "TypedDict",
+    "NamedTuple",
+    "cast",
+    "overload",
+    "TYPE_CHECKING",
+    "Final",
+    "ClassVar",
+    "Type",
+)
+
+# The record decorator, the functions that read one, and the two
+# markers its field syntax needs. make_dataclass stays out: it takes
+# field names as strings and interpolates them into source it execs
+# host-side, so its safety is CPython's identifier check rather than
+# anything this grant can state. The decorator reads names from a
+# class body instead, where they are identifiers by construction.
+_DATACLASSES_INCLUDE = (
+    "dataclass",
+    "field",
+    "fields",
+    "asdict",
+    "astuple",
+    "replace",
+    "is_dataclass",
+    "FrozenInstanceError",
+    "MISSING",
+    "KW_ONLY",
+    "InitVar",
+)
+
 # The two data-shaped types in a module that is otherwise the
 # interpreter's own machinery. SimpleNamespace is the record an agent
 # reaches for and MappingProxyType is a read-only view of a dict;
@@ -111,6 +166,7 @@ STDLIB: tuple[ModuleGrant, ...] = (
     ModuleGrant(bisect),
     ModuleGrant(functools, include=_FUNCTOOLS_INCLUDE),
     ModuleGrant(types, include=_TYPES_INCLUDE),
+    ModuleGrant(dataclasses, include=_DATACLASSES_INCLUDE),
     # dates & time
     ModuleGrant(time),
     ModuleGrant(calendar),
@@ -177,8 +233,7 @@ STDLIB: tuple[ModuleGrant, ...] = (
         warnings,
         include=("warn", "filterwarnings", "simplefilter", "catch_warnings"),
     ),
-    # typing.io / typing.re: deprecated, removed in 3.13
-    ModuleGrant(typing, exclude=("_*", "*._*", "io", "re")),
+    ModuleGrant(typing, include=_TYPING_INCLUDE),
     # file IO — routed through the workspace VFS by the sandbox
     ModuleGrant(io, include=("BytesIO", "StringIO", "TextIOWrapper")),
     ModuleGrant(

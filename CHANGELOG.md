@@ -19,10 +19,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verb had to be told about `call` by someone else or discover it by
   accident. The tool description now defers to the help rather than
   restating a second copy of the contract.
-- **`types` joins the default stdlib grant.** `SimpleNamespace` and
-  `MappingProxyType` only: the record shape a test reaches for when it
-  wants a stand-in without a class, and a read-only view of a dict. The
-  rest of the module is the interpreter's own machinery — `FunctionType`,
+- **`types`, `dataclasses` and a narrowed `typing` in the default
+  stdlib grant.** The vocabulary for describing a record, which agent
+  code reaches for constantly and a test reaches for to build a
+  stand-in: `SimpleNamespace` and `MappingProxyType` from `types`, the
+  `dataclass` decorator with `field`/`fields`/`asdict`/`astuple`/
+  `replace`/`InitVar`/`KW_ONLY`, and `typing`'s annotation names
+  (`Any`, `Optional`, `Protocol`, `TypedDict`, `NamedTuple`, …).
+  Each grant is an allowlist, and three names are deliberately outside
+  it: `typing.get_type_hints` and `typing.ForwardRef` both `eval` a
+  string annotation host-side with real builtins, which would turn an
+  annotation an agent wrote into code the sandbox never sees (an
+  annotation nothing evaluates is inert, which is what makes the rest
+  safe); `dataclasses.make_dataclass` interpolates field names it was
+  handed as strings into source it `exec`s, while the decorator reads
+  a class body, where a name is an identifier by construction. The
+  rest of `types` is the interpreter's own machinery — `FunctionType`,
   `CodeType` — and stays refused.
 
 ### Fixed

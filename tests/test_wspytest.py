@@ -167,20 +167,27 @@ def test_a_test_asking_for_a_fixture_is_an_error(ws):
 
 def test_a_test_imports_what_the_session_grants(ws):
     """The test runs in the executor the app's code runs in, so the
-    grant list is the same one: SimpleNamespace builds a stand-in
-    without a class, MagicMock fakes a collaborator."""
+    grant list is the same one: a stand-in built with SimpleNamespace
+    or a dataclass, and MagicMock for a collaborator."""
     write(
         ws,
         "tests/test_imports.py",
+        "from dataclasses import dataclass\n"
         "from types import SimpleNamespace\n"
         "from unittest.mock import MagicMock\n"
         "\n"
         "\n"
+        "@dataclass\n"
+        "class Row:\n"
+        "    name: str\n"
+        "    score: int = 0\n"
+        "\n"
+        "\n"
         "def test_a_stand_in():\n"
-        "    row = SimpleNamespace(name='ann', score=3)\n"
+        "    loose = SimpleNamespace(name='ann', score=3)\n"
         "    db = MagicMock()\n"
-        "    db.first.return_value = row\n"
-        "    assert db.first().name == 'ann'\n",
+        "    db.first.return_value = Row(loose.name, loose.score)\n"
+        "    assert db.first() == Row('ann', 3)\n",
     )
     report = run_pytest(ws)
     assert report.ok, report.outcomes
