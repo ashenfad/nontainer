@@ -1153,6 +1153,19 @@ def _dispatch_post(ws, source):
         runtime.close()
 
 
+def _error_block(log):
+    """The body of the last ERROR entry in api.log — the lines after
+    its timestamped header, up to the next entry."""
+    lines = log.splitlines()
+    start = max(n for n, line in enumerate(lines) if line.endswith("ERROR:"))
+    body = []
+    for line in lines[start + 1 :]:
+        if line.startswith("["):  # the next timestamped entry
+            break
+        body.append(line)
+    return body
+
+
 def test_a_handler_write_into_an_attachment_is_refused_on_both_rungs(tmp_path):
     """A mutating handler is dispatched, not called: an app request
     returns a response, and the handler's collision with a read-only
@@ -1182,6 +1195,52 @@ def test_a_handler_write_into_an_attachment_is_refused_on_both_rungs(tmp_path):
             assert not ws.files.fs.exists("/workspace/sib.txt")
         assert answers[0][0].status == answers[1][0].status
         assert answers[0][0].content == answers[1][0].content
+    finally:
+        local.close()
+        local_store.close()
+        dud.close()
+        dud_store.close()
+
+
+def test_a_refused_handler_write_leads_over_a_later_handler_error(tmp_path):
+    """In-process the handler STOPS at the write into the attachment,
+    so the refusal is the whole failure and the only thing dispatch
+    reports. In the guest the write succeeds and the handler runs on to
+    a failure of its own, which is not the same news: reporting that
+    one instead makes the same handler fail two different ways
+    depending on the rung, and an agent reading api.log never learns
+    the attachment refused it. The refusal leads, and the later
+    exception is kept underneath it — it did happen.
+    """
+    source = (
+        b"def post(req):\n"
+        b"    open('peek/note.md', 'w').write('x')\n"
+        b"    raise ValueError('and then this')\n"
+    )
+    local_store, local = _attached(tmp_path, "local-late")
+    dud_store, dud = _attached(
+        tmp_path,
+        "dud-late",
+        executor_factory=lambda: DudExecutor(backend="subprocess"),
+    )
+    try:
+        local_resp, local_log = _dispatch_post(local, source)
+        dud_resp, dud_log = _dispatch_post(dud, source)
+        assert local_resp.status == dud_resp.status == 500
+        assert local_resp.content == dud_resp.content
+        # The in-process failure IS the comparison: the line its
+        # traceback ends on is what the dud entry has to lead with.
+        lead = next(
+            line
+            for line in local_log.splitlines()
+            if line.startswith("PermissionError")
+        )
+        assert _error_block(dud_log)[0].startswith(lead)
+        # The handler's own later failure is kept, under the refusal —
+        # and in-process it never happened at all.
+        assert "ValueError: and then this" in dud_log
+        assert "ValueError" not in local_log
+        assert dud.files.fs.read("/workspace/peek/note.md") == b"original\n"
     finally:
         local.close()
         local_store.close()

@@ -1023,12 +1023,19 @@ class DudExecutor:
             contract=view.extra_classes,
             line_offset=line_offset,
         )
-        # A handler that raised has already said what went wrong, and
-        # in-process that is the error too: the refused writes are
-        # dropped either way, and the exception the handler did not
-        # survive is the news.
-        if refusal is not None and out.error is None:
-            out = replace(out, error=f"PermissionError: {refusal}")
+        # The refusal leads. In-process the handler stops AT the write
+        # into a read-only point, so the refusal is the whole failure
+        # and the only thing dispatch has to report; in the guest the
+        # write succeeded and the handler ran on, so it may have failed
+        # again afterwards for a reason of its own. That later error is
+        # kept, on its own line under the refusal, because it happened
+        # — but it goes second, so the response, the first line, and
+        # the api.log entry say what the other rung says.
+        if refusal is not None:
+            message = f"PermissionError: {refusal}"
+            if out.error is not None:
+                message = f"{message}\n{out.error}"
+            out = replace(out, error=message)
         return out
 
     def _map_result(
