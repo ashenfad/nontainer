@@ -180,6 +180,8 @@ def test_no_test_files_at_all_exits_one(chromium_available):
         assert r.exit_code == 1
         assert "no test files found" in out(r)
         assert "tests/" in out(r)
+        # one home is offered, and it is not the one that publishes
+        assert "beside" not in out(r)
     finally:
         w.close()
 
@@ -224,6 +226,16 @@ def test_help_states_the_exit_codes_and_where_the_browser_runs(ws):
     assert "usage: ws-vitest" in r.stdout
     assert "vitest has no separate exit code for a usage error" in r.stdout
     assert "browser on the host" in r.stdout
+
+
+def test_help_carries_the_contract_the_tool_description_points_at(ws):
+    """The tool descriptions name the verb and this help; everything
+    about writing a test has to be readable here."""
+    said = ws.terminal("ws-vitest --help").stdout
+    assert "Tests live in tests/, never under app/" in said
+    assert "vi.stubFetch(" in said
+    assert "describe, it/test" in said
+    assert "hermetic" in said
 
 
 # -- the record ---------------------------------------------------------

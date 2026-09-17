@@ -1205,9 +1205,9 @@ Tests live in tests/, never under app/: app/ is what publishes, so a
 test there ships with the app and is fetchable from it.
 
 A test is plain Python — `assert`, and `from unittest.mock import
-MagicMock` where it needs a fake. Give a shared function its
-dependencies as arguments (`def load(db, limit)`) and a test can call
-it with one. There are no fixtures, no conftest, no plugins and no
+MagicMock` where it needs a fake — and one test function per behaviour,
+so a failure names what broke. Give a shared function its dependencies
+as arguments (`def load(db, limit)`) and a test can call it with one. There are no fixtures, no conftest, no plugins and no
 markers here: setup is the test's own code, written in the test.
 
 In a test, beyond plain Python:

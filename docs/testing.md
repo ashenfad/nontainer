@@ -330,19 +330,20 @@ synthetic origin rather than fetched from a CDN. There is no
 ## Where tests live
 
 ```
-/workspace/tests/util.test.js       ← collected, and the preferred home
+/workspace/tests/util.test.js       ← collected; tests live here
 /workspace/tests/dom/card.test.js   ← collected (any depth under tests/)
 /workspace/app/util.js              ← the module under test
-/workspace/app/util.test.js         ← collected, beside its module
+/workspace/app/util.test.js         ← collected, and reported: it ships
 /workspace/app/api/scores.py        ← a handler; never a JavaScript test
 ```
 
-`tests/**/*.test.js` leads the run and `app/**/*.test.js` follows it. A
-test beside the module it tests is what the ecosystem does and what an
-agent writes without being asked, so it is allowed — and **it ships with
-the app**, because `app/` is what a publication carries. The run says so
-in a note naming the files; move one to `tests/` if that is not what you
-want.
+Tests belong in `tests/`, never under `app/`: `app/` is what a
+publication carries, so a test there **ships with the app** and is
+fetchable from it. `tests/**/*.test.js` leads the run, and
+`app/**/*.test.js` follows it because an agent writes one there without
+being asked and a test that silently never ran is worse than one that
+runs with a note naming it. The run prints that note; move the file to
+`tests/`.
 
 `app/api/` is neither home. A `.test.js` there is reported as **not
 runnable**, by name and with the reason: the harness refuses that
@@ -372,8 +373,8 @@ describe('add', () => {
 });
 ```
 
-and a test beside its module imports `'./util.js'`. Nothing else has a
-URL — not the workspace root, not `helpers/`, not `app/api/`.
+Nothing else has a URL — not the workspace root, not `helpers/`, not
+`app/api/`.
 
 ## The flags
 
