@@ -554,8 +554,9 @@ def read_workspace_image(ws: Workspace, path: str) -> tuple[bytes, str]:
     return data, fmt
 
 
-TEST_APP_DESCRIPTION = """\
-Verify the app under /app in a headless browser — no server needed.
+_TEST_APP_TEMPLATE = """\
+Verify the app under __WS__/app in a headless browser — no server
+needed.
 Pass a list of actions, executed in order:
   {"click": "#selector"}          {"type": ["#selector", "text"]}
   {"select": ["#selector", val]}  (for <select>; "type" does not work)
@@ -569,10 +570,33 @@ URLs (fetch('api/x'), never fetch('/api/x')). Prefer {"assert": ...}
 over read-and-check when you know the expected condition. When an
 assert fails, fix the APP, not the assert — weakening an assertion
 until it cannot fail (e.g. `x !== '0' || x === '0'`) verifies nothing.
-Screenshots are returned as images AND saved to /app/screenshots/.
-Backend errors land in /app/logs/api.log, which also records one line
-per request (METHOD path -> status) — so that file tells you whether
-your fetch even reached the backend. Tail it to debug."""
+Screenshots are returned as images AND saved to
+__WS__/app/screenshots/.
+Backend errors land in __WS__/app/logs/api.log, which also records one
+line per request (METHOD path -> status) — so that file tells you
+whether your fetch even reached the backend. Tail it to debug."""
+
+
+def test_app_description(
+    ws: Workspace | None = None, *, root: str | None = None
+) -> str:
+    """The test_app tool description, written against a workspace root
+    (``ws.root``, or ``root`` when there is no workspace to hand).
+
+    The paths in it are paths the agent types into the terminal, so
+    they carry the root the terminal's own notes carry: a bare
+    ``/app/logs/api.log`` is a file that does not exist at a workspace
+    root of ``/workspace``, and an agent that tails it learns nothing
+    about its app."""
+    if root is None:
+        root = ws.root if ws is not None else "/workspace"
+    return _TEST_APP_TEMPLATE.replace("__WS__", "" if root == "/" else root.rstrip("/"))
+
+
+#: The default-root rendering, for callers with no workspace in reach.
+#: Adapters have one — they pass it, so the description's paths match
+#: the workspace the agent is actually working in.
+TEST_APP_DESCRIPTION = test_app_description()
 
 
 SESSIONS_DESCRIPTION = """\

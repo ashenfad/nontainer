@@ -53,7 +53,7 @@ def build_server(
 
     ``apps``: an ``AppRuntime`` — when given, a ``test_app`` tool is
     registered; screenshots return as MCP ImageContent AND persist
-    under /app/screenshots/.
+    under ``<root>/app/screenshots/``.
 
     ``sessions``: a ``SessionRunner`` or an already-built
     ``nontainer.sessions.Sessions`` — when given, a ``sessions`` tool is
@@ -287,9 +287,9 @@ def build_server(
         from mcp.server.fastmcp import Image
 
         from ..apps import render_test_app
-        from .render import TEST_APP_DESCRIPTION
+        from .render import test_app_description
 
-        @server.tool(name="test_app", description=TEST_APP_DESCRIPTION)
+        @server.tool(name="test_app", description=test_app_description(workspace))
         async def test_app(actions: list[dict], viewport: str = "desktop") -> list:
             from ..apps.testapp import coerce_actions
 
