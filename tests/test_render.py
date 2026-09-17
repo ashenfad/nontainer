@@ -263,6 +263,53 @@ def test_apps_notes_offer_the_import_to_a_shared_module():
     assert "from host import db" in notes
 
 
+def test_frontend_tests_are_never_offered_a_home_under_app():
+    """app/ is what publishes, so a .test.js there ships with the app.
+    The tool descriptions name one home for a frontend test: tests/."""
+    from nontainer.adapters.render import apps_notes, python_description
+    from nontainer.apps import AppsConfig, enable_apps
+
+    ws = make_ws()
+    enable_apps(ws, AppsConfig())  # registers ws-pytest / ws-vitest
+    surfaces = [
+        apps_notes(),
+        terminal_description(ws, split=True, apps=True),
+        python_description(ws, apps=True),
+    ]
+    ws.close()
+    for text in surfaces:
+        assert "beside the module" not in text
+        assert "tests/" in text
+
+
+def test_each_test_tier_is_one_pointer_at_its_help():
+    """The contract for writing a test is in `ws-pytest --help` /
+    `ws-vitest --help`, which the agent reads when it needs it. The
+    descriptions ride on every request, so they name the verb, the
+    directory and the help, and stop there."""
+    from nontainer.adapters.render import apps_notes
+
+    notes = apps_notes()
+    assert "ws-pytest --help" in notes and "ws-vitest --help" in notes
+    # the details that used to be re-stated here live in the help now
+    for detail in ("MagicMock", "stubFetch", "describe/it/expect"):
+        assert detail not in notes, detail
+
+
+def test_one_call_per_turn_is_said_once_per_description():
+    """Every duplicated sentence in a tool description is paid on every
+    request. The rule also rides in the toolkit instructions, read once
+    a session; here it gets one sentence per tool."""
+    from nontainer.adapters.render import python_description
+
+    ws = make_ws()
+    term = terminal_description(ws, split=True, apps=True)
+    py = python_description(ws, apps=True)
+    ws.close()
+    assert term.count("call per turn") == 1
+    assert py.count("call per turn") == 1
+
+
 def test_handler_example_is_the_embedders_where_the_store_differs():
     """The example is what an agent copies, so an embedder whose
     handlers must use a different store replaces it rather than

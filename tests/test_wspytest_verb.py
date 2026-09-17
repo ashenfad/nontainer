@@ -137,6 +137,10 @@ def test_help_names_the_layout_rule_and_the_flags(ws):
     assert "never under app/" in r.stdout
     assert "--maxfail=N" in r.stdout
     assert "no fixtures, no conftest" in r.stdout
+    # what the run_python description points here for
+    assert "MagicMock" in r.stdout
+    assert "one test function per behaviour" in r.stdout
+    assert "dependencies\nas arguments" in r.stdout
 
 
 def test_help_states_what_a_test_gets_without_importing_it(ws):

@@ -40,13 +40,14 @@ from typing import Any
 from .wspytest import TestOutcome, TestReport, UsageError
 from .wsverb import FerrySpec, abspath, tag
 
-#: Where JavaScript tests live, recursively. The preferred home: it
-#: sits outside the subtree a publication carries.
+#: Where JavaScript tests live, recursively. The only home: it sits
+#: outside the subtree a publication carries.
 TESTS_DIR = "tests"
 
 #: The published subtree, which is also where the modules under test
-#: live — so a test may sit beside its module here, and ships when the
-#: app does.
+#: live — so a misplaced test lands here, and ships when the app does.
+#: Collected anyway, and named in the run, because a test that silently
+#: never ran is worse than one that runs where it should not be.
 APP_DIR = "app"
 
 #: Backend source. A ``.test.js`` here is not runnable: the harness
@@ -97,12 +98,12 @@ def _walk(fs: Any, base: str) -> list[str]:
 def discover(ws: Any) -> tuple[list[str], list[str]]:
     """``(test files, notes)`` for this workspace, workspace-relative.
 
-    Two homes, ``tests/`` first and ``app/`` after it. A ``.test.js``
-    beside the module it tests is what the ecosystem does and what an
-    agent writes without being asked, and the module it tests is under
-    ``app/`` by definition — so it is collected, and the run says
-    plainly that it ships with a publication. ``app/api/`` is neither:
-    the harness refuses that subtree, so a test there is reported as not
+    Tests belong in ``tests/``, which is collected first. A
+    ``.test.js`` under ``app/`` is collected too, and reported: an
+    agent writes one there without being asked, and a test that
+    silently never ran is worse than one that runs with a note saying
+    it ships with a publication. ``app/api/`` is neither home: the
+    harness refuses that subtree, so a test there is reported as not
     runnable rather than silently skipped.
     """
     fs = ws.files.fs
@@ -168,9 +169,9 @@ REFUSED = {
     "--ui": "there is no UI here — the report is the answer, and "
     "--reporter=verbose is one line per test",
     "--config": "there is no config file — the layout IS the configuration: "
-    "tests/*.test.js, and *.test.js beside a module under app/",
+    "tests/*.test.js, never under app/",
     "-c": "there is no config file — the layout IS the configuration: "
-    "tests/*.test.js, and *.test.js beside a module under app/",
+    "tests/*.test.js, never under app/",
     "--watch": "nothing here watches for edits — re-run the verb",
     "-w": "nothing here watches for edits — re-run the verb",
     "--browser": "there is one browser and it is already headless Chromium",
@@ -289,8 +290,7 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
             "\n".join(
                 [
                     f"no test files found. JavaScript tests are "
-                    f"{TESTS_DIR}/*{SUFFIX}, or *{SUFFIX} beside the module "
-                    f"they test under {APP_DIR}/.",
+                    f"{TESTS_DIR}/*{SUFFIX}, never under {APP_DIR}/.",
                     *notes,
                 ]
             )
@@ -544,6 +544,11 @@ Exit codes are 0 for a green run and 1 for anything else:
 vitest has no separate exit code for a usage error, so a refused flag, a
 filter that matched nothing and a failing test all exit 1, and the
 message is what tells them apart.
+
+Tests live in tests/, never under app/: app/ is what publishes, so a
+test there ships with the app and is fetchable from it. One such test
+still runs — silently skipping it would be worse — and the run names it
+so you can move it.
 
 The harness supplies describe, it/test, beforeEach/afterEach, expect and
 vi as globals, and the same names resolve from 'vitest' and

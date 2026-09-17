@@ -151,17 +151,18 @@ _SHARED_CODE_APP = """\
 
 # Offered only where the verb is registered: an agent told to run a
 # command that answers "command not found" spends the turn on the
-# shell instead of on the work.
+# shell instead of on the work. One sentence each: the contract for
+# writing these tests is in the verb's own --help, which the agent
+# reads once when it needs it instead of on every request.
 _TEST_NOTE = """
-- checking that reusable code works: write tests/test_<name>.py with
-  plain `assert` and run `ws-pytest` in the terminal (one function per
-  behaviour, `from unittest.mock import MagicMock` for a fake)"""
+- checking that reusable code works: tests/test_<name>.py (never under
+  app/, which publishes), run with `ws-pytest` in the terminal —
+  `ws-pytest --help` is the contract"""
 
 _JS_TEST_NOTE = """
-- checking a frontend module the same way: tests/<name>.test.js with
-  describe/it/expect, then `ws-vitest` (it runs in a browser, reaches
-  nothing but your files, and `vi.stubFetch({'api/x': {...}})` is how a
-  test fakes a request)"""
+- checking a frontend module the same way: tests/<name>.test.js (never
+  under app/), run with `ws-vitest` — `ws-vitest --help` is the
+  contract"""
 
 _CACHE_NOTE = """\
 - cache: a persistent dict for DATA (picklable values), e.g.
@@ -294,8 +295,7 @@ or db free raises NameError and the request 500s. Give shared
 functions what they need as arguments — `def load(db, limit)`, called
 `load(db, 10)` from the handler: that is the shape a test can call
 with a fake. A module that genuinely wants the ambient object imports
-it instead — `from host import db` works in a module, in a handler and
-at the top level alike.
+it instead (`from host import db`).
 __SCRIPT_HOSTS__
 Images, fetches, styles, and fonts may use any https host (map tiles
 work).
@@ -468,16 +468,10 @@ _CURL_NOTE = """Test endpoints instantly with ws-curl (no server):
 ws-curl $APP_ORIGIN/api/scores?limit=3. `-f` fails the call (exit 22)
 on 4xx/5xx — without it an error status reads as a response. Pipelines
 compose: ws-curl $APP_ORIGIN/api/scores | jq .
-Test the logic below a request with ws-pytest: put plain `assert` tests
-in tests/test_<name>.py beside app/ (never under app/, which publishes
-them) and run `ws-pytest`. A test reaches a handler and runs it
-against the session's own objects, fakes one of its dependencies when
-it must stay out of them, and names HttpError without importing
-anything — `ws-pytest --help` is where that contract is written down.
-Frontend modules get the same tier from ws-vitest: tests/<name>.test.js
-(or <name>.test.js beside the module, which then ships with the app),
-describe/it/expect and vi, and a run that reaches nothing but your own
-files — so fake a request with vi.stubFetch({'api/scores': {...}})."""
+Test the logic below a request with `ws-pytest` (tests/test_<name>.py)
+and a frontend module with `ws-vitest` (tests/<name>.test.js) — both
+live in tests/, never under app/, which publishes them.
+`ws-pytest --help` and `ws-vitest --help` carry those two contracts."""
 
 _NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and the app
 answers requests only through test_app. Verify endpoints by driving
