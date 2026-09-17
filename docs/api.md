@@ -1957,6 +1957,16 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   block says "copy this exactly" and names a CDN — a
            #   correction underneath it would lose. Air-gapped
            #   deployments set this alongside static_assets.
+           handler_example=None,  # the example handler the apps notes
+           #   show — the code an agent copies for its first endpoint.
+           #   None = the built-in get/post pair keeping state in cache;
+           #   "" omits it; a string REPLACES it (__WS__ in it becomes
+           #   the workspace root). For an embedder whose handlers must
+           #   use a different store: an example showing `cache` with
+           #   the real rule in apps_primer underneath it loses, because
+           #   the example is what gets copied. nontainer's own contract
+           #   stays either way — only verb functions are routed, the
+           #   return shapes, HttpError, read-only GET.
            csp=None,  # the Content-Security-Policy served HTML carries
            #   AND the one test_app enforces. None derives it from
            #   script_hosts (serve.build_csp); "" disables; a string is

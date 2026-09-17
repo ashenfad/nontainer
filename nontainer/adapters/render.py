@@ -261,18 +261,7 @@ __WS__/app/api/_helpers.py     <- _-prefixed files: importable, not routable
 __WS__/app/logs/api.log        <- one line per request + handler errors and
                             prints (tail it to debug)
 
-Handlers export verb functions; example __WS__/app/api/scores.py:
-
-    def get(req):
-        limit = int(req.params.get("limit", 10))
-        return {"scores": cache.get("scores", [])[:limit]}
-
-    def post(req):
-        name = req.require("name")     # 400 if missing from JSON body
-        scores = cache.get("scores", []) + [name]
-        cache["scores"] = scores       # NOT allowed in get() (read-only)
-        return {"ok": True}
-
+__HANDLER_EXAMPLE__
 Rules: ONLY verb functions (get/post/put/delete/patch) are routed — a
 function with any other name (def query(), def search()) is NEVER
 called by requests; read filters/actions from params inside a verb.
@@ -315,6 +304,36 @@ After changing the app, ALWAYS verify with the test_app tool before
 telling the user it works — it catches what endpoint-level checks
 can't (frontend wiring, absolute-URL mistakes, blocked scripts) and
 reports exactly what it rejected and why."""
+
+
+DEFAULT_HANDLER_EXAMPLE = """\
+Handlers export verb functions; example __WS__/app/api/scores.py:
+
+    def get(req):
+        limit = int(req.params.get("limit", 10))
+        return {"scores": cache.get("scores", [])[:limit]}
+
+    def post(req):
+        name = req.require("name")     # 400 if missing from JSON body
+        scores = cache.get("scores", []) + [name]
+        cache["scores"] = scores       # NOT allowed in get() (read-only)
+        return {"ok": True}
+"""
+"""The handler an agent copies, and the store it keeps state in.
+
+The rules around it — which function names are routed, what a handler
+may return, ``HttpError``, the read-only GET — are nontainer's and stay
+in the template. WHERE a handler puts state is not: ``cache`` is the
+right answer only for a deployment whose apps keep state in the cache,
+and an embedder that hands handlers a database wants the example to
+use that instead. An example is the most emphatic instruction in the
+notes, so an embedder whose rule lives in a primer underneath it is
+contradicted by the code the agent copies first.
+
+The example carries its own opening line so a replacement can name its
+own file, and ``__WS__`` in it is substituted with the workspace root
+the way the rest of the notes are.
+"""
 
 
 DEFAULT_FRONTEND_NOTES = """
@@ -403,6 +422,22 @@ def _frontend_notes(config: Any) -> str:
     return f"{notes}\n" if notes else ""
 
 
+def _handler_example(config: Any) -> str:
+    """``AppsConfig.handler_example``: ``None`` → the default block,
+    ``""`` → omit it entirely, a string → use it verbatim. Mirrors
+    ``frontend_notes``.
+
+    It REPLACES rather than appends, for the same reason: an embedder
+    whose handlers must use a different store would otherwise be
+    correcting, underneath, the example the agent has already copied.
+    """
+    example = getattr(config, "handler_example", None)
+    if example is None:
+        example = DEFAULT_HANDLER_EXAMPLE
+    example = example.strip("\n")
+    return f"{example}\n" if example else ""
+
+
 def _static_assets_note(config: Any) -> str:
     """The sentence for AppsConfig.static_assets, or nothing when none
     are declared. Derived rather than left to ``apps_primer``: an
@@ -474,6 +509,7 @@ def apps_notes(
         config = AppsConfig()
     notes = (
         _APPS_NOTES_TEMPLATE.replace("__SCRIPT_HOSTS__", _script_hosts_note(config))
+        .replace("__HANDLER_EXAMPLE__", _handler_example(config))
         .replace("__FRONTEND_NOTES__", _frontend_notes(config))
         .replace("__STATIC_ASSETS__", _static_assets_note(config))
         .replace("__WS__", "" if root == "/" else root.rstrip("/"))

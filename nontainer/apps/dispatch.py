@@ -322,6 +322,36 @@ class AppsConfig:
     Appended after ``csp_extend`` so the 0.3.3 positional order still
     binds (see ``test_positional_construction_matches_0_3_3``).
     """
+    handler_example: str | None = None
+    """The example handler the apps notes show — the code an agent
+    copies when it writes its first endpoint.
+
+    ``None`` keeps the default block (a ``get``/``post`` pair keeping
+    state in ``cache``). ``""`` omits it. A string REPLACES it::
+
+        AppsConfig(handler_example=(
+            "Handlers export verb functions; example "
+            "__WS__/app/api/notes.py:\\n\\n"
+            "    from host import db\\n\\n"
+            "    def get(req):\\n"
+            "        return {'notes': db.list()}\\n"
+        ))
+
+    ``__WS__`` in it is substituted with the workspace root, as
+    elsewhere in the notes, so the path reads the way the agent would
+    type it.
+
+    Replacing rather than appending is the point: an embedder whose
+    handlers must keep state somewhere else (a database it injects)
+    would otherwise have its rule sitting in ``apps_primer`` UNDER an
+    example that shows the other store, and the example is what gets
+    copied. One declaration, one store.
+
+    What stays regardless, because it is nontainer's own contract: only
+    verb functions are routed, the return shapes, ``HttpError``, and the
+    read-only filesystem and cache a GET handler runs under.
+
+    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Validate ``csp_extend`` at construction, where the traceback
