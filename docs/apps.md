@@ -368,6 +368,38 @@ Air-gapped deployments will usually also set `script_hosts=()`, which
 states the rule positively — *scripts may load only from this app
 itself* — rather than printing an empty allowlist.
 
+### The handler example: `handler_example` (where state goes)
+
+The notes show one handler before the rules, and that example is what
+an agent copies for its first endpoint. Where a handler keeps state is
+the embedder's question, the way the library list is:
+`AppsConfig.handler_example` replaces the built-in block, for the same
+reason `frontend_notes` does — a rule in `apps_primer` underneath an
+example that shows the other store is a rule the copied code already
+contradicts.
+
+```python
+AppsConfig(handler_example=(
+    "Handlers export verb functions; example __WS__/app/api/notes.py:\n\n"
+    "    from host import db\n\n"
+    "    def get(req):\n"
+    "        return {'notes': db.list()}\n"
+))
+```
+
+- `None` (default) keeps the built-in `get`/`post` pair, which keeps
+  state in `cache` — right for a deployment whose apps have a cache and
+  nothing else.
+- `""` omits it, leaving the rules with no worked example.
+- A string replaces it. `__WS__` becomes the workspace root, as
+  everywhere else in the notes, and the block carries its own opening
+  line so a replacement can name its own file.
+
+**What stays nontainer's either way:** only verb functions
+(get/post/put/delete/patch) are routed, the return shapes, `HttpError`,
+and the read-only filesystem and cache a GET handler runs under. Those
+are the dispatcher's contract, not a house style.
+
 ### Script hosts: one declaration, four surfaces
 
 `AppsConfig.script_hosts` is the single statement of where browser

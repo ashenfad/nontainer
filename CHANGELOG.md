@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`AppsConfig.handler_example`: the example handler an embedder can
+  replace.** The apps notes show one handler before the rules, and that
+  example is what an agent copies for its first endpoint — including
+  where it keeps state, which the built-in block keeps in `cache`. An
+  embedder whose handlers must use a different store (an injected
+  database) could only correct that from `apps_primer` underneath, and
+  a rule under an example loses to the example. `None` keeps the
+  built-in block, `""` omits it, a string replaces it whole — the same
+  three states as `frontend_notes`, with `__WS__` substituted the same
+  way. What is nontainer's own contract stays either way: only verb
+  functions are routed, the return shapes, `HttpError`, and the
+  read-only filesystem and cache a GET handler runs under.
+
 ## 0.7.5 - 2026-09-16
 
 ### Fixed

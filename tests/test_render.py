@@ -261,3 +261,40 @@ def test_apps_notes_offer_the_import_to_a_shared_module():
     notes = apps_notes()
     assert "def load(db, limit)" in notes  # still the recommendation
     assert "from host import db" in notes
+
+
+def test_handler_example_is_the_embedders_where_the_store_differs():
+    """The example is what an agent copies, so an embedder whose
+    handlers must use a different store replaces it rather than
+    correcting it from a primer underneath."""
+    from nontainer.adapters.render import apps_notes
+    from nontainer.apps import AppsConfig
+
+    default = apps_notes(AppsConfig())
+    assert 'cache.get("scores", [])' in default  # the default block, verbatim
+    assert "def post(req):" in default
+
+    house = apps_notes(
+        AppsConfig(
+            handler_example=(
+                "Handlers export verb functions; example "
+                "__WS__/app/api/notes.py:\n\n"
+                "    from host import db\n\n"
+                "    def get(req):\n"
+                "        return {'notes': db.list()}\n"
+            )
+        )
+    )
+    assert "/workspace/app/api/notes.py" in house  # __WS__ substituted
+    assert "db.list()" in house
+    assert 'cache.get("scores", [])' not in house
+    # nontainer's own contract is untouched either way
+    for notes in (default, house):
+        assert "ONLY verb functions" in notes
+        assert "HttpError(404, 'msg')" in notes
+        assert "READ-ONLY" in notes
+        assert "__HANDLER_EXAMPLE__" not in notes
+
+    empty = apps_notes(AppsConfig(handler_example=""))
+    assert "def get(req)" not in empty
+    assert "ONLY verb functions" in empty
