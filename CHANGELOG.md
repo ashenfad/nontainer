@@ -21,6 +21,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   functions are routed, the return shapes, `HttpError`, and the
   read-only filesystem and cache a GET handler runs under.
 
+### Changed
+- **Each rule in the agent-facing text has one home.** The tool
+  descriptions ride on every request, so a sentence repeated across
+  them is paid every turn: the unit-test tier was stated three times
+  (terminal, run_python, twice over for JavaScript) with different
+  details each time, and `from host import db` was explained in two
+  places. Each description now states its rule once and defers — the
+  test contract to `ws-pytest --help` / `ws-vitest --help`, which
+  gained every detail the descriptions dropped (`vi.stubFetch`, the
+  hermetic run, one test function per behaviour). Frontend tests live
+  in `tests/`, never beside the module under `app/`, because `app/` is
+  what publishes: the option is gone from the descriptions, from
+  `ws-vitest`'s own messages and from the docs, and a `.test.js` under
+  `app/` is still collected and still named in the run, so a misplaced
+  test runs rather than silently vanishing. The `test_app` description
+  spells the app's paths from the workspace root
+  (`/workspace/app/logs/api.log`), the way the terminal notes do,
+  rather than as a bare `/app/...` that no agent can tail;
+  `render.test_app_description(ws)` renders it and the adapters pass
+  their workspace.
+
 ## 0.7.5 - 2026-09-16
 
 ### Fixed

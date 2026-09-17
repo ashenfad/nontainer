@@ -310,6 +310,23 @@ def test_one_call_per_turn_is_said_once_per_description():
     assert py.count("call per turn") == 1
 
 
+def test_test_app_description_spells_paths_from_the_workspace_root():
+    """The screenshots and the log are files the agent tails in the
+    terminal, so test_app spells them the way the terminal's own notes
+    do — `/app/logs/api.log` is not a path that exists."""
+    from nontainer.adapters.render import test_app_description
+
+    desc = test_app_description(root="/workspace")
+    assert "/workspace/app/screenshots/" in desc
+    assert "/workspace/app/logs/api.log" in desc
+    assert "to /app/screenshots/" not in desc
+    assert "under /app " not in desc
+
+    ws = make_ws(root="/work")
+    assert "/work/app/logs/api.log" in test_app_description(ws)
+    ws.close()
+
+
 def test_handler_example_is_the_embedders_where_the_store_differs():
     """The example is what an agent copies, so an embedder whose
     handlers must use a different store replaces it rather than

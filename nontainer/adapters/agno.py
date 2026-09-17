@@ -130,7 +130,7 @@ class WorkspaceTools(Toolkit):
         """``apps``: an ``AppRuntime`` (from ``nontainer.apps.
         enable_apps``) — when given, a ``test_app`` tool is registered
         whose screenshots come back as real images (agno ``ToolResult``
-        media) in addition to being saved under /app/screenshots/.
+        media) in addition to being saved under ``<root>/app/screenshots/``.
 
         ``sessions``: a ``SessionRunner`` (the embedder's loop) or an
         already-built ``nontainer.sessions.Sessions`` — when given, a
@@ -319,7 +319,7 @@ class WorkspaceTools(Toolkit):
 
         if apps is not None:
             from ..apps import render_test_app
-            from .render import TEST_APP_DESCRIPTION
+            from .render import test_app_description
 
             # actions is annotated loose: models routinely send the list
             # as a JSON STRING, and agno's pydantic layer would reject it
@@ -349,7 +349,7 @@ class WorkspaceTools(Toolkit):
                     content += _media_note(len(shots))
                 return ToolResult(content=content, images=shots or None)
 
-            test_app.__doc__ = TEST_APP_DESCRIPTION
+            test_app.__doc__ = test_app_description(self._ws)
             registered.append(test_app)
 
         self.sessions = None

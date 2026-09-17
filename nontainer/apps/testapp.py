@@ -615,7 +615,7 @@ class TestAppResult:
     console: tuple[str, ...] = ()
     page_errors: tuple[str, ...] = ()
     screenshots: tuple[str, ...] = ()
-    """Workspace paths under /app/screenshots/."""
+    """Workspace paths under ``<root>/app/screenshots/``."""
 
     rejected: tuple[str, ...] = ()
     """Requests the harness refused (absolute paths, blocked scripts),
