@@ -274,70 +274,85 @@ make*. That is derivable from the code it already has.
 
 ### The entitlement harvest
 
-At publish time, walk the frozen `app/` tree for host-object calls —
-nontainer knows the names from `PythonConfig.host_objects` and `from
-host import X` — and record, per argument position, either the literal
-that was there or *free*:
+The server holds the frozen commit. It does not need to know *who* is
+calling — only whether this call is one the app could make — and for
+reads the honest bound is simple: *any read statement the author wrote
+anywhere in the app's public source, with parameters of the visitor's
+choosing.* The harvest states exactly that and nothing finer:
 
-    db.query("SELECT region, SUM(v) FROM t WHERE year = ?", (year,))
-        → (db, query, [lit:"SELECT …", free])
-    mail.send(to, "Welcome", body)
-        → (mail, send, [free, lit:"Welcome", free])
+```python
+L = {n.value
+     for f in py_files(app)            # app/**/*.py — handlers and _shared
+     for n in ast.walk(ast.parse(f))
+     if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+```
 
-The bridge check is as dumb as the harvest: find the entitlements for
-`(object, method)`, require literal positions to match exactly, let
-free positions bind anything. A visitor spoofing a harvested call is
-indistinguishable from a visitor using the app, which is the property
-wanted. No SQL knowledge anywhere; the harvest is a *shape*, not a
-meaning, and the mail example yields exactly the honest entitlement of
-that code — whether it is acceptable is the judgment about the host
-object the embedder was always making.
+Every string literal in the frozen `app/**/*.py` tree, as one set,
+stored beside the publication's manifest — server-side only, never
+shipped. A call to a read method is entitled if its *statement
+argument* is in `L`; every other argument is free. Twenty lines, no
+receivers, no call sites, no dataflow.
 
-The agent sees nothing new. It writes `db.query(literal, params)` as
-the building-apps skill already teaches for injection safety; the
-publish step does the extraction. A handler whose host calls are not
-statically harvestable — string-built SQL, a method chosen at runtime —
-is not refused: it stays server-side, with the author's code as the
-boundary, as everything is today. So routing is mechanical and
-agent-invisible: **a handler runs in the visitor's browser iff every
-host call in it is harvestable.**
+Why it is safe for reads: the source is public and parameters were
+always free, so "any literal in the tree" is the same exposure class as
+"the statement at this call site" without pretending to know which
+literal reached which call. Over-approximation is harmless —
+`db.query("Welcome to the dashboard")` is a SQL error, not a leak — and
+restricting to `.py` keeps JS strings and HTML out. Why it is complete
+where a call-site walk was not: `conn.query(A)` in a helper with a
+renamed parameter, and `q = A if asc else B; db.query(q)`, both work,
+because `A` and `B` are literals in the tree and nothing cares how they
+reached the call. What is refused is a *composed* string —
+`"SELECT … WHERE " + cond` — which is the injection-shaped thing the
+building-apps skill already tells the agent not to write, so refusing
+it in preview is a feature. The agent's rule is one it already has:
+the statement is a literal, the values are parameters.
 
-One limit decides the rest. The harvested set entitles the *union* of a
-handler's calls, not the *sequence*: `if valid(score): db.execute(INSERT
+**The marker names the statement position.** The one thing the literal
+rule cannot guess is which argument is the statement. `db.query(sql,
+params)` has one at position 0; `kv.get(key)` has none — its argument
+is data, visitor-supplied by design, and must stay free. So the
+read-method marker on the one host object carries that:
+
+```python
+AppsConfig(readonly_methods={"db": {"query": 0, "tables": None}})
+```
+
+"A read, and position 0 must come from `L`" / "a read, all arguments
+free." Still one declaration per object, still the embedder's judgment
+about the same object, and a read with free arguments exposes exactly
+what a server-side handler reading `req.params` already exposed.
+
+**Why reads, and only reads.** The set entitles the *union* of an
+app's calls, not the *sequence*: `if valid(score): db.execute(INSERT
 …)` has its validation on the visitor's machine, and the visitor can
 issue the INSERT without the check. Entitlement-by-call cannot express
 "only after". So reads are entitlement-safe and writes-with-logic are
 not — which is the split structural REST already draws. A GET handler
-executes against a read-only fs and a read-only cache today; `db` is the
-one plane that does not honour it. Make it honour it, on every rung,
-and the browser policy is: **GET handlers in the visitor's browser,
-mutating verbs on the server.** One rule the agent was already taught,
-identical in `ws-curl`, `test_app`, the preview and the published app.
+executes against a read-only fs and a read-only cache today; `db` is
+the one plane that does not honour it. Make it honour it, on every
+rung, and the browser policy is by verb and by verb alone: **GET
+handlers in the visitor's browser, mutating verbs on the server.** No
+per-handler routing, no fallback path, no "harvestable" concept. One
+rule the agent was already taught, identical in `ws-curl`,
+`test_app`, the preview and the published app. The one agent-visible
+consequence is that the reference handler's `CREATE TABLE IF NOT
+EXISTS` on every request moves into the POST path or into setup, which
+is aligning the reference with a rule the skill already states.
 
-What that needs from the embedder is a marker on the one host object,
-the same shape as the public-methods allowlist: which methods are reads
-(`AppsConfig(readonly_methods={"db": {"query"}})`, or a decorator). Not
-a second object, not a second tier the agent has to understand. The one
-agent-visible consequence is that the reference handler's
-`CREATE TABLE IF NOT EXISTS` on every request moves into the POST path
-or into setup, which is aligning the reference with a rule the skill
-already states.
-
-**Enforce the set in preview.** The walk is by receiver name, and the
-skill teaches handlers to pass `db` into helpers as an argument; a
-helper that renames the parameter would be missed, and a missed call
-means an app that works in preview and is refused published — the
-lie-class bug. The answer is the one the repo already uses for CSP and
-`script_hosts`: `test_app` and `ws-curl` enforce the same set, so the
-failure is where the agent can see it. Cheap over-approximation helps:
-harvest calls to any marked read-method name regardless of receiver.
+**Enforce the set in preview.** Under `AppsConfig(browser_served=True)`,
+dispatch's GET view checks read calls against `L` computed from the
+*working* tree (memoized on the tree hash), on every rung — so
+`test_app` and `ws-curl` fail where the agent reads it, and nothing
+verifies green and dies published. The answer the repo already gives
+for CSP and `script_hosts`.
 
 **No new seam yet.** The harvest is a function in core over the frozen
-tree and the host-object names; the marker is config; the membership
-check is the bridge's. Following the `HostObjectFactory` precedent — a
-declared seam nothing calls — no `Entitler` protocol is declared until
-an embedder has a host object whose entitlements cannot be expressed
-as literal-argument matching. That day it becomes a
+tree; the marker is config; the membership check is the bridge's.
+Following the `HostObjectFactory` precedent — a declared seam nothing
+calls — no `Entitler` protocol is declared until an embedder has a host
+object whose entitlements cannot be expressed as "statement in the
+literal set, the rest free". That day it becomes a
 `Callable[[frozen_tree, host_objects], Entitlements]` they replace.
 
 What is left after all of this is a leak the embedder judges once: a
@@ -447,11 +462,11 @@ get exactly that, over the wire:
   instantiate an `AppRuntime` or an executor server-side at all: the
   server does provider reads, static, and the hostcall bridge.
   `serve.py`'s browser mode is simpler than its current mode.
-- **Prefetch from the harvest.** The same AST walk that collects
-  entitlements can collect string literals that resolve to paths under
-  `app/`; the served page emits `<link rel="preload">` for them so the
-  parquet's download overlaps the runtime boot instead of following the
-  first request.
+- **Prefetch from the harvest.** The entitlement set `L` is every
+  string literal in the handlers; the ones that resolve to paths under
+  `app/` are the files the handlers read, so the served page emits
+  `<link rel="preload">` for them and the parquet's download overlaps
+  the runtime boot instead of following the first request.
 
 Size: ~30 lines in `store.publish`, ~40 in `serve.py` (manifest, blob
 route with `Cache-Control: immutable`), ~100–150 for `LazyFS` in the
