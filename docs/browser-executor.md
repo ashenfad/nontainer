@@ -540,6 +540,56 @@ above: the tab boots in the background and the first `run_python`
 waits, the way `dud-vm`'s first image build already does with the
 agent none the wiser.
 
+### What a snapshot freezes, and `boot()`
+
+A snapshot captures the heap after imports, so anything drawn from the
+environment *at import* is frozen into every restore: `random`'s
+global generator and `numpy.random`'s (seeded from OS entropy when the
+module loads — every visitor's first `random.sample(rows, 10)` is the
+same ten rows), the per-process `hash()` secret (identical dict and
+set order on every restore, known to whoever built the image), any
+module-level capture of a clock (`_T0 = time.monotonic()` is the
+*builder's* page), `os.environ`, cwd, locale. What does not freeze:
+`secrets`, `uuid4` and `os.urandom` reach `crypto.getRandomValues` at
+call time; `time.time()` is `Date.now()` at call time. Tokens and ids
+are fine; "pick a random tip" and "sample the frame" are the ones that
+bite.
+
+In this deployment that is a correctness footgun, not a boundary.
+Cloudflare's snapshot serves many tenants from one process, so a
+shared hash seed is a cross-tenant flooding vector and a predictable
+`random` is a cross-request leak; here the heap is the visitor's own
+tab, and the only party who could exploit a known seed against it is
+the operator who built the image — who already runs code in it.
+
+Whether to snapshot is the embedder's; the guest's correctness after a
+restore is nontainer's, because the guest wheel is nontainer's. So:
+
+- **`nontainer_guest.boot()` reseeds unconditionally** — `random.seed()`
+  and `numpy.random.seed()` with no argument, every boot, snapshot or
+  not. Two calls, and nothing for an embedder to remember, since
+  `boot()` is the only entry point either way.
+- **The snapshot is taken before `boot()`, never after.** That is the
+  one rule for the embedder, and it is the same rule that makes the
+  image **policy-free**: sandtrap's `Policy` and the sandbox are built
+  in `boot()` from what the server sends, `LazyFS` from the manifest,
+  cwd from the workspace root — so one image per *package profile*,
+  not per policy or per app. Reseeding is one more thing `boot()`
+  does because the image deliberately holds nothing derived from the
+  environment.
+- **The principle, once:** *a snapshot is a pristine interpreter —
+  imports, no execution.* Anything derived from the environment at
+  import is re-derived at boot. That covers the list above and
+  whatever is not on it.
+- **`hash()` is accepted.** CPython fixes the secret at start and it
+  cannot be reseeded; it is harmless here for the reason above, and
+  the doc says so rather than pretending.
+
+Rather than trust the enumeration, the spike restores one image
+twice, runs `boot()` in each, and asserts the two diverge on
+`random.random()` and `numpy.random.random()`. It rides the same
+harness as the dynamic-linking check.
+
 Where the cost lands matters more than its size. For an author it is
 one warm worker for a session. For a visitor it is per tab, once, and
 it lands on **time-to-first-data**: ~1s on a repeat visit (code-cached
@@ -595,7 +645,8 @@ relocates a dispatcher that never had a server.
 1. **Does Pyodide's snapshot survive dynamically-linked packages** on
    the pinned version (agex-studio pins 0.27.7)? numpy and pandas ship
    `.so` side modules; early snapshot support refused them. Cloudflare
-   snapshots both, so it is at least solvable.
+   snapshots both, so it is at least solvable. Same harness: restore
+   twice, `boot()` each, assert `random` and `numpy.random` diverge.
 2. **First-visit bytes per profile**, and what a minimal profile
    (core Pyodide, no data stack) costs for a handler that only reads
    a JSON file.
