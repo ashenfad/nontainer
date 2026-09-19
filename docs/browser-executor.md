@@ -178,16 +178,26 @@ never runs agent code — comes only from *removing* the server rung,
 which is a product choice, not a switch; so the executor has two modes
 with different prerequisites, offload (now, no regression) and
 tab-only (hosted-cheap, commits), and this doc names both rather than
-blurring them. And **the agent-facing surface must be rung-invariant**:
-skills and tool descriptions are resolved per executor today
-(`_resolve_skill_conditionals` rewrites SKILL.md in place), and a
-transcript whose turn N ran in a tab and turn N+1 on the server must
-not carry two accounts of the environment. Either switches are
-session-level and rare, or descriptions state the union honestly —
-which is where `supports_ws_verbs` was already heading: "the `ws-*`
-verbs work on every rung" is the goal, not the caveat. Smaller: cache
-pickles cross rungs, so the guest stack is pinned to the server's, the
-discipline dud's "image matched to your interpreter" already imposes.
+blurring them. And **the environment the agent is told about must be
+the same on both rungs** — a constraint on nontainer and the studio,
+invisible to the agent exactly as long as it is honoured. Skills and
+tool descriptions are resolved per executor today
+(`_resolve_skill_conditionals` rewrites SKILL.md in place) because
+local and dud genuinely differ: real bash against termish, command
+substitution, no injected commands. The offload pair is **local ↔
+browser**, and those two do not differ that way: both are termish plus
+sandtrap, same builtins, same `ws-*` verbs as real commands, ticks on
+both, one `PythonConfig` (the `isolation` decision below). The one
+thing that could differ is the package set, and it is made invariant
+by construction: the Pyodide profile is derived from the same grants,
+and a grant the profile cannot cover is refused at `open`, the way dud
+refuses what a rung cannot honour — absent rather than narrowed. Then
+"what libraries exist here" is one sentence, true on both rungs, and
+the in-place rewrite never runs on a switch. The one rule left is not
+to pair **dud ↔ browser** per turn: that crosses the bash/termish line
+and the agent would notice. Smaller: cache pickles cross rungs, so the
+guest stack is pinned to the server's, the discipline dud's "image
+matched to your interpreter" already imposes.
 
 Optionality is not free, and this stack has a lot of it. Every rung
 kept open costs a conformance suite, a tool-description variant and a
@@ -914,9 +924,10 @@ needed):
    protocol; the cross-rung suites under a Playwright-driven guest.
    Push-tree for `sync()` first; `LazyFS` over a per-session endpoint
    when the author's rung wants it. Per-turn runtime choice with the
-   server rung as fallback; rung-invariant tool descriptions and
-   skills. Closing the server rung is a separate, later product
-   decision, not a step here.
+   server rung as fallback, the Pyodide profile derived from the
+   grants and uncovered grants refused at `open`, so descriptions are
+   true on both rungs by construction. Closing the server rung is a
+   separate, later product decision, not a step here.
 
 **Phase 3 — the studio:**
 
