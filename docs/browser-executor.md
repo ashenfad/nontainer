@@ -347,6 +347,61 @@ it down. An embedder fronting a shared production db says no and hands
 the agent a narrower object *from the start*, in preview and published
 alike, so the agent again never sees a difference.
 
+### Two principals, two endpoints, two origins
+
+Host objects are reached over a bridge, and the bridge serves two
+principals: the author's session and a publication's visitor. They do
+not share an endpoint, because [apps.md](apps.md#hosting-for-real-the-embedders-half)
+already forbids them sharing an origin — *give the app origin no
+ambient authority; auth and cookies scoped to your control origin,
+never the app origin; `{token}` is the capability and it is
+sufficient*:
+
+| principal | where the hostcall lands | credential | what it reaches |
+|---|---|---|---|
+| the author's session | `/api/sessions/{name}/host/…` on the **control origin** | the studio's session auth, like every other `/api/sessions/{name}` route | that session's live host objects, the full public-method allowlist |
+| a publication's visitor | `/apps/{token}/host/…` on the **apps origin** | the token in the URL — the capability, sufficient, no cookie | the publication's visitor-facing host objects, gated by its entitlement set |
+
+Two routes, two origins, two principals, sharing only the dispatch
+helper. The endpoint's existence encodes the principal; nothing
+inspects a caller to decide which rules apply. In the executor table
+above, "a sync XHR to the server" means the control origin,
+session-scoped.
+
+**The dispatcher runs in the principal's page.** That is the rule the
+table falls out of. For a visitor, the Pyodide worker lives in the
+visitor's page on the apps origin, so its hostcalls are token-scoped by
+construction. For the author, the worker lives in the *studio* page,
+not in the preview iframe, so its hostcalls carry the studio session by
+construction. The preview iframe — sandboxed, opaque origin, as the
+studio's `cors_for_apps` describes it — never reaches the control
+origin at all: its `fetch('api/x')` is intercepted in-page and posted
+to the parent, which runs the handler in the author's worker. That
+interceptor is the one a browser-served publication needs anyway.
+Today the preview fetches the router directly, which is what the `*`
+CORS header exists for; under the tab driver it does not, which is
+strictly less exposure. A delegate that runs in the author's tab
+inherits the author's principal, which is right: a delegate acts for
+the author.
+
+What is new, and what a hosted studio owes regardless:
+
+- **Nothing new for visitors.** Anonymous traffic hits handlers on the
+  server today; browser-side it hits an entitlement-checked host object
+  instead. Rate limits stay an edge concern; the Referer leak of a URL
+  token is unchanged; the studio already keys the db by token in its
+  manifest, so publication → visitor host objects → entitlement set
+  has a home.
+- **Owed anyway:** session auth on the control origin and CSRF defence
+  on its mutating routes (SameSite cookies or a header token). The
+  author hostcall endpoint is one more POST route under that
+  protection, not a special case.
+- **The one deliberate line:** the visitor endpoint takes *only* the
+  token. It refuses cookies and any control-origin credential outright,
+  so an operator visiting their own published app never spends session
+  authority through it. That is "no ambient authority" applied to the
+  bridge — one line of code, one line of doc.
+
 ### The app's data ships lazily
 
 Shipping `app/` to the visitor as a tar makes a 50MB parquet a 50MB
