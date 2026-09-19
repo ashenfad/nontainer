@@ -80,6 +80,11 @@ The decisions, for a reader who wants them before the argument:
   server keeps every capability; a tab takes a turn when it is there.
   Closing the server rung for the hosted-cheap posture is a separate
   product decision the switch does not make.
+- **The far end is the harness in the tab.** Then the executor is
+  `LocalExecutor` as-is, the server is a kvgit *remote* (agex-ts's
+  design) plus the bridge, and no Python runs there but host objects.
+  What it gives up is server-driven turns; the question after Phase 1
+  is whether those matter.
 - **nontainer's `Executor` protocol changes in one place:** `open`
   may bind lazily.
 
@@ -620,6 +625,78 @@ The cross-rung suites (`tests/test_wsgit_conformance.py`,
 acceptance test: run them with a Playwright-driven Pyodide guest and
 the rung is real or it is not.
 
+## The far end: the harness in the tab
+
+The executor above exists because the harness is on the server. Move
+the harness into the tab and the executor question dissolves: with the
+loop local, the executor is `LocalExecutor` — termish and sandtrap in
+the same Pyodide interpreter as the `Workspace`. No socket, no tree
+push, no harvest, no lazy `open`, no `HarvestLost`. nontainer core is
+pure Python and installs under Pyodide in principle today; agex-studio
+already runs a Python harness in a Pyodide worker behind a JS shell
+and already mounts OPFS so kvgit's disk store persists. The client
+half is agex-studio's py-kernel with nontainer as the environment.
+
+**The server is a kvgit remote, not a provider.** Two shapes were
+possible. `WorkspaceProvider` over RPC — the `Workspace` in the tab
+holding the single-writer lock across a wire, every commit and read a
+round trip — works and is chatty. The other is agex-ts's
+[`kvgit-remotes.md`](https://github.com/ashenfad/agex-ts/blob/main/kvgit-remotes.md)
+verbatim: kvgit lives in the tab, the server is a passive object store
+with CAS-able refs, sync exchanges deltas on commit, "merge is not in
+the protocol — reconciliation is always local", v1 fast-forward only
+with divergence surfaced. That doc targeted GitHub as the remote and
+contorted around the Git Data API; a nontainer server is the same
+protocol on a simpler transport, and it is worth having on its own for
+multi-device sync. It is the shape in the stack's spirit: state is
+git-shaped and authoritative, so "the server is a remote" is the
+natural role rather than a hack.
+
+What the server does then: auth, the kvgit remote, the publication
+registry, browser-served publications (static, blobs, bridge — Phase
+1 unchanged), the host-object bridge, and optionally an LLM proxy so
+keys stay server-side. **No Python executes there except host
+objects.** That is the I/O manager fully realized — cleaner than the
+tab-only posture above, which still carried an exec socket.
+
+**The harness is the studio's, as it always was.** nontainer names the
+`SessionRunner` seam and stops; it never owned the loop. agno under
+Pyodide is unproven (its dependency weight, not its shape); agex-py's
+loop is proven there; and an **agex v2 whose environment is nontainer**
+is the natural closing of a loop the README already draws — "agex is
+the full agent framework over the same substrate; nontainer is the
+environment layer alone, offered to someone else's loop." Code-as-action
+over `ws.run_python`, the script-not-REPL model chosen "so an agent's
+mental model transfers verbatim", pure Python end to end. Whichever it
+is, what nontainer owes the far end is core under Pyodide (the `[apps]`
+extra split so `dispatch.py` imports neither starlette nor playwright —
+packaging, since the layering rule already keeps dispatch on core's
+API) and the remote.
+
+**What it gives up: server-driven turns.** A nightly analysis, a
+webhook-triggered turn, a delegate that outlives the session — anything
+that needs an agent to run without a human's tab has no place to run.
+That is a real class, and it is the class the current studio's
+background turns and delegates serve. Two honest answers: accept it,
+as agex-studio does; or let the server be a *client of its own remote*
+— a `LocalExecutor` harness on the server, syncing like any other
+device, for scheduled work only. That is the switchability point
+reappearing as "the server runs agent code by choice, for autonomy",
+and the product decision stays visible. The Pyodide ceiling and the
+first-visit cost now apply to the author, not only to visitors.
+
+**What it does to the plan.** Phase 2 as written — server harness, tab
+executor — is one point on a line whose other end is this. Both share
+Phases 0 and 1 entirely: the guest wheel, `LazyFS`, the blob endpoint,
+the hostcall bridge, the tab driver, browser-served publications, the
+entitlement set. They differ in what is built next: an executor stub
+and its socket, versus a kvgit remote and nontainer core under Pyodide
+— and the far end is plausibly *less* nontainer work, because
+`LocalExecutor` is used as-is and the remote is already designed. So
+the question after Phase 1 is not "build the executor?" but **"do
+server-driven turns matter?"** — yes, the hybrid; no, the far end. The
+same commitment underneath either way.
+
 ## Warmth is the embedder's
 
 Cold boot is where this could have died: agex-studio's Pyodide worker
@@ -935,6 +1012,15 @@ needed):
    grants and uncovered grants refused at `open`, so descriptions are
    true on both rungs by construction. Closing the server rung is a
    separate, later product decision, not a step here.
+
+**Phase 2′ — the far end** (the alternative to Phase 2, sharing 0 and
+1; chosen by whether server-driven turns matter):
+
+5′. nontainer core under Pyodide: the `[apps]` extra split so dispatch
+    imports nothing heavy; `LocalExecutor` as-is over a kvgit store on
+    OPFS. A kvgit remote protocol with a Python twin of agex-ts's
+    design and a nontainer server implementing it. A harness in the
+    tab — agex-py, or agex v2 over nontainer — behind a JS shell.
 
 **Phase 3 — the studio:**
 
