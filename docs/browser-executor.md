@@ -237,6 +237,98 @@ it down. An embedder fronting a shared production db says no and hands
 the agent a narrower object *from the start*, in preview and published
 alike, so the agent again never sees a difference.
 
+## `test_app` becomes a driver protocol
+
+The entitlement set enforced in preview closes one lie; a bigger one is
+left open. Under browser-side serving, `test_app` is still Playwright
+on the server hitting server-side dispatch — so it never exercises the
+runtime the publication will run on. A handler that imports something
+present in the server's grants and absent from the Pyodide profile
+passes every check and 500s for every visitor. The fix is not "run
+Playwright in the tab"; it is to name the seam `testapp.py` already
+has.
+
+Of its ~1250 lines, the Playwright-specific part is one bounded region:
+context setup, `page.route` interception, the action loop's
+`page.click` / `fill` / `evaluate` / `goto` / `screenshot`, the console
+and pageerror hooks. Everything around it is driver-neutral —
+`coerce_actions` and the DSL, `parse_frames` / `classify_frame` /
+`describe_page_error` (which read workspace lines to annotate a stack,
+host-side by nature), the CSP checker, the relocatability hint,
+`ActionResult` / `TestAppResult`, `render_test_app`.
+
+```python
+class AppDriver(Protocol):
+    def run(self, spec: DriveSpec) -> DriveReport: ...
+```
+
+`DriveSpec` carries what the neutral half has already decided — the
+actions, viewport, CSP string, `script_hosts`, timeouts — and how the
+app is served: a callback into `AppRuntime.dispatch` for Playwright,
+"your own tree, your own dispatcher" for a tab. `DriveReport` comes
+back raw: per-action results, console lines, page errors with unparsed
+stacks, rejected requests, CSP hits, screenshot bytes by name.
+`testapp.py` keeps annotating stacks against the workspace, saving
+screenshots under `app/screenshots/` so they version with the session,
+and rendering. None of that moves.
+
+Two drivers, both already written somewhere in the family:
+
+- **Playwright** — what is there now, extracted. Server-side Chromium,
+  `page.route`, a fresh context per call.
+- **Tab** — the spec crosses the executor's socket, the tab builds a
+  hidden iframe from its own tree (agex-studio's `buildAppHtml` and
+  postMessage bridge are this, down to the action set and the
+  `__agex_logs` buffer), and posts the report back. Under this driver
+  the server needs no Playwright at all, so the `[apps]` extra's
+  heaviest dependency becomes per-rung.
+
+**Who picks.** `AppsConfig.driver` if set; else the executor's, if it
+offers one (`Runtime.app_driver`, optional, probed the way
+`supports_ws_verbs` is — a public name on `Runtime`, so `apps/` reaches
+it without crossing the layering rule); else Playwright. And the
+invariant that makes this close the gap rather than only abstract it:
+**the driver's dispatcher is the dispatcher the publication will use.**
+Playwright verifies against server-side dispatch, which is what
+server-side serving runs; the tab driver verifies against the in-tab
+Pyodide dispatcher, which is what browser-side serving runs. Preview
+and publication share a runtime by construction, and a handler
+importing outside the Pyodide profile fails in `test_app`, where the
+agent reads it.
+
+Two consequences worth having. **`ws-vitest` is the second consumer**:
+`jsharness.py` and `harness.js` drive a harness page through the same
+Chromium, and two consumers are what make a driver protocol earn its
+keep. And **publish-time verification comes free**: the tab driver can
+run the same actions against the frozen publication tree on the
+visitor-shaped runtime before `publish` returns — the strongest form
+of "what verifies green is what ships".
+
+### Where the tab driver is weaker
+
+Rung-specific caveats, for the per-rung tool description to carry the
+way dud's already says "stderr merges into stdout":
+
+- **Screenshots.** Playwright's `page.screenshot()` is a compositor
+  capture. A hidden iframe on a separate apps origin cannot be captured
+  by its parent; the page rasterizes itself and posts the PNG back,
+  which loses WebGL plotly, tainted canvases and some fonts. Fine for
+  "is there a chart", not pixel-faithful — or the tab driver returns no
+  screenshot and the description says so.
+- **Fresh context.** A Playwright context starts with empty storage; a
+  cross-origin iframe has a persistent partition for that origin, so
+  repeated tests see each other's `localStorage` unless the driver
+  seeds and discards, as agex-studio's `testApp` does. Same observable
+  semantics, more bookkeeping.
+- **Blocked requests.** `page.route` denies and *reports* off-allowlist
+  fetches. An iframe enforces through an injected `<meta>` CSP (a
+  `document.write` page gets no server header) and observes through
+  `securitypolicyviolation` events — which is what `window.__nt_csp`
+  already collects, so the report shape survives while the enforcement
+  is a little weaker: no `frame-ancestors`, no report-only.
+- **Presence.** `test_app` on the tab driver waits for a browser the
+  way `run_python` does. Same gating, same rail state.
+
 ## Warmth is the embedder's
 
 Cold boot is where this could have died: agex-studio's Pyodide worker
@@ -343,8 +435,12 @@ relocates a dispatcher that never had a server.
    suites under a Playwright-driven guest.
 2. The entitlement harvest in core, the read-method marker on
    `AppsConfig`, enforcement in dispatch's GET view on every rung.
-3. Browser-side publication serving: the frozen subset of the guest,
-   the `api/*` interceptor, the hostcall endpoint checking membership.
-4. The studio: an executor knob, a per-session socket, a rail state
+3. `AppDriver`: extract the Playwright driver from `testapp.py` behind
+   the protocol, move `ws-vitest` onto it, add `Runtime.app_driver`
+   and the tab driver over the executor's socket.
+4. Browser-side publication serving: the frozen subset of the guest,
+   the `api/*` interceptor, the hostcall endpoint checking membership,
+   and publish-time verification through the tab driver.
+5. The studio: an executor knob, a per-session socket, a rail state
    for "waiting for a browser", the snapshot pipeline, and the
    first-byte hybrid if the measured first visit needs it.
