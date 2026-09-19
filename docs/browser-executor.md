@@ -178,7 +178,7 @@ server, so the server-side executor is a stub bound to a socket.
 | host objects | hostcall proxies behind `dud.public_methods` | the same allowlist; a proxy method is a sync XHR to the server, which dispatches to the live object exactly as `_host_object_rpc_handler` does |
 | `ws-*` verbs | bash functions → `ws_verb` hostcall | the guest shell is termish, so each tagged verb is a relay *command* in the guest registry; `supports_commands` is True and the `FerrySpec` path mapping applies unchanged |
 | cache | guest pickles, host stores bytes | identical |
-| isolation | a VM exceeds any `isolation` | refuse `isolation != "none"` at open, the way `_prepare_config` refuses what a rung cannot honour; the Web Worker is the boundary |
+| isolation | a VM exceeds any `isolation` | `none` and `process` are satisfied — a worker crash costs the worker, not the page, which is what `process` promises; `kernel` is refused at open, the way `_prepare_config` refuses what a rung cannot honour, since it promises a syscall filter the browser does not have |
 | ticks | gone; wall-clock only | back — sandtrap is in-process in the worker |
 | packages | grants → image package list | grants → Pyodide package list, the same `_merge_packages` idea |
 | view reentrancy | one channel, serialized | one interpreter per tab, serialized; a worker pool is a memory question the tab answers |
@@ -709,6 +709,60 @@ The apps design is already serverless — "there is no resident app
 process… requests are dispatched into sandboxed executions on demand"
 — and handlers are re-executed per request with no module state. This
 relocates a dispatcher that never had a server.
+
+## Smaller decisions
+
+Four questions with one decision each, recorded so nobody re-derives
+them.
+
+**Cancellation: terminate by default, interrupt buffer opt-in.**
+sandtrap's `cancel()`, `timeout` and `tick_limit` are checkpoint flags,
+and a busy worker never runs its event loop, so a `postMessage`
+carrying "cancel" is never *delivered* while sync Python runs. Two
+ways in: `pyodide.setInterruptBuffer` — a `SharedArrayBuffer` the page
+writes, raising `KeyboardInterrupt` at the next bytecode boundary,
+which sandtrap reports as cancelled and the worker survives — but SAB
+needs COOP/COEP on the studio origin, which constrains what the page
+may embed (the apps-origin preview iframe would need `credentialless`
+or CORP headers); or `worker.terminate()` — no headers, always works,
+costs the warm image (~1s restore). Neither interrupts a C call
+mid-flight; that is true of every rung. Cancel is rare and a second
+on cancel is fine; a header requirement on the whole studio page is
+not, so terminate is the default and the interrupt buffer is an option
+for an origin that is already cross-origin isolated. Deadlines mirror
+dud: the tab enforces `PythonConfig.timeout` plus a grace by
+terminating; the server treats silence past that as a lost guest. A
+sync XHR hostcall carries the exec's remaining budget as its `timeout`
+(allowed in workers), so a slow server cannot wedge a call past its
+deadline.
+
+**`isolation`: `process` is satisfied, `kernel` is refused.** The
+first draft refused anything but `none`, modelled on
+`_prepare_config`. That is wrong by dud's own reasoning: dud refuses
+`network=True` because it is a *capability* it cannot honour, and
+accepts any `isolation` because a VM *exceeds* it. A Web Worker
+exceeds `process` — a crash costs the worker, not the page — and does
+not exceed `kernel`, which promises a syscall filter. So `none` and
+`process` are accepted as met and `kernel` is refused. The studio's
+default `isolation="process"` is then valid on both rungs with one
+`PythonConfig`, and a delegate on `LocalExecutor` under a parent on
+the browser rung shares the parent's config, as a fork does today.
+
+**Two tabs on one session: last attached wins.** State is
+server-side and the workspace lock serializes, so this is
+availability, not correctness. A new attach detaches the previous
+guest — its socket closed with a reason it can show — after any exec
+in flight on it finishes, and `ctx.head` affinity means the newcomer
+pushes the tree only if its head differs. The tab in front of the
+user is the one they are using.
+
+**The image holds the stack, not the guest wheel.** Key a snapshot on
+(Pyodide version, package lockfile hash). sandtrap, termish, monkeyfs
+and kvgit are in it; `nontainer-guest` is not — it is pure Python and
+small, its heavy imports are already resident, so loading it after
+restore is milliseconds, and a nontainer release then invalidates
+nothing unless it moved a stack floor. Everything else about images
+is operational and the studio's.
 
 ## Spikes before committing
 
