@@ -137,9 +137,13 @@ What it costs, so the judgment is made with the bill in view:
   heavy; nontainer has no TypeScript escape hatch, because Python is
   the point.
 - **A third rung to keep honest.** The cross-rung conformance suites
-  grow a variant, and so does whatever the rung genuinely does
-  differently (cache as bytes, wall-clock deadlines). What the agent is
-  told does not: local and browser are both termish plus sandtrap, and
+  grow a variant, and so does whatever the rung does differently on
+  the embedder's side of the seam — host-side `ws.cache` reads of
+  guest-written keys returning bytes, wall-clock deadlines in place of
+  ticks. What the agent is told does not: local and browser are both
+  termish plus sandtrap, observations render the same way (sandtrap
+  captures stdout and stderr in-process on both, so the `[stderr]`
+  block the adapter labels is there or not for the same reasons), and
   the package set is invariant by construction (below).
 - **First data paint on a browser-served app** is the runtime boot
   plus the data the first handler touches. Warmth and lazy fetch make
@@ -535,8 +539,9 @@ of "what verifies green is what ships".
 
 ### Where the tab driver is weaker
 
-Rung-specific caveats, for the per-rung tool description to carry the
-way dud's already says "stderr merges into stdout":
+Rung-specific caveats. Most are the driver's to absorb without the
+agent noticing; the one that reaches the agent is the screenshot, and
+the `test_app` description says so on that rung:
 
 - **Screenshots.** Playwright's `page.screenshot()` is a compositor
   capture. A hidden iframe on a separate apps origin cannot be captured
