@@ -60,6 +60,111 @@ Three things fall out, in increasing order of how much they change:
   synchronously; agex-studio's `docs.py` and `sheets.py` already make
   host calls from the worker over synchronous `XMLHttpRequest`.
 
+## Phase 0: one filesystem protocol, and a ranged read
+
+Everything below reads workspace files across a wire — a tab pulling a
+tree from the server, a visitor's browser pulling a publication, a
+worker process pulling from the host over RPC. Today every one of those
+reads is whole-file, because the protocol says so: termish's
+`FileSystem.read(path) -> bytes`, and monkeyfs's `VirtualFile` is a
+`BytesIO` over the whole file, seeked to zero, written back on close.
+"Seekable" is a fiction over a full buffer. So a handler that wants two
+parquet columns of twenty downloads the parquet. This phase fixes that
+at the protocol, in two other repositories, before anything here needs
+it — and nothing here *blocks* on it: a whole-file lazy fetch works
+without it and gets faster when it lands.
+
+### Who owns the protocol
+
+termish and monkeyfs each declare a structural `FileSystem` protocol.
+They already agree: the same sixteen-odd methods, and a `FileMetadata`
+that is field-for-field identical (`size`, `created_at`,
+`modified_at`, `is_dir`), monkeyfs's a strict superset with `st_*`
+properties so `os.stat()` can hand it back. That is a convention that
+has held without anyone enforcing it. The proposal is to keep it a
+convention and enforce it:
+
+- **No shared import.** Both protocols are `typing.Protocol`; a shared
+  definition would change nothing at runtime. There is no natural
+  "below" — a shell over a filesystem and stdlib routing over a
+  filesystem are both consumers of one shape — and a third package
+  would cost both libraries their zero-dependency line for twenty lines
+  of protocol. Structural duplication is the Python idiom for this
+  (file-like objects, `PathLike`, WSGI).
+- **One promise, written in both READMEs.** *monkeyfs's backend
+  protocol is termish's protocol plus the ranged read; `open()` is what
+  monkeyfs provides over it, never what a backend implements.* That
+  shrinks monkeyfs's backend contract (`open` leaves it; `readlink`
+  becomes optional and probed, the way nontainer probes `refresh()`),
+  and makes every termish-shaped filesystem a Python `open()` for free.
+  `VirtualFile` is the adapter from bytes-level to file-object-level,
+  and the only place that adapter lives — which is already the shape of
+  `MountFS.open` and `ReadOnlyFS.open`, both of which delegate.
+- **A drift test where both are installed.** The repository's rule for
+  conventions is that they should not be conventions —
+  `tests/test_layering.py` walks the package with `ast` rather than
+  asking anyone to remember. Same here: nontainer is the first place
+  termish and monkeyfs meet, so it carries a meta-test that
+  `inspect.signature`s every method on both protocols and fails on
+  drift, and runs both libraries' conformance kits
+  (`termish.fs.check_filesystem`, `monkeyfs.check_filesystem` — each
+  shipped so a backend author needs neither the other library nor
+  nontainer) against `KvgitProvider.fs`, `MemoryFS`, `VirtualFS` and,
+  later, the browser guest's `LazyFS`.
+
+### The primitive
+
+```python
+def read(self, path: str, offset: int = 0, size: int = -1) -> bytes: ...
+```
+
+Defaults are today's whole-file read, so every existing backend and
+caller is unchanged; `MemoryFS` and `VirtualFS` implement the range by
+slicing; wrappers (`MountFS`, `ReadOnlyFS`, `IsolatedFS`) forward the
+two arguments. `stat().st_size` already exists for `seek(0, 2)`. Then
+`VirtualFile` in binary read mode becomes lazy — a small block cache
+over `read(path, offset, size)` instead of a materialized buffer —
+while text mode and write modes keep materializing: decoding across
+block boundaries is not worth having, and writes are whole-file by the
+protocol's own design.
+
+Who benefits, in order:
+
+1. **The browser guest.** `LazyFS.read(path, offset, size)` is an HTTP
+   `Range` request against the blob endpoint (below), so
+   `pd.read_parquet(..., columns=[...])` reads the footer and the
+   column chunks it needs. This works because pandas opens a local
+   parquet path through Python `open()` and hands pyarrow the file
+   object — which is also why handlers can read parquet under monkeyfs
+   *today*; if pyarrow opened the path itself in C++, monkeyfs would
+   never see it.
+2. **Process and kernel isolation.** The worker reaches workspace files
+   host-side over an RPC bridge that speaks the bytes-level protocol,
+   so a large file crosses whole today. Once the bridge forwards the
+   two arguments, it is lazy for free.
+3. **The author's browser rung, later.** The same `LazyFS` against a
+   per-session, authenticated endpoint.
+
+### Size, and the real cost
+
+- termish: two optional parameters on `read`; `MemoryFS` slices. ~20
+  lines.
+- monkeyfs: `open` off the backend protocol; a lazy binary-read
+  `VirtualFile` with a block cache; wrappers forward. ~100–150 lines,
+  and the ones worth testing carefully: block boundaries, `seek` past
+  EOF, `readline` across a boundary.
+- sandtrap: the process-isolation RPC filesystem forwards the
+  arguments. ~10 lines.
+- nontainer: the drift test and both conformance runs; `LazyFS` grows
+  `Range`; the blob endpoint answers 206. ~50 lines.
+
+The cost is not code. It is a protocol change across termish and
+monkeyfs (both to 0.2.0), sandtrap's `monkeyfs>=0.1.9,<0.2.0` floor
+moving, nontainer's floors moving, and the four shipping in dependency
+order. That choreography is why it is phase 0: it lives in other
+repositories, it can run in parallel with everything below, and the
+whole-file `LazyFS` means nothing waits on it.
+
 ## The executor
 
 The inversion from dud is that **the guest dials in**. dud's host
@@ -78,12 +183,17 @@ server, so the server-side executor is a stub bound to a socket.
 | packages | grants → image package list | grants → Pyodide package list, the same `_merge_packages` idea |
 | view reentrancy | one channel, serialized | one interpreter per tab, serialized; a worker pool is a memory question the tab answers |
 
-**Push-tree first, RPC filesystem later.** termish's 16-method
-`FileSystem` is a bridgeable surface, and the run-ts note in the design
-doc already imagines "bridged over an RPC filesystem". Lazy fetch is
-nicer for large workspaces; push-plus-harvest matches the existing
-contract and the cross-rung conformance suites exactly. Start there,
-add lazy blob fetch if tree size bites.
+**Push-tree for authoring; the lazy path is built first, elsewhere.**
+termish's `FileSystem` is a bridgeable surface, and the run-ts note in
+the design doc already imagines "bridged over an RPC filesystem". For
+the author's rung, push-plus-harvest matches the existing contract and
+the cross-rung conformance suites exactly, so it starts there. But the
+lazy filesystem gets built *before* this executor, for publications
+(below), where it is mandatory rather than nice — and the author's rung
+later swaps `sync()` from "push a tar" to "send a fresh manifest of
+`working_files()`" against the same `LazyFS` and a per-session
+endpoint. Only the host→guest direction changes; the write harvest is
+the same scan-diff either way.
 
 **Network honesty.** sandtrap's network denial patches `socket`, which
 does not exist under Pyodide; `network=True` would have to mean
@@ -236,6 +346,73 @@ sqlite file that is the app's own data, a studio can say yes and write
 it down. An embedder fronting a shared production db says no and hands
 the agent a narrower object *from the start*, in preview and published
 alike, so the agent again never sees a difference.
+
+### The app's data ships lazily
+
+Shipping `app/` to the visitor as a tar makes a 50MB parquet a 50MB
+download before first data paint. Two things to say about that, and the
+first is what it is *not*: it is not a new disclosure. `_dispatch_static`
+serves everything under `app/` except `app/api/`, so
+`app/data/records.parquet` is already fetchable by any visitor at
+`/apps/{token}/data/records.parquet`. What does change is `app/api/`
+itself: today it is the one part of a publication static serving
+refuses, and the skill leans on that ("`_`-prefixed files under
+`app/api/` are as private as handler source"). Browser-side, the
+handler source ships to the visitor and that sentence inverts. Under
+browser-side serving **nothing in a publication is private** — a
+secret belongs in a host object, server-side, or nowhere. A stronger
+and simpler rule than the current one; one line in the skill.
+
+The bytes problem has the provider's own answer. `files_at(commit)` is
+"a read view, not a copy: values are read on demand." The tab should
+get exactly that, over the wire:
+
+- **Metadata up front, blobs on demand.** `store.publish` already reads
+  every blob to copy it into the derived commit; while it does, it
+  hashes each and writes a manifest — `{path: (sha256, size)}` — as one
+  reserved key in that commit, beside `published_from`. The tab builds
+  its termish `FileSystem` from the manifest (`MemoryFS` populated with
+  metadata-only entries: listings, `exists`, `stat` all answer
+  locally), and a file's contents are fetched on first `read()`, over
+  the same sync channel hostcalls use, from
+  `/apps/{token}/blob/{sha256}`. monkeyfs already routes sandboxed
+  `open()` there, so `pd.read_parquet("/workspace/app/data/x.parquet")`
+  fetches that one blob, when a handler actually needs it. With phase
+  0, it fetches the byte ranges it needs.
+- **Content-addressed, so cached across everything.** The blob URL is
+  immutable: a v2 that did not touch the parquet does not re-download
+  it, two apps over one dataset share it, and the browser cache does
+  the rest. One guard: a hash is servable only if it is in *this*
+  token's manifest, or content addressing becomes a cross-app oracle.
+  (kvgit already hashes values with sha256 in the HAMT; surfacing that
+  through the provider would save re-hashing at publish, and is an
+  optimization, not a requirement — the publish-time manifest is
+  provider-neutral.)
+- **No executor on the server.** A browser-served publication does not
+  instantiate an `AppRuntime` or an executor server-side at all: the
+  server does provider reads, static, and the hostcall bridge.
+  `serve.py`'s browser mode is simpler than its current mode.
+- **Prefetch from the harvest.** The same AST walk that collects
+  entitlements can collect string literals that resolve to paths under
+  `app/`; the served page emits `<link rel="preload">` for them so the
+  parquet's download overlaps the runtime boot instead of following the
+  first request.
+
+Size: ~30 lines in `store.publish`, ~40 in `serve.py` (manifest, blob
+route with `Cache-Control: immutable`), ~100–150 for `LazyFS` in the
+guest. No seam moves.
+
+The honest limit: first data paint on a data-heavy app is the runtime
+boot plus the blobs the first handler touches. Lazy fetch makes that
+the *working set* rather than the *tree*, and phase 0 makes it the
+*columns* rather than the *file* — but the working set is what it is.
+Browser-side serving is for apps whose working set fits a download,
+which is most of what the studio produces because the skill already
+says "convert big source data once, then handlers read the parquet."
+For the tail, the cheap tell is a publish-time report — "this app's
+handlers touch 48MB of data," measured from the harvest's path
+literals against the manifest — so the author knows before a visitor
+does.
 
 ## `test_app` becomes a driver protocol
 
@@ -426,21 +603,47 @@ relocates a dispatcher that never had a server.
    socket with `Atomics.wait` (which needs COOP/COEP on the origin).
 4. **Delegates**: a second worker in the author's tab, or
    `LocalExecutor` on the server. Start hybrid.
+5. **Ranged reads reach pyarrow.** Confirm that pandas hands pyarrow
+   the Python file object (it must — handlers read parquet under
+   monkeyfs today) and that pyarrow then does column-selective `seek`
+   / `read` against it rather than slurping the file. If it slurps,
+   phase 0 still helps every other reader and the RPC bridge, but the
+   parquet win needs a `pyarrow.parquet.ParquetFile` in the handler.
 
 ## Build order
 
-1. `nontainer/executor_browser.py` beside `executor_dud.py`, a
-   `nontainer-guest` wheel (pure Python, installable with micropip)
-   and a JS shim; the lazy-`open` note on the protocol; the cross-rung
-   suites under a Playwright-driven guest.
+**Phase 0 — the filesystem protocol** (termish, monkeyfs, sandtrap;
+parallel with everything below, blocks nothing):
+the ranged `read`, `open` off monkeyfs's backend contract, the lazy
+binary `VirtualFile`, both conformance kits, the promise in both
+READMEs, and the drift test in nontainer. Four releases in dependency
+order.
+
+**Phase 1 — publications, browser-served** (nontainer, no executor
+needed):
+
+1. The publish-time manifest in `store.publish`; the manifest and blob
+   routes in `serve.py`; `LazyFS` in a `nontainer-guest` wheel (pure
+   Python, installable with micropip), whole-file first and `Range`
+   once phase 0 lands.
 2. The entitlement harvest in core, the read-method marker on
    `AppsConfig`, enforcement in dispatch's GET view on every rung.
 3. `AppDriver`: extract the Playwright driver from `testapp.py` behind
-   the protocol, move `ws-vitest` onto it, add `Runtime.app_driver`
-   and the tab driver over the executor's socket.
-4. Browser-side publication serving: the frozen subset of the guest,
-   the `api/*` interceptor, the hostcall endpoint checking membership,
-   and publish-time verification through the tab driver.
-5. The studio: an executor knob, a per-session socket, a rail state
-   for "waiting for a browser", the snapshot pipeline, and the
-   first-byte hybrid if the measured first visit needs it.
+   the protocol, move `ws-vitest` onto it, add `Runtime.app_driver`.
+4. The frozen guest: the `api/*` interceptor, the in-tab dispatcher
+   over `LazyFS`, the hostcall endpoint checking membership, the tab
+   driver, and publish-time verification through it.
+
+**Phase 2 — the executor** (nontainer):
+
+5. `nontainer/executor_browser.py` beside `executor_dud.py`, reusing
+   the guest wheel and the tab driver; the lazy-`open` note on the
+   protocol; the cross-rung suites under a Playwright-driven guest.
+   Push-tree for `sync()` first; `LazyFS` over a per-session endpoint
+   when the author's rung wants it.
+
+**Phase 3 — the studio:**
+
+6. An executor knob, a per-session socket, a rail state for "waiting
+   for a browser", the snapshot pipeline, and the first-byte hybrid if
+   the measured first visit needs it.
