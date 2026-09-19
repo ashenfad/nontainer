@@ -548,15 +548,16 @@ pitch; the pitch is the *workspace*.
 
 ## Later / maybe
 
-- **A browser executor** — a third rung whose guest is a Pyodide
-  worker in a tab, so the server keeps the provider and the loop and
-  each user's machine runs each user's agent; and, separately, a
-  published app served from the visitor's browser with the host-object
-  bridge as the only server contact. Written up in
-  [browser-executor.md](browser-executor.md): what the seams already
-  give, the one contract note (`open` binds lazily), the trust
-  boundary a browser-served publication moves and the entitlement
-  harvest that answers it, and why warmth is the embedder's.
+- **Browser compute** — a published app served from the visitor's
+  browser with the host-object bridge as the only server contact; a
+  third rung whose guest is a Pyodide worker in a tab, so the server
+  keeps the provider and the loop and each user's machine runs each
+  user's agent; and, before both, a ranged read on the filesystem
+  protocol. Written up in [browser-executor.md](browser-executor.md):
+  the trust boundary a browser-served publication moves and the
+  entitlement set that answers it, `test_app` as a driver protocol,
+  the one contract note (`open` binds lazily), and why warmth is the
+  embedder's.
 - **run-ts** — a Node sidecar wrapping
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,
   bridged over an RPC filesystem. The only piece that needs Node;
