@@ -136,9 +136,11 @@ What it costs, so the judgment is made with the bill in view:
   shipped Python first and made TypeScript primary because Pyodide was
   heavy; nontainer has no TypeScript escape hatch, because Python is
   the point.
-- **A third rung to keep honest.** Skills already fork per executor;
-  tool descriptions, "what packages exist here" and the conformance
-  suites all grow a variant.
+- **A third rung to keep honest.** The cross-rung conformance suites
+  grow a variant, and so does whatever the rung genuinely does
+  differently (cache as bytes, wall-clock deadlines). What the agent is
+  told does not: local and browser are both termish plus sandtrap, and
+  the package set is invariant by construction (below).
 - **First data paint on a browser-served app** is the runtime boot
   plus the data the first handler touches. Warmth and lazy fetch make
   that small; they do not make it zero.
