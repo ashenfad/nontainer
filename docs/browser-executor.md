@@ -76,6 +76,10 @@ The decisions, for a reader who wants them before the argument:
 - **Warmth is the embedder's; correctness after a restore is
   nontainer's.** A snapshot is a pristine interpreter taken before
   `boot()`; `boot()` builds the policy and reseeds.
+- **Executors are switchable, so the browser rung is an offload.** The
+  server keeps every capability; a tab takes a turn when it is there.
+  Closing the server rung for the hosted-cheap posture is a separate
+  product decision the switch does not make.
 - **nontainer's `Executor` protocol changes in one place:** `open`
   may bind lazily.
 
@@ -110,10 +114,13 @@ The decisions, for a reader who wants them before the argument:
 
 ## When it is worth it
 
-For a single-user local workbench, never: it moves compute from one
-process on a laptop to another process on the same laptop and pays
-with background turns. The question is whether the studio is going to
-be **hosted**. If it is, this is plausibly the cheapest path to
+For a single-user local workbench, the executor as *sole* compute is
+never worth it: it moves compute from one process on a laptop to
+another process on the same laptop and pays with background turns. As
+an *offload* beside the server rung (below) it is a latency-and-cost
+win with nothing given up, and worth building on those terms. The
+larger question is whether the studio is going to be **hosted**. If it
+is, closing the server rung is plausibly the cheapest path to
 multi-tenancy — cheaper than a microVM pool, with keys server-side —
 and the browser-served publication is the piece to build first, alone,
 because it stands without the executor and removes the ugliest line in
@@ -142,6 +149,56 @@ sandbox plus handler plus host object, all on the server; browser-side
 it is the entitlement set alone, and the handler and the sandbox stop
 being the server's problem. Twenty lines of literal harvest are a
 smaller thing to defend than a sandbox.
+
+### Executors are switchable, so the browser rung is an offload
+
+The costs above assume the tab *is* the compute. It need not be. The
+design notes already say "swapping the executor for a real machine
+never touches the versioning semantics"; the studio already reads on
+one executor what was authored on another; `shell_env`'s contract
+already allows "one workspace can carry several runtimes"; and `diff` /
+`sync` are specified as "called around execs, never during" — which is
+exactly the turn boundary a switch needs. A switch is choosing which
+runtime takes *this* turn, and `ctx.head` affinity makes a switch back
+to a tab that still holds the head free.
+
+Switchable, every cost of the form "when the tab is absent, X dies"
+becomes a fallback: a closed tab means the next turn runs server-side
+and background turns come back; a phone's memory budget or a slow
+connection means the server for that user; a helper importing outside
+the Pyodide profile means the server for that turn — the same
+"capability chooses the rung" that already routes handlers by verb.
+The server keeps everything it can do today; the browser is compute
+close to the user when it is there. That is the incremental path: the
+rung lands in the current studio as a latency-and-cost win, giving
+nothing up, and Phase 2 stops depending on the hosted decision.
+
+Two things it does not dissolve. The **threat-model win** — the server
+never runs agent code — comes only from *removing* the server rung,
+which is a product choice, not a switch; so the executor has two modes
+with different prerequisites, offload (now, no regression) and
+tab-only (hosted-cheap, commits), and this doc names both rather than
+blurring them. And **the agent-facing surface must be rung-invariant**:
+skills and tool descriptions are resolved per executor today
+(`_resolve_skill_conditionals` rewrites SKILL.md in place), and a
+transcript whose turn N ran in a tab and turn N+1 on the server must
+not carry two accounts of the environment. Either switches are
+session-level and rare, or descriptions state the union honestly —
+which is where `supports_ws_verbs` was already heading: "the `ws-*`
+verbs work on every rung" is the goal, not the caveat. Smaller: cache
+pickles cross rungs, so the guest stack is pinned to the server's, the
+discipline dud's "image matched to your interpreter" already imposes.
+
+Optionality is not free, and this stack has a lot of it. Every rung
+kept open costs a conformance suite, a tool-description variant and a
+skill block, and no rung gets the deep optimization a committed system
+gets — Cloudflare committed to Pyodide and got sub-second cold starts;
+agex-studio committed to TypeScript-primary and got a fast boot. The
+switch is the right *default* because it is cheap here, in a stack
+whose one hard commitment — the state model — is what makes the rest
+swappable. Whether to then close the server rung is the commitment
+question, and it stays a visible product decision rather than
+something the switch quietly answers.
 
 ## Publications in the visitor's browser
 
@@ -850,13 +907,16 @@ needed):
    over `LazyFS`, the hostcall endpoint checking membership, the tab
    driver, and publish-time verification through it.
 
-**Phase 2 — the executor** (nontainer):
+**Phase 2 — the executor, as an offload** (nontainer):
 
 5. `nontainer/executor_browser.py` beside `executor_dud.py`, reusing
    the guest wheel and the tab driver; the lazy-`open` note on the
    protocol; the cross-rung suites under a Playwright-driven guest.
    Push-tree for `sync()` first; `LazyFS` over a per-session endpoint
-   when the author's rung wants it.
+   when the author's rung wants it. Per-turn runtime choice with the
+   server rung as fallback; rung-invariant tool descriptions and
+   skills. Closing the server rung is a separate, later product
+   decision, not a step here.
 
 **Phase 3 — the studio:**
 
