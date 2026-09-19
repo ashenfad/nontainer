@@ -1,12 +1,16 @@
-# A browser executor
+# Browser compute
 
-> **Status: design proposal, not implemented.** A third rung beside
-> `LocalExecutor` and `DudExecutor`: the agent's Python runs in a
-> Pyodide worker in a browser tab, while the provider, the agent loop
-> and every versioning verb stay where they are. The full picture
-> reaches into [nontainer-studio](https://github.com/ashenfad/nontainer-studio);
-> the nontainer half is written down here so the studio half has a
-> contract to build against. Why the seams make this cheap is in the
+> **Status: design proposal, not implemented.** Two proposals and one
+> prerequisite. A **published app served from the visitor's browser**,
+> with the server reduced to a host-object bridge; a **browser
+> executor** — a third rung beside `LocalExecutor` and `DudExecutor`,
+> where the agent's Python runs in a Pyodide worker in a tab while the
+> provider, the loop and every versioning verb stay on the server; and,
+> before either, a **ranged read on the filesystem protocol** that
+> lives in termish and monkeyfs. The full picture reaches into
+> [nontainer-studio](https://github.com/ashenfad/nontainer-studio); the
+> nontainer half is written down here so the studio half has a contract
+> to build against. Why the seams make this cheap is in the
 > [design notes](design.md#three-seams-and-where-a-session-ends); the
 > seam itself is in [extending.md](extending.md#executor--where-code-runs).
 
@@ -21,6 +25,13 @@ agent, and the server that holds kvgit and drives the loop becomes an
 I/O manager. Bring-your-own-compute, the way a hosted studio would
 already be bring-your-own-key.
 
+"Serverless Python in the browser" is not a change of execution model
+either. The apps design is already serverless — "there is no resident
+app process… requests are dispatched into sandboxed executions on
+demand" — and handlers are re-executed per request with no module
+state. Moving that into a tab relocates a dispatcher that never had a
+server.
+
 Three things fall out, in increasing order of how much they change:
 
 1. **An author's session computes in the author's tab.** Same trust,
@@ -32,8 +43,41 @@ Three things fall out, in increasing order of how much they change:
 3. **A published app served from the visitor's browser.** Serving is
    already frozen and stateless; move the dispatcher into the tab and
    per-request server compute is the host-object bridge and nothing
-   else. This one moves a trust boundary and is treated separately
-   below.
+   else. This one moves a trust boundary — and it is the piece to
+   build first, because it stands without the executor.
+
+## The short version
+
+The decisions, for a reader who wants them before the argument:
+
+- **Publications first, executor second, a protocol change before
+  both.** A browser-served publication needs only the frozen subset of
+  a guest and no executor on the server; the executor reuses what that
+  builds.
+- **Moving a handler into the visitor's browser moves a trust
+  boundary.** The caller's identity is unprovable; the call's
+  *entitlement* is provable from the frozen commit. Reads are
+  entitlement-safe, writes-with-logic are not, so **GET handlers run in
+  the visitor's browser and mutating verbs stay on the server** — a
+  rule the agent was already taught.
+- **The entitlement set is every string literal in `app/**/*.py`.**
+  A read call is entitled if its statement argument is in the set; the
+  rest is free. The embedder marks which methods are reads and which
+  argument is the statement. No second host object, no second tier.
+- **Two principals, two endpoints, two origins.** The author's
+  hostcalls land on the control origin under session auth; a
+  visitor's on the apps origin under the token. The dispatcher runs in
+  the principal's page.
+- **The visitor's filesystem is `files_at` over the wire.** A
+  publish-time manifest, content-addressed blobs on demand, ranged
+  once phase 0 lands. Nothing in a publication is private.
+- **`test_app` is a driver protocol**, and the driver's dispatcher is
+  the dispatcher the publication will use.
+- **Warmth is the embedder's; correctness after a restore is
+  nontainer's.** A snapshot is a pristine interpreter taken before
+  `boot()`; `boot()` builds the policy and reseeds.
+- **nontainer's `Executor` protocol changes in one place:** `open`
+  may bind lazily.
 
 ## What is already true
 
@@ -59,181 +103,53 @@ Three things fall out, in increasing order of how much they change:
   Agent code calls `db.query(...)` synchronously and sandtrap runs it
   synchronously; agex-studio's `docs.py` and `sheets.py` already make
   host calls from the worker over synchronous `XMLHttpRequest`.
+- **Serving is frozen and stateless.** `resolve(token)` returns a
+  read-only workspace and each request is one `exec_python(view=)`
+  with `readonly_fs`; a publication is the derived commit holding
+  `app/` and nothing else.
 
-## Phase 0: one filesystem protocol, and a ranged read
+## When it is worth it
 
-Everything below reads workspace files across a wire — a tab pulling a
-tree from the server, a visitor's browser pulling a publication, a
-worker process pulling from the host over RPC. Today every one of those
-reads is whole-file, because the protocol says so: termish's
-`FileSystem.read(path) -> bytes`, and monkeyfs's `VirtualFile` is a
-`BytesIO` over the whole file, seeked to zero, written back on close.
-"Seekable" is a fiction over a full buffer. So a handler that wants two
-parquet columns of twenty downloads the parquet. This phase fixes that
-at the protocol, in two other repositories, before anything here needs
-it — and nothing here *blocks* on it: a whole-file lazy fetch works
-without it and gets faster when it lands.
+For a single-user local workbench, never: it moves compute from one
+process on a laptop to another process on the same laptop and pays
+with background turns. The question is whether the studio is going to
+be **hosted**. If it is, this is plausibly the cheapest path to
+multi-tenancy — cheaper than a microVM pool, with keys server-side —
+and the browser-served publication is the piece to build first, alone,
+because it stands without the executor and removes the ugliest line in
+the current threat model: anonymous HTTP triggering agent-authored code
+on the server.
 
-### Who owns the protocol
+What it costs, so the judgment is made with the bill in view:
 
-termish and monkeyfs each declare a structural `FileSystem` protocol.
-They already agree: the same sixteen-odd methods, and a `FileMetadata`
-that is field-for-field identical (`size`, `created_at`,
-`modified_at`, `is_dir`), monkeyfs's a strict superset with `st_*`
-properties so `os.stat()` can hand it back. That is a convention that
-has held without anyone enforcing it. The proposal is to keep it a
-convention and enforce it:
+- **Background turns.** "Close the tab mid-turn, the work continues"
+  dies by construction on the browser rung.
+- **The Pyodide ceiling.** No native dependency outside Pyodide's
+  index, no real bash, iOS Safari's per-tab memory budget. agex-studio
+  shipped Python first and made TypeScript primary because Pyodide was
+  heavy; nontainer has no TypeScript escape hatch, because Python is
+  the point.
+- **A third rung to keep honest.** Skills already fork per executor;
+  tool descriptions, "what packages exist here" and the conformance
+  suites all grow a variant.
+- **First data paint on a browser-served app** is the runtime boot
+  plus the data the first handler touches. Warmth and lazy fetch make
+  that small; they do not make it zero.
 
-- **No shared import.** Both protocols are `typing.Protocol`; a shared
-  definition would change nothing at runtime. There is no natural
-  "below" — a shell over a filesystem and stdlib routing over a
-  filesystem are both consumers of one shape — and a third package
-  would cost both libraries their zero-dependency line for twenty lines
-  of protocol. Structural duplication is the Python idiom for this
-  (file-like objects, `PathLike`, WSGI).
-- **One promise, written in both READMEs.** *monkeyfs's backend
-  protocol is termish's protocol plus the ranged read; `open()` is what
-  monkeyfs provides over it, never what a backend implements.* That
-  shrinks monkeyfs's backend contract (`open` leaves it; `readlink`
-  becomes optional and probed, the way nontainer probes `refresh()`),
-  and makes every termish-shaped filesystem a Python `open()` for free.
-  `VirtualFile` is the adapter from bytes-level to file-object-level,
-  and the only place that adapter lives — which is already the shape of
-  `MountFS.open` and `ReadOnlyFS.open`, both of which delegate.
-- **A drift test where both are installed.** The repository's rule for
-  conventions is that they should not be conventions —
-  `tests/test_layering.py` walks the package with `ast` rather than
-  asking anyone to remember. Same here: nontainer is the first place
-  termish and monkeyfs meet, so it carries a meta-test that
-  `inspect.signature`s every method on both protocols and fails on
-  drift, and runs both libraries' conformance kits
-  (`termish.fs.check_filesystem`, `monkeyfs.check_filesystem` — each
-  shipped so a backend author needs neither the other library nor
-  nontainer) against `KvgitProvider.fs`, `MemoryFS`, `VirtualFS` and,
-  later, the browser guest's `LazyFS`.
+None of these is a security cost for the author's session. For
+publications, risk is traded rather than added: today's surface is
+sandbox plus handler plus host object, all on the server; browser-side
+it is the entitlement set alone, and the handler and the sandbox stop
+being the server's problem. Twenty lines of literal harvest are a
+smaller thing to defend than a sandbox.
 
-### The primitive
+## Publications in the visitor's browser
 
-```python
-def read(self, path: str, offset: int = 0, size: int = -1) -> bytes: ...
-```
-
-Defaults are today's whole-file read, so every existing backend and
-caller is unchanged; `MemoryFS` and `VirtualFS` implement the range by
-slicing; wrappers (`MountFS`, `ReadOnlyFS`, `IsolatedFS`) forward the
-two arguments. `stat().st_size` already exists for `seek(0, 2)`. Then
-`VirtualFile` in binary read mode becomes lazy — a small block cache
-over `read(path, offset, size)` instead of a materialized buffer —
-while text mode and write modes keep materializing: decoding across
-block boundaries is not worth having, and writes are whole-file by the
-protocol's own design.
-
-Who benefits, in order:
-
-1. **The browser guest.** `LazyFS.read(path, offset, size)` is an HTTP
-   `Range` request against the blob endpoint (below), so
-   `pd.read_parquet(..., columns=[...])` reads the footer and the
-   column chunks it needs. This works because pandas opens a local
-   parquet path through Python `open()` and hands pyarrow the file
-   object — which is also why handlers can read parquet under monkeyfs
-   *today*; if pyarrow opened the path itself in C++, monkeyfs would
-   never see it.
-2. **Process and kernel isolation.** The worker reaches workspace files
-   host-side over an RPC bridge that speaks the bytes-level protocol,
-   so a large file crosses whole today. Once the bridge forwards the
-   two arguments, it is lazy for free.
-3. **The author's browser rung, later.** The same `LazyFS` against a
-   per-session, authenticated endpoint.
-
-### Size, and the real cost
-
-- termish: two optional parameters on `read`; `MemoryFS` slices. ~20
-  lines.
-- monkeyfs: `open` off the backend protocol; a lazy binary-read
-  `VirtualFile` with a block cache; wrappers forward. ~100–150 lines,
-  and the ones worth testing carefully: block boundaries, `seek` past
-  EOF, `readline` across a boundary.
-- sandtrap: the process-isolation RPC filesystem forwards the
-  arguments. ~10 lines.
-- nontainer: the drift test and both conformance runs; `LazyFS` grows
-  `Range`; the blob endpoint answers 206. ~50 lines.
-
-The cost is not code. It is a protocol change across termish and
-monkeyfs (both to 0.2.0), sandtrap's `monkeyfs>=0.1.9,<0.2.0` floor
-moving, nontainer's floors moving, and the four shipping in dependency
-order. That choreography is why it is phase 0: it lives in other
-repositories, it can run in parallel with everything below, and the
-whole-file `LazyFS` means nothing waits on it.
-
-## The executor
-
-The inversion from dud is that **the guest dials in**. dud's host
-drives a guest it owns; here the guest is a tab that connects to the
-server, so the server-side executor is a stub bound to a socket.
-
-| concern | `DudExecutor` | browser executor |
-|---|---|---|
-| tree | tar push over the dud channel | the same tar over the socket; `ctx.head` affinity so a tab already holding the tree skips it |
-| harvest | scan / overlay diff → `StagedDiff` | scan-diff in the worker against a shadow of the pushed tree; whole-file payloads |
-| host objects | hostcall proxies behind `dud.public_methods` | the same allowlist; a proxy method is a sync XHR to the server, which dispatches to the live object exactly as `_host_object_rpc_handler` does |
-| `ws-*` verbs | bash functions → `ws_verb` hostcall | the guest shell is termish, so each tagged verb is a relay *command* in the guest registry; `supports_commands` is True and the `FerrySpec` path mapping applies unchanged |
-| cache | guest pickles, host stores bytes | identical |
-| isolation | a VM exceeds any `isolation` | `none` and `process` are satisfied — a worker crash costs the worker, not the page, which is what `process` promises; `kernel` is refused at open, the way `_prepare_config` refuses what a rung cannot honour, since it promises a syscall filter the browser does not have |
-| ticks | gone; wall-clock only | back — sandtrap is in-process in the worker |
-| packages | grants → image package list | grants → Pyodide package list, the same `_merge_packages` idea |
-| view reentrancy | one channel, serialized | one interpreter per tab, serialized; a worker pool is a memory question the tab answers |
-
-**Push-tree for authoring; the lazy path is built first, elsewhere.**
-termish's `FileSystem` is a bridgeable surface, and the run-ts note in
-the design doc already imagines "bridged over an RPC filesystem". For
-the author's rung, push-plus-harvest matches the existing contract and
-the cross-rung conformance suites exactly, so it starts there. But the
-lazy filesystem gets built *before* this executor, for publications
-(below), where it is mandatory rather than nice — and the author's rung
-later swaps `sync()` from "push a tar" to "send a fresh manifest of
-`working_files()`" against the same `LazyFS` and a per-session
-endpoint. Only the host→guest direction changes; the write harvest is
-the same scan-diff either way.
-
-**Network honesty.** sandtrap's network denial patches `socket`, which
-does not exist under Pyodide; `network=True` would have to mean
-allowing `pyfetch` / XHR, and the policy story needs one paragraph
-saying so rather than a knob that reads as a policy and does nothing.
-
-**A closed tab is a lost guest.** `HarvestLost` already describes the
-torn call and the workspace already surfaces it. What changes is the
-product: a turn that runs while the tab is closed cannot exist on this
-rung, because the tab is the compute. A studio that keeps delegates on
-`LocalExecutor` keeps part of that story — sessions authored on one
-executor are readable on another today.
-
-### What nontainer has to change
-
-One thing. `Executor.open` is called synchronously as the last step of
-`Runtime.__init__`, and a browser executor's guest may not exist at
-that moment: the socket connects when the tab does. So `open` must be
-allowed to **bind lazily** — hold the context, attach when a guest
-dials in, and let the first exec wait, bounded, with "no browser
-attached" as an errored result rather than an exception. That is a
-note in the protocol docstring, in the same register as `close` being
-best-effort. Nothing else on the `Executor` protocol moves.
-
-The cross-rung suites (`tests/test_wsgit_conformance.py`,
-`tests/test_wscurl_conformance.py`, the two test verbs) are the
-acceptance test: run them with a Playwright-driven Pyodide guest and
-the rung is real or it is not.
-
-## Published apps in the visitor's browser
-
-Serving is frozen and stateless: `resolve(token)` returns a read-only
-workspace and each request is one `exec_python(view=)` with
-`readonly_fs`. A publication is small by construction — the derived
-commit holds `app/` and nothing else. So a visitor's browser needs only
-the frozen subset of the executor: a read-only tree, no harvest, no
-sync, no verbs, no delegation. Ship `app/` plus a Pyodide runtime,
-intercept `api/*` in the page, dispatch into the worker; the server
-sees hostcalls and nothing else. This stands alone — authoring can stay
-server-side while publications move.
+A visitor's browser needs only the frozen subset of a guest: a
+read-only tree, no harvest, no sync, no verbs, no delegation. Ship
+`app/` plus a Pyodide runtime, intercept `api/*` in the page, dispatch
+into the worker; the server sees hostcalls and nothing else. Authoring
+can stay server-side while publications move.
 
 ### The trust boundary moves, and what that does and does not mean
 
@@ -274,11 +190,10 @@ make*. That is derivable from the code it already has.
 
 ### The entitlement harvest
 
-The server holds the frozen commit. It does not need to know *who* is
-calling — only whether this call is one the app could make — and for
-reads the honest bound is simple: *any read statement the author wrote
-anywhere in the app's public source, with parameters of the visitor's
-choosing.* The harvest states exactly that and nothing finer:
+For reads the honest bound is simple: *any read statement the author
+wrote anywhere in the app's public source, with parameters of the
+visitor's choosing.* The harvest states exactly that and nothing
+finer:
 
 ```python
 L = {n.value
@@ -379,9 +294,7 @@ sufficient*:
 
 Two routes, two origins, two principals, sharing only the dispatch
 helper. The endpoint's existence encodes the principal; nothing
-inspects a caller to decide which rules apply. In the executor table
-above, "a sync XHR to the server" means the control origin,
-session-scoped.
+inspects a caller to decide which rules apply.
 
 **The dispatcher runs in the principal's page.** That is the rule the
 table falls out of. For a visitor, the Pyodide worker lives in the
@@ -447,8 +360,9 @@ get exactly that, over the wire:
   the same sync channel hostcalls use, from
   `/apps/{token}/blob/{sha256}`. monkeyfs already routes sandboxed
   `open()` there, so `pd.read_parquet("/workspace/app/data/x.parquet")`
-  fetches that one blob, when a handler actually needs it. With phase
-  0, it fetches the byte ranges it needs.
+  fetches that one blob, when a handler actually needs it. With
+  [phase 0](#phase-0-one-filesystem-protocol-and-a-ranged-read), it
+  fetches the byte ranges it needs.
 - **Content-addressed, so cached across everything.** The blob URL is
   immutable: a v2 that did not touch the parquet does not re-download
   it, two apps over one dataset share it, and the browser cache does
@@ -480,9 +394,8 @@ Browser-side serving is for apps whose working set fits a download,
 which is most of what the studio produces because the skill already
 says "convert big source data once, then handlers read the parquet."
 For the tail, the cheap tell is a publish-time report — "this app's
-handlers touch 48MB of data," measured from the harvest's path
-literals against the manifest — so the author knows before a visitor
-does.
+handlers touch 48MB of data," measured from the path literals in `L`
+against the manifest — so the author knows before a visitor does.
 
 ## `test_app` becomes a driver protocol
 
@@ -576,6 +489,63 @@ way dud's already says "stderr merges into stdout":
 - **Presence.** `test_app` on the tab driver waits for a browser the
   way `run_python` does. Same gating, same rail state.
 
+## The executor
+
+The inversion from dud is that **the guest dials in**. dud's host
+drives a guest it owns; here the guest is a tab that connects to the
+server, so the server-side executor is a stub bound to a socket. It
+reuses the guest wheel and the tab driver the publication work builds.
+
+| concern | `DudExecutor` | browser executor |
+|---|---|---|
+| tree | tar push over the dud channel | the same tar over the socket; `ctx.head` affinity so a tab already holding the tree skips it |
+| harvest | scan / overlay diff → `StagedDiff` | scan-diff in the worker against a shadow of the pushed tree; whole-file payloads |
+| host objects | hostcall proxies behind `dud.public_methods` | the same allowlist; a proxy method is a sync XHR to the control origin, session-scoped, which dispatches to the live object exactly as `_host_object_rpc_handler` does |
+| `ws-*` verbs | bash functions → `ws_verb` hostcall | the guest shell is termish, so each tagged verb is a relay *command* in the guest registry; `supports_commands` is True and the `FerrySpec` path mapping applies unchanged |
+| cache | guest pickles, host stores bytes | identical |
+| isolation | a VM exceeds any `isolation` | `none` and `process` are satisfied — a worker crash costs the worker, not the page, which is what `process` promises; `kernel` is refused at open, the way `_prepare_config` refuses what a rung cannot honour, since it promises a syscall filter the browser does not have |
+| ticks | gone; wall-clock only | back — sandtrap is in-process in the worker |
+| packages | grants → image package list | grants → Pyodide package list, the same `_merge_packages` idea |
+| view reentrancy | one channel, serialized | one interpreter per tab, serialized; a worker pool is a memory question the tab answers |
+
+**Push-tree for authoring, `LazyFS` later.** For the author's rung,
+push-plus-harvest matches the existing contract and the cross-rung
+conformance suites exactly, so it starts there. The lazy filesystem
+already exists by then, built for publications where it was mandatory
+rather than nice; the author's rung later swaps `sync()` from "push a
+tar" to "send a fresh manifest of `working_files()`" against the same
+`LazyFS` and a per-session, authenticated blob endpoint. Only the
+host→guest direction changes; the write harvest is the same scan-diff
+either way.
+
+**Network honesty.** sandtrap's network denial patches `socket`, which
+does not exist under Pyodide; `network=True` would have to mean
+allowing `pyfetch` / XHR, and the policy story needs one paragraph
+saying so rather than a knob that reads as a policy and does nothing.
+
+**A closed tab is a lost guest.** `HarvestLost` already describes the
+torn call and the workspace already surfaces it. What changes is the
+product: a turn that runs while the tab is closed cannot exist on this
+rung, because the tab is the compute. Delegates stay on `LocalExecutor`
+at first (see *Smaller decisions*), which keeps part of that story —
+sessions authored on one executor are readable on another today.
+
+### What nontainer has to change
+
+One thing. `Executor.open` is called synchronously as the last step of
+`Runtime.__init__`, and a browser executor's guest may not exist at
+that moment: the socket connects when the tab does. So `open` must be
+allowed to **bind lazily** — hold the context, attach when a guest
+dials in, and let the first exec wait, bounded, with "no browser
+attached" as an errored result rather than an exception. That is a
+note in the protocol docstring, in the same register as `close` being
+best-effort. Nothing else on the `Executor` protocol moves.
+
+The cross-rung suites (`tests/test_wsgit_conformance.py`,
+`tests/test_wscurl_conformance.py`, the two test verbs) are the
+acceptance test: run them with a Playwright-driven Pyodide guest and
+the rung is real or it is not.
+
 ## Warmth is the embedder's
 
 Cold boot is where this could have died: agex-studio's Pyodide worker
@@ -598,17 +568,28 @@ snapshot is the same object in a tab. The "swap in the fs" half is
 nearly free here because workspace files never live in MEMFS: monkeyfs
 routes sandboxed `open()` to termish's `FileSystem`, a Python object,
 so the pristine snapshot holds no workspace state and materializing a
-session is building a `MemoryFS` from the tar.
+session is building a `MemoryFS` from a tar or a manifest.
 
 None of that is nontainer's. dud owns its VM pool, sandtrap owns the
-forkserver, the studio owns `warm_view_workers` and `NONTAINER_STUDIO_VM_WARM`;
-whether a tab's warmth comes from a snapshot, a shared worker across
-tabs of one apps origin, or a profile per app derived from the same
-AST walk as the entitlements is the studio's to decide. nontainer's
-contribution is `ctx.head` as the affinity tag and the lazy `open`
-above: the tab boots in the background and the first `run_python`
-waits, the way `dud-vm`'s first image build already does with the
-agent none the wiser.
+forkserver, the studio owns `warm_view_workers` and
+`NONTAINER_STUDIO_VM_WARM`; whether a tab's warmth comes from a
+snapshot, a shared worker across tabs of one apps origin, or a profile
+per app derived from the handlers' imports is the studio's to decide.
+nontainer's contribution is `ctx.head` as the affinity tag and the
+lazy `open` above: the tab boots in the background and the first
+`run_python` waits, the way `dud-vm`'s first image build already does
+with the agent none the wiser.
+
+Where the cost lands matters more than its size. For an author it is
+one warm worker for a session. For a visitor it is per tab, once, and
+it lands on **time-to-first-data**: ~1s on a repeat visit (code-cached
+wasm plus a memcpy-scale restore), download-bound on the first. A
+profile with pandas is 10–40× the app's own vendor bundle. That number,
+measured per profile, decides whether the pragmatic hybrid — route
+`api/*` to the server's existing route until the worker reports ready,
+then flip — is a knob or the default. The hybrid keeps the steady-state
+win and gives back "the server never runs agent code" for one or two
+requests per visit; no worse than today, just not the clean story.
 
 ### What a snapshot freezes, and `boot()`
 
@@ -660,81 +641,32 @@ twice, runs `boot()` in each, and asserts the two diverge on
 `random.random()` and `numpy.random.random()`. It rides the same
 harness as the dynamic-linking check.
 
-Where the cost lands matters more than its size. For an author it is
-one warm worker for a session. For a visitor it is per tab, once, and
-it lands on **time-to-first-data**: ~1s on a repeat visit (code-cached
-wasm plus a memcpy-scale restore), download-bound on the first. A
-profile with pandas is 10–40× the app's own vendor bundle. That number,
-measured per profile, decides whether the pragmatic hybrid — route
-`api/*` to the server's existing route until the worker reports ready,
-then flip — is a knob or the default. The hybrid keeps the steady-state
-win and gives back "the server never runs agent code" for one or two
-requests per visit; no worse than today, just not the clean story.
-
-## What it costs
-
-- **Background turns.** "Close the tab mid-turn, the work continues"
-  dies by construction on this rung.
-- **The Pyodide ceiling.** No native dependency outside Pyodide's
-  index, no real bash, iOS Safari's per-tab memory budget. agex-studio
-  shipped Python first and made TypeScript primary because Pyodide was
-  heavy; nontainer has no TypeScript escape hatch, because Python is
-  the point.
-- **A third rung to keep honest.** Skills already fork per executor;
-  tool descriptions, "what packages exist here" and the conformance
-  suites all grow a variant.
-- **I/O proportional to workspace size** — tree push and harvest per
-  call, mitigated by head affinity and, later, lazy blob fetch.
-
-None of these is a security cost for the author's session. For
-publications, risk is traded rather than added: today's surface is
-sandbox plus handler plus host object, all on the server; browser-side
-it is the entitlement set alone, and the handler and the sandbox stop
-being the server's problem. A few hundred lines of AST walk are a
-smaller thing to defend than a sandbox.
-
-## When it is worth it
-
-For a single-user local workbench, never: it moves compute from one
-process on a laptop to another process on the same laptop and pays
-with background turns. The question is whether the studio is going to
-be **hosted**. If it is, this is plausibly the cheapest path to
-multi-tenancy — cheaper than a microVM pool, with keys server-side —
-and the browser-side publication is the piece to build first, alone,
-because it stands without the executor and removes the ugliest line in
-the current threat model.
-
-"Serverless Python in the browser" is not a change of execution model.
-The apps design is already serverless — "there is no resident app
-process… requests are dispatched into sandboxed executions on demand"
-— and handlers are re-executed per request with no module state. This
-relocates a dispatcher that never had a server.
-
 ## Smaller decisions
 
-Four questions with one decision each, recorded so nobody re-derives
-them.
+Questions with one decision each, recorded so nobody re-derives them.
 
-**Cancellation: terminate by default, interrupt buffer opt-in.**
-sandtrap's `cancel()`, `timeout` and `tick_limit` are checkpoint flags,
-and a busy worker never runs its event loop, so a `postMessage`
-carrying "cancel" is never *delivered* while sync Python runs. Two
-ways in: `pyodide.setInterruptBuffer` — a `SharedArrayBuffer` the page
-writes, raising `KeyboardInterrupt` at the next bytecode boundary,
-which sandtrap reports as cancelled and the worker survives — but SAB
-needs COOP/COEP on the studio origin, which constrains what the page
-may embed (the apps-origin preview iframe would need `credentialless`
-or CORP headers); or `worker.terminate()` — no headers, always works,
-costs the warm image (~1s restore). Neither interrupts a C call
-mid-flight; that is true of every rung. Cancel is rare and a second
-on cancel is fine; a header requirement on the whole studio page is
-not, so terminate is the default and the interrupt buffer is an option
-for an origin that is already cross-origin isolated. Deadlines mirror
-dud: the tab enforces `PythonConfig.timeout` plus a grace by
-terminating; the server treats silence past that as a lost guest. A
-sync XHR hostcall carries the exec's remaining budget as its `timeout`
-(allowed in workers), so a slow server cannot wedge a call past its
-deadline.
+**Cancellation: terminate by default, interrupt buffer opt-in; hostcalls
+are sync XHR.** sandtrap's `cancel()`, `timeout` and `tick_limit` are
+checkpoint flags, and a busy worker never runs its event loop, so a
+`postMessage` carrying "cancel" is never *delivered* while sync Python
+runs. Two ways in: `pyodide.setInterruptBuffer` — a `SharedArrayBuffer`
+the page writes, raising `KeyboardInterrupt` at the next bytecode
+boundary, which sandtrap reports as cancelled and the worker survives —
+but SAB needs COOP/COEP on the studio origin, which constrains what the
+page may embed (the apps-origin preview iframe would need
+`credentialless` or CORP headers); or `worker.terminate()` — no
+headers, always works, costs the warm image (~1s restore). Neither
+interrupts a C call mid-flight; that is true of every rung. Cancel is
+rare and a second on cancel is fine; a header requirement on the whole
+studio page is not, so terminate is the default and the interrupt
+buffer is an option for an origin that is already cross-origin
+isolated. The same header requirement rules out `Atomics.wait` as the
+hostcall channel by default, so hostcalls are synchronous XHR from the
+worker, as agex-studio's already are. Deadlines mirror dud: the tab
+enforces `PythonConfig.timeout` plus a grace by terminating; the server
+treats silence past that as a lost guest. A sync XHR hostcall carries
+the exec's remaining budget as its `timeout` (allowed in workers), so a
+slow server cannot wedge a call past its deadline.
 
 **`isolation`: `process` is satisfied, `kernel` is refused.** The
 first draft refused anything but `none`, modelled on
@@ -747,6 +679,13 @@ not exceed `kernel`, which promises a syscall filter. So `none` and
 default `isolation="process"` is then valid on both rungs with one
 `PythonConfig`, and a delegate on `LocalExecutor` under a parent on
 the browser rung shares the parent's config, as a fork does today.
+
+**Delegates stay on `LocalExecutor` first.** A delegate is compute the
+user never watches; running it in the author's tab makes the tab a
+compute farm and ties it to the tab's lifetime. The store already
+tolerates sessions authored on one executor and read on another, and
+the previous decision makes one `PythonConfig` serve both rungs. A
+second worker in the author's tab is a later option, not the first.
 
 **Two tabs on one session: last attached wins.** State is
 server-side and the workspace lock serializes, so this is
@@ -764,6 +703,111 @@ restore is milliseconds, and a nontainer release then invalidates
 nothing unless it moved a stack floor. Everything else about images
 is operational and the studio's.
 
+## Phase 0: one filesystem protocol, and a ranged read
+
+Everything above reads workspace files across a wire — a visitor's
+browser pulling a publication, a tab pulling a tree from the server, a
+worker process pulling from the host over RPC. Today every one of those
+reads is whole-file, because the protocol says so: termish's
+`FileSystem.read(path) -> bytes`, and monkeyfs's `VirtualFile` is a
+`BytesIO` over the whole file, seeked to zero, written back on close.
+"Seekable" is a fiction over a full buffer. So a handler that wants two
+parquet columns of twenty downloads the parquet. This phase fixes that
+at the protocol, in two other repositories, before anything above needs
+it — and nothing above *blocks* on it: the whole-file `LazyFS` works
+without it and gets faster when it lands.
+
+### Who owns the protocol
+
+termish and monkeyfs each declare a structural `FileSystem` protocol.
+They already agree: the same sixteen-odd methods, and a `FileMetadata`
+that is field-for-field identical (`size`, `created_at`,
+`modified_at`, `is_dir`), monkeyfs's a strict superset with `st_*`
+properties so `os.stat()` can hand it back. That is a convention that
+has held without anyone enforcing it. The proposal is to keep it a
+convention and enforce it:
+
+- **No shared import.** Both protocols are `typing.Protocol`; a shared
+  definition would change nothing at runtime. There is no natural
+  "below" — a shell over a filesystem and stdlib routing over a
+  filesystem are both consumers of one shape — and a third package
+  would cost both libraries their zero-dependency line for twenty lines
+  of protocol. Structural duplication is the Python idiom for this
+  (file-like objects, `PathLike`, WSGI).
+- **One promise, written in both READMEs.** *monkeyfs's backend
+  protocol is termish's protocol plus the ranged read; `open()` is what
+  monkeyfs provides over it, never what a backend implements.* That
+  shrinks monkeyfs's backend contract (`open` leaves it; `readlink`
+  becomes optional and probed, the way nontainer probes `refresh()`),
+  and makes every termish-shaped filesystem a Python `open()` for free.
+  `VirtualFile` is the adapter from bytes-level to file-object-level,
+  and the only place that adapter lives — which is already the shape of
+  `MountFS.open` and `ReadOnlyFS.open`, both of which delegate.
+- **A drift test where both are installed.** The repository's rule for
+  conventions is that they should not be conventions —
+  `tests/test_layering.py` walks the package with `ast` rather than
+  asking anyone to remember. Same here: nontainer is the first place
+  termish and monkeyfs meet, so it carries a meta-test that
+  `inspect.signature`s every method on both protocols and fails on
+  drift, and runs both libraries' conformance kits
+  (`termish.fs.check_filesystem`, `monkeyfs.check_filesystem` — each
+  shipped so a backend author needs neither the other library nor
+  nontainer) against `KvgitProvider.fs`, `MemoryFS`, `VirtualFS` and
+  the browser guest's `LazyFS`.
+
+### The primitive
+
+```python
+def read(self, path: str, offset: int = 0, size: int = -1) -> bytes: ...
+```
+
+Defaults are today's whole-file read, so every existing backend and
+caller is unchanged; `MemoryFS` and `VirtualFS` implement the range by
+slicing; wrappers (`MountFS`, `ReadOnlyFS`, `IsolatedFS`) forward the
+two arguments. `stat().st_size` already exists for `seek(0, 2)`. Then
+`VirtualFile` in binary read mode becomes lazy — a small block cache
+over `read(path, offset, size)` instead of a materialized buffer —
+while text mode and write modes keep materializing: decoding across
+block boundaries is not worth having, and writes are whole-file by the
+protocol's own design.
+
+Who benefits, in order:
+
+1. **The browser guest.** `LazyFS.read(path, offset, size)` is an HTTP
+   `Range` request against the blob endpoint, so
+   `pd.read_parquet(..., columns=[...])` reads the footer and the
+   column chunks it needs. This works because pandas opens a local
+   parquet path through Python `open()` and hands pyarrow the file
+   object — which is also why handlers can read parquet under monkeyfs
+   *today*; if pyarrow opened the path itself in C++, monkeyfs would
+   never see it.
+2. **Process and kernel isolation.** The worker reaches workspace files
+   host-side over an RPC bridge that speaks the bytes-level protocol,
+   so a large file crosses whole today. Once the bridge forwards the
+   two arguments, it is lazy for free.
+3. **The author's browser rung, later.** The same `LazyFS` against a
+   per-session, authenticated endpoint.
+
+### Size, and the real cost
+
+- termish: two optional parameters on `read`; `MemoryFS` slices. ~20
+  lines.
+- monkeyfs: `open` off the backend protocol; a lazy binary-read
+  `VirtualFile` with a block cache; wrappers forward. ~100–150 lines,
+  and the ones worth testing carefully: block boundaries, `seek` past
+  EOF, `readline` across a boundary.
+- sandtrap: the process-isolation RPC filesystem forwards the
+  arguments. ~10 lines.
+- nontainer: the drift test and both conformance runs; `LazyFS` grows
+  `Range`; the blob endpoint answers 206. ~50 lines.
+
+The cost is not code. It is a protocol change across termish and
+monkeyfs (both to 0.2.0), sandtrap's `monkeyfs>=0.1.9,<0.2.0` floor
+moving, nontainer's floors moving, and the four shipping in dependency
+order. That choreography is why it is phase 0: it lives in other
+repositories, it can run in parallel with everything above, and the
+whole-file `LazyFS` means nothing waits on it.
+
 ## Spikes before committing
 
 1. **Does Pyodide's snapshot survive dynamically-linked packages** on
@@ -773,12 +817,9 @@ is operational and the studio's.
    twice, `boot()` each, assert `random` and `numpy.random` diverge.
 2. **First-visit bytes per profile**, and what a minimal profile
    (core Pyodide, no data stack) costs for a handler that only reads
-   a JSON file.
-3. **The sync hostcall channel**: sync XHR from the worker versus a
-   socket with `Atomics.wait` (which needs COOP/COEP on the origin).
-4. **Delegates**: a second worker in the author's tab, or
-   `LocalExecutor` on the server. Start hybrid.
-5. **Ranged reads reach pyarrow.** Confirm that pandas hands pyarrow
+   a JSON file. This number decides whether the first-byte hybrid is a
+   knob or the default.
+3. **Ranged reads reach pyarrow.** Confirm that pandas hands pyarrow
    the Python file object (it must — handlers read parquet under
    monkeyfs today) and that pyarrow then does column-selective `seek`
    / `read` against it rather than slurping the file. If it slurps,

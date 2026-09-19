@@ -108,7 +108,7 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https:
 **Why it's shaped this way**
 
 - [Design notes](docs/design.md) -- execution model, commit granularity, tool exposure, and what's still ahead
-- [Browser executor](docs/browser-executor.md) -- proposal: agent compute in a Pyodide tab, publications served from the visitor's browser, and what that moves
+- [Browser compute](docs/browser-executor.md) -- proposal: publications served from the visitor's browser, a browser executor, and the ranged read both want
 
 **Seeing it run**
 
