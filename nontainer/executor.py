@@ -63,6 +63,7 @@ from types import ModuleType
 from typing import Any, Literal
 
 from .cache import Cache
+from .errors import WorkspaceError
 
 # The contract itself lives in protocol.py, next to WorkspaceProvider,
 # so an implementer reads one file and nothing has to import this
@@ -1008,3 +1009,83 @@ class LocalExecutor:
         if self._ctx is None:
             raise RuntimeError("LocalExecutor is not open (Workspace calls open())")
         return self._ctx
+
+
+# ----------------------------------------------------------------------
+# the files-only tier
+# ----------------------------------------------------------------------
+
+
+class NoExecutor:
+    """An executor that refuses to execute: the tier for a tree that
+    holds nothing to run.
+
+    A workspace built with one is SERVED rather than run. Reads, the
+    index, tags and history all work exactly as they do anywhere else,
+    and nothing builds a sandbox, forks an isolation worker or warms a
+    view worker — there is no code here to give one to. Every
+    execution raises :class:`~nontainer.errors.WorkspaceError` carrying
+    ``reason``, which is the one message that says why this workspace
+    cannot run code and what to open instead.
+
+    The capability flags read false, so a caller that asks before it
+    calls — tool descriptions, the ``ws-*`` verb registration — leaves
+    the execution surfaces out instead of advertising one that raises.
+    """
+
+    supports_commands = False
+
+    supports_ws_verbs = False
+
+    executes = False
+    """Whether this executor runs code at all.
+
+    Read through ``Runtime.executes``, in the spirit of the two flags
+    above: an executor that does not declare it runs code, so the
+    default stays true for every implementation but this one.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    @property
+    def reason(self) -> str:
+        """Why this workspace cannot run code — the text every refusal
+        below carries."""
+        return self._reason
+
+    # -- lifecycle: nothing to bind, nothing to release -------------------
+
+    def open(self, context: ExecutionContext) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    # -- execution: the refusal -------------------------------------------
+
+    def exec_python(
+        self,
+        code: str,
+        *,
+        inputs: Mapping[str, Any] | None = None,
+        stdin: str | None = None,
+        argv: list[str] | None = None,
+        echo: Literal["none", "last", "all"] | None = None,
+        view: ViewSpec | None = None,
+    ) -> PythonResult:
+        raise WorkspaceError(self._reason)
+
+    def exec_shell(self, script: str) -> TerminalResult:
+        raise WorkspaceError(self._reason)
+
+    # -- staging: nothing runs, so nothing is ever staged -----------------
+
+    def diff(self) -> StagedDiff | None:
+        return None
+
+    def sync(self) -> None:
+        pass
+
+    def guest_to_host(self, guest_path: str) -> str | None:
+        return None
