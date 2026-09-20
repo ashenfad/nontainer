@@ -38,6 +38,7 @@ looking at the diff must not miss.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import posixpath
 from typing import Any
@@ -385,13 +386,15 @@ class ViewFS:
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[Any]:
         if not self._reachable(path):
             self._refuse_missing(path, "list_detailed")
-        base = self._abs(path)
+        # ``FileInfo.path`` is the directory as queried joined with the
+        # entry, on every backend; ``name`` is the entry's own name and
+        # says nothing about where under the directory it sits, so a
+        # nested entry of a recursive listing can only be placed from
+        # ``path``.
         return [
             info
             for info in self._fs.list_detailed(path, recursive=recursive)
-            if self._reachable_abs(
-                posixpath.normpath(posixpath.join(base, getattr(info, "name", "")))
-            )
+            if self._reachable_abs(self._abs(getattr(info, "path", "")))
         ]
 
     def glob(self, pattern: str) -> list[str]:
@@ -718,7 +721,13 @@ class SubtreeFS:
         return self._fs.list(self._under(path), recursive=recursive)
 
     def list_detailed(self, path: str = ".", recursive: bool = False) -> list[Any]:
-        return self._fs.list_detailed(self._under(path), recursive=recursive)
+        # The source spells each entry's path under its own prefix; the
+        # view answers in its own namespace, as every other path it
+        # hands back does.
+        return [
+            dataclasses.replace(info, path=self._out(info.path))
+            for info in self._fs.list_detailed(self._under(path), recursive=recursive)
+        ]
 
     def glob(self, pattern: str) -> list[str]:
         return [self._out(hit) for hit in self._fs.glob(self._under(pattern))]
