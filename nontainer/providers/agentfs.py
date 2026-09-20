@@ -280,23 +280,21 @@ class _AgentFsFS:
         from agentfs_sdk import ErrnoException
 
         p = self.resolve_path(path)
-        # The target is checked once, up front: the walk below forgives
-        # every EEXIST it meets because a parent that already exists is
-        # the normal case, and that forgiveness must not extend to the
-        # directory being asked for.
-        if self.exists(p):
-            if exist_ok and self.isdir(p):
-                return
-            raise _already_exists(path)
-        parts = [seg for seg in p.split("/") if seg]
+        # The parents are forgiven for existing already, because that is
+        # the normal case; the target is not, and it is created last
+        # through ``mkdir`` so that a collision there is judged by
+        # ``exist_ok`` at the moment it happens rather than by a check
+        # made before the walk.
+        parents = [seg for seg in p.split("/") if seg][:-1]
         cur = ""
-        for seg in parts:
+        for seg in parents:
             cur += "/" + seg
             try:
                 self._loop.call(self._fs.mkdir(cur))
             except ErrnoException as e:
                 if "EEXIST" not in str(e):
                     raise
+        self.mkdir(p, exist_ok=exist_ok)
 
     def remove(self, path: str) -> None:
         from agentfs_sdk import ErrnoException
