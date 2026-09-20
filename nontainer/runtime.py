@@ -133,8 +133,6 @@ class Runtime:
         commands: Mapping[str, Callable[..., Any]] | None = None,
         max_observation: int = 32_000,
     ) -> None:
-        from .executor import LocalExecutor
-
         self._ws = ws
         self._closed = False
         if python is not None:
@@ -203,7 +201,15 @@ class Runtime:
         # execution syncs.
         self._executor_stale = False
 
-        self._executor = executor if executor is not None else LocalExecutor()
+        if executor is None:
+            # Imported here rather than at the top of the module: a
+            # runtime handed an executor never touches the default
+            # implementation, and a workspace serving files only
+            # should not pay for the sandbox stack to find that out.
+            from .executor import LocalExecutor
+
+            executor = LocalExecutor()
+        self._executor = executor
         # open() LAST: it may fork a persistent isolation worker (see
         # LocalExecutor.open), so nothing after it can fail and orphan
         # one.
@@ -236,8 +242,24 @@ class Runtime:
     def executor(self) -> "Executor":
         """The bound executor. EXTENSION SURFACE: read it to probe
         capabilities or to reach an implementation-specific handle;
-        the runtime owns its lifecycle."""
+        the runtime owns its lifecycle.
+
+        A runtime that cannot run code (``executes`` is false) binds a
+        stand-in instead of a real executor: it holds no sandbox and
+        no worker, and refuses every execution."""
         return self._executor
+
+    @property
+    def executes(self) -> bool:
+        """Whether this runtime runs code at all.
+
+        False for a workspace opened over a tree with nothing to run —
+        a publication whose files hold no ``app/api/`` handler opens
+        that way — where there is no executor, no sandbox and no
+        worker, and every execution raises instead of running. True
+        everywhere else, an executor written before the flag included.
+        """
+        return bool(getattr(self._executor, "executes", True))
 
     @property
     def python_config(self) -> PythonConfig:

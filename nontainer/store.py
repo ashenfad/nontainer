@@ -111,6 +111,15 @@ _FROZEN_SETTINGS = (
 # at the call, and reading the tree at another one finds it empty.
 _PUBLICATION_SETTINGS = tuple(n for n in _FROZEN_SETTINGS if n != "root")
 
+# Where an app keeps the code a URL reaches, under the workspace root.
+# A publication whose tree holds nothing there is files only, and the
+# workspace it opens as has no executor at all.
+_HANDLER_DIR = "app/api"
+
+# The default workspace root, for a version published before the root
+# was recorded with it: that is the root it was published under.
+_DEFAULT_ROOT = "/workspace"
+
 
 def _check_frozen_settings(
     caller: str,
@@ -348,10 +357,28 @@ class Publication:
         current one).
 
         Reads see the published files and nothing else; nothing can be
-        written or committed. Close it when done — it holds an executor
-        and a store handle of its own. ``ws.session`` names the
-        publication's own branch, because that is where the state
-        lives: a publication belongs to no session.
+        written or committed. Close it when done — it holds a store
+        handle of its own, and an executor when it has something to
+        run. ``ws.session`` names the publication's own branch, because
+        that is where the state lives: a publication belongs to no
+        session.
+
+        **A publication with no handlers opens static, and that is the
+        default.** A published tree with no ``.py`` file directly under
+        ``app/api/`` — ``_``-prefixed modules there are helpers no URL
+        routes to — has nothing to execute, so it opens with no
+        executor at all: no sandbox, no worker, nothing warmed, and the
+        files serve as the bytes they are. ``ws.runtime.executes`` says
+        which tier a handle is. On a static one every execution raises
+        naming the publication: ``run_python``, ``terminal``, and a
+        ``/api/`` request, which the router answers as the 404 it is.
+
+        Execution settings are accepted on a static open and simply go
+        unused — ``executor_factory`` is never called and ``python``
+        never reaches a sandbox. An embedder serves every publication
+        from one table and passes one set of settings for all of them;
+        having to know a tree's tier before opening it would be a
+        worse deal than settings that have nothing to apply to.
 
         ``settings`` are :meth:`Store.open`'s construction keywords —
         ``python``, ``mounts``, ``commands``, ``cache``,
@@ -1545,7 +1572,11 @@ class Store:
 
         ``settings`` are the construction keywords the public frozen
         opens forward (see ``_FROZEN_SETTINGS``), already checked by
-        the entry point the caller used. ``root`` is spelled as a named
+        the entry point the caller used — plus, from the publication
+        open alone, an ``executor`` the store built itself: a caller
+        may not name one (an executor instance is bound to one
+        workspace), and a tree with nothing to run is given one that
+        refuses. ``root`` is spelled as a named
         parameter so a caller can pass it either way and Python binds
         it here once — there is no second value to conflict with.
 
@@ -1710,6 +1741,14 @@ class Store:
         The re-read and the open share the registry lock, so an
         unpublish cannot land between them and leave the reserved
         branch minted again by the open.
+
+        The tier is decided here, on the tree the open is about to
+        serve: a publication with no handler under ``app/api/`` is
+        served as files and is given no executor, which is why this is
+        the one frozen open that decides it. Every other one
+        (``store.resolve``, ``store.tags.at``) names an arbitrary
+        state, and a snapshot of a session is a legitimate thing to
+        run code against whatever its tree holds.
         """
         self._require_own_layout("Publication.open")
         self._require_kvgit("Publication.open")
@@ -1725,8 +1764,19 @@ class Store:
                     f"Re-read it with store.publication({version.name!r})."
                 )
             ref = Ref.parse(row["ref"])
+            root = row.get("root")
             provider = self._provider_at_commit(ref.session, ref.commit)
-        return self._frozen_workspace(provider, root=row.get("root"), **settings)
+        if not _has_handlers(provider.fs, root or _DEFAULT_ROOT):
+            from .executor import NoExecutor
+
+            settings["executor"] = NoExecutor(
+                f"{version.name}/{version.version} opened static: its "
+                f"published tree holds no handler under {_HANDLER_DIR}/, so "
+                "it was opened with no executor and nothing here can run "
+                "code. Serving its files needs none; to run code against "
+                f"this tree, open its ref instead — store.resolve({str(ref)!r})."
+            )
+        return self._frozen_workspace(provider, root=root, **settings)
 
     def _branch_head(self, branch: str) -> tuple[str | None, dict[str, Any] | None]:
         """The commit at a branch's head and the info it carries.
@@ -2388,6 +2438,31 @@ def _under(path: str, paths: "Sequence[str]", root: str) -> bool:
         if path == prefix or path.startswith(f"{prefix}/"):
             return True
     return False
+
+
+def _has_handlers(fs: Any, root: str) -> bool:
+    """Whether a published tree holds anything a request can run.
+
+    The rule is the router's, read off the tree instead of a request:
+    a ``.py`` file directly under ``<root>/app/api`` whose name does
+    not begin with ``_``. An ``_``-prefixed module there is a helper
+    the handlers import and no URL routes to, and a subdirectory is
+    not routable either — so a tree holding only those has nothing to
+    execute, exactly as an empty ``app/api`` does.
+
+    An unreadable directory reads as no handlers: the tier it decides
+    is the one that runs no code, and a tree nothing can list is not a
+    tree to run code from.
+    """
+    base = "" if root == "/" else root
+    directory = f"{base}/{_HANDLER_DIR}"
+    try:
+        if not fs.isdir(directory):
+            return False
+        names = fs.list(directory)
+    except OSError:
+        return False
+    return any(n.endswith(".py") and not n.startswith("_") for n in names)
 
 
 def _published_rows(

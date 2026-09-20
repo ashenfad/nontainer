@@ -491,6 +491,13 @@ class AppRuntime:
     # -- api -------------------------------------------------------------
 
     def _dispatch_api(self, request: Request) -> WireResponse:
+        # A workspace with no executor is one served as files: its tree
+        # held no handler when it was opened, so no /api path here has
+        # an endpoint behind it and the lookup below has nothing to
+        # find. Answered first so that serving a files-only tree never
+        # reaches for an executor that was deliberately not built.
+        if not self._ws.runtime.executes:
+            raise HttpError(404, f"no such endpoint: {request.path}")
         name = request.path[len("/api/") :].strip("/")
         if not name or "/" in name or name.startswith("_"):
             raise HttpError(404, f"no such endpoint: {request.path}")
