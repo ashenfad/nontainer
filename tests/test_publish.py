@@ -605,6 +605,22 @@ def test_the_handler_rule_reads_the_root_the_version_records(tmp_path):
     snapshot.close()
 
 
+def test_a_directory_named_like_a_handler_is_not_one(tmp_path):
+    """A handler is a file. A directory under ``app/api/`` whose name
+    ends in ``.py`` routes to nothing, so a tree holding only that is
+    as static as an empty handler directory."""
+    store = Store(tmp_path)
+    ws = frontend_only(store)
+    ws.files.write("app/api/notes.py/README", "not a module, a folder")
+    ws.commit()
+    pub = store.publish(ws, "chart")
+    ws.close()
+
+    snapshot = pub.open()
+    assert snapshot.runtime.executes is False
+    snapshot.close()
+
+
 def test_a_static_open_takes_the_embedders_settings_and_builds_nothing(tmp_path):
     """One table serves every publication, so the settings arrive
     whatever the tier a name turns out to be: they are accepted and go
