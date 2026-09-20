@@ -51,6 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sandbox.
 
 ### Added
+- **A publication with no handlers is served as files, and pays for no
+  executor.** Most published artifacts have no backend, and every
+  frozen open built a sandbox anyway. A published tree with no `.py`
+  file directly under `app/api/` — an `_`-prefixed module there is a
+  helper no URL routes to, not a handler — has nothing to execute, so
+  `Publication.open` now opens it with no executor at all: no sandbox,
+  no isolation worker, no warm view worker, and a threat model that is
+  the origin and nothing else. This is the DEFAULT; a handler is what
+  opts a publication into the executor-backed tier. Reads, the index,
+  tags and history are the same workspace either way,
+  `ws.runtime.executes` says which tier a handle is on, and a `/api/`
+  request against a static one is the 404 a path with no endpoint
+  behind it always was. Every execution raises instead, with one
+  message that names the publication and hands over the ref to resolve
+  if running code against the tree is what was wanted. The execution
+  settings still go at the open and are simply unused there
+  (`executor_factory` is never called), because an embedder serves
+  every publication from one table and should not have to know a
+  tree's tier before opening it. `store.resolve` and `store.tags.at`
+  are untouched: they name arbitrary states, and a frozen snapshot of
+  a session is a legitimate thing to run code against.
 - **`ws.files.read(path, offset, size)`** — the host-side file read
   takes the same byte range the filesystem underneath does, so the
   public API is not the one place the range stops. `offset` counts

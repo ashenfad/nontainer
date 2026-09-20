@@ -191,6 +191,22 @@ published under, and reading them at another one finds an empty tree.
 A session's own `ws.tags.at(name)` is the other shape — it inherits
 the settings of the session it came from.
 
+**A publication with no handlers opens static**, and that is the
+default tier. A published tree with no `.py` file directly under
+`app/api/` (an `_`-prefixed module there is a helper no URL routes to,
+not a handler) has nothing to execute, so `Publication.open` builds no
+executor for it at all — no sandbox, no worker, nothing warmed — and
+the files serve as the bytes they are. `ws.runtime.executes` says
+which tier a handle is on; on a static one every execution raises a
+`WorkspaceError` naming the publication and the ref to resolve if code
+is what you wanted. The execution settings are still accepted there
+and go unused — `executor_factory` is never called — so an embedder
+serving every publication from one table need not know a tree's tier
+before opening it. Only `Publication.open` decides this: `store.resolve`
+and `store.tags.at` name arbitrary states, and a frozen snapshot of a
+session is a legitimate thing to run code against. `docs/apps.md` has
+the serving half.
+
 A **writable mount is refused** (`ValueError` naming the point). A
 frozen workspace accepts no writes from anyone, and a mount is the one
 part of its filesystem that is a real host directory rather than a
@@ -489,8 +505,9 @@ provider to outlive the workspace has to say so by not handing it over.
 **Every frozen open is a workspace to close.** `ws.tags.at(name)`,
 `store.tags.at(name)`, `store.resolve(ref)` and
 `Publication.open(version)` each return a `Workspace` of their own,
-with its own runtime and its own executor — on a VM rung, its own
-machine. Reading a snapshot and walking away leaks all of that, so
+with its own runtime and — everywhere but a static publication, which
+has no code to run and is given no executor — its own executor, on a
+VM rung its own machine. Reading a snapshot and walking away leaks all of that, so
 each is a `with` block or a `try` / `finally`:
 
 ```python
