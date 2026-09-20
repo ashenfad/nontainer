@@ -1297,3 +1297,43 @@ def test_a_short_id_nothing_matches_reads_like_a_whole_one(ws, store):
         store.resolve("main@0123456")
     with pytest.raises(CommitNotFoundError):
         store.resolve(f"main@{'0' * 40}")
+
+
+def test_a_recursive_view_listing_places_nested_entries_by_path(tmp_path):
+    """A nested entry of a recursive listing is placed by ``FileInfo.path``,
+    the only field that says where under the directory it sits: keyed on
+    ``name`` alone, a hidden ``hidden/deep/x.txt`` and a visible
+    ``seen/deep/x.txt`` would be told apart by luck."""
+    from monkeyfs import IsolatedFS
+
+    from nontainer.views import ViewFS
+
+    base = IsolatedFS(str(tmp_path / "tree"))
+    base.makedirs("seen/deep", exist_ok=True)
+    base.makedirs("hidden/deep", exist_ok=True)
+    base.write("seen/deep/x.txt", b"ok")
+    base.write("hidden/deep/x.txt", b"S3CR3T")
+    view = ViewFS(base, ("/seen",))
+
+    listed = sorted(i.path for i in view.list_detailed("/", recursive=True))
+    assert listed == ["/seen", "/seen/deep", "/seen/deep/x.txt"]
+    nested = view.list_detailed("/seen", recursive=True)
+    assert sorted(i.path for i in nested) == ["/seen/deep", "/seen/deep/x.txt"]
+    assert all(i.name == i.path.rsplit("/", 1)[-1] for i in nested)
+
+
+def test_a_subtree_view_lists_in_its_own_namespace(tmp_path):
+    """The source spells paths under its prefix; the view must not."""
+    from monkeyfs import IsolatedFS
+
+    from nontainer.views import SubtreeFS
+
+    base = IsolatedFS(str(tmp_path / "tree"))
+    base.makedirs("/workspace/app/api", exist_ok=True)
+    base.write("/workspace/app/api/h.py", b"def get(req): pass")
+    view = SubtreeFS(base, "/workspace")
+
+    paths = sorted(i.path for i in view.list_detailed("/app", recursive=True))
+    assert paths == ["/app/api", "/app/api/h.py"]
+    assert not any(p.startswith("/workspace") for p in paths)
+    assert all(str(tmp_path) not in p for p in paths)
