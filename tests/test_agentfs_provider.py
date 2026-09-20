@@ -22,6 +22,41 @@ def afs_ws(tmp_path):
 # -- provider basics ---------------------------------------------------------
 
 
+def test_makedirs_exist_ok_false_refuses_an_existing_directory(afs_ws):
+    fs = afs_ws.files.fs
+    fs.makedirs("/workspace/deep/nest")
+    fs.makedirs("/workspace/deep/nest", exist_ok=True)
+    with pytest.raises(FileExistsError):
+        fs.makedirs("/workspace/deep/nest", exist_ok=False)
+    with pytest.raises(FileExistsError):
+        fs.mkdir("/workspace/deep/nest")
+
+
+def test_list_detailed_answers_in_the_queried_namespace(afs_ws):
+    afs_ws.files.write("nested/leaf.txt", "x")
+    fs = afs_ws.files.fs
+    by_query = {
+        "nested": ["nested/leaf.txt"],
+        "nested/": ["nested/leaf.txt"],
+        "/workspace/nested": ["/workspace/nested/leaf.txt"],
+        ".": ["nested"],
+        "/": ["/workspace"],
+    }
+    for query, expected in by_query.items():
+        infos = fs.list_detailed(query)
+        assert [i.path for i in infos] == expected, query
+        assert all(i.name == i.path.rsplit("/", 1)[-1] for i in infos), query
+
+
+def test_exist_ok_forgives_a_directory_and_not_a_file(afs_ws):
+    fs = afs_ws.files.fs
+    afs_ws.files.write("taken.txt", "a file where a directory was asked for")
+    with pytest.raises(FileExistsError):
+        fs.makedirs("/workspace/taken.txt", exist_ok=True)
+    with pytest.raises(FileExistsError):
+        fs.mkdir("/workspace/taken.txt", exist_ok=True)
+
+
 def test_caps(afs_ws):
     caps = afs_ws.caps
     assert not caps.versioned
