@@ -2447,8 +2447,8 @@ def _has_handlers(fs: Any, root: str) -> bool:
     a ``.py`` file directly under ``<root>/app/api`` whose name does
     not begin with ``_``. An ``_``-prefixed module there is a helper
     the handlers import and no URL routes to, and a subdirectory is
-    not routable either — so a tree holding only those has nothing to
-    execute, exactly as an empty ``app/api`` does.
+    not routable either, whatever it is named — so a tree holding only
+    those has nothing to execute, exactly as an empty ``app/api`` does.
 
     An unreadable directory reads as no handlers: the tier it decides
     is the one that runs no code, and a tree nothing can list is not a
@@ -2462,7 +2462,10 @@ def _has_handlers(fs: Any, root: str) -> bool:
         names = fs.list(directory)
     except OSError:
         return False
-    return any(n.endswith(".py") and not n.startswith("_") for n in names)
+    return any(
+        n.endswith(".py") and not n.startswith("_") and fs.isfile(f"{directory}/{n}")
+        for n in names
+    )
 
 
 def _published_rows(
