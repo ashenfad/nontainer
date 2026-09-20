@@ -155,14 +155,15 @@ the parent store base for dir/agentfs (they resolve `<session>/` and
 ## `Executor` — where code runs
 
 `WorkspaceProvider` says where state *lives*; `Executor` says how code
-*runs* against it. The contract has two capability flags, two lifecycle
-methods, two execution methods, two staging methods and one path
-mapper. Choosing and configuring one of the two that ship is the
+*runs* against it. The contract has two capability flags, one optional
+capability object, two lifecycle methods, two execution methods, two
+staging methods and one path mapper. Choosing and configuring one of the two that ship is the
 embedder's side, in the [API reference](api.md#executors).
 
 ```python
 supports_commands: bool
 supports_ws_verbs: bool
+app_driver: AppDriver | None   # optional
 
 def open(self, context: ExecutionContext) -> None
 def close(self) -> None
@@ -204,6 +205,14 @@ of cwd and a verb's argv all arrive in the guest's spelling, and naming
 a workspace file means mapping one back; `None` is the honest answer
 for an in-process executor and for a guest path outside the workspace,
 which a caller passes through unchanged rather than guessing at.
+
+**`app_driver`** *(optional)* — the
+[`AppDriver`](apps.md#the-driver-seam) `test_app` should verify an app
+with, or nothing. The rung that will SERVE an app is the rung that can
+verify it the way a visitor sees it, so an executor able to offer that
+runtime says so by defining the name; `Runtime.app_driver` reads it and
+answers `None` for everything else, which is every executor that ships
+today. An embedder overrides the choice with `AppsConfig.driver`.
 
 **`open(context)`** binds to one session's state and starts any
 resident machinery — `LocalExecutor` builds the default sandbox and
