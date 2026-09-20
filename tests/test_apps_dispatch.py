@@ -1176,3 +1176,48 @@ def test_a_dropped_workspace_takes_its_app_runtime_with_it(tmp_path):
     del ws, runtime
     gc.collect()
     assert gone() is None
+
+
+# -- ws-curl: the media type decides the newline, never the bytes -------------
+
+
+def test_curl_leaves_a_blob_that_is_valid_utf8_alone():
+    """A binary body can be valid UTF-8 -- NUL is -- and it is still a
+    blob: the server said octet-stream, so no newline is synthesized
+    and a redirect lands it byte for byte."""
+    ws, rt = make_ws()
+    write_handler(ws, "blob", "def get(req):\n    return b'\\x00\\x01\\x02abc'\n")
+    try:
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/blob > blob.bin")
+        assert r, r.stderr
+        assert ws.files.fs.read("/workspace/blob.bin") == b"\x00\x01\x02abc"
+    finally:
+        ws.close()
+
+
+def test_curl_lands_every_byte_value_through_a_redirect():
+    ws, rt = make_ws()
+    write_handler(ws, "allbytes", "def get(req):\n    return bytes(range(256))\n")
+    try:
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/allbytes > all.bin")
+        assert r, r.stderr
+        assert ws.files.fs.read("/workspace/all.bin") == bytes(range(256))
+    finally:
+        ws.close()
+
+
+def test_curl_terminates_a_text_body_for_the_transcript():
+    """JSON and text bodies get the newline a transcript wants, so the
+    next line of output does not run into them."""
+    ws, rt = make_ws()
+    write_handler(ws, "jsonish", "def get(req):\n    return {'ok': True}\n")
+    write_handler(ws, "plain", "def get(req):\n    return 'no newline'\n")
+    try:
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/jsonish")
+        assert r, r.stderr
+        assert r.stdout.endswith("}\n"), r.stdout
+        r = ws.terminal("ws-curl $APP_ORIGIN/api/plain")
+        assert r, r.stderr
+        assert r.stdout == "no newline\n"
+    finally:
+        ws.close()
