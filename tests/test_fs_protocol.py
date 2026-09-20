@@ -235,43 +235,6 @@ def _agentfs_fs() -> Iterator[Any]:
         shutil.rmtree(root, ignore_errors=True)
 
 
-#: monkeyfs's in-memory backend accepts ``makedirs(exist_ok=False)`` on
-#: a directory that is already there. Marked expected-failure rather
-#: than worked around: the kit is stating the rule ``os.makedirs``
-#: states, termish's ``MemoryFS`` keeps it, and monkeyfs's own
-#: ``IsolatedFS`` keeps it by delegating to ``os.makedirs`` — only
-#: ``VirtualFS`` is out, and it raises solely when the path exists as a
-#: file. A kvgit-backed workspace is a ``VirtualFS``, so it inherits
-#: this. Settling it belongs in monkeyfs, where the method is.
-_virtualfs_makedirs = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "monkeyfs VirtualFS.makedirs() returns silently for a directory "
-        "that already exists, where exist_ok=False asks for "
-        "FileExistsError — the behaviour os.makedirs, termish's MemoryFS "
-        "and monkeyfs's own IsolatedFS all have"
-    ),
-)
-
-#: monkeyfs's real-directory backend spells ``FileInfo.path`` relative
-#: to the filesystem root, so listing ``/a/b`` answers ``a/b/one.txt``
-#: where termish's convention — the queried directory joined to the
-#: entry — asks for ``/a/b/one.txt``. ``MemoryFS`` and ``VirtualFS``
-#: both follow the convention, which is what makes this a divergence
-#: rather than an undecided question. nontainer itself is unaffected:
-#: its own ``list_detailed`` filters on ``FileInfo.name``, never on
-#: ``path``. Settling it belongs in monkeyfs.
-_isolatedfs_list_detailed_path = pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "monkeyfs IsolatedFS.list_detailed() returns FileInfo.path "
-        "relative to the filesystem root rather than to the queried "
-        "directory, which is the spelling termish's FileInfo documents "
-        "and MemoryFS and VirtualFS produce"
-    ),
-)
-
-
 def _agentfs_installed() -> bool:
     from importlib.util import find_spec
 
@@ -289,9 +252,9 @@ _needs_agentfs = pytest.mark.skipif(
 FILESYSTEMS: list[tuple[str, Callable[[], Any], tuple[Any, ...], tuple[Any, ...]]] = [
     # (id, factory, marks for the termish kit, marks for the monkeyfs kit)
     ("termish.MemoryFS", _memory_fs, (), ()),
-    ("monkeyfs.VirtualFS", _virtual_fs, (_virtualfs_makedirs,), ()),
-    ("KvgitProvider.fs", _kvgit_fs, (_virtualfs_makedirs,), ()),
-    ("DirProvider.fs", _dir_fs, (_isolatedfs_list_detailed_path,), ()),
+    ("monkeyfs.VirtualFS", _virtual_fs, (), ()),
+    ("KvgitProvider.fs", _kvgit_fs, (), ()),
+    ("DirProvider.fs", _dir_fs, (), ()),
     ("AgentFSProvider.fs", _agentfs_fs, (_needs_agentfs,), (_needs_agentfs,)),
 ]
 
