@@ -105,6 +105,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail.
 
 ### Fixed
+- **The AgentFS filesystem answers the conformance kits.** Two
+  divergences the drift test found once the `agentfs` extra was
+  installed: `makedirs(exist_ok=False)` on an existing directory
+  returned quietly, because the walk that forgives an existing parent
+  also forgave the target, and `list_detailed` put a bare relative
+  name in `FileInfo.path` where every other backend puts the queried
+  directory joined with the entry. Both now match: `makedirs` and
+  `mkdir` raise `FileExistsError` with `EEXIST` for a taken path, and
+  `exist_ok` forgives an existing directory and not a file in the way;
+  `list_detailed` answers in the namespace it was asked in, relative
+  for a relative query and absolute for an absolute one.
+- **A directory named like a handler is a 404, not a 500.** The
+  handler lookup asked whether `app/api/<name>.py` existed, so a
+  directory carrying that name passed the check and failed the read
+  of it as source. The lookup asks `isfile` now, the same question the
+  static-tier detection asks of the published tree.
 - **A view placed a nested entry of a recursive listing by the wrong
   path.** `ViewFS.list_detailed` decided whether an entry was reachable
   by joining the queried directory onto `FileInfo.name`, which only

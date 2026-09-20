@@ -161,6 +161,18 @@ def test_404_no_handler():
     ws.close()
 
 
+def test_404_directory_named_like_a_handler():
+    """A handler is a file: a directory under ``app/api/`` whose name
+    ends in ``.py`` is no endpoint, and asking for it is the plain 404
+    rather than a failed read of the directory as source."""
+    ws, rt = make_ws()
+    ws.files.write("app/api/folder.py/README", "a directory, not a module")
+    r = rt.dispatch(request("GET", "/api/folder"))
+    assert r.status == 404
+    assert json.loads(r.content)["error"] == "no such endpoint: /api/folder"
+    ws.close()
+
+
 def test_404_py_suffix_gets_did_you_mean():
     """Agents mirror the FILENAME into the url (fetch('api/explorer.py'))
     and then debug the backend for ages — the 404 must label the door."""
