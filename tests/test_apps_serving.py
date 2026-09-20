@@ -623,3 +623,34 @@ def test_a_published_app_reaches_the_embedders_host_objects(tmp_path):
     assert db.entries() == ["ada"]
     assert snapshot.frozen
     snapshot.close()
+
+
+def test_the_router_serves_a_publication_with_no_handlers(tmp_path):
+    """The static tier end to end: a published tree with nothing under
+    app/api/ is opened without an executor and served as the files it
+    is — the frontend comes back, and /api is the 404 a path with no
+    endpoint behind it has always been."""
+    from nontainer import Store
+
+    store = Store(tmp_path)
+    ws = store.open("author")
+    ws.files.write("app/index.html", "<html><body><h1>chart</h1></body></html>")
+    ws.files.write("app/chart.js", "// every bit of it client-side")
+    ws.commit()
+    store.publish(ws, "chart")
+    ws.close()
+
+    snapshot = store.publication("chart").open()
+    assert snapshot.runtime.executes is False
+
+    token = mint_token()
+    app = Starlette()
+    app.mount("/apps", build_router(lambda t: snapshot if t == token else None))
+    client = TestClient(app)
+
+    assert "<h1>chart</h1>" in client.get(f"/apps/{token}/").text
+    assert client.get(f"/apps/{token}/chart.js").status_code == 200
+    missing = client.get(f"/apps/{token}/api/anything")
+    assert missing.status_code == 404
+    assert missing.json() == {"error": "no such endpoint: /api/anything"}
+    snapshot.close()

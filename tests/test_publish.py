@@ -527,6 +527,128 @@ def test_a_publication_outlives_its_session(tmp_path):
     assert "@store/anchor" not in store._branches()
 
 
+# -- the static tier --------------------------------------------------------
+#
+# A publication is an app, and an app with no handlers is a directory of
+# files: nothing to execute, so nothing is built to execute it.
+
+
+def frontend_only(store, session="frontend"):
+    """A session whose app is a frontend and nothing else."""
+    ws = store.open(session)
+    ws.files.write("app/index.html", "<h1>a chart</h1>")
+    ws.files.write("app/chart.js", "// every bit of it client-side")
+    ws.commit(info={"tool": "seed"})
+    return ws
+
+
+def test_a_publication_with_no_handlers_opens_static(tmp_path):
+    store = Store(tmp_path)
+    ws = frontend_only(store)
+    pub = store.publish(ws, "chart")
+    ws.close()
+
+    snapshot = pub.open()
+    assert snapshot.runtime.executes is False
+    assert snapshot.files.read("app/index.html") == b"<h1>a chart</h1>"
+    with pytest.raises(WorkspaceError, match="chart/v1 opened static"):
+        snapshot.run_python("1 + 1")
+    with pytest.raises(WorkspaceError, match="no handler under app/api/"):
+        snapshot.terminal("echo hi")
+    snapshot.close()
+
+
+def test_a_publication_with_a_handler_opens_with_an_executor(tmp_path):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    pub = store.publish(ws, "scoreboard")
+    ws.close()
+
+    snapshot = pub.open()
+    assert snapshot.runtime.executes is True
+    assert snapshot.run_python("out = 1 + 1").namespace["out"] == 2
+    snapshot.close()
+
+
+def test_a_helper_module_is_not_a_handler(tmp_path):
+    """An ``_``-prefixed module under ``app/api/`` is imported by
+    handlers and routed to by nothing, so a tree holding only those has
+    nothing to run — and an empty handler directory is the same tree
+    with one fewer file in it."""
+    store = Store(tmp_path)
+    ws = frontend_only(store)
+    ws.files.write("app/api/_scoring.py", "def total(xs):\n    return sum(xs)\n")
+    ws.commit()
+    pub = store.publish(ws, "chart")
+    ws.close()
+
+    snapshot = pub.open()
+    assert snapshot.runtime.executes is False
+    assert snapshot.files.read("app/api/_scoring.py").startswith(b"def total")
+    snapshot.close()
+
+
+def test_the_handler_rule_reads_the_root_the_version_records(tmp_path):
+    """Detection happens at the publication's own root, so a flat-layout
+    session is read at ``/app/api`` the way a rooted one is read at
+    ``/workspace/app/api``."""
+    store = Store(tmp_path)
+    ws = store.open("flat", root="/")
+    ws.files.write("app/index.html", "<h1>flat</h1>")
+    ws.files.write("app/api/scores.py", "def get(req):\n    return {'n': 1}\n")
+    ws.commit()
+    pub = store.publish(ws, "flat")
+    ws.close()
+
+    snapshot = pub.open()
+    assert snapshot.runtime.executes is True
+    snapshot.close()
+
+
+def test_a_static_open_takes_the_embedders_settings_and_builds_nothing(tmp_path):
+    """One table serves every publication, so the settings arrive
+    whatever the tier a name turns out to be: they are accepted and go
+    unused, and the factory is never called."""
+    from nontainer import PythonConfig
+
+    store = Store(tmp_path)
+    ws = frontend_only(store)
+    pub = store.publish(ws, "chart")
+    ws.close()
+
+    def factory():
+        raise AssertionError("a static open builds no executor")
+
+    snapshot = pub.open(
+        python=PythonConfig(host_objects={"db": object()}),
+        executor_factory=factory,
+        max_observation=1_000,
+    )
+    assert snapshot.runtime.executes is False
+    snapshot.close()
+
+
+def test_the_static_refusal_names_the_ref_that_runs_code(tmp_path):
+    """Staticness is a fact about a publication, not about the state
+    behind it: the refusal hands over the ref, and resolving that ref
+    opens a workspace with an executor like any other frozen open."""
+    store = Store(tmp_path)
+    ws = frontend_only(store)
+    version = store.publish(ws, "chart").current_version
+    ws.close()
+
+    snapshot = store.publication("chart").open()
+    with pytest.raises(WorkspaceError) as refusal:
+        snapshot.run_python("1 + 1")
+    snapshot.close()
+    assert str(version.ref) in str(refusal.value)
+
+    resolved = store.resolve(str(version.ref))
+    assert resolved.runtime.executes is True
+    assert resolved.run_python("out = 1 + 1").namespace["out"] == 2
+    resolved.close()
+
+
 # -- refusals ---------------------------------------------------------------
 
 
