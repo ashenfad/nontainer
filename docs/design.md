@@ -554,8 +554,9 @@ pitch; the pitch is the *workspace*.
   keeps the provider and the loop and each user's machine runs each
   user's agent; and, before both, a ranged read on the filesystem
   protocol. Written up in [browser-executor.md](browser-executor.md):
-  the trust boundary a browser-served publication moves and the
-  entitlement set that answers it, `test_app` as a driver protocol,
+  the trust boundary a browser-served publication moves and the rule
+  that answers it (a visitor-facing host object is a public API the
+  embedder shapes for that audience), `test_app` as a driver protocol,
   the one contract note (`open` binds lazily), and why warmth is the
   embedder's.
 - **run-ts** — a Node sidecar wrapping
