@@ -760,6 +760,54 @@ lives in the external store its handlers reach through `host_objects`,
 and does not roll back with it — v1's code against v3's schema is your
 problem, not the registry's.
 
+### Static publications: files only, and no executor
+
+**Most published apps have no backend, and one that has none pays for
+none.** A publication whose tree holds no handler under `app/api/` —
+no `.py` file there whose name does not start with `_`, since those are
+the helper modules handlers import and no URL routes to — has nothing
+to execute, so `pub.open()` builds no executor for it: no sandbox, no
+isolation worker, no warm view worker, nothing to size and nothing to
+reap. The router serves the files, and the threat model is the one a
+frontend always had, which is the origin you serve it from.
+
+**This is the default.** Nothing opts a publication into it; a handler
+under `app/api/` is what opts one *out*, into the executor-backed tier
+the rest of this page describes.
+
+```python
+snapshot = store.publication("chart").open()
+snapshot.runtime.executes  # False -- this one is served as files
+snapshot.files.read("app/index.html")  # reads work as they always do
+snapshot.run_python("1 + 1")  # WorkspaceError naming the publication
+```
+
+`ws.runtime.executes` is how an embedder tells the two apart, and it is
+the only thing that differs: reads, the index, tags and history are the
+same workspace on either tier, and a `/api/` request against a static
+one is the 404 that a path with no endpoint behind it has always been.
+Every execution raises instead — `run_python`, `terminal`, a handler
+dispatch — with one message that names the publication, says it opened
+static because its tree holds no handler, and gives the ref to open if
+you do want to run code against the tree.
+
+**The settings still go at the open.** An embedder serves every
+publication from one table and passes the same
+`python=PythonConfig(host_objects=...)`, `executor_factory` and the
+rest to every `pub.open()` in it. A static open accepts them and uses
+none of them — the factory is never called, no sandbox policy is ever
+built — rather than making a caller know a tree's tier before it can
+open it. The day a version of that same app grows a handler, the
+unchanged call opens it on the executor-backed tier with the settings
+it was passing all along.
+
+Only `Publication.open` decides this, because a publication is an app
+by construction. `store.resolve(ref)` and `store.tags.at(name)` name an
+arbitrary state, and a frozen snapshot of a session is a legitimate
+thing to run code against whatever its tree happens to hold — which is
+also the way out the refusal names: the version's ref, resolved, is a
+frozen workspace with an executor like any other.
+
 ### Token, database, route: the embedder's table
 
 The publication registry is deliberately generic — versions, the tag
@@ -853,8 +901,10 @@ app.mount("/apps", router)      # serves /apps/{token}/...
 - **Threat framing:** anonymous HTTP triggers agent-authored code under
   your sandbox policy. The default posture keeps the BACKEND boring —
   read-only VFS, no network unless the PythonConfig granted it,
-  per-request budgets. The browser side is only as isolated as the
-  origin you serve it from, which is yours to choose: see below.
+  per-request budgets. A publication with no handlers triggers nothing
+  at all: it opened with no executor, so the backend half of this is
+  absent rather than contained. The browser side is only as isolated as
+  the origin you serve it from, which is yours to choose: see below.
 
 ## Hosting for real (the embedder's half)
 
