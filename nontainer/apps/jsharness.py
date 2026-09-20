@@ -28,11 +28,13 @@ fetch — which is the outcome that teaches. The policy is written here
 because ``AppsConfig.csp_extend`` adds sources and never removes them,
 so no configuration path tightens the derived one.
 
-Requests are answered by intercepting them (``context.route``) rather
-than by a listener: no port to bind, no server to reap, and the same
-pattern test_app already proves against this browser. Results come back
-through ``page.evaluate``, which goes over CDP and is not subject to the
-page's own policy.
+The browser itself is not this module's business. A run is one
+:class:`~nontainer.apps.driver.DriveSpec` — the harness page and the
+files under test as a serve callable, one ``eval`` action awaiting the
+run's promise — handed to the same driver ``test_app`` uses. No port to
+bind, no server to reap. The result comes back through the page's own
+evaluation, which goes over the browser's control channel and is not
+subject to the page's policy.
 
 The browser lives on the HOST on every rung. On a VM rung the guest
 never sees the test file; the workspace filesystem is read here.
@@ -40,16 +42,16 @@ never sees the test file; the workspace filesystem is read here.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import posixpath
-import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote
 
 from ..wspytest import TestFrame, TestOutcome
+from .contract import WireResponse
 from .dispatch import _content_type
+from .driver import ActionOutcome, DriveReport, DriveSpec, Refusal, pick_driver
 from .testapp import parse_frames
 
 _HOST = "nontainer.test"
@@ -376,195 +378,175 @@ def _served(ws: Any, rel: str) -> tuple[bytes, str] | None:
     return fs.read(path), _content_type(clean)
 
 
-async def _run_file(
-    browser: Any,
-    sema: "asyncio.Semaphore",
-    ws: Any,
-    rel: str,
-    *,
-    name: str | None,
-    load_timeout_ms: int,
-    run_timeout_ms: int,
-) -> FileResult:
-    """Run one test file on a fresh context of the shared browser."""
-    loop = asyncio.get_running_loop()
-    console: dict[str, int] = {}
-    refused: dict[str, None] = {}
-    misses: list[str] = []
-    page_errors: list[dict] = []
-    started = time.perf_counter()
+def _serve(ws: Any, rel: str, name: str | None, misses: list[str]) -> Any:
+    """How the harness page and the files under test reach the browser.
 
-    def _page_error(e: Any) -> None:
-        if len(page_errors) < 20:
-            page_errors.append(
-                {
-                    "name": getattr(e, "name", "") or "Error",
-                    "message": getattr(e, "message", None) or str(e),
-                    "stack": getattr(e, "stack", "") or "",
-                }
-            )
+    The trees are served as they stand — no api routes come up, and a
+    path that names nothing is remembered as well as answered: a module
+    import that 404s surfaces in the page as "Failed to fetch
+    dynamically imported module" and names the IMPORTER, never the file
+    that was missing.
+    """
 
-    def _console(message: Any) -> None:
-        line = f"[{message.type}] {message.text}"
-        if line in console:
-            console[line] += 1
-        elif len(console) < 50:
-            console[line] = 1
-
-    async def route_handler(route: Any, request: Any) -> None:
-        parts = urlsplit(request.url)
-        if parts.netloc != _HOST:
-            # Hermetic: a unit test has no business off this origin, and
-            # the policy already refused it — this is the second wall.
-            if len(refused) < 20:
-                refused.setdefault(
-                    f"{request.url} -> blocked ({request.resource_type}): a "
-                    "ws-vitest run reaches the files under test and nothing "
-                    "else. Stub the boundary with vi.stubFetch."
-                )
-            await route.abort()
-            return
-        if parts.path != _PREFIX and not parts.path.startswith(_PREFIX + "/"):
-            # An absolute path leaves the synthetic root — including the
-            # /api/* an app's own frontend would call.
-            await route.fulfill(
-                status=404, body=_HERMETIC_BODY, content_type="application/json"
-            )
-            return
+    def serve(method: str, url: str, body: bytes, headers: Any) -> WireResponse:
         # Percent-DECODED before anything looks it up: a space, a `#`
         # or a non-ASCII character rides the wire encoded, and matching
         # the encoded spelling against a filename reports a file that is
         # right there as missing. `_served` normalizes and confines what
         # comes out, so a decoded separator cannot escape the two trees.
-        rest = unquote(parts.path[len(_PREFIX) + 1 :])
+        rest = unquote(url.split("?", 1)[0].split("#", 1)[0].lstrip("/"))
         if rest in ("", "index.html"):
-            await route.fulfill(
-                status=200,
-                body=page_html(rel, {"name": name} if name else {}),
-                content_type="text/html; charset=utf-8",
-                headers={"content-security-policy": UNIT_CSP},
+            return WireResponse(
+                200,
+                page_html(rel, {"name": name} if name else {}),
+                "text/html; charset=utf-8",
+                {"content-security-policy": UNIT_CSP},
             )
-            return
         if rest == HARNESS_PATH:
-            await route.fulfill(
-                status=200,
-                body=harness_js(),
-                content_type="text/javascript; charset=utf-8",
-            )
-            return
+            return WireResponse(200, harness_js(), "text/javascript; charset=utf-8")
         if rest == "api" or rest.startswith("api/"):
-            await route.fulfill(
-                status=404, body=_HERMETIC_BODY, content_type="application/json"
-            )
-            return
-        found = await loop.run_in_executor(None, _served, ws, rest)
+            return WireResponse(404, _HERMETIC_BODY, "application/json")
+        found = _served(ws, rest)
         if found is None:
-            # Remembered, not just answered: a module import that 404s
-            # surfaces in the page as "Failed to fetch dynamically
-            # imported module" and names the IMPORTER, never the file
-            # that was missing.
             if rest not in misses and len(misses) < 20:
                 misses.append(rest)
-            await route.fulfill(
-                status=404, body=_NOT_FOUND_BODY, content_type="application/json"
-            )
-            return
-        body, content_type = found
-        await route.fulfill(status=200, body=body, content_type=content_type)
+            return WireResponse(404, _NOT_FOUND_BODY, "application/json")
+        content, content_type = found
+        return WireResponse(200, content, content_type)
 
-    async with sema:
-        context = await browser.new_context()
-        try:
-            await context.add_init_script(
-                "document.addEventListener('securitypolicyviolation', e => {"
-                "  (window.__nt_csp = window.__nt_csp || []).push("
-                "    [e.effectiveDirective || e.violatedDirective,"
-                "     e.blockedURI || '(inline)']);"
-                "});"
-            )
-            page = await context.new_page()
-            page.on("console", _console)
-            page.on("pageerror", _page_error)
-            await context.route("**/*", route_handler)
-            try:
-                await page.goto(BASE_URL, timeout=load_timeout_ms)
-            except Exception as e:
-                return FileResult(
-                    file=rel,
-                    duration=time.perf_counter() - started,
-                    console=tuple(console),
-                    load_error=str(e),
-                )
-            try:
-                # page.evaluate goes over CDP, so it is not subject to the
-                # page's own policy; the deadline bounds the WHOLE await,
-                # since a test that never settles would otherwise hang the
-                # verb with no output.
-                payload = await asyncio.wait_for(
-                    page.evaluate(_AWAIT_RUN), run_timeout_ms / 1000
-                )
-            except (TimeoutError, asyncio.TimeoutError):
-                payload = {
-                    "results": [],
-                    "collected": 0,
-                    "error": {
-                        "name": "Error",
-                        "message": (
-                            f"the run did not finish within {run_timeout_ms}ms — a "
-                            "test returned a promise that never settled"
-                        ),
-                        "stack": "",
-                    },
-                }
-            except Exception as e:
-                payload = {
-                    "results": [],
-                    "collected": 0,
-                    "error": {"name": "Error", "message": str(e), "stack": ""},
-                }
-            for directive, blocked in await _violations(page):
-                if len(refused) < 20:
-                    refused.setdefault(
-                        f"{blocked} -> blocked by the ws-vitest policy "
-                        f"({directive}). A unit run reaches the files under "
-                        "test and nothing else."
-                    )
-            sources = _Sources(ws)
-            error = payload.get("error")
-            if error:
-                frames = workspace_frames(error.get("stack") or "", sources)
-                message = _message(error)
-                if misses and "dynamically imported module" in message:
-                    message += " — nothing is served at " + ", ".join(misses)
-                return FileResult(
-                    file=rel,
-                    duration=time.perf_counter() - started,
-                    console=_lines(console),
-                    violations=tuple(refused),
-                    collection_error=message,
-                    frames=tuple(frames),
-                )
-            outcomes = [_outcome(rel, record, sources) for record in payload["results"]]
-            # What no test was running to be charged with: a module-scope
-            # rejection, a timer that outlived the test that set it.
-            # Playwright's own pageerror is the backstop for anything the
-            # page's listeners could not attribute, and is used only when
-            # the harness accounted for nothing — otherwise the same
-            # failure would be reported twice.
-            unattributed = list(payload.get("stray") or ())
-            if not unattributed and not any(o.status != "passed" for o in outcomes):
-                unattributed = page_errors
-            outcomes.extend(_unhandled(rel, record, sources) for record in unattributed)
-            return FileResult(
-                file=rel,
-                outcomes=tuple(outcomes),
-                duration=time.perf_counter() - started,
-                collected=int(payload.get("collected") or 0),
-                console=_lines(console),
-                violations=tuple(refused),
-            )
-        finally:
-            await context.close()
+    return serve
+
+
+def _spec(
+    ws: Any,
+    rel: str,
+    misses: list[str],
+    *,
+    name: str | None,
+    load_timeout_ms: int,
+    run_timeout_ms: int,
+) -> DriveSpec:
+    """One test file's run, as a drive: load the harness page, then
+    await the run's promise.
+
+    Hermetic by construction — no script hosts, no open resource types,
+    and a policy of ``'self'`` — so a forgotten stub fails on the fetch
+    rather than passing for the wrong reason. Nothing settles either:
+    the page makes its own requests and the run is over when the
+    harness says so, not when the network goes quiet.
+    """
+    return DriveSpec(
+        serve=_serve(ws, rel, name, misses),
+        base_url=BASE_URL,
+        actions=({"eval": _AWAIT_RUN},),
+        csp=UNIT_CSP,
+        eval_timeout_ms=run_timeout_ms,
+        load_timeout_ms=load_timeout_ms,
+        settle_cap_ms=0,
+        console_limit=50,
+        off_base_status=404,
+        off_base_body=_HERMETIC_BODY.decode(),
+    )
+
+
+def _payload(outcome: ActionOutcome | None, run_timeout_ms: int) -> dict:
+    """The harness's own report, or an error standing in for it."""
+
+    def failed(message: str) -> dict:
+        return {
+            "results": [],
+            "collected": 0,
+            "error": {"name": "Error", "message": message, "stack": ""},
+        }
+
+    if outcome is None:
+        return failed("the run produced no result")
+    if outcome.timed_out:
+        return failed(
+            f"the run did not finish within {run_timeout_ms}ms — a test "
+            "returned a promise that never settled"
+        )
+    if not outcome.ok:
+        return failed(outcome.error or "the run did not produce a result")
+    if not isinstance(outcome.value, dict):
+        return failed(f"the harness answered with {outcome.value!r}")
+    return outcome.value
+
+
+def _refusal_note(refusal: Refusal) -> str:
+    """One refusal in the unit tier's own words: everything here points
+    at the same repair, which is to stub the boundary."""
+    if refusal.kind == "policy":
+        return (
+            f"{refusal.url} -> blocked by the ws-vitest policy "
+            f"({refusal.directive}). A unit run reaches the files under "
+            "test and nothing else."
+        )
+    return (
+        f"{refusal.url} -> blocked ({refusal.resource_type}): a "
+        "ws-vitest run reaches the files under test and nothing "
+        "else. Stub the boundary with vi.stubFetch."
+    )
+
+
+def _result(
+    ws: Any,
+    rel: str,
+    report: DriveReport,
+    misses: list[str],
+    run_timeout_ms: int,
+) -> FileResult:
+    """One report as this verb's report contract."""
+    console = _lines(dict(report.console))
+    violations = tuple(
+        dict.fromkeys(_refusal_note(r) for r in report.refusals if r.kind != "off-base")
+    )
+    if report.load_error is not None:
+        return FileResult(
+            file=rel,
+            duration=report.duration,
+            console=console,
+            violations=violations,
+            load_error=report.load_error,
+        )
+    sources = _Sources(ws)
+    payload = _payload(report.actions[0] if report.actions else None, run_timeout_ms)
+    error = payload.get("error")
+    if error:
+        frames = workspace_frames(error.get("stack") or "", sources)
+        message = _message(error)
+        if misses and "dynamically imported module" in message:
+            message += " — nothing is served at " + ", ".join(misses)
+        return FileResult(
+            file=rel,
+            duration=report.duration,
+            console=console,
+            violations=violations,
+            collection_error=message,
+            frames=tuple(frames),
+        )
+    outcomes = [_outcome(rel, record, sources) for record in payload["results"]]
+    # What no test was running to be charged with: a module-scope
+    # rejection, a timer that outlived the test that set it. The
+    # driver's own page errors are the backstop for anything the page's
+    # listeners could not attribute, and are used only when the harness
+    # accounted for nothing — otherwise the same failure would be
+    # reported twice.
+    unattributed = list(payload.get("stray") or ())
+    if not unattributed and not any(o.status != "passed" for o in outcomes):
+        unattributed = [
+            {"name": e.name, "message": e.message, "stack": e.stack}
+            for e in report.page_errors
+        ]
+    outcomes.extend(_unhandled(rel, record, sources) for record in unattributed)
+    return FileResult(
+        file=rel,
+        outcomes=tuple(outcomes),
+        duration=report.duration,
+        collected=int(payload.get("collected") or 0),
+        console=console,
+        violations=violations,
+    )
 
 
 #: Await the harness's promise, giving the module entry a moment to park
@@ -583,13 +565,6 @@ _AWAIT_RUN = """async () => {
   }
   return await window.__nt_done;
 }"""
-
-
-async def _violations(page: Any) -> list[tuple[str, str]]:
-    try:
-        return list(await page.evaluate("window.__nt_csp || []") or [])
-    except Exception:  # noqa: BLE001 — a diagnostic never breaks a run
-        return []
 
 
 def _lines(console: dict[str, int]) -> tuple[str, ...]:
@@ -623,36 +598,33 @@ def run_js_tests(
     files already run are returned, and the rest are not started; 0 is
     no limit.
     """
-    from .browser import submit_job
-
     require_playwright()
+    driver = pick_driver(workspace=ws)
     out: list[FileResult] = []
     failed = 0
     # The workspace's single-writer lock, held for the whole run on THIS
     # thread: the page is served from the tree as it stands, so nothing
     # may rewrite a module between the import that loads it and the test
     # that asserts on it. Held here rather than taken per read inside the
-    # route handler, which runs on the browser loop's worker threads —
-    # an RLock is re-entrant for its owner and a deadlock for anyone
-    # else, and the verb is typed inside an already-locked terminal call.
+    # serve callable, which the driver calls on a worker thread — an
+    # RLock is re-entrant for its owner and a deadlock for anyone else,
+    # and the verb is typed inside an already-locked terminal call.
     with ws.lock:
         for rel in files:
+            misses: list[str] = []
+            spec = _spec(
+                ws,
+                rel,
+                misses,
+                name=name,
+                load_timeout_ms=load_timeout_ms,
+                run_timeout_ms=run_timeout_ms,
+            )
             try:
-                result = submit_job(
-                    lambda browser, sema, rel=rel: _run_file(
-                        browser,
-                        sema,
-                        ws,
-                        rel,
-                        name=name,
-                        load_timeout_ms=load_timeout_ms,
-                        run_timeout_ms=run_timeout_ms,
-                    )
-                ).result()
+                report = driver.run(spec)
             except Exception as e:  # noqa: BLE001 — a browser failure is a result
-                result = FileResult(
-                    file=rel, load_error=f"Playwright/Chromium unavailable: {e}"
-                )
+                report = DriveReport(load_error=f"{type(driver).__name__} failed: {e}")
+            result = _result(ws, rel, report, misses, run_timeout_ms)
             out.append(result)
             if result.failed:
                 failed += 1
