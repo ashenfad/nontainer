@@ -1137,11 +1137,11 @@ wheels = [
 
 [[package]]
 name = "monkeyfs"
-version = "0.1.11"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/96/6979c5934ed70f37bad886629784e68b2b419954516fc73c3376e1f7bdb7/monkeyfs-0.1.11.tar.gz", hash = "sha256:4ccd34a6226bb79b1820cbc3865c2c27cb892ca7e4039f3932181cab576a3bed", size = 113146, upload-time = "2026-09-16T22:29:31.734Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/c7/41a5c872903a462c8776c6015133e1774788a752ddc170d7de77c9880607/monkeyfs-0.2.0.tar.gz", hash = "sha256:b171fe341f53fb8814e1d627b077b5a579c89661fd7c12f621782fb08fc7e66e", size = 131843, upload-time = "2026-09-20T19:11:55.547Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/cc/726bcf1f1ab97d263413488e7aa48775a743f0f62646bc7baf48d4969059/monkeyfs-0.1.11-py3-none-any.whl", hash = "sha256:d17b3c27d701e81726678898308ffded05f3a242ab51c47877b8ca6b89697657", size = 58915, upload-time = "2026-09-16T22:29:30.637Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/47/a50ef27b297f8ba7dedfd07bd830feda9d3b7b5023328791bfea1c3a9e99/monkeyfs-0.2.0-py3-none-any.whl", hash = "sha256:2e0193da086a96b6146d6a776af7595b3fc8cd958589a4bc2d0a5560b4733fc9", size = 69707, upload-time = "2026-09-20T19:11:54.162Z" },
 ]
 
 [[package]]
@@ -1198,7 +1198,7 @@ requires-dist = [
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.9" },
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
-    { name = "monkeyfs", specifier = ">=0.1.11" },
+    { name = "monkeyfs", specifier = ">=0.2.0" },
     { name = "numpy", marker = "extra == 'dev'" },
     { name = "pandas", marker = "extra == 'dev'" },
     { name = "playwright", marker = "extra == 'apps'", specifier = ">=1.40" },
@@ -1206,9 +1206,9 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.3" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", specifier = ">=0.3.7" },
+    { name = "sandtrap", specifier = ">=0.4.0" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
-    { name = "termish", specifier = ">=0.1.9" },
+    { name = "termish", specifier = ">=0.2.0" },
 ]
 provides-extras = ["agentfs", "apps", "agno", "mcp", "dud", "dev"]
 
@@ -2387,14 +2387,14 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.3.7"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/51/a0/e0cee912e7fd152d68bceafd362c78f164288fc87f025c8b94f7d1cea086/sandtrap-0.3.7.tar.gz", hash = "sha256:4b1b81ca0ba72ab756e437ec820db53996d534ab27d9611843fd3d3e6a0751cc", size = 184191, upload-time = "2026-09-16T18:31:26.97Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/db/8cb372d8a6853349b4354d3f39c9ad29383ed090608117b5f2b612024321/sandtrap-0.4.0.tar.gz", hash = "sha256:6ac834e5cfcb8a6b3513e84d77032d5f9b1dd78d1aeb8898a0bbf705c1608e89", size = 176352, upload-time = "2026-09-20T21:07:08.232Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/20/1be4727ef890cdcbedfab34c104ce8e55a5801dcee4051360d27b9dd9813/sandtrap-0.3.7-py3-none-any.whl", hash = "sha256:653f338d1df2a585f5a2b0a262f41560d5fba7a481ce411a39809efd11f84d87", size = 103890, upload-time = "2026-09-16T18:31:25.579Z" },
+    { url = "https://files.pythonhosted.org/packages/83/a0/ae7978f3a07d95929edfdefef8cbb7dcbbbc6cf652e80087708b2e26bf1d/sandtrap-0.4.0-py3-none-any.whl", hash = "sha256:0bbf90051117b138400040861a9317cc181555646ed61f1b06eaa18dd6ee3624", size = 99079, upload-time = "2026-09-20T21:07:07.129Z" },
 ]
 
 [[package]]
@@ -2452,11 +2452,11 @@ wheels = [
 
 [[package]]
 name = "termish"
-version = "0.1.9"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/85/22/9b7a1febc998ce502dd1e7013fd5c769e9386d50a85091982316702522f5/termish-0.1.9.tar.gz", hash = "sha256:5c65d1137ec6e021ff20be6d2b04ec35ae7d4e210ccc68f6627d2f9cbc70449c", size = 98437, upload-time = "2026-07-21T22:17:42.297Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/1c/646ca29ac7f517bf70cd120c0fd89d2a3ee81948143996fdbb59e3465ec7/termish-0.2.0.tar.gz", hash = "sha256:e756deff6ae32b740030b2f45cb17dfe89610ef8864b31d96525b9bf455d00d2", size = 117000, upload-time = "2026-09-20T19:07:04.168Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/0d/c3563ad240aa46746545e853096a77a3fe6b6538e18e4809d55fbd50e5e1/termish-0.1.9-py3-none-any.whl", hash = "sha256:b71922c3c649339c920c4c9b61d0219d2c01cf55641cb4d08bbf42609502dce7", size = 71719, upload-time = "2026-07-21T22:17:41.023Z" },
+    { url = "https://files.pythonhosted.org/packages/58/bc/2cdc2b268caff2ade1b410a728f36ebe48d9316b451d6b2db3286acd50ba/termish-0.2.0-py3-none-any.whl", hash = "sha256:d9046ef7fa34c6a1b074f0c90f1e7d349b2d78f6fe697b8f59456ff1e19f9b4e", size = 83515, upload-time = "2026-09-20T19:07:02.925Z" },
 ]
 
 [[package]]

@@ -25,7 +25,17 @@ dependencies = [
     # 0.1.9: a failing command's stdout survives the raise — curl's
     # error BODY reaches the agent, not just "HTTP 404" (every hint
     # dispatch writes rides in that body)
-    "termish>=0.1.9",
+    # 0.2.0: FileSystem.read takes a byte range (offset, size), so a
+    # reader that wants a parquet footer or the tail of a log pulls
+    # that range rather than the whole file; check_filesystem ships in
+    # the package as the conformance kit tests/test_fs_protocol.py
+    # runs. Pipes and redirects carry bytes, so `ws-curl /logo.png >
+    # logo.png` writes the PNG instead of a UTF-8-replaced
+    # transliteration of it, and ctx.stdout.buffer is the binary path
+    # an injected command emits through. Plus a printf builtin, and a
+    # control-flow keyword that raises one ParseError naming it
+    # instead of three unrelated "command not found" lines.
+    "termish>=0.2.0",
     # 0.1.7: os.lchmod/os.lchflags, extended attributes, and 3.10's
     # Path.chmod no longer reach the real filesystem; os.utime stops
     # discarding ns= and retargeting symlinks; scandir stops describing
@@ -49,7 +59,15 @@ dependencies = [
     # one JSON table every write rewrites. That is what lets a selective
     # commit carry a file's metadata with its bytes, and lets a merge
     # settle metadata key by key with the same policy as the content.
-    "monkeyfs>=0.1.11",
+    # 0.2.0: the backend protocol's read takes the same byte range,
+    # and a binary open() is a lazy block-cached stream over it, so
+    # pd.read_parquet(path, columns=[...]) against a workspace file
+    # reads the footer and the selected column chunks rather than
+    # materializing the blob. open() and readlink() become optional
+    # probed methods, which makes every termish-shaped filesystem a
+    # working Python open() for free; check_filesystem ships as the
+    # conformance kit run against each filesystem a workspace mounts.
+    "monkeyfs>=0.2.0",
     # 0.3.0: process workers come from a forkserver broker instead of
     # forking the embedding process — the arrangement executor.py's
     # pooling and fork-hazard notes describe
@@ -64,7 +82,16 @@ dependencies = [
     # 0.3.5: raw is the default sandbox mode and the wrapped mode is
     # deprecated — the mode nontainer has always asked for is now the
     # one that gets the attention.
-    "sandtrap>=0.3.7",
+    # 0.4.0: the process-isolation RPC bridge forwards the byte range
+    # and serves a lazy binary open(), so the ranged read survives the
+    # channel instead of stopping at it — under isolation="process" a
+    # parquet footer costs one 64 KiB round trip rather than the file.
+    # A platform with no worker primitive raises IsolationUnavailable
+    # naming itself, instead of a bare OSError out of multiprocessing.
+    # ExecResult.dropped names the namespace values a worker could not
+    # pickle back. Wrapped sandbox mode is removed; executor.py passes
+    # mode="raw" explicitly, which is still accepted.
+    "sandtrap>=0.4.0",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
     # 0.3.3: the incremental orphan sweep no longer deletes chunks that

@@ -161,16 +161,36 @@ class _AgentFsFS:
 
     # -- read/write ------------------------------------------------------
 
-    def read(self, path: str) -> bytes:
+    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
+        """The file's bytes, or the ``size`` of them starting at
+        ``offset``.
+
+        The range is honoured by slicing what the SDK returns: AgentFS
+        reads a whole file or nothing, so there is no cheaper primitive
+        to forward to. Slicing is still the required behaviour rather
+        than an optimization — a caller that asks for the tail of a log
+        and is handed the log reads the wrong bytes at the wrong
+        position.
+
+        ``offset`` counts from the start and must not be negative; a
+        negative ``size`` reads to the end; a read starting at or past
+        the end returns ``b""``, and one running past the end is
+        truncated to what is there.
+        """
         from agentfs_sdk import ErrnoException
 
+        if offset < 0:
+            raise ValueError(f"negative offset: {offset}")
         try:
             data = self._loop.call(
                 self._fs.read_file(self.resolve_path(path), encoding=None)
             )
         except ErrnoException as e:
             raise FileNotFoundError(str(e)) from e
-        return data if isinstance(data, bytes) else data.encode()
+        blob = data if isinstance(data, bytes) else data.encode()
+        if offset == 0 and size < 0:
+            return blob
+        return blob[offset:] if size < 0 else blob[offset : offset + size]
 
     def write(self, path: str, content: bytes | str, mode: str = "w") -> None:
         data = content.encode() if isinstance(content, str) else content

@@ -28,8 +28,9 @@ from __future__ import annotations
 import posixpath
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from io import StringIO
 from typing import Any
+
+from termish.context import PipeStream
 
 #: The dud host-object name fronting every ``ws-*`` verb on guest
 #: rungs. A user host object under this name refuses at executor open
@@ -160,6 +161,16 @@ def _guest_ctx(args: list[str], cwd: str, captured: dict[str, bytes]) -> Any:
     ``fs.write()`` — writes are captured, not applied, so a capture
     lands guest-side (via the answer triple) instead of leaving the
     guest tree stale behind a provider write.
+
+    ``stdout`` is termish's own stream type rather than a text buffer,
+    so a command behaves here exactly as it does on the terminal rung:
+    text and bytes written through ``stdout`` and ``stdout.buffer``
+    land in the order they were written, and a command that emits
+    binary reaches a stream that accepts it instead of an
+    ``AttributeError``. What crosses to the guest is still the JSON
+    triple, whose stdout is text, so bytes that are not valid UTF-8
+    are replaced at that boundary — the rung's limit, not the
+    command's: a binary payload travels as a captured file.
     """
 
     class _CaptureFS:
@@ -175,10 +186,23 @@ def _guest_ctx(args: list[str], cwd: str, captured: dict[str, bytes]) -> Any:
     class _Ctx:
         def __init__(self) -> None:
             self.args = args
-            self.stdout = StringIO()
+            self.stdout = PipeStream()
             self.fs = _CaptureFS(cwd)
 
     return _Ctx()
+
+
+def _emitted(ctx: Any) -> tuple[bytes, str]:
+    """What a command wrote to stdout: the bytes, and the text the
+    answer triple carries.
+
+    The triple is JSON, so its stdout is text and a byte that is not
+    valid UTF-8 becomes U+FFFD there. A budget is measured against the
+    bytes instead, so a payload is weighed as what it is rather than
+    as what its transliteration weighs.
+    """
+    raw = ctx.stdout.getvalue()
+    return raw, raw.decode("utf-8", "replace")
 
 
 def map_argv(mapper: Any, argv: list[str], spec: FerrySpec) -> list[str]:
@@ -274,18 +298,18 @@ class WsVerbHostHandler:
                 result = cmd(ctx)
             except Exception as e:  # noqa: BLE001 — parity: termish wraps these
                 return {
-                    "stdout": ctx.stdout.getvalue(),
+                    "stdout": _emitted(ctx)[1],
                     "stderr": f"{verb}: execution error: {e}",
                     "exit_code": 1,
                 }
-            out = ctx.stdout.getvalue()
+            raw, out = _emitted(ctx)
             # (host_path, guest_path, data) per capture; None when a
             # capture escapes the workspace.
             landed = self._guest_files(ws, unmapper, captured)
             if landed is None:
                 return _fail(verb, "output path escapes the workspace")
             if spec.budget is not None and spec.over_budget is not None:
-                size = len(out.encode()) + sum(len(d) for _, _, d in landed)
+                size = len(raw) + sum(len(d) for _, _, d in landed)
                 if size > spec.budget():
                     return spec.over_budget(ws, out, landed, result)
             encoded = {

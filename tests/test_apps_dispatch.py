@@ -837,8 +837,9 @@ def test_follow_location_with_stub_runtime():
     at 5 hops); without it the 3xx reads as-is. Stub runtime: handler
     sandboxes cannot import Response, so redirect sources are pinned
     here rather than through a live handler."""
-    from io import StringIO
     from types import SimpleNamespace
+
+    from termish.context import PipeStream
 
     from nontainer.apps import AppsConfig
     from nontainer.apps.contract import WireResponse
@@ -870,10 +871,13 @@ def test_follow_location_with_stub_runtime():
             return WireResponse(200, b'{"ok": true}', "application/json", {})
 
     def run(*args):
-        ctx = SimpleNamespace(args=list(args), stdout=StringIO(), fs=None)
+        # termish's own stream, not a StringIO: ws-curl writes the
+        # response body through stdout.buffer, and a stub without one
+        # tests a context no handler is ever handed.
+        ctx = SimpleNamespace(args=list(args), stdout=PipeStream(), fs=None)
         res = make_curl_command(StubRt())(ctx)
         assert (res.exit_code if res is not None else 0) == 0
-        return ctx.stdout.getvalue()
+        return ctx.stdout.getvalue().decode()
 
     out = run("-L", "/api/old")
     assert seen == ["/api/old", "/api/nums"]
@@ -897,8 +901,9 @@ def test_inferred_post_becomes_get_on_redirect():
     """curl's -L convention: an inferred POST (from -d) turns into a
     GET on 301/302/303; explicit -X POST — and always 307/308 —
     resend the body."""
-    from io import StringIO
     from types import SimpleNamespace
+
+    from termish.context import PipeStream
 
     from nontainer.apps import AppsConfig
     from nontainer.apps.contract import WireResponse
@@ -923,10 +928,13 @@ def test_inferred_post_becomes_get_on_redirect():
             return WireResponse(302, b"moved", "text/plain", {"location": "/api/new"})
 
     def run(*args):
-        ctx = SimpleNamespace(args=list(args), stdout=StringIO(), fs=None)
+        # termish's own stream, not a StringIO: ws-curl writes the
+        # response body through stdout.buffer, and a stub without one
+        # tests a context no handler is ever handed.
+        ctx = SimpleNamespace(args=list(args), stdout=PipeStream(), fs=None)
         res = make_curl_command(StubRt())(ctx)
         assert (res.exit_code if res is not None else 0) == 0
-        return ctx.stdout.getvalue()
+        return ctx.stdout.getvalue().decode()
 
     run("-L", "-d", "a=1", "/api/old")
     assert seen == [("POST", "/api/old", b"a=1"), ("GET", "/api/new", b"")]
