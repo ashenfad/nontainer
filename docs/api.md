@@ -1176,6 +1176,8 @@ ws.runtime.supports_ws_verbs: bool
 ws.runtime.cache_enabled: bool
 ws.runtime.python_config: PythonConfig
 ws.runtime.guest_to_host(path) -> str | None   # a guest path, host-spelled
+ws.runtime.app_driver: AppDriver | None  # the executor's own app driver,
+                                         # if the rung offers one
 ```
 
 **`ws.store`** is what makes store-level work on this session's
@@ -1262,6 +1264,10 @@ Runtime(ws, *, executor=None, python=None, mounts=None,
 rt.executor -> Executor            # the bound executor
 rt.python_config -> PythonConfig
 rt.supports_commands / rt.supports_ws_verbs -> bool
+rt.app_driver -> AppDriver | None  # the executor's own app driver, for
+                                   # test_app to verify on the runtime
+                                   # an app will be served from; None
+                                   # on every rung today (apps.md)
 rt.exec_python(code, ...) -> PythonResult   # raw: no lock, no commit
 rt.exec_shell(script) -> TerminalResult     # raw: no lock, no commit
 rt.register_command(name, fn, *, rebind=None) -> None
@@ -2014,7 +2020,7 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   agent spells a request: `ws-curl $APP_ORIGIN/api/scores`.
            #   Fictional: no listener exists, dispatch is by path, so a
            #   port here is decorative.
-           handler_example=None)  # the example handler the apps notes
+           handler_example=None,  # the example handler the apps notes
            #   show — the code an agent copies for its first endpoint.
            #   None = the built-in get/post pair keeping state in cache;
            #   "" omits it; a string REPLACES it (__WS__ in it becomes
@@ -2023,7 +2029,15 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   the real rule in apps_primer underneath it loses, because
            #   the example is what gets copied. nontainer's own contract
            #   stays either way — only verb functions are routed, the
-           #   return shapes, HttpError, read-only GET. Fields are
+           #   return shapes, HttpError, read-only GET.
+           driver=None)  # the AppDriver test_app runs through. None
+           #   picks: this field, then the executor's own
+           #   (ws.runtime.app_driver), then a headless Chromium on the
+           #   host. A driver takes one DriveSpec — the actions, the
+           #   viewport, the policy, and how the app is SERVED (a
+           #   callable into this dispatch) — and answers a DriveReport.
+           #   The invariant: the driver's dispatcher is the dispatcher
+           #   the publication will use. See apps.md. Fields are
            #   declared in this order, so positional construction
            #   binds them this way.
 

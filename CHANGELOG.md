@@ -51,6 +51,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sandbox.
 
 ### Added
+- **`test_app` runs through an `AppDriver`.** Verification was one
+  490-line Playwright coroutine that also decided what an action means,
+  how a refusal reads and which stack frame is the agent's. It is a
+  protocol now: a driver takes one `DriveSpec` — the coerced actions,
+  the resolved viewport, the policy and script hosts, the timeouts, and
+  **how the app is served**, a callable into the same dispatch the
+  published router uses — and answers one `DriveReport`, raw
+  (per-action results, console lines with repeat counts, unparsed
+  stacks, refused requests, policy violations, screenshot bytes).
+  Everything the agent reads is written on the near side of it, which
+  is also where screenshots are now saved and stacks annotated, once
+  the run is over rather than mid-run. The invariant that makes this
+  worth having: the driver's dispatcher is the dispatcher the
+  publication will use, so preview and publication share a runtime by
+  construction. `AppsConfig.driver` sets one, `Runtime.app_driver`
+  lets an executor offer one, and the fallback is the headless Chromium
+  that was there before — so no run changes today. `ws-vitest` is the
+  second consumer, driving the same protocol with a hermetic spec of
+  its own.
 - **A publication with no handlers is served as files, and pays for no
   executor.** Most published artifacts have no backend, and every
   frozen open built a sandbox anyway. A published tree with no `.py`

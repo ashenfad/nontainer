@@ -661,6 +661,45 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
   loop into a thread and serialized per workspace, so a page's parallel
   fetches never reenter the sandbox.
 
+### The driver seam
+
+`test_app` is two halves with a protocol between them
+(`nontainer.apps.driver`):
+
+```python
+class AppDriver(Protocol):
+    def run(self, spec: DriveSpec) -> DriveReport: ...
+```
+
+The neutral half decides what an action means, which stack frame is the
+agent's, how a refusal reads, where a screenshot goes and what makes a
+run PASS. The driver half opens a page, runs the whole action list and
+answers raw: per-action results, console lines with their repeat
+counts, page errors with unparsed stacks, refused requests, policy
+violations, screenshot bytes. It is a batch, not a conversation —
+there is no `click()` method to implement, because a driver reached
+over a socket or a postMessage bridge could not offer one.
+
+`DriveSpec` carries what has already been decided: the coerced actions,
+the resolved viewport, the policy string and script hosts, the
+timeouts, and **how the app is served** — a callable answering
+`(method, url, body, headers)` with a wire response. That callable is
+the invariant the seam exists for: **the driver's dispatcher is the
+dispatcher the publication will use.** Today's driver runs Playwright
+on the host against server-side dispatch, which is what server-side
+serving runs, so preview and publication share a runtime by
+construction rather than by resemblance.
+
+Who picks, in order: `AppsConfig.driver`; else the executor's, if it
+offers one (`ws.runtime.app_driver`, probed the way
+`supports_ws_verbs` is); else the Playwright driver. No executor offers
+one yet, so every run ends up on the host's shared Chromium.
+
+`ws-vitest` is the second consumer — the same driver, a different spec
+(the harness page and the `app/`/`tests/` trees as its serve callable,
+a hermetic policy, no settling). Two consumers are what keep the
+protocol honest.
+
 ## Delivery (where nontainer's concern ends)
 
 nontainer's delivery surface is exactly: the `/workspace/app` convention, the
@@ -1086,3 +1125,8 @@ relative-URL rule holds unchanged.
   wants sqlite, a C extension that bypasses the virtual fs — so it needs
   the `dir` backend or a writable `Mount`. A documented sharp edge, not
   a solvable one.
+- **One driver.** The `AppDriver` seam exists and has two consumers,
+  but only one implementation: a headless browser on the host. A driver
+  that verifies an app where it will actually be served — a rung's own
+  runtime rather than the host's — is the point of the seam and is not
+  written yet.
