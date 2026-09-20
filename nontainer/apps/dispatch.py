@@ -503,13 +503,16 @@ class AppRuntime:
             raise HttpError(404, f"no such endpoint: {request.path}")
         handler_path = f"{self._api_root}/{name}.py"
         fs = self._ws.files.fs
-        if not fs.exists(handler_path):
+        # A handler is a file. A directory carrying the name is not an
+        # endpoint, and answering 404 here is what keeps it from being
+        # read as source below.
+        if not fs.isfile(handler_path):
             # agents mirror the FILENAME into the url
             # (fetch('api/explorer.py')) and then debug the backend for
             # an hour — label the door
             if name.endswith(".py"):
                 bare = name[:-3]
-                if bare and fs.exists(f"{self._api_root}/{bare}.py"):
+                if bare and fs.isfile(f"{self._api_root}/{bare}.py"):
                     raise HttpError(
                         404,
                         f"no such endpoint: {request.path} — endpoints are"
