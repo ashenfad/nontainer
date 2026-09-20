@@ -1,11 +1,13 @@
-"""The ``ws-vitest`` harness and its driver: JavaScript unit tests in a
-headless browser, against the files the workspace holds.
+"""The ``ws-vitest`` harness: JavaScript unit tests in a headless
+browser, against the files the workspace holds.
 
-Requires the ``[apps]`` extra (playwright) plus ``playwright install
-chromium`` — the same browser ``test_app`` drives, on the same shared
-loop-thread and semaphore, with a context of its own.
+Runs on the same :class:`~nontainer.apps.driver.AppDriver` ``test_app``
+uses, with a spec of its own — so the default rung needs the ``[apps]``
+extra (playwright) plus ``playwright install chromium``, and shares
+that one browser.
 
-Two things make this a driver rather than a ``test_app`` flag.
+Two things make this a spec of its own rather than a ``test_app``
+flag.
 
 **The synthetic root has two trees under it.** ``app/`` and ``tests/``
 are served as siblings::

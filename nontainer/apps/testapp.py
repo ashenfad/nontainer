@@ -321,8 +321,9 @@ def _describe_elsewhere(frames: list[Frame]) -> str:
 def _line_reader(runtime: "AppRuntime") -> Any:
     """``(rel, lineno) -> source line | None``, read from the workspace.
 
-    Called off the browser loop-thread (see the call site): it takes the
-    workspace lock, which the route dispatch also holds."""
+    Takes the workspace lock for each read, which is why it runs once
+    the drive is over: dispatch holds the same lock for every request a
+    page makes."""
 
     def read_line(rel: str, lineno: int) -> str | None:
         ws = runtime.workspace
@@ -410,10 +411,10 @@ class TestAppResult:
 
 
 def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
-    """Write a screenshot to the workspace fs — off the browser loop and
-    under the workspace's single-writer lock, since ``ws.files.fs`` is shared
-    with the executor-hopped route dispatch (which serializes under the
-    same lock inside ``AppRuntime.dispatch``)."""
+    """Write a screenshot to the workspace fs, under the workspace's
+    single-writer lock: ``ws.files.fs`` is shared with dispatch and with
+    ordinary tool calls, and a write that skipped the lock could race
+    either."""
     ws = runtime.workspace
     with ws.lock:
         ws.files.fs.makedirs(f"{runtime._app_root}/screenshots", exist_ok=True)
