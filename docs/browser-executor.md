@@ -82,8 +82,11 @@ The decisions, for a reader who wants them before the argument:
 - **The far end is the harness in the tab.** Then the executor is
   `LocalExecutor` as-is, the server is a kvgit *remote* (agex-ts's
   design) plus the bridge, and no Python runs there but host objects.
-  What it gives up is server-driven turns; the question after Phase 1
-  is whether those matter.
+  What it buys is statelessness and deferred sync, not compute — the
+  hybrid already moved the expensive part — and offline authoring only
+  with bring-your-own-key. What it gives up is server-driven turns;
+  the question after Phase 1 is whether those matter, and whether the
+  scale that makes statelessness matter is in view.
 - **nontainer's `Executor` protocol changes in one place:** `open`
   may bind lazily.
 
@@ -625,6 +628,26 @@ registry, browser-served publications (static, blobs, bridge — Phase
 keys stay server-side. **No Python executes there except host
 objects.** That is the I/O manager fully realized — cleaner than the
 tab-only posture above, which still carried an exec socket.
+
+**What it buys, stated precisely.** Not compute: a harness turn is
+LLM calls (I/O wait, and with keys server-side the tokens transit the
+server as a proxy either way), tool dispatch and commits, all
+milliseconds, and the expensive part — the agent's code — already
+moved to the tab in Phase 2. What the far end removes is *state*: the
+hybrid holds a live `Workspace`, its provider, a `Runtime`, an
+executor stub, a socket and the single-writer lock per active session,
+in one Python process, so sessions are pinned to a process and memory
+scales with connected users; a remote holds nothing per session and
+any replica answers any request. Beyond that it buys deferred sync — a
+flaky connection or a server restart mid-session loses nothing, and
+the same protocol is multi-device sync — and a transport with no
+moving parts, since `LocalExecutor` is used as-is. It does *not* buy
+offline authoring on its own: a turn needs a model, and unless the
+user brings their own key (agex-studio's shape) or runs a local one,
+every turn still goes through the server's LLM proxy. Offline is a
+property of the key arrangement, not of the architecture; what the
+architecture gives a keys-server-side product is reading, editing and
+history without a turn, and sync that catches up.
 
 **The harness is the studio's, as it always was.** nontainer names the
 `SessionRunner` seam and stops; it never owned the loop. agno under
