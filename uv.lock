@@ -1137,11 +1137,11 @@ wheels = [
 
 [[package]]
 name = "monkeyfs"
-version = "0.2.0"
+version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/99/c7/41a5c872903a462c8776c6015133e1774788a752ddc170d7de77c9880607/monkeyfs-0.2.0.tar.gz", hash = "sha256:b171fe341f53fb8814e1d627b077b5a579c89661fd7c12f621782fb08fc7e66e", size = 131843, upload-time = "2026-09-20T19:11:55.547Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/af/c3a4424d13d90fa9dbec4634e91ebda6c30dc532271a876f14f4734b65af/monkeyfs-0.2.2.tar.gz", hash = "sha256:65daab3b23c147c6aa568aa12434744ed43c4e1466648a1ed89103cd283b4204", size = 135513, upload-time = "2026-09-20T22:13:43.359Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/47/a50ef27b297f8ba7dedfd07bd830feda9d3b7b5023328791bfea1c3a9e99/monkeyfs-0.2.0-py3-none-any.whl", hash = "sha256:2e0193da086a96b6146d6a776af7595b3fc8cd958589a4bc2d0a5560b4733fc9", size = 69707, upload-time = "2026-09-20T19:11:54.162Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/0b/f0dd4417dc6886c31e10f4b18f92a01761092414378ae8d76f1ba3bba310/monkeyfs-0.2.2-py3-none-any.whl", hash = "sha256:0482b7de5ab206ade27a6e1a62bfd5e8af148a732a3a6b905d1a2454b4b7b8e4", size = 71530, upload-time = "2026-09-20T22:13:42.284Z" },
 ]
 
 [[package]]
@@ -1198,7 +1198,7 @@ requires-dist = [
     { name = "kvgit", extras = ["disk"], specifier = ">=0.3.9" },
     { name = "matplotlib", marker = "extra == 'dev'" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
-    { name = "monkeyfs", specifier = ">=0.2.0" },
+    { name = "monkeyfs", specifier = ">=0.2.2" },
     { name = "numpy", marker = "extra == 'dev'" },
     { name = "pandas", marker = "extra == 'dev'" },
     { name = "playwright", marker = "extra == 'apps'", specifier = ">=1.40" },

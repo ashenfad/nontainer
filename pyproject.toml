@@ -67,7 +67,17 @@ dependencies = [
     # probed methods, which makes every termish-shaped filesystem a
     # working Python open() for free; check_filesystem ships as the
     # conformance kit run against each filesystem a workspace mounts.
-    "monkeyfs>=0.2.0",
+    # 0.2.1: VirtualFS.makedirs(exist_ok=False) raises on a directory
+    # that already exists, as os.makedirs does, and
+    # IsolatedFS.list_detailed() spells FileInfo.path in the
+    # filesystem's own namespace.
+    # 0.2.2: a recursive list_detailed() names every entry by its
+    # basename on every backend, with path saying where it sits. The
+    # three divergences the conformance kits found, settled where the
+    # methods live, so nothing in the drift test is expected to fail;
+    # and the view's reachability filter, which places a nested entry
+    # by path, is right on every backend only from here.
+    "monkeyfs>=0.2.2",
     # 0.3.0: process workers come from a forkserver broker instead of
     # forking the embedding process — the arrangement executor.py's
     # pooling and fork-hazard notes describe

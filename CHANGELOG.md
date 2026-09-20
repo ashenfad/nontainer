@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **A binary read is ranged now, in-process, under process isolation,
   and on any filesystem a workspace mounts.** The floors move to
-  `termish>=0.2.0`, `monkeyfs>=0.2.0` and `sandtrap>=0.4.0`, which
+  `termish>=0.2.0`, `monkeyfs>=0.2.2` and `sandtrap>=0.4.0`, which
   carry one protocol change between them: `FileSystem.read` takes
   `(path, offset=0, size=-1)`, a binary `open()` is a lazy
   block-cached stream over it instead of a `BytesIO` holding the whole
@@ -72,15 +72,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `termish.fs.check_filesystem` and `monkeyfs.check_filesystem` —
   against `termish.MemoryFS`, `monkeyfs.VirtualFS`,
   `KvgitProvider.fs`, `DirProvider.fs` and `AgentFSProvider.fs` where
-  the extra is installed. The kits found two monkeyfs divergences,
-  marked strict `xfail` rather than worked around: `VirtualFS.makedirs`
-  returns silently for a directory that already exists where
-  `exist_ok=False` asks for `FileExistsError` (`os.makedirs`,
-  `MemoryFS` and monkeyfs's own `IsolatedFS` all raise), and
-  `IsolatedFS.list_detailed` spells `FileInfo.path` relative to the
-  filesystem root rather than to the queried directory.
+  the extra is installed. The kits found three monkeyfs divergences on
+  the way in -- `VirtualFS.makedirs` returned silently for a directory
+  that already exists where `exist_ok=False` asks for `FileExistsError`,
+  `IsolatedFS.list_detailed` spelled `FileInfo.path` relative to the
+  filesystem root rather than to the queried directory, and a recursive
+  `list_detailed` on `VirtualFS` and `MountFS` put the entry's relative
+  path in `FileInfo.name` where the field is the basename -- settled in
+  monkeyfs 0.2.1 and 0.2.2, which is why 0.2.2 is the floor: every
+  filesystem in the table passes both kits with nothing expected to
+  fail.
 
 ### Fixed
+- **A view placed a nested entry of a recursive listing by the wrong
+  path.** `ViewFS.list_detailed` decided whether an entry was reachable
+  by joining the queried directory onto `FileInfo.name`, which only
+  located a nested entry while the backend put the entry's relative
+  path in `name` -- monkeyfs's in-memory backend did, its real-directory
+  backend never did, so over a dir-backed workspace `hidden/deep/x.txt`
+  and `seen/deep/x.txt` were told apart by luck. `FileInfo.path` is the
+  field that says where an entry sits, on every backend, and the filter
+  reads it now. `SubtreeFS.list_detailed` handed back the source's
+  spelling of each path, under the prefix the view exists to hide; it
+  translates them the way every other path it returns is translated.
 - **`ws-curl` writes a binary body as bytes.** The response body went
   out as text, so every byte that is not valid UTF-8 became U+FFFD:
   `ws-curl $APP_ORIGIN/logo.png > logo.png` wrote a transliteration of
