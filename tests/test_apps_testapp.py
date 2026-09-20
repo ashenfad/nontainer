@@ -663,18 +663,18 @@ def test_a_custom_policy_extends_the_intercepted_origins(chromium_available):
     """A host the SERVED policy allows must not be aborted here: that is
     the same divergence pointed the other way (a false red), and this
     PR is what made a custom policy possible."""
-    from nontainer.apps.testapp import _csp_script_origins
+    from nontainer.apps.csp import csp_script_origins
 
     csp = "default-src 'self'; script-src 'self' 'unsafe-inline' https://esm.corp.internal"
-    assert _csp_script_origins(csp) == ("esm.corp.internal",)
+    assert csp_script_origins(csp) == ("esm.corp.internal",)
     # keywords, scheme-only sources and wildcards are deliberately skipped
-    assert _csp_script_origins("script-src 'self' https: *.evil.com") == ()
+    assert csp_script_origins("script-src 'self' https: *.evil.com") == ()
     # the derived policy yields exactly the declared hosts, so the
     # default path is unchanged
     from nontainer.apps import DEFAULT_SCRIPT_HOSTS
     from nontainer.apps.serve import build_csp
 
-    assert _csp_script_origins(build_csp(DEFAULT_SCRIPT_HOSTS)) == DEFAULT_SCRIPT_HOSTS
+    assert csp_script_origins(build_csp(DEFAULT_SCRIPT_HOSTS)) == DEFAULT_SCRIPT_HOSTS
 
 
 def test_a_host_added_by_csp_extend_is_intercepted_too():
@@ -685,11 +685,11 @@ def test_a_host_added_by_csp_extend_is_intercepted_too():
     rather than the tuple. Otherwise the served policy would allow a
     host verification aborts: a false red."""
     from nontainer.apps import AppsConfig
+    from nontainer.apps.csp import csp_script_origins
     from nontainer.apps.serve import resolve_csp
-    from nontainer.apps.testapp import _csp_script_origins
 
     cfg = AppsConfig(csp_extend={"script-src": ("https://esm.corp.internal",)})
-    origins = _csp_script_origins(resolve_csp(cfg))
+    origins = csp_script_origins(resolve_csp(cfg))
     assert "esm.corp.internal" in origins
     assert set(cfg.script_hosts) <= set(origins)  # the declared hosts remain
 
@@ -699,20 +699,20 @@ def test_script_origins_keep_an_explicit_port():
     and it is what a request's netloc is compared against — dropping
     the port would abort a script the served policy allows. Sources
     that name no host at all are still skipped."""
-    from nontainer.apps.testapp import _csp_script_origins
+    from nontainer.apps.csp import csp_script_origins
 
     csp = "script-src 'self' https://scripts.internal:8443 https: data: *.cdn.example"
-    assert _csp_script_origins(csp) == ("scripts.internal:8443",)
-    assert _csp_script_origins("script-src 'self' blob: data: https:") == ()
+    assert csp_script_origins(csp) == ("scripts.internal:8443",)
+    assert csp_script_origins("script-src 'self' blob: data: https:") == ()
 
 
 def _permits(resource_type, url, **cfg):
     """Would the policy this config resolves to allow that request?"""
     from nontainer.apps import AppsConfig
+    from nontainer.apps.csp import csp_permits
     from nontainer.apps.serve import resolve_csp
-    from nontainer.apps.testapp import _csp_permits
 
-    return _csp_permits(resolve_csp(AppsConfig(**cfg)), resource_type, url)
+    return csp_permits(resolve_csp(AppsConfig(**cfg)), resource_type, url)
 
 
 def test_interception_honours_a_widened_directive():
@@ -755,13 +755,13 @@ def test_a_disabled_policy_permits_nothing_by_itself():
     """csp="" is no header at all, so there is no policy to read an
     allowance out of — the caller's own https rule decides, exactly as
     it did before."""
-    from nontainer.apps.testapp import _csp_permits
+    from nontainer.apps.csp import csp_permits
 
-    assert not _csp_permits("", "fetch", "http://x.internal/y")
+    assert not csp_permits("", "fetch", "http://x.internal/y")
     # keywords and non-network sources never match a network request
-    assert not _csp_permits("connect-src 'self' data: blob:", "fetch", "http://x/y")
-    assert _csp_permits("connect-src https:", "fetch", "https://x/y")
-    assert _csp_permits("default-src *", "media", "http://x/y")  # via default-src
+    assert not csp_permits("connect-src 'self' data: blob:", "fetch", "http://x/y")
+    assert csp_permits("connect-src https:", "fetch", "https://x/y")
+    assert csp_permits("default-src *", "media", "http://x/y")  # via default-src
 
 
 INTRANET_FETCH = b"""<html><body><div id="out">init</div>

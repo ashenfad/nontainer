@@ -352,6 +352,19 @@ class AppsConfig:
     read-only filesystem and cache a GET handler runs under.
 
     Declared last: see ``frontend_notes``."""
+    driver: Any = None
+    """The :class:`~nontainer.apps.driver.AppDriver` ``test_app`` runs
+    through, or ``None`` to let the run choose.
+
+    The choice, in order: this field, then the executor's own
+    (``Runtime.app_driver``), then a headless Chromium on the host. An
+    embedder sets this to verify somewhere other than the host — the
+    invariant a driver keeps is that the dispatcher it serves the page
+    from is the dispatcher the publication will use, so the driver that
+    matches how an app will be SERVED is the one that can catch what
+    would otherwise fail only after publishing.
+
+    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Validate ``csp_extend`` at construction, where the traceback

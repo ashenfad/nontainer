@@ -316,6 +316,24 @@ class Runtime:
             return bool(declared)
         return hasattr(executor, "_guest_to_host")
 
+    @property
+    def app_driver(self) -> Any:
+        """The executor's own app driver, or None.
+
+        ``test_app`` verifies an app by driving it somewhere; an
+        executor that can offer the runtime the app will actually be
+        served on says so here, and one that cannot offers nothing and
+        gets the host's headless browser. Optional on the executor
+        (``Executor.app_driver``), so an executor written before the
+        contract named it simply has none.
+
+        The object is an ``AppDriver`` — ``run(spec) -> report`` — and
+        is not typed here: core has nothing to say about apps, and
+        reaches for this name only because apps may not reach into core
+        privately.
+        """
+        return getattr(self._executor, "app_driver", None)
+
     def guest_to_host(self, guest_path: str) -> str | None:
         """A guest-absolute path as the HOST spells it, or None.
 

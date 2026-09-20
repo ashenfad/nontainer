@@ -1,30 +1,35 @@
-"""test_app: headless verification of the agent's app. Requires the
-``[apps]`` extra (playwright) plus ``playwright install chromium``.
+"""test_app: headless verification of the agent's app.
 
-The workspace IS the origin: a fresh browser context intercepts every
-request via ``page.route`` — static paths and ``/api/*`` are answered
-by the same ``dispatch`` the curl builtin uses; external hosts are
-denied except the script-host allowlist (``AppsConfig.script_hosts``,
-default esm.sh and friends for the no-build frontend tiers — the same
-declaration the served CSP derives from). No port, no server.
+Two halves meet here. This one is neutral: what an action MEANS, which
+frame of a stack is the agent's, how a refusal reads, where a
+screenshot is written, what makes a run PASS. The other drives a
+browser, behind :class:`~nontainer.apps.driver.AppDriver` — one
+``run(spec) -> report`` call, with the default driver a headless
+Chromium on the host (``driver_playwright.py``, the ``[apps]`` extra
+plus ``playwright install chromium``).
+
+The workspace IS the origin: the driver answers every request from the
+app's own ``dispatch`` — the same one the curl builtin and the
+published router use — and denies external hosts except the script-host
+allowlist (``AppsConfig.script_hosts``, default esm.sh and friends for
+the no-build frontend tiers, the same declaration the served CSP
+derives from). No port, no server.
 
 Relocatability is enforced here by construction (docs/apps.md): the
 app is served under a synthetic prefix (``/apps/t-test/``), so a
 frontend that hardcodes absolute URLs (``fetch('/api/x')``) gets an
 instructive 404 during verification instead of breaking at delivery.
 
-Screenshots are written to ``<root>/app/screenshots/`` in the workspace and
-returned as paths — bytes never ride in model-facing observations,
-and the screenshots version, fork and check out with the session.
+Screenshots come back as bytes and are written to
+``<root>/app/screenshots/`` once the run is over, returned as paths —
+bytes never ride in model-facing observations, and the screenshots
+version, fork and check out with the session.
 
-Execution: one Chromium is shared across all test_app calls, on a
-dedicated async loop-thread (see ``browser.py``); each call runs on its
-own fresh context, bounded by a concurrency semaphore. The synchronous
-route dispatch is CPU-bound, so it's hopped off the browser loop into a
-thread; ``AppRuntime.dispatch`` serializes it under the workspace's
-own single-writer lock (``ws.lock``) — a page's parallel fetches don't
-reenter the sandbox, and dispatch/screenshot writes can't race
-ordinary tool calls on the same workspace.
+Locking: nothing here holds ``ws.lock`` across a run. Each dispatched
+request takes it inside ``AppRuntime.dispatch`` (so a page's parallel
+fetches don't reenter the sandbox, and can't race ordinary tool calls),
+and the reads and writes that follow the run — the source line behind a
+stack frame, the screenshot files — take it one at a time.
 """
 
 from __future__ import annotations
@@ -32,11 +37,26 @@ from __future__ import annotations
 import asyncio
 import posixpath
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from .contract import filter_headers, filter_response_headers, make_request
+from .csp import (
+    blocked_script_note,
+    blocks_code,
+    csp_directive_for,
+    csp_note,
+    csp_script_origins,
+)
+from .driver import (
+    ActionOutcome,
+    DriveReport,
+    DriveSpec,
+    PageError,
+    Refusal,
+    adrive,
+    pick_driver,
+)
 
 if TYPE_CHECKING:
     from .dispatch import AppRuntime
@@ -55,9 +75,9 @@ VIEWPORTS = {
 # JSON (not plain text): the app's own res.json() error path can then
 # actually read and display it
 _ABSOLUTE_PATH_HINT = (
-    b'{"error": "nontainer: absolute path -- apps are served under a '
-    b"prefix and must use RELATIVE urls (fetch('api/x'), not "
-    b"fetch('/api/x'))\"}"
+    '{"error": "nontainer: absolute path -- apps are served under a '
+    "prefix and must use RELATIVE urls (fetch('api/x'), not "
+    "fetch('/api/x'))\"}"
 )
 
 
@@ -298,250 +318,6 @@ def _describe_elsewhere(frames: list[Frame]) -> str:
     return f"{_frames(vendor)} in library code, {opaque} in {generated}"
 
 
-_ASSERT_POLL_MS = 50
-
-
-async def _poll_assert(page: Any, expression: str, timeout_ms: int) -> tuple[bool, Any]:
-    """Retry ``expression`` until truthy or the budget runs out.
-
-    Returns ``(passed, why)``. An expression that RAISES is retried too:
-    a predicate reaching into a node the app has not rendered yet throws
-    on the first pass and succeeds on the third, which is the ordinary
-    shape of asserting against an app that fetches. Only the last error
-    is reported, so the message describes the state the run ended in
-    rather than the state it started in.
-
-    The deadline bounds each EVALUATION, not just the gaps between them:
-    ``page.evaluate`` awaits a promise the expression returns, so one
-    that never settles would block before the loop could look at the
-    clock again — a hang with no output, where the old
-    ``wait_for_function(timeout=…)`` had bounded the whole thing.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_ms / 1000
-    why: Any = "assertion is falsy"
-    # Whether ANY evaluation ever came back. It separates "this
-    # expression never settles" from "the deadline simply expired":
-    # the last poll before the deadline gets a sliver of budget and
-    # times out even on an instant expression, which would otherwise
-    # report a plainly falsy assert as a hung promise.
-    settled = False
-
-    def expired() -> tuple[bool, Any]:
-        if settled:
-            return False, why
-        # Distinct from falsy, and worth saying: an assert that awaits
-        # something that never arrives is a broken assertion, not a
-        # broken app.
-        return False, (
-            f"assertion did not settle within {timeout_ms}ms — it returned a "
-            "promise that never resolved (await the value in the app and "
-            "assert on the DOM instead)"
-        )
-
-    while True:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            return expired()
-        try:
-            value = await asyncio.wait_for(page.evaluate(expression), remaining)
-            settled = True
-            if value:
-                return True, None
-            why = "assertion is falsy"
-        except (TimeoutError, asyncio.TimeoutError):
-            return expired()
-        except Exception as e:
-            settled = True
-            why = f"assertion errored: {e}"
-        await asyncio.sleep(
-            min(_ASSERT_POLL_MS / 1000, max(0.0, deadline - loop.time()))
-        )
-
-
-def blocked_script_note(url: str, script_hosts: tuple[str, ...]) -> str:
-    """The harness's message for a script from a host that isn't allowed.
-    Shared, because the block can now come from either side: request
-    interception, or the CSP that reaches the browser first."""
-    return (
-        f"{url} -> blocked: scripts may only load "
-        f"from the CDN allowlist ({', '.join(script_hosts) or 'none'})"
-    )
-
-
-def blocks_code(directive: str) -> bool:
-    """Does this violated directive mean CODE DID NOT RUN?
-
-    Those are failures, not warnings: the app is not doing what the agent
-    thinks it is. A refused image or font is a blemish on a page that
-    otherwise works, and shouldn't turn a run red on its own."""
-    return directive.startswith("script") or directive in ("worker-src", "child-src")
-
-
-def _csp_directives(csp: str) -> dict[str, list[str]]:
-    """``{directive: [source, ...]}`` for one policy string."""
-    out: dict[str, list[str]] = {}
-    for part in (csp or "").split(";"):
-        tokens = part.split()
-        if tokens:
-            out[tokens[0].lower()] = tokens[1:]
-    return out
-
-
-# A source naming a scheme and nothing else: `https:`, `data:`, `blob:`.
-# Distinguished from a bare host with a port (`scripts.internal:8443`),
-# which names an origin and must keep its port.
-_SCHEME_ONLY = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:$")
-
-
-def _csp_source_netloc(src: str) -> str | None:
-    """The ``host[:port]`` a source names, or ``None`` when it names no
-    host — a quoted keyword (``'self'``) or a scheme-only source."""
-    if src.startswith("'") or _SCHEME_ONLY.match(src):
-        return None
-    rest = src.split("://", 1)[1] if "://" in src else src
-    return rest.split("/", 1)[0].lower() or None
-
-
-def _csp_script_origins(csp: str) -> tuple[str, ...]:
-    """Host origins a policy permits scripts from.
-
-    Interception has to agree with the policy actually being enforced: a
-    custom ``AppsConfig.csp`` that allows a host ``script_hosts`` doesn't
-    list would be served happily and aborted here, which is a false RED
-    and a divergence in the other direction.
-
-    Conservative by design — quoted keywords (``'self'``), scheme-only
-    sources (``https:``, ``data:``) and wildcards are skipped. Those
-    cannot be honored by a hostname check, so list them in
-    ``script_hosts`` explicitly rather than having this guess. An
-    explicit port is KEPT (``scripts.internal:8443``): that is the
-    origin the browser connects to, and it is what a request's netloc
-    is compared against."""
-    directives = _csp_directives(csp)
-    sources = directives.get("script-src") or directives.get("default-src")
-    out: list[str] = []
-    for src in sources or []:
-        if "*" in src:
-            continue
-        netloc = _csp_source_netloc(src)
-        if netloc:
-            out.append(netloc)
-    return tuple(out)
-
-
-# Which directive governs each Playwright resource type, in the order a
-# browser consults them (the specific directive, then its fallback).
-# A top-level document never reaches this table — it is the app's own
-# origin — so ``document`` here means a SUB-FRAME, governed by
-# frame-src. Anything unlisted falls through to default-src, which is
-# also every listed directive's fallback when the policy omits it.
-_RESOURCE_DIRECTIVES: dict[str, tuple[str, ...]] = {
-    "image": ("img-src",),
-    "xhr": ("connect-src",),
-    "fetch": ("connect-src",),
-    "eventsource": ("connect-src",),
-    "websocket": ("connect-src",),
-    "stylesheet": ("style-src",),
-    "font": ("font-src",),
-    "media": ("media-src",),
-    "document": ("frame-src", "child-src"),
-    "worker": ("worker-src", "child-src"),
-    "manifest": ("manifest-src",),
-}
-
-
-def csp_directive_for(resource_type: str) -> str:
-    """The directive a request of this type is judged by — what an
-    abort note must name for the fix to be actionable."""
-    return _RESOURCE_DIRECTIVES.get(resource_type, ("default-src",))[0]
-
-
-def _source_matches(src: str, parts: Any) -> bool:
-    """Does one CSP source cover this request's origin?
-
-    Modest on purpose: scheme-only sources match by scheme, host
-    sources by scheme (when given) plus host, and a leading ``*.``
-    matches subdomains but not the bare domain. A source WITHOUT a port
-    matches any port, which is looser than a browser — the cost of
-    guessing wrong here is aborting a request the served policy allows,
-    a false red, and that is the failure this matching exists to
-    prevent. Keywords and ``data:``/``blob:`` never match: they name the
-    document's own origin or bytes it already holds, not a network
-    fetch this handler could let through."""
-    if src == "*":
-        return True
-    if src.startswith("'") or src in ("data:", "blob:", "filesystem:", "mediastream:"):
-        return False
-    if _SCHEME_ONLY.match(src):
-        return parts.scheme == src[:-1].lower()
-    scheme = src.split("://", 1)[0].lower() if "://" in src else ""
-    host = _csp_source_netloc(src)
-    if not host or (scheme and parts.scheme != scheme):
-        return False
-    netloc = parts.netloc.lower()
-    if ":" in host:  # an explicit port is part of the origin
-        return netloc == host
-    hostname = netloc.split(":", 1)[0]
-    if host.startswith("*."):
-        return hostname.endswith(host[1:])  # a subdomain, not the bare domain
-    return hostname == host
-
-
-def _csp_permits(csp: str, resource_type: str, url: str) -> bool:
-    """Would the SERVED policy let this non-script request through?
-
-    Interception aborts what the policy would refuse, so it must also
-    let through what the policy allows — otherwise an embedder who
-    widened one directive (``csp_extend={"connect-src":
-    ("http://api.internal",)}`` for an intranet API the browser is the
-    only path to) gets an app that serves fine and fails verification.
-    An empty policy means no header at all: nothing here to permit
-    anything, so the caller's own rule decides."""
-    parts = urlsplit(url)
-    if not parts.netloc:
-        return False
-    directives = _csp_directives(csp)
-    for name in (*_RESOURCE_DIRECTIVES.get(resource_type, ()), "default-src"):
-        if name in directives:
-            return any(_source_matches(src, parts) for src in directives[name])
-    return False
-
-
-def _csp_note(directive: str, blocked: str, script_hosts: tuple[str, ...]) -> str:
-    """Phrase one CSP violation as the fix.
-
-    An external script the allowlist doesn't cover gets the SAME message
-    the route handler would have given, because now it never reaches the
-    route handler — the browser refuses it first. Reporting the generic
-    policy text there would be a worse diagnostic than before the CSP
-    was enforced, which is the trap this whole change is meant to avoid.
-    """
-    if directive.startswith("script") and blocked.startswith(("http://", "https://")):
-        if urlsplit(blocked).netloc not in script_hosts:
-            return blocked_script_note(blocked, script_hosts)
-    served = (
-        f"blocked by the app's Content-Security-Policy ({directive}). This is "
-        "the policy a PUBLISHED app is served under, so it would otherwise "
-        "have failed only after publishing"
-    )
-    if blocks_code(directive):
-        # Code that never ran, and never announced it: a refused script
-        # does not throw, so without this nothing would name it at all.
-        return (
-            f"{blocked} -> {served} — and a refused script does not throw, so "
-            "nothing else would name it. blob:/data: urls, eval, and new "
-            "Function are not permitted; load code from the app's own files "
-            "instead."
-        )
-    # An image, font, stylesheet or fetch. Telling THIS one to stop using
-    # eval would send the repair somewhere there is nothing to repair.
-    return (
-        f"{blocked} -> {served}. Serve it from the app's own files "
-        f"(a relative url) or an https host the {directive} directive allows."
-    )
-
-
 def _line_reader(runtime: "AppRuntime") -> Any:
     """``(rel, lineno) -> source line | None``, read from the workspace.
 
@@ -575,19 +351,24 @@ def _asset_prefixes(runtime: "AppRuntime") -> tuple[str, ...]:
 
 
 def _annotate_page_errors(
-    runtime: "AppRuntime", records: list[tuple[str, str, str]]
+    runtime: "AppRuntime", records: tuple[PageError, ...]
 ) -> tuple[str, ...]:
-    """Render collected (name, message, stack) records. Runs off the
-    browser loop-thread — it reads the workspace fs under ``ws.lock``,
-    which route dispatch holds too, and blocking the loop would stall
-    every other test_app sharing it."""
+    """Render the page errors a run collected, reading the agent's own
+    source for the offending line. Done once the run is over: a driver
+    reports a stack unparsed because deciding which frame matters means
+    reading the workspace, which is the host's to do and not the
+    browser's."""
     prefixes = _asset_prefixes(runtime)
     read_line = _line_reader(runtime)
     return tuple(
         describe_page_error(
-            name, message, stack, asset_prefixes=prefixes, read_line=read_line
+            error.name,
+            error.message,
+            error.stack,
+            asset_prefixes=prefixes,
+            read_line=read_line,
         )
-        for name, message, stack in records[:20]
+        for error in records[:20]
     )
 
 
@@ -639,9 +420,50 @@ def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
         ws.files.fs.write(path, png)
 
 
-async def _run_actions(
-    browser: Any,
-    sema: "asyncio.Semaphore",
+# ---------------------------------------------------------------------------
+# the drive: a spec out, a report back
+# ---------------------------------------------------------------------------
+
+#: Resource types a run accepts from ANY https host, over and above what
+#: the served policy names. Data apps legitimately pull map tiles,
+#: remote imagery and third-party APIs, and the derived policy is
+#: written wide for exactly those — so verification has to be too, or an
+#: app verifies red and serves fine.
+_OPEN_HTTPS_TYPES = ("image", "xhr", "fetch", "stylesheet", "font")
+
+
+def _serve(runtime: "AppRuntime", csp: str) -> Any:
+    """How the app is served for a run: the same ``dispatch`` the curl
+    builtin and the published router use. This is the invariant the
+    driver seam is for — what verifies green is served by the code that
+    will serve the visitor."""
+
+    def serve(method: str, url: str, body: bytes, headers: Any) -> Any:
+        wire = runtime.dispatch(
+            make_request(method, url, body=body, headers=filter_headers(headers))
+        )
+        # Verification must see the wire the router would produce, so
+        # the same response-header allowlist applies: a handler setting
+        # Set-Cookie or Access-Control-Allow-Origin has to fail HERE
+        # rather than depend on a header it will never be served.
+        out = filter_response_headers(wire.headers)
+        # Send the SERVED policy on HTML. Interception reproduces a
+        # policy's ORIGIN rules, but a policy also governs BEHAVIOUR —
+        # eval, new Function, blob workers, blob module scripts — and
+        # none of those involve a request to intercept. Without the real
+        # header those pass here and fail only once published, silently:
+        # a blocked blob script never throws into the page, so a
+        # try/catch around it sees nothing. It is the CONFIGURED policy,
+        # assigned rather than deferred, because that is what the app
+        # will be served.
+        if csp and wire.content_type.startswith("text/html"):
+            out["content-security-policy"] = csp
+        return replace(wire, headers=out)
+
+    return serve
+
+
+def build_spec(
     runtime: "AppRuntime",
     actions: list[dict[str, Any]] | None,
     *,
@@ -650,9 +472,9 @@ async def _run_actions(
     load_timeout_ms: int = 10_000,
     assert_timeout_ms: int = 2_000,
     settle_cap: float = 5.0,
-) -> TestAppResult:
-    """Run one test against a fresh context on the shared browser.
-    Runs on the browser loop-thread; bounded by ``sema``."""
+) -> DriveSpec:
+    """Everything one run has been decided to be, before a browser is
+    involved."""
     vp = (
         VIEWPORTS.get(viewport, VIEWPORTS["desktop"])
         if isinstance(viewport, str)
@@ -661,487 +483,135 @@ async def _run_actions(
             "height": int(viewport.get("height", 800)),
         }
     )
-
-    # One declaration (AppsConfig.script_hosts) drives interception here
-    # AND the served CSP: what verifies headlessly matches what serves.
+    # One declaration (AppsConfig.script_hosts) drives interception AND
+    # the served CSP: what verifies headlessly matches what serves.
     from .serve import resolve_csp
 
     csp = resolve_csp(runtime.config)
-    # Interception must agree with the policy actually enforced. With the
-    # derived policy these are the same list; with a custom one, its
+    # Interception must agree with the policy actually enforced. With
+    # the derived policy these are the same list; with a custom one, its
     # script origins join in, so a host the served policy allows is not
-    # aborted here (a false red, and the same divergence pointed the
-    # other way).
+    # aborted (a false red, and the same divergence pointed the other
+    # way).
     script_hosts = tuple(
-        dict.fromkeys((*runtime.config.script_hosts, *_csp_script_origins(csp)))
+        dict.fromkeys((*runtime.config.script_hosts, *csp_script_origins(csp)))
+    )
+    return DriveSpec(
+        serve=_serve(runtime, csp),
+        base_url=_BASE_URL,
+        actions=tuple(actions or ()),
+        width=vp["width"],
+        height=vp["height"],
+        csp=csp,
+        script_hosts=script_hosts,
+        open_https_types=_OPEN_HTTPS_TYPES,
+        load_timeout_ms=load_timeout_ms,
+        assert_timeout_ms=assert_timeout_ms,
+        settle_cap_ms=int(settle_cap * 1000),
+        max_screenshots=max_screenshots,
+        screenshot_dir=f"{runtime._app_root}/screenshots",
+        off_base_body=_ABSOLUTE_PATH_HINT,
     )
 
-    # Repeated console lines are near-pure context tax: one audited
-    # session spent 39% of all test_app result bytes (7,922 of 20,279)
-    # on 32 copies of the same Tailwind CDN warning, against a model
-    # working in ~30k of context. Collapse by text, keep first-seen
-    # order, and carry the count — a genuinely repeating log (a retry
-    # storm, a render loop) still reads as repeating.
-    console: dict[str, int] = {}
-    page_error_records: list[tuple[str, str, str]] = []
-    results: list[ActionResult] = []
-    screenshots: list[str] = []
-    rejected: dict[str, None] = {}  # ordered de-dupe
-    csp_blocked_code: list[str] = []  # violations that stopped code running
-    relocatability_bugs: list[str] = []  # absolute urls: always an app bug
-    shot_counter = 0
-    loop = asyncio.get_running_loop()
 
-    def _reject(note: str) -> None:
-        if len(rejected) < 20:
-            rejected.setdefault(note)
-
-    def _console(message: Any) -> None:
-        line = f"[{message.type}] {message.text}"
-        if line in console:
-            console[line] += 1
-        elif len(console) < 100:  # cap DISTINCT lines; repeats stay free
-            console[line] = 1
-
-    def _console_lines() -> tuple[str, ...]:
-        return tuple(
-            line if n == 1 else f"{line} (x{n})" for line, n in console.items()
-        )
-
-    async def _collect_csp(page: Any) -> None:
-        """Fold any CSP violations into `rejected`, phrased as the fix.
-
-        These used to be invisible: test_app sent no policy, so an app
-        using a blob module script or eval verified green and broke only
-        once published — and the block never throws into the page, so
-        nothing in page_errors named it either."""
-        try:
-            hits = await page.evaluate("window.__nt_csp || []")
-        except Exception:
-            return  # page closed / navigated away: a diagnostic, not the run
-        for directive, blocked in hits or ():
-            _reject(_csp_note(directive, blocked, script_hosts))
-            if blocks_code(directive):
-                # A run whose code was refused is not a PASS. Without
-                # this the whole change only makes the failure VISIBLE,
-                # while `ok` keeps saying the app works — the false
-                # green it exists to remove, one layer up.
-                csp_blocked_code.append(blocked)
-
-    async def _rendered_errors() -> tuple[str, ...]:
-        """Render collected page errors, reading the agent's source for
-        the offending line. Hopped off the browser loop for the same
-        reason route dispatch is: it takes ``ws.lock``, and this loop is
-        shared by every concurrent test_app."""
-        if not page_error_records:
-            return ()
-        return await loop.run_in_executor(
-            None, _annotate_page_errors, runtime, page_error_records
-        )
-
-    async def route_handler(route: Any, request: Any) -> None:
-        parts = urlsplit(request.url)
-        if parts.netloc == _HOST:
-            if not parts.path.startswith(_PREFIX + "/") and parts.path != _PREFIX:
-                _reject(
-                    f"{parts.path} -> 404: absolute path (apps serve under "
-                    "a prefix — use relative URLs: fetch('api/x'), not "
-                    "fetch('/api/x'))"
-                )
-                # Fails the run. Relocatability is an invariant this
-                # harness exists to enforce (docs/apps.md), an absolute
-                # url is always an app bug rather than a choice, and the
-                # 404 below carries a JSON body -- so an app that calls
-                # .json() without checking .ok renders as if fine and
-                # reports PASS while being broken in production.
-                relocatability_bugs.append(parts.path)
-                await route.fulfill(
-                    status=404,
-                    body=_ABSOLUTE_PATH_HINT,
-                    content_type="application/json",
-                )
-                return
-            rel = parts.path[len(_PREFIX) :] or "/"
-            url = rel + (f"?{parts.query}" if parts.query else "")
-            req = make_request(
-                request.method,
-                url,
-                body=request.post_data_buffer or b"",
-                headers=filter_headers(request.headers),
-            )
-            # sync + CPU-bound: run off the browser loop; dispatch
-            # serializes under ws.lock so parallel fetches don't
-            # reenter the sandbox (or race tool calls)
-            wire = await loop.run_in_executor(None, runtime.dispatch, req)
-            # Verification must see the wire the router would produce,
-            # so the same response-header allowlist applies: a handler
-            # setting Set-Cookie or Access-Control-Allow-Origin has to
-            # fail HERE rather than depend on a header it will never be
-            # served.
-            headers = filter_response_headers(wire.headers)
-            # Send the SERVED policy on HTML. Interception reproduces a
-            # CSP's origin rules, but a CSP also governs BEHAVIOUR —
-            # eval, new Function, blob workers, blob module scripts —
-            # and none of those involve a request to intercept. Without
-            # the real header those pass here and fail only once
-            # published, silently: a blocked blob script never throws
-            # into the page, so a try/catch around it sees nothing.
-            # It is the CONFIGURED policy, assigned rather than
-            # deferred, because that is what the app will be served.
-            if csp and wire.content_type.startswith("text/html"):
-                headers["content-security-policy"] = csp
-            await route.fulfill(
-                status=wire.status,
-                body=wire.content,
-                content_type=wire.content_type,
-                headers=headers,
-            )
-        elif parts.netloc in script_hosts:
-            await route.continue_()
-        elif request.resource_type != "script" and (
-            (
-                parts.scheme == "https"
-                and request.resource_type
-                in ("image", "xhr", "fetch", "stylesheet", "font")
-            )
-            or _csp_permits(csp, request.resource_type, request.url)
-        ):
-            # Mirror the serving CSP: scripts only from the allowlist,
-            # but data/imagery (map tiles!) from any https host — so
-            # what verifies here matches what serves published. The
-            # policy itself is the second half of that: an origin it
-            # permits (an intranet http API in connect-src, a framed
-            # host in frame-src) is served, so aborting it here would be
-            # the same divergence pointed at a false red.
-            await route.continue_()
-        else:
-            if request.resource_type == "script":
-                _reject(blocked_script_note(request.url, script_hosts))
-            elif csp:
-                # Name the directive that would have to allow it: the
-                # fix is a source on that directive, and a note saying
-                # only "blocked" sends the repair looking at the app.
-                _reject(
-                    f"{request.url} -> blocked ({request.resource_type}: not "
-                    "permitted by the served policy's "
-                    f"{csp_directive_for(request.resource_type)}; https hosts "
-                    "are allowed, anything else needs AppsConfig.csp_extend "
-                    "or csp)"
-                )
-            else:
-                _reject(
-                    f"{request.url} -> blocked "
-                    f"({request.resource_type}; https-only environment)"
-                )
-            await route.abort()
-
-    # Idle-gap settling: Playwright's networkidle is STICKY — once
-    # reached after navigation it resolves immediately and never waits
-    # for click-triggered fetches. So we track in-flight requests and
-    # wait for a quiet gap measured from settle() entry.
-    import time as _time
-
-    net = {"inflight": 0, "last": 0.0}
-
-    def _track_start(_req: Any) -> None:
-        net["inflight"] += 1
-        net["last"] = _time.monotonic()
-
-    def _track_end(_req: Any) -> None:
-        net["inflight"] = max(0, net["inflight"] - 1)
-        net["last"] = _time.monotonic()
-
-    async def settle(page: Any, gap: float = 0.3) -> str | None:
-        """Wait for network quiet; returns None when settled, or a
-        stale-risk note when the cap expired first. A cap exit means
-        the page was still busy — the one case where a following
-        read/screenshot is genuinely untrustworthy, so it's surfaced
-        on the action result instead of silently swallowed."""
-        start = _time.monotonic()
-        while _time.monotonic() - start < settle_cap:
-            quiet_since = max(net["last"], start)
-            if net["inflight"] == 0 and _time.monotonic() - quiet_since >= gap:
-                return None
-            await page.wait_for_timeout(25)
-        n = net["inflight"]
-        detail = (
-            f"{n} request(s) still in flight"
-            if n
-            else "network activity never went quiet"
-        )
+def _refusal_note(refusal: Refusal, spec: DriveSpec) -> str:
+    """One thing the page did not get, phrased as the fix. The browser
+    console only shows the symptom (a truncated JSON parse error, an
+    anonymous ERR_FAILED)."""
+    if refusal.kind == "off-base":
         return (
-            f"page did not settle within {settle_cap:.1f}s ({detail}); "
-            'results may be stale -- prefer {"assert": ...} (it retries)'
+            f"{refusal.url} -> 404: absolute path (apps serve under "
+            "a prefix — use relative URLs: fetch('api/x'), not "
+            "fetch('/api/x'))"
         )
-
-    _SELECTOR_ACTIONS = ("click", "type", "select", "read")
-
-    async def _selectors_present(page: Any) -> str:
-        """What the page actually offers, for a selector that missed.
-
-        Playwright says only what it waited for, so an agent re-guesses
-        blind. Everywhere else this module names the door -- the
-        /api/foo.py 404, the select-not-type message, the stray-verb
-        note -- and a miss is the most common action failure there is."""
-        try:
-            found = await page.evaluate(
-                "() => [...new Set(["
-                "  ...[...document.querySelectorAll('[id]')].map(e => '#' + e.id),"
-                "  ...[...document.querySelectorAll('[data-key]')]"
-                '      .map(e => `[data-key="${e.dataset.key}"]`),'
-                "])].slice(0, 25)"
-            )
-        except Exception:
-            return ""  # a diagnostic must never replace the real error
-        if not found:
-            return " — the page has no element with an id or data-key"
-        return " — selectors on the page: " + ", ".join(found)
-
-    async def _capture(page: Any, label: str) -> str | None:
-        """Screenshot into the workspace. ``None`` means the CAP was
-        reached -- a benign skip. A genuine failure RAISES, because
-        collapsing the two let an explicitly requested screenshot fail
-        and be reported as "cap reached", ok=True."""
-        nonlocal shot_counter
-        if shot_counter >= max_screenshots:
-            return None
-        png = await page.screenshot()
-        shot_counter += 1
-        path = f"{runtime._app_root}/screenshots/{label}-{shot_counter}.png"
-        await loop.run_in_executor(None, _save_screenshot, runtime, path, png)
-        screenshots.append(path)
-        return path
-
-    async with sema:
-        context = await browser.new_context(viewport=vp)
-        try:
-
-            def _page_error(e: Any) -> None:
-                # Collect raw here and render later: describing an error
-                # well means reading the agent's source file, and this
-                # callback runs ON the browser loop-thread, where taking
-                # ws.lock would stall every other test_app sharing it.
-                page_error_records.append(
-                    (
-                        getattr(e, "name", "") or "Error",
-                        getattr(e, "message", None) or str(e),
-                        getattr(e, "stack", "") or "",
-                    )
-                )
-
-            # A CSP violation surfaces in the console as browser prose,
-            # which is the wrong shape for the agent's repair loop and
-            # easy to lose in a chatty tail. Capture the structured
-            # event instead and render it beside the harness's own
-            # refusals, where the agent already looks.
-            await context.add_init_script(
-                "document.addEventListener('securitypolicyviolation', e => {"
-                "  (window.__nt_csp = window.__nt_csp || []).push("
-                "    [e.effectiveDirective || e.violatedDirective,"
-                "     e.blockedURI || '(inline)']);"
-                "});"
-            )
-            page = await context.new_page()
-            page.on("console", _console)
-            page.on("pageerror", _page_error)
-            page.on("request", _track_start)
-            page.on("requestfinished", _track_end)
-            page.on("requestfailed", _track_end)
-            await context.route("**/*", route_handler)
-
-            try:
-                await page.goto(_BASE_URL, timeout=load_timeout_ms)
-                await settle(page)
-            except Exception as e:
-                await _collect_csp(page)
-                return TestAppResult(
-                    ok=False,
-                    console=_console_lines(),
-                    page_errors=await _rendered_errors(),
-                    rejected=tuple(rejected),
-                    load_error=str(e),
-                )
-
-            ok = True
-            for i, action in enumerate(actions or []):
-                try:
-                    value: str | None = None
-                    note: str | None = None
-                    if "click" in action:
-                        await page.click(action["click"], timeout=5_000)
-                        note = await settle(page)
-                    elif "type" in action:
-                        sel, text = action["type"]
-                        try:
-                            await page.fill(sel, text, timeout=5_000)
-                        except Exception as e:
-                            # Playwright's own message ("Element is not
-                            # an <input>...") names the problem but not
-                            # the fix, and agents rediscover the
-                            # dispatchEvent('change') workaround instead
-                            # of reaching for the action below.
-                            if "not an <input>" in str(e) or "<select>" in str(e):
-                                raise ValueError(
-                                    f"{sel} is a <select> — use "
-                                    f'{{"select": [{sel!r}, value]}}, not "type"'
-                                ) from e
-                            raise
-                        note = await settle(page)
-                    elif "select" in action:
-                        sel, val = action["select"]
-                        try:
-                            await page.select_option(sel, val, timeout=5_000)
-                        except Exception:
-                            # Agents pass whichever of value/label the
-                            # DOM showed them; falling back to the
-                            # visible label keeps that from becoming
-                            # another guess-and-retry cycle.
-                            try:
-                                await page.select_option(sel, label=val, timeout=5_000)
-                            except Exception as e:
-                                raise ValueError(
-                                    f"{sel}: no option matching {val!r} by "
-                                    f"value or by visible label ({e})"
-                                ) from e
-                        note = await settle(page)
-                    elif "read" in action:
-                        # Settle first: a fetch that STARTED after the
-                        # previous action's settle returned (debounce,
-                        # setTimeout) would otherwise be read as stale
-                        # DOM — the false-green an agent can't catch.
-                        note = await settle(page)
-                        value = await page.text_content(action["read"], timeout=5_000)
-                    elif "eval" in action:
-                        # Settle first, for the reason `read` does: an
-                        # expression evaluated against a page still
-                        # fetching reads stale DOM and reports it as
-                        # fact. `eval` is where agents ask the questions
-                        # `read` cannot express -- counts, attributes,
-                        # computed styles -- so it needs the guarantee
-                        # more, not less.
-                        note = await settle(page)
-                        value = repr(await page.evaluate(action["eval"]))
-                    elif "assert" in action:
-                        # Web-first assertion: retry the predicate until
-                        # truthy or timeout. Polled from HERE rather than
-                        # with page.wait_for_function, which installs its
-                        # poller into the page and needs `unsafe-eval` —
-                        # blocked by the CSP this harness now sends, so
-                        # every retry died and an app that merely settles
-                        # asynchronously failed. page.evaluate goes over
-                        # CDP instead and is not subject to page policy.
-                        passed, why = await _poll_assert(
-                            page, action["assert"], assert_timeout_ms
-                        )
-                        results.append(
-                            ActionResult(
-                                i, action, ok=passed, value=str(passed), error=why
-                            )
-                        )
-                        ok = ok and passed
-                        continue
-                    elif "screenshot" in action:
-                        shot = await _capture(page, "shot")
-                        if shot is None:
-                            # Soft skip, not a failure: hitting the cap
-                            # must not abort the test — later actions
-                            # (especially asserts) still run and count.
-                            results.append(
-                                ActionResult(
-                                    i,
-                                    action,
-                                    ok=True,
-                                    error=(
-                                        "skipped: screenshot cap "
-                                        f"({max_screenshots}) reached"
-                                    ),
-                                )
-                            )
-                            continue
-                        value = shot
-                    elif "goto" in action:
-                        # CSP violations live on `window`, so harvest
-                        # them before the navigation discards the page.
-                        await _collect_csp(page)
-                        target = str(action["goto"]).lstrip("/")
-                        response = await page.goto(
-                            _BASE_URL + target, timeout=load_timeout_ms
-                        )
-                        # goto RESOLVES on 4xx/5xx -- it only raises for
-                        # transport failures -- so without this a
-                        # navigation to a missing page is a passing
-                        # action on a 404 document. `response` is None
-                        # for a same-document navigation, which did not
-                        # fetch anything to be wrong about.
-                        if response is not None and not response.ok:
-                            raise ValueError(
-                                f"goto {target!r} -> HTTP {response.status} "
-                                "(the page was not served; check the filename "
-                                "and that it is under the app root)"
-                            )
-                        note = await settle(page)
-                        value = target
-                    elif "wait" in action:
-                        await page.wait_for_timeout(int(action["wait"]))
-                    else:
-                        raise ValueError(f"unknown action: {action!r}")
-                    results.append(
-                        ActionResult(i, action, ok=True, value=value, error=note)
-                    )
-                except Exception as e:
-                    detail = str(e)
-                    selector = next(
-                        (action[k] for k in _SELECTOR_ACTIONS if k in action), None
-                    )
-                    if isinstance(selector, (list, tuple)):
-                        selector = selector[0]
-                    if selector and "waiting for locator" in detail:
-                        detail += await _selectors_present(page)
-                    # The run stops here (later actions depend on this
-                    # one), so this is the last look at the page there
-                    # will be. Without it the agent re-runs the whole
-                    # test just to add a screenshot and see the state.
-                    try:
-                        shot = await _capture(page, "failure")
-                    except Exception:
-                        shot = None  # a diagnostic must never replace the error
-                    if shot:
-                        detail += f"\n  page at failure: {shot}"
-                    results.append(ActionResult(i, action, ok=False, error=detail))
-                    ok = False
-                    break  # later actions depend on earlier ones
-
-            await _collect_csp(page)
-            return TestAppResult(
-                ok=ok
-                and not page_error_records
-                and not csp_blocked_code
-                and not relocatability_bugs,
-                results=tuple(results),
-                console=_console_lines(),
-                page_errors=await _rendered_errors(),
-                screenshots=tuple(screenshots),
-                rejected=tuple(rejected),
-            )
-        finally:
-            await context.close()
+    if refusal.kind == "policy":
+        return csp_note(refusal.directive, refusal.url, spec.script_hosts)
+    if refusal.kind == "script":
+        return blocked_script_note(refusal.url, spec.script_hosts)
+    if spec.csp:
+        # Name the directive that would have to allow it: the fix is a
+        # source on that directive, and a note saying only "blocked"
+        # sends the repair looking at the app.
+        return (
+            f"{refusal.url} -> blocked ({refusal.resource_type}: not "
+            "permitted by the served policy's "
+            f"{csp_directive_for(refusal.resource_type)}; https hosts "
+            "are allowed, anything else needs AppsConfig.csp_extend "
+            "or csp)"
+        )
+    return f"{refusal.url} -> blocked ({refusal.resource_type}; https-only environment)"
 
 
-def _require_playwright() -> None:
-    try:
-        import playwright.async_api  # noqa: F401
-    except ImportError as e:
-        raise ImportError(
-            "test_app requires the apps extra: pip install nontainer[apps] "
-            "&& playwright install chromium"
-        ) from e
+def _action_value(action: dict[str, Any], outcome: ActionOutcome) -> str | None:
+    """The action's result as the agent reads it. ``eval`` is repr'd
+    because it answers with a VALUE — a count, an attribute, a computed
+    style — and ``'2'`` and ``2`` are different answers."""
+    if "assert" in action:
+        return str(outcome.value)
+    if "eval" in action:
+        return repr(outcome.value)
+    value = outcome.value
+    return value if value is None or isinstance(value, str) else str(value)
 
 
-def _submit(runtime: "AppRuntime", actions, kwargs):
-    from .browser import submit_job
+def _write_screenshots(runtime: "AppRuntime", report: DriveReport) -> tuple[str, ...]:
+    """Persist the report's captures under ``<root>/app/screenshots/``,
+    in capture order. Bytes never ride in model-facing observations, and
+    the files version, fork and check out with the session."""
+    for path, png in report.screenshots.items():
+        _save_screenshot(runtime, path, png)
+    return tuple(report.screenshots)
 
-    return submit_job(
-        lambda browser, sema: _run_actions(browser, sema, runtime, actions, **kwargs)
+
+def build_result(
+    runtime: "AppRuntime", spec: DriveSpec, report: DriveReport
+) -> TestAppResult:
+    """One report, read against the workspace it ran on: stacks
+    annotated with the agent's own source, refusals phrased as fixes,
+    screenshots written, and the one verdict the agent acts on."""
+    rejected: dict[str, None] = {}  # ordered de-dupe
+    blocked_code = False  # a policy refusal that stopped code running
+    relocatable = True  # an absolute url is always an app bug
+    for refusal in report.refusals:
+        if refusal.kind == "off-base":
+            relocatable = False
+        elif refusal.kind == "policy" and blocks_code(refusal.directive):
+            blocked_code = True
+        rejected.setdefault(_refusal_note(refusal, spec))
+    screenshots = _write_screenshots(runtime, report)
+    page_errors = _annotate_page_errors(runtime, report.page_errors)
+    console = tuple(line if n == 1 else f"{line} (x{n})" for line, n in report.console)
+    if report.load_error is not None:
+        return TestAppResult(
+            ok=False,
+            console=console,
+            page_errors=page_errors,
+            rejected=tuple(rejected),
+            load_error=report.load_error,
+        )
+    results = tuple(
+        ActionResult(
+            outcome.index,
+            spec.actions[outcome.index],
+            ok=outcome.ok,
+            value=_action_value(spec.actions[outcome.index], outcome),
+            error=outcome.error,
+        )
+        for outcome in report.actions
+    )
+    return TestAppResult(
+        # A run whose code was refused is not a PASS: reporting a
+        # refused script while still printing PASS would leave the false
+        # green intact one layer up.
+        ok=all(r.ok for r in results)
+        and not page_errors
+        and not blocked_code
+        and relocatable,
+        results=results,
+        console=console,
+        page_errors=page_errors,
+        screenshots=screenshots,
+        rejected=tuple(rejected),
     )
 
 
@@ -1156,21 +626,32 @@ def _flush_log(runtime: "AppRuntime") -> None:
         pass
 
 
+def _driver_failed(driver: Any, error: Exception) -> DriveReport:
+    """A driver that could not run at all is a load error, not a raise:
+    test_app answers with a result for app problems and for browser
+    problems alike."""
+    return DriveReport(load_error=f"{type(driver).__name__} failed: {error}")
+
+
 def run_test_app(
     runtime: "AppRuntime",
     actions: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> TestAppResult:
-    """Blocking entry: submit to the shared browser and wait. A
-    browser/launch failure comes back as ``load_error`` (test_app never
-    raises for app problems); a missing package raises ImportError."""
-    _require_playwright()
+    """Blocking entry: drive the app and read the report against the
+    workspace. A browser/launch failure comes back as ``load_error``
+    (test_app never raises for app problems); a driver whose dependency
+    is missing raises ImportError."""
+    driver = pick_driver(runtime.config, runtime.workspace)
+    spec = build_spec(runtime, actions, **kwargs)
     try:
-        return _submit(runtime, actions, kwargs).result()
-    except Exception as e:  # launch/worker failure → a result, not a raise
-        return TestAppResult(
-            ok=False, load_error=f"Playwright/Chromium unavailable: {e}"
-        )
+        try:
+            report = driver.run(spec)
+        except ImportError:
+            raise
+        except Exception as e:
+            report = _driver_failed(driver, e)
+        return build_result(runtime, spec, report)
     finally:
         _flush_log(runtime)
 
@@ -1180,15 +661,21 @@ async def arun_test_app(
     actions: list[dict[str, Any]] | None = None,
     **kwargs: Any,
 ) -> TestAppResult:
-    """Async entry for event-loop hosts (MCP): awaits the browser-loop
-    Future without burning a waiting thread."""
-    _require_playwright()
+    """Async entry for event-loop hosts (MCP): awaits the drive without
+    burning a waiting thread, and reads the report in a thread —
+    assembly touches the workspace under its lock, which is not the
+    caller's loop's business to block on."""
+    driver = pick_driver(runtime.config, runtime.workspace)
+    spec = build_spec(runtime, actions, **kwargs)
     try:
-        return await asyncio.wrap_future(_submit(runtime, actions, kwargs))
-    except Exception as e:
-        return TestAppResult(
-            ok=False, load_error=f"Playwright/Chromium unavailable: {e}"
-        )
+        try:
+            report = await adrive(driver, spec)
+        except ImportError:
+            raise
+        except Exception as e:
+            report = _driver_failed(driver, e)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, build_result, runtime, spec, report)
     finally:
         _flush_log(runtime)
 
