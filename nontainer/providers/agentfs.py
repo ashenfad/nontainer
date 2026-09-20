@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import io
 import json
+import os
 import pickle
 import posixpath
 import threading
@@ -84,6 +86,12 @@ def _iso(epoch: int | float | None) -> str:
     if not epoch:
         return ""
     return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+
+
+def _already_exists(path: str) -> FileExistsError:
+    """The error a directory operation raises for a path already taken,
+    carrying the errno the standard library would."""
+    return FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
 
 
 class _AgentFsFS:
@@ -261,8 +269,10 @@ class _AgentFsFS:
             self._loop.call(self._fs.mkdir(p))
         except ErrnoException as e:
             if "EEXIST" in str(e):
-                if not exist_ok:
-                    raise FileExistsError(str(e)) from e
+                # ``exist_ok`` forgives an existing directory and
+                # nothing else: a file at the path is still a collision.
+                if not exist_ok or not self.isdir(p):
+                    raise _already_exists(path) from e
             else:
                 raise
 
@@ -270,6 +280,14 @@ class _AgentFsFS:
         from agentfs_sdk import ErrnoException
 
         p = self.resolve_path(path)
+        # The target is checked once, up front: the walk below forgives
+        # every EEXIST it meets because a parent that already exists is
+        # the normal case, and that forgiveness must not extend to the
+        # directory being asked for.
+        if self.exists(p):
+            if exist_ok and self.isdir(p):
+                return
+            raise _already_exists(path)
         parts = [seg for seg in p.split("/") if seg]
         cur = ""
         for seg in parts:
@@ -279,8 +297,6 @@ class _AgentFsFS:
             except ErrnoException as e:
                 if "EEXIST" not in str(e):
                     raise
-        if not exist_ok and not parts:
-            raise FileExistsError(path)
 
     def remove(self, path: str) -> None:
         from agentfs_sdk import ErrnoException
@@ -330,14 +346,23 @@ class _AgentFsFS:
         from termish.fs import FileInfo
 
         p = self.resolve_path(path)
+        # ``path`` answers in the namespace the query was asked in: the
+        # directory as the caller spelled it, joined with the entry, so
+        # a relative query lists relative paths and an absolute one
+        # absolute paths. ``name`` alone is the basename.
+        if path in (".", ""):
+            prefix = ""
+        elif path.rstrip("/") == "":
+            prefix = "/"
+        else:
+            prefix = path.rstrip("/") + "/"
         out: list[Any] = []
         for rel in self.list(p, recursive=recursive):
-            full = posixpath.join(p, rel)
-            meta = self.stat(full)
+            meta = self.stat(posixpath.join(p, rel))
             out.append(
                 FileInfo(
                     name=posixpath.basename(rel),
-                    path=rel,
+                    path=prefix + rel,
                     size=meta.size,
                     created_at=meta.created_at,
                     modified_at=meta.modified_at,
