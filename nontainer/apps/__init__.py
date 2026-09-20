@@ -35,6 +35,7 @@ from .dispatch import (
     enable_apps,
     request,
 )
+from .driver import AppDriver, DriveReport, DriveSpec
 from .testapp import ActionResult, TestAppResult, arun_test_app, render_test_app
 
 
@@ -62,6 +63,9 @@ __all__ = [
     "normalize",
     "TestAppResult",
     "ActionResult",
+    "AppDriver",
+    "DriveSpec",
+    "DriveReport",
     "render_test_app",
     "arun_test_app",
     "configure_browser",
