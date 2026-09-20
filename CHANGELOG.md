@@ -5,6 +5,109 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **A binary read is ranged now, in-process, under process isolation,
+  and on any filesystem a workspace mounts.** The floors move to
+  `termish>=0.2.0`, `monkeyfs>=0.2.0` and `sandtrap>=0.4.0`, which
+  carry one protocol change between them: `FileSystem.read` takes
+  `(path, offset=0, size=-1)`, a binary `open()` is a lazy
+  block-cached stream over it instead of a `BytesIO` holding the whole
+  file, and sandtrap's process-isolation RPC bridge forwards both
+  arguments rather than materializing the file at `open()`. In a
+  handler's own terms: `pd.read_parquet(path, columns=[...])` hands
+  pyarrow a file object, pyarrow reads the footer and the two column
+  chunks it asked for, and only those bytes move. Two of twenty
+  columns was already 8% of the reads; it was 100% of the traffic,
+  because the whole-file buffer discarded a ranged access pattern that
+  was already there. Seeking to the end costs nothing: the length
+  comes from `stat()`. The defaults are the old whole-file read byte
+  for byte, so no caller changes — but a filesystem that does not
+  *accept* the two arguments raises `TypeError` the first time
+  anything opens a file in binary mode, which is what makes these
+  floors hard rather than polite.
+- **What a pipe carries, and what `>` writes, is bytes.** `cat
+  bin.dat > copy.dat` on a 256-byte file holding every byte value used
+  to write 512 bytes, because the payload between stages was `str` and
+  every byte that was not valid UTF-8 became the encoding of U+FFFD on
+  the way through. It writes 256 now. `ctx.stdin` and `ctx.stdout` are
+  still text streams, so a command that writes text needs no change;
+  `ctx.stdout.buffer` is the binary path, which nothing had before —
+  an injected command producing binary had no way to emit it.
+- **A control-flow keyword says what it is.** `for f in a b; do echo
+  $f; done` used to produce three unrelated failures, none of which
+  said that loops are unimplemented; it now raises one `ParseError`
+  naming the keyword and pointing at `xargs` or `find -exec`. `if` /
+  `then` / `else` point at `&&` and `||`. The rule is command position
+  only, so `echo for` and a file named `for` keep working.
+- **`printf` is a builtin**, with `%s`, `%d`, `%c`, `%%`, backslash
+  escapes and POSIX format reuse. Agents type `printf '...\n' > f` as
+  a matter of course and were getting `command not found`.
+- **A platform that refuses worker processes says so.**
+  `isolation="process"` where the OS has no worker primitive raises
+  sandtrap's `IsolationUnavailable` naming the platform, instead of a
+  bare `OSError` out of `multiprocessing` that reads as a bug in the
+  sandbox.
+
+### Added
+- **`ws.files.read(path, offset, size)`** — the host-side file read
+  takes the same byte range the filesystem underneath does, so the
+  public API is not the one place the range stops. `offset` counts
+  from the start and must not be negative, a negative `size` reads to
+  the end, a read at or past the end returns `b""`, and one running
+  past the end is truncated to what is there.
+- **A test that termish and monkeyfs declare one filesystem
+  protocol** (`tests/test_fs_protocol.py`). Both libraries declare a
+  structural `FileSystem` and declare the same one — sixteen methods,
+  the same signatures, a field-for-field identical `FileMetadata` —
+  and neither imports the other, so no assertion inside either can
+  hold them to it. nontainer is the first place both are installed at
+  once. The test compares the sixteen signature by signature
+  (annotations as text; both modules are written under `from
+  __future__ import annotations`), compares the two `FileMetadata`
+  records field by field, asserts `read`'s range by parameter name and
+  default so that two libraries reverting together would still fail,
+  and runs BOTH libraries' shipped conformance kits —
+  `termish.fs.check_filesystem` and `monkeyfs.check_filesystem` —
+  against `termish.MemoryFS`, `monkeyfs.VirtualFS`,
+  `KvgitProvider.fs`, `DirProvider.fs` and `AgentFSProvider.fs` where
+  the extra is installed. The kits found two monkeyfs divergences,
+  marked strict `xfail` rather than worked around: `VirtualFS.makedirs`
+  returns silently for a directory that already exists where
+  `exist_ok=False` asks for `FileExistsError` (`os.makedirs`,
+  `MemoryFS` and monkeyfs's own `IsolatedFS` all raise), and
+  `IsolatedFS.list_detailed` spells `FileInfo.path` relative to the
+  filesystem root rather than to the queried directory.
+
+### Fixed
+- **`ws-curl` writes a binary body as bytes.** The response body went
+  out as text, so every byte that is not valid UTF-8 became U+FFFD:
+  `ws-curl $APP_ORIGIN/logo.png > logo.png` wrote a transliteration of
+  the PNG, three bytes per undecodable one, rather than the PNG. It
+  goes through `stdout.buffer` now, and the terminating newline — a
+  convenience for a transcript of text — is added only for a body that
+  is text, because a byte appended to a payload corrupts the file it
+  was redirected into.
+- **A `ws-*` verb can emit binary on the dud rung.** The off-rung
+  context the relay builds gave the command a `StringIO` for stdout,
+  which has no `.buffer`, so a verb writing bytes died there with an
+  `AttributeError` while working on the terminal rung. It is termish's
+  own stream type now, so text and bytes land in the order they were
+  written. The answer triple is JSON and its stdout is still text, so
+  undecodable bytes are replaced at that boundary — the rung's limit,
+  not the command's; a binary payload travels as a captured file. An
+  output budget is measured against the bytes rather than against
+  their transliteration.
+- **`AgentFSProvider`'s filesystem accepts the byte range.** Its
+  adapter declared `read(self, path)`, so under the new floors the
+  first binary `open()` against an AgentFS-backed workspace would have
+  raised `TypeError`. It takes `offset` and `size` and honours them by
+  slicing, which is the whole of what AgentFS can do — the SDK reads a
+  whole file or nothing — but slicing is the required behaviour, not
+  an optimization: a caller handed the file where it asked for the
+  tail reads the wrong bytes at the wrong position.
+
 ## 0.7.6 - 2026-09-16
 
 ### Added
