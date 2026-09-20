@@ -25,6 +25,7 @@ modules; this one only ferries them.
 
 from __future__ import annotations
 
+import json
 import posixpath
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -197,12 +198,28 @@ def _emitted(ctx: Any) -> tuple[bytes, str]:
     answer triple carries.
 
     The triple is JSON, so its stdout is text and a byte that is not
-    valid UTF-8 becomes U+FFFD there. A budget is measured against the
-    bytes instead, so a payload is weighed as what it is rather than
-    as what its transliteration weighs.
+    valid UTF-8 becomes U+FFFD there; the bytes are what a caller
+    needs to know what the command actually produced.
     """
     raw = ctx.stdout.getvalue()
     return raw, raw.decode("utf-8", "replace")
+
+
+def answer_size(out: str, encoded_files: Mapping[str, str]) -> int:
+    """The bytes an answer triple puts on the wire, which is what a
+    budget guards.
+
+    The frame the guest receives holds ``out`` as a JSON string and
+    each captured file as base64, and neither weighs what its source
+    did: a byte that was not valid UTF-8 is three bytes of U+FFFD, a
+    control character is a six-byte escape, and base64 is four bytes
+    for every three. Measuring the source bytes let a payload pass the
+    check and then break the transport, where the documented
+    over-budget answer never had its chance; this measures what is
+    sent. ``json.dumps`` escapes to ASCII by default, so its length is
+    its byte count.
+    """
+    return len(json.dumps(out)) + sum(len(b64) for b64 in encoded_files.values())
 
 
 def map_argv(mapper: Any, argv: list[str], spec: FerrySpec) -> list[str]:
@@ -302,20 +319,19 @@ class WsVerbHostHandler:
                     "stderr": f"{verb}: execution error: {e}",
                     "exit_code": 1,
                 }
-            raw, out = _emitted(ctx)
+            out = _emitted(ctx)[1]
             # (host_path, guest_path, data) per capture; None when a
             # capture escapes the workspace.
             landed = self._guest_files(ws, unmapper, captured)
             if landed is None:
                 return _fail(verb, "output path escapes the workspace")
-            if spec.budget is not None and spec.over_budget is not None:
-                size = len(raw) + sum(len(d) for _, _, d in landed)
-                if size > spec.budget():
-                    return spec.over_budget(ws, out, landed, result)
             encoded = {
                 guest: base64.b64encode(data).decode("ascii")
                 for _, guest, data in landed
             }
+            if spec.budget is not None and spec.over_budget is not None:
+                if answer_size(out, encoded) > spec.budget():
+                    return spec.over_budget(ws, out, landed, result)
             if result is None:
                 return {"stdout": out, "stderr": "", "exit_code": 0, "files": encoded}
             err_text = result.stderr or ""

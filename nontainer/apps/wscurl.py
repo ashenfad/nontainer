@@ -89,16 +89,29 @@ def _strip_origin(url: str, extra_host: str | None = None) -> str | None:
     return url
 
 
-def _is_utf8_text(body: bytes) -> bool:
-    """Whether a response body is text this shell can terminate with a
-    newline. Empty is not: there is nothing to terminate."""
-    if not body:
+_TEXT_TYPE_MARKERS = ("json", "xml", "javascript", "ecmascript")
+
+
+def _is_text_type(content_type: str) -> bool:
+    """Whether a response's media type says its body is text.
+
+    The media type is the server's own statement about the body, and
+    it is the only honest one: sniffing the bytes classifies a binary
+    payload that happens to be valid UTF-8 -- one holding NUL bytes,
+    or any ASCII-armored blob -- as text, and a newline appended to it
+    corrupts the file it was redirected into. ``text/*`` is text, so
+    are the structured types that are text on the wire (JSON, XML,
+    JavaScript, including the ``+json`` / ``+xml`` suffix forms), and
+    nothing else is -- an absent or ``application/octet-stream`` type
+    is a body this shell leaves exactly as it came.
+    """
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if not kind:
         return False
-    try:
-        body.decode()
-    except UnicodeDecodeError:
-        return False
-    return True
+    if kind.startswith("text/"):
+        return True
+    subtype = kind.partition("/")[2]
+    return any(marker in subtype for marker in _TEXT_TYPE_MARKERS)
 
 
 def _resolve_redirect(
@@ -298,8 +311,13 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             # The terminating newline is a convenience for a transcript
             # of text, and a payload that is not text has no lines to
             # terminate — adding a byte to it would corrupt the file it
-            # was redirected into.
-            if _is_utf8_text(resp.content) and not resp.content.endswith(b"\n"):
+            # was redirected into. The media type decides, never the
+            # bytes: a blob can be valid UTF-8 and still be a blob.
+            if (
+                resp.content
+                and _is_text_type(resp.content_type)
+                and not resp.content.endswith(b"\n")
+            ):
                 ctx.stdout.buffer.write(b"\n")
 
         if write_fmt is not None:
