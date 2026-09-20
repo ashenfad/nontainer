@@ -97,7 +97,21 @@ The decisions, for a reader who wants them before the argument:
   [agex-studio](https://github.com/ashenfad/agex-studio) installs
   termish, sandtrap, monkeyfs and agex into a Pyodide worker with
   micropip and runs the agex-py loop there. The walled garden, the
-  shell and the VFS routing all boot in a browser already.
+  shell and the VFS routing all boot in a browser already. Measured
+  rather than assumed: nontainer core and `dispatch.py` run unmodified
+  from the published wheels under Pyodide 0.27.7 — a memory-backed
+  workspace, `terminal`, `run_python` with `cache`, commit, fork,
+  three-way merge, `ws-git`, `enable_apps`, `ws-curl`, a GET and a POST
+  through `AppRuntime.dispatch`, and sandbox timeout enforcement, with
+  pandas installed from Pyodide's own index — at 1.5 s from
+  `loadPyodide` to a working workspace and under a millisecond per warm
+  request. Nothing had to be patched. The one thing that does not exist
+  there is the process-isolation worker (no `multiprocessing`
+  primitives), which sandtrap now reports as `IsolationUnavailable`
+  rather than a raw `OSError`. And kvgit already ships an IndexedDB
+  backend, selected automatically under Pyodide, beside an
+  OPFS-mounted disk option, so the far end's tab-side store exists
+  today; what it lacks is the remote protocol.
 - **The `Executor` contract is transport-shaped.** `ExecutionContext`
   says so: "a remote executor instead treats the context as the two
   ends of its transport." `open` / `exec_python` / `exec_shell` /
@@ -601,11 +615,14 @@ The executor above exists because the harness is on the server. Move
 the harness into the tab and the executor question dissolves: with the
 loop local, the executor is `LocalExecutor` — termish and sandtrap in
 the same Pyodide interpreter as the `Workspace`. No socket, no tree
-push, no harvest, no lazy `open`, no `HarvestLost`. nontainer core is
-pure Python and installs under Pyodide in principle today; agex-studio
-already runs a Python harness in a Pyodide worker behind a JS shell
-and already mounts OPFS so kvgit's disk store persists. The client
-half is agex-studio's py-kernel with nontainer as the environment.
+push, no harvest, no lazy `open`, no `HarvestLost`. nontainer core
+runs under Pyodide today, unmodified (the measurements are under *What
+is already true*); agex-studio already runs a Python harness in a
+Pyodide worker behind a JS shell, and kvgit's IndexedDB backend is
+selected automatically there, with OPFS-mounted disk as the
+alternative, so state persists in the tab without any new store. The
+client half is agex-studio's py-kernel with nontainer as the
+environment.
 
 **The server is a kvgit remote, not a provider.** Two shapes were
 possible. `WorkspaceProvider` over RPC — the `Workspace` in the tab
@@ -966,12 +983,17 @@ whole-file `LazyFS` means nothing waits on it.
    (core Pyodide, no data stack) costs for a handler that only reads
    a JSON file. This number decides whether the first-byte hybrid is a
    knob or the default.
-3. **Ranged reads reach pyarrow.** Confirm that pandas hands pyarrow
-   the Python file object (it must — handlers read parquet under
-   monkeyfs today) and that pyarrow then does column-selective `seek`
-   / `read` against it rather than slurping the file. If it slurps,
-   phase 0 still helps every other reader and the RPC bridge, but the
-   parquet win needs a `pyarrow.parquet.ParquetFile` in the handler.
+3. ~~**Ranged reads reach pyarrow.**~~ Done, and both halves hold.
+   pandas opens a string path with Python `open()` and hands pyarrow
+   the file object, and pyarrow reads only the footer and the selected
+   column chunks: 2 of 20 columns of a 53 MB parquet read 8% of the
+   file in three reads, the same with `pre_buffer` on or off, and the
+   same through plain `pd.read_parquet(path, columns=[...])` as through
+   `ParquetFile`, so handlers need no change. On a fixture with eight
+   row groups, where the wanted chunks are separated by 7 MB gaps,
+   coalescing never bridged into an unselected column. The only thing
+   discarding that access pattern was monkeyfs's whole-file `BytesIO`,
+   which phase 0 replaced.
 
 ## Build order
 
@@ -980,7 +1002,11 @@ parallel with everything below, blocks nothing):
 the ranged `read`, `open` made optional on monkeyfs's backend contract,
 the lazy binary `VirtualFile` as the fallback, both conformance kits,
 the promise in both READMEs, and the drift test in nontainer. Four
-releases in dependency order.
+releases in dependency order. *Shipped: termish 0.2.0, monkeyfs 0.2.0
+and sandtrap 0.4.0 on 2026-09-20; the nontainer floors and drift test
+are the remaining piece. termish 0.2.0 also carries bytes on the wire
+for pipes and redirects, which the tab's `LazyFS` inherits: a handler
+that moves a binary file through the shell no longer corrupts it.*
 
 **Phase 1 — publications, browser-served** (nontainer, no executor
 needed):
