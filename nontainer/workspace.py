@@ -869,12 +869,23 @@ class WorkspaceFiles:
 
     # -- reads ---------------------------------------------------------
 
-    def read(self, path: str) -> bytes:
-        """The file's bytes. Raises for a missing path — use
+    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
+        """The file's bytes, or the ``size`` of them starting at
+        ``offset``. Raises for a missing path — use
         :meth:`read_artifact` where absence is an answer rather than an
-        error."""
+        error.
+
+        The range is the filesystem's, forwarded: ``offset`` counts
+        from the start and must not be negative, a negative ``size``
+        reads to the end, a read starting at or past the end returns
+        ``b""``, and one running past the end is truncated to what is
+        there. With both defaults this is the whole file, byte for
+        byte. On a backend that can serve a range without fetching the
+        rest — a directory on disk, a file behind an isolation
+        boundary — asking for a parquet footer costs the footer.
+        """
         self._ws._check_open()
-        return self._ws._fs.read(path)
+        return self._ws._fs.read(path, offset, size)
 
     def exists(self, path: str) -> bool:
         """Whether anything (file or directory) is at ``path``."""

@@ -89,6 +89,18 @@ def _strip_origin(url: str, extra_host: str | None = None) -> str | None:
     return url
 
 
+def _is_utf8_text(body: bytes) -> bool:
+    """Whether a response body is text this shell can terminate with a
+    newline. Empty is not: there is nothing to terminate."""
+    if not body:
+        return False
+    try:
+        body.decode()
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def _resolve_redirect(
     path: str, location: str, extra_host: str | None = None
 ) -> str | None:
@@ -274,9 +286,21 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             path = out_file
             ctx.fs.write(abspath(ctx.fs.getcwd(), path), resp.content)
         else:
-            ctx.stdout.write(resp.text)
-            if resp.text and not resp.text.endswith("\n"):
-                ctx.stdout.write("\n")
+            # The body goes out as bytes. Decoding it to write it back
+            # would turn every byte that is not valid UTF-8 into U+FFFD,
+            # so `ws-curl $APP_ORIGIN/logo.png > logo.png` would write a
+            # transliteration of the PNG rather than the PNG. Flush
+            # first: a header block written above is text, and the two
+            # views of one stream must land in the order they were
+            # written.
+            ctx.stdout.flush()
+            ctx.stdout.buffer.write(resp.content)
+            # The terminating newline is a convenience for a transcript
+            # of text, and a payload that is not text has no lines to
+            # terminate — adding a byte to it would corrupt the file it
+            # was redirected into.
+            if _is_utf8_text(resp.content) and not resp.content.endswith(b"\n"):
+                ctx.stdout.buffer.write(b"\n")
 
         if write_fmt is not None:
             out = (

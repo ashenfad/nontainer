@@ -8,10 +8,10 @@ mtime drift can leave real table dirt that the terminal tail
 commits, which is provider behavior (PR 2), not terminal shape.
 """
 
-import io
 import re
 
 import pytest
+from termish.context import PipeStream
 
 from nontainer import Store, Workspace
 from nontainer.providers import KvgitProvider
@@ -658,12 +658,12 @@ def test_command_closure_direct_status_shape():
         class Ctx:
             def __init__(self, args):
                 self.args = args
-                self.stdout = io.StringIO()
+                self.stdout = PipeStream()
                 self.fs = w.files.fs
 
         ctx = Ctx(["status"])
         assert fn(ctx) is None
-        assert ctx.stdout.getvalue() == "M  a.txt\n"
+        assert ctx.stdout.getvalue() == b"M  a.txt\n"
     finally:
         w.close()
 
