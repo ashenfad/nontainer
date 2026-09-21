@@ -1002,14 +1002,19 @@ parallel with everything below, blocks nothing):
 the ranged `read`, `open` made optional on monkeyfs's backend contract,
 the lazy binary `VirtualFile` as the fallback, both conformance kits,
 the promise in both READMEs, and the drift test in nontainer. Four
-releases in dependency order. *Shipped: termish 0.2.0, monkeyfs 0.2.0
-and sandtrap 0.4.0 on 2026-09-20; the nontainer floors and drift test
-are the remaining piece. termish 0.2.0 also carries bytes on the wire
-for pipes and redirects, which the tab's `LazyFS` inherits: a handler
-that moves a binary file through the shell no longer corrupts it.*
+releases in dependency order. *Shipped 2026-09-20: termish 0.2.0,
+monkeyfs 0.2.2, sandtrap 0.4.0, and the nontainer floors and drift
+test in 0.7.7. The drift test earned its keep before it shipped: three
+monkeyfs divergences, two in the AgentFS provider and one in the view
+layer came out of it. termish 0.2.0 also carries bytes on the wire for
+pipes and redirects, which the tab's `LazyFS` inherits: a handler that
+moves a binary file through the shell no longer corrupts it.*
 
 **Phase 1 — publications, browser-served** (nontainer, no executor
-needed):
+needed). *Settled first, in 0.7.7: a publication with no `app/api/`
+handler opens with no executor at all and is served as files
+(`ws.runtime.executes` is false), so the tier below is for
+publications that have handlers.*
 
 1. The publish-time manifest in `store.publish`; the manifest and blob
    routes in `serve.py`; `LazyFS` in a `nontainer-guest` wheel (pure
@@ -1021,6 +1026,11 @@ needed):
    and in the studio's building-apps skill.
 3. `AppDriver`: extract the Playwright driver from `testapp.py` behind
    the protocol, move `ws-vitest` onto it, add `Runtime.app_driver`.
+   *Shipped in 0.7.7: `DriveSpec` in, `DriveReport` out, the action
+   loop inside the driver, screenshots and stack annotation after the
+   run, `ws-vitest` on the same driver, `AppsConfig.driver` then
+   `Runtime.app_driver` then Playwright. No executor offers a driver
+   yet.*
 4. The frozen guest: the `api/*` interceptor, the in-tab dispatcher
    over `LazyFS` — `dispatch.py` itself under Pyodide, which is why
    the `[apps]` extra split lands here rather than at the far end —
