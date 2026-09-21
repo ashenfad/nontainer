@@ -1,13 +1,20 @@
-# Browser compute
+# Browser roadmap
 
-> **Status: design proposal, not implemented.** Two proposals and one
+> **Status, 2026-09-21: the prerequisite and the seams are shipped;
+> the browser-side pieces are not started.** Two proposals and one
 > prerequisite. A **published app served from the visitor's browser**,
 > with the server reduced to a host-object bridge; a **browser
 > executor** — a third rung beside `LocalExecutor` and `DudExecutor`,
 > where the agent's Python runs in a Pyodide worker in a tab while the
 > provider, the loop and every versioning verb stay on the server; and,
 > before either, a **ranged read on the filesystem protocol** that
-> lives in termish and monkeyfs. The full picture reaches into
+> lives in termish and monkeyfs. The ranged read is in every release
+> from nontainer 0.7.7 down, and so are two things the browser work
+> needed first: a publication with no handlers opens with no executor,
+> and `test_app` runs through a driver protocol. [Where this
+> stands](#where-this-stands) has the ledger; the rest of the document
+> is the design, kept because the pieces still to build depend on it.
+> The full picture reaches into
 > [nontainer-studio](https://github.com/ashenfad/nontainer-studio); the
 > nontainer half is written down here so the studio half has a contract
 > to build against. Why the seams make this cheap is in the
@@ -70,8 +77,14 @@ The decisions, for a reader who wants them before the argument:
 - **The visitor's filesystem is `files_at` over the wire.** A
   publish-time manifest, content-addressed blobs on demand, ranged
   once phase 0 lands. Nothing in a publication is private.
+- **Most publications are static, and a static publication has no
+  executor.** A tree with no handler under `app/api/` is served as
+  files, on the server today and from anywhere tomorrow; the browser
+  work is for the publications that have handlers.
 - **`test_app` is a driver protocol**, and the driver's dispatcher is
-  the dispatcher the publication will use.
+  the dispatcher the publication will use. The protocol and the
+  Playwright driver are shipped; the tab driver is the half still to
+  write.
 - **Warmth is the embedder's; correctness after a restore is
   nontainer's.** A snapshot is a pristine interpreter taken before
   `boot()`; `boot()` builds the policy and reseeds.
@@ -90,8 +103,65 @@ The decisions, for a reader who wants them before the argument:
 - **nontainer's `Executor` protocol changes in one place:** `open`
   may bind lazily.
 
+## Where this stands
+
+The build order at the end of the document is the plan; this is the
+ledger against it.
+
+| piece | state | where |
+|---|---|---|
+| Phase 0: ranged `read` on the protocol, lazy binary `open`, both conformance kits, the drift test | **shipped** | termish 0.2.0, monkeyfs 0.2.2, sandtrap 0.4.0, nontainer 0.7.7 |
+| Static publications: no handler, no executor | **shipped**, not in the original plan | nontainer 0.7.7, `ws.runtime.executes` |
+| Phase 1 step 3: `AppDriver`, the Playwright driver, `ws-vitest` on it | **shipped** | nontainer 0.7.7, `docs/apps.md` "The driver seam" |
+| Phase 1 steps 1 and 4: manifest and blob routes, `LazyFS`, the in-tab dispatcher, the hostcall endpoint, the tab driver | not started | one deliverable; the first Pyodide engineering |
+| Phase 1 step 2: the visitor host-object bridge | not started | earns its keep only with steps 1 and 4 |
+| Phase 2 or 2′: the executor as an offload, or the harness in the tab | proposal | gated on whether server-driven turns matter |
+| Phase 3: the studio | proposal | follows whichever of the above is chosen |
+
+What the drift test bought before the browser work used it: six
+divergences, three in monkeyfs, one in nontainer's view layer and two
+in the AgentFS provider, every one a listing or a directory-creation
+edge that a browser guest would have hit on its first day.
+
+**The open decision** is whether to build the browser-served tier now.
+Two of its pieces have not been spiked: the in-tab request interceptor
+and the hostcall endpoint. The recommendation is one bounded spike on
+those before the brief is written, the way the two spikes below
+de-risked Phase 0.
+
+**Issues tracking the rest.** [#112](https://github.com/ashenfad/nontainer/issues/112)
+is the serving-substrate dispatcher behind `test_app`, the half of the
+driver invariant the seam did not close;
+[#110](https://github.com/ashenfad/nontainer/issues/110) is the typed
+return codec, now scoped to server-side serving of publications with
+handlers; [#113](https://github.com/ashenfad/nontainer/issues/113) is
+idle view-worker reaping, untouched by any of this;
+[#102](https://github.com/ashenfad/nontainer/issues/102) drops the
+legacy on-disk migrations and waits for a release willing to say so.
+
 ## What is already true
 
+- **A publication with no handlers is already served with no
+  executor.** `Publication.open` reads the tree it is about to serve
+  and, finding no `.py` file under `app/api/` whose name does not
+  start with `_`, builds a workspace whose runtime executes nothing:
+  `ws.runtime.executes` is false, `/api/` requests are the missing
+  endpoint 404, and no view worker is ever warmed. Execution settings
+  passed to such an open are accepted and unused, so an embedder's
+  per-publication table does not have to know which tier a row lands
+  in. This settles the executor question for the majority of
+  publications on the server, and it is what the browser-served tier
+  below is *not* for.
+- **`test_app` runs through a driver.** `AppDriver` takes a
+  `DriveSpec` (the actions, viewport, policy, timeouts, init scripts
+  and a serve callable) and returns a `DriveReport` (raw per-action
+  outcomes, console, unparsed page errors, refusals, screenshot bytes);
+  the action loop lives in the driver, screenshots and stack annotation
+  happen after the run, and selection is `AppsConfig.driver`, else the
+  executor's `Runtime.app_driver`, else Playwright on the host. The
+  Playwright driver is the old code extracted, `ws-vitest` rides the
+  same driver, and a fake driver tests the neutral half without a
+  browser. No executor offers a driver yet.
 - **The stack runs under Pyodide today.** kvgit, termish, sandtrap and
   monkeyfs are pure Python with zero or one dependency;
   [agex-studio](https://github.com/ashenfad/agex-studio) installs
@@ -238,6 +308,10 @@ question, and it stays a visible product decision rather than
 something the switch quietly answers.
 
 ## Publications in the visitor's browser
+
+This section is about publications that have handlers. A publication
+without them is already served as files with no executor anywhere,
+which is most of them, and nothing here applies to it.
 
 A visitor's browser needs only the frozen subset of a guest: a
 read-only tree, no harvest, no sync, no verbs, no delegation. Ship
@@ -429,8 +503,8 @@ get exactly that, over the wire:
   `/apps/{token}/blob/{sha256}`. monkeyfs already routes sandboxed
   `open()` there, so `pd.read_parquet("/workspace/app/data/x.parquet")`
   fetches that one blob, when a handler actually needs it. With
-  [phase 0](#phase-0-one-filesystem-protocol-and-a-ranged-read), it
-  fetches the byte ranges it needs.
+  [phase 0](#phase-0-one-filesystem-protocol-and-a-ranged-read)
+  shipped, it fetches the byte ranges it needs from day one.
 - **Content-addressed, so cached across everything.** The blob URL is
   immutable: a v2 that did not touch the parquet does not re-download
   it, two apps over one dataset share it, and the browser cache does
@@ -460,17 +534,26 @@ For the tail, the cheap tell is a publish-time report — "this app
 ships 48MB under `app/data/`," read straight off the manifest — so the
 author knows before a visitor does.
 
-## `test_app` becomes a driver protocol
+## `test_app` is a driver protocol
 
-One lie is open. Under browser-side serving, `test_app` is still Playwright
-on the server hitting server-side dispatch — so it never exercises the
-runtime the publication will run on. A handler that imports something
+*The protocol, the Playwright driver and `ws-vitest` on it shipped in
+0.7.7 as described here; what follows is kept as the reasoning. Still
+to write: the tab driver, and the serving-substrate dispatcher behind
+the Playwright driver (#112). One gap recorded in apps.md: `ws-vitest`
+does not read `AppsConfig.driver`, because the verb can be registered
+on a workspace with no app configuration.*
+
+One lie was open. Under browser-side serving, `test_app` would be
+Playwright on the server hitting server-side dispatch — so it would
+never exercise the runtime the publication will run on. A handler that imports something
 present in the server's grants and absent from the Pyodide profile
 passes every check and 500s for every visitor. The fix is not "run
 Playwright in the tab"; it is to name the seam `testapp.py` already
 has.
 
-Of its ~1250 lines, the Playwright-specific part is one bounded region:
+Of its ~1250 lines, the Playwright-specific part was one region,
+less bounded than it looked — one coroutine interleaving page calls
+with the meaning of each action — but one region:
 context setup, `page.route` interception, the action loop's
 `page.click` / `fill` / `evaluate` / `goto` / `screenshot`, the console
 and pageerror hooks. Everything around it is driver-neutral —
@@ -869,11 +952,12 @@ worker process pulling from the host over RPC. Today every one of those
 reads is whole-file, because the protocol says so: termish's
 `FileSystem.read(path) -> bytes`, and monkeyfs's `VirtualFile` is a
 `BytesIO` over the whole file, seeked to zero, written back on close.
-"Seekable" is a fiction over a full buffer. So a handler that wants two
-parquet columns of twenty downloads the parquet. This phase fixes that
-at the protocol, in two other repositories, before anything above needs
-it — and nothing above *blocks* on it: the whole-file `LazyFS` works
-without it and gets faster when it lands.
+"Seekable" was a fiction over a full buffer. So a handler that wanted
+two parquet columns of twenty downloaded the parquet. This phase fixed
+that at the protocol, in three other repositories, before anything
+above needed it. *Shipped: termish 0.2.0, monkeyfs 0.2.2, sandtrap
+0.4.0, nontainer 0.7.7. The section is kept in the present tense of
+its design; the shapes below are the ones that landed.*
 
 ### Who owns the protocol
 
@@ -915,8 +999,9 @@ convention and enforce it:
   drift, and runs both libraries' conformance kits
   (`termish.fs.check_filesystem`, `monkeyfs.check_filesystem` — each
   shipped so a backend author needs neither the other library nor
-  nontainer) against `KvgitProvider.fs`, `MemoryFS`, `VirtualFS` and
-  the browser guest's `LazyFS`.
+  nontainer) against `KvgitProvider.fs`, `MemoryFS`, `VirtualFS`, the
+  `dir` and AgentFS providers' filesystems, and one day the browser
+  guest's `LazyFS`.
 
 ### The primitive
 
@@ -946,12 +1031,12 @@ Who benefits, in order:
    never see it.
 2. **Process and kernel isolation.** The worker reaches workspace files
    host-side over an RPC bridge that speaks the bytes-level protocol,
-   so a large file crosses whole today. Once the bridge forwards the
-   two arguments, it is lazy for free.
+   so a large file used to cross whole. The bridge forwards the two
+   arguments now, and a binary `open()` there is lazy for free.
 3. **The author's browser rung, later.** The same `LazyFS` against a
    per-session, authenticated endpoint.
 
-### Size, and the real cost
+### Size, and the real cost, as it turned out
 
 - termish: two optional parameters on `read`; `MemoryFS` slices. ~20
   lines.
@@ -965,14 +1050,45 @@ Who benefits, in order:
 - nontainer: the drift test and both conformance runs; `LazyFS` grows
   `Range`; the blob endpoint answers 206. ~50 lines.
 
-The cost is not code. It is a protocol change across termish and
+The cost was not code. It was a protocol change across termish and
 monkeyfs (both to 0.2.0), sandtrap's `monkeyfs>=0.1.9,<0.2.0` floor
 moving, nontainer's floors moving, and the four shipping in dependency
-order. That choreography is why it is phase 0: it lives in other
-repositories, it can run in parallel with everything above, and the
-whole-file `LazyFS` means nothing waits on it.
+order, which they did in one day. Two things the estimate missed. The
+lazy file became `LazyBinaryFile` behind an `open_file` synthesizer
+that every wrapper uses, so "wrappers forward" was one function rather
+than three edits. And the conformance kits, written to guard the
+protocol, found six real divergences before the browser guest existed
+to hit them: `makedirs(exist_ok=False)` silent on an existing directory
+in monkeyfs and again in the AgentFS provider, listing paths
+root-relative or bare on three backends, and a view filter that had
+been leaning on one of those bugs. monkeyfs went to 0.2.2 fixing them.
 
-## Spikes before committing
+## Spikes
+
+Two ran before Phase 0 and settled it; two remain for Phase 2; one is
+proposed before the browser-served tier is committed to.
+
+**Done.** nontainer core and `dispatch.py` run unmodified under Pyodide
+(the measurements are under *What is already true*), and ranged reads
+reach pyarrow through pandas without any handler change: 2 of 20
+columns of a 53 MB parquet read 8% of the file in three reads, the
+same with `pre_buffer` on or off, the same through plain
+`pd.read_parquet(path, columns=[...])` as through `ParquetFile`; on a
+fixture with eight row groups, where the wanted chunks were separated
+by 7 MB gaps, coalescing never bridged into an unselected column. The
+only thing discarding that access pattern was monkeyfs's whole-file
+`BytesIO`, which phase 0 replaced.
+
+**Before the browser-served tier.** The in-tab request interceptor
+(how `fetch('api/x')` from the app's page reaches the worker: service
+worker, fetch patch, or the postMessage bridge the preview iframe
+already uses) and the hostcall endpoint (a sync XHR from the worker
+against `/apps/{token}/host/…`, budgeted by the exec's deadline).
+Neither has been built anywhere in the family for a published app; a
+day on both, against a static publication served by `build_router`,
+is what the brief for steps 1 and 4 should follow rather than precede.
+
+**Before Phase 2.**
 
 1. **Does Pyodide's snapshot survive dynamically-linked packages** on
    the pinned version (agex-studio pins 0.27.7)? numpy and pandas ship
@@ -983,17 +1099,6 @@ whole-file `LazyFS` means nothing waits on it.
    (core Pyodide, no data stack) costs for a handler that only reads
    a JSON file. This number decides whether the first-byte hybrid is a
    knob or the default.
-3. ~~**Ranged reads reach pyarrow.**~~ Done, and both halves hold.
-   pandas opens a string path with Python `open()` and hands pyarrow
-   the file object, and pyarrow reads only the footer and the selected
-   column chunks: 2 of 20 columns of a 53 MB parquet read 8% of the
-   file in three reads, the same with `pre_buffer` on or off, and the
-   same through plain `pd.read_parquet(path, columns=[...])` as through
-   `ParquetFile`, so handlers need no change. On a fixture with eight
-   row groups, where the wanted chunks are separated by 7 MB gaps,
-   coalescing never bridged into an unselected column. The only thing
-   discarding that access pattern was monkeyfs's whole-file `BytesIO`,
-   which phase 0 replaced.
 
 ## Build order
 
@@ -1062,3 +1167,9 @@ publications that have handlers.*
 6. An executor knob, a per-session socket, a rail state for "waiting
    for a browser", the snapshot pipeline, and the first-byte hybrid if
    the measured first visit needs it.
+
+**Next.** Steps 1 and 4 of Phase 1, as one deliverable, after the
+interceptor and hostcall spike above; step 2 alongside them, since a
+publication served from a tab is what makes the visitor-facing object
+a public API in practice. Phase 2 against 2′ is decided after that,
+on whether server-driven turns matter.
