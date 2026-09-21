@@ -1130,3 +1130,8 @@ relative-URL rule holds unchanged.
   that verifies an app where it will actually be served — a rung's own
   runtime rather than the host's — is the point of the seam and is not
   written yet.
+- **`ws-vitest` does not read `AppsConfig.driver`.** The verb can be
+  registered on a workspace with no app configuration at all, so it
+  picks the executor's driver or the host browser. An embedder that
+  sets a driver on the config gets it for `test_app` and not yet for
+  the unit tier.

@@ -555,13 +555,46 @@ def _action_value(action: dict[str, Any], outcome: ActionOutcome) -> str | None:
     return value if value is None or isinstance(value, str) else str(value)
 
 
-def _write_screenshots(runtime: "AppRuntime", report: DriveReport) -> tuple[str, ...]:
+def _action_result(
+    action: dict[str, Any], outcome: ActionOutcome, unsaved: dict[str, str]
+) -> ActionResult:
+    """One action's result as the agent reads it. A screenshot the
+    driver captured but the workspace could not keep is that action's
+    failure, since the capture the agent asked for does not exist."""
+    if "screenshot" in action and outcome.value in unsaved:
+        return ActionResult(
+            outcome.index, action, ok=False, error=unsaved[outcome.value]
+        )
+    return ActionResult(
+        outcome.index,
+        action,
+        ok=outcome.ok,
+        value=_action_value(action, outcome),
+        error=outcome.error,
+    )
+
+
+def _write_screenshots(
+    runtime: "AppRuntime", report: DriveReport
+) -> tuple[tuple[str, ...], dict[str, str]]:
     """Persist the report's captures under ``<root>/app/screenshots/``,
     in capture order. Bytes never ride in model-facing observations, and
-    the files version, fork and check out with the session."""
+    the files version, fork and check out with the session.
+
+    A capture that cannot be written is not a reason to lose the run:
+    the paths that landed come back first, and the ones that did not
+    come back with the error, for the action that asked for each to
+    carry as its failure."""
+    written: list[str] = []
+    failed: dict[str, str] = {}
     for path, png in report.screenshots.items():
-        _save_screenshot(runtime, path, png)
-    return tuple(report.screenshots)
+        try:
+            _save_screenshot(runtime, path, png)
+        except OSError as e:
+            failed[path] = f"screenshot not saved: {e}"
+        else:
+            written.append(path)
+    return tuple(written), failed
 
 
 def build_result(
@@ -579,25 +612,22 @@ def build_result(
         elif refusal.kind == "policy" and blocks_code(refusal.directive):
             blocked_code = True
         rejected.setdefault(_refusal_note(refusal, spec))
-    screenshots = _write_screenshots(runtime, report)
+    screenshots, unsaved = _write_screenshots(runtime, report)
     page_errors = _annotate_page_errors(runtime, report.page_errors)
     console = tuple(line if n == 1 else f"{line} (x{n})" for line, n in report.console)
-    if report.load_error is not None:
+    # A report that did not load is a load failure whether or not the
+    # driver phrased one: the verdict below reads actions, and a page
+    # that never loaded has none to read, which must not pass as green.
+    if report.load_error is not None or not report.loaded:
         return TestAppResult(
             ok=False,
             console=console,
             page_errors=page_errors,
             rejected=tuple(rejected),
-            load_error=report.load_error,
+            load_error=report.load_error or "the page did not load",
         )
     results = tuple(
-        ActionResult(
-            outcome.index,
-            spec.actions[outcome.index],
-            ok=outcome.ok,
-            value=_action_value(spec.actions[outcome.index], outcome),
-            error=outcome.error,
-        )
+        _action_result(spec.actions[outcome.index], outcome, unsaved)
         for outcome in report.actions
     )
     return TestAppResult(
