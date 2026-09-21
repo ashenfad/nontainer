@@ -10,7 +10,7 @@ would not be real.
 import pytest
 
 from nontainer import Workspace
-from nontainer.apps import AppsConfig, enable_apps, render_test_app
+from nontainer.apps import AppsConfig, enable_apps, render_test_app, testapp
 from nontainer.apps.driver import (
     ActionOutcome,
     DriveReport,
@@ -272,6 +272,53 @@ def test_a_load_error_comes_through_as_a_result():
         assert result.load_error == "net::ERR_ABORTED"
         assert result.results == ()
         assert "[load error] net::ERR_ABORTED" in render_test_app(result)
+    finally:
+        ws.close()
+
+
+def test_a_report_that_did_not_load_is_a_load_failure():
+    """A driver that says the page did not load, and phrases nothing,
+    still fails the run: an empty action list on an unloaded page is
+    not a pass."""
+    build = lambda spec: DriveReport(loaded=False)  # noqa: E731
+    ws, rt, driver = make_ws("unloaded", build)
+    try:
+        result = rt.test_app([])
+        assert not result.ok
+        assert result.load_error == "the page did not load"
+    finally:
+        ws.close()
+
+
+def test_a_screenshot_that_cannot_be_saved_fails_its_action(monkeypatch):
+    """The driver captured it, the workspace could not keep it: that is
+    the screenshot action's failure, and the rest of the run stands."""
+    png = b"\x89PNG\r\n\x1a\nfake"
+
+    def build(spec):
+        path = f"{spec.screenshot_dir}/shot-1.png"
+        return DriveReport(
+            loaded=True,
+            actions=(
+                ActionOutcome(0, ok=True, value=path),
+                ActionOutcome(1, ok=True, value="42"),
+            ),
+            screenshots={path: png},
+        )
+
+    ws, rt, driver = make_ws("unsaved", build)
+    try:
+
+        def refuse(runtime, path, png):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(testapp, "_save_screenshot", refuse)
+        result = rt.test_app([{"screenshot": True}, {"read": "#out"}])
+        assert not result.ok
+        assert result.screenshots == ()
+        assert result.results[0].ok is False
+        assert "screenshot not saved: disk full" == result.results[0].error
+        assert result.results[1].ok and result.results[1].value == "42"
     finally:
         ws.close()
 

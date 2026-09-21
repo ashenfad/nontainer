@@ -600,7 +600,10 @@ def run_js_tests(
     files already run are returned, and the rest are not started; 0 is
     no limit.
     """
-    require_playwright()
+    # The dependency check belongs to the driver that has the
+    # dependency: the Playwright driver reports a missing browser as a
+    # load error with the install line, and a driver the executor
+    # offers may need no browser on this host at all.
     driver = pick_driver(workspace=ws)
     out: list[FileResult] = []
     failed = 0
