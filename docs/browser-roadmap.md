@@ -318,15 +318,18 @@ What nontainer owes is the seam, kept deliberately dumb:
 
 - **The bridge exposes public methods and nothing else.** The same
   allowlist dud uses (`dud.public_methods`), JSON in and out. A method
-  whose arguments or result cannot cross as JSON is refused at
-  `publish`, not at a visitor's first call.
+  whose arguments or result cannot cross as JSON is refused when the
+  bridge is built — at the `Publication.open` that serves, where the
+  objects are bound — before any visitor, not at a visitor's first
+  call. `publish` never sees a host object, so it cannot be the place.
 - **The visitor endpoint takes only the token** (below): no cookies,
   no control-origin credential, so an operator visiting their own app
   never spends session authority through it.
-- **A publish-time surface report.** `publish` lists the public
-  methods being exposed, with signatures — the moment the embedder, or
-  the author reading the publish output, sees what "anyone with the
-  URL" now has. A report, not a gate.
+- **A surface report at the same moment.** The serving open lists the
+  public methods being exposed, with signatures, and an embedder that
+  opens on publish — the studio does — shows it in the publish output,
+  which is where the author sees what "anyone with the URL" now has. A
+  report, not a gate.
 - **One sentence in the hosting half of apps.md, and one in the
   skill.** *A visitor-facing host object is a public API. Give the
   published app a narrower object than the session, and give the
@@ -402,12 +405,16 @@ exactly that over the wire.
   `/apps/{token}/blob/{sha256}` — with
   [phase 0](#phase-0-one-filesystem-protocol-and-a-ranged-read)
   shipped, as the byte ranges a handler actually touches.
-- **Content-addressed, so cached across everything.** The blob URL is
+- **Content-addressed, so cached across versions.** The blob URL is
   immutable, so a v2 that did not touch the parquet does not
-  re-download it, two apps over one dataset share it, and the browser
-  cache does the rest. One guard: a hash is servable only if it is in
-  *this* token's manifest, or content addressing becomes a cross-app
-  oracle.
+  re-download it, and the browser cache does the rest. Not across
+  apps: the token is in the path, so two apps over one dataset are two
+  URLs and the HTTP cache shares nothing between them. Cross-app reuse
+  would need a token-independent route on the apps origin with the
+  token carried in a header for the manifest check, and is an option,
+  not a promise. The guard holds either way: a hash is servable only
+  if it is in *this* token's manifest, or content addressing becomes a
+  cross-app oracle.
 - **No executor on the server.** A browser-served publication
   instantiates no `AppRuntime` and no executor server-side: the server
   does provider reads, static, and the hostcall bridge.
@@ -496,7 +503,7 @@ reuses the guest wheel and the tab driver the publication work builds.
 | host objects | hostcall proxies behind `dud.public_methods` | the same allowlist; a proxy method is a sync XHR to the control origin, session-scoped, dispatched to the live object exactly as `_host_object_rpc_handler` does |
 | `ws-*` verbs | bash functions → `ws_verb` hostcall; the host *pulls* the guest's diff before dispatching | the guest shell is termish, so each tagged verb is a relay *command* in the guest registry; `supports_commands` is True and the `FerrySpec` path mapping applies unchanged. One inversion: a worker blocked in a sync XHR cannot answer a pull, so the relay command ships its scan-diff *inside* the verb call and the host's absorb step consumes a pushed diff rather than calling `diff()` |
 | cache | guest pickles, host stores bytes | identical |
-| isolation | a VM exceeds any `isolation` | `none` and `process` are satisfied — a worker crash costs the worker, not the page; `kernel` is refused at open, the way `_prepare_config` refuses what a rung cannot honour |
+| isolation | a VM exceeds any `isolation` | `none` and `process` are accepted on crash containment — a worker crash costs the worker, not the page — with memory containment the tab's budget rather than a promise; `memory_limit_mb` and `kernel` are refused at open, the way `_prepare_config` refuses what a rung cannot honour |
 | ticks | gone; wall-clock only | back — sandtrap is in-process in the worker |
 | packages | grants → image package list | grants → Pyodide package list, the same `_merge_packages` idea |
 | view reentrancy | one channel, serialized | one interpreter per tab, serialized; a worker pool is a memory question the tab answers |
@@ -693,13 +700,26 @@ agex-studio's are. Deadlines mirror dud: the tab enforces
 silence past that as a lost guest; a sync XHR hostcall carries the
 exec's remaining budget as its `timeout`.
 
-**`isolation`: `process` is satisfied, `kernel` is refused.** dud
-refuses `network=True` because it is a *capability* it cannot honour,
-and accepts any `isolation` because a VM *exceeds* it. A Web Worker
-exceeds `process` — a crash costs the worker, not the page — and does
-not exceed `kernel`, which promises a syscall filter. The studio's
-default `isolation="process"` is then valid on both rungs with one
-`PythonConfig`.
+**`isolation`: `process` is accepted on crash containment,
+`memory_limit_mb` and `kernel` are refused.** dud refuses
+`network=True` because it is a *capability* it cannot honour, and
+accepts any `isolation` because a VM *exceeds* it. A Web Worker does
+not exceed `process`; it meets half of it. sandtrap's `process`
+promises that a crash, a memory blowup or a segfault in sandboxed code
+cannot affect the host. A worker gives the crash half: a trap or an
+uncaught exception kills the worker and not the page. It does not give
+the memory half: workers share the renderer, a worker that outgrows
+the browser's per-tab budget takes the tab with it, and nothing on the
+wasm side enforces a megabyte limit. The party at risk from that
+shortfall is the user's own tab, not the server, whose state is the
+provider's and survives a lost guest. So the rung accepts `process` as
+met on crash containment, says so in the executor's description, and
+refuses the one promise it cannot keep: `memory_limit_mb` set is a
+capability the browser cannot honour and is refused at `open`, as
+`kernel` is for its syscall filter. The studio's default
+`isolation="process"` is then valid on both rungs with one
+`PythonConfig`; a config that also sets a memory limit is a config
+that has chosen the server rung.
 
 **Delegates stay on `LocalExecutor` first.** A delegate is compute the
 user never watches; running it in the author's tab makes the tab a
@@ -809,9 +829,9 @@ tier below is for publications that have handlers.*
    routes in `serve.py`; `LazyFS` in a `nontainer-guest` wheel (pure
    Python, installable with micropip), ranged from the start.
 2. The visitor host-object bridge: the public-method allowlist, the
-   JSON boundary refused at `publish`, the token-only endpoint, the
-   publish-time surface report; the sentence in apps.md's hosting half
-   and in the studio's building-apps skill.
+   JSON boundary refused at the serving open, the token-only endpoint,
+   the surface report at that open; the sentence in apps.md's hosting
+   half and in the studio's building-apps skill.
 3. `AppDriver`: extract the Playwright driver from `testapp.py` behind
    the protocol, move `ws-vitest` onto it, add `Runtime.app_driver`.
    *Shipped in 0.7.7.*
