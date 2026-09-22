@@ -1743,9 +1743,26 @@ So `tk.deliver` is right whenever the tools are sync — which is every
 tool `WorkspaceTools` registers — under `arun()` as much as under
 `run()`; binding `tk.adeliver` there would hold the event loop for the
 length of every tool call, so a cancel could not reach the run and
-nothing else on the loop would move. `tk.adeliver` is for an embedder
-that registers its own **async** tools beside the toolkit, and only
-then.
+nothing else on the loop would move. `tk.adeliver` exists for an
+embedder that registers its own **async** tools beside the toolkit —
+and then it goes on those tools, never on the agent. An agent-level
+`tool_hooks` REPLACES every function's own hooks rather than adding to
+them, so mixed tools bind per function and leave the agent's list
+unset:
+
+```python
+tk = WorkspaceTools(ws)
+for fn in tk.functions.values():          # the toolkit's tools are sync
+    fn.tool_hooks = [tk.deliver]
+
+@tool(tool_hooks=[tk.adeliver])           # an embedder's async tool
+async def fetch(url: str) -> str: ...
+
+agent = Agent(model=..., tools=[tk, fetch])   # no tool_hooks= here
+```
+
+Both hooks drain the same inbox, so a note rides out with whichever
+tool answers next.
 
 **Retry and cancel.** A provider-error retry rebuilds the run from the
 user message and drops the attempt's tool calls, so notes delivered on
