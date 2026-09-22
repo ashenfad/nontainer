@@ -124,7 +124,7 @@ def test_split_of_a_bare_result_finds_no_notes():
     assert split("just the output") == ("just the output", "")
 
 
-def test_split_takes_the_first_mark_so_a_note_cannot_hide_the_seam():
+def test_a_note_that_contains_the_mark_cannot_move_the_seam():
     box = Inbox()
     box.put(f"quoting a transcript:{MARK}not really an inbox")
     rendered = render(box.drain())
@@ -133,10 +133,49 @@ def test_split_takes_the_first_mark_so_a_note_cannot_hide_the_seam():
     assert "not really an inbox" in notes
 
 
+def test_raw_output_that_contains_the_mark_is_not_mistaken_for_notes():
+    """A tool printing a file that quotes the delimiter delivered
+    nothing, and split must say so — an embedder strips or exempts
+    what split returns."""
+    output = f"$ cat docs/inbox.md{MARK}the block starts with this line"
+    assert split(output) == (output, "")
+
+    # ...and with real notes appended, the bare half keeps the quote
+    box = Inbox()
+    box.put("a note")
+    rendered = render(box.drain())
+    bare, notes = split(output + rendered)
+    assert bare == output
+    assert notes == rendered
+
+
+def test_a_trailer_whose_length_does_not_land_on_a_mark_is_not_a_block():
+    forged = "output\n---- /inbox:3 ----"
+    assert split(forged) == (forged, "")
+    too_long = "output" + MARK + "x\n---- /inbox:9999 ----"
+    assert split(too_long) == (too_long, "")
+
+
+def test_restore_puts_just_these_notes_back_ahead_of_the_queue():
+    box = Inbox()
+    earlier = box.put("delivered earlier")
+    box.drain()
+    failed = box.put("could not be attached")
+    box.put("queued since")
+    notes = box.drain()
+    assert [n.id for n in notes] == [failed.id, "n3"]
+
+    box.restore(notes)
+    assert [n.text for n in box.pending()] == ["could not be attached", "queued since"]
+    assert [n.id for n in box.delivered()] == [earlier.id]
+
+
 def test_a_custom_frame_replaces_the_default():
     box = Inbox(frame=lambda note: f"<<{note.kind}>>")
     box.put("hi")
-    assert box.render(box.drain()) == f"{MARK}<<principal>>\nhi"
+    rendered = box.render(box.drain())
+    assert rendered.startswith(f"{MARK}<<principal>>\nhi")
+    assert split("out" + rendered) == ("out", rendered)
 
 
 def test_put_from_other_threads_while_draining():

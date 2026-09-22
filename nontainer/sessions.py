@@ -407,9 +407,12 @@ class Sessions:
         Collecting through this TOUCHES each job exactly as
         :meth:`result` does, and marks it collected, so an answer is
         taken once. A job whose delegate is asked again (``resume``)
-        records a new answer and appears again; a cancelled job never
-        appears, since its answer was discarded, and an expired one
-        drops out with its branch.
+        records a new answer and appears again — and a resume DISCARDS
+        the previous answer, exactly as it does for ``result``: a job
+        resumed before its answer was read has nothing to take until
+        the new one lands. A cancelled job never appears, since its
+        answer was discarded, and an expired one drops out with its
+        branch.
         """
         now = time.time()
         taken: list[tuple[str, Answer]] = []
@@ -727,7 +730,10 @@ class Sessions:
             self._token += 1
             token = self._busy[name] = self._token
             self._jobs[name] = job
+            # The previous answer goes with its uncollected mark: a
+            # resumed job has nothing to take until the new one lands.
             self._answers.pop(name, None)
+            self._uncollected.discard(name)
             self._children[name] = child
             self._base[name] = base
         try:

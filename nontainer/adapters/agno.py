@@ -147,7 +147,9 @@ class WorkspaceTools(Toolkit):
         notes = self._collect()
         if not notes:
             return result
-        out = self._with_notes(result, notes)
+        out = self._attach(result, notes, function_name)
+        if out is None:
+            return result
         self._announce(notes, allow_async=False)
         return out
 
@@ -164,7 +166,9 @@ class WorkspaceTools(Toolkit):
         notes = self._collect()
         if not notes:
             return result
-        out = self._with_notes(result, notes)
+        out = self._attach(result, notes, function_name)
+        if out is None:
+            return result
         await self._aannounce(notes)
         return out
 
@@ -212,10 +216,38 @@ class WorkspaceTools(Toolkit):
         """
         rendered = self.inbox.render(notes)
         if isinstance(result, ToolResult):
-            return result.model_copy(update={"content": result.content + rendered})
+            content = result.content
+            if not isinstance(content, str):
+                content = "" if content is None else str(content)
+            return result.model_copy(update={"content": content + rendered})
         if isinstance(result, str):
             return result + rendered
         return str(result) + rendered
+
+    def _attach(self, result: Any, notes: "list[Note]", function_name: str) -> Any:
+        """:meth:`_with_notes`, or ``None`` when the notes could not be
+        attached — and then the notes are pending again.
+
+        The notes were drained before this ran, so a failure here (a
+        frame that raises, a result shape the text cannot be added
+        to) would otherwise spend them on a message the model never
+        sees AND replace a tool result that succeeded with an
+        exception. The tool result wins: it goes back untouched, and
+        the notes go back to the head of the queue for the next result
+        that lands.
+        """
+        try:
+            return self._with_notes(result, notes)
+        except Exception:  # noqa: BLE001 - the tool result wins
+            _logger.warning(
+                "inbox: %d note(s) could not be attached to the result of %s; "
+                "they stay pending for the next tool result",
+                len(notes),
+                function_name,
+                exc_info=True,
+            )
+            self.inbox.restore(notes)
+            return None
 
     def _announce(self, notes: "list[Note]", *, allow_async: bool) -> Any:
         """Tell the inbox's ``on_delivered`` that these notes landed.

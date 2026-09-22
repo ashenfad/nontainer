@@ -1347,6 +1347,22 @@ def test_take_and_result_share_one_collected_mark(parent, store):
         assert sessions.take() == []
 
 
+def test_a_resume_discards_the_unread_answer_and_its_mark(parent, store):
+    """A resume replaces the run, answer included, exactly as it does
+    for ``result``: nothing to take until the new answer lands, and
+    then only the new one."""
+    runner = Scripted(store, {}, text="first")
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("one")
+        landed(sessions, job.name)
+        runner.text = "second"
+        sessions.ask("two", resume=job.name)
+        assert sessions.take() == []
+        landed(sessions, job.name)
+        assert [(n, str(a)) for n, a in sessions.take()] == [(job.name, "second")]
+        assert sessions.take() == []
+
+
 def test_take_touches_the_job_the_way_result_does(parent, store):
     """Retention is an idle TTL, and taking an answer is the caller
     dealing with the job."""
