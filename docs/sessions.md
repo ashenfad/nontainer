@@ -28,6 +28,7 @@ sessions.ask(task, *, name=None, paths=None, inherit="fresh",
              fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
+sessions.take() -> list[tuple[str, Answer]]   # every answer not yet collected
 sessions.cancel(name) -> Job
 sessions.keep(name) -> Job           # out of the retention sweep, for good
 sessions.base(name) -> str | None    # the commit it was forked from
@@ -162,6 +163,23 @@ be discarded and the branch left as it is: a runner already working is
 the embedder's loop and cannot be interrupted, and nothing the helper
 does writes to the child's branch, so there is nothing to undo either.
 A job that has already answered comes back unchanged.
+
+`take()` is the collection point for an embedder that pushes: every
+answer that has landed and has not been collected, in landing order.
+It touches each job exactly as `result` does and marks it collected,
+and the two share that one mark — an embedder that reads answers
+between turns and takes them mid-turn never hands the same answer over
+twice. A cancelled job never appears, since its answer was discarded,
+and an expired one drops out with its branch; a delegate asked again
+(`resume`) lands a new answer and appears again.
+
+Notification is still the embedder's, and nothing here does it. The
+agno adapter's inbox (the [API reference](api.md) has the wiring) is
+one such notifier: with `tool_hooks` bound it calls `take()` at every
+tool result and delivers the answers there — mid-turn rather than on
+the next one — framed as the delegation mechanism speaking rather than
+as the person the agent works for. `inbox.on_delivered` is where an
+embedder records that delivery.
 
 ### Retention: an idle TTL the embedder sweeps
 

@@ -37,6 +37,9 @@ Delivery is pull: :meth:`Sessions.ask` returns a :class:`Job` and the
 answer is collected later with :meth:`Sessions.result`. How a parent
 LEARNS that a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's, not nontainer's.
+:meth:`Sessions.take` is the collection point for an embedder that
+pushes: every answer that landed and has not been collected, so the
+same answer never arrives twice however it is read.
 
 An ask starts from this session unless it is told otherwise. ``fork_from``
 names another fork point — a commit somebody else tends, spelled
@@ -192,6 +195,14 @@ class Sessions:
         self._futures: dict[str, Future] = {}
         self._children: dict[str, Workspace] = {}
         self._base: dict[str, str | None] = {}
+        #: The jobs whose answer has landed and has not been collected
+        #: since it landed. A name goes in when an answer is recorded
+        #: and comes out when a caller collects it, through either
+        #: :meth:`result` or :meth:`take` — one mark, so a caller that
+        #: reads an answer between turns and a caller that takes them
+        #: mid-turn never see the same answer twice. A resume records
+        #: a new answer, which puts the name back.
+        self._uncollected: set[str] = set()
         #: The branches with a run in flight, each held by the run that
         #: reserved it. A branch runs one job at a time: the runner
         #: cannot be interrupted, so a second run on one branch would
@@ -379,8 +390,43 @@ class Sessions:
                     f"The branch is still there as the delegate left it: "
                     f"ws-git diff {name} shows what it had done."
                 )
+            self._uncollected.discard(name)
             self._jobs[name] = replace(job, touched=time.time())
             return answer
+
+    def take(self) -> "list[tuple[str, Answer]]":
+        """Every answer that landed and has not been collected yet, as
+        ``(job name, answer)`` pairs in landing order.
+
+        The push half of delivery, for a caller that wants to hand
+        answers to the parent the moment they exist rather than
+        waiting for it to ask: an embedder polls this where it can
+        reach the model — nontainer's agno adapter drains it into the
+        next tool result — and nothing here blocks or notifies.
+
+        Collecting through this TOUCHES each job exactly as
+        :meth:`result` does, and marks it collected, so an answer is
+        taken once. A job whose delegate is asked again (``resume``)
+        records a new answer and appears again; a cancelled job never
+        appears, since its answer was discarded, and an expired one
+        drops out with its branch.
+        """
+        now = time.time()
+        taken: list[tuple[str, Answer]] = []
+        with self._lock:
+            names = sorted(
+                self._uncollected,
+                key=lambda n: (self._jobs[n].finished or 0.0, n),
+            )
+            for name in names:
+                self._uncollected.discard(name)
+                job = self._jobs.get(name)
+                answer = self._answers.get(name)
+                if job is None or answer is None or job.status == "expired":
+                    continue
+                self._jobs[name] = replace(job, touched=now)
+                taken.append((name, answer))
+        return taken
 
     def base(self, name: str) -> str | None:
         """The commit job ``name`` was forked from.
@@ -527,6 +573,7 @@ class Sessions:
             store.delete(names, min_age=min_age)
             for name in names:
                 self._answers.pop(name, None)
+                self._uncollected.discard(name)
                 self._jobs[name] = replace(self._jobs[name], status="expired")
             return names
 
@@ -1059,6 +1106,7 @@ class Sessions:
             # after this point touches the job's table rows.
             self._release_locked(name, token)
             self._answers[name] = answer
+            self._uncollected.add(name)
             self._jobs[name] = replace(
                 job,
                 status=answer.status,

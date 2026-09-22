@@ -28,6 +28,7 @@ Public surface:
 Extension surfaces (built by the embedder, never assumed present):
 
     nontainer.sessions.Sessions  -- delegation over one workspace
+    nontainer.inbox.Inbox        -- notes delivered with a tool result
     nontainer.apps.enable_apps   -- the apps loop
 
 Adapters (optional extras):

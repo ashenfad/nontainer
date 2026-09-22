@@ -24,6 +24,13 @@ turn-commit checks) and is uncontended under sync ``run()``. The
 toolkit ``instructions`` carry the one-call-per-turn convention so
 serialization stays a backstop, not the norm.
 
+Run-level seams, all optional and all bound as instance attributes so
+an embedder names them at the call site: ``tk.end_turn`` (post hook)
+commits the turn, ``tk.begin_turn`` (pre hook) re-queues notes a
+retried attempt threw away, and ``tk.deliver`` / ``tk.adeliver`` (tool
+hooks, one per run loop) append ``tk.inbox``'s notes to the next tool
+result — the only place a running agent reads new text.
+
 Exposure follows ``resolve_tools_mode`` (``"auto"`` default): a plain
 python environment gets a single ``terminal`` tool (with the `python`
 builtin); an augmented one (cache / host objects) additionally gets a
@@ -32,6 +39,8 @@ dedicated ``run_python`` tool whose description announces the magic.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import threading
 from typing import Any
 
@@ -39,6 +48,7 @@ from agno.media import Image
 from agno.tools import Toolkit
 from agno.tools.function import ToolResult
 
+from ..inbox import Inbox, Note
 from ..workspace import Workspace
 from .render import (
     FILE_EDIT_DESCRIPTION,
@@ -52,6 +62,8 @@ from .render import (
     resolve_tools_mode,
     terminal_description,
 )
+
+_logger = logging.getLogger("nontainer.adapters.agno")
 
 _INSTRUCTIONS = """\
 You have a persistent workspace (files, shell{and_python}). Make ONE
@@ -87,6 +99,168 @@ def _media_note(count: int) -> str:
 class WorkspaceTools(Toolkit):
     """agno Toolkit over a nontainer :class:`Workspace`."""
 
+    def _begin_turn(self, *args: Any, **kwargs: Any) -> None:
+        """Re-queue notes an abandoned attempt delivered. Tolerant
+        signature so it slots into agno ``pre_hooks``.
+
+        A pre hook runs once per attempt, so on a run's first attempt
+        nothing has been delivered yet and this does nothing. It earns
+        its place on the second: a provider-error retry rebuilds the
+        run from the user message and drops the attempt's tool calls,
+        so notes that rode out on one of those tool results went with
+        them and the model never saw them. Delivered-but-unsettled is
+        exactly that set, and it goes back to the front of the queue
+        for the retry to deliver again.
+
+        Cancellation needs the same care from the other side: agno
+        runs no post hook for a cancelled run, so an embedder that
+        keeps a cancelled run's messages — the model DID see the
+        notes — should call ``tk.inbox.settle()`` in its cancel path.
+        Otherwise the next turn re-delivers them.
+        """
+        self.inbox.requeue()
+
+    def _deliver(
+        self,
+        function_name: str,
+        function: Any,
+        arguments: dict[str, Any],
+    ) -> Any:
+        """agno ``tool_hook``, sync: run the tool, append the inbox.
+
+        A tool result is the one place a running agent reads new text,
+        so it is where a mid-run message is delivered. Nothing is
+        interrupted and no message is rewritten: the notes queued
+        while this call ran are appended to the text it returns.
+
+        A tool that RAISES delivers nothing — the exception propagates
+        untouched and the notes stay pending for the next result that
+        lands, rather than being spent on a message the model may
+        never see.
+
+        Pair with :meth:`_adeliver` on an async run loop: agno's sync
+        chain skips a coroutine hook with a warning, and its async
+        chain hands a hook a coroutine ``next_func`` that only an
+        async hook can drive, so each spelling covers one loop.
+        """
+        result = function(**arguments)
+        notes = self._collect()
+        if not notes:
+            return result
+        out = self._with_notes(result, notes)
+        self._announce(notes, allow_async=False)
+        return out
+
+    async def _adeliver(
+        self,
+        function_name: str,
+        function: Any,
+        arguments: dict[str, Any],
+    ) -> Any:
+        """agno ``tool_hook``, async: :meth:`_deliver` for a run loop
+        driven by ``arun()``/``aexecute()``, awaiting the tool and any
+        awaitable the inbox's ``on_delivered`` returns."""
+        result = await function(**arguments)
+        notes = self._collect()
+        if not notes:
+            return result
+        out = self._with_notes(result, notes)
+        await self._aannounce(notes)
+        return out
+
+    def _collect(self) -> "list[Note]":
+        """Everything to deliver with this tool result: the queued
+        notes, then any delegate answer that has landed since the last
+        collection.
+
+        A delegate's answer is framed as the mechanism rather than the
+        principal, because that is what it is — prose written by
+        another model, evidence rather than instruction. Taking it
+        here is what makes an answer arrive mid-turn at all; the
+        ``sessions`` tool's own ``result`` action still reads answers
+        on demand, and neither hands over the same answer twice.
+        """
+        notes = self.inbox.drain()
+        helper = self.sessions
+        if helper is None:
+            return notes
+        from ..sessions import render_answer
+
+        for name, answer in helper.take():
+            notes.append(
+                self.inbox.deliver_now(
+                    render_answer(answer),
+                    kind="mechanism",
+                    label=f"delegate {name}",
+                    job=name,
+                    answer=answer,
+                )
+            )
+        return notes
+
+    def _with_notes(self, result: Any, notes: "list[Note]") -> Any:
+        """The tool's result with the rendered notes appended, keeping
+        whatever shape it had.
+
+        A ``ToolResult`` is copied with its text replaced rather than
+        mutated, and everything else on it comes across untouched:
+        dropping the images off a screenshot's result to deliver a
+        sentence would cost the model the thing it called the tool
+        for. The copy carries fields by name rather than being rebuilt
+        from a fixed list, so a field one agno version has and another
+        does not is neither dropped nor demanded.
+        """
+        rendered = self.inbox.render(notes)
+        if isinstance(result, ToolResult):
+            return result.model_copy(update={"content": result.content + rendered})
+        if isinstance(result, str):
+            return result + rendered
+        return str(result) + rendered
+
+    def _announce(self, notes: "list[Note]", *, allow_async: bool) -> Any:
+        """Tell the inbox's ``on_delivered`` that these notes landed.
+
+        A callback that raises must not cost the model its tool
+        result: the failure is logged and delivery stands, since the
+        text has already been built and the notes are already spent.
+        """
+        callback = self.inbox.on_delivered
+        if callback is None:
+            return None
+        try:
+            outcome = callback(notes)
+        except Exception:  # noqa: BLE001 - the tool result wins
+            _logger.warning("inbox on_delivered raised", exc_info=True)
+            return None
+        if not inspect.isawaitable(outcome):
+            return None
+        if allow_async:
+            return outcome
+        # A sync run loop has no event loop to await in, so an async
+        # callback cannot run at all here. Closing it keeps python
+        # from warning about a coroutine that was never awaited, and
+        # saying so once names the fix (bind the async hook instead).
+        close = getattr(outcome, "close", None)
+        if close is not None:
+            close()
+        if not self._async_callback_warned:
+            self._async_callback_warned = True
+            _logger.warning(
+                "inbox on_delivered returned an awaitable, which a sync tool "
+                "hook cannot await; it was discarded. Bind the async hook "
+                "(tool_hooks=[tk.adeliver]) on an async run loop."
+            )
+        return None
+
+    async def _aannounce(self, notes: "list[Note]") -> None:
+        outcome = self._announce(notes, allow_async=True)
+        if outcome is None:
+            return
+        try:
+            await outcome
+        except Exception:  # noqa: BLE001 - the tool result wins
+            _logger.warning("inbox on_delivered raised", exc_info=True)
+
     def _end_turn(self, *args: Any, **kwargs: Any) -> str | None:
         """Commit the turn's staged work (one commit per agent turn).
         Tolerant signature so it slots into agno ``post_hooks``; also
@@ -104,7 +278,17 @@ class WorkspaceTools(Toolkit):
         boundary keeps it: the turn commit is the framework's, and
         ws-git measures against the agent's own last commit, so its
         staged set is still staged and its work in progress still
-        uncommitted afterwards."""
+        uncommitted afterwards.
+
+        It also settles the inbox — the turn that read this turn's
+        notes is over, so nothing will redeliver them. That happens
+        first, whether or not this toolkit owns the commit, because
+        settling is about the conversation rather than the files. A
+        cancelled run runs no post hook at all, so an embedder that
+        keeps a cancelled run's messages should call
+        ``tk.inbox.settle()`` in its cancel path; otherwise the next
+        turn re-delivers what the model has already read."""
+        self.inbox.settle()
         if self._session_db is not None:
             return None
         with self._lock:
@@ -122,6 +306,7 @@ class WorkspaceTools(Toolkit):
         sessions: Any = None,
         commit: str = "call",
         session_db: Any = None,
+        inbox: Inbox | None = None,
         terminal_primer: str | None = None,
         python_primer: str | None = None,
         vision: bool = True,
@@ -168,9 +353,26 @@ class WorkspaceTools(Toolkit):
         persists the run, so files and conversation land in one commit —
         and it is wired explicitly rather than sniffed off the workspace
         so a reader of the call site can see which object owns the
-        commit. The db's ``owns(workspace)`` is the check."""
+        commit. The db's ``owns(workspace)`` is the check.
+
+        ``inbox``: the :class:`~nontainer.inbox.Inbox` whose notes
+        :meth:`deliver` appends to tool results. One is created when
+        none is given (``tk.inbox``); pass your own to share a queue
+        an embedder already fills, or to set its framing and its
+        ``on_delivered`` callback. Delivery needs the hook wired::
+
+            tk = WorkspaceTools(ws, commit="turn")
+            agent = Agent(model=..., tools=[tk],
+                          pre_hooks=[tk.begin_turn],
+                          post_hooks=[tk.end_turn],
+                          tool_hooks=[tk.adeliver])  # tk.deliver if sync
+
+        Without ``tool_hooks`` the queue simply fills and the
+        embedder reads it between turns."""
         self._ws = workspace
         self._lock = threading.Lock()
+        self.inbox = inbox if inbox is not None else Inbox()
+        self._async_callback_warned = False
         if session_db is not None:
             owns = getattr(session_db, "owns", None)
             if owns is None or not owns(workspace):
@@ -424,6 +626,9 @@ class WorkspaceTools(Toolkit):
         instructions += skills_catalog(workspace)
 
         self.end_turn = self._end_turn  # bindable as an agno post_hook
+        self.begin_turn = self._begin_turn  # bindable as an agno pre_hook
+        self.deliver = self._deliver  # agno tool_hook, sync run loop
+        self.adeliver = self._adeliver  # agno tool_hook, async run loop
 
         super().__init__(
             name="nontainer_workspace",

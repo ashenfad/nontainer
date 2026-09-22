@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **A mid-run inbox: words reach a model that is already working.**
+  An agent loop is opaque while it runs — a human, or an embedder
+  acting for one, cannot get a sentence to the model until the run
+  ends, so a correction that arrives a second late waits for the work
+  it was meant to redirect to finish. The seam that does exist is the
+  tool result, and `nontainer.inbox.Inbox` is a thread-safe queue
+  anyone can `put()` into from any thread; the agno adapter's
+  `tk.deliver` / `tk.adeliver` tool hooks drain it at each tool result
+  and append the notes behind a visible `---- inbox ----` mark
+  (`split()` cuts them back off for a transcript or a compression
+  pass). Delivery is at a tool result and never sooner: nothing is
+  interrupted, no message the model has read is rewritten, and a run
+  that ends without another tool call leaves its notes pending for the
+  next turn. Each note is framed with one line naming who is speaking
+  — `principal` (whoever this session works for: the person at the
+  keyboard, or the parent, for a delegate) or `mechanism` (the
+  machinery around the agent, framed as evidence rather than
+  instruction) — because text inside a tool result otherwise reads as
+  the tool's output, and the two carry different authority. Two hook
+  spellings because agno has two chains: the sync one skips a
+  coroutine hook, the async one hands a hook a coroutine `next_func`
+  a sync hook cannot drive. `tk.begin_turn` (a pre hook) re-queues
+  notes a retried attempt delivered and then threw away, and
+  `tk.end_turn` settles them.
+- **`Sessions.take()`: every delegate answer that landed and has not
+  been collected.** The collection point for an embedder that pushes,
+  in landing order. It touches each job exactly as `result` does and
+  marks it collected, and the two share that one mark, so an embedder
+  that reads answers between turns and takes them mid-turn never hands
+  the same answer over twice; cancelled and expired jobs never appear,
+  and a resumed delegate appears again when its new answer lands. With
+  the delivery hooks wired, a delegate's answer reaches the parent
+  mid-turn — as a `mechanism` note in the next tool result — instead
+  of waiting for the parent to ask on a later one.
+
 ## 0.7.7 - 2026-09-20
 
 ### Changed
