@@ -1658,6 +1658,7 @@ WorkspaceTools(
     sessions: SessionRunner | Sessions | None = None,  # adds the sessions tool
     commit: "call" | "turn" = "call",
     session_db: KvgitSessionDb | KvgitStoreDb | None = None,  # conversation in the branch
+    inbox: Inbox | None = None,         # mid-run notes; tk.inbox otherwise
     terminal_primer: str | None = None, # host guidance → terminal tool
     python_primer: str | None = None,   # host guidance → run_python tool
     **toolkit_kwargs,
@@ -1686,6 +1687,63 @@ place to tell the agent about conventions the core can't infer (e.g.
 `run_python` tool. In terminal-only mode there is no `run_python`
 tool, so a `python_primer` lands in the `terminal` tool's `python`
 section (and warns). Same params on `build_server`.
+
+**The inbox: words for a model that is already working.** A run is
+opaque while it happens — nothing can reach the model between the
+moment it starts and the moment it ends. The seam that does exist is
+the tool result, so that is where a note is delivered:
+
+```python
+tk = WorkspaceTools(ws, commit="turn")
+agent = Agent(model=..., tools=[tk],
+              pre_hooks=[tk.begin_turn], post_hooks=[tk.end_turn],
+              tool_hooks=[tk.adeliver])      # tk.deliver for a sync run loop
+tk.inbox.put("switch the chart to a log scale")   # from any thread
+```
+
+The note rides out with the agent's **next tool result**, never sooner:
+nothing is interrupted and no message the model has already read is
+rewritten. A run that ends without another tool call leaves the note
+pending, for the embedder to start the next turn with. `tk.inbox` is an
+`Inbox` (`nontainer.inbox`, no agno import) unless one is passed in:
+
+```python
+note = inbox.put(text, kind="principal", label="", job=None, answer=None)
+inbox.pending() / inbox.withdraw(note.id) / inbox.drain()
+inbox.delivered() / inbox.settle() / inbox.requeue()
+inbox.on_delivered = lambda notes: ...     # awaited by adeliver if awaitable
+```
+
+Each note is framed with one line naming who is speaking. `kind`
+is `"principal"` — whoever this session works for, the person at the
+keyboard for a top-level session and the parent for a delegate — or
+`"mechanism"`, the machinery around the agent, which is framed as
+evidence rather than instruction. Text inside a tool result reads as
+the tool's output unless something says otherwise, and the two carry
+different authority.
+
+`split(text) -> (bare result, rendered notes)` cuts on the first `MARK`
+and is how an embedder strips the block from a transcript or exempts it
+from tool-result compression; the two halves concatenate back.
+
+**Two hook spellings** because agno has two chains: the sync one skips
+a coroutine hook with a warning, and the async one hands a hook a
+coroutine `next_func` that a sync hook cannot drive. Bind `tk.deliver`
+on a `run()` loop and `tk.adeliver` on an `arun()` one.
+
+**Retry and cancel.** A provider-error retry rebuilds the run from the
+user message and drops the attempt's tool calls, so notes delivered on
+one of them were never seen; `tk.begin_turn` (a pre hook, once per
+attempt) puts delivered-but-unsettled notes back at the front of the
+queue. `tk.end_turn` settles them — whether or not a `session_db` owns
+the commit. agno runs no post hook for a **cancelled** run, so an
+embedder that keeps a cancelled run's messages (the model did see the
+notes) should call `tk.inbox.settle()` in its cancel path; otherwise
+the next turn re-delivers.
+
+With `sessions=` wired, every delegate answer that has landed is taken
+at the same delivery point (`Sessions.take()`) and arrives as a
+`mechanism` note — mid-turn instead of on the next one.
 
 **The artifacts note (`run_python`).** The `ui = {...}` convention
 materializes namespace values into `/ui/` files (spec formats > pixels >

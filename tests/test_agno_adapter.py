@@ -417,3 +417,263 @@ def test_agno_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
         tk.sessions.close()
         ws.close()
         store.close()
+
+
+# -- the inbox: notes delivered with the next tool result ----------------------
+
+
+def call_through_agno(function, arguments, hook):
+    """Run a tool the way agno runs one: a Function whose tool_hooks
+    hold the delivery hook, executed through FunctionCall.
+
+    Driving agno's own chain rather than calling the hook directly is
+    the point of these tests — the hook's argument names are bound by
+    agno's signature inspection, and a rename there is exactly the
+    breakage worth catching.
+    """
+    from agno.tools.function import Function, FunctionCall
+
+    fn = Function(name=function.__name__, entrypoint=function, tool_hooks=[hook])
+    return FunctionCall(function=fn, arguments=arguments).execute()
+
+
+def test_inbox_note_rides_out_with_the_next_tool_result():
+    from nontainer.inbox import split
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.put("switch the chart to a log scale")
+
+    out = call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert out.status == "success"
+    bare, notes = split(out.result)
+    assert bare.strip().endswith("hi")
+    assert "switch the chart to a log scale" in notes
+    assert "NOT part of the tool's output" in notes
+    # spent: delivered once, and not pending for the next call
+    assert tk.inbox.pending() == []
+    assert len(tk.inbox.delivered()) == 1
+    ws.close()
+
+
+def test_an_empty_inbox_leaves_the_result_exactly_as_it_was():
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    out = call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert "inbox" not in out.result
+    assert out.result == tk.functions["terminal"].entrypoint("echo hi")
+    ws.close()
+
+
+def test_delivery_keeps_a_tool_results_images():
+    """A screenshot's images are what the model called the tool for;
+    appending a sentence must not cost them."""
+    from agno.tools.function import ToolResult
+
+    png = bytes.fromhex(
+        "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
+        "7753de0000000c49444154089963f8cfc000000301010018dd8db0000000"
+        "0049454e44ae426082"
+    )
+    ws = make_ws()
+    ws.files.fs.write("/plot.png", png)
+    tk = WorkspaceTools(ws)
+    tk.inbox.put("stop after this one")
+
+    out = call_through_agno(
+        tk.functions["view_image"].entrypoint, {"path": "/plot.png"}, tk.deliver
+    )
+    result = out.result
+    assert isinstance(result, ToolResult)
+    assert result.images and result.images[0].format == "png"
+    assert result.content.endswith("stop after this one")
+    ws.close()
+
+
+def test_a_result_that_is_neither_str_nor_tool_result_is_stringified():
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.put("noted")
+
+    def counter() -> int:
+        return 42
+
+    out = call_through_agno(counter, {}, tk.deliver)
+    assert out.result.startswith("42")
+    assert "noted" in out.result
+    ws.close()
+
+
+def test_a_raising_tool_leaves_the_notes_pending():
+    """Notes wait for a result that lands rather than being spent on
+    a message the model may never read."""
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.put("still waiting")
+
+    def boom() -> str:
+        raise RuntimeError("nope")
+
+    out = call_through_agno(boom, {}, tk.deliver)
+    assert out.status == "failure"
+    assert [n.text for n in tk.inbox.pending()] == ["still waiting"]
+    assert tk.inbox.delivered() == []
+    ws.close()
+
+
+def test_on_delivered_is_called_with_the_notes():
+    seen = []
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.on_delivered = seen.append
+    tk.inbox.put("recorded")
+
+    call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert [n.text for n in seen[0]] == ["recorded"]
+    ws.close()
+
+
+def test_an_on_delivered_that_raises_does_not_cost_the_tool_result():
+    from nontainer.inbox import Inbox
+
+    def angry(notes):
+        raise RuntimeError("bookkeeping is down")
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws, inbox=Inbox(on_delivered=angry))
+    tk.inbox.put("delivered anyway")
+    out = call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert "delivered anyway" in out.result
+    ws.close()
+
+
+def test_a_sync_hook_discards_an_awaitable_callback():
+    async def later(notes):
+        return None
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.on_delivered = later
+    tk.inbox.put("still lands")
+    out = call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert "still lands" in out.result
+    ws.close()
+
+
+async def test_the_async_hook_delivers_and_awaits_the_callback():
+    """agno's async chain hands a hook a coroutine next_func, which is
+    why there are two hook spellings."""
+    from agno.tools.function import Function, FunctionCall
+
+    seen = []
+
+    async def record(notes):
+        seen.extend(notes)
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.on_delivered = record
+    tk.inbox.put("mid-run word")
+
+    async def slow_echo(text: str) -> str:
+        return text.upper()
+
+    fn = Function(name="slow_echo", entrypoint=slow_echo, tool_hooks=[tk.adeliver])
+    out = await FunctionCall(function=fn, arguments={"text": "hi"}).aexecute()
+    assert out.result.startswith("HI")
+    assert "mid-run word" in out.result
+    assert [n.text for n in seen] == ["mid-run word"]
+    ws.close()
+
+
+def test_begin_turn_requeues_what_a_dropped_attempt_delivered():
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.put("say it once")
+    call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+
+    # a provider-error retry: the attempt's tool calls are gone, so the
+    # model never saw the note — the next attempt delivers it again
+    tk.begin_turn()
+    assert [n.text for n in tk.inbox.pending()] == ["say it once"]
+    out = call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert "say it once" in out.result
+
+    # the turn completes: settled, and a later begin_turn finds nothing
+    tk.end_turn()
+    assert tk.inbox.delivered() == []
+    tk.begin_turn()
+    assert tk.inbox.pending() == []
+    ws.close()
+
+
+def test_end_turn_settles_even_when_a_session_db_owns_the_commit():
+    class FakeDb:
+        def owns(self, workspace):
+            return True
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws, session_db=FakeDb())
+    tk.inbox.put("read and done")
+    tk.inbox.drain()
+    assert tk.end_turn() is None  # the db commits, not the toolkit
+    assert tk.inbox.delivered() == []
+    ws.close()
+
+
+def test_a_delegate_answer_arrives_with_the_next_tool_result(tmp_path):
+    """The answer is framed as the mechanism, not as the person the
+    agent works for."""
+    import time
+
+    from nontainer import Store
+    from nontainer.inbox import split
+
+    store = Store(tmp_path / "store")
+    ws = store.open("analyst")
+
+    class Scripted:
+        def run(self, session, task, *, budget=None):
+            return "north is 4"
+
+    tk = WorkspaceTools(ws, sessions=Scripted())
+    try:
+        job = tk.sessions.ask("what is north?")
+        deadline = time.time() + 10
+        while tk.sessions.list()[0].status == "running" and time.time() < deadline:
+            time.sleep(0.01)
+
+        out = call_through_agno(
+            tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+        )
+        _, notes = split(out.result)
+        assert "north is 4" in notes
+        assert "the delegation mechanism speaking" in notes
+        assert f"delegate {job.name}" in notes
+
+        # taken once: the next tool call carries nothing
+        again = call_through_agno(
+            tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+        )
+        assert "inbox" not in again.result
+        # and it is under requeue like any other delivered note
+        assert tk.begin_turn() is None
+        assert [n.job for n in tk.inbox.pending()] == [job.name]
+    finally:
+        tk.sessions.close()
+        ws.close()
+        store.close()

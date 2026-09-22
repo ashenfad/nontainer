@@ -11,6 +11,7 @@ grouped seed vs elsewhere, and that no job can die with its thread.
 
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -1293,3 +1294,133 @@ def test_a_keep_while_a_resume_is_being_set_up_survives_it(parent, store):
 
     assert row.kept is True
     assert row.task == "second"
+
+
+# -- take: the push half of delivery -------------------------------------------
+
+
+def landed(sessions, name, timeout=10):
+    """Wait for a job's answer to land without collecting it.
+
+    ``ask(wait=True)`` reads the answer, which marks it collected —
+    exactly what these tests need NOT to happen — so they wait on the
+    job's status instead.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = next(j for j in sessions.list() if j.name == name)
+        if job.status != "running":
+            return job
+        time.sleep(0.01)
+    raise AssertionError(f"job {name} never landed")
+
+
+def test_take_hands_over_an_answer_once(parent, store):
+    runner = Scripted(store, {"/workspace/report.md": "polished\n"}, text="polished")
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("polish it")
+        landed(sessions, job.name)
+
+        taken = sessions.take()
+        assert [(name, str(answer)) for name, answer in taken] == [
+            (job.name, "polished")
+        ]
+        assert isinstance(taken[0][1], Answer)
+        assert sessions.take() == []
+
+
+def test_take_and_result_share_one_collected_mark(parent, store):
+    """An embedder that reads between turns and takes mid-turn never
+    gets the same answer twice."""
+    runner = Scripted(store, {}, text="here")
+    with Sessions(parent, runner) as sessions:
+        first = sessions.ask("one")
+        landed(sessions, first.name)
+        assert sessions.result(first.name).text == "here"
+        assert sessions.take() == []  # result collected it
+
+        second = sessions.ask("two")
+        landed(sessions, second.name)
+        assert [name for name, _ in sessions.take()] == [second.name]
+        # taking is not consuming: the answer is still readable
+        assert sessions.result(second.name).text == "here"
+        assert sessions.take() == []
+
+
+def test_take_touches_the_job_the_way_result_does(parent, store):
+    """Retention is an idle TTL, and taking an answer is the caller
+    dealing with the job."""
+    runner = Scripted(store, {}, text="here")
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("go")
+        landed(sessions, job.name)
+        with sessions._lock:
+            sessions._jobs[job.name] = replace(
+                sessions._jobs[job.name], touched=time.time() - 120
+            )
+
+        sessions.take()
+        assert sessions.list()[0].touched > time.time() - 5
+
+
+def test_take_returns_answers_in_landing_order(parent, store):
+    runner = Scripted(store, {}, text="here")
+    with Sessions(parent, runner, max_workers=1) as sessions:
+        first = sessions.ask("one")
+        landed(sessions, first.name)
+        second = sessions.ask("two")
+        landed(sessions, second.name)
+        assert [name for name, _ in sessions.take()] == [first.name, second.name]
+
+
+def test_a_cancelled_job_is_never_taken(parent, store):
+    """Its answer was discarded, so there is nothing to hand over."""
+    release = threading.Event()
+
+    class Slow(Scripted):
+        def run(self, session, task, *, budget=None):
+            release.wait(5)
+            return super().run(session, task, budget=budget)
+
+    runner = Slow(store, {}, text="too late")
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("go")
+        sessions.cancel(job.name)
+        release.set()
+        sessions.close()  # joins the worker
+        assert sessions.take() == []
+
+
+def test_an_expired_job_is_never_taken(parent, store):
+    """The branch the answer describes is gone with the sweep."""
+    runner = Scripted(store, {}, text="here")
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("go")
+        landed(sessions, job.name)
+        with sessions._lock:
+            sessions._jobs[job.name] = replace(
+                sessions._jobs[job.name], touched=time.time() - 120
+            )
+        assert sessions.sweep(idle=60, min_age=0) == [job.name]
+        assert sessions.take() == []
+
+
+def test_a_resumed_delegate_is_taken_again(parent, store):
+    """A new answer landed, so there is something new to hand over."""
+    runner = Scripted(store, {}, text="first pass")
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("go")
+        landed(sessions, job.name)
+        assert len(sessions.take()) == 1
+
+        runner.text = "second pass"
+        sessions.ask("again", resume=job.name)
+        deadline = time.time() + 10
+        while sessions.list()[0].task != "again" or sessions.list()[0].status == (
+            "running"
+        ):
+            assert time.time() < deadline
+            time.sleep(0.01)
+
+        taken = sessions.take()
+        assert [(name, str(a)) for name, a in taken] == [(job.name, "second pass")]
