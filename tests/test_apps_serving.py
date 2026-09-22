@@ -1,6 +1,9 @@
 """Frozen app serving: read-only snapshots, concurrency, no mutation."""
 
 import json
+import re
+import secrets
+import string
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -93,6 +96,72 @@ def make_served(*, python=None, on_log=None, **router_kwargs):
 def test_mint_token_shape():
     assert mint_token() != mint_token()
     assert len(mint_token()) > 40
+
+
+def test_a_minted_token_never_begins_with_a_dash():
+    """A token is a publication name, a tag prefix and a CLI argument
+    as well as a secret, and every CLI reads a leading ``-`` as a flag.
+    ``secrets.token_urlsafe`` leads with ``-`` about one draw in 64, so
+    a sample this size would all but certainly catch an unfiltered
+    mint while the shape stays a full url-safe draw."""
+    tokens = [mint_token() for _ in range(2000)]
+    assert [t for t in tokens if t.startswith("-")] == []
+    assert all(t[0].isalnum() for t in tokens)
+    assert {len(t) for t in tokens} == {43}
+    alphabet = set(string.ascii_letters + string.digits + "-_")
+    assert all(set(t) <= alphabet for t in tokens)
+    assert len(set(tokens)) == len(tokens)
+
+
+def test_a_dash_leading_draw_is_redrawn_rather_than_rewritten(monkeypatch):
+    """The whole draw is discarded and taken again, so every token
+    returned carries the entropy of one untouched ``token_urlsafe``
+    call — a rewritten first character would not."""
+    draws = iter(["-leading-dash", "cleanEnough_x"])
+    monkeypatch.setattr(secrets, "token_urlsafe", lambda nbytes: next(draws))
+
+    assert mint_token() == "cleanEnough_x"
+    assert next(draws, None) is None  # the first draw was really taken
+
+
+def test_a_minted_token_mounts_as_a_store_tag_through_ws_git(tmp_path):
+    """The shape an embedder builds end to end: the token names the
+    publication, a store tag is minted under it, and that tag is typed
+    into a ws-git verb whose argument guard refuses anything starting
+    with a dash."""
+    from nontainer import Store
+    from nontainer.wsgit import register_wsgit
+
+    store = Store(tmp_path / "store")
+    try:
+        token = mint_token()
+        origin = store.open("origin")
+        register_wsgit(origin)
+        origin.files.write("app/index.html", "<h1>scores</h1>")
+        origin.terminal("ws-git commit -m shipped")
+        pub = store.publish(origin, token)
+        assert pub.name == token
+        tag = f"{token}/v1/origin"
+        store.tags.add(origin, tag)
+        origin.close()
+
+        reader = store.open("reader")
+        register_wsgit(reader)
+        try:
+            r = reader.terminal(f"ws-git worktree add old {tag}")
+            assert r.exit_code == 0, r.stderr
+            assert re.fullmatch(
+                rf"worktree old: @store/tag/{re.escape(tag)}@[0-9a-f]{{7}}"
+                r" \(read-only\)\n",
+                r.stdout,
+            ), r.stdout
+            assert (
+                reader.files.read("/workspace/old/app/index.html") == b"<h1>scores</h1>"
+            )
+        finally:
+            reader.close()
+    finally:
+        store.close()
 
 
 def test_unknown_token_404():

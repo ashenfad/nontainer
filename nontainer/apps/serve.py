@@ -144,8 +144,30 @@ def resolve_csp(config: "AppsConfig") -> str:
 def mint_token(nbytes: int = 32) -> str:
     """A capability-grade token (~43 url-safe chars for the default).
     Distinct from session ids by design — session ids may be guessable;
-    tokens must not be. The token→snapshot map is the embedder's."""
-    return secrets.token_urlsafe(nbytes)
+    tokens must not be. The token→snapshot map is the embedder's.
+
+    The first character is always alphanumeric. A token is not only a
+    secret: embedders use it as a publication name, as the prefix of
+    the store tags minted under it, and as an argument typed into CLI
+    verbs — and every CLI reads a leading ``-`` as a flag and refuses
+    the argument, so a token drawn with one in front is an intermittent
+    failure that depends on the draw. ``_`` raises no such question and
+    stays in the alphabet.
+
+    Redrawing rather than rewriting the first character is what keeps
+    the entropy of the token that is returned untouched: every token
+    handed back is a full ``secrets.token_urlsafe`` draw, not a draw
+    with a character substituted. About one draw in 64 is discarded, so
+    the loop ends on the first or second draw with overwhelming
+    probability.
+    """
+    while True:
+        token = secrets.token_urlsafe(nbytes)
+        # A zero-byte draw is the empty string, which no redraw can
+        # ever fix; returning it keeps a degenerate argument from
+        # hanging the caller.
+        if not token or token[0].isalnum():
+            return token
 
 
 def build_router(

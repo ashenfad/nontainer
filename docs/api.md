@@ -1697,7 +1697,8 @@ the tool result, so that is where a note is delivered:
 tk = WorkspaceTools(ws, commit="turn")
 agent = Agent(model=..., tools=[tk],
               pre_hooks=[tk.begin_turn], post_hooks=[tk.end_turn],
-              tool_hooks=[tk.adeliver])      # tk.deliver for a sync run loop
+              tool_hooks=[tk.deliver])       # sync tools -> the sync hook,
+                                             # under run() and arun() alike
 tk.inbox.put("switch the chart to a log scale")   # from any thread
 ```
 
@@ -1712,6 +1713,7 @@ note = inbox.put(text, kind="principal", label="", job=None, answer=None)
 inbox.pending() / inbox.withdraw(note.id) / inbox.drain()
 inbox.delivered() / inbox.settle() / inbox.requeue()
 inbox.on_delivered = lambda notes: ...     # awaited by adeliver if awaitable
+                                           # (a sync hook discards an awaitable)
 ```
 
 Each note is framed with one line naming who is speaking. `kind`
@@ -1732,8 +1734,18 @@ cannot move the seam.
 
 **Two hook spellings** because agno has two chains: the sync one skips
 a coroutine hook with a warning, and the async one hands a hook a
-coroutine `next_func` that a sync hook cannot drive. Bind `tk.deliver`
-on a `run()` loop and `tk.adeliver` on an `arun()` one.
+coroutine `next_func` that a sync hook cannot drive. Match the hook to
+the **tool entrypoints**, not to `run()` versus `arun()`. agno picks
+the execution path per tool call: a sync entrypoint runs in a thread
+via `asyncio.to_thread` *unless* one of the tool hooks is a coroutine
+function, in which case the whole call runs inline on the event loop.
+So `tk.deliver` is right whenever the tools are sync — which is every
+tool `WorkspaceTools` registers — under `arun()` as much as under
+`run()`; binding `tk.adeliver` there would hold the event loop for the
+length of every tool call, so a cancel could not reach the run and
+nothing else on the loop would move. `tk.adeliver` is for an embedder
+that registers its own **async** tools beside the toolkit, and only
+then.
 
 **Retry and cancel.** A provider-error retry rebuilds the run from the
 user message and drops the attempt's tool calls, so notes delivered on
