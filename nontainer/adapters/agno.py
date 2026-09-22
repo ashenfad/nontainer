@@ -28,8 +28,10 @@ Run-level seams, all optional and all bound as instance attributes so
 an embedder names them at the call site: ``tk.end_turn`` (post hook)
 commits the turn, ``tk.begin_turn`` (pre hook) re-queues notes a
 retried attempt threw away, and ``tk.deliver`` / ``tk.adeliver`` (tool
-hooks, one per run loop) append ``tk.inbox``'s notes to the next tool
-result — the only place a running agent reads new text.
+hooks, one per tool-entrypoint style — ``tk.deliver`` for sync tools,
+which is everything this toolkit registers) append ``tk.inbox``'s notes
+to the next tool result — the only place a running agent reads new
+text.
 
 Exposure follows ``resolve_tools_mode`` (``"auto"`` default): a plain
 python environment gets a single ``terminal`` tool (with the `python`
@@ -138,10 +140,16 @@ class WorkspaceTools(Toolkit):
         lands, rather than being spent on a message the model may
         never see.
 
-        Pair with :meth:`_adeliver` on an async run loop: agno's sync
-        chain skips a coroutine hook with a warning, and its async
-        chain hands a hook a coroutine ``next_func`` that only an
-        async hook can drive, so each spelling covers one loop.
+        This is the right hook whenever the tool entrypoints are
+        sync, which is every tool this toolkit registers — under
+        ``run()`` and under ``arun()`` alike. agno picks the execution
+        path per TOOL CALL, not per run loop: a sync entrypoint runs
+        in a thread via ``asyncio.to_thread`` unless one of the tool
+        hooks is a coroutine function, in which case the whole call
+        runs inline on the event loop. An async hook over sync tools
+        therefore holds the loop for the length of every tool call: a
+        cancel cannot reach the run, and nothing else on that loop
+        moves. Pair with :meth:`_adeliver` only for async tools.
         """
         result = function(**arguments)
         notes = self._collect()
@@ -159,9 +167,19 @@ class WorkspaceTools(Toolkit):
         function: Any,
         arguments: dict[str, Any],
     ) -> Any:
-        """agno ``tool_hook``, async: :meth:`_deliver` for a run loop
-        driven by ``arun()``/``aexecute()``, awaiting the tool and any
-        awaitable the inbox's ``on_delivered`` returns."""
+        """agno ``tool_hook``, async: :meth:`_deliver` for ASYNC tool
+        entrypoints, awaiting the tool and any awaitable the inbox's
+        ``on_delivered`` returns.
+
+        Match the hook to the tool entrypoints, not to ``run()``
+        versus ``arun()``. agno's async chain hands a hook a coroutine
+        ``next_func`` that only a coroutine hook can drive, so a tool
+        whose entrypoint is async needs this spelling. Every tool this
+        toolkit registers is sync, so this one is for an embedder that
+        registers async tools of its own beside the toolkit — and only
+        then, because binding it makes agno run every tool call inline
+        on the event loop, sync tools included.
+        """
         result = await function(**arguments)
         notes = self._collect()
         if not notes:
@@ -279,8 +297,9 @@ class WorkspaceTools(Toolkit):
             self._async_callback_warned = True
             _logger.warning(
                 "inbox on_delivered returned an awaitable, which a sync tool "
-                "hook cannot await; it was discarded. Bind the async hook "
-                "(tool_hooks=[tk.adeliver]) on an async run loop."
+                "hook cannot await; it was discarded. Make the callback sync, "
+                "or bind the async hook (tool_hooks=[tk.adeliver]), which is "
+                "only right when the tool entrypoints are async."
             )
         return None
 
@@ -397,7 +416,9 @@ class WorkspaceTools(Toolkit):
             agent = Agent(model=..., tools=[tk],
                           pre_hooks=[tk.begin_turn],
                           post_hooks=[tk.end_turn],
-                          tool_hooks=[tk.adeliver])  # tk.deliver if sync
+                          # sync tools take the sync hook, under
+                          # run() and arun() alike
+                          tool_hooks=[tk.deliver])
 
         Without ``tool_hooks`` the queue simply fills and the
         embedder reads it between turns."""
@@ -659,8 +680,8 @@ class WorkspaceTools(Toolkit):
 
         self.end_turn = self._end_turn  # bindable as an agno post_hook
         self.begin_turn = self._begin_turn  # bindable as an agno pre_hook
-        self.deliver = self._deliver  # agno tool_hook, sync run loop
-        self.adeliver = self._adeliver  # agno tool_hook, async run loop
+        self.deliver = self._deliver  # agno tool_hook, sync tools
+        self.adeliver = self._adeliver  # agno tool_hook, async tools
 
         super().__init__(
             name="nontainer_workspace",

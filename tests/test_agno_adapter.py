@@ -1,5 +1,7 @@
 """agno Toolkit adapter: exposure modes, locking, commit modes, schemas."""
 
+import threading
+
 import pytest
 
 from nontainer import Workspace
@@ -643,6 +645,46 @@ async def test_the_async_hook_delivers_and_awaits_the_callback():
     assert out.result.startswith("HI")
     assert "mid-run word" in out.result
     assert [n.text for n in seen] == ["mid-run word"]
+    ws.close()
+
+
+async def test_the_tool_entrypoints_pick_the_hook_not_run_versus_arun():
+    """Which spelling to bind is decided by the TOOL entrypoints.
+
+    agno's seam is ``Model.arun_function_call`` (agno/models/base.py):
+    a sync entrypoint is handed to ``asyncio.to_thread`` unless one of
+    the tool hooks is a coroutine function, in which case the whole
+    call runs inline on the event loop. So the async hook over sync
+    tools — everything ``WorkspaceTools`` registers — holds the loop
+    for the length of every tool call, which is why the sync hook is
+    right under ``arun()`` too. ``FunctionCall.aexecute()`` alone
+    cannot show this: it is the model, not the function call, that
+    chooses the thread.
+    """
+    from agno.models.base import Model
+    from agno.tools.function import Function, FunctionCall
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    ran_on: list[int] = []
+
+    def note_thread() -> str:
+        ran_on.append(threading.get_ident())
+        return "ok"
+
+    async def dispatch(hook):
+        fn = Function(name="note_thread", entrypoint=note_thread, tool_hooks=[hook])
+        call = FunctionCall(function=fn, arguments={})
+        # arun_function_call reads nothing off the model it is defined
+        # on, so calling it unbound keeps a provider out of a test
+        # about dispatch.
+        success, _timer, _call, _result = await Model.arun_function_call(None, call)
+        assert success is True
+        return ran_on[-1]
+
+    on_the_loop = threading.get_ident()
+    assert await dispatch(tk.adeliver) == on_the_loop
+    assert await dispatch(tk.deliver) != on_the_loop
     ws.close()
 
 

@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A minted token never begins with a dash.** `mint_token()` returned
+  a raw `secrets.token_urlsafe` draw, and that alphabet includes `-`,
+  so about one token in 64 led with one. A capability token is not
+  only a secret: an embedder uses it as a publication name (the
+  session-id shape allows a leading dash, so `publish` accepts it), as
+  the prefix of the store tags minted under it
+  (`<token>/<version>/origin`), and as a word typed into ws-git verbs
+  — and every CLI reads a leading `-` as a flag, so `ws-git worktree
+  add old <tag>`, `ws-git diff <tag>` and `ws-git checkout <tag> --
+  paths` each came back a usage error for exactly the tokens that
+  drew one. What that looks like from outside is a mount that works
+  for most published apps and refuses for the occasional one, with
+  nothing about the failing app to explain it — a flake, rather than
+  the rule it is. The mint now draws again until the first character
+  is alphanumeric. Redrawing rather than rewriting the offending
+  character is what keeps the entropy of the token that is returned
+  untouched: every token handed back is a full `token_urlsafe` draw,
+  and about one draw in 64 is discarded. `_` is not a flag character
+  anywhere and stays in the alphabet. Neither the session-id shape
+  (`SESSION_ID_RE`) nor the ws-git argument guards moved: a leading
+  dash is a legal session id, and a CLI is entitled to read a leading
+  dash as a flag. The name is what had no business carrying one.
+
+### Changed
+- **The inbox hook to bind is chosen by the tool entrypoints, not by
+  `run()` versus `arun()`.** The guidance in `docs/api.md` and in the
+  hook docstrings said to bind `tk.deliver` on a `run()` loop and
+  `tk.adeliver` on an `arun()` one, and that was wrong. agno picks the
+  execution path per TOOL CALL, in `Model.arun_function_call`: an
+  async tool entrypoint runs inline on the event loop, and a sync one
+  is handed to `asyncio.to_thread` — unless one of the tool hooks is a
+  coroutine function, in which case the whole call runs inline on the
+  loop too. Every tool `WorkspaceTools` registers is sync, so
+  `tk.adeliver` on an `arun()` loop blocked the event loop for the
+  length of each tool call: a cancel could not reach the run, and
+  nothing else on that loop ran. The rule is to match the hook to the
+  tool entrypoints. `tk.deliver` is right whenever the tools are sync,
+  which is always for `WorkspaceTools`, under `arun()` as much as
+  under `run()`; `tk.adeliver` is for an embedder that registers async
+  tools of its own beside the toolkit, and only then. No behavior
+  changed — the two hooks do what they always did — and a test now
+  pins the agno seam that decides.
+
 ## 0.7.8 - 2026-09-22
 
 ### Added
