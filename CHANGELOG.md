@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tool result, and `nontainer.inbox.Inbox` is a thread-safe queue
   anyone can `put()` into from any thread; the agno adapter's
   `tk.deliver` / `tk.adeliver` tool hooks drain it at each tool result
-  and append the notes behind a visible `---- inbox ----` mark
-  (`split()` cuts them back off for a transcript or a compression
-  pass). Delivery is at a tool result and never sooner: nothing is
+  and append the notes behind a visible `---- inbox ----` mark, closed
+  by a trailer carrying the block's length (`split()` cuts the block
+  back off for a transcript or a compression pass, and recognises it
+  by that trailer, so raw output quoting the mark is left whole). Delivery is at a tool result and never sooner: nothing is
   interrupted, no message the model has read is rewritten, and a run
   that ends without another tool call leaves its notes pending for the
   next turn. Each note is framed with one line naming who is speaking

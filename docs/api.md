@@ -1722,9 +1722,13 @@ evidence rather than instruction. Text inside a tool result reads as
 the tool's output unless something says otherwise, and the two carry
 different authority.
 
-`split(text) -> (bare result, rendered notes)` cuts on the first `MARK`
-and is how an embedder strips the block from a transcript or exempts it
-from tool-result compression; the two halves concatenate back.
+`split(text) -> (bare result, rendered notes)` is how an embedder
+strips the block from a transcript or exempts it from tool-result
+compression; the two halves concatenate back. It recognises a block by
+the trailer `render` closes it with — the block's own length — not by
+searching for `MARK`, so raw output that quotes the delimiter (a tool
+printing this page) is left whole, and a note whose text contains it
+cannot move the seam.
 
 **Two hook spellings** because agno has two chains: the sync one skips
 a coroutine hook with a warning, and the async one hands a hook a

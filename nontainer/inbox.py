@@ -36,6 +36,7 @@ choice.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -53,9 +54,17 @@ from .protocol import Answer
 NoteKind = Literal["principal", "mechanism"]
 
 #: The delimiter the rendered block starts with. Distinctive on
-#: purpose: an embedder splits a transcript on it (:func:`split`), and
-#: a model reading the raw text can see where the tool's output ended.
+#: purpose: a model reading the raw text can see where the tool's
+#: output ended. It is not what makes :func:`split` exact — a tool
+#: that prints a file quoting this line would fool a search for it —
+#: so the block also ends with a trailer carrying its own length, and
+#: ``split`` recognises a block only by that trailer.
 MARK = "\n\n---- inbox ----\n"
+
+#: The trailer's shape: the block's length in characters, so that a
+#: reader can find where the block began without searching for MARK.
+_TRAILER = "\n---- /inbox:{length} ----"
+_TRAILER_RE = re.compile(r"\n---- /inbox:(\d+) ----\Z")
 
 
 @dataclass(frozen=True)
@@ -136,15 +145,19 @@ def render(notes: "list[Note]", *, frame: "Callable[[Note], str] | None" = None)
     if not notes:
         return ""
     framer = frame or default_frame
-    return MARK + "\n\n".join(f"{framer(note)}\n{note.text}" for note in notes)
+    block = MARK + "\n\n".join(f"{framer(note)}\n{note.text}" for note in notes)
+    return block + _TRAILER.format(length=len(block))
 
 
 def split(text: str) -> "tuple[str, str]":
     """Split a tool result into ``(bare result, rendered notes)``.
 
-    On the FIRST :data:`MARK`, because a note's own text may contain
-    the delimiter and the bare result is what precedes everything the
-    inbox added. The second element carries the ``MARK``, so the two
+    A block is recognised by its trailer, not by searching for
+    :data:`MARK`: the text must END with a trailer whose length lands
+    exactly on a ``MARK``. Raw tool output that happens to contain the
+    delimiter — a file being printed that quotes it — is therefore
+    left whole, and a note whose own text contains it cannot move the
+    seam. The second element carries the whole block, so the two
     halves concatenate back to what was delivered; it is ``""`` when
     nothing was appended.
 
@@ -152,8 +165,13 @@ def split(text: str) -> "tuple[str, str]":
     stored transcript, exempts it from tool-result compression, or
     renders it differently in a UI.
     """
-    head, mark, tail = text.partition(MARK)
-    return (head, mark + tail if mark else "")
+    match = _TRAILER_RE.search(text)
+    if match is None:
+        return (text, "")
+    start = match.start() - int(match.group(1))
+    if start < 0 or not text.startswith(MARK, start):
+        return (text, "")
+    return (text[:start], text[start:])
 
 
 class Inbox:
@@ -289,6 +307,19 @@ class Inbox:
         """
         with self._lock:
             self._delivered.clear()
+
+    def restore(self, notes: "list[Note]") -> None:
+        """Put these just-delivered notes back at the head of the queue.
+
+        For a delivery that failed after the notes were drained — the
+        tool's result could not take the text — so they are pending
+        again in fact. Only these notes move: anything delivered
+        earlier in the attempt reached the model and stays delivered.
+        """
+        with self._lock:
+            ids = {note.id for note in notes}
+            self._delivered = [n for n in self._delivered if n.id not in ids]
+            self._pending[:0] = notes
 
     def requeue(self) -> int:
         """Put delivered-but-unsettled notes back at the FRONT of the

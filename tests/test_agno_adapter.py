@@ -474,6 +474,8 @@ def test_delivery_keeps_a_tool_results_images():
     appending a sentence must not cost them."""
     from agno.tools.function import ToolResult
 
+    from nontainer.inbox import split
+
     png = bytes.fromhex(
         "89504e470d0a1a0a0000000d494844520000000100000001080200000090"
         "7753de0000000c49444154089963f8cfc000000301010018dd8db0000000"
@@ -490,7 +492,55 @@ def test_delivery_keeps_a_tool_results_images():
     result = out.result
     assert isinstance(result, ToolResult)
     assert result.images and result.images[0].format == "png"
-    assert result.content.endswith("stop after this one")
+    _, notes = split(result.content)
+    assert "stop after this one" in notes
+    ws.close()
+
+
+def test_a_tool_result_whose_content_is_not_text_still_takes_the_notes():
+    """``ToolResult.content`` is typed as text, but a result built
+    past validation can carry ``None``; the note must ride out on it
+    rather than turn a successful call into an exception."""
+    from agno.tools.function import ToolResult
+
+    from nontainer.inbox import split
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    tk.inbox.put("noted")
+
+    def odd() -> ToolResult:
+        return ToolResult.model_construct(content=None)
+
+    out = call_through_agno(odd, {}, tk.deliver)
+    assert isinstance(out.result, ToolResult)
+    bare, notes = split(out.result.content)
+    assert bare == ""
+    assert "noted" in notes
+    ws.close()
+
+
+def test_a_delivery_that_cannot_attach_keeps_the_result_and_the_notes():
+    """The notes are drained before the text is built, so a frame
+    that raises must not spend them — or replace a tool result that
+    succeeded with an exception."""
+    from nontainer.inbox import Inbox, split
+
+    def broken(note):
+        raise RuntimeError("no frame today")
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws, inbox=Inbox(frame=broken))
+    tk.inbox.put("first")
+    tk.inbox.put("second")
+
+    out = call_through_agno(
+        tk.functions["terminal"].entrypoint, {"command": "echo hi"}, tk.deliver
+    )
+    assert out.status == "success"
+    assert split(out.result) == (out.result, "")
+    assert [n.text for n in tk.inbox.pending()] == ["first", "second"]
+    assert tk.inbox.delivered() == []
     ws.close()
 
 
