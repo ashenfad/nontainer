@@ -176,9 +176,13 @@ class WorkspaceTools(Toolkit):
         ``next_func`` that only a coroutine hook can drive, so a tool
         whose entrypoint is async needs this spelling. Every tool this
         toolkit registers is sync, so this one is for an embedder that
-        registers async tools of its own beside the toolkit — and only
-        then, because binding it makes agno run every tool call inline
-        on the event loop, sync tools included.
+        registers async tools of its own beside the toolkit — and then
+        it is bound on THOSE functions (``@tool(tool_hooks=[...])``),
+        never on the agent: an agent-level ``tool_hooks`` replaces every
+        function's own hooks rather than adding to them, and this hook
+        over a sync tool makes agno run the call inline on the event
+        loop. The toolkit's own functions take :meth:`_deliver` on
+        each of them in that setup, and both hooks drain one inbox.
         """
         result = await function(**arguments)
         notes = self._collect()

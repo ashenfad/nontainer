@@ -688,6 +688,60 @@ async def test_the_tool_entrypoints_pick_the_hook_not_run_versus_arun():
     ws.close()
 
 
+@pytest.mark.asyncio
+async def test_mixed_tools_bind_a_hook_per_function_and_share_the_inbox():
+    """An embedder with async tools of its own beside the toolkit binds
+    a hook on each function and none on the agent: agno assigns an
+    agent-level ``tool_hooks`` over every function's own (agent/_tools.py
+    sets ``_func.tool_hooks = agent.tool_hooks``), so one agent-wide
+    spelling would put the async hook on the sync workspace tools and
+    hold the event loop for each of their calls. Per function, the sync
+    tool keeps its worker thread and the async tool runs inline, and
+    both deliver from the one inbox."""
+    from agno.models.base import Model
+    from agno.tools.function import Function, FunctionCall
+
+    from nontainer.inbox import split
+
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    ran_on: list[int] = []
+
+    # the toolkit's own (sync) tool, hooked on the function itself
+    terminal = tk.functions["terminal"]
+    terminal.tool_hooks = [tk.deliver]
+
+    async def fetch(url: str) -> str:
+        ran_on.append(threading.get_ident())
+        return f"fetched {url}"
+
+    # the embedder's async tool, hooked on the function itself
+    fetching = Function(name="fetch", entrypoint=fetch, tool_hooks=[tk.adeliver])
+
+    tk.inbox.put("first")
+    tk.inbox.put("second")
+
+    on_the_loop = threading.get_ident()
+    ok, _t, _c, sync_result = await Model.arun_function_call(
+        None, FunctionCall(function=terminal, arguments={"command": "echo hi"})
+    )
+    assert ok is True
+    _, notes = split(sync_result.result)
+    assert "first" in notes and "second" in notes
+
+    tk.inbox.put("third")
+    ok, _t, _c, async_result = await Model.arun_function_call(
+        None, FunctionCall(function=fetching, arguments={"url": "u"})
+    )
+    assert ok is True
+    assert ran_on == [on_the_loop]
+    bare, notes = split(async_result.result)
+    assert bare == "fetched u"
+    assert "third" in notes and "first" not in notes
+    assert tk.inbox.pending() == []
+    ws.close()
+
+
 def test_begin_turn_requeues_what_a_dropped_attempt_delivered():
     ws = make_ws()
     tk = WorkspaceTools(ws)
