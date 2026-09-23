@@ -153,20 +153,22 @@ apps = [
     "anyio>=4",
 ]
 agno = [
-    # The floor is 2.1, not 1.0. Two things set it, and they are
-    # different: the adapter imports `agno.tools.function.ToolResult`,
-    # which does not exist in agno 1.x at all, and the SHIPPED
-    # INTEGRATIONS need `pre_hooks`/`post_hooks` on Agent, which landed
-    # in 2.1.0 (examples/analyst.py passes post_hooks; studio passes
-    # pre_hooks). A floor that only the adapter clears would still ship
-    # an example that cannot run. Verified on 2.1.0 / 2.7.2 / 3.0.1;
-    # CI pins it in its own job so the claim keeps being true.
+    # The floor is 3.0.0, and the pre hook sets it. `tk.begin_turn`
+    # rewinds the workspace when agno retries a run, and telling a
+    # retry from a new run takes the run id: agno 3 hands a pre hook
+    # `run_context`, whose `run_id` holds across a run's attempts.
+    # agno 2.1 hands a pre hook only `run_input`, `agent`, `session`,
+    # `user_id` and `debug_mode` — no run context at all. Later 2.x
+    # releases grew one, but unevenly (on 2.2.7 `arun()` does not retry
+    # a provider error at all, and the session-db surface kept moving
+    # through 2.5), so the floor is the first release of the major where
+    # all of it holds. Verified on 3.0.0 / 3.0.11; CI pins the floor in
+    # its own job so the claim keeps being true.
     #
-    # No upper bound: agno 3.0's breaking changes are all in surfaces
-    # this adapter never touches (the runs table, renamed Agent params,
-    # Workflow/HITL, MultiMCPTools). It builds a Toolkit and returns
-    # ToolResult, and that has been stable across both majors.
-    "agno>=2.1",
+    # No upper bound: the adapter builds a Toolkit, returns ToolResult,
+    # and reads `run_context.run_id` in a hook, and none of that has
+    # moved across the 3.x releases.
+    "agno>=3.0.0",
 ]
 mcp = [
     # The adapter targets mcp.server.fastmcp, removed in MCP 2.0.

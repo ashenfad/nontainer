@@ -51,13 +51,15 @@ jobs:
   # The matrix above installs agno unpinned, so it only ever proves the
   # LATEST release works. That is how `agno>=1.0` went two months
   # claiming support for a version the adapter cannot even import on
-  # (agno 1.x has no `ToolResult`). These pins cover the other points:
-  # the declared floor, and the current major — so when agno 5 ships and
-  # "latest" moves on, 3.x does not silently stop being tested.
+  # (agno 1.x has no `ToolResult`). This pin covers the other end:
+  # the declared floor. The floor is also the oldest release of the
+  # current major, so between them the unpinned matrix and this pin
+  # cover both ends of 3.x, and when agno 4 ships the floor keeps 3.x
+  # tested without a separate current-major pin.
   agno-versions:
     strategy:
       matrix:
-        agno: ["2.1.0", "3.0.1"]
+        agno: ["3.0.0"]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
