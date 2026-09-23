@@ -1764,14 +1764,22 @@ agent = Agent(model=..., tools=[tk, fetch])   # no tool_hooks= here
 Both hooks drain the same inbox, so a note rides out with whichever
 tool answers next.
 
-**Retry and cancel.** A provider-error retry rebuilds the run from the
-user message and drops the attempt's tool calls, so notes delivered on
-one of them were never seen; `tk.begin_turn` (a pre hook, once per
-attempt) puts delivered-but-unsettled notes back at the front of the
-queue. `tk.end_turn` settles them — whether or not a `session_db` owns
-the commit. agno runs no post hook for a **cancelled** run, so an
-embedder that keeps a cancelled run's messages (the model did see the
-notes) should call `tk.inbox.settle()` in its cancel path; otherwise
+**Retry and cancel.** agno's run-level retry (`Agent(retries=N)`)
+rebuilds the run from the user message and drops the failed attempt's
+tool calls: the model forgets them, the files they wrote stay, and
+notes delivered on them were never seen. `tk.begin_turn` (a pre hook,
+once per attempt) answers both. On a retry of the same run id it
+restores the workspace to where the run began (`ws.checkout` when the
+head moved, `ws.discard` when the writes are uncommitted), then puts
+delivered-but-unsettled notes back at the front of the queue. Bind it
+whenever `retries` is above zero; under `arun()` bind `tk.abegin_turn`,
+which does the restore off the event loop. A run that starts with
+uncommitted writes has no commit to return to, so it is not rewound
+(one warning says so). `tk.end_turn` settles the notes — whether or
+not a `session_db` owns the commit. agno runs no post hook for a
+**cancelled** run, so an embedder that keeps a cancelled run's
+messages (the model did see the notes) should call
+`tk.inbox.settle()` in its cancel path; otherwise
 the next turn re-delivers.
 
 With `sessions=` wired, every delegate answer that has landed is taken

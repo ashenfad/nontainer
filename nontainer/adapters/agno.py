@@ -26,8 +26,10 @@ serialization stays a backstop, not the norm.
 
 Run-level seams, all optional and all bound as instance attributes so
 an embedder names them at the call site: ``tk.end_turn`` (post hook)
-commits the turn, ``tk.begin_turn`` (pre hook) re-queues notes a
-retried attempt threw away, and ``tk.deliver`` / ``tk.adeliver`` (tool
+commits the turn, ``tk.begin_turn`` / ``tk.abegin_turn`` (pre hook,
+one per run loop — ``run()`` and ``arun()``) rewinds the workspace and
+re-queues notes when agno retries a run whose failed attempt the model
+will never remember, and ``tk.deliver`` / ``tk.adeliver`` (tool
 hooks, one per tool-entrypoint style — ``tk.deliver`` for sync tools,
 which is everything this toolkit registers) append ``tk.inbox``'s notes
 to the next tool result — the only place a running agent reads new
@@ -41,9 +43,11 @@ dedicated ``run_python`` tool whose description announces the magic.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from agno.media import Image
@@ -98,29 +102,143 @@ def _media_note(count: int) -> str:
     )
 
 
+@dataclass
+class _Anchor:
+    """The run :meth:`WorkspaceTools._begin_turn` last anchored: its id,
+    the head its first attempt began at (``None`` when that attempt
+    found uncommitted writes and there is nothing to return to), and
+    whether the missing anchor has been reported."""
+
+    run_id: str
+    head: str | None
+    warned: bool = False
+
+
 class WorkspaceTools(Toolkit):
     """agno Toolkit over a nontainer :class:`Workspace`."""
 
-    def _begin_turn(self, *args: Any, **kwargs: Any) -> None:
-        """Re-queue notes an abandoned attempt delivered. Tolerant
-        signature so it slots into agno ``pre_hooks``.
+    def _begin_turn(self, *args: Any, run_context: Any = None, **kwargs: Any) -> None:
+        """agno ``pre_hook``: undo what an abandoned attempt did to the
+        workspace, and re-queue the notes it delivered. Bind it whenever
+        ``Agent(retries=...)`` is above zero; bind :meth:`_abegin_turn`
+        instead under ``arun()``.
 
-        A pre hook runs once per attempt, so on a run's first attempt
-        nothing has been delivered yet and this does nothing. It earns
-        its place on the second: a provider-error retry rebuilds the
-        run from the user message and drops the attempt's tool calls,
-        so notes that rode out on one of those tool results went with
-        them and the model never saw them. Delivered-but-unsettled is
-        exactly that set, and it goes back to the front of the queue
-        for the retry to deliver again.
+        A pre hook runs once per attempt. agno's run-level retry
+        restarts a failed run from the user message: the next attempt
+        rebuilds its messages from the stored history, so every tool
+        call the failed attempt made is gone from the model's memory.
+        Both jobs answer that one fact — this attempt replaces one the
+        model will never remember — which is why they share a hook.
+
+        **Rewind.** The failed attempt's tool calls are forgotten, but
+        the files they wrote are not, and a workspace whose files and
+        conversation disagree sends the model off to build a second,
+        divergent version beside the first. So the first attempt of a
+        run records the workspace head as its anchor, and a later
+        attempt of the SAME run (agno keeps ``run_context.run_id``
+        stable across attempts) restores the whole session — files,
+        cache, cwd, the stored conversation — to it:
+
+        - the head moved (``commit="call"``, or anything that committed
+          mid-attempt): ``ws.checkout(anchor)``, which also replaces
+          any uncommitted writes on top. It appends a commit, so the
+          abandoned attempt's work stays in ``ws.log()``.
+        - the head did not move but writes are uncommitted
+          (``commit="turn"``, a ``session_db``): ``ws.discard()``.
+        - neither: nothing is written.
+
+        An outstanding ws-git merge is not a reason to stand down: the
+        restore is whole-session, so the merge context rewinds with the
+        tree and the anchor's merge state is exactly what comes back.
+
+        The anchor is a commit, so it only describes the workspace when
+        the workspace is clean. A run whose first attempt finds
+        uncommitted writes (an embedder's host-side write before the
+        run, under ``commit="turn"``) is not rewound: committing them
+        here would put a commit nobody asked for into the turn, and
+        discarding back to the head would destroy them. A retry of such
+        a run logs one warning saying so and only re-queues notes.
+        A frozen or unversioned workspace, or a call with no
+        ``run_context`` (a direct call), skips the rewind entirely.
+        One slot, not a map: a toolkit drives one run at a time, so a
+        new run id simply replaces the old anchor.
+
+        A restore that raises is left to agno, which logs a failing pre
+        hook and carries on with the attempt; the notes are re-queued
+        either way. The hook must run inline, never as one of agno's
+        background hooks: a restore that lands after the attempt has
+        begun would undo the retry's own work.
+
+        **Requeue.** Notes that rode out on one of the abandoned
+        attempt's tool results went with them, so the model never saw
+        them. Delivered-but-unsettled is exactly that set, and it goes
+        back to the front of the queue for this attempt to deliver
+        again. On a run's first attempt nothing is delivered yet and
+        this does nothing.
 
         Cancellation needs the same care from the other side: agno
         runs no post hook for a cancelled run, so an embedder that
         keeps a cancelled run's messages — the model DID see the
         notes — should call ``tk.inbox.settle()`` in its cancel path.
         Otherwise the next turn re-delivers them.
+
+        Named ``run_context`` rather than read off ``**kwargs`` so the
+        dependency is visible in the signature agno inspects; the
+        tolerant ``*args``/``**kwargs`` let it take whatever else agno
+        hands a pre hook, and a bare ``tk.begin_turn()`` still works.
         """
-        self.inbox.requeue()
+        try:
+            run_id = getattr(run_context, "run_id", None)
+            if run_id is not None:
+                self._rewind(run_id)
+        finally:
+            self.inbox.requeue()
+
+    async def _abegin_turn(
+        self, *args: Any, run_context: Any = None, **kwargs: Any
+    ) -> None:
+        """agno ``pre_hook`` for ``arun()``: :meth:`_begin_turn` on a
+        worker thread.
+
+        Match the spelling to how the agent is run. agno's async run
+        loop calls a sync pre hook inline on the event loop, and a
+        rewind rewrites the whole tree, so the sync spelling there
+        would hold the loop for the length of the restore. agno's sync
+        run loop skips a coroutine pre hook with a warning, so under
+        ``run()`` this spelling does nothing and :meth:`_begin_turn`
+        is the one to bind.
+        """
+        await asyncio.to_thread(self._begin_turn, run_context=run_context)
+
+    def _rewind(self, run_id: str) -> None:
+        """The rewind half of :meth:`_begin_turn`: anchor on a run's
+        first attempt, restore on any later one."""
+        with self._lock:
+            ws = self._ws
+            if ws.frozen or not ws.caps.versioned:
+                return
+            slot = self._attempt
+            if slot is None or slot.run_id != run_id:
+                clean = not ws.uncommitted
+                self._attempt = _Anchor(run_id, ws.head if clean else None)
+                return
+            if slot.head is None:
+                if not slot.warned:
+                    slot.warned = True
+                    _logger.warning(
+                        "run %s is being retried, but the workspace held "
+                        "uncommitted writes when its first attempt began, so "
+                        "no commit describes the state to return to; the "
+                        "workspace is NOT rewound and the failed attempt's "
+                        "writes remain. Commit before the run to make it "
+                        "rewindable.",
+                        run_id,
+                    )
+                return
+            if ws.head != slot.head:
+                ws.checkout(slot.head)
+            elif ws.uncommitted:
+                ws.discard()
 
     def _deliver(
         self,
@@ -232,9 +350,9 @@ class WorkspaceTools(Toolkit):
         mutated, and everything else on it comes across untouched:
         dropping the images off a screenshot's result to deliver a
         sentence would cost the model the thing it called the tool
-        for. The copy carries fields by name rather than being rebuilt
-        from a fixed list, so a field one agno version has and another
-        does not is neither dropped nor demanded.
+        for. The copy carries every field rather than being rebuilt from
+        a fixed list, so a field this adapter never names — media, a
+        field agno adds later — comes across instead of being dropped.
         """
         rendered = self.inbox.render(notes)
         if isinstance(result, ToolResult):
@@ -430,6 +548,7 @@ class WorkspaceTools(Toolkit):
         self._lock = threading.Lock()
         self.inbox = inbox if inbox is not None else Inbox()
         self._async_callback_warned = False
+        self._attempt: _Anchor | None = None
         if session_db is not None:
             owns = getattr(session_db, "owns", None)
             if owns is None or not owns(workspace):
@@ -683,7 +802,8 @@ class WorkspaceTools(Toolkit):
         instructions += skills_catalog(workspace)
 
         self.end_turn = self._end_turn  # bindable as an agno post_hook
-        self.begin_turn = self._begin_turn  # bindable as an agno pre_hook
+        self.begin_turn = self._begin_turn  # agno pre_hook, run()
+        self.abegin_turn = self._abegin_turn  # agno pre_hook, arun()
         self.deliver = self._deliver  # agno tool_hook, sync tools
         self.adeliver = self._adeliver  # agno tool_hook, async tools
 

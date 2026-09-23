@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **BREAKING — the `agno` extra now requires agno 3 (`agno>=3.0.0`).**
+  The workspace rewind below has to tell a retry of a run from a new
+  run, and that takes the run id. agno 3 hands a pre hook
+  `run_context`, whose `run_id` stays the same across a run's retry
+  attempts. agno 2.1, the previous floor, hands a pre hook only
+  `run_input`, `agent`, `session`, `user_id` and `debug_mode`, with no
+  run context at all, so there is nothing there to key the rewind on.
+  Later 2.x releases grew a run context, but unevenly — on 2.2.7
+  `arun()` does not retry a provider error at all — so the floor is
+  the first release of the major where all of it holds: 3.0.0, which
+  passes the full suite. CI's `agno-versions` job now pins that floor
+  instead of 2.1.0.
+
+### Added
+- **`tk.begin_turn` rewinds the workspace when agno retries a run.**
+  agno's run-level retry (`Agent(retries=N)`) restarts a failed run
+  from the user message: the next attempt rebuilds its messages from
+  the stored history, so every tool call the failed attempt made is
+  gone from the model's memory, while every file those calls wrote is
+  still in the workspace. That breaks the promise that files and
+  memory move together — with a `session_db` the conversation is in
+  the same branch, and the two now disagree — and the model goes on to
+  build a second, divergent version beside the first. The pre hook now
+  records the head on a run's first attempt and, on a later attempt
+  under the same run id, restores the whole session to it:
+  `ws.checkout(anchor)` when the head moved (`commit="call"`, or
+  anything that committed mid-attempt), `ws.discard()` when the head
+  did not move but writes are uncommitted (`commit="turn"`, a
+  `session_db`), nothing when there is nothing to undo. The checkout
+  appends, so the abandoned attempt's commits stay in `ws.log()`. A
+  run that begins with uncommitted writes has no commit describing its
+  start, so it is not rewound: the hook neither commits on the
+  embedder's behalf nor destroys those writes, and a retry logs one
+  warning saying so. Frozen and unversioned workspaces are left alone.
+  Re-queuing the notes the failed attempt delivered is unchanged, and
+  it shares the hook because both jobs answer the same fact: this
+  attempt replaces one the model will never remember. `tk.abegin_turn` is the spelling for `arun()`: agno's async
+  loop calls a sync pre hook inline on the event loop, and a restore
+  rewrites the tree, so the async spelling does it on a worker thread.
+
 ## 0.7.9 - 2026-09-22
 
 ### Fixed
