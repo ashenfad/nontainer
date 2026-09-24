@@ -57,7 +57,13 @@ from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 from .cache import Cache
-from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
+from .errors import (
+    CommitNotFoundError,
+    LegacyLayoutError,
+    NotSupportedError,
+    WorkspaceError,
+)
+from .migrate import legacy_keys
 from .planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from .protocol import (
     Capabilities,
@@ -127,13 +133,6 @@ def _owns_cwd(provider_fs: Any) -> bool:
     from monkeyfs import VirtualFS
 
     return isinstance(provider_fs, VirtualFS)
-
-
-_LEGACY_CWD_KEY = "__cwd__"
-"""Where nontainer used to keep its own copy of the cwd. Stores written
-before the two keys were folded into one still carry it; a workspace
-opened over such a store adopts the value and drops the key, and the
-change rides the next commit."""
 
 
 @dataclass(frozen=True)
@@ -1559,6 +1558,17 @@ class Workspace:
         # property, and a third-party provider without it is not frozen.
         self._frozen = bool(getattr(provider, "frozen", False))
         self._frozen_at = getattr(provider, "frozen_at", None)
+        # A head written before monkeyfs 0.1.10 keeps its metadata in a
+        # table and its cwd under a key nothing reads as live state any
+        # more. Writing over it would build new commits on a tree this
+        # version only half reads, so a writable open refuses it before
+        # anything is written, and names the one-time migration. A
+        # frozen open reads it as it always did: monkeyfs still consults
+        # the table for a path without a row.
+        if not self._frozen:
+            found = legacy_keys(provider.kv)
+            if found:
+                raise LegacyLayoutError(provider.session, found)
         # What the executor's cache and the host-side ``cache`` build
         # on: the provider's kv, or a refusing view of it when frozen.
         self._kv_view: MutableMapping[str, Any] = (
@@ -1676,12 +1686,6 @@ class Workspace:
         # doesn't dirty staging providers (which would turn read-only
         # tool calls into commits).
         self._owns_cwd = _owns_cwd(provider.fs)
-        # Unconditionally, before anything reads a cwd: the legacy key
-        # is dead state and every session that opens takes it out,
-        # mounted or not, whether or not its value is still wanted.
-        # Leaving it on a branch that has no use for it is what would
-        # keep it around to be merged.
-        legacy_cwd = self._legacy_cwd()
         if normalized_mounts and self._owns_cwd:
             # The composition resolves paths before handing them down,
             # so the filesystem underneath has to sit at the root. Any
@@ -1704,7 +1708,7 @@ class Workspace:
                 # had a tree attached when it was last committed would
                 # otherwise reopen at "/" instead of its own root.
                 stored = None
-            stored_cwd = stored or legacy_cwd or self._root
+            stored_cwd = stored or self._root
         if stored_cwd != "/":
             try:
                 if self._fs.getcwd() != stored_cwd:
@@ -3026,9 +3030,14 @@ class Workspace:
                 parents = [head] if head is not None else []
                 self._require_source_clean(git, source)
                 at = git.source_commit(source)
-            outcome = self._provider.merge(
-                source, at=at, info={"virtual_parents": parents}
-            )
+            try:
+                outcome = self._provider.merge(
+                    source, at=at, info={"virtual_parents": parents}
+                )
+            except LegacyLayoutError as e:
+                if self._store is None:
+                    raise
+                raise e.for_store(self._store) from None
             if outcome.merged and self._provider.caps.index:
                 from .agentgit import AgentGit
 
@@ -3582,26 +3591,6 @@ class Workspace:
                 f"frozen: this workspace is a snapshot{where}; it accepts no "
                 f"writes, so {op} is not supported"
             )
-
-    def _legacy_cwd(self) -> str | None:
-        """Drop the cwd key of the two-key layout, and return what it
-        held in case this session still needs it.
-
-        The removal is unconditional: a store written under that layout
-        carries both keys, the filesystem's is the one that resolves
-        paths (so this value is only ever the fallback), and a dead key
-        left on a branch is one more thing for a merge to contest. It
-        is staged like any other write and rides the next commit.
-        """
-        kv = self._provider.kv
-        try:
-            legacy = kv.get(_LEGACY_CWD_KEY)
-            if legacy is None:
-                return None
-            del kv[_LEGACY_CWD_KEY]
-            return legacy if isinstance(legacy, str) else None
-        except Exception:  # noqa: BLE001 - a kv that refuses has nothing to migrate
-            return None
 
     def _save_cwd(self) -> bool:
         """Persist the cwd where the filesystem keeps it.

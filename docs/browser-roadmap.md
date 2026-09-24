@@ -127,10 +127,8 @@ is the serving-substrate dispatcher behind `test_app`, the half of the
 driver invariant the seam did not close;
 [#110](https://github.com/ashenfad/nontainer/issues/110) is the typed
 return codec, now scoped to server-side serving of publications with
-handlers; [#113](https://github.com/ashenfad/nontainer/issues/113) is
-idle view-worker reaping, untouched by any of this;
-[#102](https://github.com/ashenfad/nontainer/issues/102) drops the
-legacy on-disk migrations and waits for a release willing to say so.
+handlers; and [#113](https://github.com/ashenfad/nontainer/issues/113)
+is idle view-worker reaping, untouched by any of this.
 
 ## What is already true
 

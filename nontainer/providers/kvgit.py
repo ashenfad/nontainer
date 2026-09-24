@@ -79,11 +79,6 @@ _KVGIT_CAPS = Capabilities(
     tags=True,
 )
 
-_LEGACY_CWD_KEY = "__cwd__"
-"""The cwd key nontainer kept beside the filesystem's own, before the
-two were folded into one. Only ever swept now — a workspace drops it on
-open, and a merge hands it to whichever side is doing the merging."""
-
 
 def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
     """Positional session state (cwd): the merger's context wins."""
@@ -175,65 +170,6 @@ def _merge_metadata_row(
     ).encode()
 
 
-def _merge_legacy_metadata_table(old: Any, ours: Any, theirs: Any) -> Any:
-    """Field-aware merge for the pre-row ``__vfs_metadata__`` table.
-
-    The table is drained one path at a time — writing a path stores its
-    row and drops that path from the table — so two branches that each
-    wrote a DIFFERENT file both changed this one key, and without a rule
-    an otherwise disjoint merge is a hard conflict over state that
-    agrees. Merge it per entry instead:
-
-    - An entry a side removed has been drained there: that path holds a
-      row on that side, and rows merge by key beside their blobs, so the
-      removal wins and the path stays described by its row.
-    - An entry both sides kept unchanged passes through, and an entry
-      only one side changed takes that side.
-    - An entry the two sides changed differently raises ``CantMark`` — a
-      hard conflict — rather than a guess. Nothing writes a table entry
-      any more, so ordinary use cannot produce one.
-
-    When nothing survives, the table describes nothing: the key is
-    removed where a side removed it, and otherwise this side's leftovers
-    stand. Each of those names a path the other side drained, so each is
-    shadowed by that side's row and drains for good on the next write —
-    which is as close to removal as a merge function gets, since it can
-    only drop a key by choosing a side that dropped it.
-    """
-    from kvgit import MergeChoice
-    from kvgit.merges import CantMark
-
-    def table(value: Any) -> dict:
-        if value is None:
-            return {}
-        try:
-            parsed = json.loads(value)
-        except (ValueError, TypeError) as e:
-            raise CantMark(f"VFS metadata table not JSON: {e}") from e
-        if not isinstance(parsed, dict):
-            raise CantMark("VFS metadata table not a table")
-        return parsed
-
-    old_t, ours_t, theirs_t = table(old), table(ours), table(theirs)
-    merged: dict[str, Any] = {}
-    for path in old_t.keys() | ours_t.keys() | theirs_t.keys():
-        o, u, t = old_t.get(path), ours_t.get(path), theirs_t.get(path)
-        if u == t:
-            if u is not None:
-                merged[path] = u
-        elif u is None or t is None:
-            continue
-        elif o == u:
-            merged[path] = t
-        elif o == t:
-            merged[path] = u
-        else:
-            raise CantMark(f"two different table entries for {path!r}")
-    if not merged:
-        return MergeChoice.THEIRS if theirs is None else MergeChoice.OURS
-    return json.dumps(merged, sort_keys=True).encode()
-
-
 class _FileView(Mapping):
     """One tree's files as ``path -> stored value``, read on demand.
 
@@ -319,26 +255,22 @@ class KvgitProvider:
         # already uses for them, registered for ORDINARY commits too.
         # A commit whose CAS is lost to another handle on this session
         # three-way merges by key, and these are the keys two writers
-        # are bound to contend on: the cwd and the ws-git blob, the
-        # metadata row of any file both of them wrote, and — until every
-        # state written before per-file rows has drained — the legacy
-        # table, which a write to any path still in it changes. Without
-        # a policy each of those turns a routine race into a raised
-        # conflict. Rows are registered by prefix because their names
-        # are the encoded paths, unknown until a file is written; a
-        # merge function under a prefix is consulted only where both
-        # sides changed a key, so registering it disturbs nothing else.
+        # are bound to contend on: the cwd and the ws-git blob, and the
+        # metadata row of any file both of them wrote. Without a policy
+        # each of those turns a routine race into a raised conflict.
+        # Rows are registered by prefix because their names are the
+        # encoded paths, unknown until a file is written; a merge
+        # function under a prefix is consulted only where both sides
+        # changed a key, so registering it disturbs nothing else.
         register = getattr(staged, "set_merge_fn", None)
         register_prefix = getattr(staged, "set_merge_prefix", None)
         if callable(register):
             from kvgit import MergeChoice
             from monkeyfs import VirtualFS
 
-            register(VirtualFS.METADATA_KEY, _merge_legacy_metadata_table)
             register(VirtualFS.CWD_KEY, _keep_ours)
             register(_WS_BLOB_KEY, MergeChoice.OURS)
             register(_VIEW_KEY, MergeChoice.OURS)
-            register(_LEGACY_CWD_KEY, MergeChoice.OURS)
             if callable(register_prefix):
                 register_prefix(VirtualFS.META_PREFIX, _merge_metadata_row)
 
@@ -550,11 +482,17 @@ class KvgitProvider:
         ``reset_to`` is deliberately not used.
 
         The whole keyset moves, not the files alone: the cache, the
-        cwd, the VFS table, the ws-git blob and the stored conversation
-        are keys like any other, and the host restored the whole world.
-        The keys to touch come from kvgit's keyset diff between the
-        head and the target, so the cost is the size of the change and
-        not the size of the tree.
+        cwd, the metadata rows, the ws-git blob and the stored
+        conversation are keys like any other, and the host restored the
+        whole world. The keys to touch come from kvgit's keyset diff
+        between the head and the target, so the cost is the size of the
+        change and not the size of the tree.
+
+        A target written before per-file metadata rows lands in the
+        current layout (see :mod:`nontainer.migrate`): its table
+        entries arrive as rows and its old cwd key in the cwd slot, and
+        neither legacy key is written to the head. The old commit
+        itself is not touched.
 
         IT CONVERGES ON THE TARGET. Another handle on this session can
         commit between the diff and the commit; kvgit then three-way
@@ -620,16 +558,28 @@ class KvgitProvider:
         Leaves the buffer holding exactly what the head has to change
         to become the target's state — nothing when it already is, so
         an empty buffer afterwards is what says the restore is done.
+
+        The target is read in the current layout. Its converted keys are
+        not in kvgit's diff (the target commit does not hold them), so
+        they are compared as well; a legacy key the diff names is absent
+        from the converted target and is therefore never written.
         """
+        from ..migrate import converted_keys, current_layout
+
+        target = current_layout(target)
         changed = self._staged.versioned.diff(head, commit_id)
-        for key in changed.added:
-            self._staged[key] = target.get(key)
-        for key in changed.modified:
-            value = target.get(key)
-            if self._staged.get(key) != value:
-                self._staged[key] = value
-        for key in changed.removed:
-            if key in self._staged:
+        keys = (
+            set(changed.added)
+            | set(changed.modified)
+            | set(changed.removed)
+            | converted_keys(target)
+        )
+        for key in keys:
+            if key in target:
+                value = target.get(key)
+                if key not in self._staged or self._staged.get(key) != value:
+                    self._staged[key] = value
+            elif key in self._staged:
                 del self._staged[key]
 
     def _invalidate_fs(self) -> None:
@@ -677,7 +627,14 @@ class KvgitProvider:
         that earlier commit instead, and the staged changes are left
         alone: they belong to this session's present, not to the past
         the fork is branching from.
+
+        The fork's head is always in the current layout: a fork point
+        written before per-file metadata rows is migrated on the new
+        branch, one commit after the fork point (see
+        :mod:`nontainer.migrate`). The fork point itself is untouched.
         """
+        from ..migrate import legacy_keys, migrate_provider
+
         self._refuse_frozen("fork")
         validate_session_id(name)
         if name in self._staged.list_branches():
@@ -693,7 +650,10 @@ class KvgitProvider:
                 if "does not exist" in str(e):
                     raise CommitNotFoundError(at) from e
                 raise
-        return KvgitProvider(forked, session=name)
+        child = KvgitProvider(forked, session=name)
+        if legacy_keys(forked):
+            migrate_provider(child)
+        return child
 
     def discard(self) -> None:
         self._staged.reset()
@@ -801,14 +761,8 @@ class KvgitProvider:
         its blob: a committed file whose row stayed behind would have no
         size and no timestamps, and a reader of that commit would not
         see the file at all. A staged deletion carries its row's
-        deletion the same way. The legacy ``__vfs_metadata__`` table is
-        never part of a selective commit — it moves only with a full
-        one. A stale entry beside a committed row is harmless, since a
-        row wins over the table, whereas committing a drained table
-        would strip the entries of files whose rows are still unstaged.
+        deletion the same way.
         """
-        from monkeyfs import VirtualFS
-
         self._refuse_frozen("commit_keys")
         pending = {
             key for key in self._resolve_keys(keys) if self._staged.is_staged(key)
@@ -820,7 +774,6 @@ class KvgitProvider:
             row = vfs.metadata_key(path)
             if self._staged.is_staged(row):
                 pending.add(row)
-        pending.discard(VirtualFS.METADATA_KEY)
         from kvgit import MergeConflict
 
         try:
@@ -1042,6 +995,13 @@ class KvgitProvider:
         contested. The filesystem caches are invalidated afterwards;
         marker conflicts are reported by provenance, so pre-existing
         marker-like bytes in a brought file don't count as conflicts.
+
+        Both sides must be in the current layout, and a side that is not
+        raises :class:`~nontainer.errors.LegacyLayoutError` naming its
+        branch. One case is not refused: ``at`` in the old layout, on a
+        source whose head was migrated since and holds the same files.
+        That is a migrated session whose agent has not committed since,
+        and its head is merged instead — the same files, with rows.
         """
         from kvgit import MergeConflict
 
@@ -1062,6 +1022,7 @@ class KvgitProvider:
             if probe is None:
                 raise CommitNotFoundError(f"No such commit: {at!r}")
             other = probe
+        other, source_head = self._current_layout_side(source, other, source_head)
 
         # The rules are the same three-way rules an apply resolves by,
         # read against the base kvgit's own merge will use: the merged
@@ -1123,6 +1084,41 @@ class KvgitProvider:
             auto_merged=tuple(sorted(set(candidates) - set(conflicts))),
         )
 
+    def _current_layout_side(
+        self, source: str, other: Any, source_head: str
+    ) -> tuple[Any, str]:
+        """Both sides of a merge in the current layout, or a refusal.
+
+        A merge is kvgit's own three-way over two commits, so a side in
+        the old layout cannot be converted on the way in the way a
+        restore converts one; it is refused instead. The exception is a
+        source commit that its own branch has migrated since without
+        changing a file: the branch head is then the same tree in the
+        current layout, and that is what is merged.
+        """
+        from ..errors import LegacyLayoutError
+        from ..migrate import legacy_keys
+
+        ours = legacy_keys(self._staged)
+        if ours:
+            raise LegacyLayoutError(self._session, ours)
+        found = legacy_keys(other)
+        if not found:
+            return other, source_head
+        head = self._open_branch(source)
+        if (
+            head.current_commit != source_head
+            and not legacy_keys(head)
+            and self._same_files(source_head, head.current_commit)
+        ):
+            return head, head.current_commit
+        raise LegacyLayoutError(source, found)
+
+    def _same_files(self, a: str, b: str) -> bool:
+        """Whether two commits hold the same files with the same bytes."""
+        change = self.diff(a, b)
+        return not (change.added or change.removed or change.modified)
+
     def _three_way_rules(
         self, other: Any, at_base: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1147,9 +1143,6 @@ class KvgitProvider:
         - a file's metadata row merges field-aware beside its blob,
           carrying the size of the merged bytes. Bound per key for the
           same reason: the function has to know which file it describes.
-        - the legacy VFS table merges per entry, because a write drains
-          its own path out of that one key, so two sides change it by
-          writing different files.
         - the ws-git blob, the view seed and the cwd take ours: they
           are this session's position, not content to reconcile.
         - THE PLANE POLICY, whole: this is filesystem-only. The cache
@@ -1186,17 +1179,9 @@ class KvgitProvider:
         merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
         for key in row_keys:
             merge_fns[key] = self._row_merge_fn(key, other, at_base)
-        merge_fns[VirtualFS.METADATA_KEY] = _merge_legacy_metadata_table
         merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
         merge_fns[_VIEW_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
-        # The key nontainer used to keep a cwd of its own under. It is
-        # dead: a workspace drops it on open. Branches written before
-        # that still carry it, and two of them can carry different
-        # values, which is a conflict over state neither side reads.
-        # OURS ends it every time — whichever side still has the key,
-        # the three-way takes this side's answer, including its removal.
-        merge_fns[_LEGACY_CWD_KEY] = MergeChoice.OURS
         merge_prefixes: dict[str, Any] = {
             CACHE_PREFIX: MergeChoice.OURS,
             CONVERSATION_PREFIX: MergeChoice.OURS,
@@ -1233,18 +1218,25 @@ class KvgitProvider:
         session's. Conflicts are spelled exactly as a merge's are:
         markers land IN the commit and are reported in the outcome,
         with only contested state no rule resolves aborting untouched.
+
+        Either commit may predate per-file metadata rows: both are read
+        in the current layout (see :mod:`nontainer.migrate`), so the
+        change applied is a change of blobs and rows, and no legacy key
+        is ever written to this head.
         """
         from kvgit import MergeChoice, MergeConflict
         from kvgit.versioned.helpers import diff_keysets
         from kvgit.versioned.merge import pick_merge_policy, resolve_merge
+
+        from ..migrate import current_layout
 
         self._refuse_frozen("apply")
         if self.dirty:
             raise WorkspaceError(
                 "uncommitted changes on this branch; commit or discard them first"
             )
-        at_base = self._at_commit(base)
-        at_theirs = self._at_commit(theirs)
+        at_base = current_layout(self._at_commit(base))
+        at_theirs = current_layout(self._at_commit(theirs))
         merge_fns, merge_prefixes = self._three_way_rules(at_theirs, at_base)
         # A key a policy gives to ours outright is not read at all: the
         # planes that take ours keep every key under them, and their
@@ -1397,10 +1389,19 @@ class KvgitProvider:
     ) -> set[str]:
         """The keys one commit's change touches, from the store's own
         diff — and every key of the one side there is where the other
-        side is the empty tree."""
+        side is the empty tree.
+
+        A side read in the current layout adds the keys its conversion
+        wrote, which the store's diff cannot name, and never contributes
+        a legacy key.
+        """
+        from ..migrate import LEGACY_KEYS, converted_keys
+
         if base is not None and theirs is not None:
             change = self._staged.versioned.diff(base, theirs)
-            return set(change.added) | set(change.removed) | set(change.modified)
+            keys = set(change.added) | set(change.removed) | set(change.modified)
+            keys |= converted_keys(at_base) | converted_keys(at_theirs)
+            return keys - set(LEGACY_KEYS)
         handle = at_theirs if at_base is None else at_base
         return set(handle.keys()) if handle is not None else set()
 
@@ -1610,6 +1611,8 @@ class KvgitProvider:
         """Store key → workspace file path, for the keys that are files."""
         from monkeyfs import VirtualFS
 
+        from ..migrate import LEGACY_TABLE_KEY
+
         vfs = self.fs
         out: dict[str, str] = {}
         for key in keys:
@@ -1617,11 +1620,13 @@ class KvgitProvider:
                 continue
             # A metadata row starts with the file prefix too, so the
             # scan has to say so: it describes a file, it is not one.
-            # The cwd slot and the legacy metadata table are the other
-            # two keys under the prefix that hold no file content.
+            # The cwd slot is another key under the prefix that holds no
+            # file content, and so is the single metadata table monkeyfs
+            # kept before per-file rows: an old commit a frozen read
+            # opens can still hold it, and it is never a file.
             if VirtualFS.is_metadata_key(key):
                 continue
-            if key in (VirtualFS.METADATA_KEY, VirtualFS.CWD_KEY):
+            if key in (LEGACY_TABLE_KEY, VirtualFS.CWD_KEY):
                 continue
             try:
                 # The VFS owns the path encoding; asking it back is the

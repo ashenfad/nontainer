@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+- **Stores written before monkeyfs 0.1.10 need a one-time migration.**
+  Run `python -m nontainer.migrate --store <dir>` (add `--dry-run` to
+  see what it would change first), or `Store(<dir>).migrate_layout()`.
+  That layout kept every file's metadata in one `__vfs_metadata__`
+  table and nontainer's cwd under `__cwd__`, and until now every open
+  and every merge carried rules for both: an open dropped `__cwd__` and
+  fell back to its value, and both policy tables merged the old table
+  entry by entry and gave `__cwd__` to ours. Those rules are gone.
+  A writable open of a session whose head still carries either key now
+  raises `LegacyLayoutError`, naming the session, the keys, and the
+  exact migrate command; so does merging such a branch. The draining
+  they relied on never finished: monkeyfs removes a table entry only
+  when that path is written, so a branch whose old files were never
+  rewritten carried the table forever, and reopening on an older
+  version would not have cleared it. Frozen reads are not refused:
+  tags, publications, `store.resolve` and `ws.files.attach` read an old
+  tree through monkeyfs's table fallback, and `migrate_layout` never
+  rewrites a publication branch, a tag or an old commit. Such a
+  snapshot now opens at the workspace root rather than at the old
+  `__cwd__`.
+
 ### Added
 - **`ws.runtime.reap_idle(max_age)` drains warm view workers.** Under
   process/kernel isolation a workspace keeps up to
@@ -30,6 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed runtime, `DudExecutor` — so it can be called on every open
   workspace unconditionally. Executors opt in by defining
   `reap_idle(max_age) -> int`; `LocalExecutor` does.
+- **`Store.migrate_layout(sessions=None, *, dry_run=False)`** and
+  **`python -m nontainer.migrate [--store DIR] [--backend B]
+  [--session NAME ...] [--dry-run]`.** One commit per session head:
+  each table entry becomes the per-file row monkeyfs writes today (a
+  row already there wins), `__cwd__` moves into the filesystem's cwd
+  slot when that is empty, and both keys are deleted. A clean head is
+  left alone with no commit, so a second run changes nothing. Returns
+  a `LayoutMigration` report per session. `migrate_provider(provider)`
+  in `nontainer.migrate` does one provider, for a store built on a
+  `provider_factory`.
+- **Old commits land in the current layout wherever they become live.**
+  A restore (`ws.checkout(commit)`), a revert or cherry-pick, and a
+  fork from an old commit convert the old tree on the way in, so a
+  migrated session can still reach its own history; the old commits
+  themselves are never rewritten. A merge whose source commit
+  predates the migration takes the source's migrated head instead,
+  when no file changed in between.
 
 ## 0.7.10 - 2026-09-23
 

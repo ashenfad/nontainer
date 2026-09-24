@@ -21,9 +21,11 @@ Public surface:
     JobStatus, AnswerStatus -- the words their ``status`` can hold
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
     MergeOutcome, WorkspaceStatus
+    LayoutMigration     -- store.migrate_layout's report for one session
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CommitNotFoundError, BookkeepingLost, SessionsError,
-            JobRunning, BranchExpired, CacheError, HarvestLost
+            JobRunning, BranchExpired, CacheError, HarvestLost,
+            LegacyLayoutError
 
 Extension surfaces (built by the embedder, never assumed present):
 
@@ -35,6 +37,11 @@ Adapters (optional extras):
 
     nontainer.adapters.agno  -- WorkspaceTools (agno Toolkit)
     python -m nontainer.adapters.mcp  -- MCP server (stdio)
+
+Maintenance:
+
+    python -m nontainer.migrate  -- move pre-monkeyfs-0.1.10 sessions
+                                    onto the current layout
 """
 
 from .artifacts import ArtifactPath, artifact_kind
@@ -45,11 +52,13 @@ from .errors import (
     BranchExpired,
     CommitNotFoundError,
     JobRunning,
+    LegacyLayoutError,
     NotSupportedError,
     SessionIdError,
     SessionsError,
     WorkspaceError,
 )
+from .migrate import LayoutMigration
 from .protocol import (
     SESSION_ID_RE,
     Answer,
@@ -135,4 +144,6 @@ __all__ = [
     "JobRunning",
     "BranchExpired",
     "HarvestLost",
+    "LegacyLayoutError",
+    "LayoutMigration",
 ]
