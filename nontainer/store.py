@@ -46,6 +46,7 @@ from .protocol import (
 )
 
 if TYPE_CHECKING:
+    from .migrate import LayoutMigration
     from .protocol import Executor
     from .workspace import Mount, PythonConfig, Workspace
 
@@ -650,20 +651,30 @@ class Store:
         ``root`` is the workspace root — the absolute VFS path agent
         code sees its files under (default ``/workspace``). One value
         per session, inherited by forks.
+
+        A session whose head was written before monkeyfs 0.1.10 is
+        refused with :class:`~nontainer.errors.LegacyLayoutError`, which
+        names the :meth:`migrate_layout` call that fixes it.
         """
+        from .errors import LegacyLayoutError
         from .workspace import Workspace
 
-        ws = Workspace(
-            self._session_provider(session),
-            python=python,
-            mounts=mounts,
-            commands=commands,
-            cache=cache,
-            autocommit=autocommit,
-            max_observation=max_observation,
-            executor_factory=executor_factory,
-            root=root,
-        )
+        provider = self._session_provider(session)
+        try:
+            ws = Workspace(
+                provider,
+                python=python,
+                mounts=mounts,
+                commands=commands,
+                cache=cache,
+                autocommit=autocommit,
+                max_observation=max_observation,
+                executor_factory=executor_factory,
+                root=root,
+            )
+        except LegacyLayoutError as e:
+            provider.close()
+            raise e.for_store(self) from None
         ws._store = self
         return ws
 
@@ -842,6 +853,70 @@ class Store:
             return clean_orphans(backend, min_age=min_age)
         finally:
             self._close_backend(backend)
+
+    def migrate_layout(
+        self,
+        sessions: "str | Iterable[str] | None" = None,
+        *,
+        dry_run: bool = False,
+    ) -> "dict[str, LayoutMigration]":
+        """Rewrite session heads written before monkeyfs 0.1.10 into the
+        current layout; returns a report per session examined.
+
+        Such a head keeps every file's metadata in one
+        ``__vfs_metadata__`` table and its working directory under
+        ``__cwd__``, and a writable open refuses it. Migrating one is a
+        single commit on its branch: each table entry becomes the
+        file's own metadata row (a row already there wins), the old cwd
+        moves into the filesystem's slot when that is empty, and both
+        keys are deleted. A head in the current layout is left alone
+        and costs no commit, so running this twice is running it once.
+        See :mod:`nontainer.migrate` for the rules.
+
+        ``sessions`` names the sessions to migrate — one id or several;
+        each must be a session this store holds. ``None`` is every
+        session :meth:`sessions` lists. ``dry_run`` computes the same
+        reports and writes nothing.
+
+        What is never rewritten: publication branches, tags, and old
+        commits in any session's history. A tag and a publication name
+        one frozen state that something may be serving, and history is
+        append-only. They keep reading right, because monkeyfs still
+        reads the table for any path without a row, and whatever brings
+        an old commit's state into a live head converts it on the way
+        (a restore, a fork from it, a revert or cherry-pick of it).
+
+        Close any workspace open on these sessions first, as for
+        :meth:`delete`. The ``dir`` and ``agentfs`` backends keep no
+        table, so there only the cwd key moves, with no commit to name.
+
+        Returns ``{session: LayoutMigration}`` for every session
+        examined, clean ones included (``report.clean``).
+        """
+        from .migrate import migrate_provider
+
+        self._require_own_layout("migrate_layout")
+        held = set(self.sessions())
+        if sessions is None:
+            names = sorted(held)
+        else:
+            names = sorted({sessions} if isinstance(sessions, str) else set(sessions))
+            self._require_session_names(names)
+            missing = [name for name in names if name not in held]
+            if missing:
+                raise ValueError(
+                    f"no session {', '.join(repr(n) for n in missing)} on this "
+                    "store: migrate_layout rewrites sessions that exist, and "
+                    "opening one that does not would create it"
+                )
+        reports: dict[str, LayoutMigration] = {}
+        for name in names:
+            provider = self._session_provider(name)
+            try:
+                reports[name] = migrate_provider(provider, dry_run=dry_run)
+            finally:
+                provider.close()
+        return reports
 
     def resolve(
         self, ref: "str | Ref", *, root: str | None = None, **settings: Any
@@ -1938,9 +2013,10 @@ class Store:
         directories above them), which is what makes a frozen open read
         the published tree and see nothing else. The rows are asked of a
         filesystem over the source commit rather than copied key by key,
-        so a source still carrying the legacy ``__vfs_metadata__`` table
-        publishes rows like any other — and the table itself, which
-        describes files this publication does not hold, never travels.
+        so a source commit written before per-file rows publishes rows
+        like any other (monkeyfs reads its ``__vfs_metadata__`` table for
+        a path with no row), and the table itself never travels. A
+        publication is therefore always in the current layout.
 
         Blobs are copied rather than pointed at. That is fine at app
         sizes, and content addressing in the store below would make the

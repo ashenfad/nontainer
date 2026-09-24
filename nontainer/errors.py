@@ -74,3 +74,67 @@ class BranchExpired(SessionsError):
     verbs that need the branch say what happened and name the way
     forward, which is to ask again and keep the next one.
     """
+
+
+class LegacyLayoutError(WorkspaceError):
+    """A branch head still carries the layout written before monkeyfs 0.1.10.
+
+    That layout kept every file's metadata in one ``__vfs_metadata__``
+    table and nontainer's working directory under ``__cwd__``. Nothing
+    reads either as live state any more, so a writable workspace
+    refuses a head that carries one rather than half-read it, and so
+    does a merge of one. The fix is a one-time migration, which the
+    message spells out: :meth:`Store.migrate_layout`, or ``python -m
+    nontainer.migrate`` from a shell. Frozen reads of such a tree (a
+    tag, a publication, ``store.resolve``) are not refused.
+
+    ``session`` names the branch and ``keys`` the legacy keys its head
+    carries.
+    """
+
+    def __init__(
+        self,
+        session: str,
+        keys: "tuple[str, ...]",
+        *,
+        store: "str | None" = None,
+        backend: str = "kvgit",
+    ) -> None:
+        self.session = session
+        self.keys = tuple(keys)
+        self.store = store
+        self.backend = backend
+        if store is None:
+            how = (
+                "nontainer.migrate.migrate_provider(provider) on this "
+                "session's provider, or Store(<path>).migrate_layout"
+                f"([{session!r}]) for a store"
+            )
+        else:
+            flag = "" if backend == "kvgit" else f" --backend {backend}"
+            arg = "" if backend == "kvgit" else f", backend={backend!r}"
+            how = (
+                f"python -m nontainer.migrate --store {store}{flag} "
+                f"--session {session}, or Store({store!r}{arg})"
+                f".migrate_layout([{session!r}])"
+            )
+        super().__init__(
+            f"session {session!r} carries the layout written before monkeyfs "
+            f"0.1.10 ({', '.join(self.keys)}), which this version no longer "
+            f"reads as live state. Migrate it once, then retry: {how}. A "
+            "dry run (--dry-run, or dry_run=True) reports what would change."
+        )
+
+    def for_store(self, store: "object") -> "LegacyLayoutError":
+        """The same refusal, naming the store the session lives on, so
+        the command in the message runs as written."""
+        path = getattr(store, "path", None)
+        if getattr(store, "_provider_factory", None) is not None:
+            # The layout is the factory's: no path names it.
+            path = None
+        return LegacyLayoutError(
+            self.session,
+            self.keys,
+            store=None if path is None else str(path),
+            backend=getattr(store, "backend", "kvgit"),
+        )

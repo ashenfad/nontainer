@@ -436,6 +436,29 @@ they differ per embedder; a studio keeps them in its own table keyed by
 name. What nontainer owns is the part every consumer would otherwise
 reinvent identically.
 
+## Old layouts migrate in one explicit step
+
+Before monkeyfs 0.1.10 a branch kept every file's metadata in one
+`__vfs_metadata__` table, and nontainer kept its own cwd under
+`__cwd__`. For a while both were drained implicitly: an open dropped
+`__cwd__`, monkeyfs moved a table entry to a row when that path was
+written, and every merge carried rules for both keys. The draining
+never finished — an entry leaves the table only when its path is
+written, so a branch whose old files are never rewritten carries the
+table forever — and it cost a merge rule per dead key on every commit.
+
+So the conversion is explicit instead. `store.migrate_layout()` (or
+`python -m nontainer.migrate`) rewrites each session head in one
+commit; a writable open or a merge of a head still in the old layout
+is refused by name rather than half-read. Frozen state is left as it
+is: a tag and a publication name one state something may be serving,
+and history is append-only, so none of them is rewritten. They still
+read right because monkeyfs keeps its read fallback for the table, and
+the verbs that bring an old commit's state into a live head — restore,
+revert, cherry-pick, fork — convert it on the way in. The rules live in
+one module (`nontainer/migrate/`), used by both the migration and those
+verbs, so there is one definition of "the current layout".
+
 ## Tool exposure adapts to the environment
 
 `WorkspaceTools(tools="auto")` picks the surface from the config:

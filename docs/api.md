@@ -47,6 +47,8 @@ store.delete(sessions, *, min_age=3600) -> None
 store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at
                                           # session@commit; close it
 store.clean(*, min_age=3600) -> int       # sweep unreachable commits
+store.migrate_layout(sessions=None, *, dry_run=False)
+    -> dict[str, LayoutMigration]         # pre-monkeyfs-0.1.10 heads
 store.tags -> StoreTags                   # store-scoped tags (below)
 store.close() -> None                     # also a context manager
 ```
@@ -83,6 +85,50 @@ pins its branch). It cleans only the workspace store, never
 bookkeeping a caller keeps *beside* it. `min_age` is the orphan
 sweep's grace period in seconds (kvgit only), so a concurrent writer
 mid-commit is never swept out from under.
+
+**`store.migrate_layout(sessions=None, *, dry_run=False)`** moves
+session heads written before monkeyfs 0.1.10 onto the current layout.
+That layout kept every file's metadata in one `__vfs_metadata__` table
+and nontainer's cwd under `__cwd__`; neither is read as live state, so
+a writable `open` (and a merge) of a head carrying either raises
+`LegacyLayoutError`, naming the session, the keys and the command that
+fixes it. Migrating a head is one commit on its branch: each table
+entry becomes that file's own metadata row (a row already there wins;
+an entry describing no file is dropped), `__cwd__` moves into the
+filesystem's cwd slot when that is empty or holds the filesystem root,
+and both keys are deleted. A head already in the current layout is left
+alone and gets no commit, so a second run changes nothing. `sessions`
+is one id, several, or `None` for every session; naming one the store
+does not hold is a `ValueError` rather than a new branch. `dry_run`
+reports and writes nothing. The same thing from a shell:
+
+```
+python -m nontainer.migrate [--store DIR] [--backend kvgit|dir|agentfs]
+                            [--session NAME ...] [--dry-run]
+```
+
+It prints one line per session that needed it and a count. Each report
+is a `LayoutMigration(session, found, rows, kept, dropped, cwd, commit,
+dry_run)`: `found` is the legacy keys the head carried (empty, and
+`clean` true, for a head that needed nothing), `rows` / `kept` /
+`dropped` count table entries written, shadowed by an existing row, and
+describing no file, `cwd` is the working directory moved, and `commit`
+is the migration commit (`None` on a dry run, a clean head, or a
+backend without commits). `nontainer.migrate.migrate_provider(provider,
+*, dry_run=False)` does one provider, for a store built on a
+`provider_factory`, which `migrate_layout` refuses like the other
+store-level verbs.
+
+**Frozen state is never rewritten**: publication branches, tags and
+old commits stay as they are, and keep reading right, because monkeyfs
+still reads the table for a path with no row. Whatever brings an old
+commit's state into a live head converts it on the way in instead — a
+restore (`ws.checkout(commit)`), a revert or cherry-pick, a fork from
+the commit (the child's first commit after the fork point is its
+migration). A merge whose source commit predates the migration — a
+source agent that has not committed since — merges the source's
+migrated head when no file changed between the two, and is refused
+otherwise.
 
 **`store.resolve(ref)`** opens a frozen `Workspace` at the exact
 commit a ref names. A `Ref` is `session@commit`, optionally
@@ -1679,7 +1725,9 @@ clause holds the package:
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
 `SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
 `SessionsError` (no such job) · `JobRunning` (not yet) ·
-`BranchExpired` (the job's branch was swept) · `CacheError` (a cache
+`BranchExpired` (the job's branch was swept) · `LegacyLayoutError` (a
+head written before monkeyfs 0.1.10, which `store.migrate_layout`
+converts) · `CacheError` (a cache
 write that cannot complete — also a `ValueError`) · `HarvestLost` (a
 remote executor lost its guest between a successful exec and the write
 harvest, so the call is torn rather than absent — also a
