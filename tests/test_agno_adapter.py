@@ -217,19 +217,16 @@ def test_agno_view_image():
 def test_the_agno_surface_this_adapter_depends_on():
     """The whole of nontainer's agno contract, named in one place.
 
-    Four imports, plus one argument agno hands a pre hook:
-    ``run_context``, whose ``run_id`` stays the same across a run's
-    retry attempts. That argument is what sets the floor at 3.0.0 —
-    agno 2.1 hands a pre hook no run context, and the 2.x releases that
-    grew one did so unevenly — and the retry tests below exercise it
-    through agno's own run loop rather than naming it here. No upper
-    bound: none of this has moved across the 3.x releases.
+    It is four imports, which is why `agno>=2` carries no upper bound:
+    agno 3.0's breaking changes are all in surfaces this adapter never
+    touches (the runs table, renamed Agent params, Workflow/HITL,
+    MultiMCPTools). Verified on 2.0.0, 2.4.0, 2.7.2 and 3.0.1.
 
     The FLOOR is the part worth pinning down. `agno>=1.0` stood for two
     months while being false — ToolResult does not exist in agno 1.x, so
     `pip install 'nontainer[agno]'` resolving to 1.0.0 failed at import.
     Nothing noticed because CI installs unpinned and therefore only ever
-    tests the newest release; the agno-versions job covers the other
+    tested the newest release; the agno-floor job now covers the other
     end.
     """
     from agno.media import Image
@@ -247,10 +244,12 @@ def test_the_documented_integration_shapes_construct():
     """The adapter clearing a floor is not the same as the SHIPPED
     INTEGRATIONS clearing it.
 
-    `WorkspaceTools` can build on a release whose ``Agent`` rejects the
-    hooks the README and examples pass it, and then the declared floor
-    ships an example that cannot run. So the Agent is constructed here
-    the way the README and examples tell people to.
+    `agno>=2` looked right — `WorkspaceTools` builds fine on 2.0.0 and
+    every adapter test passes there. But examples/analyst.py passes
+    `post_hooks` and studio passes `pre_hooks`, and both landed in
+    2.1.0, so the declared floor shipped an example that could not run
+    on it. Nothing caught that because nothing constructed an Agent the
+    way the README and examples tell people to.
 
     `model=None` keeps this a construction check: no key, no network,
     no model call — a renamed or dropped kwarg is a TypeError right
@@ -275,14 +274,6 @@ def test_the_documented_integration_shapes_construct():
     Agent(model=None, tools=[toolkit], tool_call_limit=30)
     # nontainer-studio's shape, so a floor bump there is caught here too
     Agent(model=None, tools=[toolkit], pre_hooks=[lambda **kw: None])
-    # a retrying agent, as docs/api.md wires it
-    Agent(
-        model=None,
-        tools=[toolkit],
-        retries=1,
-        pre_hooks=[toolkit.begin_turn],
-        post_hooks=[toolkit.end_turn],
-    )
 
 
 # -- the sessions tool ---------------------------------------------------------
@@ -834,17 +825,17 @@ def test_a_delegate_answer_arrives_with_the_next_tool_result(tmp_path):
         store.close()
 
 
-# -- a retried run: begin_turn rewinds the workspace ---------------------------
+# -- a run cut short: kept as an interrupt ------------------------------------
 
 
-def flaky_model(script):
+def aborting_model(script):
     """A scripted model driven through agno's own run loop.
 
-    Steps are consumed in order: a string is the assistant's reply
-    (ending the attempt), a ``(tool, args)`` pair is one tool call, and
-    ``RAISE`` is a provider error — the failure agno's run-level retry
-    exists for. ``seen`` holds the messages of every model call, one
-    list per call, so a test can read what an attempt was shown.
+    Steps are consumed in order: a string is the assistant's reply, a
+    ``(tool, args)`` pair is one tool call, ``RAISE`` is a provider
+    error and ``INTERRUPT`` a stop (``KeyboardInterrupt``, which agno
+    records as a cancelled run). ``seen`` holds the messages of every
+    model call, one list per call.
     """
     import json
 
@@ -852,9 +843,9 @@ def flaky_model(script):
     from agno.models.base import Model
     from agno.models.response import ModelResponse
 
-    class Flaky(Model):
+    class Aborting(Model):
         def __init__(self, steps):
-            super().__init__(id="flaky", name="Flaky", provider="flaky")
+            super().__init__(id="aborting", name="Aborting", provider="aborting")
             self.steps = list(steps)
             self.seen = []
 
@@ -863,6 +854,8 @@ def flaky_model(script):
             step = self.steps.pop(0) if self.steps else "done"
             if step == "RAISE":
                 raise ModelProviderError("upstream 503", status_code=503)
+            if step == "INTERRUPT":
+                raise KeyboardInterrupt
             response = ModelResponse(role="assistant")
             if isinstance(step, str):
                 response.content = step
@@ -895,284 +888,177 @@ def flaky_model(script):
         def _parse_provider_response_delta(self, response):
             return response
 
-    return Flaky(script)
+    return Aborting(script)
 
 
-def retrying_agent(tk, script, **kwargs):
+@pytest.fixture(params=["kvgit-store", "sqlite"])
+def stored_agent(request, tmp_path):
+    """An agent whose conversation is stored, with a workspace beside it:
+    in the workspace branch (``KvgitStoreDb``), or in agno's own
+    ``SqliteDb``, which keeps runs in a table of their own on agno 3."""
     from agno.agent import Agent
 
-    kwargs.setdefault("pre_hooks", [tk.begin_turn])
-    return Agent(
-        model=flaky_model(script),
+    from nontainer import workspace
+
+    live = {}
+
+    def open_ws(session_id):
+        if session_id not in live:
+            live[session_id] = workspace(session_id, store=tmp_path / "store")
+        return live[session_id]
+
+    ws = open_ws("chat")
+    if request.param == "kvgit-store":
+        from nontainer.adapters.agno_db import KvgitStoreDb
+
+        db = KvgitStoreDb(tmp_path / "store", open=open_ws, db_path=str(tmp_path))
+        tk = WorkspaceTools(ws, commit="turn", session_db=db)
+        post_hooks = [tk.end_turn]
+    else:
+        pytest.importorskip("sqlalchemy")
+        from agno.db.sqlite import SqliteDb
+
+        db = SqliteDb(db_file=str(tmp_path / "agno.db"))
+        tk = WorkspaceTools(ws)
+        post_hooks = []
+    agent = Agent(
+        model=aborting_model([]),
+        db=db,
+        session_id="chat",
         tools=[tk],
-        retries=1,
-        delay_between_retries=0,
+        post_hooks=post_hooks,
+        retries=0,
+        add_history_to_context=True,
         telemetry=False,
-        **kwargs,
     )
+    yield agent, ws
+    for held in live.values():
+        held.close()
 
 
-def seeded_ws(**kwargs) -> Workspace:
-    ws = make_ws(**kwargs)
-    ws.files.fs.write("a.txt", b"before")
-    ws.commit(info={"tool": "seed"})
-    return ws
+def run_script(agent, steps, message="go"):
+    agent.model.steps = list(steps)
+    return agent.run(message)
 
 
-FAILED_ATTEMPT = [
-    ("file_write", {"path": "a.txt", "content": "attempt one"}),
-    ("file_write", {"path": "b.txt", "content": "attempt one"}),
-    "RAISE",
-]
+def shown(agent) -> str:
+    """Everything the model was shown on its last call, as one text."""
+    return "\n".join(str(m.content) for m in agent.model.seen[-1])
 
 
-def test_a_retry_rewinds_what_the_failed_attempt_committed():
-    """``commit="call"``: every write committed, so the head moved and
-    the restore is a checkout — appended, so the abandoned work is
-    still in the log."""
-    ws = seeded_ws()
-    anchor = ws.head
-    tk = WorkspaceTools(ws)
-    agent = retrying_agent(tk, FAILED_ATTEMPT + ["done"])
+@pytest.mark.parametrize("abort", ["RAISE", "INTERRUPT"])
+def test_an_aborted_run_is_forgotten_until_it_is_kept(stored_agent, abort):
+    from agno.exceptions import ModelProviderError
+    from agno.run.base import RunStatus
 
-    out = agent.run("go")
+    from nontainer.adapters.agno import keep_aborted_run
 
-    assert out.status == "COMPLETED", out.content
-    assert ws.files.fs.read("a.txt") == b"before"
-    assert not ws.files.fs.exists("b.txt")
+    agent, ws = stored_agent
+    steps = [("file_write", {"path": "report.md", "content": "draft"}), abort]
+    try:
+        out = run_script(agent, steps)
+    except ModelProviderError:
+        pytest.skip("this agno raises a provider error and stores no run")
+    expected = RunStatus.error if abort == "RAISE" else RunStatus.cancelled
+    assert out.status == expected
+    assert ws.files.fs.read("report.md") == b"draft"  # the work is real
+
+    session = agent.db.get_session(session_id="chat", session_type=_agent_type())
+    if session is None or out.run_id not in [r.run_id for r in session.runs or []]:
+        # Older agno stores no aborted run at all: there is nothing to
+        # keep, and the helper says so without writing anything.
+        head = ws.head
+        assert keep_aborted_run(agent.db, "chat", out.run_id, "stop") is False
+        assert ws.head == head
+        return
+
+    # agno's history builder skips the aborted run: the model forgets it
+    run_script(agent, ["ok"])
+    assert "report.md" not in shown(agent)
+
+    assert keep_aborted_run(agent.db, "chat", out.run_id, "provider error")
+    # A db with a runs table of its own (agno 3's SqliteDb) holds the run
+    # there too, and reads other than the session's — a run listing, a
+    # resume — go to it, so it must say completed as well.
+    stored = getattr(agent.db, "get_run", lambda run_id: None)(out.run_id)
+    if stored is not None:
+        assert stored.status == RunStatus.completed
+
+    run_script(agent, ["ok"])
+    history = shown(agent)
+    assert "wrote report.md" in history  # the tool call's result
+    assert "[turn aborted early: provider error — the work above" in history
+    assert ws.files.fs.read("report.md") == b"draft"  # nothing undone
     assert not ws.uncommitted
-    diff = ws.diff(anchor, ws.head)
-    assert not (diff.added or diff.removed or diff.modified)
-    tools = [e.info.get("tool") for e in ws.log()]
-    assert tools.count("file_write") == 2  # still there, stepped off
-    ws.close()
 
 
-def test_a_retry_discards_what_the_failed_attempt_left_uncommitted():
-    """``commit="turn"``: the failed attempt committed nothing, so the
-    head never moved — a "did the head move" check alone would keep
-    its writes. They are dropped, and the head is the anchor itself."""
-    ws = seeded_ws()
-    anchor = ws.head
-    tk = WorkspaceTools(ws, commit="turn")
-    agent = retrying_agent(tk, FAILED_ATTEMPT + ["done"], post_hooks=[tk.end_turn])
+def test_keep_aborted_run_leaves_every_other_run_alone(stored_agent):
+    from nontainer.adapters.agno import keep_aborted_run
 
-    out = agent.run("go")
+    agent, ws = stored_agent
+    out = run_script(agent, ["fine"])
+    head = ws.head
+    stored = agent.db.get_session(session_id="chat", session_type=_agent_type())
 
-    assert out.status == "COMPLETED", out.content
-    assert ws.files.fs.read("a.txt") == b"before"
-    assert not ws.files.fs.exists("b.txt")
-    assert not ws.uncommitted
-    assert ws.head == anchor  # nothing to restore by commit, nothing new
-    ws.close()
+    assert keep_aborted_run(agent.db, "chat", out.run_id, "x") is False  # completed
+    assert keep_aborted_run(agent.db, "chat", "no-such-run", "x") is False
+    assert keep_aborted_run(agent.db, "no-such-session", out.run_id, "x") is False
+    assert keep_aborted_run(agent.db, "chat", None, "x") is False
+    assert keep_aborted_run(None, "chat", out.run_id, "x") is False
 
-
-def test_the_retry_keeps_its_own_work():
-    """Only the failed attempt is undone: what the retry writes lands."""
-    ws = seeded_ws()
-    tk = WorkspaceTools(ws, commit="turn")
-    script = FAILED_ATTEMPT + [
-        ("file_write", {"path": "a.txt", "content": "attempt two"}),
-        "done",
-    ]
-    agent = retrying_agent(tk, script, post_hooks=[tk.end_turn])
-
-    agent.run("go")
-
-    assert ws.files.fs.read("a.txt") == b"attempt two"
-    assert not ws.files.fs.exists("b.txt")
-    assert ws.log()[0].info == {"tool": "turn"}
-    ws.close()
+    after = agent.db.get_session(session_id="chat", session_type=_agent_type())
+    assert [r.to_dict() for r in after.runs] == [r.to_dict() for r in stored.runs]
+    assert ws.head == head and not ws.uncommitted
 
 
-def test_a_run_that_succeeds_first_time_writes_nothing_extra():
-    ws = seeded_ws()
-    before = len(ws.log())
-    tk = WorkspaceTools(ws)
-    script = [("file_write", {"path": "a.txt", "content": "after"}), "done"]
-    agent = retrying_agent(tk, script)
+def _agent_type():
+    from agno.db.base import SessionType
 
-    agent.run("go")
-    agent.model.steps = ["done"]
-    agent.run("again")  # a new run id: a new anchor, not a retry
-
-    assert ws.files.fs.read("a.txt") == b"after"
-    assert len(ws.log()) == before + 1  # the write, and no restore
-    ws.close()
+    return SessionType.AGENT
 
 
-def test_a_run_that_began_with_uncommitted_writes_is_not_rewound(caplog):
-    """No commit describes a dirty start, and the hook neither commits
-    on the embedder's behalf nor destroys its writes: it says so, once,
-    and leaves the workspace alone."""
+def _passes_run_context() -> bool:
+    try:
+        from agno.run.base import RunContext  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def test_a_restarted_run_is_warned_about_once(caplog):
+    """A run-level retry forgets the failed attempt's tool calls while
+    its files stay; the pre hook says so once per run, and leaves the
+    workspace alone."""
     import logging
 
-    ws = seeded_ws()
-    tk = WorkspaceTools(ws, commit="turn")
-    ws.files.fs.write("upload.txt", b"from the host")  # staged, not committed
-    assert ws.uncommitted
-    agent = retrying_agent(
-        tk, FAILED_ATTEMPT + ["RAISE", "done"], post_hooks=[tk.end_turn]
-    )
-    agent.retries = 2
+    from agno.agent import Agent
 
+    if not _passes_run_context():
+        pytest.skip("this agno hands pre hooks no run context")
+    ws = make_ws()
+    tk = WorkspaceTools(ws)
+    agent = Agent(
+        model=aborting_model([]),
+        tools=[tk],
+        retries=2,
+        delay_between_retries=0,
+        pre_hooks=[tk.begin_turn],
+        telemetry=False,
+    )
+    agent.model.steps = [
+        ("file_write", {"path": "a.txt", "content": "one"}),
+        "RAISE",
+        "RAISE",
+        "done",
+    ]
     with caplog.at_level(logging.WARNING, logger="nontainer.adapters.agno"):
-        out = agent.run("go")
+        agent.run("go")
+        restarted = [r for r in caplog.records if "restarted run" in r.getMessage()]
+        assert len(restarted) == 1  # two restarts, one warning
+        assert ws.files.fs.read("a.txt") == b"one"  # nothing undone
 
-    assert out.status == "COMPLETED", out.content
-    assert ws.files.fs.read("upload.txt") == b"from the host"
-    assert ws.files.fs.read("a.txt") == b"attempt one"  # not rewound
-    warnings = [r for r in caplog.records if "NOT rewound" in r.getMessage()]
-    assert len(warnings) == 1  # two retries, one warning
-    ws.close()
-
-
-def test_an_unversioned_workspace_is_left_alone(tmp_path):
-    from nontainer.providers import DirProvider
-
-    ws = Workspace(DirProvider(tmp_path / "ws", session="s1"))
-    ws.files.fs.write("a.txt", b"before")
-    tk = WorkspaceTools(ws)
-    agent = retrying_agent(tk, FAILED_ATTEMPT + ["done"])
-
-    out = agent.run("go")
-
-    assert out.status == "COMPLETED", out.content
-    # nothing to return to, so the failed attempt's writes stand
-    assert ws.files.fs.read("a.txt") == b"attempt one"
-    assert ws.files.fs.read("b.txt") == b"attempt one"
-    ws.close()
-
-
-def test_a_frozen_workspace_is_left_alone():
-    """A snapshot at a tag takes no writes, a restore included, so the
-    hook never anchors on one."""
-    ws = seeded_ws()
-    ws.tags.add("v1")
-    snap = ws.tags.at("v1")
-    tk = WorkspaceTools(snap)
-    agent = retrying_agent(tk, [("terminal", {"command": "ls"}), "RAISE", "done"])
-    try:
-        out = agent.run("go")
-        assert out.status == "COMPLETED", out.content
-        assert tk._attempt is None
-        assert snap.files.fs.read("a.txt") == b"before"
-    finally:
-        snap.close()
-        ws.close()
-
-
-def test_a_retry_still_requeues_what_the_failed_attempt_delivered():
-    """The note rode out on a tool result the retry threw away, so the
-    retry delivers it again — and the model finally reads it."""
-    ws = seeded_ws()
-    tk = WorkspaceTools(ws)
-    tk.inbox.put("say it twice if you must")
-    script = [
-        ("terminal", {"command": "echo one"}),
-        "RAISE",
-        ("terminal", {"command": "echo two"}),
-        "done",
-    ]
-    agent = retrying_agent(
-        tk, script, post_hooks=[tk.end_turn], tool_hooks=[tk.deliver]
-    )
-
-    out = agent.run("go")
-
-    assert out.status == "COMPLETED", out.content
-    last_call = agent.model.seen[-1]
-    tool_texts = [str(m.content) for m in last_call if m.role == "tool"]
-    assert len(tool_texts) == 1  # attempt one's tool call is gone
-    assert "say it twice if you must" in tool_texts[0]
-    assert tk.inbox.pending() == [] and tk.inbox.delivered() == []
-    ws.close()
-
-
-def test_a_retry_rewinds_an_outstanding_merge_with_the_tree(tmp_path):
-    """The restore is whole-session, so a merge that was outstanding
-    when the run began is outstanding again — markers and context both
-    — even though the failed attempt resolved and committed it."""
-    from nontainer import Store
-    from nontainer.wsgit import register_wsgit
-
-    store = Store(tmp_path / "store")
-    ws = store.open("main")
-    register_wsgit(ws)
-    ws.files.write("/workspace/a.txt", "one\ntwo\nthree\n")
-    ws.index.commit("first")
-    ws.files.write("/workspace/a.txt", "one\nTWO\nthree\n")
-    ws.index.commit("second")
-    second = ws.index.head
-    ws.files.write("/workspace/a.txt", "one\nLATER\nthree\n")
-    ws.index.commit("third")
-    ws.revert(second)  # conflicts: markers + an outstanding merge
-    assert ws.index.status().merge_source is not None
-    marked = ws.files.read("/workspace/a.txt")
-
-    tk = WorkspaceTools(ws)
-    script = [
-        ("file_write", {"path": "a.txt", "content": "resolved\n"}),
-        ("terminal", {"command": "ws-git commit -m resolved"}),
-        "RAISE",
-        "done",
-    ]
-    agent = retrying_agent(tk, script)
-    try:
-        out = agent.run("go")
-        assert out.status == "COMPLETED", out.content
-        assert ws.files.read("/workspace/a.txt") == marked
-        assert ws.index.status().merge_source is not None
-    finally:
-        ws.close()
-        store.close()
-
-
-@pytest.mark.parametrize("commit", ["call", "turn"])
-def test_a_retry_under_a_session_db_leaves_one_run_and_no_stray_files(tmp_path, commit):
-    """With the conversation in the branch, files and memory move
-    together: the stored history holds the one run that completed, and
-    the files hold nothing of the attempt it replaced."""
-    from nontainer.adapters.agno_db import RUN_PREFIX, KvgitSessionDb
-
-    ws = seeded_ws()
-    anchor = ws.head
-    db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))
-    tk = WorkspaceTools(ws, commit=commit, session_db=db)
-    agent = retrying_agent(tk, FAILED_ATTEMPT + ["done"], db=db, session_id=ws.session)
-
-    out = agent.run("go")
-
-    assert out.status == "COMPLETED", out.content
-    assert not ws.files.fs.exists("b.txt")
-    assert ws.files.fs.read("a.txt") == b"before"
-    runs = [k for k in ws.provider.kv.keys() if k.startswith(RUN_PREFIX)]
-    assert len(runs) == 1
-    diff = ws.diff(anchor, ws.head)
-    assert not (diff.added or diff.removed or diff.modified)
-    ws.close()
-
-
-async def test_abegin_turn_rewinds_under_arun_off_the_event_loop():
-    """agno's async loop calls a sync pre hook inline on the event loop,
-    so ``arun()`` takes the async spelling, which does the restore on a
-    worker thread."""
-    ws = seeded_ws()
-    tk = WorkspaceTools(ws)
-    ran_on: list[int] = []
-    rewind = tk._rewind
-
-    def spy(run_id):
-        ran_on.append(threading.get_ident())
-        return rewind(run_id)
-
-    tk._rewind = spy
-    agent = retrying_agent(tk, FAILED_ATTEMPT + ["done"], pre_hooks=[tk.abegin_turn])
-
-    out = await agent.arun("go")
-
-    assert out.status == "COMPLETED", out.content
-    assert ws.files.fs.read("a.txt") == b"before"
-    assert not ws.files.fs.exists("b.txt")
-    assert len(ran_on) == 2 and threading.get_ident() not in ran_on
+        caplog.clear()
+        agent.model.steps = ["done"]
+        agent.run("again")  # a first attempt: nothing to say
+        assert not [r for r in caplog.records if "restarted run" in r.getMessage()]
     ws.close()

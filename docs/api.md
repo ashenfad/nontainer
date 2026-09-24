@@ -1764,23 +1764,27 @@ agent = Agent(model=..., tools=[tk, fetch])   # no tool_hooks= here
 Both hooks drain the same inbox, so a note rides out with whichever
 tool answers next.
 
-**Retry and cancel.** agno's run-level retry (`Agent(retries=N)`)
-rebuilds the run from the user message and drops the failed attempt's
-tool calls: the model forgets them, the files they wrote stay, and
-notes delivered on them were never seen. `tk.begin_turn` (a pre hook,
-once per attempt) answers both. On a retry of the same run id it
-restores the workspace to where the run began (`ws.checkout` when the
-head moved, `ws.discard` when the writes are uncommitted), then puts
-delivered-but-unsettled notes back at the front of the queue. Bind it
-whenever `retries` is above zero; under `arun()` bind `tk.abegin_turn`,
-which does the restore off the event loop. A run that starts with
-uncommitted writes has no commit to return to, so it is not rewound
-(one warning says so). `tk.end_turn` settles the notes — whether or
-not a `session_db` owns the commit. agno runs no post hook for a
-**cancelled** run, so an embedder that keeps a cancelled run's
-messages (the model did see the notes) should call
-`tk.inbox.settle()` in its cancel path; otherwise
-the next turn re-delivers.
+**Retry and cancel.** A failed or stopped run is an interrupt, not a
+rollback: the workspace keeps what it wrote. agno's run-level retry
+(`Agent(retries=N)`) rebuilds the run from the user message and forgets
+the failed attempt's tool calls while their files stay, so with a
+workspace set `Agent(retries=0)` and put the retries on the model
+(`Model.retries`, default 0) to absorb transient provider errors — it
+retries one model call and keeps the turn's tool results. `tk.begin_turn` (a pre hook, once per attempt)
+re-queues notes delivered on a dropped attempt and warns once when agno
+restarts a run. `tk.end_turn` settles the notes — whether or not a
+`session_db` owns the commit.
+
+agno's history skips a run whose status is error or cancelled, so the
+model forgets a turn whose files are still there. After such a run —
+and after any in-place resume, since this marks the run completed —
+call `keep_aborted_run(agent.db, session_id, run_id, note)`
+(`nontainer.adapters.agno`): it closes the run with `[turn aborted
+early: {note} — …]` and marks it completed, on agno 2's inline runs and
+agno 3's runs table alike. agno runs no post hook for a **cancelled**
+run, so an embedder that keeps a cancelled run's messages (the model
+did see the notes) should also call `tk.inbox.settle()` in its cancel
+path; otherwise the next turn re-delivers.
 
 With `sessions=` wired, every delegate answer that has landed is taken
 at the same delivery point (`Sessions.take()`) and arrives as a
