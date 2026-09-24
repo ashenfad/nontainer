@@ -525,8 +525,10 @@ finally:
 so the symmetric shape can be written. A store holds no long-lived
 handle: every verb opens what it needs and either hands ownership to
 the workspace it returns or closes it before returning. An app runtime
-holds no workers: each handler call mints and reaps its own. Neither
-one closes the workspaces it handed out — that is the caller's, above.
+holds no workers of its own: handler calls run on the workspace's
+runtime, whose warm workers `ws.runtime.reap_idle` releases and
+`ws.close()` reaps. Neither one closes the workspaces it handed out —
+that is the caller's, above.
 
 ### The two tools
 
@@ -1278,6 +1280,8 @@ rt.cache_enabled -> bool
 rt.commands / rt.framework_commands   # the live mappings
 rt.stale -> bool ; rt.mark_stale() ; rt.sync_if_stale()
 rt.diff() -> StagedDiff | None
+rt.reap_idle(max_age: float) -> int   # close workers idle >= max_age
+                                      # seconds; how many it closed
 rt.close() -> None
 ```
 
@@ -1299,6 +1303,40 @@ runtime keeps running. Closing it releases only its executor.
 `mounts=` here are this runtime's alone. Mount composition otherwise
 belongs to the workspace, so that `ws.files.fs` and execution see the same
 tree.
+
+**`rt.reap_idle(max_age)`** releases what a runtime holds warm and
+unused. On `LocalExecutor` under process/kernel isolation that is the
+resident view workers apps' handler dispatch keeps
+(`PythonConfig.warm_view_workers`): every one idle for at least
+`max_age` seconds is closed, and the next request for its view starts
+a fresh one. A worker mid-request is never touched, and neither is the
+session worker `run_python` runs on. It returns how many it closed,
+and 0 wherever there is nothing idle to release — in-process
+isolation, a static publication, a closed runtime, `DudExecutor` (one
+guest serves every call) and any executor that does not declare
+`reap_idle` — so an embedder calls it on every workspace it holds open
+without asking which rung each is on.
+
+Nothing calls it for you. An expiry checked when the next request
+arrives would fire only under traffic, and the memory worth reclaiming
+is the memory held while nothing is happening, so the embedder
+schedules it on the timer it already runs for `sessions.sweep` and
+`store.clean`. A worker's exit may take a moment, so an event-loop host
+reaps from a thread:
+
+```python
+async def reap_forever(open_workspaces, *, every=60.0, max_age=600.0):
+    while True:
+        await asyncio.sleep(every)
+        for ws in list(open_workspaces()):   # sessions and served
+            await asyncio.to_thread(          # publications alike
+                ws.runtime.reap_idle, max_age
+            )
+```
+
+Reaping is semantically free: each view call is a fresh execution, so
+a rebuilt worker costs its start (~235ms with a pandas/plotly policy)
+and nothing else.
 
 ## Executors
 
@@ -1533,11 +1571,13 @@ class PythonConfig:
   Two numbers, worth not conflating: **peak** workers during a burst is
   set by concurrency, not by this cap — N concurrent calls means N
   workers alive at once either way. **Resident** workers afterwards is
-  `min(N, warm_view_workers)`, and only ever rises toward the cap, because
-  transients are reaped when their call ends while pooled ones are kept
-  and nothing expires an idle one. So the cap is a floor you fill and
-  keep paying for (per distinct view, per workspace), not a ceiling you
-  retreat from.
+  `min(N, warm_view_workers)`, because transients are reaped when their
+  call ends while pooled ones are kept. Left alone, residency only rises
+  toward the cap, so the cap is a floor you fill and keep paying for
+  (per distinct view, per workspace), not a ceiling you retreat from.
+  [`ws.runtime.reap_idle(max_age)`](#runtime-wsruntime) is how it
+  drains: the embedder calls it on a timer and idle workers past
+  `max_age` are closed.
 
   `0` gives every call a pristine worker, and is the only setting with
   clean process-state semantics: any pool >0 means `sys.modules` and

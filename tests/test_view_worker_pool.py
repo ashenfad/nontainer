@@ -129,7 +129,7 @@ def test_residency_after_a_burst_is_the_cap_not_the_concurrency():
     alive at once whatever the cap is — so the cap does not bound what a
     burst can reach. RESIDENT afterwards is min(concurrency, cap), because
     the calls past the cap get transient sandboxes the caller reaps, while
-    pooled ones are kept and nothing expires an idle one.
+    pooled ones are kept until something reaps them.
 
     Written because the docs claimed a burst of N leaves N resident, which
     is only true while N <= cap.
@@ -170,7 +170,7 @@ def test_checkout_releases_a_warm_worker_without_reaping_it():
     with pool.checkout(VIEW, _builder(made)) as sb:
         assert sb.entered == 1  # the pool entered it
     assert sb.shutdowns == 0  # ...and kept it
-    assert pool._idle[_view_key(VIEW)] == [sb]
+    assert [idle for idle, _ in pool._idle[_view_key(VIEW)]] == [sb]
 
     with pool.checkout(VIEW, _builder(made)) as again:
         assert again is sb  # handed straight back
@@ -324,6 +324,243 @@ def test_failed_worker_start_frees_its_reservation():
     assert pooled  # a failed start doesn't permanently shrink the pool
 
 
+# -- reap_idle(): expiry the embedder schedules --------------------------------
+#
+# Nothing expires an idle worker on the way past — lazy expiry at checkout
+# would fire only under traffic, and the memory worth reclaiming is held while
+# nothing happens — so the pool offers reap_idle(max_age) and the embedder
+# calls it on a timer. The clock is injected, so age is set, not slept for.
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _clocked(size: int = 2) -> tuple[_ViewWorkerPool, FakeClock]:
+    clock = FakeClock()
+    return _ViewWorkerPool(size, enabled=True, clock=clock), clock
+
+
+def test_reap_idle_closes_workers_idle_past_max_age():
+    made: list = []
+    pool, clock = _clocked(size=2)
+
+    a, _ = pool.acquire(VIEW, _builder(made))
+    b, _ = pool.acquire(VIEW, _builder(made))
+    pool.release(VIEW, a)
+    pool.release(VIEW, b)
+
+    clock.advance(59)
+    assert pool.reap_idle(60) == 0  # not old enough yet
+    clock.advance(1)
+    assert pool.reap_idle(60) == 2  # exactly max_age counts
+    assert a.shutdowns == 1 and b.shutdowns == 1
+
+    # An emptied view leaves no bookkeeping behind.
+    key = _view_key(VIEW)
+    assert key not in pool._idle
+    assert key not in pool._live
+
+
+def test_reap_idle_keeps_workers_younger_than_max_age():
+    made: list = []
+    pool, clock = _clocked(size=2)
+
+    old, _ = pool.acquire(VIEW, _builder(made))
+    young, _ = pool.acquire(VIEW, _builder(made))
+    pool.release(VIEW, old)
+    clock.advance(50)
+    pool.release(VIEW, young)
+    clock.advance(20)
+
+    assert pool.reap_idle(60) == 1
+    assert old.shutdowns == 1
+    assert young.shutdowns == 0
+    assert pool._live[_view_key(VIEW)] == 1
+
+    again, pooled = pool.acquire(VIEW, _builder(made))
+    assert pooled and again is young  # the survivor is still handed out
+
+
+def test_a_reused_worker_starts_its_idle_age_over():
+    """Age is time since the worker last went idle, not since it was
+    built: a worker in steady use is never reaped."""
+    made: list = []
+    pool, clock = _clocked(size=1)
+
+    worker, _ = pool.acquire(VIEW, _builder(made))
+    pool.release(VIEW, worker)
+    clock.advance(50)
+    with pool.checkout(VIEW, _builder(made)) as again:
+        assert again is worker
+    clock.advance(20)
+
+    assert pool.reap_idle(60) == 0
+    assert worker.shutdowns == 0
+
+
+def test_reap_idle_never_touches_a_checked_out_worker():
+    made: list = []
+    pool, clock = _clocked(size=2)
+
+    in_flight, _ = pool.acquire(VIEW, _builder(made))
+    idle, _ = pool.acquire(VIEW, _builder(made))
+    pool.release(VIEW, idle)
+    clock.advance(3600)
+
+    assert pool.reap_idle(0) == 1  # every idle worker, and only those
+    assert idle.shutdowns == 1
+    assert in_flight.shutdowns == 0  # still running its call
+    assert pool._live[_view_key(VIEW)] == 1  # ...and still holding its slot
+
+    pool.release(VIEW, in_flight)
+    assert in_flight.shutdowns == 0  # it returns to the pool as usual
+    assert pool.reap_idle(0) == 1
+    assert in_flight.shutdowns == 1
+
+
+def test_a_reaped_slot_is_refilled_by_the_next_call():
+    made: list = []
+    pool, clock = _clocked(size=1)
+
+    first, _ = pool.acquire(VIEW, _builder(made))
+    pool.release(VIEW, first)
+    clock.advance(600)
+    assert pool.reap_idle(300) == 1
+
+    fresh, pooled = pool.acquire(VIEW, _builder(made))
+    assert pooled  # the cap came back, rather than leaking a slot
+    assert fresh is not first and fresh.entered == 1
+    assert len(made) == 2
+    assert pool._live[_view_key(VIEW)] == 1
+
+    # ...and the refilled slot is capped as before.
+    extra, pooled = pool.acquire(VIEW, _builder(made))
+    assert not pooled
+
+
+def test_reap_idle_reaps_across_views():
+    made: list = []
+    pool, clock = _clocked(size=1)
+    other = ViewSpec(readonly_fs=False, readonly_cache=True, timeout=10.0)
+
+    a, _ = pool.acquire(VIEW, _builder(made))
+    pool.release(VIEW, a)
+    clock.advance(100)
+    b, _ = pool.acquire(other, _builder(made))
+    pool.release(other, b)
+
+    assert pool.reap_idle(60) == 1
+    assert a.shutdowns == 1 and b.shutdowns == 0
+    assert _view_key(VIEW) not in pool._idle
+    assert [sb for sb, _ in pool._idle[_view_key(other)]] == [b]
+
+
+def test_reap_idle_shuts_workers_down_outside_the_lock():
+    """A shutdown can wait seconds on a worker's exit, and a concurrent
+    checkout must not queue behind it."""
+    pool, clock = _clocked(size=1)
+    seen: list[bool] = []
+
+    class Slow(FakeSandbox):
+        def shutdown(self) -> None:
+            seen.append(pool._lock.locked())
+            super().shutdown()
+
+    worker, _ = pool.acquire(VIEW, Slow)
+    pool.release(VIEW, worker)
+    clock.advance(10)
+
+    assert pool.reap_idle(0) == 1
+    assert seen == [False]
+
+
+def test_reap_idle_is_a_no_op_on_a_disabled_pool():
+    for pool in (
+        _ViewWorkerPool(0, enabled=True),
+        _ViewWorkerPool(4, enabled=False),
+    ):
+        assert pool.reap_idle(0) == 0
+
+
+def test_reap_idle_is_a_no_op_after_close():
+    made: list = []
+    pool, clock = _clocked(size=2)
+
+    in_flight, _ = pool.acquire(VIEW, _builder(made))
+    pool.close()
+    clock.advance(3600)
+
+    assert pool.reap_idle(0) == 0
+    assert in_flight.shutdowns == 0  # its own release reaps it
+    pool.release(VIEW, in_flight)
+    assert in_flight.shutdowns == 1
+
+
+def test_reap_idle_is_safe_against_concurrent_checkouts():
+    """Reaping while other threads check workers in and out never closes
+    one mid-call and never leaks or double-frees a slot."""
+    import threading
+    import time
+
+    pool = _ViewWorkerPool(3, enabled=True)
+    violations: list[str] = []
+    made: list = []
+    made_lock = threading.Lock()
+
+    class Tracked(FakeSandbox):
+        busy = False
+
+        def shutdown(self) -> None:
+            if self.busy:
+                violations.append("reaped while checked out")
+            super().shutdown()
+
+    def build():
+        sb = Tracked()
+        with made_lock:
+            made.append(sb)
+        return sb
+
+    stop = threading.Event()
+
+    def serve() -> None:
+        while not stop.is_set():
+            with pool.checkout(VIEW, build) as sb:
+                sb.busy = True
+                time.sleep(0.0005)  # hand the reaper a window mid-call
+                sb.busy = False
+
+    def reap() -> None:
+        while not stop.is_set():
+            pool.reap_idle(0)
+
+    threads = [threading.Thread(target=serve) for _ in range(4)]
+    threads.append(threading.Thread(target=reap))
+    for t in threads:
+        t.start()
+    stop.wait(0.5)
+    stop.set()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert not violations
+    key = _view_key(VIEW)
+    idle = len(pool._idle.get(key, []))
+    assert pool._live.get(key, 0) == idle  # nothing checked out, nothing lost
+    assert idle <= 3
+    pool.reap_idle(0)
+    assert all(sb.shutdowns >= 1 for sb in made)  # every worker was closed
+    assert pool._live.get(key, 0) == 0
+
+
 def test_view_key_tolerates_a_list_of_extra_classes():
     """``ViewSpec`` is frozen but stores what it is handed, so
     ``extra_classes`` may be an unhashable list — the same coercion the
@@ -369,8 +606,9 @@ def test_view_calls_reuse_one_worker():
 
 
 def test_a_burst_leaves_only_the_default_resident():
-    """The default is 1, and residency never decays — so what a burst of
-    concurrent requests leaves behind is the whole memory story.
+    """The default is 1, and residency never decays on its own — so what
+    a burst of concurrent requests leaves behind is the whole memory story
+    until the embedder reaps it.
 
     Concurrency, not the cap, decides how many workers exist *during* the
     burst (past the cap they're transient sandboxes). The cap decides how
@@ -398,7 +636,7 @@ def test_a_burst_leaves_only_the_default_resident():
         assert not errors, errors
 
         pool = ws.runtime.executor._pool
-        resident = [sb for group in pool._idle.values() for sb in group]
+        resident = [sb for group in pool._idle.values() for sb, _ in group]
         assert len(resident) == 1
         assert sum(pool._live.values()) == 1  # transients freed their slots too
     finally:
@@ -421,7 +659,7 @@ def test_pooled_worker_is_reaped_on_close():
     ws = _ws("pool-close")
     ws.runtime.exec_python(WHICH_WORKER, view=VIEW)
     pool = ws.runtime.executor._pool
-    resident = [sb for group in pool._idle.values() for sb in group]
+    resident = [sb for group in pool._idle.values() for sb, _ in group]
     assert len(resident) == 1
     # Grab the handle now: shutdown() clears the sandbox's own.
     process = resident[0]._process
@@ -439,7 +677,7 @@ def test_a_worker_that_dies_while_idle_doesnt_poison_the_pool():
         first = ws.runtime.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
 
         resident = next(
-            sb for group in ws.runtime.executor._pool._idle.values() for sb in group
+            sb for group in ws.runtime.executor._pool._idle.values() for sb, _ in group
         )
         # kill+join, not os.kill: SIGKILL is asynchronous, and a checkout
         # racing the death would hand out a worker that is still alive.
@@ -451,6 +689,50 @@ def test_a_worker_that_dies_while_idle_doesnt_poison_the_pool():
         assert result.namespace["pid"] != first
     finally:
         ws.close()
+
+
+def test_reap_idle_closes_a_real_idle_worker():
+    """The runtime surface an embedder schedules, over real workers: an
+    idle worker's process exits, and the next request starts a new one."""
+    ws = _ws("pool-reap")
+    try:
+        first = ws.runtime.exec_python(WHICH_WORKER, view=VIEW).namespace["pid"]
+        pool = ws.runtime.executor._pool
+        (resident,) = [sb for group in pool._idle.values() for sb, _ in group]
+        process = resident._process
+
+        assert ws.runtime.reap_idle(3600) == 0  # younger than an hour: kept
+        assert process.is_alive()
+
+        assert ws.runtime.reap_idle(0) == 1
+        process.join(timeout=5.0)
+        assert not process.is_alive()
+
+        result = ws.runtime.exec_python(WHICH_WORKER, view=VIEW)
+        assert result.error is None
+        assert result.namespace["pid"] != first  # a fresh worker
+        assert sum(pool._live.values()) == 1  # which took the freed slot
+    finally:
+        ws.close()
+
+
+def test_reap_idle_leaves_the_session_worker_alone():
+    ws = _ws("pool-reap-session")
+    try:
+        session_pid = ws.run_python(WHICH_WORKER).namespace["pid"]
+        ws.runtime.exec_python(WHICH_WORKER, view=VIEW)
+
+        assert ws.runtime.reap_idle(0) == 1  # the view worker only
+        assert ws.run_python(WHICH_WORKER).namespace["pid"] == session_pid
+    finally:
+        ws.close()
+
+
+def test_reap_idle_after_close_is_zero():
+    ws = _ws("pool-reap-closed")
+    ws.runtime.exec_python(WHICH_WORKER, view=VIEW)
+    ws.close()
+    assert ws.runtime.reap_idle(0) == 0
 
 
 def test_concurrent_view_calls_stay_correct():

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`ws.runtime.reap_idle(max_age)` drains warm view workers.** Under
+  process/kernel isolation a workspace keeps up to
+  `PythonConfig.warm_view_workers` resident workers per distinct view for
+  apps' handler dispatch, and nothing ever expired an idle one, so a host
+  holding workspaces open for its lifetime paid for every view that had
+  ever served a request — about 113MB a worker on a pandas/plotly
+  policy — until the workspace closed.
+  `Runtime.reap_idle(max_age: float) -> int` closes every view worker
+  that has sat idle for at least `max_age` seconds and returns how many
+  it closed; the next request for
+  that view starts a fresh one, which costs its start and nothing else,
+  since each view call is a fresh execution. A worker mid-request is never
+  touched, the session worker `run_python` runs on is never touched, and
+  shutdowns happen outside the pool's lock, so a concurrent request never
+  waits on one. Nothing calls it for the embedder: an expiry checked on
+  the next request would fire only under traffic, and the memory worth
+  reclaiming is held while nothing happens, so it is a verb to schedule
+  beside `sessions.sweep` and `store.clean`. It returns 0 wherever there
+  is nothing to reap — in-process isolation, a static publication, a
+  closed runtime, `DudExecutor` — so it can be called on every open
+  workspace unconditionally. Executors opt in by defining
+  `reap_idle(max_age) -> int`; `LocalExecutor` does.
+
 ## 0.7.10 - 2026-09-23
 
 ### Added

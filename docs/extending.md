@@ -156,8 +156,8 @@ the parent store base for dir/agentfs (they resolve `<session>/` and
 
 `WorkspaceProvider` says where state *lives*; `Executor` says how code
 *runs* against it. The contract has two capability flags, one optional
-capability object, two lifecycle methods, two execution methods, two
-staging methods and one path mapper. Choosing and configuring one of the two that ship is the
+capability object, two lifecycle methods and an optional reaper, two
+execution methods, two staging methods and one path mapper. Choosing and configuring one of the two that ship is the
 embedder's side, in the [API reference](api.md#executors).
 
 ```python
@@ -167,6 +167,7 @@ app_driver: AppDriver | None   # optional
 
 def open(self, context: ExecutionContext) -> None
 def close(self) -> None
+def reap_idle(self, max_age: float) -> int   # optional
 def exec_python(code, *, inputs=None, stdin=None, argv=None,
                 echo=None, view=None) -> PythonResult
 def exec_shell(script: str) -> TerminalResult
@@ -224,6 +225,17 @@ itself, and a frozen open or a fork builds another for the workspace it
 returns. It is not re-entrant. `close()` must be best-effort and
 idempotent and **must not raise**: the workspace closes its provider
 next regardless.
+
+**`reap_idle(max_age)`** *(optional)* — release whatever the executor
+keeps warm between calls and has left unused for at least `max_age`
+seconds, and return how many it released. `LocalExecutor` closes the
+idle workers of its view pool; nothing checked out is touched, and the
+next call for that view starts a fresh one. The embedder schedules it
+through `Runtime.reap_idle`, which answers 0 for an executor that does
+not define the name — `DudExecutor` does not, since its one guest
+serves every call and nothing sits idle beside it. An executor that
+does define it must make it safe to call from any thread while view
+calls are in flight, and after `close()`.
 
 ### Concurrency
 

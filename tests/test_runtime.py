@@ -339,3 +339,59 @@ def test_an_executor_with_neither_name_ferries_nothing():
     rt = _bare_runtime(OldExecutor())
     assert rt.supports_ws_verbs is False
     assert rt.guest_to_host("/work/a.py") is None
+
+
+# -- reap_idle: the embedder's timer, callable on every rung -------------------
+
+
+def test_reap_idle_delegates_to_an_executor_that_declares_it():
+    class Pooled:
+        def __init__(self):
+            self.asked: list[float] = []
+
+        def reap_idle(self, max_age):
+            self.asked.append(max_age)
+            return 3
+
+    ex = Pooled()
+    rt = _bare_runtime(ex)
+    rt._closed = False
+    assert rt.reap_idle(600) == 3
+    assert ex.asked == [600]
+
+
+def test_reap_idle_is_zero_where_the_executor_has_nothing_to_reap():
+    """An embedder calls it on every open workspace without asking which
+    rung each is on, so an executor that does not declare it answers 0."""
+
+    class OldExecutor:
+        pass
+
+    rt = _bare_runtime(OldExecutor())
+    rt._closed = False
+    assert rt.reap_idle(0) == 0
+
+
+def test_reap_idle_is_zero_in_process(ws):
+    """``isolation="none"`` keeps no view workers, so there is nothing
+    resident to reap however many view calls ran."""
+    view = ViewSpec(readonly_fs=True, readonly_cache=True)
+    ws.runtime.exec_python("x = 1", view=view)
+    assert ws.runtime.reap_idle(0) == 0
+
+
+def test_reap_idle_is_zero_on_a_runtime_that_does_not_execute(ws):
+    from nontainer.executor import NoExecutor
+
+    rt = Runtime(ws, executor=NoExecutor("files only"))
+    try:
+        assert rt.executes is False
+        assert rt.reap_idle(0) == 0
+    finally:
+        rt.close()
+
+
+def test_reap_idle_is_zero_after_close(ws):
+    rt = Runtime(ws)
+    rt.close()
+    assert rt.reap_idle(0) == 0

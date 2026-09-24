@@ -1786,3 +1786,12 @@ def test_a_namespace_grant_installs_only_its_owning_distribution(monkeypatch, tm
     monkeypatch.setattr(metadata, "version", lambda name: "9.9")
 
     assert _packages_from_grants([module]) == ["ns-storage==9.9"]
+
+
+def test_reap_idle_is_zero_and_harmless(ws):
+    """One guest serves every call, so there is no idle worker to reap —
+    but an embedder reaping every open workspace on a timer may call it
+    here too, and the guest must keep working."""
+    assert ws.runtime.reap_idle(0) == 0
+    r = ws.run_python("x = 41 + 1")
+    assert r.error is None and r.namespace["x"] == 42
