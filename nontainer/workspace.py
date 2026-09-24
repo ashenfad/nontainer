@@ -443,14 +443,15 @@ class PythonConfig:
     concurrency falls back to a per-call sandbox rather than queueing,
     so the failure mode of too-low is latency, not errors.
 
-    Too-high is memory, because **residency only rises**. A burst of N
-    concurrent calls leaves ``min(N, warm_view_workers)`` workers resident
-    for the executor's life — the ones past the cap are transient and
-    reaped when their call ends, but those within it are kept. The cap
-    is therefore a floor you fill and keep paying for, per distinct
-    view, per workspace; it is not a ceiling you retreat from. Nothing
-    reaps an idle worker today (see the idle-TTL item in
-    ``docs/design.md``).
+    Too-high is memory, because **residency only rises unless you reap
+    it**. A burst of N concurrent calls leaves ``min(N, warm_view_workers)``
+    workers resident — the ones past the cap are transient and reaped
+    when their call ends, but those within it are kept. Left alone, the
+    cap is therefore a floor you fill and keep paying for, per distinct
+    view, per workspace, for the executor's life.
+    ``ws.runtime.reap_idle(max_age)`` closes the ones idle for
+    ``max_age`` seconds, and an embedder holding workspaces open calls
+    it on a timer; nothing calls it on the embedder's behalf.
 
     ``0`` gives every call a pristine worker. That is the only setting
     with clean process-state semantics: any pool >0 means ``sys.modules``,

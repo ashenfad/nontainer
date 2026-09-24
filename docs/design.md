@@ -537,6 +537,33 @@ question for the day someone actually wants `nontainer-core` on its
 own. Holding the seam now means that day is a repackaging rather than
 a redesign.
 
+## Warm workers expire when the embedder says so
+
+Under process/kernel isolation, a view's resident workers rise toward
+`PythonConfig.warm_view_workers` and, left alone, never decay: the cap
+is a floor you fill and then keep paying for — per distinct view, per
+workspace, and ~113MB apiece on a pandas/plotly policy. At the default
+of 1 that is a small bill. It matters for exactly the embedders told to
+raise it (anyone serving concurrent app traffic), and in a multi-user
+host with many open workspaces it multiplies.
+
+Reaping an idle worker is semantically free, which is what makes it
+worth doing: a view call is a fresh execution, so a rebuilt worker
+loses nothing the contract offers — only warm imports, which cost time
+on the next call, not correctness.
+
+The constraint that shaped it is not obvious: **lazy expiry on checkout
+does not work.** It fires only when there is traffic, and the case that
+matters is memory held while nothing is happening. That left a
+background timer thread — nontainer has none, and adding one to a
+library means every embedder pays for a policy only some of them want —
+or an embedder-driven `Runtime.reap_idle(max_age)` called from a
+periodic task the host already owns. It is the latter, which is how
+the rest of this splits: mechanism here, policy and scheduling with the
+embedder, the same shape as `sessions.sweep` and `store.clean`. It
+answers 0 on every rung with nothing to reap, so an embedder calls it
+across every workspace it holds without branching on the executor.
+
 ## Sandbox honesty
 
 In-process mode (`isolation="none"`) is a walled garden for cooperative
@@ -569,28 +596,5 @@ pitch; the pitch is the *workspace*.
 - **Merge-fn presets** for concurrent sessions over one branch. kvgit
   has the CAS + three-way-merge machinery; shipping opinionated
   defaults doesn't yet.
-- **Idle TTL for view workers.** A view's resident workers only ever
-  *rise* toward `PythonConfig.warm_view_workers` and never decay, so
-  the cap is a floor you fill and then keep paying for — per distinct
-  view, per workspace, and ~113MB apiece on a pandas/plotly policy. At
-  the default of 1 that is a small bill. It matters for exactly the
-  embedders we tell to raise it (see `docs/apps.md`: anyone serving
-  concurrent app traffic), and in a multi-user host with many open
-  workspaces it multiplies.
-
-  Reaping an idle worker is semantically free, which is what makes this
-  attractive: a `run_python` call is a fresh execution, so a rebuilt
-  worker loses nothing the contract offers — only warm imports, which
-  cost time on the next call, not correctness.
-
-  The design constraint worth recording, because it is not obvious:
-  **lazy expiry on checkout does not work.** It fires only when there is
-  traffic, and the case that matters is memory held while nothing is
-  happening. So it needs either a background timer thread — nontainer
-  has none today, and adding one to a library is a real cost — or an
-  embedder-driven `reap_idle(max_age)` called from a periodic task the
-  host already owns. The latter fits how the rest of this splits:
-  mechanism here, policy and scheduling with the embedder.
-
 - **Distribution** — upstreaming a thin `WorkspaceTools` to agno's
   toolkit registry, and an MCP Skill document. Channels, not code.

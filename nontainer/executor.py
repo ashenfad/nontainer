@@ -424,16 +424,26 @@ class _ViewWorkerPool:
       concurrent view calls means N workers alive at once either way —
       ``size`` pooled, the rest transient. So this cap does not bound
       the memory a burst can reach.
-    - **Resident** workers is ``min(N, size)``, and only ever rises
-      toward ``size``: transients are reaped when their call ends,
-      pooled ones are kept. Nothing expires an idle worker, so the cap
-      behaves as a floor that fills and stays filled rather than a
-      ceiling that drains.
+    - **Resident** workers is ``min(N, size)`` after a burst:
+      transients are reaped when their call ends, pooled ones are kept.
+      Left alone, the cap is a floor that fills and stays filled rather
+      than a ceiling that drains.
 
     Bound concurrent view traffic at your own edge if the peak matters;
     nontainer deliberately doesn't, because deciding what to do instead
     of running (503, queue, shed) needs to know what kind of request it
     is, and only the embedder does.
+
+    **Idle workers expire only when asked.** :meth:`reap_idle` closes
+    every idle worker that has sat unused for ``max_age`` seconds, and
+    the embedder schedules it. Expiring lazily at checkout would fire
+    only under traffic, and the memory worth reclaiming is the memory
+    held while nothing is happening; a timer thread of our own would
+    make every executor pay for a policy only the embedder can set.
+    Reaping loses nothing the contract offers — each view call is a
+    fresh execution, so a rebuilt worker costs its start and nothing
+    else. Checkout is LIFO, so under light traffic the same worker
+    stays hot while the rest age out.
 
     **Reuse is visible to handler code.** A pooled worker keeps its
     process state between calls: ``sys.modules``, module globals, and
@@ -446,10 +456,22 @@ class _ViewWorkerPool:
     ``PythonConfig.warm_view_workers=0`` for the old per-call semantics.
     """
 
-    def __init__(self, size: int, *, enabled: bool) -> None:
+    def __init__(
+        self,
+        size: int,
+        *,
+        enabled: bool,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._size = size if enabled else 0
         self._lock = threading.Lock()
-        self._idle: dict[tuple, list[Any]] = {}
+        # Monotonic, so a wall-clock step never makes a worker look
+        # older or younger than it is.
+        self._clock = clock
+        # Each idle worker with the moment it went idle, in release
+        # order: checkout pops from the end, so the front holds the
+        # workers that have waited longest.
+        self._idle: dict[tuple, list[tuple[Any, float]]] = {}
         # Live count includes checked-out workers, so the cap bounds
         # RESIDENT processes rather than idle ones.
         self._live: dict[tuple, int] = {}
@@ -510,7 +532,7 @@ class _ViewWorkerPool:
         with self._lock:
             idle = self._idle.get(key)
             while idle:
-                sandbox = idle.pop()
+                sandbox, _ = idle.pop()
                 if _worker_alive(sandbox):
                     return sandbox, True
                 # A worker that died between calls (crash, OOM, seccomp
@@ -548,7 +570,7 @@ class _ViewWorkerPool:
         alive = _worker_alive(sandbox)
         with self._lock:
             if alive and not self._closed:
-                self._idle.setdefault(key, []).append(sandbox)
+                self._idle.setdefault(key, []).append((sandbox, self._clock()))
                 return
             self._live[key] = self._live.get(key, 1) - 1
         _shutdown_quietly(sandbox)
@@ -558,11 +580,52 @@ class _ViewWorkerPool:
         by their own :meth:`release` — the flag makes that terminal."""
         with self._lock:
             self._closed = True
-            idle = [sb for group in self._idle.values() for sb in group]
+            idle = [sb for group in self._idle.values() for sb, _ in group]
             self._idle.clear()
             self._live.clear()
         for sandbox in idle:
             _shutdown_quietly(sandbox)
+
+    def reap_idle(self, max_age: float) -> int:
+        """Close every idle worker unused for at least ``max_age``
+        seconds; returns how many were closed.
+
+        Checked-out workers are never touched: only the idle set is
+        read, and a worker leaves it the moment a checkout takes it.
+        Each reaped worker gives its slot back, so the next call for
+        that view builds a fresh one. A view left with no workers at
+        all drops out of the bookkeeping entirely. ``max_age <= 0``
+        reaps every idle worker.
+
+        Workers are chosen under the lock and shut down outside it:
+        a shutdown may wait seconds on a worker's exit, and a
+        concurrent checkout must not queue behind that. A disabled or
+        closed pool holds no idle workers and returns 0.
+        """
+        if self._size <= 0:
+            return 0
+        reaped: list[Any] = []
+        with self._lock:
+            if self._closed:
+                return 0
+            now = self._clock()
+            for key in list(self._idle):
+                keep: list[tuple[Any, float]] = []
+                for sandbox, since in self._idle[key]:
+                    if now - since >= max_age:
+                        reaped.append(sandbox)
+                        self._live[key] -= 1
+                    else:
+                        keep.append((sandbox, since))
+                if keep:
+                    self._idle[key] = keep
+                else:
+                    del self._idle[key]
+                if self._live.get(key) == 0:
+                    del self._live[key]
+        for sandbox in reaped:
+            _shutdown_quietly(sandbox)
+        return len(reaped)
 
 
 # ----------------------------------------------------------------------
@@ -581,7 +644,8 @@ class LocalExecutor:
     sandbox forks a persistent worker at :meth:`open` and reaps it at
     :meth:`close`; view calls (apps' handler dispatch) draw resident
     workers from a :class:`_ViewWorkerPool` reaped at the same time,
-    rather than forking one per call.
+    rather than forking one per call. :meth:`reap_idle` closes the idle
+    ones sooner, when the embedder asks.
     """
 
     # termish takes the injected mapping directly (see exec_shell), so
@@ -634,6 +698,18 @@ class LocalExecutor:
                 shutdown()
             except Exception:
                 pass  # best-effort by contract: the provider closes next
+
+    def reap_idle(self, max_age: float) -> int:
+        """Close view workers idle for at least ``max_age`` seconds;
+        returns how many were closed.
+
+        Only the view pool is reaped. The session worker, which serves
+        ``run_python``, is held from :meth:`open` to :meth:`close` and
+        is not touched. Safe to call from any thread at any time,
+        before :meth:`open` and after :meth:`close` included, where
+        there is nothing to reap.
+        """
+        return self._pool.reap_idle(max_age)
 
     def guest_to_host(self, guest_path: str) -> str | None:
         """Always ``None``: execution is in-process, so a path has one

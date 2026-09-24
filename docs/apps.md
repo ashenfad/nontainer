@@ -911,7 +911,9 @@ app.mount("/apps", router)      # serves /apps/{token}/...
   loop, not for traffic. Two corollaries: concurrency, not the cache
   size, decides how many workers exist at once (so bound concurrent
   traffic at your edge if worker memory matters), and what stays warm
-  afterwards is never reaped.
+  afterwards stays until you reap it: `ws.runtime.reap_idle(max_age)`
+  on the workspace `resolve` caches, called from a timer, closes the
+  workers idle that long (see [`Runtime`](api.md#runtime-wsruntime)).
 
   **Prefer `preload_grants=True` with `warm_view_workers=0` where your
   grants allow it.** Preloading puts the granted stack in the forkserver

@@ -609,6 +609,34 @@ class Runtime:
     # lifecycle
     # ------------------------------------------------------------------
 
+    def reap_idle(self, max_age: float) -> int:
+        """Release execution resources that have sat idle for at least
+        ``max_age`` seconds; returns how many were released.
+
+        On ``LocalExecutor`` that is the resident view workers apps'
+        handler dispatch keeps warm (``PythonConfig.warm_view_workers``):
+        each one idle that long is closed, and the next call for its
+        view starts a fresh one. Nothing checked out is touched, and
+        neither is the session worker serving ``run_python``.
+
+        Nothing calls this for the embedder. Expiring a worker when the
+        next call arrives would fire only under traffic, and the memory
+        worth reclaiming is the memory held while nothing is happening,
+        so the embedder schedules it on a timer it already owns — beside
+        ``sessions.sweep`` and ``store.clean``. It may block while
+        workers exit, so an event-loop host runs it in a thread.
+
+        Returns 0 wherever there is nothing idle to release: a closed
+        runtime, a runtime that does not execute, and an executor that
+        does not declare ``reap_idle`` (``DudExecutor``, whose one guest
+        serves every call). So it is safe to call on every open
+        workspace without asking which rung each is on.
+        """
+        if self._closed:
+            return 0
+        reap = getattr(self._executor, "reap_idle", None)
+        return int(reap(max_age)) if reap is not None else 0
+
     def close(self) -> None:
         """Release execution resources. Idempotent. Settles a pending
         sync first: a closing executor may park its tree tagged with
