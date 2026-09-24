@@ -7,46 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- **BREAKING — the `agno` extra now requires agno 3 (`agno>=3.0.0`).**
-  The workspace rewind below has to tell a retry of a run from a new
-  run, and that takes the run id. agno 3 hands a pre hook
-  `run_context`, whose `run_id` stays the same across a run's retry
-  attempts. agno 2.1, the previous floor, hands a pre hook only
-  `run_input`, `agent`, `session`, `user_id` and `debug_mode`, with no
-  run context at all, so there is nothing there to key the rewind on.
-  Later 2.x releases grew a run context, but unevenly — on 2.2.7
-  `arun()` does not retry a provider error at all — so the floor is
-  the first release of the major where all of it holds: 3.0.0, which
-  passes the full suite. CI's `agno-versions` job now pins that floor
-  instead of 2.1.0.
-
 ### Added
-- **`tk.begin_turn` rewinds the workspace when agno retries a run.**
-  agno's run-level retry (`Agent(retries=N)`) restarts a failed run
-  from the user message: the next attempt rebuilds its messages from
-  the stored history, so every tool call the failed attempt made is
-  gone from the model's memory, while every file those calls wrote is
-  still in the workspace. That breaks the promise that files and
-  memory move together — with a `session_db` the conversation is in
-  the same branch, and the two now disagree — and the model goes on to
-  build a second, divergent version beside the first. The pre hook now
-  records the head on a run's first attempt and, on a later attempt
-  under the same run id, restores the whole session to it:
-  `ws.checkout(anchor)` when the head moved (`commit="call"`, or
-  anything that committed mid-attempt), `ws.discard()` when the head
-  did not move but writes are uncommitted (`commit="turn"`, a
-  `session_db`), nothing when there is nothing to undo. The checkout
-  appends, so the abandoned attempt's commits stay in `ws.log()`. A
-  run that begins with uncommitted writes has no commit describing its
-  start, so it is not rewound: the hook neither commits on the
-  embedder's behalf nor destroys those writes, and a retry logs one
-  warning saying so. Frozen and unversioned workspaces are left alone.
-  Re-queuing the notes the failed attempt delivered is unchanged, and
-  it shares the hook because both jobs answer the same fact: this
-  attempt replaces one the model will never remember. `tk.abegin_turn` is the spelling for `arun()`: agno's async
-  loop calls a sync pre hook inline on the event loop, and a restore
-  rewrites the tree, so the async spelling does it on a worker thread.
+- **`keep_aborted_run` keeps a failed or stopped run in the agent's
+  memory.** agno's history builder skips runs whose status is error or
+  cancelled, so a run cut short by a provider failure or a stop vanished
+  from what the model is shown next turn while every file its tool calls
+  wrote stayed in the workspace — memory and files disagreeing, which is
+  the divergence nontainer exists to prevent, and a model that cannot
+  remember its own work confabulates around it. The workspace already
+  treats an abort as an interrupt (nothing is undone, because undoing
+  cannot safely tell the attempt's writes from a host's concurrent
+  ones); `keep_aborted_run(db, session_id, run_id, note)` in
+  `nontainer.adapters.agno` makes the conversation match. It marks the
+  run completed and closes it with `[turn aborted early: {note} — the
+  work above this point is real and completed]`, so the model keeps
+  what it did and knows the turn ended early. agno 2.x stores runs
+  inline and `upsert_session` carries the change; agno 3 stores runs in
+  a table of their own, so the run also goes through `upsert_run`, and
+  a db that has not moved to that table (`NotImplementedError`) is
+  skipped the way agno's own storage layer skips it. Returns whether it
+  changed anything. Call it once the embedder has stopped trying to
+  finish the run — after any in-place resume, since it marks the run
+  completed.
+- **`tk.begin_turn` warns when agno restarts a run.** A run-level retry
+  (`Agent(retries=N)`) rebuilds the run from the user message and
+  forgets the failed attempt's tool calls, while the files they wrote
+  stay. On agno releases that hand pre hooks a `run_context`, a run id
+  seen twice is that restart, and the hook logs one warning per run
+  naming the fix: `Agent(retries=0)`, with `retries` set on the model
+  (`Model.retries`, default 0) to absorb transient provider errors,
+  since it retries one model call and keeps the turn's tool results. Nothing is undone; without a `run_context`
+  the hook only re-queues notes, as before.
 
 ## 0.7.9 - 2026-09-22
 

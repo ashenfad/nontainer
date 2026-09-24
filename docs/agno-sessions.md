@@ -281,8 +281,8 @@ The store path is the same `store=` the embedder passes to
 
 ## agno assumptions this rides on
 
-Checked on agno 3.0.0 and 3.0.11; CI's `agno-versions` job runs the
-session-db tests on the declared floor, and the main matrix on the latest.
+Checked on agno 2.6.22 and 3.0.1; CI's `agno-versions` matrix should
+add the session-db tests so a bump re-checks them.
 
 - `BaseDb` session methods and signatures: `get_session`,
   `get_sessions`, `upsert_session`, `upsert_sessions`,
