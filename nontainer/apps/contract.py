@@ -359,6 +359,11 @@ def _convert(value: Any) -> Any:
             return float(value / np.timedelta64(1, "s"))
         if isinstance(value, (np.bool_, np.integer, np.floating)):
             native = value.item()
+            # An extended-precision float (longdouble on x86) has no
+            # lossless native equivalent, so .item() returns it
+            # unchanged; the consumer reads a double either way.
+            if isinstance(value, np.floating) and not isinstance(native, float):
+                native = float(value)
             if isinstance(native, float) and not _math.isfinite(native):
                 return None
             return native
@@ -395,7 +400,11 @@ _FINAL = _json.JSONEncoder(allow_nan=False)
 
 
 def _clean_key(key: Any) -> Any:
-    if isinstance(key, (str, int, float)) or key is None:
+    # A non-finite float key becomes null like a non-finite value, which
+    # the encoder writes as the key "null".
+    if isinstance(key, float):
+        return float(key) if _math.isfinite(key) else None
+    if isinstance(key, (str, int)) or key is None:
         return key
     try:
         converted = _convert(key)
@@ -486,4 +495,9 @@ def encode_json(value: Any) -> bytes:
         raise TypeError(f"${''.join(reversed(e.path))}: {e.message}") from None
     except RecursionError:
         raise TypeError("return value is nested too deeply to encode as JSON") from None
-    return _FINAL.encode(cleaned).encode()
+    try:
+        return _FINAL.encode(cleaned).encode()
+    except ValueError as e:
+        # The walk leaves nothing the strict encoder refuses; if it ever
+        # does, it surfaces as the refusal dispatch reports, not a crash.
+        raise TypeError(f"return value is not JSON-encodable: {e}") from None
