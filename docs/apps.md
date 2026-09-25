@@ -121,6 +121,29 @@ def post(req):
   paths. Anything else → 500 + logged. Response headers are
   allowlisted on the way out (content/caching metadata plus `x-*`); see
   the CSP section below for what is dropped and why.
+- **JSON encoding** (a `dict`/`list` return, or one as a `Response`
+  body) takes the data stack's values at any depth, so a handler can
+  return `df.to_dict("records")` as it is:
+
+  | Value | JSON |
+  |---|---|
+  | numpy bool / integer / floating scalar | the native value |
+  | numpy array | nested lists |
+  | `datetime`, `date`, `time`, pandas `Timestamp`, numpy `datetime64` | ISO 8601 string, offset kept when present |
+  | `timedelta`, pandas `Timedelta`, numpy `timedelta64` | total seconds (number) |
+  | `Decimal` | number (a JavaScript client parses it to a double either way) |
+  | NaN, ±Infinity (Python or numpy), `pd.NaT`, `pd.NA`, `None` | `null` |
+  | tuple | array |
+  | `set`, `DataFrame`, anything else | refused: 500 + logged |
+
+  Durations are seconds rather than ISO 8601 (`PT1M30S`) because a
+  browser adds seconds to a `Date` with arithmetic and needs a library
+  to parse a duration string. Dict keys may be anything that encodes to
+  a string, number or null (a `Timestamp` key from
+  `series.to_dict()` becomes its ISO string). A refusal names the path
+  to the value, in the response's `error` and the `BAD RETURN` line of
+  `api.log`: `$.rows[3].when: DataFrame is not JSON-encodable (return
+  .to_dict("records"), or bytes with a content-type)`.
 - **Structural REST (authoring)**: `get` handlers execute against a
   read-only filesystem view (`ReadOnlyFS`) — a GET that writes gets a
   `PermissionError`, which teaches the agent better than a style rule.

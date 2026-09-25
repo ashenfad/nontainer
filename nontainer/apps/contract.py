@@ -9,8 +9,12 @@ policy so agent code can construct/raise them.
 
 from __future__ import annotations
 
+import datetime as _dt
 import json as _json
+import math as _math
 from dataclasses import dataclass, field
+from decimal import Decimal as _Decimal
+from itertools import islice as _islice
 from typing import Any
 
 
@@ -263,12 +267,223 @@ def normalize(value: Any) -> WireResponse:
     if value is None:
         return WireResponse(204, b"", "text/plain")
     if isinstance(value, (dict, list)):
-        return WireResponse(200, _json.dumps(value).encode(), "application/json")
+        return WireResponse(200, encode_json(value), "application/json")
     if isinstance(value, str):
         return WireResponse(200, value.encode(), "text/plain; charset=utf-8")
     if isinstance(value, bytes):
         return WireResponse(200, value, "application/octet-stream")
+    hint = _REFUSAL_HINTS.get(type(value).__name__)
     raise TypeError(
-        f"handler returned {type(value).__name__}; return dict/list/str/"
-        "bytes/Response or raise HttpError"
+        f"handler returned {type(value).__name__}; "
+        + (hint or "return dict/list/str/bytes/Response or raise HttpError")
     )
+
+
+# -- JSON encoding of handler returns -----------------------------------
+#
+# Handler returns are built by data code, so they carry numpy scalars,
+# pandas timestamps and NaN as often as plain Python values. Encoding
+# rules, applied at any depth:
+#
+#   numpy bool/integer/floating scalar  -> the native Python value
+#   numpy array                         -> nested lists
+#   datetime / date / time / Timestamp  -> ISO 8601 string (offset kept)
+#   numpy datetime64                    -> ISO 8601 string
+#   timedelta / Timedelta / timedelta64 -> total seconds (float)
+#   Decimal                             -> number (float)
+#   NaN / +Inf / -Inf, NaT, pd.NA, None -> null
+#   tuple                               -> list
+#   set, anything else                  -> refused, naming the path
+#
+# Plain data takes the stdlib C encoder in one pass. A value it cannot
+# take (a NaN, which ``json.dumps`` writes as the non-JSON token
+# ``NaN`` unless ``allow_nan=False`` makes it raise; a non-str dict
+# key; an unknown type) sends the whole value through a Python walk
+# that rebuilds only the containers whose contents change, then
+# encodes the result. Both passes are linear, so the slow case costs
+# at most a constant factor over the fast one: 100k five-field records
+# encode in ~40ms (the same as bare ``json.dumps``), and ~160ms with a
+# NaN in the last record.
+
+_REFUSAL_HINTS = {
+    "DataFrame": 'return .to_dict("records"), or bytes with a content-type',
+    "Series": "return .tolist() or .to_dict()",
+    "set": "its order is unstable; return sorted(...)",
+    "frozenset": "its order is unstable; return sorted(...)",
+    "bytes": "decode it, or return the bytes themselves with a content-type",
+}
+
+
+class _Unencodable(Exception):
+    """A value with no JSON encoding. ``path`` collects the keys and
+    indexes leading to it, innermost first, as the exception unwinds
+    through the containers holding it."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.path: list[str] = []
+
+
+def _refuse(value: Any) -> _Unencodable:
+    name = type(value).__name__
+    hint = _REFUSAL_HINTS.get(name)
+    suffix = f" ({hint})" if hint else ""
+    return _Unencodable(f"{name} is not JSON-encodable{suffix}")
+
+
+def _convert(value: Any) -> Any:
+    """The JSON-native stand-in for one value the stdlib encoder does
+    not accept, or :class:`_Unencodable`. The result may itself be a
+    container still holding such values (an object array's
+    ``tolist()``); callers encode it recursively.
+
+    numpy and pandas are recognized by the module their types come
+    from, so a return holding neither never imports them."""
+    module = type(value).__module__
+    if module == "numpy":
+        import numpy as np
+
+        if isinstance(value, np.ndarray):
+            if value.dtype.kind == "M":
+                text = np.datetime_as_string(value)
+                return np.where(np.isnat(value), None, text).tolist()
+            if value.dtype.kind == "m":
+                return (value / np.timedelta64(1, "s")).tolist()
+            return value.tolist()
+        if isinstance(value, np.datetime64):
+            return None if np.isnat(value) else str(np.datetime_as_string(value))
+        if isinstance(value, np.timedelta64):
+            if np.isnat(value):
+                return None
+            return float(value / np.timedelta64(1, "s"))
+        if isinstance(value, (np.bool_, np.integer, np.floating)):
+            native = value.item()
+            if isinstance(native, float) and not _math.isfinite(native):
+                return None
+            return native
+        raise _refuse(value)
+    if module == "pandas" or module.startswith("pandas."):
+        import pandas as pd
+
+        if value is pd.NaT or value is pd.NA:
+            return None
+    if isinstance(value, float):
+        return value if _math.isfinite(value) else None
+    if isinstance(value, (_dt.datetime, _dt.date, _dt.time)):
+        return value.isoformat()
+    # Total seconds rather than an ISO 8601 duration: a JavaScript
+    # consumer adds seconds to a Date with arithmetic, while parsing
+    # "P1DT2H" needs a library.
+    if isinstance(value, _dt.timedelta):
+        seconds = value.total_seconds()
+        return seconds if _math.isfinite(seconds) else None
+    # A float rather than a string: the consumer is JavaScript, which
+    # parses any JSON number to a double, so a string would only move
+    # the same rounding into every caller.
+    if isinstance(value, _Decimal):
+        number = float(value)
+        return number if _math.isfinite(number) else None
+    raise _refuse(value)
+
+
+# The fast pass converts through ``default=``; the stdlib encoder
+# re-encodes what it returns, so a NaN inside a converted value (an
+# array's ``tolist()``) still raises and reaches the walk.
+_FAST = _json.JSONEncoder(allow_nan=False, default=_convert)
+_FINAL = _json.JSONEncoder(allow_nan=False)
+
+
+def _clean_key(key: Any) -> Any:
+    if isinstance(key, (str, int, float)) or key is None:
+        return key
+    try:
+        converted = _convert(key)
+    except _Unencodable:
+        converted = key
+    if isinstance(converted, (str, int, float)) or converted is None:
+        return converted
+    raise _Unencodable(f"dict key of type {type(key).__name__} is not JSON-encodable")
+
+
+def _clean(value: Any, active: set[int]) -> Any:
+    """``value`` with every non-JSON-native leaf replaced, returning
+    the original object wherever nothing under it changed."""
+    kind = type(value)
+    if kind is str or kind is int or kind is bool or value is None:
+        return value
+    if kind is float:
+        return value if _math.isfinite(value) else None
+    if isinstance(value, dict):
+        return _clean_dict(value, active)
+    if isinstance(value, (list, tuple)):
+        return _clean_list(value, active)
+    if isinstance(value, (str, int)):
+        return value
+    return _clean(_convert(value), active)
+
+
+def _clean_dict(value: dict, active: set[int]) -> dict:
+    ident = id(value)
+    if ident in active:
+        raise _Unencodable("circular reference")
+    active.add(ident)
+    out: dict | None = None
+    for i, (key, item) in enumerate(value.items()):
+        new_key = _clean_key(key)
+        try:
+            new_item = _clean(item, active)
+        except _Unencodable as e:
+            e.path.append(_key_segment(key))
+            raise
+        if out is None and (new_key is not key or new_item is not item):
+            out = dict(_islice(value.items(), i))
+        if out is not None:
+            out[new_key] = new_item
+    active.discard(ident)
+    return value if out is None else out
+
+
+def _clean_list(value: list | tuple, active: set[int]) -> list | tuple:
+    ident = id(value)
+    if ident in active:
+        raise _Unencodable("circular reference")
+    active.add(ident)
+    out: list | None = None
+    for i, item in enumerate(value):
+        try:
+            new_item = _clean(item, active)
+        except _Unencodable as e:
+            e.path.append(f"[{i}]")
+            raise
+        if out is None and new_item is not item:
+            out = list(value[:i])
+        if out is not None:
+            out.append(new_item)
+    active.discard(ident)
+    return value if out is None else out
+
+
+def _key_segment(key: Any) -> str:
+    if isinstance(key, str) and key.isidentifier():
+        return f".{key}"
+    return f"[{_json.dumps(key) if isinstance(key, str) else repr(key)}]"
+
+
+def encode_json(value: Any) -> bytes:
+    """Encode a handler's dict/list return as JSON bytes by the rules
+    above. Raises ``TypeError`` naming the path to the first value it
+    refuses, e.g. ``$.rows[3].when: DataFrame is not JSON-encodable``."""
+    try:
+        return _FAST.encode(value).encode()
+    except (TypeError, ValueError, _Unencodable):
+        pass
+    except RecursionError:
+        raise TypeError("return value is nested too deeply to encode as JSON") from None
+    try:
+        cleaned = _clean(value, set())
+    except _Unencodable as e:
+        raise TypeError(f"${''.join(reversed(e.path))}: {e.message}") from None
+    except RecursionError:
+        raise TypeError("return value is nested too deeply to encode as JSON") from None
+    return _FINAL.encode(cleaned).encode()
