@@ -112,18 +112,21 @@ def post(req):
 ```
 
 - **Request** is a frozen dataclass: `method`, `path`, `params`
-  (query, str→str), `headers` (allowlisted subset), `body: bytes`,
+  (query, str→str), `headers` (allowlisted subset, lowercased names), `body: bytes`,
   `json` (lazy parse), plus `require(name, type)` sugar → clean 400s.
   It is picklable data — it crosses the sandbox boundary as an input.
 - **Liberal returns**: `dict`/`list` → JSON 200 · `str` → text/html by
-  extension sniff · `bytes` → octet-stream · `Response(status=, body=,
-  headers=)` for control · `raise HttpError(404, "msg")` for error
-  paths. Anything else → 500 + logged. Response headers are
+  extension sniff · `bytes` → octet-stream · a table (`DataFrame`,
+  `Series`, pyarrow `Table`, anything with `__arrow_c_stream__`) → JSON
+  rows, or an Arrow stream when the request asks for one (see [Table
+  returns](#table-returns)) · `Response(status=, body=, headers=)` for
+  control · `raise HttpError(404, "msg")` for error paths. Anything
+  else → 500 + logged. Response headers are
   allowlisted on the way out (content/caching metadata plus `x-*`); see
   the CSP section below for what is dropped and why.
 - **JSON encoding** (a `dict`/`list` return, or one as a `Response`
   body) takes the data stack's values at any depth, so a handler can
-  return `df.to_dict("records")` as it is:
+  return `{"rows": df, "total": len(df)}` as it is:
 
   | Value | JSON |
   |---|---|
@@ -134,7 +137,8 @@ def post(req):
   | `Decimal` | number (a JavaScript client parses it to a double either way) |
   | NaN, ±Infinity (Python or numpy), `pd.NaT`, `pd.NA`, `None` | `null` |
   | tuple | array |
-  | `set`, `DataFrame`, anything else | refused: 500 + logged |
+  | a table (`DataFrame`, `Series`, pyarrow `Table`, `__arrow_c_stream__`) | its rows: an array of objects (see [Table returns](#table-returns)) |
+  | `set`, anything else | refused: 500 + logged |
 
   Durations are seconds rather than ISO 8601 (`PT1M30S`) because a
   browser adds seconds to a `Date` with arithmetic and needs a library
@@ -142,11 +146,14 @@ def post(req):
   a string, number or null (a `Timestamp` key from
   `series.to_dict()` becomes its ISO string). A refusal names the path
   to the value, in the response's `error` and the `BAD RETURN` line of
-  `api.log`: `$.rows[3].when: DataFrame is not JSON-encodable (return
-  .to_dict("records"), or bytes with a content-type)`.
+  `api.log`: `$.rows[3].tags: set is not JSON-encodable (its order is
+  unstable; return sorted(...))`.
 - **Status**: a `Response` status, or an `HttpError`'s, must be an
   integer from 100 to 599; anything else is refused like an
   unencodable return (500 + `BAD RETURN` in the log).
+- **Size**: a text body (JSON, `text/*`, XML, JavaScript) is capped at
+  `max_response_bytes` (10 MB) and any other body at
+  `max_binary_response_bytes` (32 MB); see [Response size](#response-size).
 - **Structural REST (authoring)**: `get` handlers execute against a
   read-only filesystem view (`ReadOnlyFS`) — a GET that writes gets a
   `PermissionError`, which teaches the agent better than a style rule.
@@ -164,6 +171,109 @@ def post(req):
   which owns its own concurrency (serving is lock-free). Tell the agent
   about the injected store with a **primer** (see the adapters). The
   `webapp` example shows the whole pattern.
+
+### Table returns
+
+A handler may return a table as the whole response:
+
+```python
+def get(req):
+    df = load_sales()
+    return df.groupby("year")["revenue"].sum()   # a Series: columns year, revenue
+```
+
+| Returned | Request's `Accept` | Response |
+|---|---|---|
+| `DataFrame`, `Series`, pyarrow `Table`, or an object with `__arrow_c_stream__` (polars, a DuckDB relation, ...) | lists `application/vnd.apache.arrow.stream` | an Arrow IPC **stream** (`application/vnd.apache.arrow.stream`) |
+| the same | anything else, or none | JSON rows: `[{"year": 2023, "revenue": 1.5e6}, ...]`, the shape of `df.to_dict("records")`, encoded by the rules above (NaN → `null`, dates → ISO 8601) |
+| a table nested in a `dict`/`list` (`{"rows": df, "total": 42}`) | any | JSON, the table as its rows; Arrow applies only to a table that is the whole return |
+
+- **Negotiation** reads `Accept` as HTTP defines it: media ranges,
+  `q` values, `*/*`. Arrow is chosen only when the Arrow type is named
+  with `q` above 0 and JSON is not ranked above it, so `*/*` (what a
+  browser's `fetch` sends by default) gets JSON. A `dict` return asked
+  for as Arrow is still JSON: `Accept` is a preference.
+- **`Vary: Accept`** is on every response to a table return, since
+  its body depends on that header. A `Response(body=df, headers=...)`
+  keeps its own `Vary` and gains `Accept`. Other returns do not vary.
+- **The index** follows one rule for JSON rows and Arrow alike: a
+  default `RangeIndex` (0, 1, 2, ..., unnamed) is dropped; any other
+  index becomes columns, named as `reset_index()` names them (the
+  index's name, or `index` when unnamed; one column per level of a
+  `MultiIndex`). `df.groupby("year")["v"].sum()` gives columns `year`,
+  `v`. A `Series` is one column named after it; an unnamed one is
+  named `0`, as `to_frame()` names it. JSON rows are built with pandas
+  alone, so they never need pyarrow; Arrow converts the same frame, so
+  both carry the same columns. A frame with duplicate column names, or
+  `MultiIndex` columns, has no row form and is refused.
+- **pyarrow** is needed for Arrow output, where the handler runs. When
+  Arrow is requested and pyarrow cannot be imported there, the answer
+  is **406**, never a silent fallback to JSON, with the error body and
+  `api.log` line saying `Arrow was requested, but pyarrow is not
+  available to this app's handlers: install pyarrow where they run, or
+  request JSON`. JSON rows for a pandas `DataFrame`/`Series` still work
+  without it. An `__arrow_c_stream__` object needs pyarrow to be read at
+  all, so returned without it and asked for as JSON, it is a bad return
+  (500 + `BAD RETURN`) naming pyarrow.
+
+A page asks for Arrow with the header, and decodes with the
+[apache-arrow](https://www.npmjs.com/package/apache-arrow) JS library:
+
+```js
+import { tableFromIPC } from "apache-arrow";
+
+const res = await fetch("api/sales", {
+  headers: { Accept: "application/vnd.apache.arrow.stream" },
+});
+if (!res.ok) throw new Error((await res.json()).error);
+const table = tableFromIPC(await res.arrayBuffer());
+```
+
+apache-arrow is not built in: the embedder provides it to pages, as a
+[vendored
+asset](#vendored-assets-files-served-with-the-app-absent-from-the-workspace)
+or from an allowed script host, and says so in `frontend_notes`. `ws-curl` saves a stream with `-o`:
+`ws-curl -H 'Accept: application/vnd.apache.arrow.stream' -o
+sales.arrow $APP_ORIGIN/api/sales`.
+
+### Response size
+
+Two caps, both set by the embedder on `AppsConfig` and neither
+reachable from handler code:
+
+| Body | Cap | Default |
+|---|---|---|
+| text: `text/*`, JSON, XML, JavaScript (including `+json` / `+xml` types) | `max_response_bytes` | 10 MB |
+| anything else: images, `application/octet-stream`, an Arrow stream | `max_binary_response_bytes` | 32 MB |
+
+Text versus binary is decided by the media type, by the same rule
+`ws-curl` uses to decide whether a body is text. The caps are enforced
+inside the handler's sandbox, right after the return is encoded, so an
+oversized body never crosses back; the host checks again, which holds a
+handler that replaced the encoder to the same caps. Over a cap, the
+request answers 500, and the message, in the response and in
+`api.log`, says what to do instead:
+
+```
+JSON response is 12.3 MB, over the 10 MB limit for text: aggregate or paginate on the server, or return a table and request Arrow (limit 32 MB)
+Arrow response is 40 MB, over the 32 MB limit for binary responses: filter or paginate on the server
+```
+
+An executor may carry only so much back from one execution, and
+declares it (`Runtime.view_result_limit`). The effective cap is the
+smaller of the configured one and that ceiling, and the message names
+the ceiling when it is the one that binds (`... over the 6.3 MB this
+executor can carry ...`). `LocalExecutor` has no ceiling.
+`DudExecutor` sizes its transport to the caps for each handler
+execution, up to 64 MiB of body, so the defaults work there unchanged.
+
+Declared `static_assets` are exempt; a static file from the workspace
+is held to the caps like a handler's body.
+
+`ws-curl` on a `DudExecutor` prints at most 768 KiB of body to stdout,
+which is the frame its answer rides back into the guest on. A larger
+body, or any binary one, belongs in a file: `ws-curl -o out.json ...`
+writes it to the workspace whatever its size.
 
 ## Execution model (how a handler actually runs)
 
@@ -220,7 +330,8 @@ back to the host is one tuple of primitives:
 
 ```
 ("nt-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes)
-("nt-refused/1", message: str)     # a return the rules above refuse
+("nt-refused/1", message: str)         # a return the rules above refuse (500)
+("nt-not-acceptable/1", message: str)  # Arrow asked for, pyarrow missing (406)
 ```
 
 So a handler answers with the **same bytes on every executor** —
@@ -241,16 +352,23 @@ comes back either way.
 The host reads only that tuple, and checks it strictly: exact built-in
 types throughout, a status from 100 to 599, headers `str` to `str`, a
 `bytes` body. A refusal is logged as `BAD RETURN: ...` and answers 500
-with the message; anything else that is not a response (the tuple
-missing, or replaced by handler code) answers 500 with an `ERROR` line
-in the log, and is never an exception out of dispatch. Header filtering
-and `max_response_bytes` apply after, as for any response.
+with the message; a not-acceptable is logged as `NOT ACCEPTABLE: ...`
+and answers 406 with `Vary: Accept`; anything else that is not a
+response (the tuple missing, or replaced by handler code) answers 500
+with an `ERROR` line in the log, and is never an exception out of
+dispatch. The size caps are checked again on the host, and header
+filtering applies after, as for any response.
+
+The trailer carries the request's `Accept` header and the size caps
+into the encoder. The caps are literals in the trailer's source, not
+inputs, so no name the handler can bind changes them.
 
 An executor may have its own ceiling on what one execution carries
-back. `DudExecutor`'s is 8 MiB per value on the wire, which the body
-reaches base64-encoded, so about 6 MB of body: far over the 2 MB
-`max_response_bytes` default, but an embedder raising that cap past it
-gets a 500 whose log line says no response came back.
+back. dud caps each value on the wire at 8 MiB by default, which a body
+reaches base64-encoded, so about 6.29 MB of body. `DudExecutor` asks
+dud for caps sized to the configured response caps on every handler
+execution (`ViewSpec.result_bytes`), up to 64 MiB of body, and
+declares that as its ceiling (see [Response size](#response-size)).
 
 On a VM rung the guest has no nontainer installed, so the encoder
 arrives the way the contract classes do: as the source of
@@ -371,10 +489,9 @@ What follows from that:
   collision is noted in `api.log` rather than shadowed silently — an
   agent that writes `app/vendor/lib.js` and sees no change would
   otherwise debug the app.
-- **They are exempt from `max_response_bytes`.** That cap catches a
+- **They are exempt from the response-size caps.** Those catch a
   handler returning something runaway; an asset's size is a decision the
-  embedder already made, and a charting bundle clears the 2MB default on
-  its own.
+  embedder already made.
 - **Readable ≠ servable.** A minified bundle teaches an agent nothing,
   so if it needs to *understand* a private library, ship a curated API
   surface — a components manifest, a props cheatsheet, a working example

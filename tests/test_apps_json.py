@@ -340,17 +340,11 @@ def test_pandas_records_and_series_dict():
     }
 
 
-def test_dataframe_refused_with_path_and_hint():
+def test_nested_dataframe_encodes_as_rows():
     pd = pytest.importorskip("pandas")
-    value = {"rows": [{}, {}, {}, {"when": pd.DataFrame({"a": [1]})}]}
-    assert refusal(value) == (
-        "$.rows[3].when: DataFrame is not JSON-encodable "
-        '(return .to_dict("records"), or bytes with a content-type)'
-    )
-    with pytest.raises(
-        TypeError, match=r"handler returned DataFrame; return \.to_dict"
-    ):
-        normalize(pd.DataFrame())
+    value = {"rows": [{}, {"when": pd.DataFrame({"a": [1, float("nan")]})}]}
+    assert enc(value) == {"rows": [{}, {"when": [{"a": 1.0}, {"a": None}]}]}
+    assert strict_loads(normalize(pd.DataFrame({"a": [1]})).content) == [{"a": 1}]
 
 
 # -- end to end through a workspace handler -------------------------------
@@ -398,14 +392,13 @@ def test_handler_bad_return_names_the_path():
         "/workspace/app/api/frame.py",
         b"import pandas as pd\n"
         b"def get(req):\n"
-        b"    return {'result': {'table': pd.DataFrame({'a': [1]})}}\n",
+        b"    return {'result': {'table': {pd.Timestamp('2024-01-01')}}}\n",
     )
     r = rt.dispatch(request("GET", "/api/frame"))
     assert r.status == 500
     assert (
-        "$.result.table: DataFrame is not JSON-encodable"
-        in strict_loads(r.content)["error"]
+        "$.result.table: set is not JSON-encodable" in strict_loads(r.content)["error"]
     )
     log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
-    assert "BAD RETURN: $.result.table: DataFrame" in log
+    assert "BAD RETURN: $.result.table: set" in log
     ws.close()

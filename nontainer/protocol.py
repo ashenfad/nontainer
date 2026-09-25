@@ -915,6 +915,14 @@ class ViewSpec:
     sandbox policy; a remote executor imports them by qualified name, or
     builds them from their module's source where it cannot."""
 
+    result_bytes: int | None = None
+    """The largest ``bytes`` value the caller needs this execution to
+    carry back (apps: the response body, under its size caps). An
+    executor whose transport bounds what one execution returns sizes
+    that bound to carry this much, up to its own
+    ``view_result_limit``; one with no such bound ignores it. ``None``
+    leaves the executor's defaults."""
+
 
 @runtime_checkable
 class Executor(Protocol):

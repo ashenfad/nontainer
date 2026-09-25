@@ -334,6 +334,21 @@ class Runtime:
         """
         return getattr(self._executor, "app_driver", None)
 
+    @property
+    def view_result_limit(self) -> int | None:
+        """The largest ``bytes`` value one view execution can carry
+        back, or None when the executor has no such limit.
+
+        An executor that returns results over a transport with a size
+        bound declares it here (``Executor.view_result_limit``); the
+        apps runtime lowers its response-size caps to it, so a body too
+        large to carry is refused with a message naming this limit
+        rather than lost on the way. Optional on the executor: one that
+        declares nothing carries whatever it is handed, as the
+        in-process executor does.
+        """
+        return getattr(self._executor, "view_result_limit", None)
+
     def guest_to_host(self, guest_path: str) -> str | None:
         """A guest-absolute path as the HOST spells it, or None.
 

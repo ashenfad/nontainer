@@ -266,8 +266,10 @@ __HANDLER_EXAMPLE__
 Rules: ONLY verb functions (get/post/put/delete/patch) are routed — a
 function with any other name (def query(), def search()) is NEVER
 called by requests; read filters/actions from params inside a verb.
-Return dict/list (JSON), str (text), bytes, or Response(status=,
-body=); raise HttpError(404, 'msg') for error responses. GET handlers
+Return dict/list (JSON), str (text), bytes, a DataFrame or other table
+(JSON rows, or an Arrow stream when the request sends Accept:
+application/vnd.apache.arrow.stream), or Response(status=, body=);
+raise HttpError(404, 'msg') for error responses. GET handlers
 have a READ-ONLY filesystem and cache. Handlers see the same
 environment as your python code (cache, files via open(), injected
 objects). Use `with open(...)` for writes.
@@ -467,7 +469,8 @@ def _static_assets_note(config: Any) -> str:
 _CURL_NOTE = """Test endpoints instantly with ws-curl (no server):
 ws-curl $APP_ORIGIN/api/scores?limit=3. `-f` fails the call (exit 22)
 on 4xx/5xx — without it an error status reads as a response. Pipelines
-compose: ws-curl $APP_ORIGIN/api/scores | jq .
+compose: ws-curl $APP_ORIGIN/api/scores | jq . Save a large or binary
+body with -o FILE rather than printing it.
 Test the logic below a request with `ws-pytest` (tests/test_<name>.py)
 and a frontend module with `ws-vitest` (tests/<name>.test.js) — both
 live in tests/, never under app/, which publishes them.

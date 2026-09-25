@@ -122,17 +122,17 @@ def test_curl_reaches_assets(assets):
 
 
 def test_assets_are_exempt_from_the_response_cap(tmp_path):
-    """A vendored charting bundle clears the 2MB default on its own. The
-    cap exists to catch runaway HANDLER output; an asset's size is a
-    decision the embedder already made."""
+    """An asset over the text cap is served whole. The cap exists to
+    catch runaway HANDLER output; an asset's size is a decision the
+    embedder already made."""
     d = tmp_path / "big"
     d.mkdir()
-    (d / "plotly.js").write_bytes(b"x" * 3_500_000)
+    (d / "plotly.js").write_bytes(b"x" * 10_500_000)
     ws, rt = make_ws(d)
     try:
         r = get(rt, "/vendor/plotly.js")
         assert r.status == 200
-        assert len(r.content) == 3_500_000
+        assert len(r.content) == 10_500_000
     finally:
         ws.close()
 
@@ -142,7 +142,7 @@ def test_assets_are_exempt_from_the_response_cap(tmp_path):
     try:
         ws2.files.fs.makedirs("/workspace/app/api", exist_ok=True)
         ws2.files.fs.write(
-            "/workspace/app/api/big.py", b"def get(req):\n    return 'x'*3_000_000\n"
+            "/workspace/app/api/big.py", b"def get(req):\n    return 'x'*10_500_000\n"
         )
         assert get(rt2, "/api/big").status == 500
     finally:

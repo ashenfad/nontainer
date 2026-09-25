@@ -198,6 +198,9 @@ dev = [
     # agno's own SqliteDb, which the aborted-run tests use beside the
     # workspace dbs: it stores runs in their own table on agno 3
     "sqlalchemy",
+    # table returns: a handler's DataFrame answers as Arrow IPC when
+    # the request asks for it, which needs pyarrow in the worker
+    "pyarrow",
 ]
 
 [build-system]

@@ -18,6 +18,7 @@ import datetime as _dt
 import json as _json
 import math as _math
 import operator as _operator
+import sys as _sys
 from dataclasses import dataclass, field
 from decimal import Decimal as _Decimal
 from itertools import islice as _islice
@@ -201,7 +202,10 @@ def make_request(
         method=method.upper(),
         path=parts.path,
         params=params,
-        headers=dict(headers or {}),
+        # Lowercased: header names are case-insensitive, and a handler
+        # (or the encoder reading ``accept``) looks them up by one
+        # spelling whichever caller built the request.
+        headers={str(k).lower(): v for k, v in dict(headers or {}).items()},
         body=body,
         json=parsed,
     )
@@ -250,28 +254,43 @@ class WireResponse:
         return 200 <= self.status < 400
 
 
-def normalize(value: Any) -> WireResponse:
-    """Liberal returns: dict/list → JSON, str → text, bytes → blob,
-    Response → as specified, None → 204. Raises ``TypeError`` for a
-    return it refuses, naming what was wrong."""
-    status, content_type, headers, content = _response_parts(value)
+def normalize(value: Any, accept: str | None = None) -> WireResponse:
+    """Liberal returns: dict/list → JSON, str → text, bytes → blob, a
+    table → JSON rows or Arrow as ``accept`` negotiates, Response → as
+    specified, None → 204. Raises ``TypeError`` for a return it refuses,
+    naming what was wrong. A table asked for as Arrow where pyarrow
+    cannot be imported answers 406, as dispatch does."""
+    try:
+        status, content_type, headers, content = _response_parts(value, accept)
+    except _NotAcceptable as e:
+        return WireResponse(
+            406, error_body(str(e)), "application/json", {"vary": "Accept"}
+        )
     return WireResponse(status, content, content_type, headers)
 
 
-def _response_parts(value: Any) -> tuple[int, str, dict[str, str], bytes]:
+def _response_parts(
+    value: Any, accept: str | None = None
+) -> tuple[int, str, dict[str, str], bytes]:
     """``(status, content_type, headers, content)`` for one handler
-    return, by the liberal-return rules. Raises ``TypeError`` for a
-    return it refuses."""
+    return, by the liberal-return rules; ``accept`` is the request's
+    ``Accept`` header, which only a table return consults. Raises
+    ``TypeError`` for a return it refuses, and :class:`_NotAcceptable`
+    for a table asked for in a format this sandbox cannot produce."""
     if isinstance(value, Response):
+        vary = None
         if value.body is None:
             content_type, content = "text/plain", b""
         else:
-            _, content_type, _, content = _response_parts(value.body)
+            _, content_type, body_headers, content = _response_parts(value.body, accept)
+            vary = body_headers.get("vary")
         # Lowercase the agent-supplied header keys: HTTP headers are
         # case-insensitive, and agents type the idiomatic Content-Type —
         # a cased lookup would silently ignore it. Tolerate an explicit
         # headers=None (agents write it; the field default is {}).
         headers = {str(k).lower(): str(v) for k, v in (value.headers or {}).items()}
+        if vary is not None:
+            headers["vary"] = _add_vary(headers.get("vary"), vary)
         return (
             _status(value.status, "Response"),
             headers.get("content-type", content_type),
@@ -286,11 +305,29 @@ def _response_parts(value: Any) -> tuple[int, str, dict[str, str], bytes]:
         return 200, "text/plain; charset=utf-8", {}, value.encode()
     if isinstance(value, bytes):
         return 200, "application/octet-stream", {}, bytes(value)
+    kind = _table_kind(value)
+    if kind is not None:
+        return _table_parts(value, kind, accept)
     hint = _REFUSAL_HINTS.get(type(value).__name__)
     raise TypeError(
         f"handler returned {type(value).__name__}; "
-        + (hint or "return dict/list/str/bytes/Response or raise HttpError")
+        + (
+            hint
+            or "return dict/list/str/bytes, a table (DataFrame, Series, Arrow), "
+            "a Response, or raise HttpError"
+        )
     )
+
+
+def _add_vary(existing: str | None, name: str) -> str:
+    """``existing`` (a ``Vary`` value) with ``name`` added unless it is
+    already there, or the value is ``*``, which varies on everything."""
+    if not existing or not existing.strip():
+        return name
+    present = {part.strip().lower() for part in existing.split(",")}
+    if "*" in present or name.lower() in present:
+        return existing
+    return f"{existing}, {name}"
 
 
 def _status(value: Any, source: str) -> int:
@@ -322,27 +359,32 @@ def error_body(message: str, **extra: str) -> bytes:
 # -- the response wire --------------------------------------------------
 #
 # A handler's return is encoded where the handler ran, and what crosses
-# back to the host is one of two tuples of primitives:
+# back to the host is one of three tuples of primitives:
 #
 #   (WIRE_RESPONSE, status: int, content_type: str,
 #    headers: dict[str, str], body: bytes)
 #   (WIRE_REFUSED, message: str)
+#   (WIRE_NOT_ACCEPTABLE, message: str)
 #
 # The first element names the shape and its version. A refusal is a
-# return the liberal-return rules reject (a set, a DataFrame, a status
-# out of range); its message is the one ``normalize`` raises with. The
-# host reads nothing else from the execution's namespace, and checks
-# every element's exact type before using it.
+# return the liberal-return rules reject (a set, a status out of range,
+# a body over the size limits); its message is the one ``normalize``
+# raises with, and the host answers it 500. Not-acceptable is a table
+# the request asked for as Arrow in a sandbox that cannot import
+# pyarrow; the host answers it 406. The host reads nothing else from
+# the execution's namespace, and checks every element's exact type
+# before using it.
 #
 # Everything the encoding needs lives in this module, and this module
 # imports only the standard library at module level: an executor whose
 # sandbox has no nontainer installed (a VM guest) builds it from this
-# file's source. numpy and pandas are imported only when a value of
-# theirs is being encoded, so a sandbox holding neither never needs
-# them.
+# file's source. numpy, pandas and pyarrow are imported only when a
+# value of theirs is being encoded, so a sandbox holding none of them
+# never needs them.
 
 WIRE_RESPONSE = "nt-response/1"
 WIRE_REFUSED = "nt-refused/1"
+WIRE_NOT_ACCEPTABLE = "nt-not-acceptable/1"
 
 
 class nt__Encoder:
@@ -358,15 +400,36 @@ class nt__Encoder:
     policy, and granting it would let every handler import this module.
 
     Calling it from handler code grants nothing: it produces the same
-    tuple the trailer does, which the host validates like any other."""
+    tuple the trailer does, which the host validates like any other,
+    size limits included."""
 
     @staticmethod
-    def respond(value: Any) -> tuple:
-        """The wire tuple for one handler return."""
+    def respond(
+        value: Any,
+        accept: str | None = None,
+        *,
+        text_limit: int | None = None,
+        binary_limit: int | None = None,
+        carry_limit: int | None = None,
+    ) -> tuple:
+        """The wire tuple for one handler return.
+
+        ``accept`` is the request's ``Accept`` header, which decides
+        whether a table answers as JSON rows or an Arrow stream. The
+        limits are the response-size caps (see :func:`size_refusal`):
+        a body over them is refused here, before its bytes leave the
+        sandbox. ``None`` is no limit."""
         try:
-            status, content_type, headers, content = _response_parts(value)
+            status, content_type, headers, content = _response_parts(value, accept)
+        except _NotAcceptable as e:
+            return (WIRE_NOT_ACCEPTABLE, str(e))
         except TypeError as e:
             return (WIRE_REFUSED, str(e))
+        refusal = size_refusal(
+            len(content), content_type, text_limit, binary_limit, carry_limit
+        )
+        if refusal is not None:
+            return (WIRE_REFUSED, refusal)
         return (WIRE_RESPONSE, status, content_type, headers, content)
 
     @staticmethod
@@ -391,6 +454,345 @@ class nt__Encoder:
         return (WIRE_RESPONSE, code, "application/json", {}, error_body(str(message)))
 
 
+# -- response size ------------------------------------------------------
+#
+# Two caps, chosen by whether the body is text: a JSON (or other text)
+# response and a binary one. They exist to catch a handler returning
+# something runaway, and are applied where the body is encoded, so an
+# oversized one never crosses the sandbox boundary. An executor that
+# can carry only so much back from one execution adds a third, lower
+# bound of its own (the carry limit); the effective cap is the smallest
+# that applies, and the refusal names the one that bound.
+
+_TEXT_TYPE_MARKERS = ("json", "xml", "javascript", "ecmascript")
+
+
+def is_text_type(content_type: str) -> bool:
+    """Whether a response's media type says its body is text.
+
+    The media type is the server's own statement about the body, and
+    it is the only honest one: sniffing the bytes classifies a binary
+    payload that happens to be valid UTF-8 -- one holding NUL bytes,
+    or any ASCII-armored blob -- as text. ``text/*`` is text, so are
+    the structured types that are text on the wire (JSON, XML,
+    JavaScript, including the ``+json`` / ``+xml`` suffix forms), and
+    nothing else is -- an absent or ``application/octet-stream`` type
+    is binary.
+    """
+    kind = content_type.split(";", 1)[0].strip().lower()
+    if not kind:
+        return False
+    if kind.startswith("text/"):
+        return True
+    subtype = kind.partition("/")[2]
+    return any(marker in subtype for marker in _TEXT_TYPE_MARKERS)
+
+
+def _size(n: int) -> str:
+    """A byte count for a message, in decimal units."""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + " MB"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}".rstrip("0").rstrip(".") + " kB"
+    return f"{n} bytes"
+
+
+def _smaller(a: int | None, b: int | None) -> int | None:
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return min(a, b)
+
+
+def size_refusal(
+    size: int,
+    content_type: str,
+    text_limit: int | None = None,
+    binary_limit: int | None = None,
+    carry_limit: int | None = None,
+    *,
+    advise: bool = True,
+) -> str | None:
+    """The message refusing a body of ``size`` bytes, or ``None`` when
+    it is within the cap for its kind.
+
+    ``text_limit`` applies to a text body (:func:`is_text_type`) and
+    ``binary_limit`` to any other; ``carry_limit`` is how much the
+    executor can carry back, which lowers either. ``None`` is no limit,
+    and a body exactly at its cap passes. With ``advise``, the message
+    says what a handler can do instead."""
+    text = is_text_type(content_type)
+    configured = text_limit if text else binary_limit
+    limit = _smaller(configured, carry_limit)
+    if limit is None or size <= limit:
+        return None
+    media = content_type.split(";", 1)[0].strip().lower()
+    if "json" in media.partition("/")[2]:
+        subject = "JSON response"
+    elif media == ARROW_STREAM:
+        subject = "Arrow response"
+    elif media:
+        subject = f"{media} response"
+    else:
+        subject = "Response"
+    shown = _size(size)
+    if shown == _size(limit):
+        shown = f"{size:,} bytes"
+    if carry_limit is not None and carry_limit == limit and carry_limit != configured:
+        over = f"over the {_size(limit)} this executor can carry"
+    elif text:
+        over = f"over the {_size(limit)} limit for text"
+    else:
+        over = f"over the {_size(limit)} limit for binary responses"
+    message = f"{subject} is {shown}, {over}"
+    if not advise:
+        return message
+    if text:
+        arrow = _smaller(binary_limit, carry_limit)
+        cap = f" (limit {_size(arrow)})" if arrow is not None else ""
+        return (
+            f"{message}: aggregate or paginate on the server, or return a "
+            f"table and request Arrow{cap}"
+        )
+    return f"{message}: filter or paginate on the server"
+
+
+# -- table returns ------------------------------------------------------
+#
+# A table is a pandas DataFrame, a pandas Series (one column), a
+# pyarrow Table, or any object exposing ``__arrow_c_stream__`` (polars,
+# a DuckDB relation, ...). Returned as the whole response, it answers
+# as an Arrow IPC stream when the request's Accept asks for one, and as
+# JSON rows (``[{column: value, ...}, ...]``) otherwise; the response
+# carries ``Vary: Accept`` either way. Nested anywhere inside a dict or
+# list return, it encodes as its JSON rows.
+#
+# The index follows one rule on both paths: a default RangeIndex
+# (0, 1, 2, ... and unnamed) is dropped, and any other index becomes
+# columns the way ``reset_index()`` names them (the index's name, or
+# ``index``; one column per level of a MultiIndex). It is applied with
+# pandas, so JSON rows never need pyarrow, and the Arrow path converts
+# the same frame, so both carry the same columns.
+#
+# pyarrow is needed for Arrow output, and for reading an
+# ``__arrow_c_stream__`` object at all. Where it cannot be imported, an
+# Arrow request answers 406 rather than quietly sending JSON, and a
+# stream object asked for as JSON is refused; both say so.
+
+ARROW_STREAM = "application/vnd.apache.arrow.stream"
+
+ARROW_UNAVAILABLE = (
+    "Arrow was requested, but pyarrow is not available to this app's "
+    "handlers: install pyarrow where they run, or request JSON"
+)
+
+
+class _NotAcceptable(Exception):
+    """The request asked for a format this sandbox cannot produce."""
+
+
+def _import_pyarrow() -> Any:
+    """The pyarrow module, or ``None`` where it cannot be imported."""
+    try:
+        import pyarrow
+        import pyarrow.ipc  # noqa: F401
+    except ImportError:
+        return None
+    return pyarrow
+
+
+def _table_kind(value: Any) -> str | None:
+    """``"pandas"``, ``"arrow"`` or ``"stream"`` for a table, else
+    ``None``. A pandas or pyarrow value can exist only once its library
+    is imported, so the check reads ``sys.modules`` instead of
+    importing either."""
+    pd = _sys.modules.get("pandas")
+    if pd is not None and isinstance(value, (pd.DataFrame, pd.Series)):
+        return "pandas"
+    pa = _sys.modules.get("pyarrow")
+    if pa is not None and isinstance(value, (pa.Table, pa.RecordBatch)):
+        return "arrow"
+    if hasattr(type(value), "__arrow_c_stream__"):
+        return "stream"
+    return None
+
+
+def _pandas_frame(value: Any) -> Any:
+    """A DataFrame or Series as the frame both output paths encode:
+    a Series as one column (named after it, or ``0`` if unnamed, as
+    ``to_frame()`` names it), the index by the rule above."""
+    import pandas as pd
+
+    name = type(value).__name__
+    frame = value.to_frame() if isinstance(value, pd.Series) else value
+    index = frame.index
+    default = (
+        isinstance(index, pd.RangeIndex)
+        and index.start == 0
+        and index.step == 1
+        and index.name is None
+    )
+    if not default:
+        try:
+            frame = frame.reset_index()
+        except ValueError as e:
+            raise _Unencodable(
+                f"{name} index cannot become a column ({e}); rename the index "
+                "or the column it collides with"
+            ) from None
+    if isinstance(frame.columns, pd.MultiIndex):
+        raise _Unencodable(
+            f"{name} has MultiIndex columns, which have no row form; flatten "
+            "them to single names first"
+        )
+    if not frame.columns.is_unique:
+        dupes = sorted({str(c) for c in frame.columns[frame.columns.duplicated()]})
+        raise _Unencodable(
+            f"{name} has duplicate column names ({', '.join(dupes)}); rename them"
+        )
+    return frame
+
+
+def _arrow_table(value: Any, kind: str, pa: Any) -> Any:
+    """A pyarrow value or Arrow stream object as a ``pa.Table``."""
+    name = type(value).__name__
+    try:
+        table = value if kind == "arrow" else pa.table(value)
+    except (pa.ArrowException, TypeError, ValueError) as e:
+        raise _Unencodable(
+            f"{name} exposes __arrow_c_stream__ but does not read as a table: {e}"
+        ) from None
+    if isinstance(table, pa.RecordBatch):
+        table = pa.Table.from_batches([table])
+    names = table.column_names
+    if len(set(names)) != len(names):
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        raise _Unencodable(
+            f"{name} has duplicate column names ({', '.join(dupes)}); rename them"
+        )
+    return table
+
+
+def _needs_pyarrow(value: Any) -> str:
+    return (
+        f"{type(value).__name__} is an Arrow stream, and reading one needs "
+        "pyarrow, which is not available to this app's handlers: install "
+        "pyarrow where they run, or return a pandas DataFrame"
+    )
+
+
+def _table_rows(value: Any, kind: str) -> list:
+    """A table as JSON rows: one dict per row, column name to value.
+    The values are left for the JSON encoder to convert."""
+    if kind == "pandas":
+        return _pandas_frame(value).to_dict("records")
+    pa = _import_pyarrow()
+    if pa is None:
+        raise _Unencodable(_needs_pyarrow(value))
+    return _arrow_table(value, kind, pa).to_pylist()
+
+
+def _table_ipc(value: Any, kind: str, pa: Any) -> bytes:
+    """A table as an Arrow IPC stream."""
+    if kind == "pandas":
+        frame = _pandas_frame(value)
+        try:
+            table = pa.Table.from_pandas(frame, preserve_index=False)
+        except (pa.ArrowException, TypeError, ValueError) as e:
+            raise _Unencodable(
+                f"{type(value).__name__} could not be converted to Arrow: {e}"
+            ) from None
+    else:
+        table = _arrow_table(value, kind, pa)
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
+
+
+def _table_parts(
+    value: Any, kind: str, accept: str | None
+) -> tuple[int, str, dict[str, str], bytes]:
+    """``_response_parts`` for a table returned as the whole response."""
+    headers = {"vary": "Accept"}
+    try:
+        if accepts_arrow(accept):
+            pa = _import_pyarrow()
+            if pa is None:
+                raise _NotAcceptable(ARROW_UNAVAILABLE)
+            return 200, ARROW_STREAM, headers, _table_ipc(value, kind, pa)
+        rows = _table_rows(value, kind)
+    except _Unencodable as e:
+        raise TypeError(e.message) from None
+    return 200, "application/json", headers, encode_json(rows)
+
+
+def _media_ranges(accept: str) -> list[tuple[str, str, float]]:
+    """``(type, subtype, q)`` for each well-formed media range in an
+    ``Accept`` value, lowercased. A range whose q is not a number from
+    0 to 1 is left out."""
+    out = []
+    for part in accept.split(","):
+        fields = part.split(";")
+        media = fields[0].strip().lower()
+        mtype, slash, subtype = media.partition("/")
+        mtype, subtype = mtype.strip(), subtype.strip()
+        if not slash or not mtype or not subtype:
+            continue
+        q: float | None = 1.0
+        for param in fields[1:]:
+            key, _, raw = param.partition("=")
+            if key.strip().lower() != "q":
+                continue
+            try:
+                q = float(raw.strip().strip('"'))
+            except ValueError:
+                q = None
+            if q is not None and not 0.0 <= q <= 1.0:
+                q = None
+            break
+        if q is not None:
+            out.append((mtype, subtype, q))
+    return out
+
+
+def _quality(ranges: list[tuple[str, str, float]], mtype: str, subtype: str):
+    """``(q, specificity)`` the most specific matching range gives a
+    media type: 2 for an exact match, 1 for ``type/*``, 0 for ``*/*``,
+    ``(None, -1)`` when nothing matches."""
+    best: tuple[float | None, int] = (None, -1)
+    for t, st, q in ranges:
+        if t == mtype and st == subtype:
+            level = 2
+        elif t == mtype and st == "*":
+            level = 1
+        elif t == "*" and st == "*":
+            level = 0
+        else:
+            continue
+        if level > best[1] or (level == best[1] and q > (best[0] or 0.0)):
+            best = (q, level)
+    return best
+
+
+def accepts_arrow(accept: str | None) -> bool:
+    """Whether an ``Accept`` header asks for an Arrow IPC stream.
+
+    Only by name: the Arrow type must be listed explicitly with a q
+    above 0 (``*/*`` and ``application/*`` do not ask for it), and not
+    ranked below JSON, whose q comes from its most specific matching
+    range. An absent header asks for JSON."""
+    if not accept:
+        return False
+    ranges = _media_ranges(accept)
+    q_arrow, level = _quality(ranges, "application", ARROW_STREAM.partition("/")[2])
+    if level != 2 or not q_arrow:
+        return False
+    q_json, _ = _quality(ranges, "application", "json")
+    return q_json is None or q_arrow >= q_json
+
+
 # -- JSON encoding of handler returns -----------------------------------
 #
 # Handler returns are built by data code, so they carry numpy scalars,
@@ -405,6 +807,7 @@ class nt__Encoder:
 #   Decimal                             -> number (float)
 #   NaN / +Inf / -Inf, NaT, pd.NA, None -> null
 #   tuple                               -> list
+#   a table (DataFrame, Series, Arrow)  -> its JSON rows (see above)
 #   set, anything else                  -> refused, naming the path
 #
 # Plain data takes the stdlib C encoder in one pass. A value it cannot
@@ -418,8 +821,6 @@ class nt__Encoder:
 # NaN in the last record.
 
 _REFUSAL_HINTS = {
-    "DataFrame": 'return .to_dict("records"), or bytes with a content-type',
-    "Series": "return .tolist() or .to_dict()",
     "set": "its order is unstable; return sorted(...)",
     "frozenset": "its order is unstable; return sorted(...)",
     "bytes": "decode it, or return the bytes themselves with a content-type",
@@ -501,6 +902,9 @@ def _convert(value: Any) -> Any:
     if isinstance(value, _Decimal):
         number = float(value)
         return number if _math.isfinite(number) else None
+    kind = _table_kind(value)
+    if kind is not None:
+        return _table_rows(value, kind)
     raise _refuse(value)
 
 

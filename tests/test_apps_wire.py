@@ -20,6 +20,7 @@ from nontainer import PythonConfig, Workspace
 from nontainer.apps import Response, enable_apps, request
 from nontainer.apps import contract as contract_module
 from nontainer.apps.contract import (
+    ARROW_STREAM,
     HANDLER_CONTRACT,
     WIRE_REFUSED,
     WIRE_RESPONSE,
@@ -27,7 +28,7 @@ from nontainer.apps.contract import (
     make_request,
     nt__Encoder,
 )
-from nontainer.apps.dispatch import _TRAILER, _Malformed, _read_wire, _Refused
+from nontainer.apps.dispatch import _Malformed, _read_wire, _Refused, _trailer
 from nontainer.executor import ViewSpec
 from nontainer.providers import KvgitProvider
 
@@ -89,18 +90,68 @@ CASES = {
         "def get(req):\n    raise HttpError(418, 'short and stout')\n",
         (418, "application/json", {}, b'{"error": "short and stout"}'),
     ),
-    "frame": (
+    # A table nested in a dict encodes as its rows, whatever Accept says.
+    "nested_frame": (
         "import pandas as pd\n"
         "def get(req):\n"
         "    return {'rows': [{'df': pd.DataFrame({'a': [1]})}]}\n",
+        (200, "application/json", {}, b'{"rows": [{"df": [{"a": 1}]}]}'),
+    ),
+    "unencodable": (
+        "def get(req):\n    return {'rows': [{'s': {1}}]}\n",
         (
             500,
             "application/json",
             {},
             json.dumps(
                 {
-                    "error": "$.rows[0].df: DataFrame is not JSON-encodable "
-                    '(return .to_dict("records"), or bytes with a content-type)'
+                    "error": "$.rows[0].s: set is not JSON-encodable "
+                    "(its order is unstable; return sorted(...))"
+                }
+            ).encode(),
+        ),
+    ),
+    # A table answers as JSON rows when the request does not ask for
+    # Arrow, its named index a column; the response varies on Accept.
+    "frame": (
+        "import pandas as pd\n"
+        "def get(req):\n"
+        "    return pd.DataFrame({'a': [1, 2], 'x': [0.5, float('nan')]},\n"
+        "                        index=pd.Index(['p', 'q'], name='k'))\n",
+        (
+            200,
+            "application/json",
+            {"vary": "Accept"},
+            b'[{"k": "p", "a": 1, "x": 0.5}, {"k": "q", "a": 2, "x": null}]',
+        ),
+    ),
+    # Refused inside the sandbox, before the body crosses.
+    "oversize_json": (
+        "def get(req):\n    return {'s': 'x' * 12_000_000}\n",
+        (
+            500,
+            "application/json",
+            {},
+            json.dumps(
+                {
+                    "error": "JSON response is 12 MB, over the 10 MB limit for "
+                    "text: aggregate or paginate on the server, or return a "
+                    "table and request Arrow (limit 32 MB)"
+                }
+            ).encode(),
+        ),
+    ),
+    "oversize_binary": (
+        "def get(req):\n    return bytes(33_000_000)\n",
+        (
+            500,
+            "application/json",
+            {},
+            json.dumps(
+                {
+                    "error": "application/octet-stream response is 33 MB, over "
+                    "the 32 MB limit for binary responses: filter or paginate "
+                    "on the server"
                 }
             ).encode(),
         ),
@@ -172,12 +223,45 @@ def test_every_executor_answers_with_the_same_bytes(rungs, case):
     assert seen["dud"] == seen["process"], seen
 
 
+def test_every_executor_answers_arrow_alike(rungs):
+    pa = pytest.importorskip("pyarrow")
+    seen = {}
+    for rung, (_, runtime) in rungs.items():
+        r = runtime.dispatch(
+            request("GET", "/api/frame", headers={"Accept": ARROW_STREAM})
+        )
+        assert (r.status, r.content_type, r.headers) == (
+            200,
+            ARROW_STREAM,
+            {"vary": "Accept"},
+        ), rung
+        seen[rung] = pa.ipc.open_stream(r.content).read_all()
+    assert seen["process"].column_names == ["k", "a", "x"]
+    assert seen["process"].to_pydict() == {
+        "k": ["p", "q"],
+        "a": [1, 2],
+        "x": [0.5, None],
+    }
+    assert seen["none"].equals(seen["process"])
+    assert seen["dud"].equals(seen["process"])
+
+
+def test_an_oversized_body_is_logged_in_every_log(rungs):
+    for rung, (ws, runtime) in rungs.items():
+        runtime.dispatch(request("GET", "/api/oversize_json"))
+        runtime.dispatch(request("GET", "/api/oversize_binary"))
+        log = _log(ws)
+        assert "[oversize_json:get] BAD RETURN: JSON response is 12 MB" in log, rung
+        assert (
+            "[oversize_binary:get] BAD RETURN: application/octet-stream "
+            "response is 33 MB"
+        ) in log, rung
+
+
 def test_a_refusal_names_the_path_in_every_log(rungs):
     for rung, (ws, runtime) in rungs.items():
-        runtime.dispatch(request("GET", "/api/frame"))
-        assert "BAD RETURN: $.rows[0].df: DataFrame is not JSON-encodable" in _log(
-            ws
-        ), rung
+        runtime.dispatch(request("GET", "/api/unencodable"))
+        assert "BAD RETURN: $.rows[0].s: set is not JSON-encodable" in _log(ws), rung
 
 
 def test_a_raise_logs_its_traceback_in_every_log(rungs):
@@ -262,7 +346,7 @@ FORGED = {
     "forged": (
         "class nt__Encoder:\n"
         "    @staticmethod\n"
-        "    def respond(value):\n"
+        "    def respond(value, *args, **kwargs):\n"
         "        return ('nt-response/1', 200, 'text/plain', {}, 'not bytes')\n"
         "def get(req):\n"
         "    return 'hi'\n"
@@ -270,7 +354,7 @@ FORGED = {
     "unwired": (
         "class nt__Encoder:\n"
         "    @staticmethod\n"
-        "    def respond(value):\n"
+        "    def respond(value, *args, **kwargs):\n"
         "        return None\n"
         "def get(req):\n"
         "    return 'hi'\n"
@@ -368,14 +452,14 @@ def test_the_contract_module_imports_nothing_from_nontainer():
     """Its source is what a VM guest builds the encoder and the contract
     classes from, and that guest has no nontainer to import: an import
     of this package, relative or absolute, breaks every handler there.
-    The standard library at module level; numpy and pandas only inside
-    the functions that encode their values."""
+    The standard library at module level; numpy, pandas and pyarrow
+    only inside the functions that encode their values."""
     source = open(contract_module.__file__).read()
     top, nested, relative = _module_imports(ast.parse(source))
     assert relative == 0
     stdlib = sys.stdlib_module_names | {"__future__"}
     assert top <= stdlib, top - stdlib
-    assert nested <= stdlib | {"numpy", "pandas"}, nested - stdlib
+    assert nested <= stdlib | {"numpy", "pandas", "pyarrow"}, nested - stdlib
 
 
 def test_every_class_dispatch_ships_lives_in_the_contract_module():
@@ -427,7 +511,7 @@ def _run_in_bare_guest(handler: str, verb: str, req) -> dict:
 
     extra = (*HANDLER_CONTRACT, nt__Encoder)
     program, inputs, _ = _view_program(
-        handler + _TRAILER.format(verb=verb),
+        handler + _trailer(verb),
         {"nt__req": req},
         ViewSpec(extra_classes=extra),
     )
@@ -530,5 +614,105 @@ def test_handler_tuples_cross_as_tuples(rung):
         assert r.error is None, r.error
         assert r.namespace["t"] == ("a", 1, {"k": "v"}, BINARY)
         assert type(r.namespace["t"]) is tuple
+    finally:
+        ws.close()
+
+
+# -- carrying large bodies ---------------------------------------------------
+
+# Over what dud carries back at its default caps (8 MiB per value on the
+# wire, which a body reaches base64-encoded: about 6.29 MB of body).
+LARGE = 10_000_000
+
+
+def _dud_ws(session: str) -> Workspace:
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+
+    return Workspace(
+        KvgitProvider.open(None, session=session),
+        executor=DudExecutor(backend="subprocess"),
+    )
+
+
+def test_dud_sizes_its_caps_to_the_body_asked_for():
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import (
+        _DUD_OUTPUTS_CAP,
+        _DUD_VALUE_CAP,
+        _VIEW_RESULT_LIMIT,
+        DudExecutor,
+        _view_caps,
+    )
+
+    assert _view_caps(None) is None
+    small = _view_caps(1000)
+    assert small == {
+        "value": _DUD_VALUE_CAP,
+        "outputs": _DUD_VALUE_CAP + _DUD_OUTPUTS_CAP,
+    }
+    caps = _view_caps(32_000_000)
+    assert caps["value"] >= 32_000_000 * 4 // 3
+    assert caps["outputs"] == caps["value"] + _DUD_OUTPUTS_CAP
+    assert _view_caps(10**12) == _view_caps(_VIEW_RESULT_LIMIT)
+    assert DudExecutor.view_result_limit == _VIEW_RESULT_LIMIT
+
+
+def test_dud_view_carries_what_it_is_asked_to():
+    """The same binding is left out at dud's defaults and carried once
+    the view names the size it needs: the caps are what carry it."""
+    ws = _dud_ws("wire-carry")
+    try:
+        code = f"import random\nblob = random.Random(7).randbytes({LARGE})"
+        r = ws.runtime.exec_python(code, view=ViewSpec())
+        assert r.error is None, r.error
+        assert "blob" not in r.namespace
+        r = ws.runtime.exec_python(code, view=ViewSpec(result_bytes=LARGE))
+        assert r.error is None, r.error
+        assert r.namespace["blob"] == _random_bytes(LARGE)
+    finally:
+        ws.close()
+
+
+def _random_bytes(n: int) -> bytes:
+    import random
+
+    return random.Random(7).randbytes(n)
+
+
+def test_dud_carries_a_large_response_byte_for_byte():
+    ws = _dud_ws("wire-large")
+    try:
+        ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.files.fs.write(
+            "/workspace/app/api/big.py",
+            (
+                "import random\n"
+                "def get(req):\n"
+                f"    return random.Random(7).randbytes({LARGE})\n"
+            ).encode(),
+        )
+        runtime = enable_apps(ws)
+        r = runtime.dispatch(request("GET", "/api/big"))
+        assert (r.status, r.content_type) == (200, "application/octet-stream")
+        assert r.content == _random_bytes(LARGE)
+    finally:
+        ws.close()
+
+
+@pytest.mark.parametrize("rung", ["process", "dud"])
+def test_ws_curl_saves_an_arrow_stream(rung):
+    pa = pytest.importorskip("pyarrow")
+    pytest.importorskip("pandas")
+    ws = _apps_ws(rung)
+    try:
+        enable_apps(ws)
+        r = ws.terminal(
+            "ws-curl -H 'Accept: application/vnd.apache.arrow.stream' "
+            "-o out.arrow $APP_ORIGIN/api/frame"
+        )
+        assert r.exit_code == 0, (r.stdout, r.stderr)
+        table = pa.ipc.open_stream(ws.files.fs.read("/workspace/out.arrow")).read_all()
+        assert table.to_pydict() == {"k": ["p", "q"], "a": [1, 2], "x": [0.5, None]}
     finally:
         ws.close()
