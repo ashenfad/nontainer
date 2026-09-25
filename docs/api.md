@@ -1234,6 +1234,8 @@ ws.runtime.python_config: PythonConfig
 ws.runtime.guest_to_host(path) -> str | None   # a guest path, host-spelled
 ws.runtime.app_driver: AppDriver | None  # the executor's own app driver,
                                          # if the rung offers one
+ws.runtime.view_result_limit: int | None  # the largest bytes value one
+                                         # view execution can carry back
 ```
 
 **`ws.store`** is what makes store-level work on this session's
@@ -1295,7 +1297,8 @@ ws.runtime.exec_python(code, *, inputs=None, stdin=None, argv=None,
     # the raw execution path: no commit, no lock. `view` (a
     # ViewSpec) requests a restricted, budgeted execution — a
     # read-only fs/cache view, a tighter timeout/tick budget, contract
-    # classes in scope — and is executor-neutral: no sandbox object
+    # classes in scope, the size of bytes value it must carry back
+    # (result_bytes) — and is executor-neutral: no sandbox object
     # crosses the seam. `echo` overrides expression echo for the call;
     # stdin/argv expose sandtrap's synthetic `sys`. Safe to call
     # concurrently with a `view` (frozen app serving does); callers
@@ -1324,6 +1327,12 @@ rt.app_driver -> AppDriver | None  # the executor's own app driver, for
                                    # test_app to verify on the runtime
                                    # an app will be served from; None
                                    # on every rung today (apps.md)
+rt.view_result_limit -> int | None # the largest bytes value one view
+                                   # execution carries back (ViewSpec.
+                                   # result_bytes asks for up to this);
+                                   # None on LocalExecutor, 64 MiB on
+                                   # DudExecutor. Apps lowers its
+                                   # response-size caps to it.
 rt.exec_python(code, ...) -> PythonResult   # raw: no lock, no commit
 rt.exec_shell(script) -> TerminalResult     # raw: no lock, no commit
 rt.register_command(name, fn, *, rebind=None) -> None
@@ -2160,7 +2169,16 @@ enable_apps(ws, config: AppsConfig | None = None) -> AppRuntime
 app_runtime(ws) -> AppRuntime | None    # what a workspace is wired with
 
 AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
-           max_response_bytes=2_000_000,
+           max_response_bytes=10_000_000,  # the largest TEXT body a
+           #   handler may answer with: text/*, JSON, XML, JavaScript
+           #   (+json/+xml types too; the rule ws-curl uses for text).
+           #   Enforced in the handler's sandbox right after encoding,
+           #   and again on the host; over it, 500 with a message (in
+           #   the response and api.log) steering to aggregation,
+           #   pagination, or a table requested as Arrow. Lowered to
+           #   the executor's ws.runtime.view_result_limit when that is
+           #   smaller. static_assets are exempt. Only the embedder sets
+           #   it: handler code cannot raise it.
            script_hosts=DEFAULT_SCRIPT_HOSTS,  # where browser scripts may
            #   load from — drives test_app interception, the served CSP,
            #   and the agent-facing allowlist sentence (one declaration)
@@ -2211,8 +2229,8 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   from this mapping; `ws-curl $APP_ORIGIN/vendor/mui.js` still works), and
            #   they add nothing to commits, forks, or a guest tree.
            #   Same-origin, so script_hosts needs no entry. Assets skip
-           #   max_response_bytes and win over a workspace file at the
-           #   same path (noted in api.log). See apps.md.
+           #   the response-size caps and win over a workspace file at
+           #   the same path (noted in api.log). See apps.md.
            origin="http://localhost",  # the app's canonical base URL.
            #   enable_apps exports it as $APP_ORIGIN — in the termish
            #   shell and in a dud guest's real bash — which is how the
@@ -2229,16 +2247,19 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   the example is what gets copied. nontainer's own contract
            #   stays either way — only verb functions are routed, the
            #   return shapes, HttpError, read-only GET.
-           driver=None)  # the AppDriver test_app runs through. None
+           driver=None,  # the AppDriver test_app runs through. None
            #   picks: this field, then the executor's own
            #   (ws.runtime.app_driver), then a headless Chromium on the
            #   host. A driver takes one DriveSpec — the actions, the
            #   viewport, the policy, and how the app is SERVED (a
            #   callable into this dispatch) — and answers a DriveReport.
            #   The invariant: the driver's dispatcher is the dispatcher
-           #   the publication will use. See apps.md. Fields are
-           #   declared in this order, so positional construction
-           #   binds them this way.
+           #   the publication will use. See apps.md.
+           max_binary_response_bytes=32_000_000)  # the largest body of
+           #   any type max_response_bytes does not cover: images,
+           #   octet-stream, the Arrow stream a table return answers
+           #   with. Enforced the same way. Fields are declared in this
+           #   order, so positional construction binds them this way.
 
 AppRuntime.dispatch(request: Request) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", ...) -> TestAppResult

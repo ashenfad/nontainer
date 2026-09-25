@@ -168,7 +168,7 @@ class Call:
             method.upper(), url, body=body or b"", headers=dict(headers or {})
         )
         try:
-            wire = normalize(fn(request))
+            wire = normalize(fn(request), request.headers.get("accept"))
         except HttpError as e:
             return Call._error(e.status, e.message)
         return TestResponse(wire.status, wire.content, wire.content_type, wire.headers)

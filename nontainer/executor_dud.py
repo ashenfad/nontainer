@@ -305,6 +305,40 @@ _VIEW_EPILOGUE = (
 )
 
 
+# What one view execution can carry back. dud bounds each harvested
+# binding (``value``, 8 MiB by default) and everything one exec
+# harvests (``outputs``, 32 MiB), measured on the wire, where bytes are
+# base64 text: at the defaults, a response body of about 6.29 MB is the
+# most that crosses. A view whose caller names the body it needs
+# (``ViewSpec.result_bytes``) gets caps sized to carry it, up to this
+# ceiling. The ceiling exists because the guest's supervisor parses
+# each frame whole, and on a VM rung it is PID 1: it matches the
+# largest single cache write dud itself accepts (64 MiB).
+_VIEW_RESULT_LIMIT = 64 << 20
+# dud's own defaults, which a sized view never goes below.
+_DUD_VALUE_CAP = 8 << 20
+_DUD_OUTPUTS_CAP = 32 << 20
+# Room beside the body for the rest of the response wire (tag, status,
+# content type, headers) and the epilogue's tagging.
+_VIEW_WIRE_HEADROOM = 1 << 20
+
+
+def _view_caps(result_bytes: int | None) -> dict[str, int] | None:
+    """The dud caps that carry a ``result_bytes`` body back from a view
+    execution, or ``None`` to keep dud's defaults.
+
+    ``value`` fits the body as base64 (4 bytes per 3) plus headroom for
+    the fields beside it. ``outputs`` is that plus dud's default budget
+    for everything else the execution binds, so a handler's other
+    module-level names cannot crowd the response out. dud derives the
+    frame ceiling from these, so nothing else needs raising."""
+    if result_bytes is None:
+        return None
+    body = min(max(int(result_bytes), 0), _VIEW_RESULT_LIMIT)
+    value = max(-(-body // 3) * 4 + _VIEW_WIRE_HEADROOM, _DUD_VALUE_CAP)
+    return {"value": value, "outputs": value + _DUD_OUTPUTS_CAP}
+
+
 def _decode_slots(values: Any, bin_keys: Any) -> Any:
     """Reverse the epilogue's ``__nt_slots``: base64-decode exactly the
     slots its ``bin`` list names, leaving every other value as it is.
@@ -587,6 +621,10 @@ class DudExecutor:
     # shell function per registered ws-* verb and relays each call home
     # over the hostcall channel.
     supports_ws_verbs = True
+
+    # The largest body a view execution carries back when asked to
+    # (``ViewSpec.result_bytes``); see ``_VIEW_RESULT_LIMIT``.
+    view_result_limit = _VIEW_RESULT_LIMIT
 
     def __init__(
         self,
@@ -1005,6 +1043,7 @@ class DudExecutor:
                 full,
                 inputs=guest_inputs,
                 timeout=timeout,
+                caps=_view_caps(view.result_bytes),
                 cache_readonly=view.readonly_cache,
             )
         )

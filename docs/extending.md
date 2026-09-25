@@ -215,6 +215,16 @@ runtime says so by defining the name; `Runtime.app_driver` reads it and
 answers `None` for everything else, which is every executor that ships
 today. An embedder overrides the choice with `AppsConfig.driver`.
 
+**`view_result_limit`** *(optional)* — the largest `bytes` value one
+view execution can carry back, or nothing for no limit. An executor
+whose transport bounds what an execution returns declares it, and sizes
+that bound to a view's `result_bytes` up to it; `Runtime.view_result_limit`
+reads it and answers `None` for an executor that does not define the
+name. Apps lowers its response-size caps to it, so a body too large to
+carry is refused with a message naming the limit rather than lost on
+the way. `DudExecutor` declares 64 MiB; `LocalExecutor` carries
+whatever it is handed and declares nothing.
+
 **`open(context)`** binds to one session's state and starts any
 resident machinery — `LocalExecutor` builds the default sandbox and
 forks the isolation worker; `DudExecutor` boots or resumes a guest and
@@ -263,7 +273,7 @@ never asked to re-materialize a tree it is mid-exec against.
 restricted, budgeted execution — the apps extra's handler dispatch is
 the only consumer. A `ViewSpec` declares the *intent*
 (`readonly_fs`, `readonly_cache`, `timeout`, `tick_limit`,
-`extra_classes`) and each executor realizes it its own way:
+`extra_classes`, `result_bytes`) and each executor realizes it its own way:
 `LocalExecutor` builds a sandtrap sandbox with a memoized policy and
 registers the extra classes; `DudExecutor` ships those classes' module
 *source* so a guest with no nontainer installed can synthesize them,
@@ -271,6 +281,10 @@ and rejects a non-empty write-diff (rung 1) or mounts read-only (VM
 rungs). No sandbox object crosses the seam, so nothing sandtrap-shaped
 rides on the protocol. `tick_limit` is LocalExecutor's alone — a remote
 executor has no tick machinery, and wall-clock is its guard.
+`result_bytes` is the largest bytes value the caller needs back (apps:
+the response body, under its size caps); `DudExecutor` raises dud's
+per-value and per-exec harvest caps to carry it, and `LocalExecutor`
+has nothing to raise.
 
 What a view exec must **carry back** is narrow. Apps dispatch encodes
 the handler's response inside the execution, using a class it passes in
@@ -280,6 +294,7 @@ the handler's response inside the execution, using a class it passes in
 ```
 ("nt-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes)
 ("nt-refused/1", message: str)
+("nt-not-acceptable/1", message: str)
 ```
 
 An executor has to return that tuple as a `tuple`, each element of its

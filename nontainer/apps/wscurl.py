@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..wscurl import FERRY
 from ..wsverb import abspath, tag
-from .contract import make_request
+from .contract import is_text_type, make_request
 
 if TYPE_CHECKING:
     from .dispatch import AppRuntime
@@ -87,31 +87,6 @@ def _strip_origin(url: str, extra_host: str | None = None) -> str | None:
     if not url.startswith("/"):
         url = "/" + url
     return url
-
-
-_TEXT_TYPE_MARKERS = ("json", "xml", "javascript", "ecmascript")
-
-
-def _is_text_type(content_type: str) -> bool:
-    """Whether a response's media type says its body is text.
-
-    The media type is the server's own statement about the body, and
-    it is the only honest one: sniffing the bytes classifies a binary
-    payload that happens to be valid UTF-8 -- one holding NUL bytes,
-    or any ASCII-armored blob -- as text, and a newline appended to it
-    corrupts the file it was redirected into. ``text/*`` is text, so
-    are the structured types that are text on the wire (JSON, XML,
-    JavaScript, including the ``+json`` / ``+xml`` suffix forms), and
-    nothing else is -- an absent or ``application/octet-stream`` type
-    is a body this shell leaves exactly as it came.
-    """
-    kind = content_type.split(";", 1)[0].strip().lower()
-    if not kind:
-        return False
-    if kind.startswith("text/"):
-        return True
-    subtype = kind.partition("/")[2]
-    return any(marker in subtype for marker in _TEXT_TYPE_MARKERS)
 
 
 def _resolve_redirect(
@@ -315,7 +290,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             # bytes: a blob can be valid UTF-8 and still be a blob.
             if (
                 resp.content
-                and _is_text_type(resp.content_type)
+                and is_text_type(resp.content_type)
                 and not resp.content.endswith(b"\n")
             ):
                 ctx.stdout.buffer.write(b"\n")

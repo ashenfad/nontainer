@@ -81,6 +81,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `$.rows[3].when: DataFrame is not JSON-encodable (return
   .to_dict("records"), or bytes with a content-type)`. Plain data
   encodes as fast as before and imports neither numpy nor pandas.
+- **Handlers can return tables, negotiated by `Accept`.** A pandas
+  `DataFrame`, a `Series` (one column, named after it, or `0` when
+  unnamed, as `to_frame()` names it), a pyarrow `Table`, or any object
+  exposing `__arrow_c_stream__` (polars, a DuckDB relation) may be the
+  whole return. When the request's `Accept` names
+  `application/vnd.apache.arrow.stream` with q above 0 (and does not
+  rank JSON higher), it answers as an Arrow IPC stream of that type;
+  otherwise as JSON rows, the shape of `df.to_dict("records")`, encoded
+  by the same rules as any JSON return. Every response to a table return
+  carries `Vary: Accept`. The index follows one rule on both paths: a
+  default `RangeIndex` is dropped, any other index becomes columns named
+  as `reset_index()` names them, so `df.groupby("year")["v"].sum()`
+  answers with columns `year` and `v`. JSON rows for pandas never need
+  pyarrow. Arrow asked for where the handler's environment cannot import
+  pyarrow answers 406, never JSON in its place, with the error and an
+  `api.log` `NOT ACCEPTABLE` line saying to install pyarrow or request
+  JSON; an `__arrow_c_stream__` object asked for as JSON there is a
+  bad return naming pyarrow. See apps.md, "Table returns".
+- **`AppsConfig.max_binary_response_bytes`** (default 32 MB) caps any
+  body that is not text, beside `max_response_bytes` for text. Text is
+  `text/*`, JSON, XML and JavaScript types, the rule `ws-curl` already
+  used (now `nontainer.apps.contract.is_text_type`, shared by both).
+- **`ws.runtime.view_result_limit`** and **`ViewSpec.result_bytes`**.
+  An executor that can carry only so much back from one execution
+  declares it, and a view names the size of bytes value it needs
+  carried. `DudExecutor` sizes dud's `value` and `outputs` caps to
+  `result_bytes` for each view execution, up to a 64 MiB ceiling it
+  declares; at dud's defaults a handler's body could be at most about
+  6.29 MB before it was silently lost. `LocalExecutor` declares none.
 
 ### Changed
 - **NaN and ±Infinity in a handler's JSON return become `null`.** They
@@ -101,6 +130,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or malformed answers 500 with an `ERROR` line in the log, where a
   missing response used to answer 204. Executors other than the two
   shipped here must carry that tuple back intact; see docs/extending.md.
+- **`AppsConfig.max_response_bytes` defaults to 10 MB, up from 2 MB,
+  and now caps text bodies only** (binary bodies have their own cap,
+  above). Both caps are enforced inside the handler's sandbox right
+  after its return is encoded, so an oversized body no longer crosses
+  back before being refused, and again on the host. Over a cap the
+  answer is still 500, but the message says what happened and what to
+  do (`JSON response is 12.3 MB, over the 10 MB limit for text:
+  aggregate or paginate on the server, or return a table and request
+  Arrow (limit 32 MB)`), in the response and as a `BAD RETURN` line in
+  `api.log`, where it used to be a bare `response too large` that
+  nothing logged. The effective cap is lowered to the executor's
+  `view_result_limit`, and the message names that limit when it binds.
+  A static file from the workspace is held to the same two caps;
+  declared `static_assets` stay exempt.
+- **A table nested in a handler's JSON return encodes as its rows.** A
+  `DataFrame`, `Series`, pyarrow `Table` or Arrow stream object inside a
+  `dict`/`list` return (`{"rows": df, "total": 42}`) was refused; it now
+  becomes an array of row objects by the table rules. Arrow applies
+  only to a table that is the whole return.
+- **Request header names are lowercased by `make_request`**, so
+  `req.headers["accept"]` finds the header whichever caller built the
+  request (`dispatch` called directly, or `call(headers=...)` in
+  `ws-pytest`), as the router and `ws-curl` already did.
 
 ### Fixed
 - **`DudExecutor`: a handler returning a date, numpy value or `Decimal`

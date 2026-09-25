@@ -31,6 +31,7 @@ from ..executor import ViewSpec
 from ..workspace import Workspace
 from .contract import (
     HANDLER_CONTRACT,
+    WIRE_NOT_ACCEPTABLE,
     WIRE_REFUSED,
     WIRE_RESPONSE,
     HttpError,
@@ -39,6 +40,7 @@ from .contract import (
     error_body,
     make_request,
     nt__Encoder,
+    size_refusal,
 )
 
 # Fixed names under the workspace root (ws.root, default /workspace):
@@ -187,19 +189,51 @@ def _content_type(path: str) -> str:
 # so intentional errors come back structured rather than as tracebacks.
 # The return value itself is never bound, so nothing but the tuple is
 # left in the namespace for the executor to carry back.
+#
+# The size limits are literals in the trailer's source rather than
+# inputs, so no binding the handler can reach changes them. That keeps
+# an honest handler's oversized body from leaving the sandbox; one that
+# replaces the encoder is still held to the same limits by the host.
 _WIRE = "nt__wire"
 _TRAILER = """
 
 try:
-    nt__wire = nt__Encoder.respond({verb}(nt__req))
+    nt__wire = nt__Encoder.respond(
+        {verb}(nt__req),
+        nt__req.headers.get("accept"),
+        text_limit={text_limit!r},
+        binary_limit={binary_limit!r},
+        carry_limit={carry_limit!r},
+    )
 except HttpError as nt__e:
     nt__wire = nt__Encoder.error(nt__e.status, nt__e.message)
 """
 
 
+def _trailer(
+    verb: str,
+    text_limit: int | None = None,
+    binary_limit: int | None = None,
+    carry_limit: int | None = None,
+) -> str:
+    """The trailer calling ``verb``, with the size limits written in."""
+    return _TRAILER.format(
+        verb=verb,
+        text_limit=None if text_limit is None else int(text_limit),
+        binary_limit=None if binary_limit is None else int(binary_limit),
+        carry_limit=None if carry_limit is None else int(carry_limit),
+    )
+
+
 class _Refused(Exception):
     """The wire carried a refusal: the handler returned something the
     liberal-return rules reject. The message says what."""
+
+
+class _Unacceptable(Exception):
+    """The wire said the request asked for a format the handler's
+    sandbox cannot produce (Arrow without pyarrow). The message says
+    what, and how to fix it."""
 
 
 class _Malformed(Exception):
@@ -213,7 +247,8 @@ def _read_wire(value: Any) -> WireResponse:
     each element's EXACT type is checked (a subclass of ``str`` or
     ``dict`` would carry methods of the handler's making into the code
     that reads it), and the status must be one HTTP can carry. Raises
-    :class:`_Refused` for the encoder's refusal marker and
+    :class:`_Refused` for the encoder's refusal marker,
+    :class:`_Unacceptable` for its not-acceptable marker, and
     :class:`_Malformed` for anything else that is not a response."""
     if type(value) is not tuple or not value or type(value[0]) is not str:
         raise _Malformed(f"expected a wire tuple, got {type(value).__name__}")
@@ -222,6 +257,10 @@ def _read_wire(value: Any) -> WireResponse:
         if len(value) != 2 or type(value[1]) is not str:
             raise _Malformed("a refusal must be (tag, message: str)")
         raise _Refused(value[1])
+    if tag == WIRE_NOT_ACCEPTABLE:
+        if len(value) != 2 or type(value[1]) is not str:
+            raise _Malformed("a not-acceptable must be (tag, message: str)")
+        raise _Unacceptable(value[1])
     if tag != WIRE_RESPONSE:
         raise _Malformed(f"unknown wire tag {tag[:40]!r}")
     if len(value) != 5:
@@ -267,7 +306,19 @@ class AppsConfig:
     # commit checks both); the tick limit only backstops it and
     # must not fire on an honest handler looping over a big frame.
     request_tick_limit: int = 10_000_000
-    max_response_bytes: int = 2_000_000
+    max_response_bytes: int = 10_000_000
+    """The largest TEXT body a handler may answer with: JSON, ``text/*``,
+    XML and JavaScript types (the rule ``ws-curl`` uses to decide what is
+    text). Any other body is held to ``max_binary_response_bytes``.
+
+    Enforced where the handler ran, right after its return is encoded,
+    so an oversized body never crosses the sandbox boundary; the host
+    checks again. Over it, the request answers 500 with a message, also
+    in ``api.log``, that says what to do instead. An executor that can
+    carry less back from one execution lowers it (see
+    ``Runtime.view_result_limit``). Declared ``static_assets`` are
+    exempt; a static file from the workspace is not. Only the embedder
+    sets it: nothing in handler code can raise it."""
     script_hosts: tuple[str, ...] = DEFAULT_SCRIPT_HOSTS
     """Hosts browser scripts may load from (test_app enforcement, served
     CSP, and the agent guidance all derive from this one tuple)."""
@@ -294,8 +345,8 @@ class AppsConfig:
 
     They are same-origin, so ``script_hosts`` needs no entry — ``'self'``
     is always allowed by the served CSP. The two exemptions assets get
-    from handler rules are deliberate: no ``max_response_bytes`` cap
-    (the embedder chose these bytes; the cap exists to catch runaway
+    from handler rules are deliberate: no response-size cap
+    (the embedder chose these bytes; the caps exist to catch runaway
     handler output), and precedence over a workspace file at the same
     path, which is noted in ``api.log`` rather than shadowed silently.
 
@@ -454,6 +505,16 @@ class AppsConfig:
     would otherwise fail only after publishing.
 
     Declared last: see ``frontend_notes``."""
+    max_binary_response_bytes: int = 32_000_000
+    """The largest body of any type ``max_response_bytes`` does not
+    cover: images, ``application/octet-stream``, an Arrow stream a
+    table return answers with. Enforced the same way.
+
+    Larger than the text cap because a binary body is already compact:
+    the same rows as an Arrow stream are a fraction of their size as
+    JSON, which is why the text refusal suggests asking for Arrow.
+
+    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Validate ``csp_extend`` at construction, where the traceback
@@ -581,13 +642,21 @@ class AppRuntime:
                 resp, asset = self._dispatch_static(request)
         except HttpError as e:
             resp = _error_response(e.status, e.message)
-        # Declared assets skip the cap. It exists to catch a handler
-        # returning something runaway; an asset's size is a decision the
-        # embedder already made, and a vendored charting bundle clears
-        # the 2MB default on its own.
-        cap = self._config.max_response_bytes
-        if not asset and len(resp.content) > cap:
-            resp = _error_response(500, "response too large")
+        # A handler's response was held to the caps where it was encoded
+        # and again in _dispatch_api. A static file from the workspace is
+        # held to them here. Declared assets skip them: the caps exist
+        # to catch runaway output, and an asset's size is a decision the
+        # embedder already made.
+        if not api and not asset:
+            refusal = size_refusal(
+                len(resp.content),
+                resp.content_type,
+                self._config.max_response_bytes,
+                self._config.max_binary_response_bytes,
+                advise=False,
+            )
+            if refusal is not None:
+                resp = _error_response(500, refusal)
         # Only /api requests: static assets are high-volume and
         # low-signal, and would bury the tracebacks the log exists for.
         if api:
@@ -653,15 +722,27 @@ class AppRuntime:
         # read-only GET can't mutate, contract classes are in scope,
         # and the per-request budget applies, whichever executor runs
         # it). No sandbox object crosses back here.
+        #
+        # The size caps travel into the sandbox with the trailer, and the
+        # executor is told the largest body it must carry back: one with
+        # a transport limit sizes it to fit, up to its own ceiling, which
+        # then lowers both caps.
+        text_limit = self._config.max_response_bytes
+        binary_limit = self._config.max_binary_response_bytes
+        carry_limit = ws.runtime.view_result_limit
+        largest = max(text_limit, binary_limit)
+        if carry_limit is not None:
+            largest = min(largest, carry_limit)
         view = ViewSpec(
             readonly_fs=readonly,
             readonly_cache=readonly,
             timeout=self._config.request_timeout,
             tick_limit=self._config.request_tick_limit,
             extra_classes=self._contract,
+            result_bytes=largest,
         )
         result = ws.runtime.exec_python(
-            source + _TRAILER.format(verb=verb),
+            source + _trailer(verb, text_limit, binary_limit, carry_limit),
             inputs={"nt__req": request},
             view=view,
             # handlers are scripts: a stray module-level bare
@@ -687,12 +768,21 @@ class AppRuntime:
             return _error_response(500, "internal error", log=self._log_path)
 
         try:
-            return _read_wire(result.namespace.get(_WIRE))
+            resp = _read_wire(result.namespace.get(_WIRE))
         except _Refused as e:
             if atomic:
                 ws.discard()
             self._log(f"[{where}] BAD RETURN: {e}")
             return _error_response(500, str(e))
+        except _Unacceptable as e:
+            # The response depended on the request's Accept, so it says
+            # so: a cache must not answer a JSON request with this.
+            if atomic:
+                ws.discard()
+            self._log(f"[{where}] NOT ACCEPTABLE: {e}")
+            return WireResponse(
+                406, error_body(str(e)), "application/json", {"vary": "Accept"}
+            )
         except _Malformed as e:
             # Not something a handler's return produces: the encoder
             # always hands back a well-formed tuple or a refusal. So the
@@ -710,6 +800,18 @@ class AppRuntime:
             )
             self._log(f"[{where}] ERROR: {reason}")
             return _error_response(500, "internal error", log=self._log_path)
+
+        # The encoder refused an oversized body before it crossed; this
+        # holds a handler that replaced the encoder to the same caps.
+        refusal = size_refusal(
+            len(resp.content), resp.content_type, text_limit, binary_limit, carry_limit
+        )
+        if refusal is not None:
+            if atomic:
+                ws.discard()
+            self._log(f"[{where}] BAD RETURN: {refusal}")
+            return _error_response(500, refusal)
+        return resp
 
     def test_app(
         self,
@@ -729,7 +831,7 @@ class AppRuntime:
     def _dispatch_static(self, request: Request) -> tuple[WireResponse, bool]:
         """Serve a static path. The flag says the bytes came from a
         declared ``static_assets`` directory, which exempts them from
-        ``max_response_bytes`` (see :meth:`_dispatch`)."""
+        the response-size caps (see :meth:`_dispatch`)."""
         if request.method.upper() != "GET":
             raise HttpError(405, "static paths are GET-only")
         # Normalize `.`/`..` and confine to the app root FIRST, before
