@@ -5,6 +5,11 @@ docs/apps.md. These classes cross the sandbox boundary: ``Request``
 rides in via the ``inputs=`` channel (it is plain picklable data),
 ``Response``/``HttpError`` are registered in the handler sandbox's
 policy so agent code can construct/raise them.
+
+The encoding of a handler's return runs inside the sandbox too (see
+``nt__Encoder``), so this module is loaded wherever handlers run,
+including sandboxes with no nontainer installed. It imports only the
+standard library at module level, and must keep to that.
 """
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from __future__ import annotations
 import datetime as _dt
 import json as _json
 import math as _math
+import operator as _operator
 from dataclasses import dataclass, field
 from decimal import Decimal as _Decimal
 from itertools import islice as _islice
@@ -246,37 +252,132 @@ class WireResponse:
 
 def normalize(value: Any) -> WireResponse:
     """Liberal returns: dict/list → JSON, str → text, bytes → blob,
-    Response → as specified, None → 204."""
+    Response → as specified, None → 204. Raises ``TypeError`` for a
+    return it refuses, naming what was wrong."""
+    status, content_type, headers, content = _response_parts(value)
+    return WireResponse(status, content, content_type, headers)
+
+
+def _response_parts(value: Any) -> tuple[int, str, dict[str, str], bytes]:
+    """``(status, content_type, headers, content)`` for one handler
+    return, by the liberal-return rules. Raises ``TypeError`` for a
+    return it refuses."""
     if isinstance(value, Response):
-        inner = (
-            normalize(value.body)
-            if value.body is not None
-            else WireResponse(204, b"", "text/plain")
-        )
+        if value.body is None:
+            content_type, content = "text/plain", b""
+        else:
+            _, content_type, _, content = _response_parts(value.body)
         # Lowercase the agent-supplied header keys: HTTP headers are
         # case-insensitive, and agents type the idiomatic Content-Type —
         # a cased lookup would silently ignore it. Tolerate an explicit
         # headers=None (agents write it; the field default is {}).
         headers = {str(k).lower(): str(v) for k, v in (value.headers or {}).items()}
-        return WireResponse(
-            status=value.status,
-            content=inner.content,
-            content_type=headers.get("content-type", inner.content_type),
-            headers=headers,
+        return (
+            _status(value.status, "Response"),
+            headers.get("content-type", content_type),
+            headers,
+            content,
         )
     if value is None:
-        return WireResponse(204, b"", "text/plain")
+        return 204, "text/plain", {}, b""
     if isinstance(value, (dict, list)):
-        return WireResponse(200, encode_json(value), "application/json")
+        return 200, "application/json", {}, encode_json(value)
     if isinstance(value, str):
-        return WireResponse(200, value.encode(), "text/plain; charset=utf-8")
+        return 200, "text/plain; charset=utf-8", {}, value.encode()
     if isinstance(value, bytes):
-        return WireResponse(200, value, "application/octet-stream")
+        return 200, "application/octet-stream", {}, bytes(value)
     hint = _REFUSAL_HINTS.get(type(value).__name__)
     raise TypeError(
         f"handler returned {type(value).__name__}; "
         + (hint or "return dict/list/str/bytes/Response or raise HttpError")
     )
+
+
+def _status(value: Any, source: str) -> int:
+    """``value`` as an HTTP status, or ``TypeError``. Anything that is
+    an integer by ``__index__`` passes (a numpy integer from a lookup
+    table is one); a bool never does."""
+    status = None
+    if not isinstance(value, bool):
+        try:
+            status = _operator.index(value)
+        except TypeError:
+            pass
+    if status is None or not 100 <= status <= 599:
+        raise TypeError(
+            f"{source} status must be an integer from 100 to 599, got {value!r}"
+        )
+    return int(status)
+
+
+def error_body(message: str, **extra: str) -> bytes:
+    """The body of an error response: JSON, because model-written
+    frontends call ``res.json()`` unconditionally, and a plain-text
+    error cascades into a second, misleading ``SyntaxError`` in the app
+    console. JSON keeps their catch blocks working
+    (``{"error": ..., ...}``)."""
+    return _json.dumps({"error": message, **extra}).encode()
+
+
+# -- the response wire --------------------------------------------------
+#
+# A handler's return is encoded where the handler ran, and what crosses
+# back to the host is one of two tuples of primitives:
+#
+#   (WIRE_RESPONSE, status: int, content_type: str,
+#    headers: dict[str, str], body: bytes)
+#   (WIRE_REFUSED, message: str)
+#
+# The first element names the shape and its version. A refusal is a
+# return the liberal-return rules reject (a set, a DataFrame, a status
+# out of range); its message is the one ``normalize`` raises with. The
+# host reads nothing else from the execution's namespace, and checks
+# every element's exact type before using it.
+#
+# Everything the encoding needs lives in this module, and this module
+# imports only the standard library at module level: an executor whose
+# sandbox has no nontainer installed (a VM guest) builds it from this
+# file's source. numpy and pandas are imported only when a value of
+# theirs is being encoded, so a sandbox holding neither never needs
+# them.
+
+WIRE_RESPONSE = "nt-response/1"
+WIRE_REFUSED = "nt-refused/1"
+
+
+class nt__Encoder:
+    """The response encoder dispatch binds into a handler's sandbox.
+
+    Dispatch appends a trailer to the handler source that calls the
+    verb function and passes its return to :meth:`respond` (or, when it
+    raises ``HttpError``, the status and message to :meth:`error`), so
+    the encoding runs in the same place on every executor and only the
+    wire tuple leaves the sandbox. Bound the way the contract classes
+    are, under a name in the reserved ``nt__`` space, rather than
+    imported: an import from handler code is refused by the sandbox
+    policy, and granting it would let every handler import this module.
+
+    Calling it from handler code grants nothing: it produces the same
+    tuple the trailer does, which the host validates like any other."""
+
+    @staticmethod
+    def respond(value: Any) -> tuple:
+        """The wire tuple for one handler return."""
+        try:
+            status, content_type, headers, content = _response_parts(value)
+        except TypeError as e:
+            return (WIRE_REFUSED, str(e))
+        return (WIRE_RESPONSE, status, content_type, headers, content)
+
+    @staticmethod
+    def error(status: Any, message: Any) -> tuple:
+        """The wire tuple for an ``HttpError``: its status, with the
+        message in the JSON error body every error response carries."""
+        try:
+            code = _status(status, "HttpError")
+        except TypeError as e:
+            return (WIRE_REFUSED, str(e))
+        return (WIRE_RESPONSE, code, "application/json", {}, error_body(str(message)))
 
 
 # -- JSON encoding of handler returns -----------------------------------

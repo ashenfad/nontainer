@@ -87,8 +87,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were written as the bare tokens `NaN` and `Infinity`, which are not
   JSON: the handler answered 200 and the browser's `res.json()` threw,
   with nothing in `api.log`. The same holds for numpy floats.
+- **Handler responses are encoded inside the sandbox, and every
+  executor answers with the same bytes.** The handler's return used to
+  cross back to the host and be encoded there; now the trailer dispatch
+  appends encodes it where the handler ran, and only `(status, content
+  type, headers, body bytes)` crosses, as a tuple of primitives the
+  host checks element by element. On `LocalExecutor` under process or
+  kernel isolation the host no longer unpickles the handler's return
+  object. A `Response` or `HttpError` status outside 100 to 599 is now
+  refused as a bad return (500, with a `BAD RETURN` line in `api.log`)
+  instead of being passed to the server. A wire value that is missing
+  or malformed answers 500 with an `ERROR` line in the log, where a
+  missing response used to answer 204. Executors other than the two
+  shipped here must carry that tuple back intact; see docs/extending.md.
 
 ### Fixed
+- **`DudExecutor`: a handler returning a date, numpy value or `Decimal`
+  answered 204 with an empty body.** The return crossed the guest
+  boundary through dud's codec, which runs a plain `json.dumps` and
+  silently skips what that refuses, so the response never reached the
+  host. It is now encoded in the guest (see Changed), and answers what
+  `LocalExecutor` answers: `{"n": float("nan"), "d": date(2024, 1, 2)}`
+  is `200 {"n": null, "d": "2024-01-02"}` on both.
 - **`ws-pytest` with no paths collects `tests/` only.** It walked the
   whole workspace except `app/`, although its help said `tests/`, so a
   vendored library or copied example whose `test_*.py` could not import

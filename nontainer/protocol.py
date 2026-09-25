@@ -909,9 +909,11 @@ class ViewSpec:
     no tick machinery and ignore it — wall-clock is the guard)."""
 
     extra_classes: tuple[type, ...] = ()
-    """Classes the handler code must be able to name (apps' ``Request``
-    / ``Response`` / ``HttpError``). LocalExecutor registers them in the
-    sandbox policy; a remote executor imports them by qualified name."""
+    """Classes the executed code must be able to name: apps' ``Request``
+    / ``Response`` / ``HttpError``, and the encoder dispatch's trailer
+    calls on the handler's return. LocalExecutor registers them in the
+    sandbox policy; a remote executor imports them by qualified name, or
+    builds them from their module's source where it cannot."""
 
 
 @runtime_checkable

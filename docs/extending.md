@@ -272,6 +272,27 @@ rungs). No sandbox object crosses the seam, so nothing sandtrap-shaped
 rides on the protocol. `tick_limit` is LocalExecutor's alone — a remote
 executor has no tick machinery, and wall-clock is its guard.
 
+What a view exec must **carry back** is narrow. Apps dispatch encodes
+the handler's response inside the execution, using a class it passes in
+`extra_classes`, and reads exactly one binding from the result's
+`namespace`: `nt__wire`, a flat tuple of built-in primitives —
+
+```
+("nt-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes)
+("nt-refused/1", message: str)
+```
+
+An executor has to return that tuple as a `tuple`, each element of its
+exact built-in type, with the body's bytes unchanged. The host checks
+every element's type and answers 500 when one is off, so an executor
+that turns the tuple into a list, or the bytes into base64 text,
+serves nothing but errors. `DudExecutor`'s codec is JSON plus top-level
+bytes, so its epilogue tags a tuple as a list with base64'd bytes
+elements and rebuilds it host-side. An executor that cannot carry a
+value it was asked for should leave the binding out rather than send
+something in its place: dispatch reports a missing wire as its own
+error.
+
 **`diff()` and `sync()`** exist for executors whose writes do not land
 in the provider directly. The workspace calls `diff` after every
 mutating exec, before its commit flow, and `sync` whenever it moves
