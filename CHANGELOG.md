@@ -69,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   themselves are never rewritten. A merge whose source commit
   predates the migration takes the source's migrated head instead,
   when no file changed in between.
+- **Handler JSON returns take numpy, pandas and stdlib data values.**
+  A `dict`/`list` return, or one as a `Response` body, encodes at any
+  depth: numpy scalars as native values, numpy arrays as lists,
+  `datetime`/`date`/`time`/`Timestamp`/`datetime64` as ISO 8601
+  strings (offset kept), `timedelta`/`Timedelta`/`timedelta64` as total
+  seconds, `Decimal` as a number, and `pd.NaT`/`pd.NA` as `null`, so
+  `df.to_dict("records")` returns as it is. Each was a 500 before. A
+  value still refused (a `set`, a `DataFrame`, an unknown type) names
+  its path in the 500 and the `BAD RETURN` log line:
+  `$.rows[3].when: DataFrame is not JSON-encodable (return
+  .to_dict("records"), or bytes with a content-type)`. Plain data
+  encodes as fast as before and imports neither numpy nor pandas.
+
+### Changed
+- **NaN and ±Infinity in a handler's JSON return become `null`.** They
+  were written as the bare tokens `NaN` and `Infinity`, which are not
+  JSON: the handler answered 200 and the browser's `res.json()` threw,
+  with nothing in `api.log`. The same holds for numpy floats.
 
 ### Fixed
 - **`ws-pytest` with no paths collects `tests/` only.** It walked the
