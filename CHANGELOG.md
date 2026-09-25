@@ -74,13 +74,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   depth: numpy scalars as native values, numpy arrays as lists,
   `datetime`/`date`/`time`/`Timestamp`/`datetime64` as ISO 8601
   strings (offset kept), `timedelta`/`Timedelta`/`timedelta64` as total
-  seconds, `Decimal` as a number, and `pd.NaT`/`pd.NA` as `null`, so
-  `df.to_dict("records")` returns as it is. Each was a 500 before. A
-  value still refused (a `set`, a `DataFrame`, an unknown type) names
-  its path in the 500 and the `BAD RETURN` log line:
-  `$.rows[3].when: DataFrame is not JSON-encodable (return
-  .to_dict("records"), or bytes with a content-type)`. Plain data
-  encodes as fast as before and imports neither numpy nor pandas.
+  seconds, `Decimal` as a number, `pd.NaT`/`pd.NA` as `null`, and a
+  table (`DataFrame`, `Series`, pyarrow `Table`, an `__arrow_c_stream__`
+  object) as its rows, an array of row objects by the table rules below,
+  so `{"rows": df, "total": len(df)}` returns as it is. Each was a 500
+  before. A value still refused (a `set`, an unknown type) names its
+  path in the 500 and the `BAD RETURN` log line: `$.rows[3].tags: set
+  is not JSON-encodable (its order is unstable; return sorted(...))`.
+  Plain data encodes as fast as before and imports neither numpy nor
+  pandas.
 - **Handlers can return tables, negotiated by `Accept`.** A pandas
   `DataFrame`, a `Series` (one column, named after it, or `0` when
   unnamed, as `to_frame()` names it), a pyarrow `Table`, or any object
@@ -90,15 +92,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rank JSON higher), it answers as an Arrow IPC stream of that type;
   otherwise as JSON rows, the shape of `df.to_dict("records")`, encoded
   by the same rules as any JSON return. Every response to a table return
-  carries `Vary: Accept`. The index follows one rule on both paths: a
-  default `RangeIndex` is dropped, any other index becomes columns named
-  as `reset_index()` names them, so `df.groupby("year")["v"].sum()`
-  answers with columns `year` and `v`. JSON rows for pandas never need
-  pyarrow. Arrow asked for where the handler's environment cannot import
-  pyarrow answers 406, never JSON in its place, with the error and an
-  `api.log` `NOT ACCEPTABLE` line saying to install pyarrow or request
-  JSON; an `__arrow_c_stream__` object asked for as JSON there is a
-  bad return naming pyarrow. See apps.md, "Table returns".
+  carries `Vary: Accept`. The index follows one rule on both paths,
+  pyarrow's own default (`preserve_index=None`) with one departure:
+  any `RangeIndex` is dropped whatever its start, step or name, and so
+  is an unnamed integer index (pyarrow would keep that one as
+  `__index_level_0__`; after a boolean filter it holds only the old row
+  positions). Every other index becomes columns named as
+  `reset_index()` names them: a named one keeps its name
+  (`df.groupby("year")["v"].sum()` answers with columns `year` and
+  `v`), an unnamed non-integer one becomes `index`, and a `MultiIndex`
+  gives a column per level. JSON rows for pandas never need pyarrow.
+  Arrow asked for where the handler's environment cannot import
+  pyarrow answers JSON rows when the request's `Accept` also accepts
+  JSON (with a `NOTE` line in `api.log` saying why), and 406 when Arrow
+  is the only acceptable type (with a `NOT ACCEPTABLE` line saying to
+  install pyarrow or request JSON); an `__arrow_c_stream__` object
+  asked for as JSON there is a bad return naming pyarrow. The response
+  wire gains `nt-noted-response/1` and `nt-not-acceptable/1` for these.
+  See apps.md, "Table returns".
 - **`AppsConfig.max_binary_response_bytes`** (default 32 MB) caps any
   body that is not text, beside `max_response_bytes` for text. Text is
   `text/*`, JSON, XML and JavaScript types, the rule `ws-curl` already
@@ -144,11 +155,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `view_result_limit`, and the message names that limit when it binds.
   A static file from the workspace is held to the same two caps;
   declared `static_assets` stay exempt.
-- **A table nested in a handler's JSON return encodes as its rows.** A
-  `DataFrame`, `Series`, pyarrow `Table` or Arrow stream object inside a
-  `dict`/`list` return (`{"rows": df, "total": 42}`) was refused; it now
-  becomes an array of row objects by the table rules. Arrow applies
-  only to a table that is the whole return.
 - **Request header names are lowercased by `make_request`**, so
   `req.headers["accept"]` finds the header whichever caller built the
   request (`dispatch` called directly, or `call(headers=...)` in

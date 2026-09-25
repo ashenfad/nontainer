@@ -16,9 +16,11 @@ import pytest
 from nontainer import PythonConfig, Workspace
 from nontainer.apps import AppsConfig, Response, enable_apps, normalize, request
 from nontainer.apps.contract import (
+    ARROW_FELL_BACK,
     ARROW_STREAM,
     ARROW_UNAVAILABLE,
     WIRE_NOT_ACCEPTABLE,
+    WIRE_NOTED_RESPONSE,
     WIRE_REFUSED,
     WIRE_RESPONSE,
     accepts_arrow,
@@ -153,21 +155,54 @@ def test_response_body_table_negotiates_and_keeps_its_headers():
 # -- the index ----------------------------------------------------------------
 
 
+def _filtered():
+    """What a boolean filter leaves: an unnamed integer index holding the
+    surviving rows' old positions, irregular so pandas cannot make it a
+    RangeIndex."""
+    df = pd.DataFrame({"v": [1, 2, 3, 4]})
+    out = df[df.v != 3]
+    assert not isinstance(out.index, pd.RangeIndex)
+    return out
+
+
 INDEX_CASES = {
-    "range_index_dropped": (
-        pd.DataFrame({"v": [1, 2]}),
+    # Row numbers are dropped: any RangeIndex, and an unnamed integer index.
+    "default_range_index": (pd.DataFrame({"v": [1, 2]}), ["v"]),
+    "sliced_range_index": (pd.DataFrame({"v": [1, 2, 3]}).iloc[1:], ["v"]),
+    "stepped_range_index": (pd.DataFrame({"v": [1, 2, 3]}).iloc[::2], ["v"]),
+    "named_range_index": (
+        pd.DataFrame({"v": [1, 2]}, index=pd.RangeIndex(0, 2, name="k")),
         ["v"],
     ),
-    "named_index": (
+    "filtered_int_index": (_filtered(), ["v"]),
+    "unnamed_int_index": (pd.DataFrame({"v": [1, 2]}, index=[10, 20]), ["v"]),
+    "unnamed_uint_index": (
+        pd.DataFrame({"v": [1, 2]}, index=pd.Index([9, 4], dtype="uint8")),
+        ["v"],
+    ),
+    "unnamed_nullable_int_index": (
+        pd.DataFrame({"v": [1, 2, 3]}, index=pd.Index([3, 1, 7], dtype="Int64")),
+        ["v"],
+    ),
+    # Everything else is data, and becomes columns.
+    "named_int_index": (
+        pd.DataFrame({"v": [1, 2, 3]}, index=pd.Index([10, 30, 20], name="id")),
+        ["id", "v"],
+    ),
+    "named_string_index": (
         pd.DataFrame({"v": [1, 2]}, index=pd.Index(["a", "b"], name="k")),
         ["k", "v"],
     ),
-    "unnamed_non_default_index": (
-        pd.DataFrame({"v": [1, 2]}, index=[10, 20]),
+    "unnamed_datetime_index": (
+        pd.DataFrame({"v": [1, 2]}, index=pd.date_range("2024-01-01", periods=2)),
         ["index", "v"],
     ),
-    "offset_range_index": (
-        pd.DataFrame({"v": [1, 2, 3]}).iloc[1:],
+    "unnamed_string_index": (
+        pd.DataFrame({"v": [1, 2]}, index=["a", "b"]),
+        ["index", "v"],
+    ),
+    "unnamed_float_index": (
+        pd.DataFrame({"v": [1, 2]}, index=[0.5, 1.5]),
         ["index", "v"],
     ),
     "multi_index": (
@@ -177,8 +212,12 @@ INDEX_CASES = {
         ),
         ["k", "level_1", "v"],
     ),
+    "unnamed_int_multi_index": (
+        pd.DataFrame({"v": [1, 2]}, index=pd.MultiIndex.from_tuples([(1, 5), (2, 3)])),
+        ["level_0", "level_1", "v"],
+    ),
     "groupby_series": (
-        pd.DataFrame({"year": [2020, 2020, 2021], "v": [1, 2, 3]})
+        pd.DataFrame({"year": [2020, 2020, 2023], "v": [1, 2, 3]})
         .groupby("year")["v"]
         .sum(),
         ["year", "v"],
@@ -192,6 +231,11 @@ def test_index_rule_gives_the_same_columns_both_ways(case):
     rows = json_rows(value)
     assert list(rows[0]) == columns
     assert arrow_table(value).column_names == columns
+
+
+def test_filtered_rows_keep_their_values_not_their_positions():
+    assert json_rows(_filtered()) == [{"v": 1}, {"v": 2}, {"v": 4}]
+    assert arrow_table(_filtered()).to_pydict() == {"v": [1, 2, 4]}
 
 
 def test_groupby_series_values():
@@ -322,6 +366,55 @@ def test_arrow_without_pyarrow_is_406(no_pyarrow):
     assert json_rows(pd.Series([1], name="s")) == [{"s": 1}]
 
 
+@pytest.mark.parametrize(
+    "accept",
+    [
+        f"{ARROW_STREAM}, application/json;q=0.5",
+        f"{ARROW_STREAM}, application/*;q=0.2",
+        f"{ARROW_STREAM}, */*;q=0.1",
+        f"{ARROW_STREAM}, application/json",
+    ],
+)
+def test_arrow_without_pyarrow_falls_back_when_json_is_accepted(no_pyarrow, accept):
+    df = pd.DataFrame({"a": [1]})
+    assert respond(df, accept) == (
+        WIRE_NOTED_RESPONSE,
+        200,
+        "application/json",
+        {"vary": "Accept"},
+        b'[{"a": 1}]',
+        ARROW_FELL_BACK,
+    )
+    wire = normalize(df, accept)
+    assert (wire.status, wire.content, wire.headers) == (
+        200,
+        b'[{"a": 1}]',
+        {"vary": "Accept"},
+    )
+    # The note survives a Response wrapper.
+    assert respond(Response(body=df), accept)[5] == ARROW_FELL_BACK
+
+
+@pytest.mark.parametrize(
+    "accept",
+    [
+        ARROW_STREAM,
+        f"{ARROW_STREAM}, text/html",
+        f"{ARROW_STREAM}, application/json;q=0",
+        # The most specific range covering JSON decides, and it says no.
+        f"{ARROW_STREAM}, application/json;q=0, */*",
+    ],
+)
+def test_arrow_without_pyarrow_is_406_when_only_arrow_is_accepted(no_pyarrow, accept):
+    df = pd.DataFrame({"a": [1]})
+    assert respond(df, accept) == (WIRE_NOT_ACCEPTABLE, ARROW_UNAVAILABLE)
+
+
+def test_with_pyarrow_arrow_is_sent_and_nothing_is_noted():
+    wire = respond(pd.DataFrame({"a": [1]}), f"{ARROW_STREAM}, */*;q=0.1")
+    assert wire[0] == WIRE_RESPONSE and wire[2] == ARROW_STREAM
+
+
 def test_a_stream_without_pyarrow(no_pyarrow):
     """A stream object needs pyarrow to be read at all: as JSON that is
     a bad return naming pyarrow, as Arrow the same 406."""
@@ -361,6 +454,24 @@ def test_dispatch_answers_406_and_logs_it(no_pyarrow):
         assert "GET /api/t -> 406" in log
         r = rt.dispatch(request("GET", "/api/t"))
         assert (r.status, json.loads(r.content)) == (200, [{"a": 1}, {"a": 2}])
+    finally:
+        ws.close()
+
+
+def test_dispatch_falls_back_to_json_and_logs_it(no_pyarrow):
+    ws, rt = _table_ws()
+    try:
+        accept = f"{ARROW_STREAM}, application/json;q=0.5"
+        r = rt.dispatch(request("GET", "/api/t?x=1", headers={"accept": accept}))
+        assert (r.status, r.content_type, r.headers) == (
+            200,
+            "application/json",
+            {"vary": "Accept"},
+        )
+        assert json.loads(r.content) == [{"a": 1}, {"a": 2}]
+        log = ws.files.fs.read(LOG).decode()
+        assert f"[t:get ?x=1] NOTE: {ARROW_FELL_BACK}" in log
+        assert "GET /api/t?x=1 -> 200" in log
     finally:
         ws.close()
 

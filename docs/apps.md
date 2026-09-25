@@ -196,23 +196,48 @@ def get(req):
 - **`Vary: Accept`** is on every response to a table return, since
   its body depends on that header. A `Response(body=df, headers=...)`
   keeps its own `Vary` and gains `Accept`. Other returns do not vary.
-- **The index** follows one rule for JSON rows and Arrow alike: a
-  default `RangeIndex` (0, 1, 2, ..., unnamed) is dropped; any other
-  index becomes columns, named as `reset_index()` names them (the
-  index's name, or `index` when unnamed; one column per level of a
-  `MultiIndex`). `df.groupby("year")["v"].sum()` gives columns `year`,
-  `v`. A `Series` is one column named after it; an unnamed one is
-  named `0`, as `to_frame()` names it. JSON rows are built with pandas
-  alone, so they never need pyarrow; Arrow converts the same frame, so
-  both carry the same columns. A frame with duplicate column names, or
+- **The index** follows one rule for JSON rows and Arrow alike: an
+  index that only numbers the rows is dropped, and any other becomes
+  columns, named as `reset_index()` names them.
+
+  | Index | Columns |
+  |---|---|
+  | any `RangeIndex`, whatever its start, step or name (`df.iloc[10:]`, `df.iloc[::2]`) | dropped |
+  | unnamed, integer dtype (int, uint, nullable `Int64`), as `df[df.score > 50]` leaves | dropped |
+  | named, any other kind (`groupby("year")` gives `year`) | one column, the index's name |
+  | unnamed, not integer (dates, strings, floats) | one column, `index` |
+  | `MultiIndex` | one column per level; unnamed levels `level_0`, `level_1`, ... |
+
+  That is pyarrow's own default (`preserve_index=None`, which keeps a
+  `RangeIndex` only as schema metadata a page never sees), except for
+  an unnamed integer index, which pyarrow keeps as
+  `__index_level_0__`: after a filter it holds the surviving rows' old
+  positions, which mean nothing to a page. Name the index to keep it.
+  A `Series` is one column named after it; an unnamed one is named
+  `0`, as `to_frame()` names it. JSON rows are built with pandas alone,
+  so they never need pyarrow; Arrow converts the same frame, so both
+  carry the same columns. A frame with duplicate column names, or
   `MultiIndex` columns, has no row form and is refused.
+
+  With pandas 3, `df.set_index("id")` over consecutive integers makes
+  a *named* `RangeIndex`, which is dropped like any other; use
+  `reset_index()` first, or return the column, when the ids matter.
 - **pyarrow** is needed for Arrow output, where the handler runs. When
-  Arrow is requested and pyarrow cannot be imported there, the answer
-  is **406**, never a silent fallback to JSON, with the error body and
-  `api.log` line saying `Arrow was requested, but pyarrow is not
-  available to this app's handlers: install pyarrow where they run, or
-  request JSON`. JSON rows for a pandas `DataFrame`/`Series` still work
-  without it. An `__arrow_c_stream__` object needs pyarrow to be read at
+  Arrow is requested and pyarrow cannot be imported there:
+  - if the request's `Accept` also explicitly accepts JSON with q
+    above 0 (`application/json`, `application/*` or `*/*`, the most
+    specific range covering JSON deciding), the answer is JSON rows, a
+    normal 200 with `Vary: Accept`, and `api.log` gets a `NOTE:` line:
+    `Arrow was requested, but pyarrow is not available to this app's
+    handlers, so JSON was sent (the request accepts JSON too): install
+    pyarrow where they run to serve Arrow`;
+  - otherwise, with Arrow the only acceptable type, the answer is
+    **406** with the error body and an `api.log` `NOT ACCEPTABLE:` line
+    saying `Arrow was requested, but pyarrow is not available to this
+    app's handlers: install pyarrow where they run, or request JSON`.
+
+  Never JSON the request did not accept. JSON rows for a pandas
+  `DataFrame`/`Series` work without pyarrow. An `__arrow_c_stream__` object needs pyarrow to be read at
   all, so returned without it and asked for as JSON, it is a bad return
   (500 + `BAD RETURN`) naming pyarrow.
 
@@ -330,6 +355,7 @@ back to the host is one tuple of primitives:
 
 ```
 ("nt-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes)
+("nt-noted-response/1", status, content_type, headers, body, note: str)  # served, note logged
 ("nt-refused/1", message: str)         # a return the rules above refuse (500)
 ("nt-not-acceptable/1", message: str)  # Arrow asked for, pyarrow missing (406)
 ```
@@ -351,7 +377,10 @@ comes back either way.
 
 The host reads only that tuple, and checks it strictly: exact built-in
 types throughout, a status from 100 to 599, headers `str` to `str`, a
-`bytes` body. A refusal is logged as `BAD RETURN: ...` and answers 500
+`bytes` body. A noted response is served like a plain one, and its note
+is logged as `NOTE: ...`; it is flat for the same reason the others are,
+so an executor carries it the way it carries any response. A refusal
+is logged as `BAD RETURN: ...` and answers 500
 with the message; a not-acceptable is logged as `NOT ACCEPTABLE: ...`
 and answers 406 with `Vary: Accept`; anything else that is not a
 response (the tuple missing, or replaced by handler code) answers 500

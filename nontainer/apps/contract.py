@@ -259,7 +259,8 @@ def normalize(value: Any, accept: str | None = None) -> WireResponse:
     table → JSON rows or Arrow as ``accept`` negotiates, Response → as
     specified, None → 204. Raises ``TypeError`` for a return it refuses,
     naming what was wrong. A table asked for as Arrow where pyarrow
-    cannot be imported answers 406, as dispatch does."""
+    cannot be imported answers 406, or JSON rows when the request
+    accepts JSON too, as dispatch does."""
     try:
         status, content_type, headers, content = _response_parts(value, accept)
     except _NotAcceptable as e:
@@ -270,19 +271,23 @@ def normalize(value: Any, accept: str | None = None) -> WireResponse:
 
 
 def _response_parts(
-    value: Any, accept: str | None = None
+    value: Any, accept: str | None = None, notes: list[str] | None = None
 ) -> tuple[int, str, dict[str, str], bytes]:
     """``(status, content_type, headers, content)`` for one handler
     return, by the liberal-return rules; ``accept`` is the request's
     ``Accept`` header, which only a table return consults. Raises
     ``TypeError`` for a return it refuses, and :class:`_NotAcceptable`
-    for a table asked for in a format this sandbox cannot produce."""
+    for a table asked for in a format this sandbox cannot produce.
+    Anything the encoding did that the handler's author should hear
+    about, without the response failing, is appended to ``notes``."""
     if isinstance(value, Response):
         vary = None
         if value.body is None:
             content_type, content = "text/plain", b""
         else:
-            _, content_type, body_headers, content = _response_parts(value.body, accept)
+            _, content_type, body_headers, content = _response_parts(
+                value.body, accept, notes
+            )
             vary = body_headers.get("vary")
         # Lowercase the agent-supplied header keys: HTTP headers are
         # case-insensitive, and agents type the idiomatic Content-Type —
@@ -307,7 +312,7 @@ def _response_parts(
         return 200, "application/octet-stream", {}, bytes(value)
     kind = _table_kind(value)
     if kind is not None:
-        return _table_parts(value, kind, accept)
+        return _table_parts(value, kind, accept, notes)
     hint = _REFUSAL_HINTS.get(type(value).__name__)
     raise TypeError(
         f"handler returned {type(value).__name__}; "
@@ -359,14 +364,20 @@ def error_body(message: str, **extra: str) -> bytes:
 # -- the response wire --------------------------------------------------
 #
 # A handler's return is encoded where the handler ran, and what crosses
-# back to the host is one of three tuples of primitives:
+# back to the host is one of four tuples of primitives:
 #
 #   (WIRE_RESPONSE, status: int, content_type: str,
 #    headers: dict[str, str], body: bytes)
+#   (WIRE_NOTED_RESPONSE, status: int, content_type: str,
+#    headers: dict[str, str], body: bytes, note: str)
 #   (WIRE_REFUSED, message: str)
 #   (WIRE_NOT_ACCEPTABLE, message: str)
 #
-# The first element names the shape and its version. A refusal is a
+# The first element names the shape and its version. A noted response
+# is served like any other, and its note, something the handler's
+# author should hear about (JSON sent in place of Arrow), goes to the
+# handler log; it is flat, like the others, so every executor carries
+# it the way it carries a plain response. A refusal is a
 # return the liberal-return rules reject (a set, a status out of range,
 # a body over the size limits); its message is the one ``normalize``
 # raises with, and the host answers it 500. Not-acceptable is a table
@@ -385,6 +396,7 @@ def error_body(message: str, **extra: str) -> bytes:
 WIRE_RESPONSE = "nt-response/1"
 WIRE_REFUSED = "nt-refused/1"
 WIRE_NOT_ACCEPTABLE = "nt-not-acceptable/1"
+WIRE_NOTED_RESPONSE = "nt-noted-response/1"
 
 
 class nt__Encoder:
@@ -419,8 +431,11 @@ class nt__Encoder:
         limits are the response-size caps (see :func:`size_refusal`):
         a body over them is refused here, before its bytes leave the
         sandbox. ``None`` is no limit."""
+        notes: list[str] = []
         try:
-            status, content_type, headers, content = _response_parts(value, accept)
+            status, content_type, headers, content = _response_parts(
+                value, accept, notes
+            )
         except _NotAcceptable as e:
             return (WIRE_NOT_ACCEPTABLE, str(e))
         except TypeError as e:
@@ -430,6 +445,9 @@ class nt__Encoder:
         )
         if refusal is not None:
             return (WIRE_REFUSED, refusal)
+        if notes:
+            note = "; ".join(notes)
+            return (WIRE_NOTED_RESPONSE, status, content_type, headers, content, note)
         return (WIRE_RESPONSE, status, content_type, headers, content)
 
     @staticmethod
@@ -568,23 +586,32 @@ def size_refusal(
 # carries ``Vary: Accept`` either way. Nested anywhere inside a dict or
 # list return, it encodes as its JSON rows.
 #
-# The index follows one rule on both paths: a default RangeIndex
-# (0, 1, 2, ... and unnamed) is dropped, and any other index becomes
-# columns the way ``reset_index()`` names them (the index's name, or
-# ``index``; one column per level of a MultiIndex). It is applied with
-# pandas, so JSON rows never need pyarrow, and the Arrow path converts
-# the same frame, so both carry the same columns.
+# The index follows one rule on both paths, decided by
+# ``_keeps_index``: an index that only numbers the rows is dropped, and
+# any other becomes columns the way ``reset_index()`` names them (the
+# index's name, or ``index``; one column per level of a MultiIndex).
+# Row numbers are any RangeIndex (whatever its start, step or name) and
+# an unnamed index of integer dtype. The rule is applied with pandas,
+# so JSON rows never need pyarrow, and the Arrow path converts the same
+# frame with ``preserve_index=False``, so both carry the same columns.
 #
 # pyarrow is needed for Arrow output, and for reading an
 # ``__arrow_c_stream__`` object at all. Where it cannot be imported, an
-# Arrow request answers 406 rather than quietly sending JSON, and a
-# stream object asked for as JSON is refused; both say so.
+# Arrow request that also accepts JSON gets JSON rows, with a note for
+# the handler log saying why; one that accepts only Arrow answers 406.
+# A stream object asked for as JSON is refused. Each says so.
 
 ARROW_STREAM = "application/vnd.apache.arrow.stream"
 
 ARROW_UNAVAILABLE = (
     "Arrow was requested, but pyarrow is not available to this app's "
     "handlers: install pyarrow where they run, or request JSON"
+)
+
+ARROW_FELL_BACK = (
+    "Arrow was requested, but pyarrow is not available to this app's "
+    "handlers, so JSON was sent (the request accepts JSON too): install "
+    "pyarrow where they run to serve Arrow"
 )
 
 
@@ -618,22 +645,46 @@ def _table_kind(value: Any) -> str | None:
     return None
 
 
+def _keeps_index(index: Any) -> bool:
+    """Whether a frame's index carries data, and so becomes columns.
+
+    A MultiIndex always does, every level of it. A RangeIndex never
+    does, whatever its start, step or name: pyarrow's own default
+    (``preserve_index=None``) keeps one only as schema metadata, which
+    neither a JSON row nor a page reading Arrow sees. Any other named
+    index does (``groupby("year")`` keeps ``year``), and so does an
+    unnamed one of any dtype but integer (dates, strings, floats), as a
+    column called ``index``, so the data is not lost.
+
+    An unnamed integer index is dropped, which is where this departs
+    from pyarrow (it keeps one as ``__index_level_0__``). That is what a
+    boolean filter leaves behind, ``df[df.score > 50]``: the surviving
+    row positions of the original frame, which mean nothing to a
+    page."""
+    import pandas as pd
+
+    if isinstance(index, pd.MultiIndex):
+        return True
+    if isinstance(index, pd.RangeIndex):
+        return False
+    if index.name is None and pd.api.types.is_integer_dtype(index.dtype):
+        return False
+    return True
+
+
 def _pandas_frame(value: Any) -> Any:
     """A DataFrame or Series as the frame both output paths encode:
     a Series as one column (named after it, or ``0`` if unnamed, as
-    ``to_frame()`` names it), the index by the rule above."""
+    ``to_frame()`` names it), its index kept as columns or dropped by
+    :func:`_keeps_index`. Either way the result has a default index,
+    which neither path encodes."""
     import pandas as pd
 
     name = type(value).__name__
     frame = value.to_frame() if isinstance(value, pd.Series) else value
-    index = frame.index
-    default = (
-        isinstance(index, pd.RangeIndex)
-        and index.start == 0
-        and index.step == 1
-        and index.name is None
-    )
-    if not default:
+    if not _keeps_index(frame.index):
+        frame = frame.reset_index(drop=True)
+    else:
         try:
             frame = frame.reset_index()
         except ValueError as e:
@@ -712,16 +763,19 @@ def _table_ipc(value: Any, kind: str, pa: Any) -> bytes:
 
 
 def _table_parts(
-    value: Any, kind: str, accept: str | None
+    value: Any, kind: str, accept: str | None, notes: list[str] | None = None
 ) -> tuple[int, str, dict[str, str], bytes]:
     """``_response_parts`` for a table returned as the whole response."""
     headers = {"vary": "Accept"}
     try:
         if accepts_arrow(accept):
             pa = _import_pyarrow()
-            if pa is None:
+            if pa is not None:
+                return 200, ARROW_STREAM, headers, _table_ipc(value, kind, pa)
+            if not accepts_json(accept):
                 raise _NotAcceptable(ARROW_UNAVAILABLE)
-            return 200, ARROW_STREAM, headers, _table_ipc(value, kind, pa)
+            if notes is not None:
+                notes.append(ARROW_FELL_BACK)
         rows = _table_rows(value, kind)
     except _Unencodable as e:
         raise TypeError(e.message) from None
@@ -791,6 +845,17 @@ def accepts_arrow(accept: str | None) -> bool:
         return False
     q_json, _ = _quality(ranges, "application", "json")
     return q_json is None or q_arrow >= q_json
+
+
+def accepts_json(accept: str | None) -> bool:
+    """Whether an ``Accept`` header explicitly accepts JSON: its most
+    specific range covering ``application/json`` (the type itself,
+    ``application/*`` or ``*/*``) has a q above 0. An absent header
+    accepts anything, but says nothing explicitly, so it is False."""
+    if not accept:
+        return False
+    q_json, _ = _quality(_media_ranges(accept), "application", "json")
+    return bool(q_json)
 
 
 # -- JSON encoding of handler returns -----------------------------------
