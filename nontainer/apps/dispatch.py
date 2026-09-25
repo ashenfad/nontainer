@@ -41,8 +41,29 @@ from .contract import (
 
 # Fixed names under the workspace root (ws.root, default /workspace):
 # the app tree is <root>/app, handlers <root>/app/api, the handler log
-# <root>/app/logs/api.log. AppRuntime derives the absolute paths.
+# <root>/app/logs/api.log, test_app's captures <root>/app/screenshots.
+# AppRuntime derives the absolute paths.
 APP_DIR = "app"
+API_DIR = "api"
+LOG_DIR = "logs"
+LOG_FILE = "api.log"
+SCREENSHOT_DIR = "screenshots"
+
+# What the authoring loop writes into the app tree for the agent to
+# read back through the filesystem: handler tracebacks and prints (which
+# can carry secrets from exception messages) and page captures. They are
+# the author's, never a visitor's, so a publication leaves them out.
+AUTHORING_DIRS = (LOG_DIR, SCREENSHOT_DIR)
+
+# Top-level directories of the app tree that static serving refuses, in
+# the live preview and in a publication alike: backend source, and the
+# authoring artifacts above. The refusal is by directory name, so it
+# also covers a publication made before those were left out of one.
+UNSERVED_DIRS = (API_DIR, *AUTHORING_DIRS)
+
+# The same, as workspace paths relative to the root, in the spelling
+# ``Store.publish(exclude=...)`` takes.
+PUBLISH_EXCLUDE = tuple(f"{APP_DIR}/{name}/" for name in AUTHORING_DIRS)
 
 
 def app_root(ws: Workspace) -> str:
@@ -104,6 +125,20 @@ _STATIC_TYPES = {
 }
 
 
+def _unserved_top(rel: str) -> str | None:
+    """The entry of ``UNSERVED_DIRS`` that a canonical path relative to
+    the app root sits in (or names), else ``None``.
+
+    Compared without case: a workspace over a case-insensitive host
+    filesystem opens ``LOGS/api.log`` as ``logs/api.log``, so an
+    exact-case check would refuse one spelling and serve the other."""
+    top = rel.split("/", 1)[0].casefold()
+    for name in UNSERVED_DIRS:
+        if top == name.casefold():
+            return name
+    return None
+
+
 def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
     """URL prefix -> read-only, confined filesystem over a host
     directory. Reuses the composition a read-only ``Mount`` gets
@@ -118,11 +153,19 @@ def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
         prefix = str(raw).strip("/")
         if not prefix or any(p in (".", "..", "") for p in prefix.split("/")):
             raise ValueError(f"static_assets prefix must be a relative path: {raw!r}")
-        if prefix == "api" or prefix.startswith("api/"):
+        top = _unserved_top(prefix)
+        if top == API_DIR:
             # /api/ routes to handlers before static ever runs, so an
             # asset there would be silently unreachable.
             raise ValueError(
                 f"static_assets prefix {raw!r} is unreachable: /api/ routes to handlers"
+            )
+        if top is not None:
+            # Static serving refuses these directories before it looks
+            # for an asset, so an asset there would never be served.
+            raise ValueError(
+                f"static_assets prefix {raw!r} is unreachable: {top}/ holds the "
+                "app's authoring artifacts, which are never served"
             )
         real = Path(source).expanduser().resolve()
         if not real.is_dir():
@@ -438,8 +481,10 @@ class AppRuntime:
         self._contract = HANDLER_CONTRACT
         # Path layout, derived once from the workspace root.
         self._app_root = app_root(ws)
-        self._api_root = f"{self._app_root}/api"
-        self._log_path = f"{self._app_root}/logs/api.log"
+        self._api_root = f"{self._app_root}/{API_DIR}"
+        self._log_dir = f"{self._app_root}/{LOG_DIR}"
+        self._log_path = f"{self._log_dir}/{LOG_FILE}"
+        self._screenshot_dir = f"{self._app_root}/{SCREENSHOT_DIR}"
 
     @property
     def config(self) -> AppsConfig:
@@ -645,15 +690,20 @@ class AppRuntime:
         if not path.startswith(self._app_root + "/"):
             raise HttpError(404, f"not found: {request.path}")
         rel = path[len(self._app_root) + 1 :]
+        # Backend source and the authoring artifacts are never served as
+        # static, and the check runs on the canonical path. The /api/ URL
+        # prefix routes to handlers, but a static request that normalizes
+        # INTO api/ (e.g. `/./api/h.py`, `/x/../api/_shared.py`) would
+        # otherwise serve raw handler source — the frontend/backend
+        # boundary — and one that reaches logs/ or screenshots/ would
+        # serve the author's tracebacks and captures to any visitor.
+        # Refused before the asset lookup, so no declared prefix can
+        # reopen these paths whatever the config holds.
+        if _unserved_top(rel) is not None:
+            raise HttpError(404, f"not found: {request.path}")
         asset = self._asset_response(rel, request)
         if asset is not None:
             return asset, True
-        # Backend is never served as static. The /api/ URL prefix routes
-        # to handlers, but a static request that normalizes INTO api/
-        # (e.g. `/./api/h.py`, `/x/../api/_shared.py`) would otherwise
-        # serve raw handler source — the frontend/backend boundary.
-        if path == self._api_root or path.startswith(self._api_root + "/"):
-            raise HttpError(404, f"not found: {request.path}")
         fs = self._ws.files.fs
         if not fs.exists(path) or not fs.isfile(path):
             raise HttpError(404, f"not found: {request.path}")
@@ -787,7 +837,7 @@ class AppRuntime:
                 self._log_sink(message.rstrip())
                 return
             fs = self._ws.files.fs
-            fs.makedirs(f"{self._app_root}/logs", exist_ok=True)
+            fs.makedirs(self._log_dir, exist_ok=True)
             if not self._log_started:
                 # Header on creation, not at enable_apps: pre-creating
                 # would materialize <root>/app before the agent has

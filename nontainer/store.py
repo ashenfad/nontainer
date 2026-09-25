@@ -79,14 +79,23 @@ _VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
 # Keys publish() writes into the commit itself. A caller's ``info`` may
 # not spell them: the commit is immutable and is where provenance is
 # read from, so a false ``published_from`` would outlive every chance to
-# notice it — and ``published_from`` and ``paths`` together are what a
-# retry compares to recognise its own interrupted attempt.
-_RESERVED_INFO_KEYS = ("tool", "name", "version", "published_from", "paths")
+# notice it — and ``published_from``, ``paths`` and ``exclude`` together
+# are what a retry compares to recognise its own interrupted attempt.
+_RESERVED_INFO_KEYS = (
+    "tool",
+    "name",
+    "version",
+    "published_from",
+    "paths",
+    "exclude",
+)
 # The same keys read the other way: all of them present, carrying the
 # values a caller can name, is what marks a commit as one publish
 # attempt's work. Nothing the store did not publish is ever removed on
-# the strength of its name alone.
-_PUBLISH_IDENTITY_KEYS = _RESERVED_INFO_KEYS
+# the strength of its name alone. ``exclude`` is not required: a
+# version published before publish recorded it carries none, and is a
+# publication all the same.
+_PUBLISH_IDENTITY_KEYS = tuple(k for k in _RESERVED_INFO_KEYS if k != "exclude")
 
 # The construction keywords a frozen open takes. Exactly
 # :meth:`Store.open`'s, minus ``autocommit``: a frozen provider commits
@@ -116,6 +125,15 @@ _PUBLICATION_SETTINGS = tuple(n for n in _FROZEN_SETTINGS if n != "root")
 # A publication whose tree holds nothing there is files only, and the
 # workspace it opens as has no executor at all.
 _HANDLER_DIR = "app/api"
+
+# What a publish leaves out unless told otherwise: the files an app's
+# authoring loop writes beside the app for the agent to read back —
+# the handler log (tracebacks, prints, exception messages that can
+# carry secrets) and test_app's page captures. They are the author's
+# working notes, not part of what a visitor is served, and a version
+# carrying them would hand them to whoever holds its URL or its export.
+# The apps layer owns these names; a test pins that the two agree.
+_DEFAULT_PUBLISH_EXCLUDE = ("app/logs/", "app/screenshots/")
 
 # The default workspace root, for a version published before the root
 # was recorded with it: that is the root it was published under.
@@ -274,8 +292,12 @@ class Version:
     published apps with their display titles and owners is one registry
     read and no backend open. It holds what the caller passed and
     nothing else: what publish writes itself is already spelled out by
-    ``name``, ``version``, ``published_from`` and ``paths``. A row
-    written before the field existed reads as an empty mapping.
+    ``name``, ``version``, ``published_from``, ``paths`` and
+    ``exclude``. A row written before the field existed reads as an
+    empty mapping.
+
+    ``exclude`` is what the publish left out from under ``paths``; a
+    version published before publish recorded it reads as empty.
 
     ``info`` reads as a read-only view all the way down: nested
     mappings are read-only too, and a JSON array reads as a tuple. A
@@ -299,6 +321,7 @@ class Version:
         default_factory=lambda: MappingProxyType({}), hash=False
     )
     paths: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1023,6 +1046,7 @@ class Store:
         name: str,
         *,
         paths: "Sequence[str]" = ("app/",),
+        exclude: "Sequence[str] | str" = _DEFAULT_PUBLISH_EXCLUDE,
         version: str | None = None,
         current: bool = True,
         create_only: bool = False,
@@ -1078,6 +1102,14 @@ class Store:
                 is taken under ``ws.root``, an absolute one as given; a
                 trailing slash is optional. The default publishes the
                 app tree an ``[apps]`` handler serves.
+            exclude: What to leave out from under ``paths``, spelled as
+                ``paths`` is. The default leaves out what an app's
+                authoring loop writes beside it for the agent alone —
+                ``app/logs/`` (the handler log, which holds tracebacks
+                and exception messages) and ``app/screenshots/`` — so a
+                version never carries them. Pass ``()`` to publish
+                everything under ``paths``; to leave out more, pass the
+                default's entries along with your own.
             version: The version name. Defaults to ``v<N>``, one past
                 the highest ``v``-number this lineage holds — only
                 names of that exact shape are counted, so a lineage
@@ -1110,11 +1142,11 @@ class Store:
                 earlier ``publication()`` can be taken before this call
                 reaches the lock.
             info: Extra keys merged into the commit's info, beside the
-                ``tool``/``name``/``version``/``published_from``/``paths``
-                this writes itself. They are recorded on the registry
-                row as well and come back as :attr:`Version.info`, so
-                listing publications with their metadata costs one
-                registry read and no backend open.
+                ``tool``/``name``/``version``/``published_from``/``paths``/
+                ``exclude`` this writes itself. They are recorded on the
+                registry row as well and come back as
+                :attr:`Version.info`, so listing publications with their
+                metadata costs one registry read and no backend open.
 
         Returns:
             The :class:`Publication`, with the new version current.
@@ -1128,8 +1160,8 @@ class Store:
                 are immutable and a name is never repointed; a
                 publication name that already holds a version, under
                 ``create_only``; ``paths`` that match no file at
-                ``ws``'s commit. Naming a version
-                the registry does not hold to :meth:`set_current`,
+                ``ws``'s commit once ``exclude`` is left out. Naming a
+                version the registry does not hold to :meth:`set_current`,
                 :meth:`unpublish` or :meth:`Publication.open` is the
                 same mistake and raises the same class.
             WorkspaceError: The store is not in a state to publish, and
@@ -1171,6 +1203,8 @@ class Store:
 
         if version is not None:
             _validate_version_name(version)
+        if isinstance(exclude, str):
+            exclude = (exclude,)
 
         def land(registry: dict[str, Any]) -> Publication:
             # Everything from "which version number is free" to the
@@ -1202,6 +1236,7 @@ class Store:
                 "version": chosen,
                 "published_from": str(published_from),
                 "paths": sorted(paths),
+                "exclude": sorted(exclude),
                 **(info or {}),
             }
             # No record holds this version (the check above says so), so
@@ -1240,6 +1275,7 @@ class Store:
                     head,
                     branch=branch,
                     paths=paths,
+                    exclude=exclude,
                     tag=tag,
                     commit_info=commit_info,
                 )
@@ -1250,6 +1286,7 @@ class Store:
                 "created": time.time(),
                 "root": ws.root,
                 "paths": list(landed.get("paths") or sorted(paths)),
+                "exclude": list(landed.get("exclude") or ()),
                 # The caller's keys only. What publish writes itself is
                 # already spelled out by the fields around this one, and
                 # the commit stays the place provenance is read from.
@@ -1791,6 +1828,7 @@ class Store:
                 created=float(row.get("created") or 0.0),
                 info=_frozen_json(row.get("info") or {}),
                 paths=tuple(row.get("paths") or ()),
+                exclude=tuple(row.get("exclude") or ()),
             )
             for v, row in sorted(rows.items(), key=lambda kv: _version_order(kv[0]))
         )
@@ -1948,12 +1986,12 @@ class Store:
         The branch and the tag are written before the record, so a
         crash between them leaves a reserved branch no record names.
         The retry rebuilds the same commit info, and a branch whose
-        head carries the same ``published_from`` commit and the same
-        ``paths`` was written by that same attempt: its commit is
-        returned to be recorded as this publish's, and the tag is
-        minted if the crash came before it. ``None`` says the branch
-        holds some other attempt's commit, which this publish may not
-        adopt and may not overwrite.
+        head carries the same ``published_from`` commit, the same
+        ``paths`` and the same ``exclude`` was written by that same
+        attempt: its commit is returned to be recorded as this
+        publish's, and the tag is minted if the crash came before it.
+        ``None`` says the branch holds some other attempt's commit, which
+        this publish may not adopt and may not overwrite.
 
         The commit and the info IT carries come back together, and that
         info is what the record and a late-minted tag describe. The
@@ -1962,8 +2000,9 @@ class Store:
         describe the version as something it is not.
 
         The whole tree is not compared. What identifies the attempt is
-        what it was told to do — one source commit, one set of paths —
-        because publishing that twice writes the same files either way.
+        what it was told to do — one source commit, one set of paths and
+        exclusions — because publishing that twice writes the same files
+        either way.
         """
         import kvgit
 
@@ -1973,7 +2012,7 @@ class Store:
         if commit is None:
             return None
         if not _is_publish_attempt(
-            found, {key: commit_info.get(key) for key in _PUBLISH_IDENTITY_KEYS}
+            found, {key: commit_info.get(key) for key in _RESERVED_INFO_KEYS}
         ):
             return None
         landed = dict(found or {})
@@ -2000,6 +2039,7 @@ class Store:
         *,
         branch: str,
         paths: "Sequence[str]",
+        exclude: "Sequence[str]",
         tag: str,
         commit_info: dict[str, Any],
     ) -> str:
@@ -2036,13 +2076,14 @@ class Store:
         wanted = {
             key: path
             for key, path in src._file_keys(handle.keys()).items()
-            if _under(path, paths, ws.root)
+            if _under(path, paths, ws.root) and not _under(path, exclude, ws.root)
         }
         if not wanted:
+            left_out = f" once {', '.join(exclude)!r} is left out" if exclude else ""
             raise ValueError(
                 f"Nothing to publish from {ws.session!r} at {head}: no files "
-                f"under {', '.join(paths)!r}. Publish paths that exist, or "
-                "widen paths=."
+                f"under {', '.join(paths)!r}{left_out}. Publish paths that "
+                "exist, or widen paths=."
             )
         rows = _published_rows(
             VirtualFS(handle).get_metadata_snapshot(), set(wanted.values())

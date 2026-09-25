@@ -417,7 +417,7 @@ def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
     either."""
     ws = runtime.workspace
     with ws.lock:
-        ws.files.fs.makedirs(f"{runtime._app_root}/screenshots", exist_ok=True)
+        ws.files.fs.makedirs(runtime._screenshot_dir, exist_ok=True)
         ws.files.fs.write(path, png)
 
 
@@ -510,7 +510,7 @@ def build_spec(
         assert_timeout_ms=assert_timeout_ms,
         settle_cap_ms=int(settle_cap * 1000),
         max_screenshots=max_screenshots,
-        screenshot_dir=f"{runtime._app_root}/screenshots",
+        screenshot_dir=runtime._screenshot_dir,
         off_base_body=_ABSOLUTE_PATH_HINT,
     )
 

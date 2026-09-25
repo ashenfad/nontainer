@@ -44,7 +44,15 @@ HTM+Preact path only).
                                      importable, never routable
 /workspace/app/logs/api.log        ← one line per request, + tracebacks
                                      and handler print() output
+/workspace/app/screenshots/        ← test_app's page captures
 ```
+
+`logs/` and `screenshots/` are the authoring loop's, for the agent to
+read through the filesystem (`tail app/logs/api.log`). Like `api/`,
+neither is ever served as static — not in the live preview, not from a
+publication, whatever the spelling (`/./logs/api.log`,
+`/x/../logs/api.log`, `/LOGS/api.log`) — and `store.publish` leaves both
+out of what it copies.
 
 Shared backend code lives under `app/` as well: a module at
 `/workspace/app/api/_data.py` imports as `from app.api._data import
@@ -281,6 +289,10 @@ What follows from that:
 - **No `script_hosts` entry is needed.** Vendored assets are
   same-origin, and `'self'` is always allowed by the served CSP. Adding
   a host for them would loosen the supply-chain pin for nothing.
+- **`api/`, `logs/` and `screenshots/` cannot be claimed.** Static
+  serving refuses those directories before it looks for an asset, so a
+  prefix there could never serve and is refused when the config is
+  built.
 - **Assets win over a workspace file at the same path**, and the
   collision is noted in `api.log` rather than shadowed silently — an
   agent that writes `app/vendor/lib.js` and sees no change would
@@ -781,6 +793,14 @@ Three rules make that snapshot worth serving:
   "data/seed.csv")`. Backend modules the handlers import are the same
   rule read the other way: they belong under `app/api/` as
   `_`-prefixed files, where the publication carries them.
+- **The authoring loop's files stay behind.** `exclude=` leaves paths
+  out from under `paths`, and its default is `("app/logs/",
+  "app/screenshots/")`: the handler log holds every traceback and
+  `print` from development — exception messages included, which can
+  carry secrets — and test_app's captures are the author's too. Pass
+  `exclude=()` to publish everything under `paths`. A version published
+  before this default still carries them, and serving refuses them
+  regardless (see the security notes below).
 - **The cache does not travel.** A publication carries file blobs and
   the filesystem rows describing them; a `cache` entry is neither, so
   a frozen open starts with an empty cache however full the session's
@@ -935,8 +955,14 @@ app.mount("/apps", router)      # serves /apps/{token}/...
 - **Logs go off the VFS** (it's read-only): `on_log` receives handler
   stdout/errors, defaulting to the `nontainer.apps` logger.
 - **Static requests are confined**: `.`/`..` collapse, the path must
-  stay under `/workspace/app/`, and `/workspace/app/api/` is never served as a file — so
-  backend source and workspace internals can't leak.
+  stay under `/workspace/app/`, and `/workspace/app/api/`,
+  `/workspace/app/logs/` and `/workspace/app/screenshots/` are never
+  served as files (compared without case, so a case-insensitive host
+  filesystem cannot reopen them) — so backend source, the handler log's
+  tracebacks and test_app's captures, and workspace internals can't
+  leak. The refusal is by directory at serve time, so it covers a
+  version published before `store.publish` began leaving `logs/` and
+  `screenshots/` out.
 - **Rate limiting / quotas are edge concerns** — put them at your
   gateway; the router doesn't presume to.
 - **Threat framing:** anonymous HTTP triggers agent-authored code under

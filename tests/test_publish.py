@@ -96,12 +96,60 @@ def test_publish_makes_a_branch_a_tag_and_a_record(tmp_path):
                     "created": version.created,
                     "root": "/workspace",
                     "paths": ["app/"],
+                    "exclude": ["app/logs/", "app/screenshots/"],
                     "info": {},
                 }
             },
             "meta": {},
         }
     }
+    ws.close()
+
+
+def test_exclude_leaves_paths_out_from_under_the_published_ones(tmp_path):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    ws.files.write("/workspace/app/logs/api.log", "Traceback: password is hunter2")
+    ws.files.write("/workspace/app/screenshots/shot-1.png", "png")
+    ws.files.write("/workspace/app/drafts/todo.md", "later")
+    ws.files.write("/workspace/app/logsheet.html", "<p>kept</p>")
+    ws.commit()
+
+    # the default leaves out the app's authoring artifacts
+    pub = store.publish(ws, "scoreboard")
+    assert pub.current_version.exclude == ("app/logs/", "app/screenshots/")
+    snap = pub.open()
+    assert not snap.files.exists("app/logs")
+    assert not snap.files.exists("app/screenshots")
+    assert snap.files.read("app/drafts/todo.md") == b"later"
+    assert snap.files.read("app/logsheet.html") == b"<p>kept</p>"
+    assert snap.files.read("app/index.html") == b"<h1>scores</h1>"
+    snap.close()
+
+    # a caller's own list replaces it, and a bare string is one entry
+    pub = store.publish(ws, "scoreboard", exclude="/workspace/app/drafts")
+    assert pub.current_version.exclude == ("/workspace/app/drafts",)
+    snap = pub.open()
+    assert not snap.files.exists("app/drafts")
+    assert snap.files.exists("app/logs/api.log")
+    snap.close()
+
+    # and () publishes everything under paths
+    pub = store.publish(ws, "scoreboard", exclude=())
+    assert pub.current_version.exclude == ()
+    snap = pub.open()
+    assert snap.files.exists("app/logs/api.log")
+    assert snap.files.exists("app/screenshots/shot-1.png")
+    snap.close()
+    ws.close()
+
+
+def test_excluding_everything_is_nothing_to_publish(tmp_path):
+    store = Store(tmp_path)
+    ws = seeded(store)
+    with pytest.raises(ValueError, match="once 'app/' is left out"):
+        store.publish(ws, "scoreboard", exclude=("app/",))
+    assert store.publication("scoreboard") is None
     ws.close()
 
 
@@ -892,6 +940,38 @@ def test_publishing_other_paths_is_a_different_attempt(tmp_path, monkeypatch):
     ws.close()
 
 
+def test_excluding_other_paths_is_a_different_attempt(tmp_path, monkeypatch):
+    """What was left out is part of what was published, so a retry that
+    narrowed exclude= is refused rather than served the other tree."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _registry_write_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", version="v1")
+    monkeypatch.undo()
+
+    with pytest.raises(WorkspaceError, match="@store/pub/scoreboard/v1"):
+        store.publish(ws, "scoreboard", version="v1", exclude=())
+    ws.close()
+
+
+def test_a_commit_without_exclude_is_still_a_publish_attempt():
+    """A version published before publish recorded ``exclude`` carries
+    only the other keys, and is a publication all the same."""
+    from nontainer.store import _is_publish_attempt
+
+    info = {
+        "tool": "publish",
+        "name": "scoreboard",
+        "version": "v1",
+        "published_from": "author@abc",
+        "paths": ["app/"],
+    }
+    assert _is_publish_attempt(info, {"name": "scoreboard", "version": "v1"})
+    # ...but it is not the attempt of a publish that records one
+    assert not _is_publish_attempt(info, {"exclude": ["app/logs/"]})
+
+
 def test_unpublish_leaves_a_store_tag_it_did_not_publish_alone(tmp_path):
     """A store tag may hold a slash, so 'release/prod' is a version of
     'release' by name alone. Only what carries publish's own provenance
@@ -1199,6 +1279,7 @@ def test_info_may_not_overwrite_the_provenance_keys(tmp_path):
         {"name": "other"},
         {"version": "v99"},
         {"paths": ["everything/"]},
+        {"exclude": []},
     ):
         with pytest.raises(ValueError, match="info may not set"):
             store.publish(ws, "scoreboard", info=bad)
