@@ -273,46 +273,62 @@ _VIEW_EPILOGUE = (
     "for __nt_k in list(__nt_in):\n"
     "    globals().pop(__nt_k, None)\n"
     "import dataclasses as __nt_dc, base64 as __nt_b64\n"
-    "def __nt_bytes(__nt_v):\n"
-    "    if isinstance(__nt_v, (bytes, bytearray)):\n"
-    "        return {'__nt_b__': __nt_b64.b64encode(bytes(__nt_v)).decode()}\n"
-    "    return __nt_v\n"
+    # Bytes travel as base64 text, and the tag names WHICH slots hold
+    # them: the host decodes exactly those. Recognizing a bytes slot by
+    # its shape instead would decode any value that merely looks like
+    # one (a headers dict with a matching key).
+    "def __nt_slots(__nt_items):\n"
+    "    __nt_out, __nt_bin = {}, []\n"
+    "    for __nt_k, __nt_v in __nt_items:\n"
+    "        if isinstance(__nt_v, (bytes, bytearray)):\n"
+    "            __nt_v = __nt_b64.b64encode(bytes(__nt_v)).decode()\n"
+    "            __nt_bin.append(__nt_k)\n"
+    "        __nt_out[__nt_k] = __nt_v\n"
+    "    return __nt_out, __nt_bin\n"
     "def __nt_marshal(__nt_o):\n"
     # A tuple holding bytes would otherwise have no codec form, and dud's
     # harvest drops a binding it cannot encode without a word. One level
     # deep: the apps response wire is a flat tuple whose body is bytes.
     "    if type(__nt_o) is tuple:\n"
-    "        return {'__nt_tuple__': [__nt_bytes(__nt_v) for __nt_v in __nt_o]}\n"
+    "        __nt_v, __nt_bin = __nt_slots(enumerate(__nt_o))\n"
+    "        return {'__nt_tuple__': [__nt_v[__nt_i] for __nt_i in range(len(__nt_o))],\n"
+    "                'bin': __nt_bin}\n"
     "    if __nt_dc.is_dataclass(__nt_o) and not isinstance(__nt_o, type):\n"
-    "        __nt_f = {}\n"
-    "        for __nt_fld in __nt_dc.fields(__nt_o):\n"
-    "            __nt_f[__nt_fld.name] = __nt_bytes(getattr(__nt_o, __nt_fld.name))\n"
+    "        __nt_f, __nt_bin = __nt_slots(\n"
+    "            (__nt_fld.name, getattr(__nt_o, __nt_fld.name))\n"
+    "            for __nt_fld in __nt_dc.fields(__nt_o))\n"
     "        return {'__nt_dc__': type(__nt_o).__module__ + ':' + type(__nt_o).__qualname__,\n"
-    "                'fields': __nt_f}\n"
+    "                'fields': __nt_f, 'bin': __nt_bin}\n"
     "    return __nt_o\n"
     "for __nt_name in [__nt_g for __nt_g in list(globals()) if not __nt_g.startswith('_')]:\n"
     "    globals()[__nt_name] = __nt_marshal(globals()[__nt_name])\n"
 )
 
 
-def _unmarshal_bytes(value: Any) -> Any:
-    """Reverse the epilogue's ``__nt_bytes``: a ``{'__nt_b__': b64}`` tag
-    back to the bytes it carried; anything else passes through.
+def _decode_slots(values: Any, bin_keys: Any) -> Any:
+    """Reverse the epilogue's ``__nt_slots``: base64-decode exactly the
+    slots its ``bin`` list names, leaving every other value as it is.
 
-    Guest code can bind a dict shaped like a tag, so one that does not
-    decode is left as it is for the caller to judge, rather than raising
-    out of the result mapping."""
+    Guest code can bind anything, so a ``bin`` list that is not a list,
+    names a slot that is missing, or holds text that is not base64 leaves
+    the value undecoded for the caller's own validation to refuse,
+    rather than raising out of the result mapping."""
     import base64
     import binascii
 
-    if isinstance(value, dict) and len(value) == 1:
-        encoded = value.get("__nt_b__")
+    if not isinstance(bin_keys, list):
+        return values
+    for key in bin_keys:
+        try:
+            encoded = values[key]
+        except (KeyError, IndexError, TypeError):
+            continue
         if isinstance(encoded, str):
             try:
-                return base64.b64decode(encoded, validate=True)
+                values[key] = base64.b64decode(encoded, validate=True)
             except (binascii.Error, ValueError):
-                return value
-    return value
+                pass
+    return values
 
 
 def _rebuild_view_value(value: Any, contract: tuple[type, ...]) -> Any:
@@ -324,10 +340,10 @@ def _rebuild_view_value(value: Any, contract: tuple[type, ...]) -> Any:
     untagged value (plain dict/list/str/bytes) passes through."""
     if (
         isinstance(value, dict)
-        and len(value) == 1
-        and isinstance(value.get("__nt_tuple__"), list)
+        and set(value) == {"__nt_tuple__", "bin"}
+        and isinstance(value["__nt_tuple__"], list)
     ):
-        return tuple(_unmarshal_bytes(v) for v in value["__nt_tuple__"])
+        return tuple(_decode_slots(list(value["__nt_tuple__"]), value["bin"]))
     return _rebuild_dataclass(value, contract)
 
 
@@ -338,7 +354,10 @@ def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
     if not (isinstance(value, dict) and "__nt_dc__" in value):
         return value
     ref = value["__nt_dc__"]
-    fields = {k: _unmarshal_bytes(fv) for k, fv in value.get("fields", {}).items()}
+    raw = value.get("fields")
+    if not isinstance(raw, dict):
+        return value
+    fields = _decode_slots(dict(raw), value.get("bin"))
     for c in contract:
         if f"{c.__module__}:{c.__qualname__}" == ref:
             try:

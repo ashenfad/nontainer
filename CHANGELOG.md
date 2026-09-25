@@ -94,8 +94,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   type, headers, body bytes)` crosses, as a tuple of primitives the
   host checks element by element. On `LocalExecutor` under process or
   kernel isolation the host no longer unpickles the handler's return
-  object. A `Response` or `HttpError` status outside 100 to 599 is now
-  refused as a bad return (500, with a `BAD RETURN` line in `api.log`)
+  object. A `Response` status outside 100 to 599, or an `HttpError`
+  status outside 400 to 599 (an error that would read as a success), is
+  now refused as a bad return (500, with a `BAD RETURN` line in `api.log`)
   instead of being passed to the server. A wire value that is missing
   or malformed answers 500 with an `ERROR` line in the log, where a
   missing response used to answer 204. Executors other than the two
