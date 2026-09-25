@@ -111,11 +111,15 @@ class LegacyLayoutError(WorkspaceError):
                 f"([{session!r}]) for a store"
             )
         else:
-            flag = "" if backend == "kvgit" else f" --backend {backend}"
+            import shlex
+
+            # "--opt=value" rather than "--opt value": a session id may
+            # start with "-", which argparse would read as another option.
+            flag = "" if backend == "kvgit" else f" --backend={backend}"
             arg = "" if backend == "kvgit" else f", backend={backend!r}"
             how = (
-                f"python -m nontainer.migrate --store {store}{flag} "
-                f"--session {session}, or Store({store!r}{arg})"
+                f"python -m nontainer.migrate --store={shlex.quote(store)}{flag} "
+                f"--session={shlex.quote(session)}, or Store({store!r}{arg})"
                 f".migrate_layout([{session!r}])"
             )
         super().__init__(

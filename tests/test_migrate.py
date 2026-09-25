@@ -6,6 +6,7 @@ the fixtures here build them by hand, the way an old store left them.
 """
 
 import json
+import shlex
 
 import pytest
 from monkeyfs import VirtualFS
@@ -332,7 +333,7 @@ def test_a_writable_open_of_an_unmigrated_session_is_refused(tmp_path):
     message = str(error)
     assert "'old'" in message
     assert LEGACY_TABLE_KEY in message and LEGACY_CWD_KEY in message
-    assert f"python -m nontainer.migrate --store {tmp_path} --session old" in message
+    assert f"python -m nontainer.migrate --store={tmp_path} --session=old" in message
     assert f"Store({str(tmp_path)!r}).migrate_layout(['old'])" in message
 
     # the one-liner refuses the same way, and nothing was written
@@ -368,7 +369,7 @@ def test_a_dir_session_carrying_the_old_cwd_key(tmp_path):
 
     with pytest.raises(LegacyLayoutError) as excinfo:
         store.open("plain")
-    assert "--backend dir" in str(excinfo.value)
+    assert "--backend=dir" in str(excinfo.value)
 
     report = store.migrate_layout()["plain"]
     assert report.found == (LEGACY_CWD_KEY,)
@@ -421,7 +422,7 @@ def test_merging_an_unmigrated_branch_is_refused_by_name(tmp_path):
         with pytest.raises(LegacyLayoutError) as excinfo:
             ws.merge("worker")
         assert excinfo.value.session == "worker"
-        assert "--session worker" in str(excinfo.value)
+        assert "--session=worker" in str(excinfo.value)
         assert ws.head == head
 
 
@@ -654,6 +655,23 @@ def test_the_command_line_dry_runs_then_migrates(tmp_path, capsys):
 
     assert main(["--store", str(tmp_path)]) == 0
     assert "migrated 0 of 2 sessions" in capsys.readouterr().out
+
+
+def test_the_refusal_prints_a_command_that_runs_as_written(tmp_path, capsys):
+    store_dir = tmp_path / "my store"
+    store = seeded(store_dir, "-old")
+    legacy = to_legacy(store_dir, "-old")
+
+    with pytest.raises(LegacyLayoutError) as excinfo:
+        store.open("-old")
+    message = str(excinfo.value)
+    command = message.split("retry: ", 1)[1].split(", or Store(", 1)[0]
+    argv = shlex.split(command)
+    assert argv[:3] == ["python", "-m", "nontainer.migrate"]
+
+    assert main(argv[3:]) == 0
+    assert "-old: migrated" in capsys.readouterr().out
+    assert head_of(store_dir, "-old") != legacy
 
 
 def test_the_command_line_names_a_session_it_cannot_migrate(tmp_path, capsys):
