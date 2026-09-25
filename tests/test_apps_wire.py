@@ -71,6 +71,12 @@ CASES = {
         f"    return Response(body={BINARY!r}, headers={{'Content-Type': 'image/png'}})\n",
         (200, "image/png", {"content-type": "image/png"}, BINARY),
     ),
+    # A header dict shaped like the dud epilogue's old bytes tag: only
+    # the slots the guest marks as bytes are decoded, so it stays a dict.
+    "tag_shaped_header": (
+        "def get(req):\n    return Response(body='ok', headers={'__nt_b__': 'eA=='})\n",
+        (200, "text/plain; charset=utf-8", {"__nt_b__": "eA=="}, b"ok"),
+    ),
     "text": (
         "def get(req):\n    return 'héllo'\n",
         (200, "text/plain; charset=utf-8", {}, "héllo".encode()),
@@ -312,6 +318,20 @@ def test_a_status_http_cannot_carry_is_a_bad_return():
     assert nt__Encoder.respond(Response(status=np.int64(201)))[1] == 201
 
 
+def test_an_http_error_must_carry_an_error_status():
+    """HttpError coerces with int(), so a success status could slip in
+    as a float or a string; the encoder refuses anything below 400."""
+    for raised in (HttpError(201.9, "x"), HttpError("201", "x"), HttpError(302)):
+        wire = nt__Encoder.error(raised.status, raised.message)
+        assert wire[0] == WIRE_REFUSED, raised
+        assert "HttpError status must be 400 to 599" in wire[1]
+    lenient = HttpError("404", "gone")
+    assert nt__Encoder.error(lenient.status, lenient.message)[:2] == (
+        WIRE_RESPONSE,
+        404,
+    )
+
+
 def test_the_wire_carries_primitives_only():
     """What an executor has to carry back: exact built-in types, so the
     host never calls a method of the handler's making."""
@@ -467,13 +487,23 @@ def test_dud_rebuilds_a_tuple_and_leaves_forged_tags_alone():
     from nontainer.executor_dud import _rebuild_view_value
 
     body = base64.b64encode(BINARY).decode()
-    tagged = {"__nt_tuple__": [WIRE_RESPONSE, 200, "x", {}, {"__nt_b__": body}]}
+    tagged = {"__nt_tuple__": [WIRE_RESPONSE, 200, "x", {}, body], "bin": [4]}
     assert _rebuild_view_value(tagged, ()) == (WIRE_RESPONSE, 200, "x", {}, BINARY)
+    # Only the named slots decode: a dict that looks like a tag is data.
+    lookalike = {"__nt_b__": body}
+    value = {"__nt_tuple__": [lookalike, body], "bin": [1]}
+    assert _rebuild_view_value(value, ()) == (lookalike, BINARY)
+    # A forged bin list never raises: bad indexes, non-text, bad base64.
+    for forged_bin in ([9], [-9], ["x"], "0", None):
+        value = {"__nt_tuple__": [body], "bin": forged_bin}
+        assert _rebuild_view_value(value, ()) == (body,)
     for forged in (5, "not base64!", None):
-        value = {"__nt_tuple__": [{"__nt_b__": forged}]}
-        assert _rebuild_view_value(value, ()) == ({"__nt_b__": forged},)
+        value = {"__nt_tuple__": [forged], "bin": [0]}
+        assert _rebuild_view_value(value, ()) == (forged,)
     with pytest.raises(_Malformed):
-        _read_wire(_rebuild_view_value({"__nt_tuple__": [WIRE_RESPONSE]}, ()))
+        _read_wire(
+            _rebuild_view_value({"__nt_tuple__": [WIRE_RESPONSE], "bin": []}, ())
+        )
 
 
 @pytest.mark.parametrize("rung", RUNGS)

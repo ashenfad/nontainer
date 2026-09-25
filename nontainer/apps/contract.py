@@ -372,11 +372,22 @@ class nt__Encoder:
     @staticmethod
     def error(status: Any, message: Any) -> tuple:
         """The wire tuple for an ``HttpError``: its status, with the
-        message in the JSON error body every error response carries."""
+        message in the JSON error body every error response carries.
+
+        The status must be an error: 4xx or 5xx. ``HttpError`` coerces
+        with ``int()``, which lets ``HttpError("404")`` through but would
+        also turn ``HttpError(201.9)`` into a success; a response that
+        succeeds is a ``Response``, so anything below 400 is refused."""
         try:
             code = _status(status, "HttpError")
         except TypeError as e:
             return (WIRE_REFUSED, str(e))
+        if code < 400:
+            return (
+                WIRE_REFUSED,
+                f"HttpError status must be 400 to 599, got {status!r}; "
+                "return Response(status=...) for anything else",
+            )
         return (WIRE_RESPONSE, code, "application/json", {}, error_body(str(message)))
 
 
