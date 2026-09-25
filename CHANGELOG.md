@@ -93,11 +93,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   otherwise as JSON rows, the shape of `df.to_dict("records")`, encoded
   by the same rules as any JSON return. Every response to a table return
   carries `Vary: Accept`. The index follows one rule on both paths,
-  pyarrow's own default (`preserve_index=None`) with one departure:
-  any `RangeIndex` is dropped whatever its start, step or name, and so
-  is an unnamed integer index (pyarrow would keep that one as
-  `__index_level_0__`; after a boolean filter it holds only the old row
-  positions). Every other index becomes columns named as
+  and the name decides: an unnamed `RangeIndex` or integer index is
+  row positions and is dropped (after a boolean filter it holds only
+  the old positions; pyarrow would keep it as `__index_level_0__`),
+  while a named index is kept, including the named `RangeIndex` pandas
+  3 makes from `set_index("id")` over consecutive ids (pyarrow would
+  drop that one). Every other index becomes columns named as
   `reset_index()` names them: a named one keeps its name
   (`df.groupby("year")["v"].sum()` answers with columns `year` and
   `v`), an unnamed non-integer one becomes `index`, and a `MultiIndex`

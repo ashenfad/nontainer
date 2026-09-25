@@ -648,23 +648,28 @@ def _table_kind(value: Any) -> str | None:
 def _keeps_index(index: Any) -> bool:
     """Whether a frame's index carries data, and so becomes columns.
 
-    A MultiIndex always does, every level of it. A RangeIndex never
-    does, whatever its start, step or name: pyarrow's own default
-    (``preserve_index=None``) keeps one only as schema metadata, which
-    neither a JSON row nor a page reading Arrow sees. Any other named
-    index does (``groupby("year")`` keeps ``year``), and so does an
-    unnamed one of any dtype but integer (dates, strings, floats), as a
-    column called ``index``, so the data is not lost.
+    The name decides. A named index is data and becomes a column:
+    ``groupby("year")`` keeps ``year``, and ``set_index("id")`` keeps
+    ``id`` even where pandas stores consecutive ids as a named
+    RangeIndex. An unnamed index is data unless it is row positions:
+    an unnamed RangeIndex or integer index (what slicing and boolean
+    filters leave behind) is dropped, and any other unnamed index
+    (dates, strings, floats) becomes a column called ``index``. A
+    MultiIndex keeps every level.
 
-    An unnamed integer index is dropped, which is where this departs
-    from pyarrow (it keeps one as ``__index_level_0__``). That is what a
-    boolean filter leaves behind, ``df[df.score > 50]``: the surviving
-    row positions of the original frame, which mean nothing to a
-    page."""
+    pyarrow's default (``preserve_index=None``) differs in two places:
+    it drops a named RangeIndex, and keeps an unnamed integer index as
+    ``__index_level_0__``. The first loses a column the author named;
+    the second ships row positions no page wants."""
     import pandas as pd
 
     if isinstance(index, pd.MultiIndex):
         return True
+    if index.name is not None:
+        return True
+    return not (
+        isinstance(index, pd.RangeIndex) or pd.api.types.is_integer_dtype(index.dtype)
+    )
     if isinstance(index, pd.RangeIndex):
         return False
     if index.name is None and pd.api.types.is_integer_dtype(index.dtype):
