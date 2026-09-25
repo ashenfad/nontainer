@@ -166,13 +166,19 @@ def _filtered():
 
 
 INDEX_CASES = {
-    # Row numbers are dropped: any RangeIndex, and an unnamed integer index.
+    # Row numbers are dropped: an unnamed RangeIndex or integer index.
     "default_range_index": (pd.DataFrame({"v": [1, 2]}), ["v"]),
     "sliced_range_index": (pd.DataFrame({"v": [1, 2, 3]}).iloc[1:], ["v"]),
     "stepped_range_index": (pd.DataFrame({"v": [1, 2, 3]}).iloc[::2], ["v"]),
+    # A named RangeIndex is data: pandas 3 stores set_index("id") over
+    # consecutive ids as one, and the author named it.
     "named_range_index": (
         pd.DataFrame({"v": [1, 2]}, index=pd.RangeIndex(0, 2, name="k")),
-        ["v"],
+        ["k", "v"],
+    ),
+    "set_index_consecutive_ids": (
+        pd.DataFrame({"id": [1, 2, 3], "v": [4, 5, 6]}).set_index("id"),
+        ["id", "v"],
     ),
     "filtered_int_index": (_filtered(), ["v"]),
     "unnamed_int_index": (pd.DataFrame({"v": [1, 2]}, index=[10, 20]), ["v"]),

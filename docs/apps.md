@@ -202,26 +202,25 @@ def get(req):
 
   | Index | Columns |
   |---|---|
-  | any `RangeIndex`, whatever its start, step or name (`df.iloc[10:]`, `df.iloc[::2]`) | dropped |
+  | unnamed `RangeIndex`, whatever its start or step (`df.iloc[10:]`, `df.iloc[::2]`) | dropped |
   | unnamed, integer dtype (int, uint, nullable `Int64`), as `df[df.score > 50]` leaves | dropped |
-  | named, any other kind (`groupby("year")` gives `year`) | one column, the index's name |
+  | named, of any kind (`groupby("year")` gives `year`; `set_index("id")` keeps `id`) | one column, the index's name |
   | unnamed, not integer (dates, strings, floats) | one column, `index` |
   | `MultiIndex` | one column per level; unnamed levels `level_0`, `level_1`, ... |
 
-  That is pyarrow's own default (`preserve_index=None`, which keeps a
-  `RangeIndex` only as schema metadata a page never sees), except for
-  an unnamed integer index, which pyarrow keeps as
-  `__index_level_0__`: after a filter it holds the surviving rows' old
-  positions, which mean nothing to a page. Name the index to keep it.
+  The name decides: a named index is data, and an unnamed integer one
+  is row positions. That is pyarrow's own default
+  (`preserve_index=None`) in two places reversed. pyarrow drops a
+  named `RangeIndex` (pandas 3 makes one from `set_index("id")` over
+  consecutive ids), and keeps an unnamed integer index as
+  `__index_level_0__`, which after a filter holds only the surviving
+  rows' old positions. Name an index to keep it.
   A `Series` is one column named after it; an unnamed one is named
   `0`, as `to_frame()` names it. JSON rows are built with pandas alone,
   so they never need pyarrow; Arrow converts the same frame, so both
   carry the same columns. A frame with duplicate column names, or
   `MultiIndex` columns, has no row form and is refused.
 
-  With pandas 3, `df.set_index("id")` over consecutive integers makes
-  a *named* `RangeIndex`, which is dropped like any other; use
-  `reset_index()` first, or return the column, when the ids matter.
 - **pyarrow** is needed for Arrow output, where the handler runs. When
   Arrow is requested and pyarrow cannot be imported there:
   - if the request's `Accept` also explicitly accepts JSON with q
