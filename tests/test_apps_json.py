@@ -135,6 +135,12 @@ def test_non_str_keys():
     assert enc(value) == {"1": "a", "2.5": "b", "null": "c", "2024-01-02": "d"}
 
 
+def test_non_finite_float_keys_become_null():
+    """A Series with a missing numeric index yields a NaN key."""
+    assert enc({float("nan"): 1, 2.5: 2}) == {"null": 1, "2.5": 2}
+    assert enc({float("inf"): 1}) == {"null": 1}
+
+
 # -- refusals -------------------------------------------------------------
 
 
@@ -262,6 +268,19 @@ def test_numpy_datetime_and_timedelta():
 def test_numpy_keys():
     np = pytest.importorskip("numpy")
     assert enc({np.int64(1): "a", np.str_("k"): "b"}) == {"1": "a", "k": "b"}
+    assert enc({np.float64("nan"): "a"}) == {"null": "a"}
+
+
+def test_numpy_longdouble_is_a_double():
+    """Where longdouble is extended precision (x86), ``.item()`` returns
+    a longdouble rather than a float; it still encodes as a number."""
+    np = pytest.importorskip("numpy")
+    value = {
+        "x": np.longdouble(1.5),
+        "arr": np.array([1.5, np.nan], dtype=np.longdouble),
+        "nan": np.longdouble("nan"),
+    }
+    assert enc(value) == {"x": 1.5, "arr": [1.5, None], "nan": None}
 
 
 def test_numpy_unsupported_scalar_refused():
