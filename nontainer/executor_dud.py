@@ -128,10 +128,10 @@ def _lost_exc() -> Any:
 
 # Guest-side wrapper for app-handler (view) execution. PRELUDE
 # reconstructs the pickled inputs (Request et al.) that rode in host→
-# guest; EPILOGUE reduces any dataclass result (Response) to a tagged,
-# json-crossable dict (bytes fields base64'd) since guest→host never
-# pickles. All names are underscore-prefixed so the runner's harvest
-# (which drops ``_*``) ignores the scaffolding.
+# guest; EPILOGUE reduces a dataclass result (Response) or a tuple (the
+# apps response wire) to a tagged, json-crossable dict (bytes base64'd)
+# since guest→host never pickles. All names are underscore-prefixed so
+# the runner's harvest (which drops ``_*``) ignores the scaffolding.
 _VIEW_PRELUDE = (
     "import pickle as __nt_pk, base64 as __nt_b64\n"
     "__nt_in = set()\n"
@@ -273,14 +273,20 @@ _VIEW_EPILOGUE = (
     "for __nt_k in list(__nt_in):\n"
     "    globals().pop(__nt_k, None)\n"
     "import dataclasses as __nt_dc, base64 as __nt_b64\n"
+    "def __nt_bytes(__nt_v):\n"
+    "    if isinstance(__nt_v, (bytes, bytearray)):\n"
+    "        return {'__nt_b__': __nt_b64.b64encode(bytes(__nt_v)).decode()}\n"
+    "    return __nt_v\n"
     "def __nt_marshal(__nt_o):\n"
+    # A tuple holding bytes would otherwise have no codec form, and dud's
+    # harvest drops a binding it cannot encode without a word. One level
+    # deep: the apps response wire is a flat tuple whose body is bytes.
+    "    if type(__nt_o) is tuple:\n"
+    "        return {'__nt_tuple__': [__nt_bytes(__nt_v) for __nt_v in __nt_o]}\n"
     "    if __nt_dc.is_dataclass(__nt_o) and not isinstance(__nt_o, type):\n"
     "        __nt_f = {}\n"
     "        for __nt_fld in __nt_dc.fields(__nt_o):\n"
-    "            __nt_val = getattr(__nt_o, __nt_fld.name)\n"
-    "            if isinstance(__nt_val, (bytes, bytearray)):\n"
-    "                __nt_val = {'__nt_b__': __nt_b64.b64encode(bytes(__nt_val)).decode()}\n"
-    "            __nt_f[__nt_fld.name] = __nt_val\n"
+    "            __nt_f[__nt_fld.name] = __nt_bytes(getattr(__nt_o, __nt_fld.name))\n"
     "        return {'__nt_dc__': type(__nt_o).__module__ + ':' + type(__nt_o).__qualname__,\n"
     "                'fields': __nt_f}\n"
     "    return __nt_o\n"
@@ -289,23 +295,50 @@ _VIEW_EPILOGUE = (
 )
 
 
-def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
-    """Reverse ``_VIEW_EPILOGUE``: turn a ``{'__nt_dc__': ...}`` tag back
-    into an instance of the named contract class (base64 bytes fields
-    decoded). Safe across a real boundary — a known class name from the
-    view's own ``extra_classes`` plus primitive fields, never pickle. An
-    untagged value (plain dict/list/str/bytes) passes through."""
-    import base64
+def _unmarshal_bytes(value: Any) -> Any:
+    """Reverse the epilogue's ``__nt_bytes``: a ``{'__nt_b__': b64}`` tag
+    back to the bytes it carried; anything else passes through.
 
+    Guest code can bind a dict shaped like a tag, so one that does not
+    decode is left as it is for the caller to judge, rather than raising
+    out of the result mapping."""
+    import base64
+    import binascii
+
+    if isinstance(value, dict) and len(value) == 1:
+        encoded = value.get("__nt_b__")
+        if isinstance(encoded, str):
+            try:
+                return base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError):
+                return value
+    return value
+
+
+def _rebuild_view_value(value: Any, contract: tuple[type, ...]) -> Any:
+    """Reverse ``_VIEW_EPILOGUE``: a ``{'__nt_tuple__': [...]}`` tag back
+    to the tuple it was, and a ``{'__nt_dc__': ...}`` tag back to an
+    instance of the named contract class, bytes decoded in both. Safe
+    across a real boundary — primitives, and for a dataclass a known
+    class name from the view's own ``extra_classes``, never pickle. An
+    untagged value (plain dict/list/str/bytes) passes through."""
+    if (
+        isinstance(value, dict)
+        and len(value) == 1
+        and isinstance(value.get("__nt_tuple__"), list)
+    ):
+        return tuple(_unmarshal_bytes(v) for v in value["__nt_tuple__"])
+    return _rebuild_dataclass(value, contract)
+
+
+def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
+    """Turn a ``{'__nt_dc__': ...}`` tag back into an instance of the
+    named contract class (base64 bytes fields decoded). An untagged
+    value passes through."""
     if not (isinstance(value, dict) and "__nt_dc__" in value):
         return value
     ref = value["__nt_dc__"]
-    fields = {}
-    for k, fv in value.get("fields", {}).items():
-        if isinstance(fv, dict) and "__nt_b__" in fv:
-            fields[k] = base64.b64decode(fv["__nt_b__"])
-        else:
-            fields[k] = fv
+    fields = {k: _unmarshal_bytes(fv) for k, fv in value.get("fields", {}).items()}
     for c in contract:
         if f"{c.__module__}:{c.__qualname__}" == ref:
             try:
@@ -313,6 +346,55 @@ def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
             except Exception:
                 return value  # can't rebuild — leave the tag for the caller
     return value
+
+
+def _view_program(
+    code: str, inputs: Mapping[str, Any], view: ViewSpec
+) -> tuple[str, dict[str, Any], int]:
+    """The guest program for one view execution: ``(source, guest
+    inputs, line offset)``. The guest inputs lack only the host-module
+    names, which the caller adds; the line offset is how far the
+    guest's line numbers run ahead of ``code``'s.
+
+    Separate from the session so what a guest with no nontainer
+    installed receives can be run and checked anywhere."""
+    import base64
+    import inspect
+
+    blob = base64.b64encode(pickle.dumps(dict(inputs))).decode()
+    # Contract classes cross by SOURCE, not by install: group them by
+    # defining module and ship each module's source so the guest can
+    # synthesize it when the import fails (VM rungs have no nontainer).
+    # A module whose source can't be read falls back to a plain import
+    # line — the pre-VM behavior, correct wherever the guest shares
+    # the host venv.
+    boot: dict[str, dict[str, Any]] = {}
+    for c in view.extra_classes:
+        mod, name = getattr(c, "__module__", None), getattr(c, "__name__", None)
+        if not mod or not name:
+            continue
+        entry = boot.setdefault(mod, {"src": None, "names": []})
+        if name not in entry["names"]:
+            entry["names"].append(name)
+    imports = ""
+    for mod, entry in list(boot.items()):
+        try:
+            entry["src"] = inspect.getsource(sys.modules[mod])
+        except Exception:
+            imports += f"from {mod} import {', '.join(entry['names'])}\n"
+            del boot[mod]
+    # The host prelude runs AFTER the view prelude: plain-data host
+    # objects reach the guest inside the pickle blob, so they are
+    # globals only once it has been unpickled.
+    #
+    # The handler's own source is what follows, at line 1 of ``code``
+    # — so the guest's line numbers run ahead of the file's by the
+    # whole of this prefix, and the result puts them back. That is
+    # the number the api.log traceback shows an agent reading its
+    # own handler.
+    prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + _HOST_PRELUDE
+    full = prefix + code + _VIEW_EPILOGUE
+    return full, {"__nt_blob": blob, "__nt_boot": boot}, prefix.count("\n")
 
 
 class _KvBytesCache(MutableMapping[str, bytes]):
@@ -885,51 +967,16 @@ class DudExecutor:
         marshaller (guest→host never pickles): dataclass results (e.g.
         ``Response``) reduce to a tagged dict with base64 for bytes
         fields, reconstructed host-side from the view's declared
-        ``extra_classes``. Read-only is enforced (cache write raises
-        guest-side; a GET that writes the fs is rejected here), and a
-        mutating handler's writes are absorbed into the provider (so
-        ``ws.files.fs`` reflects them, like LocalExecutor's write-through)."""
-        import base64
-        import inspect
-        import pickle
-        import sys
-
+        ``extra_classes``; a tuple result (the apps response wire) crosses
+        the same way, as a tagged list. Read-only is enforced (cache
+        write raises guest-side; a GET that writes the fs is rejected
+        here), and a mutating handler's writes are absorbed into the
+        provider (so ``ws.files.fs`` reflects them, like LocalExecutor's
+        write-through)."""
         merged = dict(self._plain)
         merged.update(inputs)
-        blob = base64.b64encode(pickle.dumps(merged)).decode()
-        # Contract classes cross by SOURCE, not by install: group them by
-        # defining module and ship each module's source so the guest can
-        # synthesize it when the import fails (VM rungs have no nontainer).
-        # A module whose source can't be read falls back to a plain import
-        # line — the pre-VM behavior, correct wherever the guest shares
-        # the host venv.
-        boot: dict[str, dict[str, Any]] = {}
-        for c in view.extra_classes:
-            mod, name = getattr(c, "__module__", None), getattr(c, "__name__", None)
-            if not mod or not name:
-                continue
-            entry = boot.setdefault(mod, {"src": None, "names": []})
-            if name not in entry["names"]:
-                entry["names"].append(name)
-        imports = ""
-        for mod, entry in list(boot.items()):
-            try:
-                entry["src"] = inspect.getsource(sys.modules[mod])
-            except Exception:
-                imports += f"from {mod} import {', '.join(entry['names'])}\n"
-                del boot[mod]
-        # The host prelude runs AFTER the view prelude: plain-data host
-        # objects reach the guest inside the pickle blob, so they are
-        # globals only once it has been unpickled.
-        #
-        # The handler's own source is what follows, at line 1 of ``code``
-        # — so the guest's line numbers run ahead of the file's by the
-        # whole of this prefix, and the result puts them back. That is
-        # the number the api.log traceback shows an agent reading its
-        # own handler.
-        prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + _HOST_PRELUDE
-        line_offset = prefix.count("\n")
-        full = prefix + code + _VIEW_EPILOGUE
+        full, guest_inputs, line_offset = _view_program(code, merged, view)
+        guest_inputs[_HOST_NAMES_INPUT] = self._host_module_names(ctx)
         timeout = (
             view.timeout if view.timeout is not None else ctx.python_config.timeout
         )
@@ -937,11 +984,7 @@ class DudExecutor:
         result = self._with_recovery(
             lambda: self._session.python(
                 full,
-                inputs={
-                    "__nt_blob": blob,
-                    "__nt_boot": boot,
-                    _HOST_NAMES_INPUT: self._host_module_names(ctx),
-                },
+                inputs=guest_inputs,
                 timeout=timeout,
                 cache_readonly=view.readonly_cache,
             )
@@ -984,7 +1027,7 @@ class DudExecutor:
                     result,
                     ctx,
                     duration,
-                    contract=view.extra_classes,
+                    contract=tuple(view.extra_classes),
                     line_offset=line_offset,
                 )
                 return replace(
@@ -1020,7 +1063,7 @@ class DudExecutor:
             result,
             ctx,
             duration,
-            contract=view.extra_classes,
+            contract=tuple(view.extra_classes),
             line_offset=line_offset,
         )
         # The refusal leads. In-process the handler stops AT the write
@@ -1043,9 +1086,12 @@ class DudExecutor:
         result: Any,
         ctx: ExecutionContext,
         duration: float,
-        contract: tuple[type, ...] = (),
+        contract: tuple[type, ...] | None = None,
         line_offset: int = 0,
     ) -> PythonResult:
+        """``contract`` is set for a view execution, whose outputs went
+        through ``_VIEW_EPILOGUE`` and are rebuilt here; it names the
+        classes a tagged dataclass may be rebuilt as."""
         error = None
         if result.error is not None:
             # The guest renders its own traceback (rendering happens
@@ -1061,9 +1107,9 @@ class DudExecutor:
         # agent bound — and read only from this name, so a `ui` value
         # shaped like a diagnosis is just a value.
         ui_problems = _ui_problems(namespace.pop(_PROBLEMS, None))
-        if contract:
+        if contract is not None:
             namespace = {
-                k: _rebuild_dataclass(v, contract) for k, v in namespace.items()
+                k: _rebuild_view_value(v, contract) for k, v in namespace.items()
             }
 
         stdout, trunc = _truncate(result.transcript, ctx.max_observation)

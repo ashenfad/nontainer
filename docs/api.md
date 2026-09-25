@@ -2274,10 +2274,15 @@ Response(status=200, body=None, headers={})
     # the x-* namespace so a handler cannot reach an internal location
     # through a server in front.
 HttpError(status, message)
+    # status (here and on Response) must be an integer from 100 to 599;
+    # any other is refused like an unencodable return: 500 + BAD RETURN.
 ```
 
 Liberal returns: dict/list → JSON · str → text · bytes → blob ·
-`Response` → as specified · None → 204. GET handlers run against a
+`Response` → as specified · None → 204. The encoding runs inside the
+sandbox the handler ran in, and only `(status, content type, headers,
+body bytes)` crosses back, so every executor answers with the same
+bytes (see apps.md, "Where the response is encoded"). GET handlers run against a
 read-only filesystem AND a read-only cache view. Failed mutating
 handlers discard their staged writes when the provider was clean at
 dispatch. Logs: `/workspace/app/logs/api.log`.

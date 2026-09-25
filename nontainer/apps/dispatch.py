@@ -19,7 +19,6 @@ agent's repair loop is ``tail``, edit, retry.
 
 from __future__ import annotations
 
-import json
 import posixpath
 import re
 import time
@@ -32,11 +31,14 @@ from ..executor import ViewSpec
 from ..workspace import Workspace
 from .contract import (
     HANDLER_CONTRACT,
+    WIRE_REFUSED,
+    WIRE_RESPONSE,
     HttpError,
     Request,
     WireResponse,
+    error_body,
     make_request,
-    normalize,
+    nt__Encoder,
 )
 
 # Fixed names under the workspace root (ws.root, default /workspace):
@@ -95,12 +97,10 @@ def _query_string(request: Request) -> str:
 
 
 def _error_response(status: int, message: str, **extra: str) -> WireResponse:
-    """Error bodies ride as JSON: model-written frontends call
-    res.json() unconditionally, so a plain-text error cascades into a
-    second, misleading SyntaxError in the app console. JSON keeps
-    their catch-blocks functional ({"error": ..., ...})."""
-    body = json.dumps({"error": message, **extra}).encode()
-    return WireResponse(int(status), body, "application/json")
+    """An error response in the one shape every error takes, whether
+    dispatch or a handler's ``HttpError`` raised it: a JSON body (see
+    :func:`~nontainer.apps.contract.error_body`)."""
+    return WireResponse(int(status), error_body(message, **extra), "application/json")
 
 
 _STATIC_TYPES = {
@@ -181,17 +181,63 @@ def _content_type(path: str) -> str:
     return _STATIC_TYPES.get(ext, "application/octet-stream")
 
 
-# Trailer appended to handler source. Catches HttpError in-sandbox so
-# intentional errors come back structured, not as tracebacks.
+# Trailer appended to handler source. The return is encoded here, in
+# the sandbox, into the wire tuple the host reads back (see
+# contract.nt__Encoder); an HttpError becomes a response the same way,
+# so intentional errors come back structured rather than as tracebacks.
+# The return value itself is never bound, so nothing but the tuple is
+# left in the namespace for the executor to carry back.
+_WIRE = "nt__wire"
 _TRAILER = """
 
 try:
-    nt__resp = {verb}(nt__req)
-    nt__http = None
+    nt__wire = nt__Encoder.respond({verb}(nt__req))
 except HttpError as nt__e:
-    nt__resp = None
-    nt__http = (nt__e.status, nt__e.message)
+    nt__wire = nt__Encoder.error(nt__e.status, nt__e.message)
 """
+
+
+class _Refused(Exception):
+    """The wire carried a refusal: the handler returned something the
+    liberal-return rules reject. The message says what."""
+
+
+class _Malformed(Exception):
+    """The wire value is not one of the shapes the encoder produces."""
+
+
+def _read_wire(value: Any) -> WireResponse:
+    """The response one handler execution handed back.
+
+    The value came out of the sandbox, so nothing about it is trusted:
+    each element's EXACT type is checked (a subclass of ``str`` or
+    ``dict`` would carry methods of the handler's making into the code
+    that reads it), and the status must be one HTTP can carry. Raises
+    :class:`_Refused` for the encoder's refusal marker and
+    :class:`_Malformed` for anything else that is not a response."""
+    if type(value) is not tuple or not value or type(value[0]) is not str:
+        raise _Malformed(f"expected a wire tuple, got {type(value).__name__}")
+    tag = value[0]
+    if tag == WIRE_REFUSED:
+        if len(value) != 2 or type(value[1]) is not str:
+            raise _Malformed("a refusal must be (tag, message: str)")
+        raise _Refused(value[1])
+    if tag != WIRE_RESPONSE:
+        raise _Malformed(f"unknown wire tag {tag[:40]!r}")
+    if len(value) != 5:
+        raise _Malformed(f"a response has 5 elements, got {len(value)}")
+    _, status, content_type, headers, body = value
+    if type(status) is not int or not 100 <= status <= 599:
+        raise _Malformed("status must be an int from 100 to 599")
+    if type(content_type) is not str:
+        raise _Malformed("content type must be a str")
+    if type(headers) is not dict or not all(
+        type(k) is str and type(v) is str for k, v in headers.items()
+    ):
+        raise _Malformed("headers must be a dict of str to str")
+    if type(body) is not bytes:
+        raise _Malformed("body must be bytes")
+    return WireResponse(status, body, content_type, dict(headers))
 
 
 # Where browser SCRIPTS may load from. One declaration drives all four
@@ -478,7 +524,10 @@ class AppRuntime:
         self._verb_notes: dict[str, int] = {}  # module -> source hash noted
         self._shadow_notes: set[str] = set()  # asset collisions noted
         self._assets = _build_assets(self._config.static_assets)
-        self._contract = HANDLER_CONTRACT
+        # The names a handler may use, plus the encoder its trailer
+        # calls (bound the same way, so every executor that carries the
+        # contract classes carries the encoder too).
+        self._contract = (*HANDLER_CONTRACT, nt__Encoder)
         # Path layout, derived once from the workspace root.
         self._app_root = app_root(ws)
         self._api_root = f"{self._app_root}/{API_DIR}"
@@ -637,18 +686,30 @@ class AppRuntime:
             self._log(f"[{where}] ERROR:\n{result.error}{suffix}")
             return _error_response(500, "internal error", log=self._log_path)
 
-        http = result.namespace.get("nt__http")
-        if http is not None:
-            status, message = http
-            return _error_response(int(status), str(message))
-
         try:
-            return normalize(result.namespace.get("nt__resp"))
-        except TypeError as e:
+            return _read_wire(result.namespace.get(_WIRE))
+        except _Refused as e:
             if atomic:
                 ws.discard()
             self._log(f"[{where}] BAD RETURN: {e}")
             return _error_response(500, str(e))
+        except _Malformed as e:
+            # Not something a handler's return produces: the encoder
+            # always hands back a well-formed tuple or a refusal. So the
+            # tuple was replaced, or never arrived (an executor that
+            # drops a value it cannot carry, such as one over its size
+            # limit, drops it silently).
+            if atomic:
+                ws.discard()
+            reason = (
+                "no response came back from the handler's execution (an "
+                "executor leaves out a value it cannot carry, such as a "
+                "response body over its size limit)"
+                if _WIRE not in result.namespace
+                else f"the handler's response came back malformed: {e}"
+            )
+            self._log(f"[{where}] ERROR: {reason}")
+            return _error_response(500, "internal error", log=self._log_path)
 
     def test_app(
         self,

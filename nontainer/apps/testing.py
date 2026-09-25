@@ -93,8 +93,9 @@ class Call:
 
     Everything but the closure over the composed handlers lives here,
     in ordinary Python, so the envelope a test sees is built by the
-    same ``make_request`` and ``normalize`` the real dispatch uses
-    rather than by a second implementation in generated source.
+    same ``make_request`` and liberal-return rules (``normalize``) the
+    real dispatch applies rather than by a second implementation in
+    generated source.
     """
 
     @staticmethod

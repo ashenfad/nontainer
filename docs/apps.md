@@ -144,6 +144,9 @@ def post(req):
   to the value, in the response's `error` and the `BAD RETURN` line of
   `api.log`: `$.rows[3].when: DataFrame is not JSON-encodable (return
   .to_dict("records"), or bytes with a content-type)`.
+- **Status**: a `Response` status, or an `HttpError`'s, must be an
+  integer from 100 to 599; anything else is refused like an
+  unencodable return (500 + `BAD RETURN` in the log).
 - **Structural REST (authoring)**: `get` handlers execute against a
   read-only filesystem view (`ReadOnlyFS`) — a GET that writes gets a
   `PermissionError`, which teaches the agent better than a style rule.
@@ -176,8 +179,8 @@ extension surface (`Runtime.exec_python`, no commit) with:
 
 - the handler source prepended, the verb function invoked in a small
   trailer, `req` passed via the established `inputs=` channel
-  (picklable dataclass), and the response captured via namespace-out
-  (`__resp__` binding, filtered from agent-visible conventions);
+  (picklable dataclass), and the response **encoded in the sandbox**
+  (below);
 - the same sandbox policy as `run_python` — handlers can do exactly
   what interactive agent code can do, nothing more (the symmetry rule);
 - a per-request tick/timeout budget tighter than the interactive one
@@ -206,6 +209,54 @@ extension surface (`Runtime.exec_python`, no commit) with:
   from a screenshot written mid-run. `curl` and `test_app` flush when
   they finish — both run inside a tool call that commits anyway,
   and both are followed by the agent reading the log.
+
+### Where the response is encoded
+
+The encoding above runs **inside the sandbox the handler ran in**,
+right after the verb function returns: the trailer hands the return to
+an encoder that dispatch binds into the sandbox beside the contract
+classes (`nontainer.apps.contract.nt__Encoder`), and all that crosses
+back to the host is one tuple of primitives:
+
+```
+("nt-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes)
+("nt-refused/1", message: str)     # a return the rules above refuse
+```
+
+So a handler answers with the **same bytes on every executor** —
+`LocalExecutor` under any isolation, `DudExecutor` on any rung.
+Carrying the return value back and encoding it host-side would make the
+answer depend on what each executor can carry: dud's codec has no form
+for a `date` or a numpy scalar, so such a return would never reach the
+host at all.
+
+The encoder is bound as a name rather than imported because the
+sandbox policy refuses an import of nontainer from handler code, and
+granting one would let every handler import the module. The name is in
+the `nt__` space dispatch reserves for its own scaffolding
+(`nt__req`, `nt__wire`), and replacing it from handler code gains
+nothing a `Response` does not already allow: the host validates what
+comes back either way.
+
+The host reads only that tuple, and checks it strictly: exact built-in
+types throughout, a status from 100 to 599, headers `str` to `str`, a
+`bytes` body. A refusal is logged as `BAD RETURN: ...` and answers 500
+with the message; anything else that is not a response (the tuple
+missing, or replaced by handler code) answers 500 with an `ERROR` line
+in the log, and is never an exception out of dispatch. Header filtering
+and `max_response_bytes` apply after, as for any response.
+
+An executor may have its own ceiling on what one execution carries
+back. `DudExecutor`'s is 8 MiB per value on the wire, which the body
+reaches base64-encoded, so about 6 MB of body: far over the 2 MB
+`max_response_bytes` default, but an embedder raising that cap past it
+gets a 500 whose log line says no response came back.
+
+On a VM rung the guest has no nontainer installed, so the encoder
+arrives the way the contract classes do: as the source of
+`nontainer/apps/contract.py`, which the guest builds into a module. That
+module imports only the standard library (numpy and pandas only when
+encoding a value of theirs), and a test pins it.
 
 Handler executions hold the same per-workspace lock as tool calls —
 serialized per session, by design (handlers are ms-scale).
