@@ -7,6 +7,8 @@ at the module level, on a workspace scripted per test — the terminal
 verb and the cross-rung conformance live beside this.
 """
 
+import shlex
+
 import pytest
 
 from nontainer import Workspace
@@ -160,7 +162,19 @@ def test_a_test_file_outside_tests_is_named_not_run(ws):
     assert report.collected == 1
     note = next(n for n in report.notes if "outside tests/" in n)
     assert "examples/test_other.py" in note
-    assert "ws-pytest examples/test_other.py" in note
+    assert "ws-pytest /workspace/examples/test_other.py" in note
+
+
+def test_the_suggested_command_runs_from_any_cwd(ws):
+    write(ws, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+    write(ws, "examples/my demo/test_it.py", "def test_it():\n    assert True\n")
+    report = run_pytest(ws, cwd="/workspace/tests")
+    note = next(n for n in report.notes if "outside tests/" in n)
+    argv = shlex.split(note.split("name it to run it: ", 1)[1])
+    assert argv[0] == "ws-pytest"
+    rerun = run_pytest(ws, argv[1:], cwd="/workspace/tests")
+    assert rerun.exit_code == 0
+    assert rerun.passed == 1
 
 
 def test_a_test_file_outside_tests_runs_when_named(ws):

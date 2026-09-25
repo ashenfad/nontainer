@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -249,7 +250,9 @@ def _discover(
             f"{len(elsewhere)} test file(s) outside {TESTS_DIR}/ not collected "
             f"({_some(elsewhere)}): with no paths, ws-pytest collects "
             f"{TESTS_DIR}/ only. Move a test there, or name it to run it: "
-            f"ws-pytest {elsewhere[0]}"
+            # Absolute, because a relative selector resolves against the
+            # terminal's cwd, which need not be the workspace root.
+            f"ws-pytest {shlex.quote(_abs(ws, elsewhere[0]))}"
         )
     stray = _walk(fs, f"{root}/{APP_DIR}", "")
     if stray:
