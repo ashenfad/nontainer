@@ -293,6 +293,7 @@ the handler's response inside the execution, using a class it passes in
 
 ```
 ("nt-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes)
+("nt-noted-response/1", status: int, content_type: str, headers: dict[str, str], body: bytes, note: str)
 ("nt-refused/1", message: str)
 ("nt-not-acceptable/1", message: str)
 ```

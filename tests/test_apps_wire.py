@@ -22,6 +22,7 @@ from nontainer.apps import contract as contract_module
 from nontainer.apps.contract import (
     ARROW_STREAM,
     HANDLER_CONTRACT,
+    WIRE_NOTED_RESPONSE,
     WIRE_REFUSED,
     WIRE_RESPONSE,
     HttpError,
@@ -299,13 +300,16 @@ class _Str(str):
 
 
 def test_read_wire_accepts_the_encoders_shapes():
-    r = _read_wire(_ok(headers={"x-a": "1"}, body=b"hi"))
+    r, note = _read_wire(_ok(headers={"x-a": "1"}, body=b"hi"))
     assert (r.status, r.content_type, r.headers, r.content) == (
         200,
         "text/plain",
         {"x-a": "1"},
         b"hi",
     )
+    assert note is None
+    r, note = _read_wire((WIRE_NOTED_RESPONSE, 200, "text/plain", {}, b"hi", "n"))
+    assert (r.status, r.content, note) == (200, b"hi", "n")
     with pytest.raises(_Refused, match="nope"):
         _read_wire((WIRE_REFUSED, "nope"))
 
@@ -333,6 +337,12 @@ def test_read_wire_accepts_the_encoders_shapes():
         _ok(tag=_Str(WIRE_RESPONSE)),
         (WIRE_REFUSED, 1),
         (WIRE_REFUSED, "a", "b"),
+        (WIRE_NOTED_RESPONSE, 200, "text/plain", {}, b""),
+        (WIRE_NOTED_RESPONSE, 200, "text/plain", {}, b"", None),
+        (WIRE_NOTED_RESPONSE, 200, "text/plain", {}, b"", _Str("n")),
+        (WIRE_NOTED_RESPONSE, 200, "text/plain", {}, "text", "n"),
+        (WIRE_NOTED_RESPONSE, 200, "text/plain", {}, b"", "n", "extra"),
+        (WIRE_RESPONSE, 200, "text/plain", {}, b"", "n"),
     ],
 )
 def test_read_wire_refuses_anything_else(value):
@@ -536,7 +546,7 @@ def _run_in_bare_guest(handler: str, verb: str, req) -> dict:
 def test_the_encoder_runs_in_a_guest_without_nontainer(case):
     source, expected = CASES[case]
     out = _run_in_bare_guest(source, "get", make_request("GET", f"/api/{case}"))
-    r = _read_wire(out["nt__wire"])
+    r, _ = _read_wire(out["nt__wire"])
     assert (r.status, r.content_type, r.headers, r.content) == expected
 
 
@@ -714,5 +724,32 @@ def test_ws_curl_saves_an_arrow_stream(rung):
         assert r.exit_code == 0, (r.stdout, r.stderr)
         table = pa.ipc.open_stream(ws.files.fs.read("/workspace/out.arrow")).read_all()
         assert table.to_pydict() == {"k": ["p", "q"], "a": [1, 2], "x": [0.5, None]}
+    finally:
+        ws.close()
+
+
+@pytest.mark.parametrize("rung", RUNGS)
+def test_a_noted_response_crosses_every_executor(rung):
+    """The noted shape is flat, like a plain response, so every executor
+    carries it back with its bytes intact, and the note reaches the log."""
+    pytest.importorskip("pandas")
+    ws = _apps_ws(rung)
+    try:
+        ws.files.fs.write(
+            "/workspace/app/api/noted.py",
+            (
+                "class nt__Encoder:\n"
+                "    @staticmethod\n"
+                "    def respond(value, *args, **kwargs):\n"
+                "        return ('nt-noted-response/1', 200, 'image/png', {},\n"
+                f"                {BINARY!r}, 'the note')\n"
+                "def get(req):\n"
+                "    return 'hi'\n"
+            ).encode(),
+        )
+        runtime = enable_apps(ws)
+        r = runtime.dispatch(request("GET", "/api/noted"))
+        assert (r.status, r.content_type, r.content) == (200, "image/png", BINARY)
+        assert "[noted:get] NOTE: the note" in _log(ws)
     finally:
         ws.close()

@@ -32,6 +32,7 @@ from ..workspace import Workspace
 from .contract import (
     HANDLER_CONTRACT,
     WIRE_NOT_ACCEPTABLE,
+    WIRE_NOTED_RESPONSE,
     WIRE_REFUSED,
     WIRE_RESPONSE,
     HttpError,
@@ -240,8 +241,10 @@ class _Malformed(Exception):
     """The wire value is not one of the shapes the encoder produces."""
 
 
-def _read_wire(value: Any) -> WireResponse:
-    """The response one handler execution handed back.
+def _read_wire(value: Any) -> tuple[WireResponse, str | None]:
+    """The response one handler execution handed back, and the note
+    for the handler log a noted response carries (``None`` for a plain
+    one).
 
     The value came out of the sandbox, so nothing about it is trusted:
     each element's EXACT type is checked (a subclass of ``str`` or
@@ -261,11 +264,18 @@ def _read_wire(value: Any) -> WireResponse:
         if len(value) != 2 or type(value[1]) is not str:
             raise _Malformed("a not-acceptable must be (tag, message: str)")
         raise _Unacceptable(value[1])
-    if tag != WIRE_RESPONSE:
+    note = None
+    if tag == WIRE_NOTED_RESPONSE:
+        if len(value) != 6:
+            raise _Malformed(f"a noted response has 6 elements, got {len(value)}")
+        note = value[5]
+        if type(note) is not str:
+            raise _Malformed("a response's note must be a str")
+    elif tag != WIRE_RESPONSE:
         raise _Malformed(f"unknown wire tag {tag[:40]!r}")
-    if len(value) != 5:
+    elif len(value) != 5:
         raise _Malformed(f"a response has 5 elements, got {len(value)}")
-    _, status, content_type, headers, body = value
+    _, status, content_type, headers, body = value[:5]
     if type(status) is not int or not 100 <= status <= 599:
         raise _Malformed("status must be an int from 100 to 599")
     if type(content_type) is not str:
@@ -276,7 +286,7 @@ def _read_wire(value: Any) -> WireResponse:
         raise _Malformed("headers must be a dict of str to str")
     if type(body) is not bytes:
         raise _Malformed("body must be bytes")
-    return WireResponse(status, body, content_type, dict(headers))
+    return WireResponse(status, body, content_type, dict(headers)), note
 
 
 # Where browser SCRIPTS may load from. One declaration drives all four
@@ -768,7 +778,7 @@ class AppRuntime:
             return _error_response(500, "internal error", log=self._log_path)
 
         try:
-            resp = _read_wire(result.namespace.get(_WIRE))
+            resp, note = _read_wire(result.namespace.get(_WIRE))
         except _Refused as e:
             if atomic:
                 ws.discard()
@@ -801,6 +811,8 @@ class AppRuntime:
             self._log(f"[{where}] ERROR: {reason}")
             return _error_response(500, "internal error", log=self._log_path)
 
+        if note is not None:
+            self._log(f"[{where}] NOTE: {note}")
         # The encoder refused an oversized body before it crossed; this
         # holds a handler that replaced the encoder to the same caps.
         refusal = size_refusal(
