@@ -70,6 +70,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   predates the migration takes the source's migrated head instead,
   when no file changed in between.
 
+### Fixed
+- **`ws-pytest` with no paths collects `tests/` only.** It walked the
+  whole workspace except `app/`, although its help said `tests/`, so a
+  vendored library or copied example whose `test_*.py` could not import
+  failed a run in which every real test passed. Test files elsewhere
+  are named in a note (the first three and a count) and run when their
+  path is passed. `ws-vitest` names a `.test.js` outside `tests/` and
+  `app/` the same way instead of skipping it silently.
+- **`ws-vitest` reports no longer end with a note on where tests run.**
+  Where the browser runs is the embedder's concern and is in
+  `ws-vitest --help`; the agent was reading it after every run.
+
 ## 0.7.10 - 2026-09-23
 
 ### Added

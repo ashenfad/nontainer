@@ -150,6 +150,45 @@ def test_tests_under_app_are_not_collected_and_say_so(ws):
     assert any("publishes" in note for note in report.notes)
 
 
+def test_a_test_file_outside_tests_is_named_not_run(ws):
+    """A vendored or copied test that cannot import must not fail the
+    workspace's own suite, and must not vanish without a word either."""
+    write(ws, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+    write(ws, "examples/test_other.py", "from app.api.missing import X\n")
+    report = run_pytest(ws)
+    assert report.exit_code == 0
+    assert report.collected == 1
+    note = next(n for n in report.notes if "outside tests/" in n)
+    assert "examples/test_other.py" in note
+    assert "ws-pytest examples/test_other.py" in note
+
+
+def test_a_test_file_outside_tests_runs_when_named(ws):
+    write(ws, "test_root.py", "def test_root():\n    assert True\n")
+    report = run_pytest(ws, ["test_root.py"])
+    assert report.exit_code == 0
+    assert report.passed == 1
+    assert not any("outside tests/" in n for n in report.notes)
+
+
+def test_only_stray_test_files_is_exit_five_with_the_note(ws):
+    write(ws, "test_root.py", "def test_root():\n    assert True\n")
+    report = run_pytest(ws)
+    assert report.exit_code == 5
+    assert any("test_root.py" in n for n in report.notes)
+
+
+def test_a_long_list_of_stray_test_files_is_capped(ws):
+    for i in range(5):
+        write(ws, f"vendor/lib/test_{i}.py", "def test_x():\n    assert True\n")
+    write(ws, "tests/test_ok.py", "def test_ok():\n    assert True\n")
+    report = run_pytest(ws)
+    note = next(n for n in report.notes if "outside tests/" in n)
+    assert note.startswith("5 test file(s)")
+    assert "and 2 more" in note
+    assert "vendor/lib/test_3.py" not in note
+
+
 def test_a_conftest_is_reported_not_ignored(ws):
     write(ws, "tests/conftest.py", "import pytest\n")
     write(ws, "tests/test_a.py", "def test_a():\n    assert True\n")

@@ -61,16 +61,22 @@ exactly as the app does.
 
 ```
 /workspace/tests/test_scores.py    ← collected
-/workspace/tests/util/test_fmt.py  ← collected (any depth under the root)
+/workspace/tests/util/test_fmt.py  ← collected (any depth under tests/)
 /workspace/app/api/scores.py       ← a handler; never a test
 /workspace/app/test_thing.py       ← NOT collected, and the run says so
+/workspace/examples/test_demo.py   ← NOT collected, and the run names it
 ```
 
-`test_*.py` anywhere under the workspace root is collected, except
-under `app/`. That exception is not taste: `app/` is what publishes, so
-a test there ships in every deployment and is fetchable from the served
-app. `tests/` sits outside the published subtree, which is the whole
-reason to put it there.
+With no paths, `ws-pytest` collects `test_*.py` under `tests/` and
+nowhere else. `app/` is refused for a reason that is not taste: it is
+what publishes, so a test there ships in every deployment and is
+fetchable from the served app. `tests/` sits outside the published
+subtree, which is the whole reason to put it there. Everywhere else is
+left out so the suite is the workspace's own: a vendored library or a
+copied example whose tests cannot import would otherwise fail a run in
+which every real test passed. A test file found anywhere else is named
+in a note (the first few, and a count), and runs when you pass its
+path: `ws-pytest examples/test_demo.py`.
 
 Inside a file, every top-level `def test_*()` taking no arguments runs.
 A test that takes an argument is asking for a fixture, and there are
@@ -343,7 +349,8 @@ fetchable from it. `tests/**/*.test.js` leads the run, and
 `app/**/*.test.js` follows it because an agent writes one there without
 being asked and a test that silently never ran is worse than one that
 runs with a note naming it. The run prints that note; move the file to
-`tests/`.
+`tests/`. A `.test.js` anywhere else is not run, and the run names it
+in a note too.
 
 `app/api/` is neither home. A `.test.js` there is reported as **not
 runnable**, by name and with the reason: the harness refuses that
@@ -533,7 +540,8 @@ a hang.
 `ws-vitest` runs **host-side on every rung**. Chromium lives on the
 host; on a VM rung the guest never sees the test file, and the workspace
 filesystem is read by the driver. That is the asymmetry `test_app`
-already has, and it sits right next to `ws-pytest`'s guest execution, so
-every report ends with a note saying which is which. The report reads
+already has, and it sits right next to `ws-pytest`'s guest execution;
+`ws-vitest --help` says which is which, and the reports leave it out.
+The report reads
 identically on both rungs — a conformance corpus asserts it, including
 a test file written by real bash in a guest.

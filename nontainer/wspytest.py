@@ -200,14 +200,26 @@ def _walk(fs: Any, base: str, skip: str) -> list[str]:
     return sorted(out)
 
 
+def _some(paths: list[str], shown: int = 3) -> str:
+    """The first few of ``paths``, and how many more: a vendored tree
+    can hold hundreds, and a note is one line."""
+    head = ", ".join(paths[:shown])
+    rest = len(paths) - shown
+    return f"{head}, and {rest} more" if rest > 0 else head
+
+
 def _discover(
     ws: Any, selection: list[tuple[str, str | None]]
 ) -> tuple[list[str], list[str]]:
     """``(test files, notes)`` for this run, workspace-relative.
 
-    With no positional selector the whole tree is walked except
-    ``app/``; with one, only what it names is collected. A selector
-    that names nothing is a usage error, the way pytest's is.
+    With no positional selector only ``tests/`` is collected, and test
+    files anywhere else are named in a note rather than run: a vendored
+    library or copied example that fails to import must not fail the
+    workspace's own suite, and a test written in the wrong place must
+    not go silently unrun either. With a selector, only what it names
+    is collected. A selector that names nothing is a usage error, the
+    way pytest's is.
     """
     fs = ws.files.fs
     root = "" if ws.root == "/" else ws.root.rstrip("/")
@@ -225,7 +237,20 @@ def _discover(
         seen = list(dict.fromkeys(files))
         return [_rel(ws, p) for p in seen], notes
 
-    files = _walk(fs, root or "/", f"{root}/{APP_DIR}")
+    tests_root = f"{root}/{TESTS_DIR}"
+    files = _walk(fs, tests_root, "")
+    elsewhere = [
+        _rel(ws, p)
+        for p in _walk(fs, root or "/", f"{root}/{APP_DIR}")
+        if not (p == tests_root or p.startswith(tests_root + "/"))
+    ]
+    if elsewhere:
+        notes.append(
+            f"{len(elsewhere)} test file(s) outside {TESTS_DIR}/ not collected "
+            f"({_some(elsewhere)}): with no paths, ws-pytest collects "
+            f"{TESTS_DIR}/ only. Move a test there, or name it to run it: "
+            f"ws-pytest {elsewhere[0]}"
+        )
     stray = _walk(fs, f"{root}/{APP_DIR}", "")
     if stray:
         notes.append(
@@ -1202,7 +1227,8 @@ not collect, 4 an argument that makes no sense (a flag, a path, or a
 test name nothing defines), 5 nothing collected.
 
 Tests live in tests/, never under app/: app/ is what publishes, so a
-test there ships with the app and is fetchable from it.
+test there ships with the app and is fetchable from it. A test file
+anywhere else is named in a note and not run unless you pass its path.
 
 A test is plain Python — `assert`, and `from unittest.mock import
 MagicMock` where it needs a fake — and one test function per behaviour,
