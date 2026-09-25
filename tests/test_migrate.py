@@ -537,7 +537,9 @@ def test_applying_an_old_commit_writes_rows_not_the_table(tmp_path):
 # -- frozen state -----------------------------------------------------------------
 
 
-def _legacy_write_publication(self, ws, head, *, branch, paths, tag, commit_info):
+def _legacy_write_publication(
+    self, ws, head, *, branch, paths, exclude, tag, commit_info
+):
     """``Store._write_publication`` as the old layout would have
     written it: the blobs, and one table describing them."""
     import kvgit
@@ -547,7 +549,7 @@ def _legacy_write_publication(self, ws, head, *, branch, paths, tag, commit_info
     wanted = {
         key: path
         for key, path in src._file_keys(handle.keys()).items()
-        if _under(path, paths, ws.root)
+        if _under(path, paths, ws.root) and not _under(path, exclude, ws.root)
     }
     rows = _published_rows(
         VirtualFS(handle).get_metadata_snapshot(), set(wanted.values())

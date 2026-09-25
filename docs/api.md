@@ -269,8 +269,9 @@ part of a session's tree, with a name and a pointer saying which
 version is current.
 
 ```python
-store.publish(ws, name, *, paths=("app/",), version=None, current=True,
-              create_only=False, info=None) -> Publication
+store.publish(ws, name, *, paths=("app/",),
+              exclude=("app/logs/", "app/screenshots/"), version=None,
+              current=True, create_only=False, info=None) -> Publication
 store.publications() -> dict[str, Publication]         # by name
 store.publication(name) -> Publication | None
 store.set_current(name, version) -> Publication
@@ -287,6 +288,7 @@ Publication: .name, .versions -> tuple[Version, ...], .current
 Version:     .name, .version, .tag, .ref, .published_from, .created
              .info -> Mapping[str, Any]      # the caller's publish info
              .paths -> tuple[str, ...]       # what was published
+             .exclude -> tuple[str, ...]     # what was left out of it
 ```
 
 What lands is **the subtree, not the session**. `publish` derives a new
@@ -300,14 +302,20 @@ Deleting the session leaves every version of it exactly as it was.
 
 `paths` are workspace paths: relative entries are taken under `ws.root`
 (`"app/"` means `<root>/app`), absolute ones as given, trailing slash
-optional. Publishing paths that hold no files is refused rather than
-producing an empty version. `ws` must be one this store opened and must
-be clean — publish names a commit, so land staged changes with
-`ws.commit()` or drop them with `ws.discard()` first. `version` defaults
-to `v<N>`, one past the highest `v`-number the lineage holds. Only
-names of that exact shape are counted, so a lineage holding `v1`, `v2`
-and `release-1` gets `v3`: the default is a series of its own, and a
-version the caller named stands outside it. An embedder that wants
+optional. `exclude` takes the same spelling and leaves those paths out
+from under `paths`. Its default leaves out what an app's authoring loop
+writes for the agent alone — `app/logs/` (the handler log, whose
+tracebacks and exception messages can carry secrets) and
+`app/screenshots/` (test_app's captures); pass `exclude=()` to publish
+everything under `paths`, or the default's entries plus your own to
+leave out more. Publishing paths that hold no files, once `exclude` is
+left out, is refused rather than producing an empty version. `ws` must
+be one this store opened and must be clean — publish names a commit, so
+land staged changes with `ws.commit()` or drop them with `ws.discard()`
+first. `version` defaults to `v<N>`, one past the highest `v`-number
+the lineage holds. Only names of that exact shape are counted, so a
+lineage holding `v1`, `v2` and `release-1` gets `v3`: the default is a
+series of its own, and a version the caller named stands outside it. An embedder that wants
 every version numbered passes `version=` itself. An explicit name must
 be unused, because versions never move.
 
@@ -328,12 +336,12 @@ off the registry row rather than the tag: listing publications with
 their display titles and owners is one registry read and no backend
 open. It carries what the caller passed and nothing else — what publish
 writes itself is already spelled out by `name`, `version`,
-`published_from` and `paths`. A row written before the field existed
-reads as an empty mapping, and `paths` as an empty tuple. `info` counts
-for equality but is left out of the hash, so a `Version` — and a
-`Publication` holding one — goes in a set or a dict key like any other
-frozen record: the mapping holds whatever JSON the caller passed, and
-that is not hashable.
+`published_from`, `paths` and `exclude`. A row written before the field
+existed reads as an empty mapping, and `paths` and `exclude` as empty
+tuples. `info` counts for equality but is left out of the hash, so a
+`Version` — and a `Publication` holding one — goes in a set or a dict
+key like any other frozen record: the mapping holds whatever JSON the
+caller passed, and that is not hashable.
 
 `Version.info` and `Publication.meta` both read as **read-only views
 all the way down**: nested mappings are read-only too, and a JSON array

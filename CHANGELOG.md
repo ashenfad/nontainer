@@ -82,6 +82,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Where the browser runs is the embedder's concern and is in
   `ws-vitest --help`; the agent was reading it after every run.
 
+### Security
+- **Apps no longer serve their authoring log or screenshots.** A
+  publication copied all of `app/`, including `app/logs/api.log` (every
+  handler traceback and `print` from development, exception messages
+  included) and test_app's `app/screenshots/`, and static serving
+  refused only `app/api/`, so the live preview and every published
+  version served both to anyone holding the URL. Static serving now
+  refuses `logs/` and `screenshots/` as it refuses `api/`: on the
+  canonical path (`/./logs/api.log` and `/x/../logs/api.log` included)
+  and without regard to case, which also closes `/API/h.py` serving
+  handler source from a workspace on a case-insensitive host
+  filesystem. The refusal runs at serve time, so versions published
+  before this fix are covered. `store.publish` gains `exclude=`, which
+  leaves paths out from under `paths` and defaults to `("app/logs/",
+  "app/screenshots/")`, so new versions do not carry them at all; it is
+  recorded in the commit and on `Version.exclude`. A `static_assets`
+  prefix at `logs` or `screenshots` is refused when declared, as one at
+  `api` already was.
+
 ## 0.7.10 - 2026-09-23
 
 ### Added
