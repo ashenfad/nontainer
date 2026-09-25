@@ -11,7 +11,7 @@ import pytest
 from nontainer import Workspace
 from nontainer.apps import AppsConfig, enable_apps
 from nontainer.providers import KvgitProvider
-from nontainer.wsvitest import register_wsvitest, run_vitest
+from nontainer.wsvitest import discover, register_wsvitest, run_vitest
 
 UTIL = "export const add = (a, b) => a + b;\n"
 
@@ -336,6 +336,25 @@ def test_a_workspace_with_only_a_beside_module_test_still_runs(chromium_availabl
         assert " Test Files  1 passed (1)" in r.stdout
     finally:
         w.close()
+
+
+def test_a_test_file_outside_tests_and_app_is_named_not_run():
+    w = Workspace(KvgitProvider.open(None, session="wsvitest-elsewhere"))
+    try:
+        w.files.fs.write("/workspace/tests/good.test.js", b"it('ok', () => {});\n")
+        w.files.fs.write("/workspace/lib/x.test.js", b"it('x', () => {});\n")
+        files, notes = discover(w)
+        assert files == ["tests/good.test.js"]
+        assert any("lib/x.test.js" in n and "not collected" in n for n in notes)
+    finally:
+        w.close()
+
+
+def test_the_report_does_not_explain_where_tests_run(ws):
+    """Where the browser runs is the embedder's business; the agent
+    reads it in --help if it wonders, not after every run."""
+    r = ws.terminal("ws-vitest")
+    assert "on every rung" not in r.stdout
 
 
 def test_tests_lead_the_run_and_app_follows(ws):

@@ -95,6 +95,14 @@ def _walk(fs: Any, base: str) -> list[str]:
     return sorted(out)
 
 
+def _some(paths: list[str], shown: int = 3) -> str:
+    """The first few of ``paths``, and how many more: a vendored tree
+    can hold hundreds, and a note is one line."""
+    head = ", ".join(paths[:shown])
+    rest = len(paths) - shown
+    return f"{head}, and {rest} more" if rest > 0 else head
+
+
 def discover(ws: Any) -> tuple[list[str], list[str]]:
     """``(test files, notes)`` for this workspace, workspace-relative.
 
@@ -104,7 +112,8 @@ def discover(ws: Any) -> tuple[list[str], list[str]]:
     silently never ran is worse than one that runs with a note saying
     it ships with a publication. ``app/api/`` is neither home: the
     harness refuses that subtree, so a test there is reported as not
-    runnable rather than silently skipped.
+    runnable rather than silently skipped. A test file anywhere else is
+    named in a note and not run, for the same reason.
     """
     fs = ws.files.fs
     root = "" if ws.root == "/" else ws.root.rstrip("/")
@@ -134,6 +143,19 @@ def discover(ws: Any) -> tuple[list[str], list[str]]:
             f"({', '.join(unreachable)}): the harness refuses that subtree the "
             "way the served app does, so the page could not load them — and "
             f"handlers are Python, which ws-pytest runs from {TESTS_DIR}/."
+        )
+    tests_root = f"{root}/{TESTS_DIR}"
+    app_root = f"{root}/{APP_DIR}"
+    elsewhere = [
+        _rel(ws, p)
+        for p in _walk(fs, root or "/")
+        if not any(p.startswith(d + "/") for d in (tests_root, app_root))
+    ]
+    if elsewhere:
+        notes.append(
+            f"{_files(elsewhere)} outside {TESTS_DIR}/ and {APP_DIR}/ not "
+            f"collected ({_some(elsewhere)}). Move a test to {TESTS_DIR}/ to "
+            "run it."
         )
     return [*tests, *beside], notes
 
@@ -250,14 +272,6 @@ def parse_argv(argv: Any = ()) -> Options:
 # the run
 # --------------------------------------------------------------------
 
-#: Said in every report, because it is the one thing about this verb
-#: that the shell it is typed in does not imply.
-RUNG_NOTE = (
-    "JavaScript tests run in a browser on the host on every rung, against "
-    "the files this workspace holds — the same place test_app runs. Python "
-    "tests run where your code runs."
-)
-
 
 def run_vitest(ws: Any, argv: Any = (), *, cwd: str | None = None) -> TestReport:
     """Run the workspace's JavaScript tests and report what happened.
@@ -360,7 +374,7 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
         outcomes=tuple(outcomes),
         stdout=console,
         collection_error="\n\n".join(errors) or None,
-        notes=(*notes, RUNG_NOTE),
+        notes=tuple(notes),
     )
 
 
