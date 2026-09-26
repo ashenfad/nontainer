@@ -1,12 +1,9 @@
 """The seams: where workspace state lives, and how code runs on it.
 
 ``WorkspaceProvider`` (below) is the substrate seam; ``Executor``
-(further down) is the execution seam. ``SessionRunner`` and
-``HostObjectFactory`` are the loop seam: ``SessionRunner`` is what
-``nontainer.sessions`` hands each delegation to, so an embedder's agent
-loop is the implementation; ``HostObjectFactory`` names the shape for
-deciding which host objects a child may reach and is called by nothing
-yet.
+(further down) is the execution seam. ``SessionRunner`` is the loop
+seam: it is what ``nontainer.sessions`` hands each delegation to, so an
+embedder's agent loop is the implementation.
 
 A provider supplies three things:
 
@@ -1290,29 +1287,4 @@ class SessionRunner(Protocol):
         own, and a runner with an async loop blocks on its own future
         inside it.
         """
-        ...
-
-
-@runtime_checkable
-class HostObjectFactory(Protocol):
-    """The shape for deciding which host objects a child session's
-    code may reach. Declared, and not yet asked by anything.
-
-    Host objects are live host resources (a db handle, an HTTP client),
-    so a child session cannot simply inherit the parent's set in every
-    embedding — a per-user db handle belongs to the user whose turn
-    opened it. Today a fork replays the parent's ``PythonConfig``, host
-    objects included, and a delegate's runner may open the child with a
-    config of its own; there is no default implementation and the
-    sessions helper takes no factory. When one does, it is asked once
-    per child.
-
-    ``kind`` names why the child exists (a fork, a review, a
-    sub-task); an embedder that scopes resources by purpose keys on it.
-    """
-
-    def __call__(
-        self, parent_session: str, child_session: str, kind: str
-    ) -> "Mapping[str, Any]":
-        """The host objects for ``child_session``'s executions."""
         ...

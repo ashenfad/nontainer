@@ -16,7 +16,7 @@ Public surface:
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
     ExecutionContext, StagedDiff, ViewSpec -- what its methods speak
-    SessionRunner, HostObjectFactory -- the loop seam
+    SessionRunner       -- the loop seam
     Job, Answer         -- what a delegation is, and what it says back
     JobStatus, AnswerStatus -- the words their ``status`` can hold
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
@@ -68,7 +68,6 @@ from .protocol import (
     ExecutionContext,
     Executor,
     HarvestLost,
-    HostObjectFactory,
     Job,
     JobStatus,
     MergeOutcome,
@@ -120,7 +119,6 @@ __all__ = [
     "StagedDiff",
     "ViewSpec",
     "SessionRunner",
-    "HostObjectFactory",
     "Job",
     "Answer",
     "JobStatus",
