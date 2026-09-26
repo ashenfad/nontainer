@@ -482,9 +482,6 @@ branch whose info does not carry publish's provenance (`tool`, `name`,
 `version`, `published_from`, `paths`) is left where it is and the call
 raises `ValueError`.
 
-**Not yet:** `store.shared(name)` raises `NotImplementedError`; it is a
-later stage of the API plan.
-
 ## `nontainer.workspace(...)` — the factory
 
 ```python

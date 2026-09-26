@@ -422,17 +422,6 @@ def test_provider_factory_refuses_the_store_level_verbs():
             call()
 
 
-# -- planned surface ---------------------------------------------------------
-
-
-def test_shared_is_declared_not_half_built(tmp_path):
-    """`publish` landed (tests/test_publish.py); the shared plane has
-    not."""
-    st = Store(tmp_path)
-    with pytest.raises(NotImplementedError):
-        st.shared("notes")
-
-
 def test_store_is_a_context_manager(tmp_path):
     with Store(tmp_path) as st:
         with st.open("s"):
