@@ -451,9 +451,18 @@ class nt__Encoder:
         return (WIRE_RESPONSE, status, content_type, headers, content)
 
     @staticmethod
-    def error(status: Any, message: Any) -> tuple:
+    def error(
+        status: Any,
+        message: Any,
+        *,
+        text_limit: int | None = None,
+        binary_limit: int | None = None,
+        carry_limit: int | None = None,
+    ) -> tuple:
         """The wire tuple for an ``HttpError``: its status, with the
         message in the JSON error body every error response carries.
+        The body is held to the same size caps as any response, so an
+        oversized message is refused before it leaves the sandbox.
 
         The status must be an error: 4xx or 5xx. ``HttpError`` coerces
         with ``int()``, which lets ``HttpError("404")`` through but would
@@ -469,7 +478,18 @@ class nt__Encoder:
                 f"HttpError status must be 400 to 599, got {status!r}; "
                 "return Response(status=...) for anything else",
             )
-        return (WIRE_RESPONSE, code, "application/json", {}, error_body(str(message)))
+        body = error_body(str(message))
+        refusal = size_refusal(
+            len(body),
+            "application/json",
+            text_limit,
+            binary_limit,
+            carry_limit,
+            advise=False,
+        )
+        if refusal is not None:
+            return (WIRE_REFUSED, f"HttpError message too large: {refusal}; shorten it")
+        return (WIRE_RESPONSE, code, "application/json", {}, body)
 
 
 # -- response size ------------------------------------------------------
@@ -707,7 +727,33 @@ def _pandas_frame(value: Any) -> Any:
         raise _Unencodable(
             f"{name} has duplicate column names ({', '.join(dupes)}); rename them"
         )
+    # Distinct labels can still meet once converted: 1 and "1" are one
+    # JSON key, and a row would silently keep only one of the two values.
+    # Arrow names fields by str(), which can collide differently (a
+    # Timestamp label is ISO as a JSON key but not as a str).
+    for kind, key_of in (("JSON key", _json_key), ("Arrow field name", str)):
+        seen: dict[str, Any] = {}
+        for label in frame.columns:
+            key = key_of(label)
+            if key is None:
+                continue
+            if key in seen:
+                raise _Unencodable(
+                    f"{name} columns {seen[key]!r} and {label!r} both become the "
+                    f"{kind} {key!r}; rename one"
+                )
+            seen[key] = label
     return frame
+
+
+def _json_key(label: Any) -> str | None:
+    """The object key ``label`` becomes in JSON, or ``None`` when it has
+    none (encoding the rows refuses that label with its own message)."""
+    try:
+        key = _clean_key(label)
+    except _Unencodable:
+        return None
+    return next(iter(_json.loads(_FINAL.encode({key: 0}))))
 
 
 def _arrow_table(value: Any, kind: str, pa: Any) -> Any:

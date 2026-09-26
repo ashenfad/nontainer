@@ -249,6 +249,33 @@ def test_groupby_series_values():
     assert json_rows(s.sum()) == [{"year": 2020, "v": 3}, {"year": 2021, "v": 3}]
 
 
+def test_labels_that_meet_once_converted_are_refused():
+    """Distinct labels that become one JSON key (or one Arrow field name)
+    would leave each row holding only one of the two values."""
+    ts = pd.Timestamp("2024-01-01")
+    cases = [
+        (pd.DataFrame([[1, 2]], columns=[1, "1"]), "JSON key '1'"),
+        (pd.DataFrame([[1, 2]], columns=[ts, "2024-01-01T00:00:00"]), "JSON key"),
+        (pd.DataFrame([[1, 2]], columns=[ts, "2024-01-01 00:00:00"]), "Arrow field"),
+    ]
+    for frame, expected in cases:
+        for accept in (None, ARROW_STREAM):
+            wire = respond(frame, accept)
+            assert wire[0] == WIRE_REFUSED, (frame.columns, accept)
+            assert expected in wire[1], wire[1]
+    # Distinct after conversion: fine.
+    assert json_rows(pd.DataFrame([[1, 2]], columns=[1, 2])) == [{"1": 1, "2": 2}]
+
+
+def test_an_http_error_body_is_held_to_the_caps():
+    wire = nt__Encoder.error(400, "x" * 200, text_limit=100)
+    assert wire[0] == WIRE_REFUSED
+    assert wire[1].startswith("HttpError message too large: JSON response is")
+    assert nt__Encoder.error(400, "short", text_limit=100)[:2] == (WIRE_RESPONSE, 400)
+    carried = nt__Encoder.error(400, "x" * 200, text_limit=10_000, carry_limit=100)
+    assert carried[0] == WIRE_REFUSED and "this executor can carry" in carried[1]
+
+
 def test_frames_with_no_row_form_are_refused():
     dupes = pd.DataFrame([[1, 2]], columns=["a", "a"])
     for accept in (None, ARROW_STREAM):

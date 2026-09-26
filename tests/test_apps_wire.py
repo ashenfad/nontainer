@@ -142,6 +142,21 @@ CASES = {
             ).encode(),
         ),
     ),
+    # An HttpError's body is held to the same caps, in the worker.
+    "oversize_http_error": (
+        "def get(req):\n    raise HttpError(400, 'x' * 12_000_000)\n",
+        (
+            500,
+            "application/json",
+            {},
+            json.dumps(
+                {
+                    "error": "HttpError message too large: JSON response is "
+                    "12 MB, over the 10 MB limit for text; shorten it"
+                }
+            ).encode(),
+        ),
+    ),
     "oversize_binary": (
         "def get(req):\n    return bytes(33_000_000)\n",
         (
