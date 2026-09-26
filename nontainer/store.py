@@ -1022,21 +1022,6 @@ class Store:
         return StoreTags(self)
 
     # ------------------------------------------------------------------
-    # not yet: the shared plane (see scratch/api-v2.md)
-    # ------------------------------------------------------------------
-
-    def shared(self, name: str) -> "Workspace":
-        """The shared plane: a multi-writer workspace on
-        ``@store/shared/<name>``, visible to every session.
-
-        Planned; see the api-v2 spec. Not implemented.
-        """
-        raise NotImplementedError(
-            "Store.shared is not implemented yet — see the api-v2 spec for "
-            "the shared plane."
-        )
-
-    # ------------------------------------------------------------------
     # publications
     # ------------------------------------------------------------------
 

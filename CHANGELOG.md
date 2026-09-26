@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewrites a publication branch, a tag or an old commit. Such a
   snapshot now opens at the workspace root rather than at the old
   `__cwd__`.
+- **`Store.shared` and `HostObjectFactory` are removed.** Neither did
+  anything. `Store.shared(name)` raised `NotImplementedError` for a
+  shared plane that is no longer planned. `HostObjectFactory` was a
+  protocol exported from `nontainer` that nothing called, since the
+  sessions helper never took a factory. Code that imported or called
+  either now gets an `ImportError` or `AttributeError`.
 
 ### Added
 - **`ws.runtime.reap_idle(max_age)` drains warm view workers.** Under
