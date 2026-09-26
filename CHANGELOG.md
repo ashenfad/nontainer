@@ -110,6 +110,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   install pyarrow or request JSON); an `__arrow_c_stream__` object
   asked for as JSON there is a bad return naming pyarrow. The response
   wire gains `nt-noted-response/1` and `nt-not-acceptable/1` for these.
+  A table whose column labels cannot all be told apart once converted
+  is a bad return: duplicate labels, `MultiIndex` columns, and distinct
+  labels that meet as one JSON key or Arrow field name (`1` and `"1"`),
+  which would otherwise leave each row holding only one of the values.
   See apps.md, "Table returns".
 - **`AppsConfig.max_binary_response_bytes`** (default 32 MB) caps any
   body that is not text, beside `max_response_bytes` for text. Text is
@@ -154,6 +158,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `api.log`, where it used to be a bare `response too large` that
   nothing logged. The effective cap is lowered to the executor's
   `view_result_limit`, and the message names that limit when it binds.
+  An `HttpError`'s body is held to the same caps in the sandbox, so an
+  oversized message is refused as `HttpError message too large` rather
+  than crossing first.
   A static file from the workspace is held to the same two caps;
   declared `static_assets` stay exempt.
 - **Request header names are lowercased by `make_request`**, so

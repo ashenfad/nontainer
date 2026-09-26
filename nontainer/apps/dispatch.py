@@ -207,7 +207,13 @@ try:
         carry_limit={carry_limit!r},
     )
 except HttpError as nt__e:
-    nt__wire = nt__Encoder.error(nt__e.status, nt__e.message)
+    nt__wire = nt__Encoder.error(
+        nt__e.status,
+        nt__e.message,
+        text_limit={text_limit!r},
+        binary_limit={binary_limit!r},
+        carry_limit={carry_limit!r},
+    )
 """
 
 
