@@ -627,16 +627,17 @@ class Runtime:
     def warm(self) -> None:
         """Start now what the executor would otherwise start at its first
         execution — on ``LocalExecutor`` under process/kernel isolation,
-        the session worker ``run_python`` runs on.
+        the session worker ``run_python`` runs on; on ``DudExecutor``,
+        the guest machine.
 
-        Opening a workspace starts no worker: one opened to read files,
+        Opening a workspace starts neither: one opened to read files,
         serve a snapshot or list history never runs code, and holds
-        nothing it would not use. A host that wants the first
-        ``run_python`` to pay no start-up cost calls this when it knows
-        code is coming — a chat session opening, say. Idempotent, and a
-        no-op on a closed runtime and on an executor with nothing to
-        start (in-process isolation, ``DudExecutor``, which boots its
-        guest at open).
+        nothing it would not use. A host that wants the first execution
+        to pay no start-up cost calls this when it knows code is coming
+        — a chat session opening, say — and a host that wants to learn
+        at open that the rung is unavailable calls it straight after
+        opening. Idempotent, and a no-op on a closed runtime and on an
+        executor with nothing to start (in-process isolation).
         """
         if self._closed:
             return

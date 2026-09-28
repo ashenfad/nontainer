@@ -739,12 +739,15 @@ def test_harvest_loss_is_an_error_not_a_silent_success():
         ws.close()
 
 
-def test_open_failure_closes_the_session(monkeypatch):
-    """A failure after session construction but inside open() (boot
-    race, bad tree) must close the session it just made — otherwise the
-    guest is orphaned with no workspace to close it (and a pooled one
-    would linger in the pool's bound set past teardown)."""
+def test_a_failed_boot_closes_the_session_and_the_next_call_retries(monkeypatch):
+    """A failure after session construction but before it is bound
+    (boot race, bad tree) must close the session it just made —
+    otherwise the guest is orphaned (and a pooled one would linger in
+    the pool's bound set past teardown). The guest boots on first use,
+    so that is where the failure arrives; opening costs nothing and
+    cannot fail this way."""
     closed = []
+    made = []
 
     class DoomedSession:
         def ping(self):
@@ -754,15 +757,22 @@ def test_open_failure_closes_the_session(monkeypatch):
             closed.append(True)
 
     ex = DudExecutor(backend="subprocess")
-    monkeypatch.setattr(ex, "_make_session", lambda live, cache: DoomedSession())
+    monkeypatch.setattr(
+        ex, "_make_session", lambda live, cache: made.append(1) or DoomedSession()
+    )
     provider = KvgitProvider.open(None, session="dud-open-fail")
+    w = Workspace(provider, executor=ex)
     try:
+        assert made == []  # open booted nothing
         with pytest.raises(RuntimeError, match="boot race"):
-            Workspace(provider, executor=ex)
+            w.runtime.warm()
         assert closed == [True]
         assert ex._session is None
+        with pytest.raises(RuntimeError, match="boot race"):
+            w.runtime.warm()  # cleared, so the next call boots afresh
+        assert made == [1, 1]
     finally:
-        provider.close()
+        w.close()
 
 
 def test_sync_recovery_pushes_the_tree_once():
@@ -1795,3 +1805,121 @@ def test_reap_idle_is_zero_and_harmless(ws):
     assert ws.runtime.reap_idle(0) == 0
     r = ws.run_python("x = 41 + 1")
     assert r.error is None and r.namespace["x"] == 42
+
+
+# -- the guest boots on first use (#160) ---------------------------------------
+
+
+def _counted(ex):
+    """Count the sessions an executor makes, leaving it real."""
+    made = []
+    real = ex._make_session
+
+    def make(live, cache):
+        made.append(1)
+        return real(live, cache)
+
+    ex._make_session = make
+    return made
+
+
+def _lazy_ws(session):
+    ex = DudExecutor(backend="subprocess")
+    made = _counted(ex)
+    w = Workspace(KvgitProvider.open(None, session=session), executor=ex)
+    return w, ex, made
+
+
+def test_opening_boots_no_guest_and_file_work_never_does():
+    w, ex, made = _lazy_ws("dud-lazy-open")
+    try:
+        w.files.write("a.txt", b"a")
+        w.commit()
+        assert w.files.read("a.txt") == b"a"
+        assert len(list(w.log())) >= 1
+        w.runtime.sync_if_stale()  # a host write marked it stale
+        assert made == [] and ex._session is None
+    finally:
+        w.close()
+
+
+def test_the_first_execution_boots_with_the_tree_as_it_is_then():
+    """Host writes made before the guest exists, committed or not,
+    reach it: the boot pushes the tree as it is at that moment."""
+    w, ex, made = _lazy_ws("dud-lazy-first")
+    try:
+        w.files.write("committed.txt", b"one\n")
+        w.commit()
+        w.files.write("pending.txt", b"two\n")  # not committed
+        r = w.terminal("cat committed.txt pending.txt")
+        assert r.stdout.split() == ["one", "two"]
+        assert made == [1]
+        w.run_python("print(open('pending.txt').read())")
+        assert made == [1]  # later executions reuse the guest
+    finally:
+        w.close()
+
+
+def test_warm_boots_once_and_close_without_executing_is_clean():
+    w, ex, made = _lazy_ws("dud-lazy-warm")
+    try:
+        w.runtime.warm()
+        w.runtime.warm()
+        assert made == [1] and ex._session is not None
+    finally:
+        w.close()
+
+    w2, ex2, made2 = _lazy_ws("dud-lazy-close")
+    w2.close()
+    w2.runtime.warm()  # closed runtime: nothing to do
+    ex2.warm()  # closed executor, reached directly: nothing either
+    assert made2 == [] and ex2._session is None
+    with pytest.raises(RuntimeError, match="closed"):
+        ex2.exec_shell("true")
+
+
+def test_a_frozen_snapshot_boots_no_guest_until_it_runs_code(tmp_path):
+    from nontainer import Store
+
+    st = Store(tmp_path)
+    factory = lambda: DudExecutor(backend="subprocess")  # noqa: E731
+    ws = st.open("a", executor_factory=factory)
+    ws.files.write("x.txt", b"x")
+    ws.commit()
+    st.tags.add(ws, "t1")
+    frozen = st.tags.at("t1", executor_factory=factory)
+    try:
+        assert frozen.files.read("x.txt") == b"x"
+        assert frozen.runtime.executor._session is None
+        assert ws.runtime.executor._session is None
+        assert frozen.terminal("cat x.txt").stdout == "x"
+        assert frozen.runtime.executor._session is not None
+    finally:
+        frozen.close()
+        ws.close()
+        st.close()
+
+
+def test_racing_warms_boot_one_guest():
+    import threading
+
+    w, ex, made = _lazy_ws("dud-lazy-race")
+    gate = threading.Barrier(5)
+    errors = []
+
+    def go():
+        try:
+            gate.wait()
+            w.runtime.warm()
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=go) for _ in range(5)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=60)
+        assert errors == [] and made == [1]
+    finally:
+        w.close()

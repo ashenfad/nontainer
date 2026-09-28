@@ -187,6 +187,10 @@ def test_dud_edges_match_local(ws):
 
 def test_guest_to_host_mapping(ws):
     ex = ws.runtime.executor
+    if ex._session is None:
+        # Before the guest boots there is no guest path to map.
+        assert ex._guest_to_host("/anything") is None
+        ws.runtime.warm()
     work = ex._work
     assert work, "subprocess ping must report a workspace"
     assert ex._guest_to_host(f"{work}/sub/f.txt") == "/workspace/sub/f.txt"

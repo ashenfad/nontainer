@@ -8,13 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Changed
+- **`DudExecutor` boots its guest on first use** (#160), not at open. Opening a dud-backed workspace to read files, serve a frozen snapshot or list history no longer costs a machine (a subprocess or VM) or a full tree push. `ws.runtime.warm()` boots it ahead of the first execution.
+  - **What moves to the first execution:** the pooled VM acquire and tree push, and any failure to boot, including dud's `IsolationUnavailable` for a rung the host can't provide. Call `warm()` straight after opening to learn that at open.
+  - **Park-and-resume matches more often.** The pool is asked for the provider's state at first execution rather than at open, and a parked VM more likely holds that. Uncommitted writes still name no state, so they always get a push.
 - **Opening a workspace starts no worker** (#159). Under `isolation="process"` or `"kernel"`, the session worker that `run_python` runs on now starts with the first execution that needs it, not at open.
   - A workspace opened to read files, serve a frozen snapshot, list history or run shell commands never starts one. In the issue's repro, opening a session and a tagged snapshot went from 4 processes to none.
   - The sandbox and its policy are still built at open, so a bad configuration fails there as before.
   - **What moves to the first `run_python`** is the worker's start-up latency (about 14ms with `preload_grants`), and any failure to start the worker. That includes sandtrap's `IsolationUnavailable`: `isolation="kernel"` on a platform without seccomp or Landlock, or `isolation="process"` without multiprocessing (Pyodide). `open()` no longer raises it. A host that wants to know at open, to fall back to another rung for instance, calls `ws.runtime.warm()` straight after opening.
 
 ### Added
-- **`ws.runtime.warm()`** starts the session worker now, for a host that wants the first `run_python` to pay no start-up cost, such as a chat session opening. It is idempotent, and a no-op where there is nothing to start (in-process isolation, `DudExecutor`, a closed runtime). Executors may define `warm()`, and `Runtime.warm` calls it where it exists.
+- **`ws.runtime.warm()`** starts the session worker now, for a host that wants the first `run_python` to pay no start-up cost, such as a chat session opening. On `DudExecutor` it boots the guest. It is idempotent, and a no-op where there is nothing to start (in-process isolation, a closed runtime). Executors may define `warm()`, and `Runtime.warm` calls it where it exists.
 - **`test_app(action_timeout_ms=)`**: how long a `click`, `type`,
   `select` or `read` waits for its element before failing (default
   5000, as before). It sits beside `load_timeout_ms` and
