@@ -710,8 +710,19 @@ class LocalExecutor:
     def warm(self) -> None:
         """Start the session worker now rather than at the first
         execution, for a host that wants that latency paid up front.
-        Idempotent; nothing to start under in-process isolation."""
-        self._session_sandbox()
+        Idempotent, safe from any thread, and a no-op where there is
+        nothing to start: in-process isolation, and an executor not yet
+        open or already closed. A warm that loses a race with close()
+        is the last case, so it checks under the lock close() takes;
+        an execution after close still raises, as it should."""
+        ctx = self._ctx
+        if ctx is None or ctx.python_config.isolation == "none":
+            return
+        with self._session_lock:
+            if self._closed or self._session_started:
+                return
+            self._sandbox.__enter__()
+            self._session_started = True
 
     def close(self) -> None:
         self._pool.close()  # best-effort internally

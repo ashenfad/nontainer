@@ -403,6 +403,22 @@ def test_closing_without_executing_is_clean_and_warm_after_close_does_nothing():
     assert _worker(w) is None
 
 
+def test_a_warm_that_loses_the_race_with_close_does_nothing():
+    """Runtime.warm checks its own flag, then reaches the executor; a
+    close can land between the two. The executor's own check, under the
+    lock close takes, is what makes that warm a no-op rather than an
+    error — while an execution after close still refuses."""
+    w = _iso_ws("lazy-warm-close")
+    try:
+        w.runtime._executor.close()  # close lands under a still-open runtime
+        w.runtime.warm()
+        assert _worker(w) is None
+        with pytest.raises(RuntimeError, match="closed"):
+            w.runtime.exec_python("1")
+    finally:
+        w.close()
+
+
 def test_racing_starts_make_one_worker():
     """Several threads reaching the not-yet-started worker at once —
     the start is what races, so that is what they call. (Executions on
