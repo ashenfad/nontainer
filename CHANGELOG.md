@@ -44,7 +44,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to open the store afresh for every verb; now it opens it once and
   every session and verb shares it — one pool of connections to a
   networked backend. Closing a workspace leaves the store's repository
-  open; `store.close()` closes it (a store used again reopens it).
+  open; `store.close()` closes it (a store used again reopens it), and
+  with it a backend the store built from a URL or on disk — a `KVStore`
+  passed as `kv=` stays the caller's to close.
   `nontainer.workspace(...)` hands its one-off store's backend to the
   workspace it returns, so closing that workspace closes it.
 - **Merging a branch this session already contains writes nothing.** A

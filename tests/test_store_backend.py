@@ -57,14 +57,39 @@ def test_every_session_shares_one_repository(tmp_path):
     child.close()
     a.close()
     b.close()
-    assert kv.closes == 0  # closing a workspace leaves the store's backend open
-
     st.close()
-    assert kv.closes == 1
-    with st.open("a") as again:  # the repository reopens on its next use
+    # A backend handed in stays the caller's: nothing here closes it, so
+    # the store can reopen its repository over the same object.
+    assert kv.closes == 0
+    with st.open("a") as again:
         assert again.head is not None
     st.close()
-    assert kv.closes == 2
+    assert kv.closes == 0
+
+
+@pytest.mark.disk_only
+def test_close_closes_a_backend_the_store_built(tmp_path, monkeypatch):
+    import kvgit.kv.disk
+
+    closes = []
+    real_close = kvgit.kv.disk.Disk.close
+
+    def counting(self):
+        closes.append(self)
+        return real_close(self)
+
+    monkeypatch.setattr(kvgit.kv.disk.Disk, "close", counting)
+    st = Store(tmp_path)
+    with st.open("a") as ws:
+        ws.files.write("x.txt", "1")
+        ws.commit()
+    assert closes == []  # the workspace borrowed it
+    st.close()
+    assert len(closes) == 1
+    with st.open("a") as again:  # reopens on a fresh backend
+        assert again.files.read("x.txt") == b"1"
+    st.close()
+    assert len(closes) == 2
 
 
 @pytest.mark.disk_only

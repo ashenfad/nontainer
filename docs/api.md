@@ -594,11 +594,13 @@ finally:
     served.close()                  # when the app stops being served
 ```
 
-**A `Store` owns its backend.** A kvgit store opens its repository on
-first use and every workspace it opens borrows it, so closing a
-workspace leaves it open and `store.close()` closes it — for a
-PostgreSQL store, its connection pool. Close the workspaces first, then
-the store; a store used again after `close()` reopens its repository.
+**A `Store` owns the backend it builds.** A kvgit store opens its
+repository on first use and every workspace it opens borrows it, so
+closing a workspace leaves it open and `store.close()` closes it — for
+a store on a PostgreSQL URL, its connection pool. A `KVStore` handed in
+as `kv=` is the caller's: `store.close()` lets go of it without closing
+it. Close the workspaces first, then the store; a store used again
+after `close()` reopens its repository.
 `nontainer.workspace(...)` builds a store for the one workspace it
 returns, and hands that workspace the store's backend: closing the
 workspace closes it.
