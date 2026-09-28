@@ -87,6 +87,8 @@ class DriveSpec:
 
     load_timeout_ms: int = 10_000
     action_timeout_ms: int = 5_000
+    """How long a ``click``, ``type``, ``select`` or ``read`` waits for
+    its element before failing."""
     assert_timeout_ms: int = 2_000
     """Budget for one ``assert``, which is retried until it passes."""
 

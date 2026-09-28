@@ -471,6 +471,7 @@ def build_spec(
     viewport: str | dict[str, int] = "desktop",
     max_screenshots: int = 5,
     load_timeout_ms: int = 10_000,
+    action_timeout_ms: int = 5_000,
     assert_timeout_ms: int = 2_000,
     settle_cap: float = 5.0,
 ) -> DriveSpec:
@@ -507,6 +508,7 @@ def build_spec(
         script_hosts=script_hosts,
         open_https_types=_OPEN_HTTPS_TYPES,
         load_timeout_ms=load_timeout_ms,
+        action_timeout_ms=action_timeout_ms,
         assert_timeout_ms=assert_timeout_ms,
         settle_cap_ms=int(settle_cap * 1000),
         max_screenshots=max_screenshots,

@@ -130,7 +130,7 @@ pip install nontainer[dud]      # + real-machine / microVM execution (needs 3.11
 
 ```bash
 uv sync --extra dev --extra apps --extra agno --extra mcp --extra dud
-uv run pytest -q
+uv run pytest -q -n auto      # one worker per core; drop -n for a single test
 uv run ruff check nontainer tests && uv run ruff format --check nontainer tests
 ```
 

@@ -36,9 +36,12 @@ jobs:
     - name: Install Playwright browser
       run: python -m playwright install --with-deps chromium
 
+    # One worker per core: the tests are independent (each has its
+    # own tmp_path and in-memory stores), and the browser and the
+    # sandbox workers they start are per process.
     - name: Run tests
       run: |
-        pytest tests/ -v
+        pytest tests/ -v -n auto
 
     - name: Run linter
       run: |
@@ -127,4 +130,4 @@ jobs:
 
     - name: Run the whole suite on Postgres
       run: |
-        pytest tests/ -q
+        pytest tests/ -q -n auto

@@ -205,6 +205,7 @@ dev = [
     "ruff",
     "pytest",
     "pytest-asyncio",
+    "pytest-xdist",
     "httpx2",
     # exercised by the preset tests (plotly deliberately left out —
     # its preset path is importorskip'd)
