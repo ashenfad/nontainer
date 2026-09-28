@@ -45,17 +45,22 @@ def _local_ws(session, isolation, **cfg):
 
     An isolation level is a property of the machine: a kernel rung needs
     seccomp and Landlock bindings the runner may not carry, and sandtrap
-    says so by refusing to build the sandbox rather than degrading into
-    something weaker under the same name. There is nothing to assert on
-    a rung that does not exist, so the parameter skips.
+    says so when its worker starts, rather than degrading into something
+    weaker under the same name. The worker starts with the first
+    execution, so the workspace is warmed here, inside the guard: there
+    is nothing to assert on a rung that does not exist, so the parameter
+    skips.
     """
+    w = Workspace(
+        KvgitProvider.open(None, session=session),
+        python=PythonConfig(isolation=isolation, **cfg),
+    )
     try:
-        return Workspace(
-            KvgitProvider.open(None, session=session),
-            python=PythonConfig(isolation=isolation, **cfg),
-        )
+        w.runtime.warm()
     except IsolationUnavailable as e:
+        w.close()
         pytest.skip(f"isolation={isolation!r} unavailable here: {e}")
+    return w
 
 
 def _dud_ws(session, **cfg):
