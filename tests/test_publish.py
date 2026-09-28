@@ -1588,6 +1588,11 @@ def _unpublish_between_check_and_open(tmp_path, read):
     window is opened deliberately instead of by timing. When the read
     holds the registry lock the unpublish cannot land while the hook
     waits, and the wait times out — which is the point being tested.
+
+    Half a second is ample for an unpublish that is NOT blocked to land
+    (it takes milliseconds), and the timeout is paid on every run where
+    the lock does its job. A machine stalled for longer could only make
+    a missing lock pass unnoticed, never fail a correct one.
     """
     store = Store(tmp_path)
     ws = seeded(store)
@@ -1601,7 +1606,7 @@ def _unpublish_between_check_and_open(tmp_path, read):
     def hook(name, op):
         real(name, op)
         checked.set()
-        unpublished.wait(timeout=2.0)
+        unpublished.wait(timeout=0.5)
 
     store._require_branch = hook
     outcome = {}
