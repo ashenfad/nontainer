@@ -117,7 +117,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -e ".[dev,apps,agno,mcp,postgres]"
+        pip install -e ".[dev,apps,agno,mcp,dud,postgres]"
 
     # The app tests publish to the store and serve from it, and they run
     # only with a browser: without one they skip, and the store's
