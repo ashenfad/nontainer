@@ -466,14 +466,15 @@ class KvgitProvider:
         from kvgit import Repo
         from kvgit.kv.disk import Disk
 
-        if not set(sessions):
+        requested = set(sessions)  # once: ``sessions`` may be one-shot
+        if not requested:
             return  # nothing asked: don't touch the store
         p = Path(path).expanduser()
         if not p.is_dir():
             return  # never-materialized (or non-kvgit) store: nothing here
         repo = Repo(Disk(str(p)))
         try:
-            cls.delete_in(repo, sessions, min_age=min_age)
+            cls.delete_in(repo, requested, min_age=min_age)
         finally:
             repo.close()
 

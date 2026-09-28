@@ -689,6 +689,14 @@ def test_delete_purges_legacy_void_anchor(tmp_path):
 
 
 @pytest.mark.disk_only
+def test_delete_takes_a_one_shot_iterable(tmp_path):
+    with workspace("gen", store=tmp_path, backend="kvgit") as ws:
+        ws.terminal("echo x > x.txt")
+    KvgitProvider.delete(_kvgit_dir(tmp_path), (name for name in ["gen"]))
+    assert "gen" not in Store(tmp_path).sessions()
+
+
+@pytest.mark.disk_only
 def test_delete_empty_set_is_noop(tmp_path):
     with workspace("s", store=tmp_path, backend="kvgit") as ws:
         ws.terminal("echo x > x.txt")

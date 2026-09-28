@@ -644,8 +644,10 @@ class Store:
             ``<path>/kvgit``. A PostgreSQL URL's table is
             ``NONTAINER_KV_TABLE`` (default ``kvgit``). The store opens
             the backend once, on first use, and every session and verb
-            shares it; :meth:`close` closes it. ``path`` still holds the
-            publication registry.
+            shares it. :meth:`close` closes a backend the store built
+            (from a URL, or on disk); a ``KVStore`` passed here stays
+            yours to close. ``path`` still holds the publication
+            registry.
         provider_factory: Bring your own substrate — a callable taking
             a session id and returning a
             :class:`~nontainer.protocol.WorkspaceProvider`. When given
@@ -673,6 +675,10 @@ class Store:
         # networked backend rather than one per call.
         self._kvgit: Any = None
         self._kvgit_lock = threading.Lock()
+        # Whether the store built the backend under that repository (from
+        # a URL, or on disk) and so closes it. A KVStore handed in as
+        # ``kv=`` stays the caller's.
+        self._owns_backend = False
         # The publication registry for a store that has no directory of
         # its own: a provider_factory decides where state lives, so
         # there is nowhere to put the file. It then lives for as long as
@@ -1509,8 +1515,10 @@ class Store:
 
     def close(self) -> None:
         """Release store-level resources: the kvgit repository every
-        session of this store shares, and with it the backend's
-        connections.
+        session of this store shares, and with it — when the store built
+        it, from a URL or on disk — the backend's connections. A
+        ``KVStore`` handed in as ``kv=`` is left open: it is the
+        caller's to close.
 
         Close the workspaces this store opened first — they read and
         commit through that repository. The store can be used again
@@ -1518,7 +1526,8 @@ class Store:
         """
         with self._kvgit_lock:
             repo, self._kvgit = self._kvgit, None
-        if repo is not None:
+            owned = self._owns_backend
+        if repo is not None and owned:
             repo.close()
 
     def __enter__(self) -> "Store":
@@ -2175,6 +2184,7 @@ class Store:
         with self._kvgit_lock:
             if self._kvgit is None:
                 kv = self._kv if self._kv is not None else os.environ.get(KV_ENV)
+                self._owns_backend = not kv or isinstance(kv, str)
                 if kv:
                     backend = _backend_for(kv)
                 else:
