@@ -191,7 +191,7 @@ def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     # the conversation landed — the bug was that it did not
     assert len(run_keys(ws)) == 1
     assert len(db.get_session(ws.session).runs) == 1
-    head = ws._provider._staged.checkout(ws.head)
+    head = ws._provider.repo.snapshot(commit=ws.head)
     assert head.get(SESSION_KEY) is not None
 
     # the composition is untouched, and the agent's files are durable

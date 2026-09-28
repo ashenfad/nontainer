@@ -62,9 +62,9 @@ _RESERVED_BRANCH_PREFIXES = ("refs/tags/", "@")
 # under the store's own "@" namespace so no session can spell it.
 _PUB_BRANCH_PREFIX = "@store/pub/"
 # The store's own branch, in the same namespace: what a store-scoped
-# read anchors on when the store holds no session and no publication.
-# It carries one commit and that commit is empty, so it names a place
-# to read from and nothing else.
+# read is labelled with when the store holds no session and no
+# publication, so the ref it quotes resolves. It sits at the empty root
+# commit, so it names a place to read from and nothing else.
 _ANCHOR_BRANCH = "@store/anchor"
 # The session half a ref carries when it names a STORE TAG rather than
 # a session, in the same "@" namespace: a store tag belongs to no
@@ -865,17 +865,10 @@ class Store:
         self._require_own_layout("clean")
         if self._backend != "kvgit":
             return 0
-        p = self._kvgit_path()
-        if not p.is_dir():
-            return 0
-        from kvgit.kv.disk import Disk
-        from kvgit.versioned.kv import clean_orphans
-
-        backend = Disk(str(p))
-        try:
-            return clean_orphans(backend, min_age=min_age)
-        finally:
-            self._close_backend(backend)
+        with self._repo() as repo:
+            if repo is None:
+                return 0
+            return repo.gc(min_age=min_age)
 
     def migrate_layout(
         self,
@@ -1885,17 +1878,11 @@ class Store:
         and a reserved branch minted by a read is exactly what would
         then block republishing that version.
         """
-        import kvgit
-
-        if branch not in set(self._branches()):
-            return None, None
-        pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
-        try:
-            commit = pub.current_commit
-            info = pub.versioned.commit_info(commit) if commit else None
-            return commit, info
-        finally:
-            self._close_backend(getattr(pub.versioned, "store", None))
+        with self._repo() as repo:
+            if repo is None or branch not in repo.branches:
+                return None, None
+            commit = repo.branches[branch]
+            return commit, repo.get_commit(commit).info
 
     def _clear_stranded_attempt(
         self, name: str, version: str, *, min_age: float
@@ -1989,8 +1976,6 @@ class Store:
         exclusions — because publishing that twice writes the same files
         either way.
         """
-        import kvgit
-
         from .providers.kvgit import KvgitProvider
 
         commit, found = self._branch_head(branch)
@@ -2003,16 +1988,12 @@ class Store:
         landed = dict(found or {})
         existing = self._raw_tag_info(tag)
         if existing is None:
-            # Tagged through a handle on the branch that holds the
-            # commit. A checkout at a commit is frozen, and a frozen
-            # provider writes nothing — tags included.
-            pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
-            try:
-                KvgitProvider(pub, session=branch).tag(
+            # Tagged through a provider on the branch that holds the
+            # commit: the provider applies the store scope's name rules.
+            with self._repo() as repo:
+                KvgitProvider(repo, repo.worktree(branch), session=branch).tag(
                     tag, at=commit, info=landed, scope="store"
                 )
-            finally:
-                self._close_backend(getattr(pub.versioned, "store", None))
         elif existing.id != commit:
             return None
         return commit, landed
@@ -2048,16 +2029,12 @@ class Store:
         copy free — the keys are identical, so the same bytes would land
         under the same hash.
         """
-        import kvgit
         from monkeyfs import VirtualFS
 
-        from .errors import CommitNotFoundError
         from .providers.kvgit import KvgitProvider
 
         src = ws._provider
-        handle = src.staged.checkout(head)
-        if handle is None:
-            raise CommitNotFoundError(head)
+        handle = src._snapshot(head)
         wanted = {
             key: path
             for key, path in src._file_keys(handle.keys()).items()
@@ -2074,8 +2051,8 @@ class Store:
             VirtualFS(handle).get_metadata_snapshot(), set(wanted.values())
         )
 
-        pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
-        try:
+        with self._repo(create=True) as repo:
+            pub = repo.worktree(branch, create=True)
             pub_fs = VirtualFS(pub)
             for key in wanted:
                 pub[key] = handle.get(key)
@@ -2089,13 +2066,11 @@ class Store:
                     f"publish failed: could not commit the derived tree on "
                     f"{branch!r}: {result}"
                 )
-            commit = pub.current_commit
-            KvgitProvider(pub, session=branch).tag(
+            commit = pub.head
+            KvgitProvider(repo, pub, session=branch).tag(
                 tag, at=commit, info=commit_info, scope="store"
             )
             return commit
-        finally:
-            self._close_backend(getattr(pub.versioned, "store", None))
 
     # -- kvgit specifics -------------------------------------------------
     #
@@ -2106,24 +2081,33 @@ class Store:
     def _kvgit_path(self) -> Path:
         return self._path / "kvgit"
 
-    @staticmethod
-    def _close_backend(backend: Any) -> None:
-        close = getattr(backend, "close", None)
-        if callable(close):
-            close()
+    @contextmanager
+    def _repo(self, *, create: bool = False) -> "Iterator[Any | None]":
+        """The kvgit repository under this store, open for one verb, or
+        ``None`` when nothing was ever written here (unless ``create``).
 
-    def _branches(self) -> list[str]:
+        A ``Repo`` never writes by being opened and makes no branch by
+        being read, so every admin read goes through here; a caller
+        reading many things holds one across the lot.
+        """
         p = self._kvgit_path()
         if not p.is_dir():
-            return []  # never-materialized store: no branches
+            if not create:
+                yield None
+                return
+            p.mkdir(parents=True, exist_ok=True)
+        from kvgit import Repo
         from kvgit.kv.disk import Disk
-        from kvgit.versioned.kv import VersionedKV
 
-        backend = Disk(str(p))
+        repo = Repo(Disk(str(p)))
         try:
-            return list(VersionedKV.branches(backend))
+            yield repo
         finally:
-            self._close_backend(backend)
+            repo.close()
+
+    def _branches(self) -> list[str]:
+        with self._repo() as repo:
+            return [] if repo is None else list(repo.branches)
 
     @staticmethod
     def _store_tag_prefix() -> str:
@@ -2131,64 +2115,39 @@ class Store:
 
         return _STORE_PREFIX
 
-    @contextmanager
-    def _raw_backend(self) -> "Iterator[Any | None]":
-        """The kvgit store open for a handle-free read, or ``None``
-        when nothing was ever written under this store.
-
-        Opened as a backend rather than a branch handle: opening a
-        branch by name would create that branch. Every admin read that
-        must not do that goes through here, and a caller reading many
-        things holds one of these across the lot.
-        """
-        p = self._kvgit_path()
-        if not p.is_dir():
-            yield None
-            return
-        from kvgit.kv.disk import Disk
-
-        backend = Disk(str(p))
-        try:
-            yield backend
-        finally:
-            self._close_backend(backend)
-
-    def _raw_tags(self, backend: Any = None) -> dict[str, str]:
+    def _raw_tags(self, repo: Any = None) -> dict[str, str]:
         """Every tag in the kvgit store, stored (prefixed) names and
-        all. Reads on ``backend`` when given one, else on an open of
-        its own."""
-        from kvgit.versioned.kv import tags as raw_tags
+        all. Reads on ``repo`` when given one, else on an open of its
+        own."""
+        if repo is not None:
+            return dict(repo.tags.items())
+        with self._repo() as opened:
+            return {} if opened is None else dict(opened.tags.items())
 
-        if backend is not None:
-            return dict(raw_tags(backend))
-        with self._raw_backend() as opened:
-            return {} if opened is None else dict(raw_tags(opened))
-
-    def _raw_tag_info(self, name: str, backend: Any = None) -> TagInfo | None:
-        """Describe one store-scoped tag. Reads on ``backend`` when
-        given one, else on an open of its own."""
-        if backend is None:
-            with self._raw_backend() as opened:
+    def _raw_tag_info(self, name: str, repo: Any = None) -> TagInfo | None:
+        """Describe one store-scoped tag. Reads on ``repo`` when given
+        one, else on an open of its own."""
+        if repo is None:
+            with self._repo() as opened:
                 if opened is None:
                     return None
                 return self._raw_tag_info(name, opened)
-        from kvgit.encoding import safe_loads
-        from kvgit.versioned.kv import tag_info as raw_tag_info
+        from kvgit import UnknownCommitError, UnknownTagError
 
         stored = self._scoped_store_tag(name)
-        info = raw_tag_info(backend, stored)
-        if info is None:
+        try:
+            info = repo.tags.info(stored)
+        except UnknownTagError:
             return None
-        # The commit's keyset root hash, read off the store key that
-        # holds it — the same raw read KvgitProvider makes for a
-        # commit's tree, since kvgit has no public accessor.
-        raw = backend.get(f"__commit_root__{info.commit}")
-        root = safe_loads(raw) if raw is not None else None
+        try:
+            tree = None if info.dangling else repo.get_commit(info.commit).root
+        except UnknownCommitError:
+            tree = None
         return TagInfo(
             name=name,
             scope="store",
             id=info.commit,
-            tree=root if isinstance(root, str) else None,
+            tree=tree,
             time=info.time,
             info=info.info,
             dangling=info.dangling,
@@ -2197,15 +2156,15 @@ class Store:
     def _raw_tag_infos(self) -> dict[str, TagInfo]:
         """Every store-scoped tag described, on one backend open."""
         prefix = self._store_tag_prefix()
-        with self._raw_backend() as backend:
-            if backend is None:
+        with self._repo() as repo:
+            if repo is None:
                 return {}
             described = {}
-            for stored in self._raw_tags(backend):
+            for stored in self._raw_tags(repo):
                 if not stored.startswith(prefix):
                     continue
                 name = stored[len(prefix) :]
-                info = self._raw_tag_info(name, backend)
+                info = self._raw_tag_info(name, repo)
                 if info is not None:
                     described[name] = info
             return described
@@ -2214,11 +2173,13 @@ class Store:
         from .errors import CommitNotFoundError
 
         stored = self._scoped_store_tag(name)
-        if self._raw_tag_info(name) is None:
-            raise CommitNotFoundError(f"No such tag: {name!r} in scope 'store'")
-        import kvgit
-
-        kvgit.delete_tags([stored], kind="disk", path=str(self._kvgit_path()))
+        with self._repo() as repo:
+            if repo is None or self._raw_tag_info(name, repo) is None:
+                raise CommitNotFoundError(f"No such tag: {name!r} in scope 'store'")
+            repo.tags.delete(stored)
+            # Removing the tag is what makes its commits collectable;
+            # the sweep takes them past its default grace period.
+            repo.gc()
 
     def _scoped_store_tag(self, name: str) -> str:
         """The stored name for a caller's store-scoped tag, with the
@@ -2283,18 +2244,9 @@ class Store:
         factory owns where state lives, so the store-level verbs refuse
         before there is an anchor to mint.
         """
-        import kvgit
-
-        if _ANCHOR_BRANCH in set(self._branches()):
-            return _ANCHOR_BRANCH
-        anchor = kvgit.store(
-            kind="disk", path=str(self._kvgit_path()), branch=_ANCHOR_BRANCH
-        )
-        try:
-            if anchor.current_commit is None:
-                anchor.commit(info={"tool": "nontainer", "anchor": True})
-        finally:
-            self._close_backend(getattr(anchor.versioned, "store", None))
+        with self._repo(create=True) as repo:
+            if _ANCHOR_BRANCH not in repo.branches:
+                repo.branches.create(_ANCHOR_BRANCH)  # at the empty root
         return _ANCHOR_BRANCH
 
     def _require_registered(self, ref: Ref) -> None:
@@ -2339,21 +2291,22 @@ class Store:
         # every spelling nontainer prints is one it accepts back.
         try:
             commit = provider.expand_commit(commit)
-        except BaseException:
-            provider.close()
-            raise
-        handle = provider._staged.checkout(commit)
-        if handle is None:
+            snapshot = provider._snapshot(commit)
+        except CommitNotFoundError:
             provider.close()
             raise CommitNotFoundError(
                 f"no commit {commit!r} on session {session!r} "
                 f"(ws-git log {session} lists what it holds)"
-            )
-        # The frozen provider and the handle it came from share one
-        # backend, so closing the workspace this ends up in closes the
-        # store exactly once. The opening provider is not closed here:
-        # that would close the backend the caller is about to read.
-        return KvgitProvider(handle, session=session, frozen_at=commit)
+            ) from None
+        except BaseException:
+            provider.close()
+            raise
+        # The frozen provider takes over the repository the opening
+        # provider opened, so closing the workspace this ends up in
+        # closes the store exactly once. The opening provider is not
+        # closed here: that would close the store the caller is about
+        # to read.
+        return KvgitProvider(provider.repo, snapshot, session=session, frozen_at=commit)
 
     def _require_tag_at(self, tag: str, ref: Ref) -> None:
         """Refuse a tag ref the tag no longer answers for.
@@ -2382,18 +2335,36 @@ class Store:
             )
 
     def _provider_at_store_tag(self, name: str) -> WorkspaceProvider:
+        from kvgit import Repo, UnknownCommitError, UnknownTagError
+        from kvgit.kv.disk import Disk
+
+        from .errors import CommitNotFoundError
         from .providers.kvgit import KvgitProvider
 
-        anchor = self._anchor_session(f"store.tags.at({name!r})")
-        provider = KvgitProvider.open(self._kvgit_path(), session=anchor)
+        # The snapshot itself needs no branch, but the workspace it ends
+        # up in quotes a ref, ``<session>@<commit>``, and that ref has to
+        # resolve: so the provider is labelled with a branch the store
+        # holds — a session's, a publication's, or the store's own
+        # anchor (see _anchor_session).
+        session = self._anchor_session(f"store.tags.at({name!r})")
+        stored = self._scoped_store_tag(name)
+        p = self._kvgit_path()
+        if not p.is_dir():
+            raise CommitNotFoundError(f"No such tag: {name!r} in scope 'store'")
+        repo = Repo(Disk(str(p)))
         try:
-            frozen = provider.at_tag(name, scope="store")
+            snapshot = repo.snapshot(tag=stored)
+        except (UnknownTagError, UnknownCommitError):
+            repo.close()
+            raise CommitNotFoundError(
+                f"No such tag: {name!r} in scope 'store'"
+            ) from None
         except BaseException:
-            provider.close()
+            repo.close()
             raise
-        # Shares a backend with the provider it came from, which is
-        # therefore not closed here (see _provider_at_commit).
-        return frozen
+        # The provider owns the repository from here; closing the
+        # workspace it ends up in closes it.
+        return KvgitProvider(repo, snapshot, session=session, frozen_at=name)
 
 
 def _as_json_value(value: Any) -> Any:

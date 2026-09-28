@@ -129,8 +129,9 @@ with it False, `commit` / `checkout` / `history` / `fork` all raise
 
 ```python
 KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store
-KvgitProvider(staged, *, session)                        # bring your own Staged
-    .staged            # the kvgit Staged (host-side power tool)
+KvgitProvider(repo, worktree, *, session)                # bring your own kvgit Repo
+    .repo              # the kvgit Repo the branch lives in
+    .worktree          # the kvgit Worktree (host-side power tool)
 KvgitProvider.delete(path, sessions)   # drop branches (path = the store dir)
 
 DirProvider(root, *, session)
@@ -145,9 +146,9 @@ AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
 Each `delete(path, sessions)` is the store-level teardown primitive
 `Store.delete` dispatches to — plural, idempotent, and validating
 session ids first where a bad name could escape the store root (dir,
-agentfs). Kvgit's goes through `kvgit.delete_branches`, which is
-anchor-free: it works on the store rather than through a branch handle,
-so even the last session on a store deletes cleanly. `path` is the
+agentfs). Kvgit's works on the store's `Repo` rather than through a
+branch handle, so even the last session on a store deletes cleanly, and
+one garbage-collection sweep follows the deletion. `path` is the
 store directory — the same `store/kvgit` that `open` takes for kvgit;
 the parent store base for dir/agentfs (they resolve `<session>/` and
 `<session>.db` under it).

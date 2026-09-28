@@ -338,7 +338,7 @@ def test_a_checkout_is_undone_by_checking_out_what_it_stepped_off(kv_ws):
 
 def _keyset(provider, commit):
     """Every key a commit holds, with its value — the whole session."""
-    handle = provider._staged.checkout(commit)
+    handle = provider.repo.snapshot(commit=commit)
     return {key: handle.get(key) for key in handle.keys()}
 
 
@@ -655,28 +655,24 @@ def test_delete_purges_legacy_void_anchor(tmp_path):
     # always folds __void__ into the doomed set, so a normal session
     # delete purges the stale anchor from such stores. Forge one the old
     # way (fork __void__ off a session branch), then delete.
-    import kvgit
+    from kvgit import Repo
+    from kvgit.kv.disk import Disk
 
     with workspace("s", store=tmp_path, backend="kvgit") as ws:
         ws.terminal("echo x > x.txt")
 
-    forge = kvgit.store(kind="disk", path=str(_kvgit_dir(tmp_path)), branch="s")
-    forge.create_branch("__void__")  # legacy anchor, forks s's commit
-    assert "__void__" in forge.list_branches()
-    _closer = getattr(forge.versioned.store, "close", None)
-    if callable(_closer):
-        _closer()
+    with Repo(Disk(str(_kvgit_dir(tmp_path)))) as forge:
+        # legacy anchor, forks s's commit
+        forge.branches.create("__void__", at=forge.branches["s"])
+        assert "__void__" in forge.branches
 
     KvgitProvider.delete(_kvgit_dir(tmp_path), {"s"})
 
     # Both the session AND the legacy anchor are gone (orphans swept).
-    probe = kvgit.store(kind="disk", path=str(_kvgit_dir(tmp_path)), branch="probe")
-    branches = set(probe.list_branches())
+    with Repo(Disk(str(_kvgit_dir(tmp_path)))) as probe:
+        branches = set(probe.branches)
     assert "__void__" not in branches
     assert "s" not in branches
-    _closer2 = getattr(probe.versioned.store, "close", None)
-    if callable(_closer2):
-        _closer2()
 
     # And the deleted name stays deleted (no resurrection).
     with workspace("s", store=tmp_path, backend="kvgit") as ws2:

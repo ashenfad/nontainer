@@ -23,7 +23,7 @@ in the factory that builds the provider, not here.
 
 The three that ship, under ``nontainer.providers``:
 
-- ``KvgitProvider``   (default) — kvgit ``Staged`` per session branch.
+- ``KvgitProvider``   (default) — a kvgit ``Worktree`` per session branch.
   staging=True, cheap_fork=True, merge=True, tags=True, index=True.
 - ``DirProvider``     — a real directory via monkeyfs ``IsolatedFS``.
   versioned=False; the tools work, the time-travel verbs raise.
