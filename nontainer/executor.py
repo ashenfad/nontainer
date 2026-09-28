@@ -663,6 +663,13 @@ class LocalExecutor:
         # memo with the default sandbox's build.
         self._policy_memo: dict[Any, Any] = {}
         self._sandbox: Any | None = None
+        # Under process/kernel isolation the session sandbox's worker
+        # starts on the first execution that needs it, not at open():
+        # a workspace opened to read files, serve a snapshot or list
+        # history never runs code, and should not hold a worker.
+        self._session_lock = threading.Lock()
+        self._session_started = False
+        self._closed = False
         # Sized at open(), where the config is known. A pool that is
         # never opened is a pool that is never used, so an inert one is
         # the right default — close() must work regardless.
@@ -681,19 +688,38 @@ class LocalExecutor:
         self._pool = _ViewWorkerPool(
             cfg.warm_view_workers, enabled=cfg.isolation != "none"
         )
-        # Process/kernel sandboxes start a persistent worker here. Entering
-        # eagerly is still deliberate, though the reason narrowed: sandtrap
-        # 0.3 no longer forks the embedding process, so a multi-threaded host
-        # is no longer the hazard it was. What remains is ordering — the
-        # workspace calls open() LAST, so no later construction failure can
-        # orphan a worker (PR #10 review).
-        if cfg.isolation != "none":
-            self._sandbox.__enter__()
+        # The sandbox and its policy are built here, so a bad config
+        # still fails at open. Its worker (process/kernel isolation)
+        # starts on first use: see _session_sandbox and warm().
+
+    def _session_sandbox(self) -> Any:
+        """The session sandbox, its worker started if it has one and has
+        not started yet. One worker however many first calls race here:
+        exec_python is safe to call concurrently."""
+        if self._require_ctx().python_config.isolation == "none":
+            return self._sandbox  # in-process: no worker to start
+        if not self._session_started:
+            with self._session_lock:
+                if self._closed:
+                    raise RuntimeError("LocalExecutor is closed")
+                if not self._session_started:
+                    self._sandbox.__enter__()
+                    self._session_started = True
+        return self._sandbox
+
+    def warm(self) -> None:
+        """Start the session worker now rather than at the first
+        execution, for a host that wants that latency paid up front.
+        Idempotent; nothing to start under in-process isolation."""
+        self._session_sandbox()
 
     def close(self) -> None:
         self._pool.close()  # best-effort internally
+        with self._session_lock:
+            self._closed = True
+            started, self._session_started = self._session_started, False
         shutdown = getattr(self._sandbox, "shutdown", None)
-        if callable(shutdown):  # process/kernel worker
+        if started and callable(shutdown):  # process/kernel worker
             try:
                 shutdown()
             except Exception:
@@ -704,8 +730,8 @@ class LocalExecutor:
         returns how many were closed.
 
         Only the view pool is reaped. The session worker, which serves
-        ``run_python``, is held from :meth:`open` to :meth:`close` and
-        is not touched. Safe to call from any thread at any time,
+        ``run_python``, is held from its first use (or :meth:`warm`) to
+        :meth:`close` and is not touched. Safe to call from any thread at any time,
         before :meth:`open` and after :meth:`close` included, where
         there is nothing to reap.
         """
@@ -947,7 +973,7 @@ class LocalExecutor:
                     self._pool.checkout(view, lambda: self._build_sandbox(view))
                 )
             else:
-                sb = self._sandbox
+                sb = self._session_sandbox()
             bridged = hasattr(sb, "_rpc_handlers")
 
             for name, obj in ctx.python_config.host_objects.items():

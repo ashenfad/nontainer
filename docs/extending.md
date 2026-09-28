@@ -181,6 +181,7 @@ app_driver: AppDriver | None   # optional
 def open(self, context: ExecutionContext) -> None
 def close(self) -> None
 def reap_idle(self, max_age: float) -> int   # optional
+def warm(self) -> None                        # optional
 def exec_python(code, *, inputs=None, stdin=None, argv=None,
                 echo=None, view=None) -> PythonResult
 def exec_shell(script: str) -> TerminalResult
@@ -248,6 +249,14 @@ itself, and a frozen open or a fork builds another for the workspace it
 returns. It is not re-entrant. `close()` must be best-effort and
 idempotent and **must not raise**: the workspace closes its provider
 next regardless.
+
+**`warm()`** *(optional)* — start now whatever the executor would
+otherwise start at its first execution. `LocalExecutor` starts its
+session worker lazily under process/kernel isolation, so opening a
+workspace costs no process; `warm()` starts it ahead of the first
+`run_python`. `Runtime.warm` calls it where it is defined and does
+nothing where it is not. It must be idempotent and safe to call from
+any thread.
 
 **`reap_idle(max_age)`** *(optional)* — release whatever the executor
 keeps warm between calls and has left unused for at least `max_age`

@@ -624,6 +624,26 @@ class Runtime:
     # lifecycle
     # ------------------------------------------------------------------
 
+    def warm(self) -> None:
+        """Start now what the executor would otherwise start at its first
+        execution — on ``LocalExecutor`` under process/kernel isolation,
+        the session worker ``run_python`` runs on.
+
+        Opening a workspace starts no worker: one opened to read files,
+        serve a snapshot or list history never runs code, and holds
+        nothing it would not use. A host that wants the first
+        ``run_python`` to pay no start-up cost calls this when it knows
+        code is coming — a chat session opening, say. Idempotent, and a
+        no-op on a closed runtime and on an executor with nothing to
+        start (in-process isolation, ``DudExecutor``, which boots its
+        guest at open).
+        """
+        if self._closed:
+            return
+        warm = getattr(self._executor, "warm", None)
+        if warm is not None:
+            warm()
+
     def reap_idle(self, max_age: float) -> int:
         """Release execution resources that have sat idle for at least
         ``max_age`` seconds; returns how many were released.
@@ -632,7 +652,8 @@ class Runtime:
         handler dispatch keeps warm (``PythonConfig.warm_view_workers``):
         each one idle that long is closed, and the next call for its
         view starts a fresh one. Nothing checked out is touched, and
-        neither is the session worker serving ``run_python``.
+        neither is the session worker serving ``run_python`` once it
+        has started.
 
         Nothing calls this for the embedder. Expiring a worker when the
         next call arrives would fire only under traffic, and the memory
