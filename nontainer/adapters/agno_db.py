@@ -670,8 +670,7 @@ class KvgitStoreDb(JsonDb):
         self._store = Path(store).expanduser() / "kvgit"
         self._open = open
         self._view_kwargs: dict[str, Any] = {"db_path": db_path, **kwargs}
-        self._disk: Any = None
-        self._handle: Any = None
+        self._repo: Any = None
 
     def owns(self, workspace: Workspace) -> bool:
         """Whether this db commits the turns of ``workspace``: true when
@@ -681,29 +680,28 @@ class KvgitStoreDb(JsonDb):
 
     # -- the store -----------------------------------------------------
 
-    def _branches(self) -> list[str]:
-        from kvgit.kv.disk import Disk
-        from kvgit.versioned.kv import VersionedKV
+    def _kvgit(self) -> Any:
+        """The kvgit repository under the store, opened on first use."""
+        if self._repo is None:
+            from kvgit import Repo
+            from kvgit.kv.disk import Disk
 
-        if self._disk is None:
             self._store.mkdir(parents=True, exist_ok=True)
-            self._disk = Disk(str(self._store))
-        return VersionedKV.branches(self._disk)
+            self._repo = Repo(Disk(str(self._store)))
+        return self._repo
+
+    def _branches(self) -> list[str]:
+        return list(self._kvgit().branches)
 
     def _peek(self, branch: str, key: str) -> Any:
         """Read one key at a branch's committed head without opening the
-        branch as a workspace. The kvgit handle is opened on an existing
-        branch, since opening a name creates it; reads for other
-        branches go through ``peek`` and never switch."""
-        if self._handle is None:
-            import kvgit
-
-            if branch not in self._branches():
-                return None
-            self._handle = kvgit.store(
-                kind="disk", path=str(self._store), branch=branch
-            )
-        return self._handle.peek(key, branch=branch)
+        branch as a workspace. A snapshot of the head reads that key
+        alone, and reading makes no branch, so a name the store does not
+        hold reads as absent."""
+        repo = self._kvgit()
+        if branch not in repo.branches:
+            return None
+        return repo.snapshot(branch=branch).get(key)
 
     def _exists(self, session_id: str) -> bool:
         return session_id in self._branches()

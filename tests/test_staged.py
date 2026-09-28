@@ -440,7 +440,7 @@ def test_partial_commit_takes_each_files_row_with_its_blob(kv_ws):
     kv_ws.index.stage(["/workspace/a.txt"])
     kv_ws.index.commit("a only")
 
-    committed = p._staged.checkout(kv_ws.index.head)
+    committed = p.repo.snapshot(commit=kv_ws.index.head)
     rows = {
         VirtualFS.path_for_metadata_key(k)
         for k in committed.keys()
@@ -913,7 +913,7 @@ def test_a_concurrent_commit_between_the_two_keyed_commits(tmp_path):
             out = real(info, keys=keys)
             if not seen:
                 seen.append(out)
-                other._provider._staged.refresh()
+                other._provider.worktree.refresh()
                 other.files.fs.write("/workspace/elsewhere.txt", b"theirs\n")
                 other.commit(info={"tool": "turn"})
             return out

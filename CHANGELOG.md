@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Breaking
+- **Requires kvgit 0.4.1 and monkeyfs 0.2.3.** nontainer is written
+  against kvgit's `Repo` / `Worktree` / `Snapshot` API; kvgit's `Staged`
+  is gone.
+- **Upgrading a store is one-way. Back it up first.** kvgit 0.4 reads a
+  store written by earlier nontainer releases as it is — sessions,
+  history, tags, publications and refs all read unchanged, and nothing
+  is rewritten on open — but the first commit stamps the store with
+  kvgit's storage version 4, after which nontainer 0.7.x (kvgit 0.3.x)
+  refuses to open its sessions.
+- **`KvgitProvider` is built from a kvgit `Repo`.** The constructor is
+  `KvgitProvider(repo, worktree, *, session)` rather than
+  `KvgitProvider(staged, *, session)`, and the host-side power tool is
+  `provider.worktree` (with `provider.repo`) rather than
+  `provider.staged`. A frozen provider — a workspace opened at a tag or
+  a commit — reads a kvgit `Snapshot` and has no worktree.
+
+### Changed
+- **Merging a branch this session already contains writes nothing.** A
+  merge whose source is already in this session's history returns the
+  current head as its commit instead of adding an empty merge commit.
+  Every other merge still lands as a merge commit, never a fast-forward.
+- **Reading at a commit or another branch's head reads just what is
+  asked for**, rather than loading that commit's whole keyset: a file
+  at an old commit, a key from another session's head (the agno
+  session db's listing reads one record per session this way), a
+  store tag.
+- **A listing reads every file's metadata in one request** (monkeyfs
+  0.2.3), and a commit's reads no longer grow with how many files it
+  writes or deletes (kvgit 0.4).
+
 ## 0.7.11 - 2026-09-26
 
 ### Breaking

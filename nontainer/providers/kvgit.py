@@ -2,7 +2,7 @@
 
 One shared kvgit store; each session is a branch. Files (via monkeyfs
 ``VirtualFS``), the agent cache, and framework keys (the working
-directory, the ws-git blob) all live in one flat ``Staged`` mapping —
+directory, the ws-git blob) all live in one flat kvgit ``Worktree`` —
 so one ``commit()`` commits the whole world atomically, and
 ``checkout()`` restores all of it (including where the agent's cwd
 was) as a new commit.
@@ -170,6 +170,17 @@ def _merge_metadata_row(
     ).encode()
 
 
+def _commit_info(commit: Any) -> CommitInfo:
+    """A kvgit ``Commit`` record as this layer's :class:`CommitInfo`."""
+    return CommitInfo(
+        id=commit.hash,
+        time=float(commit.time) if commit.time is not None else 0.0,
+        info=commit.info if isinstance(commit.info, dict) else {},
+        tree=commit.root,
+        parents=tuple(commit.parents),
+    )
+
+
 class _FileView(Mapping):
     """One tree's files as ``path -> stored value``, read on demand.
 
@@ -209,6 +220,77 @@ class _FileView(Mapping):
         return f"<files: {len(self)} paths>"
 
 
+class _Overlay(MutableMapping):
+    """Writes held in memory over a read-only snapshot.
+
+    A frozen provider reads one commit and commits nothing, but its
+    filesystem can still write: ``chdir`` records the cwd in the state,
+    and code run against a snapshot may write files it never keeps.
+    Those writes land here and read back, as they would in a worktree,
+    and go nowhere — there is no commit to take them.
+    """
+
+    def __init__(self, snapshot: Any) -> None:
+        self.snapshot = snapshot
+        self._updates: dict[str, Any] = {}
+        self._removed: set[str] = set()
+
+    @property
+    def dirty(self) -> bool:
+        return bool(self._updates or self._removed)
+
+    def discard(self) -> None:
+        self._updates.clear()
+        self._removed.clear()
+
+    def __getitem__(self, key: str) -> Any:
+        if key in self._removed:
+            raise KeyError(key)
+        if key in self._updates:
+            return self._updates[key]
+        return self.snapshot[key]
+
+    def get(self, key: str, default: Any = None) -> Any:
+        if key in self._removed:
+            return default
+        if key in self._updates:
+            return self._updates[key]
+        return self.snapshot.get(key, default)
+
+    def get_many(self, *keys: str) -> dict[str, Any]:
+        found = {k: self._updates[k] for k in keys if k in self._updates}
+        rest = [k for k in keys if k not in self._updates and k not in self._removed]
+        if rest:
+            found.update(self.snapshot.get_many(*rest))
+        return found
+
+    def __contains__(self, key: object) -> bool:
+        if key in self._removed:
+            return False
+        return key in self._updates or key in self.snapshot
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._removed.discard(key)
+        self._updates[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        if key not in self:
+            raise KeyError(key)
+        self._updates.pop(key, None)
+        if key in self.snapshot:
+            self._removed.add(key)
+
+    def _keys(self) -> set[str]:
+        held = {key for key in self.snapshot if key not in self._removed}
+        return held | set(self._updates)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._keys())
+
+    def __len__(self) -> int:
+        return len(self._keys())
+
+
 SESSION_SCOPE = "session"
 STORE_SCOPE = "store"
 # Leading "@": session ids cannot start with one (SESSION_ID_RE), so no
@@ -232,47 +314,61 @@ def _validate_branch(name: str) -> str:
 
 
 class KvgitProvider:
-    """``WorkspaceProvider`` over a kvgit ``Staged`` branch.
+    """``WorkspaceProvider`` over a kvgit branch.
 
     Construct via :meth:`open` (path-based, branch-per-session) or
-    directly from a ``Staged`` you built yourself (custom codecs,
-    memory stores for tests, an existing store).
+    directly from a kvgit ``Repo`` and a ``Worktree`` on it that you
+    built yourself (another backend, a codec, memory stores for tests).
     """
 
     def __init__(
-        self, staged: Any, *, session: str, frozen_at: str | None = None
+        self,
+        repo: Any,
+        handle: Any,
+        *,
+        session: str,
+        frozen_at: str | None = None,
     ) -> None:
-        """``frozen_at`` names the tag this handle was opened at, and
-        makes it a snapshot: see :meth:`at_tag`. Only that method passes
-        it — a handle on a branch head is never frozen."""
+        """``handle`` is a kvgit ``Worktree`` on the session's branch or,
+        for a frozen provider, a ``Snapshot`` of the commit it reads.
+        ``frozen_at`` names what that snapshot was opened at and makes
+        the provider a snapshot: see :meth:`at_tag`. Only a frozen
+        provider takes one — a provider on a branch head never is.
+
+        The provider owns ``repo`` from here: :meth:`close` closes it.
+        """
         _validate_branch(session)
         self._session = session
-        self._staged = staged
+        self._repo = repo
         self._frozen_at = frozen_at
+        self._wt: Any | None = None
+        self._state: Any
+        if frozen_at is None:
+            self._wt = handle
+            self._state = handle
+        else:
+            self._state = handle if isinstance(handle, _Overlay) else _Overlay(handle)
         self._fs: Any | None = None
         self._closed = False
-        # The framework's own keys, with the policy the merge verb
-        # already uses for them, registered for ORDINARY commits too.
-        # A commit whose CAS is lost to another handle on this session
-        # three-way merges by key, and these are the keys two writers
-        # are bound to contend on: the cwd and the ws-git blob, and the
-        # metadata row of any file both of them wrote. Without a policy
-        # each of those turns a routine race into a raised conflict.
-        # Rows are registered by prefix because their names are the
-        # encoded paths, unknown until a file is written; a merge
-        # function under a prefix is consulted only where both sides
-        # changed a key, so registering it disturbs nothing else.
-        register = getattr(staged, "set_merge_fn", None)
-        register_prefix = getattr(staged, "set_merge_prefix", None)
-        if callable(register):
+        if self._wt is not None:
             from kvgit import MergeChoice
             from monkeyfs import VirtualFS
 
-            register(VirtualFS.CWD_KEY, _keep_ours)
-            register(_WS_BLOB_KEY, MergeChoice.OURS)
-            register(_VIEW_KEY, MergeChoice.OURS)
-            if callable(register_prefix):
-                register_prefix(VirtualFS.META_PREFIX, _merge_metadata_row)
+            # The framework's own keys, with the policy the merge verb
+            # already uses for them, registered for ORDINARY commits too.
+            # A commit whose CAS is lost to another handle on this session
+            # three-way merges by key, and these are the keys two writers
+            # are bound to contend on: the cwd and the ws-git blob, and the
+            # metadata row of any file both of them wrote. Without a policy
+            # each of those turns a routine race into a raised conflict.
+            # Rows are registered by prefix because their names are the
+            # encoded paths, unknown until a file is written; a merge
+            # function under a prefix is consulted only where both sides
+            # changed a key, so registering it disturbs nothing else.
+            self._wt.set_merge_fn(VirtualFS.CWD_KEY, _keep_ours)
+            self._wt.set_merge_fn(_WS_BLOB_KEY, MergeChoice.OURS)
+            self._wt.set_merge_fn(_VIEW_KEY, MergeChoice.OURS)
+            self._wt.set_merge_prefix(VirtualFS.META_PREFIX, _merge_metadata_row)
 
     @classmethod
     def open(
@@ -289,21 +385,28 @@ class KvgitProvider:
                 (tests / ephemeral).
             session: Branch name. A new name starts an empty branch;
                 an existing name resumes it.
-            codecs: Optional kvgit codec preset (e.g. ``"scientific"``
-                for numpy/pandas chunk dedup).
+            codecs: Optional kvgit codec (e.g. ``"scientific"`` for
+                numpy/pandas chunk dedup); pickle when omitted.
         """
-        import kvgit
+        from kvgit import Repo
+        from kvgit.kv.memory import Memory
 
         _validate_branch(session)
         if path is None:
-            staged = kvgit.store(kind="memory", branch=session, codecs=codecs)
+            backend: Any = Memory()
         else:
+            from kvgit.kv.disk import Disk
+
             p = Path(path).expanduser()
             p.mkdir(parents=True, exist_ok=True)
-            staged = kvgit.store(
-                kind="disk", path=str(p), branch=session, codecs=codecs
-            )
-        return cls(staged, session=session)
+            backend = Disk(str(p))
+        repo = Repo(backend, codec=codecs or "pickle")
+        try:
+            worktree = repo.worktree(session, create=True)
+        except BaseException:
+            repo.close()
+            raise
+        return cls(repo, worktree, session=session)
 
     @classmethod
     def delete(
@@ -332,22 +435,17 @@ class KvgitProvider:
         (``@store/``) are left exactly where they are — that scope exists
         so a publication can outlive the session that made it, and
         teardown is where that promise is kept; no session id can spell
-        that prefix, so no name passed here can reach them. Removing a
-        tag is what makes its commits collectable, so the sweep runs
-        first and the branch deletion's own orphan sweep finishes the
-        job.
+        that prefix, so no name passed here can reach them.
 
-        This lives in kvgit now: :func:`kvgit.delete_branches` opens the
-        raw backend with no current branch, so it can drop any branch —
-        including the store's only one, the case a branch-anchored handle
-        can't reach.
-
-        ``min_age`` is the orphan sweep's grace period in seconds:
-        commits younger than it are left alone, so a concurrent writer
-        mid-commit is never swept out from under. Lower it only when
-        nothing else is writing (tests, a controlled teardown).
+        The tags and branches go first and one garbage-collection sweep
+        follows, taking the commits that only they reached.
+        ``min_age`` is that sweep's grace period in seconds: commits
+        younger than it are left for a later sweep. Any value is safe
+        beside concurrent writers; it only decides how long abandoned
+        work lingers.
         """
-        import kvgit
+        from kvgit import Repo
+        from kvgit.kv.disk import Disk
 
         requested = set(sessions)
         if not requested:
@@ -359,46 +457,24 @@ class KvgitProvider:
         # Legacy cleanup: stores that ran the old code minted a hidden
         # ``__void__`` anchor branch that pinned a dead session's entire
         # history (create_branch forks from the current commit), silently
-        # defeating orphan GC. The anchor-free admin API can delete it
-        # safely — it carries no wanted state — so we always sweep it into
-        # the doomed set, erasing that retention bug on the next delete.
+        # defeating orphan GC. It carries no wanted state, so it always
+        # joins the doomed set, erasing that retention bug on the next
+        # delete.
         names = requested | {"__void__"}
-
-        cls._delete_session_tags(p, requested)
-
-        # No branch anchor needed, no probe, no void dance: one call
-        # removes each head + its prev-HEAD backup and sweeps orphans.
-        # Missing names (including __void__ on stores that never had one)
-        # are no-ops, and a dir that isn't a kvgit store has no branch
-        # keys to match, so the old tolerance is preserved.
-        kvgit.delete_branches(names, kind="disk", path=str(p), min_age=min_age)
-
-    @staticmethod
-    def _delete_session_tags(path: Path, sessions: Iterable[str]) -> None:
-        """Delete every tag stored under ``<session>/`` for these names.
-
-        The names have to be listed before they can be deleted, and
-        kvgit's anchor-free admin surface deletes tags without listing
-        them — so the backend is opened directly here, the way
-        :func:`kvgit.delete_tags` opens it, rather than through a handle
-        that would have to invent a branch to sit on.
-        """
-        import kvgit
-        from kvgit.kv.disk import Disk
-        from kvgit.versioned.kv import tags as store_tags
-
-        prefixes = tuple(f"{s}/" for s in sessions)
-        if not prefixes:
-            return
-        backend = Disk(str(path))
+        prefixes = tuple(f"{s}/" for s in requested)
+        repo = Repo(Disk(str(p)))
         try:
-            doomed = [name for name in store_tags(backend) if name.startswith(prefixes)]
+            for tag in [t for t in repo.tags if t.startswith(prefixes)]:
+                repo.tags.delete(tag)
+            # Missing names (including __void__ on stores that never had
+            # one) are skipped, and a dir that isn't a kvgit store has no
+            # branches to match, so the old tolerance is preserved.
+            for name in names:
+                if name in repo.branches:
+                    repo.branches.delete(name)
+            repo.gc(min_age=min_age)
         finally:
-            close = getattr(backend, "close", None)
-            if callable(close):
-                close()
-        if doomed:
-            kvgit.delete_tags(doomed, kind="disk", path=str(path))
+            repo.close()
 
     # -- identity ------------------------------------------------------
 
@@ -411,9 +487,15 @@ class KvgitProvider:
         return _KVGIT_CAPS
 
     @property
-    def staged(self) -> Any:
-        """The underlying kvgit ``Staged`` (host-side power tool)."""
-        return self._staged
+    def worktree(self) -> Any:
+        """The underlying kvgit ``Worktree`` (host-side power tool), or
+        ``None`` on a frozen provider, which reads a ``Snapshot``."""
+        return self._wt
+
+    @property
+    def repo(self) -> Any:
+        """The kvgit ``Repo`` this provider's branch lives in."""
+        return self._repo
 
     @property
     def frozen(self) -> bool:
@@ -441,36 +523,40 @@ class KvgitProvider:
         if self._fs is None:
             from monkeyfs import VirtualFS
 
-            self._fs = VirtualFS(self._staged)
+            self._fs = VirtualFS(self._state)
         return self._fs
 
     @property
     def kv(self) -> MutableMapping[str, Any]:
-        return self._staged
+        return self._state
 
     @property
     def dirty(self) -> bool:
-        return bool(self._staged.has_changes)
+        if self._wt is None:
+            return self._state.dirty
+        return bool(self._wt.status())
 
     # -- versioning ----------------------------------------------------
 
     @property
     def head(self) -> str:
-        return self._staged.current_commit
+        if self._wt is None:
+            return self._state.snapshot.commit
+        return self._wt.head
 
     def commit(self, info: dict[str, Any] | None = None) -> str:
         """Commit staged fs + kv writes atomically; returns the commit
         hash. No staged changes → no new commit (returns current)."""
         self._refuse_frozen("commit")
-        if not self._staged.has_changes:
-            return self._staged.current_commit
-        result = self._staged.commit(info=info)
+        if not self._wt.status():
+            return self._wt.head
+        result = self._wt.commit(info=info)
         if not result.merged:
             raise WorkspaceError(
                 f"commit failed: conflicting concurrent commit on branch "
                 f"{self._session!r} (CAS): {result}"
             )
-        return self._staged.current_commit
+        return self._wt.head
 
     def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
         """Append a commit whose keyset equals that commit's; return it.
@@ -519,27 +605,25 @@ class KvgitProvider:
         who wants only that).
         """
         self._refuse_frozen("checkout")
-        target = self._staged.checkout(commit_id)
-        if target is None:
-            raise CommitNotFoundError(f"No such commit: {commit_id!r}")
+        target = self._snapshot(commit_id)
         # The diff below is between two COMMITS: a buffer left in place
         # would ride into the restore commit as though it were part of
         # the target's state.
-        if self._staged.has_changes:
-            self._staged.reset()
+        if self._wt.status():
+            self._wt.discard()
         landed = 0
         while True:
-            head = self._staged.current_commit
+            head = self._wt.head
             self._stage_restore(target, head, commit_id)
             # HEAD moved (or the buffer did) under the VirtualFS
             # object: drop its caches the way discard() does.
             self._invalidate_fs()
-            if not self._staged.has_changes:
+            if not self._wt.status():
                 # Nothing left to write: this head IS the target's
                 # state, whether it took one commit or several.
                 return head
             if landed >= _CHECKOUT_ATTEMPTS:
-                self._staged.reset()
+                self._wt.discard()
                 self._invalidate_fs()
                 raise WorkspaceError(
                     f"checkout of {commit_id!r} on session {self._session!r} "
@@ -567,7 +651,7 @@ class KvgitProvider:
         from ..migrate import converted_keys, current_layout
 
         target = current_layout(target)
-        changed = self._staged.versioned.diff(head, commit_id)
+        changed = self._repo.diff(head, commit_id)
         keys = (
             set(changed.added)
             | set(changed.modified)
@@ -577,10 +661,10 @@ class KvgitProvider:
         for key in keys:
             if key in target:
                 value = target.get(key)
-                if key not in self._staged or self._staged.get(key) != value:
-                    self._staged[key] = value
-            elif key in self._staged:
-                del self._staged[key]
+                if key not in self._wt or self._wt.get(key) != value:
+                    self._wt[key] = value
+            elif key in self._wt:
+                del self._wt[key]
 
     def _invalidate_fs(self) -> None:
         """Drop VirtualFS's lazy caches after state changed underneath
@@ -594,30 +678,35 @@ class KvgitProvider:
         return self._history_iter(limit)
 
     def _history_iter(self, limit: int | None) -> Iterator[CommitInfo]:
+        """This branch's own line, newest first: the first parent of
+        each commit, so a merge's other side is not walked."""
+        from kvgit import UnknownCommitError
+
+        if limit is not None and limit <= 0:
+            return
         count = 0
-        for commit_hash in self._staged.history():
-            if limit is not None and count >= limit:
-                return
-            record = self._commit_record(commit_hash)
-            if record is not None:
-                yield record
+        try:
+            for commit in self._repo.log(commit=self.head, first_parent=True):
+                yield _commit_info(commit)
                 count += 1
+                if limit is not None and count >= limit:
+                    return
+        except UnknownCommitError:
+            return  # history ends where the store stops holding it
 
     def _tree(self, commit_hash: str) -> str | None:
-        """The commit's keyset root hash — the identity of its content.
+        """The commit's keyset root hash — the identity of its content."""
+        record = self._commit_record(commit_hash)
+        return record.tree if record is not None else None
 
-        Read straight off the store key that holds it, the same way this
-        provider reads a commit's time and info: kvgit has no public
-        accessor for the root, and these three raw reads are the one
-        place that knows their key names.
-        """
-        from kvgit.encoding import safe_loads
+    def _snapshot(self, commit: str) -> Any:
+        """A read-only view of one commit, or ``CommitNotFoundError``."""
+        from kvgit import UnknownCommitError
 
-        raw = self._staged.versioned.store.get(f"__commit_root__{commit_hash}")
-        if raw is None:
-            return None
-        root = safe_loads(raw)
-        return root if isinstance(root, str) else None
+        try:
+            return self._repo.snapshot(commit=commit)
+        except UnknownCommitError:
+            raise CommitNotFoundError(f"No such commit: {commit!r}") from None
 
     def fork(self, name: str, *, at: str | None = None) -> "KvgitProvider":
         """O(1) branch sharing storage.
@@ -633,30 +722,33 @@ class KvgitProvider:
         branch, one commit after the fork point (see
         :mod:`nontainer.migrate`). The fork point itself is untouched.
         """
+        from kvgit import UnknownCommitError
+
         from ..migrate import legacy_keys, migrate_provider
 
         self._refuse_frozen("fork")
         validate_session_id(name)
-        if name in self._staged.list_branches():
+        if name in self._repo.branches:
             raise WorkspaceError(f"Branch already exists: {name!r}")
         if at is None:
-            if self._staged.has_changes:
+            if self._wt.status():
                 self.commit(info={"tool": "fork", "target": name})
-            forked = self._staged.create_branch(name)
+            self._repo.branches.create(name, at=self._wt.head)
         else:
             try:
-                forked = self._staged.create_branch(name, at=at)
-            except ValueError as e:
-                if "does not exist" in str(e):
-                    raise CommitNotFoundError(at) from e
-                raise
-        child = KvgitProvider(forked, session=name)
-        if legacy_keys(forked):
+                self._repo.branches.create(name, at=at)
+            except UnknownCommitError as e:
+                raise CommitNotFoundError(at) from e
+        child = KvgitProvider(self._repo, self._repo.worktree(name), session=name)
+        if legacy_keys(child.kv):
             migrate_provider(child)
         return child
 
     def discard(self) -> None:
-        self._staged.reset()
+        if self._wt is None:
+            self._state.discard()
+        else:
+            self._wt.discard()
         self._invalidate_fs()
 
     # -- read views ------------------------------------------------------
@@ -669,16 +761,13 @@ class KvgitProvider:
         the agent-facing git needs to compare a tree against another
         one without materializing either.
         """
-        handle = self._staged.checkout(commit)
-        if handle is None:
-            raise CommitNotFoundError(f"No such commit: {commit!r}")
-        return _FileView(self, handle)
+        return _FileView(self, self._snapshot(commit))
 
     def working_files(self) -> Mapping[str, Any]:
         """The live working tree's files, by workspace path — including
         writes not committed yet, and excluding deletions not committed
         yet."""
-        return _FileView(self, self._staged)
+        return _FileView(self, self._state)
 
     def key_at(self, commit: str, key: str) -> Any:
         """One store key's value at a commit, or ``None`` if absent.
@@ -686,15 +775,17 @@ class KvgitProvider:
         The non-file half of :meth:`files_at`: what reads bookkeeping
         (the ws-git blob) out of a commit without materializing a tree.
         """
-        handle = self._staged.checkout(commit)
-        if handle is None:
-            raise CommitNotFoundError(f"No such commit: {commit!r}")
-        return handle.get(key)
+        return self._snapshot(commit).get(key)
 
     def branch_head(self, session: str) -> str:
         """Another session's current commit on this store. Unknown
         names raise ``ValueError``."""
-        return self._open_branch(session).current_commit
+        from kvgit import UnknownBranchError
+
+        try:
+            return self._repo.branches[session]
+        except UnknownBranchError:
+            raise ValueError(f"unknown branch {session!r}") from None
 
     def expand_commit(self, commit: str, *, session: str | None = None) -> str:
         """A commit id typed short → the whole one it names.
@@ -725,10 +816,13 @@ class KvgitProvider:
         )
 
     def _commit_ids(self, session: str | None) -> Iterable[str]:
-        """Every commit id on a session's branch, newest first."""
+        """Every commit id on a session's branch, newest first: its own
+        line, the first parent of each commit."""
         if session is None or session == self.session:
-            return self._staged.history()
-        return self._open_branch(session).history()
+            start = self.head
+        else:
+            start = self.branch_head(session)
+        return (c.hash for c in self._repo.log(commit=start, first_parent=True))
 
     def refresh(self) -> None:
         """Re-read the branch head, DISCARDING uncommitted writes.
@@ -738,7 +832,7 @@ class KvgitProvider:
         work has to be re-applied against the head that won.
         """
         self._refuse_frozen("refresh")
-        self._staged.refresh()
+        self._wt.refresh()
         self._invalidate_fs()
 
     def commit_keys(
@@ -764,21 +858,21 @@ class KvgitProvider:
         deletion the same way.
         """
         self._refuse_frozen("commit_keys")
-        pending = {
-            key for key in self._resolve_keys(keys) if self._staged.is_staged(key)
-        }
+        status = self._wt.status()
+        staged = status.updated | status.removed
+        pending = {key for key in self._resolve_keys(keys) if key in staged}
         if not pending:
             return None
         vfs = self.fs
         for path in list(self._file_keys(pending).values()):
             row = vfs.metadata_key(path)
-            if self._staged.is_staged(row):
+            if row in staged:
                 pending.add(row)
         from kvgit import MergeConflict
 
         try:
             try:
-                result = self._staged.commit(keys=pending, info=info)
+                result = self._wt.commit(keys=pending, info=info)
             except MergeConflict as e:
                 # kvgit three-way merges a concurrent write on other
                 # keys and raises only where both sides touched one.
@@ -795,7 +889,7 @@ class KvgitProvider:
                 )
         finally:
             self._invalidate_fs()
-        return self._staged.current_commit
+        return self._wt.head
 
     def _resolve_keys(self, keys: Iterable[str]) -> set[str]:
         """Caller-named state as store keys.
@@ -887,12 +981,16 @@ class KvgitProvider:
         Tags the current commit unless ``at`` names another — staged
         changes are in no commit yet, so they are never what gets named.
         """
+        from kvgit import KvgitError
+
         self._refuse_frozen("tag")
         stored = self._scoped(name, scope)
         self._refuse_unaddressable(name, scope)
+        target = at or self.head
         try:
-            return self._staged.tag(stored, at=at, info=info)
-        except ValueError as e:
+            self._repo.tags.create(stored, target, info=info)
+            return target
+        except (KvgitError, ValueError) as e:
             # kvgit's message carries the stored (prefixed) name, which
             # is not the name the caller used.
             raise WorkspaceError(f"cannot tag {name!r} in scope {scope!r}: {e}") from e
@@ -902,13 +1000,16 @@ class KvgitProvider:
         prefix = self._prefix(scope)
         return {
             stored[len(prefix) :]: commit
-            for stored, commit in self._staged.tags().items()
+            for stored, commit in self._repo.tags.items()
             if stored.startswith(prefix)
         }
 
     def tag_info(self, name: str, *, scope: str = SESSION_SCOPE) -> TagInfo | None:
-        info = self._staged.tag_info(self._scoped(name, scope))
-        if info is None:
+        from kvgit import UnknownTagError
+
+        try:
+            info = self._repo.tags.info(self._scoped(name, scope))
+        except UnknownTagError:
             return None
         return TagInfo(
             name=name,
@@ -921,28 +1022,38 @@ class KvgitProvider:
         )
 
     def delete_tag(self, name: str, *, scope: str = SESSION_SCOPE) -> None:
-        """Drop a tag, then sweep commits nothing else reaches."""
+        """Drop a tag, then sweep commits nothing else reaches (past the
+        sweep's default grace period)."""
+        from kvgit import UnknownTagError
+
         self._refuse_frozen("delete_tag")
         stored = self._scoped(name, scope)
         try:
-            self._staged.delete_tag(stored)
-        except ValueError as e:
+            self._repo.tags.delete(stored)
+        except UnknownTagError as e:
             raise CommitNotFoundError(
                 f"No such tag: {name!r} in scope {scope!r}"
             ) from e
+        self._repo.gc()
 
     def at_tag(self, name: str, *, scope: str = SESSION_SCOPE) -> "KvgitProvider":
         """A frozen provider over the tagged commit.
 
-        The kvgit handle underneath is a checkout at that commit on this
-        session's branch, so it reads the tagged state; the frozen flag
-        is what keeps anything from committing through it.
+        It reads a snapshot of that commit, which takes no commits: the
+        frozen provider has no worktree to write through.
         """
+        from kvgit import UnknownCommitError, UnknownTagError
+
         stored = self._scoped(name, scope)
-        handle = self._staged.checkout(tag=stored)
-        if handle is None:
-            raise CommitNotFoundError(f"No such tag: {name!r} in scope {scope!r}")
-        return KvgitProvider(handle, session=self._session, frozen_at=name)
+        try:
+            snapshot = self._repo.snapshot(tag=stored)
+        except (UnknownTagError, UnknownCommitError):
+            raise CommitNotFoundError(
+                f"No such tag: {name!r} in scope {scope!r}"
+            ) from None
+        return KvgitProvider(
+            self._repo, snapshot, session=self._session, frozen_at=name
+        )
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
         """File-level changes between two commits.
@@ -953,17 +1064,20 @@ class KvgitProvider:
         the filesystem's metadata).
 
         ``modified`` answers the content question, not the write
-        question. kvgit compares per-commit blob pointers, so a file
-        re-saved with the same bytes reads as modified there; here the
+        question. kvgit compares blob pointers, and a pointer written
+        before kvgit's content-addressed layout names the commit that
+        wrote it, so equal bytes can sit under two pointers; here the
         bytes are read at both commits and the path is kept only if they
         differ. That costs one read per candidate key per side — paid
         only for files the pointer diff already flagged — and it is what
-        makes "what changed since I published" mean what it says. The
-        commit's ``tree`` still moves for such a rewrite, since kvgit
-        stamps each entry with when it was written: ``tree`` identifies
-        this exact write, ``diff`` identifies the content.
+        makes "what changed since I published" mean what it says.
         """
-        raw = self._staged.versioned.diff(a, b)
+        from kvgit import UnknownCommitError
+
+        try:
+            raw = self._repo.diff(a, b)
+        except UnknownCommitError as e:
+            raise CommitNotFoundError(str(e)) from None
         return WorkspaceDiff(
             added=frozenset(self._file_keys(raw.added).values()),
             removed=frozenset(self._file_keys(raw.removed).values()),
@@ -1010,18 +1124,15 @@ class KvgitProvider:
             raise WorkspaceError(
                 "uncommitted changes on this branch; commit or discard them first"
             )
-        if source == self._staged.current_branch:
+        if source == self._wt.branch:
             raise ValueError("cannot merge a branch into itself")
         other = self._open_branch(source)
-        source_head = other.current_commit if at is None else at
-        if at is not None and at != other.current_commit:
+        source_head = other.commit if at is None else at
+        if at is not None and at != other.commit:
             # Merging an earlier commit on that branch: read its side
             # from THERE, so the key enumeration and the marker
             # provenance describe what is being merged.
-            probe = self._staged.checkout(at)
-            if probe is None:
-                raise CommitNotFoundError(f"No such commit: {at!r}")
-            other = probe
+            other = self._snapshot(at)
         other, source_head = self._current_layout_side(source, other, source_head)
 
         # The rules are the same three-way rules an apply resolves by,
@@ -1029,8 +1140,8 @@ class KvgitProvider:
         # bytes of a contested file are a function of that base, and a
         # row whose size was computed against a different one would
         # describe bytes nothing holds.
-        base = self._merge_base(self._staged.current_commit, source_head)
-        at_base = self._staged.checkout(base) if base is not None else None
+        base = self._merge_base(self._wt.head, source_head)
+        at_base = self._snapshot(base) if base is not None else None
         merge_fns, merge_prefixes = self._three_way_rules(other, at_base)
 
         # Markers commit WITH the merge (flagged in the outcome), they
@@ -1039,12 +1150,19 @@ class KvgitProvider:
         # non-file hard conflicts abort untouched (no fn can resolve
         # them). Hence no post_check here — kvgit keeps the hook for
         # callers that genuinely want blocking; we want markers.
+        #
+        # Always a merge commit, never a fast-forward: the merge is a
+        # step in this session's history, carrying the tool's info, and
+        # what it brought is read below as the diff from our pre-merge
+        # head to that commit.
+        before = self._wt.head
         try:
-            self._staged.merge(
-                source_head,
+            result = self._wt.merge(
+                commit=source_head,
                 merge_fns=merge_fns,
                 merge_prefixes=merge_prefixes,
                 info={"tool": "ws-git.merge", "source": source, **(info or {})},
+                fast_forward=False,
             )
         except MergeConflict as e:
             return MergeOutcome(
@@ -1053,18 +1171,20 @@ class KvgitProvider:
                 conflicts=tuple(sorted(self._display_conflicts(e))),
                 auto_merged=(),
             )
-        # What the merge brought in: first parent is our pre-merge head
-        # (git convention), so this diff lists exactly the merge's work.
-        # Conflict markers are reported by provenance, not by scan: a
-        # brought file may legitimately contain marker-like bytes, so
-        # only markers absent from both parents' versions count.
-        parents = self._staged.versioned.parents()
-        base = parents[0] if parents else self._staged.current_commit
-        brought = self.diff(base, self._staged.current_commit)
-        at_base = self._staged.checkout(base)
+        if result.strategy == "no_op":
+            # Our history already holds theirs: nothing to bring in.
+            return MergeOutcome(
+                merged=True, commit=before, conflicts=(), auto_merged=()
+            )
+        # What the merge brought in: the diff from our pre-merge head
+        # lists exactly the merge's work. Conflict markers are reported
+        # by provenance, not by scan: a brought file may legitimately
+        # contain marker-like bytes, so only markers absent from both
+        # parents' versions count.
+        brought = self.diff(before, self._wt.head)
+        at_base = self._snapshot(before)
         rev = {
-            display: key
-            for key, display in self._file_keys(self._staged.keys()).items()
+            display: key for key, display in self._file_keys(self._wt.keys()).items()
         }
         candidates = brought.added | brought.removed | brought.modified
         conflicts = tuple(
@@ -1079,7 +1199,7 @@ class KvgitProvider:
         self._invalidate_fs()
         return MergeOutcome(
             merged=True,
-            commit=self._staged.current_commit,
+            commit=self._wt.head,
             conflicts=conflicts,
             auto_merged=tuple(sorted(set(candidates) - set(conflicts))),
         )
@@ -1099,7 +1219,7 @@ class KvgitProvider:
         from ..errors import LegacyLayoutError
         from ..migrate import legacy_keys
 
-        ours = legacy_keys(self._staged)
+        ours = legacy_keys(self._state)
         if ours:
             raise LegacyLayoutError(self._session, ours)
         found = legacy_keys(other)
@@ -1107,11 +1227,11 @@ class KvgitProvider:
             return other, source_head
         head = self._open_branch(source)
         if (
-            head.current_commit != source_head
+            head.commit != source_head
             and not legacy_keys(head)
-            and self._same_files(source_head, head.current_commit)
+            and self._same_files(source_head, head.commit)
         ):
-            return head, head.current_commit
+            return head, head.commit
         raise LegacyLayoutError(source, found)
 
     def _same_files(self, a: str, b: str) -> bool:
@@ -1170,7 +1290,7 @@ class KvgitProvider:
 
         file_keys: set[str] = set()
         row_keys: set[str] = set()
-        for handle in (self._staged, other):
+        for handle in (self._state, other):
             if handle is None:
                 continue
             keys = list(handle.keys())
@@ -1225,8 +1345,8 @@ class KvgitProvider:
         is ever written to this head.
         """
         from kvgit import MergeChoice, MergeConflict
-        from kvgit.versioned.helpers import diff_keysets
-        from kvgit.versioned.merge import pick_merge_policy, resolve_merge
+        from kvgit.versioned.keyset import KeysetEntry, MetaEntry
+        from kvgit.versioned.merge import Change, pick_merge_policy, resolve_merge
 
         from ..migrate import current_layout
 
@@ -1251,14 +1371,15 @@ class KvgitProvider:
         if not changed:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
 
-        # kvgit resolves a three-way over KEYSETS — key to content id,
-        # with a reader from id to bytes — and it compares those ids
-        # only within one key. So the three trees are handed to it as
-        # keysets of values: an id per distinct value of a key, and a
-        # reader that hands the value back. That keeps the resolution
-        # kvgit's own (equal-content shortcuts, removals, the order a
-        # policy is picked in) while the base is ours to name, which is
-        # the whole difference between this and a merge.
+        # kvgit resolves a three-way from each side's CHANGES since the
+        # base — per key, an entry there and an entry here, each naming
+        # content by id, with a reader from id to value — and it
+        # compares those ids only within one key. So the three trees are
+        # handed to it as ids of values: one per distinct value of a key,
+        # and a reader that hands the value back. That keeps the
+        # resolution kvgit's own (equal-content shortcuts, removals, the
+        # order a policy is picked in) while the base is ours to name,
+        # which is the whole difference between this and a merge.
         values: dict[str, Any] = {}
         base_keys: dict[str, str] = {}
         our_keys: dict[str, str] = {}
@@ -1267,7 +1388,7 @@ class KvgitProvider:
             slots: list[tuple[Any, str]] = []
             for keyset, handle in (
                 (base_keys, at_base),
-                (our_keys, self._staged),
+                (our_keys, self._wt),
                 (their_keys, at_theirs),
             ):
                 if handle is None or key not in handle:
@@ -1282,17 +1403,29 @@ class KvgitProvider:
                     slots.append((value, name))
                     values[name] = value
                     keyset[key] = name
+
+        def entry(name: str | None) -> Any:
+            # Every entry carries the same metadata, so two entries are
+            # equal exactly when they name the same value.
+            return (
+                None if name is None else KeysetEntry(blob=name, meta=MetaEntry(size=0))
+            )
+
+        def changes(side: dict[str, str]) -> dict[str, Any]:
+            return {
+                key: Change(entry(base_keys.get(key)), entry(side.get(key)))
+                for key in changed
+                if side.get(key) != base_keys.get(key)
+            }
+
         try:
             resolution = resolve_merge(
-                lca_keyset=base_keys,
-                our_keyset=our_keys,
-                their_keyset=their_keys,
-                our_diff=diff_keysets(base_keys, our_keys),
-                their_diff=diff_keysets(base_keys, their_keys),
-                blob_reader=values.get,
-                merge_fns=merge_fns,
-                default_merge=None,
-                merge_prefixes=merge_prefixes,
+                changes(our_keys),
+                changes(their_keys),
+                values.get,
+                merge_fns,
+                None,
+                merge_prefixes,
             )
         except MergeConflict as e:
             return MergeOutcome(
@@ -1305,7 +1438,7 @@ class KvgitProvider:
         written = self._stage_applied(changed, resolution, values)
         if not written:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
-        before = self._staged.current_commit
+        before = self._wt.head
         try:
             landed = self.commit(
                 info={
@@ -1317,7 +1450,7 @@ class KvgitProvider:
         except BaseException:
             # Nothing of anyone's is at stake in the buffer: it holds
             # only what this call put there.
-            self._staged.reset()
+            self._wt.discard()
             self._invalidate_fs()
             raise
         # The tree moved under the VirtualFS object: drop its caches
@@ -1326,7 +1459,7 @@ class KvgitProvider:
         # Conflicts by provenance, not by scan: a file the change
         # brings may legitimately contain marker-like bytes, so only
         # markers absent from both sides count.
-        at_before = self._staged.checkout(before)
+        at_before = self._snapshot(before)
         paths = self._file_keys(written)
         conflicts = tuple(
             sorted(
@@ -1347,26 +1480,28 @@ class KvgitProvider:
     ) -> set[str]:
         """Stage a resolved apply; returns the keys it wrote.
 
-        A resolved key lands as the merge function's own value, as the
-        value of whichever side the resolution kept, or as a removal
-        where neither side kept it. A key whose resolution is what the
-        tree already holds is not written at all, so a change already
-        present costs no commit.
+        The resolution says what to change on our side: a key a merge
+        function produced a value for, a key that takes the value one
+        side holds, a key that goes. A key it leaves alone keeps ours. A
+        key whose resolution is what the tree already holds is not
+        written at all, so a change already present costs no commit.
         """
         written: set[str] = set()
         for key in changed:
             if key in resolution.merged_values:
                 value = resolution.merged_values[key]
-            elif key in resolution.merged_keyset:
-                value = values[resolution.merged_keyset[key]]
-            else:
-                if key in self._staged:
-                    del self._staged[key]
+            elif key in resolution.updates:
+                value = values[resolution.updates[key].blob]
+            elif key in resolution.removals:
+                if key in self._wt:
+                    del self._wt[key]
                     written.add(key)
                 continue
-            if key in self._staged and _same(self._staged.get(key), value):
+            else:
                 continue
-            self._staged[key] = value
+            if key in self._wt and _same(self._wt.get(key), value):
+                continue
+            self._wt[key] = value
             written.add(key)
         return written
 
@@ -1379,10 +1514,7 @@ class KvgitProvider:
         """
         if commit is None:
             return None
-        handle = self._staged.checkout(commit)
-        if handle is None:
-            raise CommitNotFoundError(f"No such commit: {commit!r}")
-        return handle
+        return self._snapshot(commit)
 
     def _changed_keys(
         self, base: str | None, theirs: str | None, at_base: Any, at_theirs: Any
@@ -1398,7 +1530,7 @@ class KvgitProvider:
         from ..migrate import LEGACY_KEYS, converted_keys
 
         if base is not None and theirs is not None:
-            change = self._staged.versioned.diff(base, theirs)
+            change = self._repo.diff(base, theirs)
             keys = set(change.added) | set(change.removed) | set(change.modified)
             keys |= converted_keys(at_base) | converted_keys(at_theirs)
             return keys - set(LEGACY_KEYS)
@@ -1432,37 +1564,24 @@ class KvgitProvider:
     def _commit_record(self, commit_hash: str) -> CommitInfo | None:
         """One commit as a :class:`CommitInfo`, or ``None`` if the store
         holds no such commit."""
-        from kvgit.encoding import safe_loads
+        from kvgit import UnknownCommitError
 
-        root = self._tree(commit_hash)
-        if root is None:
+        try:
+            return _commit_info(self._repo.get_commit(commit_hash))
+        except UnknownCommitError:
             return None
-        store = self._staged.versioned.store
-        raw_time = store.get(f"__commit_time__{commit_hash}")
-        raw_info = store.get(f"__info__{commit_hash}")
-        time_val = safe_loads(raw_time) if raw_time is not None else None
-        info_val = safe_loads(raw_info) if raw_info is not None else None
-        return CommitInfo(
-            id=commit_hash,
-            time=float(time_val) if time_val is not None else 0.0,
-            info=info_val if isinstance(info_val, dict) else {},
-            tree=root,
-            parents=tuple(self._staged.versioned.parents(commit_hash)),
-        )
 
-    def _open_branch(self, source: str):
-        """A throwaway read handle on another branch's HEAD.
+    def _open_branch(self, source: str) -> Any:
+        """A read-only snapshot of another branch's head.
 
-        kvgit has no "head of branch X" lookup; a fresh checkout switched
-        in place lands exactly there without touching our own handle.
         Unknown branches raise ValueError naming them.
         """
-        probe = self._staged.checkout(self._staged.current_commit)
+        from kvgit import UnknownBranchError
+
         try:
-            probe.switch_branch(source)
-        except ValueError:
+            return self._repo.snapshot(branch=source)
+        except UnknownBranchError:
             raise ValueError(f"unknown branch {source!r}") from None
-        return probe
 
     def _display_conflicts(self, exc: Exception) -> set[str]:
         """Conflicting keys as display paths (raw keys for non-files).
@@ -1499,7 +1618,7 @@ class KvgitProvider:
         back to a side's own.
         """
         try:
-            return self._staged.versioned.merge_base(ours, theirs)
+            return self._repo.merge_base(ours, theirs)
         except Exception:  # noqa: BLE001 - no base is an answer, not a failure
             return None
 
@@ -1554,7 +1673,7 @@ class KvgitProvider:
         except (ValueError, UnicodeDecodeError):
             return None
         base = at_lca.get(blob_key) if at_lca is not None else None
-        ours = self._staged.get(blob_key)
+        ours = self._state.get(blob_key)
         theirs = other.get(blob_key) if other is not None else None
         for side in (base, ours, theirs):
             if side is not None and not isinstance(side, bytes):
@@ -1582,7 +1701,7 @@ class KvgitProvider:
         """
         if key is None:
             return False
-        value = self._staged.get(key)
+        value = self._state.get(key)
         if not isinstance(value, bytes) or b"<<<<<<< " not in value:
             return False
         for handle in (at_base, other):
@@ -1597,9 +1716,12 @@ class KvgitProvider:
         """Of these file keys, the paths whose bytes actually differ."""
         if not keys:
             return frozenset()
-        at_a = self._staged.checkout(a)
-        at_b = self._staged.checkout(b)
-        if at_a is None or at_b is None:
+        from kvgit import UnknownCommitError
+
+        try:
+            at_a = self._repo.snapshot(commit=a)
+            at_b = self._repo.snapshot(commit=b)
+        except UnknownCommitError:
             # A commit that cannot be opened cannot be compared; the
             # pointer diff is then the most this can honestly say.
             return frozenset(keys.values())
@@ -1653,7 +1775,4 @@ class KvgitProvider:
         if self._closed:
             return
         self._closed = True
-        store = getattr(self._staged.versioned, "store", None)
-        close = getattr(store, "close", None)
-        if callable(close):
-            close()
+        self._repo.close()

@@ -25,15 +25,11 @@ def kv_ws():
 
 def _store_tags(tmp_path):
     """Every tag in the store, as kvgit stores it (prefixes included)."""
-    import kvgit
+    from kvgit import Repo
+    from kvgit.kv.disk import Disk
 
-    handle = kvgit.store(kind="disk", path=str(tmp_path / "kvgit"), branch="probe")
-    try:
-        return handle.tags()
-    finally:
-        close = getattr(handle.versioned.store, "close", None)
-        if callable(close):
-            close()
+    with Repo(Disk(str(tmp_path / "kvgit"))) as repo:
+        return dict(repo.tags.items())
 
 
 # -- round trip, both scopes -------------------------------------------------

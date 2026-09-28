@@ -40,7 +40,7 @@ def commit_keys(store, ref):
     """Every store key the commit a ref names actually holds."""
     provider = store._provider_at_commit(ref.session, ref.commit)
     try:
-        return sorted(provider.staged.keys())
+        return sorted(provider.kv.keys())
     finally:
         provider.close()
 

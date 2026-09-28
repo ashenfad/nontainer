@@ -79,7 +79,7 @@ def metadata(tmp_path, session, commit=None):
     """Every path's metadata as a filesystem over that head reads it."""
     p = provider(tmp_path, session)
     try:
-        handle = p.staged if commit is None else p.staged.checkout(commit)
+        handle = p.worktree if commit is None else p.repo.snapshot(commit=commit)
         return VirtualFS(handle).get_metadata_snapshot()
     finally:
         p.close()
@@ -134,7 +134,7 @@ def test_migrate_turns_the_table_into_rows_and_keeps_the_metadata(tmp_path):
     p = provider(tmp_path, "old")
     try:
         assert p.head == report.commit
-        assert tuple(p.staged.versioned.parents(report.commit)) == (legacy,)
+        assert p.repo.get_commit(report.commit).parents == (legacy,)
         info = next(iter(p.history(limit=1))).info
         assert info["tool"] == MIGRATE_TOOL
         for path in before:
@@ -444,7 +444,7 @@ def test_an_old_source_commit_merges_as_its_migrated_head(tmp_path):
     try:
         out = main.merge("worker", at=old)
         assert out.merged
-        assert main.staged.versioned.parents(out.commit)[1] == migrated
+        assert main.repo.get_commit(out.commit).parents[1] == migrated
         assert main.fs.stat("/workspace/w.txt").size == len(b"worker\n")
         assert LEGACY_TABLE_KEY not in main.kv
     finally:
@@ -503,7 +503,7 @@ def test_a_fork_from_an_old_commit_is_migrated_on_its_own_branch(tmp_path):
     # the fork point itself is untouched
     p = provider(tmp_path, "old")
     try:
-        assert LEGACY_TABLE_KEY in p.staged.checkout(legacy)
+        assert LEGACY_TABLE_KEY in p.repo.snapshot(commit=legacy)
     finally:
         p.close()
     assert metadata(tmp_path, "child") == before
@@ -542,10 +542,8 @@ def _legacy_write_publication(
 ):
     """``Store._write_publication`` as the old layout would have
     written it: the blobs, and one table describing them."""
-    import kvgit
-
     src = ws._provider
-    handle = src.staged.checkout(head)
+    handle = src._snapshot(head)
     wanted = {
         key: path
         for key, path in src._file_keys(handle.keys()).items()
@@ -554,19 +552,17 @@ def _legacy_write_publication(
     rows = _published_rows(
         VirtualFS(handle).get_metadata_snapshot(), set(wanted.values())
     )
-    pub = kvgit.store(kind="disk", path=str(self._kvgit_path()), branch=branch)
-    try:
+    with self._repo(create=True) as repo:
+        pub = repo.worktree(branch, create=True)
         for key in wanted:
             pub[key] = handle.get(key)
         pub[LEGACY_TABLE_KEY] = json.dumps(rows).encode()
         pub.commit(info=commit_info)
-        commit = pub.current_commit
-        KvgitProvider(pub, session=branch).tag(
+        commit = pub.head
+        KvgitProvider(repo, pub, session=branch).tag(
             tag, at=commit, info=commit_info, scope="store"
         )
         return commit
-    finally:
-        self._close_backend(getattr(pub.versioned, "store", None))
 
 
 def test_an_old_publication_still_serves_and_is_never_rewritten(tmp_path, monkeypatch):
