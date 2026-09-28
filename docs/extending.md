@@ -239,12 +239,18 @@ carry is refused with a message naming the limit rather than lost on
 the way. `DudExecutor` declares 64 MiB; `LocalExecutor` carries
 whatever it is handed and declares nothing.
 
-**`open(context)`** binds to one session's state and starts any
-resident machinery — `LocalExecutor` builds the default sandbox and
-forks the isolation worker; `DudExecutor` boots or resumes a guest and
-materializes the tree. `Runtime.__init__` calls it once, as the last
-step of its own construction, so no construction failure after that
-point can orphan a worker. A workspace builds exactly one runtime for
+**`open(context)`** binds to one session's state and prepares what
+execution will need, without starting it. `LocalExecutor` builds the
+default sandbox and its policy, so a bad configuration fails here;
+`DudExecutor` checks its config and wires its host objects and cache.
+Neither starts a process or a machine: `LocalExecutor`'s isolation
+worker and `DudExecutor`'s guest start with the first execution (or
+`warm()`), so a workspace opened to read files or serve a snapshot
+holds nothing it would not use. An executor of your own may start
+eagerly here instead, if it has no reason to wait. `Runtime.__init__`
+calls it once, as the last step of its own construction, so no
+construction failure after that point can orphan whatever it does
+start. A workspace builds exactly one runtime for
 itself, and a frozen open or a fork builds another for the workspace it
 returns. It is not re-entrant. `close()` must be best-effort and
 idempotent and **must not raise**: the workspace closes its provider
@@ -344,7 +350,8 @@ refresh. `DudExecutor` harvests the guest's writes as a `StagedDiff`
 paths, with the harvest rebased so each call yields only its own
 changes) and re-materializes the tree wholesale on `sync`. `sync` is
 called lazily, once, before the next execution, so N host writes cost
-one sync rather than N.
+one sync rather than N; before the guest has booted it does nothing,
+since the boot pushes the tree as it is then.
 
 A remote executor that loses its guest **between a successful exec and
 the harvest** raises `HarvestLost` from `diff()` rather than returning
