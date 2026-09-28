@@ -22,19 +22,48 @@ jobs:
       with:
         python-version: ${{ matrix.python-version }}
 
+    # uv resolves from pyproject.toml the way pip did -- the newest
+    # releases the constraints allow, not uv.lock -- so the matrix still
+    # proves the latest agno and friends work. It is only faster, and
+    # its cache keeps the downloads between runs.
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+        cache-dependency-glob: pyproject.toml
+        cache-suffix: ${{ matrix.python-version }}
+
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
         # `dud` included so tests/test_dud_executor.py actually RUNS.
         # It guards itself with importorskip, so without the extra the
         # whole DudExecutor suite skipped silently in CI -- which is how
         # a dud breaking change reached us unnoticed. The extra carries a
         # `python_version >= "3.11"` marker, so 3.10 installs nothing for
         # it and those tests keep skipping there, by design.
-        pip install -e ".[dev,apps,agno,mcp,dud]"
+        uv pip install --system -e ".[dev,apps,agno,mcp,dud]"
+
+    # The browser is keyed on the Playwright version that was installed,
+    # so a Playwright release fetches a fresh one. Linux still needs the
+    # system libraries on a hit: those live outside the cache.
+    - name: Playwright version
+      id: pw
+      run: echo "version=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Playwright browser
+      id: pw-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.os == 'macOS' && '~/Library/Caches/ms-playwright' || '~/.cache/ms-playwright' }}
+        key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.pw.outputs.version }}
 
     - name: Install Playwright browser
+      if: steps.pw-cache.outputs.cache-hit != 'true'
       run: python -m playwright install --with-deps chromium
+
+    - name: Install Playwright system dependencies
+      if: steps.pw-cache.outputs.cache-hit == 'true' && runner.os == 'Linux'
+      run: python -m playwright install-deps chromium
 
     # One worker per core: the tests are independent (each has its
     # own tmp_path and in-memory stores), and the browser and the
@@ -67,11 +96,14 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: "3.12"
+    - uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+        cache-dependency-glob: pyproject.toml
+        cache-suffix: agno-${{ matrix.agno }}
     - name: Install with agno ${{ matrix.agno }}
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev,apps]"
-        pip install "agno==${{ matrix.agno }}"
+        uv pip install --system -e ".[dev,apps]" "agno==${{ matrix.agno }}"
     - name: Confirm the pin actually took
       # Belt and braces: an overlay that silently loses to an already
       # installed agno would make every assertion below vacuous, and a
@@ -117,16 +149,41 @@ jobs:
       with:
         python-version: "3.12"
 
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        enable-cache: true
+        cache-dependency-glob: pyproject.toml
+        cache-suffix: postgres
+
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install -e ".[dev,apps,agno,mcp,dud,postgres]"
+        uv pip install --system -e ".[dev,apps,agno,mcp,dud,postgres]"
 
     # The app tests publish to the store and serve from it, and they run
     # only with a browser: without one they skip, and the store's
     # publication paths would go untested here.
+    # The browser is keyed on the Playwright version that was installed,
+    # so a Playwright release fetches a fresh one. Linux still needs the
+    # system libraries on a hit: those live outside the cache.
+    - name: Playwright version
+      id: pw
+      run: echo "version=$(python -c 'import importlib.metadata as m; print(m.version("playwright"))')" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Playwright browser
+      id: pw-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.os == 'macOS' && '~/Library/Caches/ms-playwright' || '~/.cache/ms-playwright' }}
+        key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.pw.outputs.version }}
+
     - name: Install Playwright browser
+      if: steps.pw-cache.outputs.cache-hit != 'true'
       run: python -m playwright install --with-deps chromium
+
+    - name: Install Playwright system dependencies
+      if: steps.pw-cache.outputs.cache-hit == 'true' && runner.os == 'Linux'
+      run: python -m playwright install-deps chromium
 
     - name: Run the whole suite on Postgres
       run: |
