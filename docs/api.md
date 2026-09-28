@@ -36,6 +36,7 @@ Store(
     path: str | Path | None = None,       # default ~/.nontainer
     *,
     backend: "kvgit" | "dir" | "agentfs" = "kvgit",
+    kv: KVStore | str | None = None,      # kvgit: where its data lives (below)
     provider_factory: Callable[[str], WorkspaceProvider] | None = None,
 )
 nontainer.store(...)                      # the same, as sugar
@@ -50,12 +51,33 @@ store.clean(*, min_age=3600) -> int       # sweep unreachable commits
 store.migrate_layout(sessions=None, *, dry_run=False)
     -> dict[str, LayoutMigration]         # pre-monkeyfs-0.1.10 heads
 store.tags -> StoreTags                   # store-scoped tags (below)
+store.repo -> kvgit.Repo                  # kvgit: the repository (power tool)
 store.close() -> None                     # also a context manager
 ```
 
-Store layout is the backend's: kvgit keeps one shared store at
-`<path>/kvgit` with a branch per session, `dir` keeps
-`<path>/<session>/`, `agentfs` keeps `<path>/<session>.db`.
+Store layout is the backend's: kvgit keeps one shared store with a
+branch per session, `dir` keeps `<path>/<session>/`, `agentfs` keeps
+`<path>/<session>.db`.
+
+**Where a kvgit store keeps its data.** On disk under `<path>/kvgit`
+(SQLite, through kvgit's `Disk`) unless told otherwise:
+
+```python
+Store(path)                                       # on disk, as ever
+Store(path, kv="postgresql://app@db.internal/nt") # PostgreSQL ([postgres] extra)
+Store(path, kv=Postgres(dsn, table="sessions"))   # any kvgit KVStore
+# or, with no kv=, from the environment:
+#   NONTAINER_KV=postgresql://app@db.internal/nt
+#   NONTAINER_KV_TABLE=sessions                   # default "kvgit"
+```
+
+`kv=` wins over `NONTAINER_KV`, which wins over the disk default. A
+PostgreSQL store is shared by every process pointed at it, and any
+number of them may commit and sweep at once. The store opens its
+backend once, on first use, and every session and verb shares that one
+repository — one connection pool, not one per call; `store.repo` is
+that repository. `path` still holds the publication registry
+(`publications.json`), which is a file on that machine.
 `provider_factory` replaces all of that for `open` (bring your own
 substrate); the store-level verbs then refuse, because the layout is
 the factory's and guessing it would be worse than saying so.
@@ -572,14 +594,20 @@ finally:
     served.close()                  # when the app stops being served
 ```
 
-**`Store.close()` and `AppRuntime.close()` are no-ops**, and are kept
-so the symmetric shape can be written. A store holds no long-lived
-handle: every verb opens what it needs and either hands ownership to
-the workspace it returns or closes it before returning. An app runtime
-holds no workers of its own: handler calls run on the workspace's
-runtime, whose warm workers `ws.runtime.reap_idle` releases and
-`ws.close()` reaps. Neither one closes the workspaces it handed out —
-that is the caller's, above.
+**A `Store` owns its backend.** A kvgit store opens its repository on
+first use and every workspace it opens borrows it, so closing a
+workspace leaves it open and `store.close()` closes it — for a
+PostgreSQL store, its connection pool. Close the workspaces first, then
+the store; a store used again after `close()` reopens its repository.
+`nontainer.workspace(...)` builds a store for the one workspace it
+returns, and hands that workspace the store's backend: closing the
+workspace closes it.
+
+**`AppRuntime.close()` is a no-op**, kept so the symmetric shape can be
+written. An app runtime holds no workers of its own: handler calls run
+on the workspace's runtime, whose warm workers `ws.runtime.reap_idle`
+releases and `ws.close()` reaps. Neither a store nor an app runtime
+closes the workspaces it handed out — that is the caller's, above.
 
 ### The two tools
 
@@ -2070,7 +2098,7 @@ turns; in per-turn mode that is exactly when the workspace is clean.
 from nontainer.adapters.agno_db import KvgitStoreDb
 
 db = KvgitStoreDb(
-    store.path,                 # a nontainer Store's directory
+    store,                      # the embedder's nontainer Store (or its path)
     open=registry.open,         # session_id -> the LIVE Workspace
     db_path="/var/agno",        # inherited tables, shared by all sessions
 )

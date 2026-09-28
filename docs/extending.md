@@ -130,9 +130,11 @@ with it False, `commit` / `checkout` / `history` / `fork` all raise
 ```python
 KvgitProvider.open(path=None, *, session, codecs=None)  # None → memory store
 KvgitProvider(repo, worktree, *, session)                # bring your own kvgit Repo
+KvgitProvider.on(repo, session)        # borrow a Repo someone else closes (a Store's)
     .repo              # the kvgit Repo the branch lives in
     .worktree          # the kvgit Worktree (host-side power tool)
-KvgitProvider.delete(path, sessions)   # drop branches (path = the store dir)
+KvgitProvider.delete(path, sessions)   # drop branches (path = the on-disk store dir)
+KvgitProvider.delete_in(repo, sessions)   # the same, on a Repo already open
 
 DirProvider(root, *, session)
     .root              # the real directory

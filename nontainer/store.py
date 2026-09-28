@@ -42,6 +42,7 @@ from .protocol import (
     SHORT_ID_RE,
     TagInfo,
     WorkspaceProvider,
+    expand_commit,
     validate_session_id,
 )
 
@@ -51,6 +52,48 @@ if TYPE_CHECKING:
     from .workspace import Mount, PythonConfig, Workspace
 
 Backend = Literal["kvgit", "dir", "agentfs"]
+
+#: Environment variable naming the kvgit backend a :class:`Store` uses
+#: when it is not handed one: a PostgreSQL URL (``postgresql://...``).
+#: Unset, a store keeps its kvgit data on disk under ``<path>/kvgit``.
+KV_ENV = "NONTAINER_KV"
+#: The table a PostgreSQL backend named by URL keeps its store in
+#: (default ``kvgit``). Several stores can share one database this way.
+KV_TABLE_ENV = "NONTAINER_KV_TABLE"
+
+
+def _backend_for(kv: Any) -> Any:
+    """The kvgit ``KVStore`` a ``kv=`` argument or ``NONTAINER_KV``
+    names: a ``KVStore`` as it is, or a PostgreSQL URL."""
+    if not isinstance(kv, str):
+        return kv
+    if not kv.startswith(("postgresql://", "postgres://")):
+        raise ValueError(
+            f"kv={kv!r} is not a backend nontainer can open: pass a kvgit "
+            "KVStore, or a PostgreSQL URL (postgresql://...)"
+        )
+    try:
+        from kvgit.kv.postgres import Postgres
+    except ImportError as e:
+        raise ImportError(
+            "A PostgreSQL store needs the postgres extra: "
+            "pip install 'nontainer[postgres]'"
+        ) from e
+    return Postgres(kv, table=os.environ.get(KV_TABLE_ENV) or "kvgit")
+
+
+def _disk_backend(path: Path, create: bool) -> Any:
+    """The on-disk kvgit backend under ``path`` (the store's ``kvgit``
+    directory), or ``None`` where nothing was ever written and nothing
+    is to be: reading a store must not create one."""
+    if not path.is_dir():
+        if not create:
+            return None
+        path.mkdir(parents=True, exist_ok=True)
+    from kvgit.kv.disk import Disk
+
+    return Disk(str(path))
+
 
 # kvgit's own reserved branch namespaces, plus the legacy placeholder
 # branch older nontainer versions minted during teardown. None of them
@@ -593,6 +636,16 @@ class Store:
             per session, ``dir`` keeps ``<path>/<session>/``, and
             ``agentfs`` keeps ``<path>/<session>.db``.
         backend: Which substrate the sessions live on.
+        kv: Where a ``"kvgit"`` store keeps its data: a kvgit
+            ``KVStore`` (``kvgit.kv.postgres.Postgres(...)``, say), or a
+            PostgreSQL URL (``postgresql://...``; needs the ``postgres``
+            extra). ``None`` reads the ``NONTAINER_KV`` environment
+            variable, and with that unset keeps the data on disk under
+            ``<path>/kvgit``. A PostgreSQL URL's table is
+            ``NONTAINER_KV_TABLE`` (default ``kvgit``). The store opens
+            the backend once, on first use, and every session and verb
+            shares it; :meth:`close` closes it. ``path`` still holds the
+            publication registry.
         provider_factory: Bring your own substrate — a callable taking
             a session id and returning a
             :class:`~nontainer.protocol.WorkspaceProvider`. When given
@@ -608,11 +661,18 @@ class Store:
         path: str | Path | None = None,
         *,
         backend: Backend = "kvgit",
+        kv: Any = None,
         provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
     ) -> None:
         self._path = Path(path).expanduser() if path else Path.home() / ".nontainer"
         self._backend = backend
         self._provider_factory = provider_factory
+        self._kv = kv
+        # The one kvgit repository every session and verb of this store
+        # shares, opened on first use: one pool of connections to a
+        # networked backend rather than one per call.
+        self._kvgit: Any = None
+        self._kvgit_lock = threading.Lock()
         # The publication registry for a store that has no directory of
         # its own: a provider_factory decides where state lives, so
         # there is nowhere to put the file. It then lives for as long as
@@ -635,6 +695,16 @@ class Store:
     @property
     def backend(self) -> str:
         return self._backend
+
+    @property
+    def repo(self) -> Any:
+        """The kvgit ``Repo`` this store's sessions live in (host-side
+        power tool): opened on first use, shared by every session and
+        verb of this store, and closed by :meth:`close`. kvgit stores
+        only."""
+        self._require_own_layout("repo")
+        self._require_kvgit("repo")
+        return self._kvgit_repo(create=True)
 
     def __repr__(self) -> str:
         if self._provider_factory is not None:
@@ -837,7 +907,9 @@ class Store:
         elif self._backend == "kvgit":
             from .providers.kvgit import KvgitProvider
 
-            KvgitProvider.delete(self._path / "kvgit", names, min_age=min_age)
+            repo = self._kvgit_repo()
+            if repo is not None:
+                KvgitProvider.delete_in(repo, names, min_age=min_age)
         elif self._backend == "agentfs":
             from .providers.agentfs import AgentFSProvider
 
@@ -1436,14 +1508,18 @@ class Store:
     # ------------------------------------------------------------------
 
     def close(self) -> None:
-        """Release store-level resources.
+        """Release store-level resources: the kvgit repository every
+        session of this store shares, and with it the backend's
+        connections.
 
-        A ``Store`` holds no long-lived handle today: every verb opens
-        what it needs and hands ownership to the workspace it returns,
-        or closes it before returning. The method exists so callers can
-        write the symmetric shape now (and so ``with`` works) rather
-        than adding it to every call site later.
+        Close the workspaces this store opened first — they read and
+        commit through that repository. The store can be used again
+        afterwards; the repository reopens on its next use.
         """
+        with self._kvgit_lock:
+            repo, self._kvgit = self._kvgit, None
+        if repo is not None:
+            repo.close()
 
     def __enter__(self) -> "Store":
         return self
@@ -1592,13 +1668,7 @@ class Store:
             return ref
         if ref.session not in set(self._branches()):
             return ref
-        from .providers.kvgit import KvgitProvider
-
-        provider = KvgitProvider.open(self._kvgit_path(), session=ref.session)
-        try:
-            return Ref(ref.session, provider.expand_commit(ref.commit), ref.path)
-        finally:
-            provider.close()
+        return Ref(ref.session, self._expand_commit(ref.session, ref.commit), ref.path)
 
     @contextmanager
     def _ref_provider(
@@ -1628,7 +1698,7 @@ class Store:
             from .providers.kvgit import KvgitProvider
 
             yield (
-                KvgitProvider.open(self._kvgit_path(), session=source.session),
+                KvgitProvider.on(self._kvgit_repo(create=True), source.session),
                 source,
             )
 
@@ -1645,7 +1715,7 @@ class Store:
         if self._backend == "kvgit":
             from .providers.kvgit import KvgitProvider
 
-            return KvgitProvider.open(self._kvgit_path(), session=session)
+            return KvgitProvider.on(self._kvgit_repo(create=True), session)
         if self._backend == "agentfs":
             from .providers.agentfs import AgentFSProvider
 
@@ -1954,7 +2024,9 @@ class Store:
             self._delete_store_tag(tag)
         if branch in set(self._branches()):
             found = True
-        KvgitProvider.delete(self._kvgit_path(), {branch}, min_age=min_age)
+        repo = self._kvgit_repo()
+        if repo is not None:
+            KvgitProvider.delete_in(repo, {branch}, min_age=min_age)
         return found
 
     def _resume_publication(
@@ -2088,29 +2160,37 @@ class Store:
     def _kvgit_path(self) -> Path:
         return self._path / "kvgit"
 
+    def _kvgit_repo(self, *, create: bool = False) -> Any:
+        """The kvgit repository this store's sessions share, opened on
+        first use; ``None`` when the store keeps its data on disk and
+        nothing was ever written there (unless ``create``).
+
+        The backend is ``kv=`` when given, else ``NONTAINER_KV``, else
+        the store's ``kvgit`` directory. A ``Repo`` never writes by
+        being opened and makes no branch by being read, so every admin
+        read goes through here as well as every session.
+        """
+        if self._kvgit is not None:
+            return self._kvgit
+        with self._kvgit_lock:
+            if self._kvgit is None:
+                kv = self._kv if self._kv is not None else os.environ.get(KV_ENV)
+                if kv:
+                    backend = _backend_for(kv)
+                else:
+                    backend = _disk_backend(self._kvgit_path(), create)
+                    if backend is None:
+                        return None
+                from kvgit import Repo
+
+                self._kvgit = Repo(backend)
+            return self._kvgit
+
     @contextmanager
     def _repo(self, *, create: bool = False) -> "Iterator[Any | None]":
-        """The kvgit repository under this store, open for one verb, or
-        ``None`` when nothing was ever written here (unless ``create``).
-
-        A ``Repo`` never writes by being opened and makes no branch by
-        being read, so every admin read goes through here; a caller
-        reading many things holds one across the lot.
-        """
-        p = self._kvgit_path()
-        if not p.is_dir():
-            if not create:
-                yield None
-                return
-            p.mkdir(parents=True, exist_ok=True)
-        from kvgit import Repo
-        from kvgit.kv.disk import Disk
-
-        repo = Repo(Disk(str(p)))
-        try:
-            yield repo
-        finally:
-            repo.close()
+        """:meth:`_kvgit_repo` for a block. The repository is the
+        store's and stays open after the block."""
+        yield self._kvgit_repo(create=create)
 
     def _branches(self) -> list[str]:
         with self._repo() as repo:
@@ -2289,31 +2369,39 @@ class Store:
         )
 
     def _provider_at_commit(self, session: str, commit: str) -> WorkspaceProvider:
+        from kvgit import UnknownCommitError
+
         from .errors import CommitNotFoundError
         from .providers.kvgit import KvgitProvider
 
         self._require_branch(session, f"read at {session}@{commit}")
-        provider = KvgitProvider.open(self._kvgit_path(), session=session)
+        repo = self._kvgit_repo(create=True)
         # What ws-git prints is seven characters of a commit id, and
         # every spelling nontainer prints is one it accepts back.
+        commit = self._expand_commit(session, commit)
         try:
-            commit = provider.expand_commit(commit)
-            snapshot = provider._snapshot(commit)
-        except CommitNotFoundError:
-            provider.close()
+            snapshot = repo.snapshot(commit=commit)
+        except UnknownCommitError:
             raise CommitNotFoundError(
                 f"no commit {commit!r} on session {session!r} "
                 f"(ws-git log {session} lists what it holds)"
             ) from None
-        except BaseException:
-            provider.close()
-            raise
-        # The frozen provider takes over the repository the opening
-        # provider opened, so closing the workspace this ends up in
-        # closes the store exactly once. The opening provider is not
-        # closed here: that would close the store the caller is about
-        # to read.
-        return KvgitProvider(provider.repo, snapshot, session=session, frozen_at=commit)
+        return KvgitProvider(
+            repo, snapshot, session=session, frozen_at=commit, owns_repo=False
+        )
+
+    def _expand_commit(self, session: str, commit: str) -> str:
+        """A commit id typed short, expanded against ``session``'s own
+        line of history; anything else comes back unchanged (see
+        :meth:`KvgitProvider.expand_commit`)."""
+        if not isinstance(commit, str) or not SHORT_ID_RE.fullmatch(commit):
+            return commit
+        repo = self._kvgit_repo(create=True)
+        return expand_commit(
+            commit,
+            (c.hash for c in repo.log(branch=session, first_parent=True)),
+            where=f"on session {session!r}",
+        )
 
     def _require_tag_at(self, tag: str, ref: Ref) -> None:
         """Refuse a tag ref the tag no longer answers for.
@@ -2342,8 +2430,7 @@ class Store:
             )
 
     def _provider_at_store_tag(self, name: str) -> WorkspaceProvider:
-        from kvgit import Repo, UnknownCommitError, UnknownTagError
-        from kvgit.kv.disk import Disk
+        from kvgit import UnknownCommitError, UnknownTagError
 
         from .errors import CommitNotFoundError
         from .providers.kvgit import KvgitProvider
@@ -2355,23 +2442,18 @@ class Store:
         # anchor (see _anchor_session).
         session = self._anchor_session(f"store.tags.at({name!r})")
         stored = self._scoped_store_tag(name)
-        p = self._kvgit_path()
-        if not p.is_dir():
-            raise CommitNotFoundError(f"No such tag: {name!r} in scope 'store'")
-        repo = Repo(Disk(str(p)))
+        repo = self._kvgit_repo()
         try:
+            if repo is None:
+                raise UnknownTagError(stored)
             snapshot = repo.snapshot(tag=stored)
         except (UnknownTagError, UnknownCommitError):
-            repo.close()
             raise CommitNotFoundError(
                 f"No such tag: {name!r} in scope 'store'"
             ) from None
-        except BaseException:
-            repo.close()
-            raise
-        # The provider owns the repository from here; closing the
-        # workspace it ends up in closes it.
-        return KvgitProvider(repo, snapshot, session=session, frozen_at=name)
+        return KvgitProvider(
+            repo, snapshot, session=session, frozen_at=name, owns_repo=False
+        )
 
 
 def _as_json_value(value: Any) -> Any:
@@ -2580,7 +2662,8 @@ def store(
     path: str | Path | None = None,
     *,
     backend: Backend = "kvgit",
+    kv: Any = None,
     provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
 ) -> Store:
     """Build a :class:`Store` (sugar, matching ``nontainer.workspace``)."""
-    return Store(path, backend=backend, provider_factory=provider_factory)
+    return Store(path, backend=backend, kv=kv, provider_factory=provider_factory)

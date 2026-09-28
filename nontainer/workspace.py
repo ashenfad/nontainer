@@ -3972,7 +3972,7 @@ def workspace(
     from .store import Store
 
     if provider is None:
-        return Store(store, backend=backend).open(
+        ws = Store(store, backend=backend).open(
             session,
             python=python,
             mounts=mounts,
@@ -3983,6 +3983,13 @@ def workspace(
             executor_factory=executor_factory,
             root=root,
         )
+        # The store was built for this one workspace and nothing else
+        # holds it, so the workspace takes its repository: closing the
+        # workspace closes the backend under it.
+        take = getattr(ws._provider, "_take_repo", None)
+        if callable(take):
+            take()
+        return ws
     # A ready provider is one session's substrate, already built. It
     # goes in as the factory's answer for every id, and the id is
     # validated here rather than in Store.open, which leaves naming to

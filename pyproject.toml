@@ -183,6 +183,12 @@ mcp = [
     # Lift this cap when the MCP 2 adapter migration lands.
     "mcp>=1.0,<2",
 ]
+postgres = [
+    # A Store whose kvgit data lives in PostgreSQL: Store(kv="postgresql://...")
+    # or NONTAINER_KV. kvgit's backend is psycopg 3 with a connection pool,
+    # one per Store.
+    "kvgit[postgres]>=0.4.1,<0.5",
+]
 dud = [
     # dud itself requires >=3.11; the marker keeps nontainer's 3.10
     # floor intact for everyone not opting into this executor.

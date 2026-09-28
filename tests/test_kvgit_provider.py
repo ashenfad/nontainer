@@ -600,12 +600,16 @@ def test_sessions_are_independent_branches(tmp_path):
 
 
 # -- delete ------------------------------------------------------------------
+#
+# KvgitProvider.delete(path) opens the on-disk store at a path, so these
+# are tests of the disk layout; Store.delete is the backend-agnostic one.
 
 
 def _kvgit_dir(tmp_path):
     return tmp_path / "kvgit"
 
 
+@pytest.mark.disk_only
 def test_delete_removes_branch_and_frees_the_name(tmp_path):
     with workspace("gone", store=tmp_path, backend="kvgit") as ws:
         ws.terminal("echo secret > s.txt")
@@ -616,6 +620,7 @@ def test_delete_removes_branch_and_frees_the_name(tmp_path):
         assert not ws2.terminal("cat s.txt")
 
 
+@pytest.mark.disk_only
 def test_delete_the_only_branch(tmp_path):
     # the wrinkle this API exists for: deleting the sole branch, with
     # nothing else to anchor a store handle on
@@ -626,6 +631,7 @@ def test_delete_the_only_branch(tmp_path):
         assert not ws2.terminal("cat x.txt")
 
 
+@pytest.mark.disk_only
 def test_delete_leaves_siblings_untouched(tmp_path):
     with workspace("keep", store=tmp_path, backend="kvgit") as wk:
         wk.terminal("echo alive > k.txt")
@@ -636,6 +642,7 @@ def test_delete_leaves_siblings_untouched(tmp_path):
         assert wk2.terminal("cat k.txt").stdout.strip() == "alive"
 
 
+@pytest.mark.disk_only
 def test_delete_nonexistent_name_is_noop(tmp_path):
     with workspace("real", store=tmp_path, backend="kvgit") as ws:
         ws.terminal("echo hi > h.txt")
@@ -645,10 +652,12 @@ def test_delete_nonexistent_name_is_noop(tmp_path):
         assert not ws2.terminal("cat h.txt")
 
 
+@pytest.mark.disk_only
 def test_delete_from_nonexistent_store_is_noop(tmp_path):
     KvgitProvider.delete(tmp_path / "no-such-store", {"whatever"})  # no raise
 
 
+@pytest.mark.disk_only
 def test_delete_purges_legacy_void_anchor(tmp_path):
     # Stores written by the OLD code carry a hidden __void__ branch that
     # pins a dead session's whole history (the retention bug). delete now
@@ -679,6 +688,7 @@ def test_delete_purges_legacy_void_anchor(tmp_path):
         assert not ws2.terminal("cat x.txt")
 
 
+@pytest.mark.disk_only
 def test_delete_empty_set_is_noop(tmp_path):
     with workspace("s", store=tmp_path, backend="kvgit") as ws:
         ws.terminal("echo x > x.txt")
