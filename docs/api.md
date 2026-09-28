@@ -1395,18 +1395,19 @@ runtime keeps running. Closing it releases only its executor.
 belongs to the workspace, so that `ws.files.fs` and execution see the same
 tree.
 
-**The session worker starts on first use.** Under process/kernel
-isolation, `run_python` runs on a worker the runtime keeps for the
-workspace's life, and it starts with the first execution that needs
-it: not at open. A workspace opened to read files, serve a snapshot or
+**Execution starts on first use.** Under process/kernel isolation,
+`run_python` runs on a worker the runtime keeps for the workspace's
+life; on `DudExecutor`, everything runs in a guest machine. Either
+starts with the first execution that needs it: not at open. A workspace opened to read files, serve a snapshot or
 list history never starts one. The sandbox and its policy are still
 built at open, so a bad configuration fails there. What moves to the
-first `run_python` is the worker's start: its latency, about 14ms with
-`preload_grants`, and any failure to start it. **`rt.warm()`** starts
-it now, for a host that knows code is coming (a chat session opening)
-and wants that first call to pay nothing. It is idempotent, and a
-no-op on a closed runtime and wherever there is nothing to start
-(in-process isolation, `DudExecutor`).
+first execution is the start itself: its latency (about 14ms for a
+worker with `preload_grants`; a pooled VM acquire plus a tree push on
+dud) and any failure to start. **`rt.warm()`** starts it now, for a
+host that knows code is coming (a chat session opening) and wants that
+first call to pay nothing, or that wants to learn at open that the
+rung is unavailable. It is idempotent, and a no-op on a closed runtime
+and wherever there is nothing to start (in-process isolation).
 
 **`rt.reap_idle(max_age)`** releases what a runtime holds warm and
 unused. On `LocalExecutor` under process/kernel isolation that is the
@@ -1511,6 +1512,11 @@ nothing.
   warm pool and reuses a warm one instead of booting — a parked VM
   still holding this exact tree resumes with no push at all;
   `vm={"pooled": False}` opts out.
+
+The guest boots with the first execution, not at open, on every rung
+(see [`Runtime`](#runtime-wsruntime)): opening a dud workspace to read
+it costs no machine and no tree push. A rung that turns out to be
+unavailable says so then, or at `ws.runtime.warm()`.
 
 Everything above the transport is the same: the same `terminal` /
 `run_python` tools, the same commits, the same O(1) forks.

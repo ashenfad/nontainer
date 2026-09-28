@@ -825,16 +825,43 @@ class DudExecutor:
             live[DUD_OBJECT] = WsVerbHostHandler(ws, context.commands)
         self._live = live
         self._cache = _KvBytesCache(context.kv)
-        self._session = self._make_session(live, self._cache)
-        self._bind_session()
+        # The guest boots on first use (_ensure_session), not here: a
+        # workspace opened to read files, serve a snapshot or list
+        # history never runs code, and should not hold a machine.
+
+    def _ensure_session(self) -> None:
+        """Boot and bind the guest if it has not been yet. Called under
+        ``self._lock``, so racing first calls boot one guest.
+
+        Booting late also tags it better: the pool is asked for the
+        provider's state as it is NOW, which a parked machine is more
+        likely to hold than the state at open. A provider with
+        uncommitted writes names no state (``ExecutionContext.head``),
+        so it never resumes a parked tree and always gets a push."""
+        if self._closed:
+            raise RuntimeError("DudExecutor is closed")
+        if self._session is None:
+            self._session = self._make_session(self._live, self._cache)
+            self._bind_session()
+
+    def warm(self) -> None:
+        """Boot the guest now rather than at the first execution, for a
+        host that wants that latency paid up front — or wants to learn
+        at open that the rung is unavailable. Idempotent, safe from any
+        thread, and a no-op on an executor not yet open or already
+        closed."""
+        with self._lock:
+            if self._ctx is None or self._closed:
+                return
+            self._ensure_session()
 
     def _bind_session(self) -> None:
         """Ping + materialize the tree + re-assert cwd on a freshly made
         session — closing it on ANY failure. Without this, a boot race
-        or a bad tree raising out of ``open()`` (the last step of
-        ``Workspace.__init__``) orphans a live guest: nobody holds a
-        workspace to close, and a leaked pooled session sits in the
-        pool's bound set, which pool teardown doesn't reap."""
+        or a bad tree raising out of the call that boots the guest
+        orphans it: ``self._session`` would name a half-bound guest, and
+        a leaked pooled session sits in the pool's bound set, which pool
+        teardown doesn't reap. Cleared, the next call boots afresh."""
         try:
             self._work = self._session.ping()["workspace"]
             if not getattr(self._session, "resumed", False):
@@ -856,8 +883,12 @@ class DudExecutor:
             self._close_locked()
 
     def _close_locked(self) -> None:
-        if self._session is not None and not self._closed:
-            self._closed = True
+        if self._closed:
+            return
+        # Closed whether or not a guest ever booted, so nothing boots
+        # one afterwards.
+        self._closed = True
+        if self._session is not None:
             # Tag the parked tree with its provider commit so a session
             # resuming at this exact state skips the push (pool state
             # affinity). Every synced mutation path keeps guest == fs
@@ -974,6 +1005,7 @@ class DudExecutor:
             # The lock spans exec + harvest so a read-only view's diff
             # check can't see a concurrent call's writes.
             with self._lock:
+                self._ensure_session()
                 return self._exec_view(ctx, code, dict(inputs or {}), view)
 
         from dud.values import NotRepresentable
@@ -984,6 +1016,7 @@ class DudExecutor:
         start = time.monotonic()
         try:
             with self._lock:
+                self._ensure_session()
                 result = self._with_recovery(
                     lambda: self._session.python(
                         _HOST_PRELUDE + code,
@@ -1213,6 +1246,7 @@ class DudExecutor:
             exports = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items())
             script = exports + script
         with self._lock:
+            self._ensure_session()
             result = self._with_recovery(
                 lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
             )
@@ -1244,6 +1278,8 @@ class DudExecutor:
         half — retrying the diff on the recovered guest would report
         success for a call whose fs effects silently vanished."""
         with self._lock:
+            if self._session is None:
+                return None  # no guest yet, so nothing it wrote
             try:
                 d = self._session.diff(rebase=True)
             except _lost_exc() as exc:
@@ -1276,6 +1312,10 @@ class DudExecutor:
         (or affinity-resumes) the same tree itself — no retry on top,
         or the wholesale push would run twice."""
         with self._lock:
+            if self._session is None:
+                # No guest yet: the boot pushes the tree as it is then,
+                # host writes made before it included.
+                return
             try:
                 self._push_tree()
             except _lost_exc():
@@ -1286,7 +1326,7 @@ class DudExecutor:
     # -- internals ---------------------------------------------------------
 
     def _require_ctx(self) -> ExecutionContext:
-        if self._ctx is None or self._session is None:
+        if self._ctx is None:
             raise RuntimeError("DudExecutor is not open (Workspace calls open())")
         return self._ctx
 

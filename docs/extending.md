@@ -252,9 +252,10 @@ next regardless.
 
 **`warm()`** *(optional)* — start now whatever the executor would
 otherwise start at its first execution. `LocalExecutor` starts its
-session worker lazily under process/kernel isolation, so opening a
-workspace costs no process; `warm()` starts it ahead of the first
-`run_python`. `Runtime.warm` calls it where it is defined and does
+session worker lazily under process/kernel isolation, and
+`DudExecutor` boots its guest lazily, so opening a workspace costs no
+process and no machine; `warm()` starts either ahead of the first
+execution. `Runtime.warm` calls it where it is defined and does
 nothing where it is not. It must be idempotent and safe to call from
 any thread.
 

@@ -63,6 +63,7 @@ def test_a_registered_verb_ferries_with_no_executor_edit(ws):
 
 def test_the_ferry_maps_paths_and_leaves_opaque_values_alone(ws):
     _register(ws)
+    ws.runtime.warm()  # the guest's own path exists once the guest does
     guest = ws.runtime.executor._work
     r = ws.terminal(f"ws-demo {guest}/a.txt -m {guest}/msg")
     assert r.exit_code == 0, r.stdout
