@@ -478,7 +478,7 @@ def _commit(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
             return _usage_error(
                 "commit takes the staged set only (no pathspec; try: -m MSG)."
             )
-    branch = git.status().branch
+    branch = git.branch
     commit, files = git.commit(message)
     subject = message if message is not None else "ws-git"
     n = len(files)
@@ -928,8 +928,7 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if rest == ["--abort"]:
         source, commit = git.abort_merge()
         ctx.stdout.write(
-            f"[{git.status().branch}] aborted merge of {source}, "
-            f"restored to {commit[:7]}\n"
+            f"[{git.branch}] aborted merge of {source}, restored to {commit[:7]}\n"
         )
         return None
     if len(rest) != 1 or rest[0].startswith("-"):
@@ -966,7 +965,7 @@ def _merged(
         ctx.stdout.write(f"CONFLICT (content): Merge conflict in {_show(ws, path)}\n")
     n = len(out.auto_merged) + len(out.conflicts)
     ctx.stdout.write(
-        f"[{git.status().branch} {out.commit[:7]}] merge {source} "
+        f"[{git.branch} {out.commit[:7]}] merge {source} "
         f"({n} file{'' if n == 1 else 's'})\n"
     )
     if out.conflicts:
@@ -1046,7 +1045,7 @@ def _applied(
         ctx.stdout.write(f"CONFLICT (content): Merge conflict in {_show(ws, path)}\n")
     n = len(out.auto_merged) + len(out.conflicts)
     ctx.stdout.write(
-        f"[{git.status().branch} {out.commit[:7]}] {verb} {what} "
+        f"[{git.branch} {out.commit[:7]}] {verb} {what} "
         f"({n} file{'' if n == 1 else 's'})\n"
     )
     if out.conflicts:

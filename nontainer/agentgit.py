@@ -449,6 +449,12 @@ class AgentGit:
         self._provider.kv[BLOB_KEY] = value
 
     @property
+    def branch(self) -> str:
+        """The session this git is over — what ``status`` names as the
+        branch, without the tree comparison ``status`` pays for."""
+        return self._provider.session
+
+    @property
     def head(self) -> str | None:
         """The agent's own head: the commit its last ``ws-git commit``
         made, or ``None`` before the first one. Not the store's head,
