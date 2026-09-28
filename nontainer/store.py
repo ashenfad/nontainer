@@ -1222,7 +1222,9 @@ class Store:
             # record landed. One that matches this call is that same
             # attempt and its commit is taken as this publish's; one
             # that does not is somebody else's leftover and is refused.
-            stranded = branch in set(self._branches())
+            # One that holds nothing yet died before committing, and is
+            # simply written.
+            stranded = self._branch_head(branch)[0] is not None
             resumed = (
                 self._resume_publication(branch, tag, commit_info) if stranded else None
             )
@@ -1872,17 +1874,22 @@ class Store:
     def _branch_head(self, branch: str) -> tuple[str | None, dict[str, Any] | None]:
         """The commit at a branch's head and the info it carries.
 
-        ``(None, None)`` when the store has no such branch or the
-        branch holds no commit. The existence check comes first
-        because opening a kvgit branch by an unknown name creates it,
-        and a reserved branch minted by a read is exactly what would
-        then block republishing that version.
+        ``(None, None)`` when the store has no such branch, or when the
+        branch holds nothing yet: a head with an empty tree and no info
+        is a branch created and never written — what a publish that
+        died between making its reserved branch and committing to it
+        leaves behind. Such a branch holds nobody's state, so it neither
+        blocks a retry nor needs anyone's provenance to be cleared.
         """
+        from kvgit.hamt import EMPTY_HASH
+
         with self._repo() as repo:
             if repo is None or branch not in repo.branches:
                 return None, None
-            commit = repo.branches[branch]
-            return commit, repo.get_commit(commit).info
+            commit = repo.get_commit(repo.branches[branch])
+            if commit.root == EMPTY_HASH and not commit.info:
+                return None, None
+            return commit.hash, commit.info
 
     def _clear_stranded_attempt(
         self, name: str, version: str, *, min_age: float
@@ -1906,9 +1913,9 @@ class Store:
         has_branch = branch in set(self._branches())
         if found is None and not has_branch:
             return False
-        _, head_info = self._branch_head(branch) if has_branch else (None, None)
+        head, head_info = self._branch_head(branch) if has_branch else (None, None)
         tag_blocks = found is not None and not _is_publish_attempt(found.info, expect)
-        branch_blocks = has_branch and not _is_publish_attempt(head_info, expect)
+        branch_blocks = head is not None and not _is_publish_attempt(head_info, expect)
         if tag_blocks or branch_blocks:
             blocking = ", ".join(
                 part
