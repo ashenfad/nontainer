@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.0 - 2026-09-28
 
 ### Breaking
 - **Requires kvgit 0.4.1 and monkeyfs 0.2.4.** nontainer is written
@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `provider.worktree` (with `provider.repo`) rather than
   `provider.staged`. A frozen provider — a workspace opened at a tag or
   a commit — reads a kvgit `Snapshot` and has no worktree.
+- **The provider protocol gains `working_diff(commit)`**: file-level
+  changes from a commit to the live working tree, uncommitted writes
+  included. The agent's git calls it unconditionally, so a provider of
+  your own needs it — one that cannot answer raises
+  `NotSupportedError`, as the `dir` and `agentfs` providers do (and as
+  they do for `files_at`). `KvgitProvider` answers it without reading
+  the tree.
 
 ### Added
 - **A store's kvgit data can live in PostgreSQL.**
@@ -55,11 +62,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ws.checkout(ref, paths=)` reads only the files it takes.
   - The dud executor tars the workspace from one `read_many` rather than
     a read per file.
-- **Providers gain `working_diff(commit)`**: file-level changes from a
-  commit to the live working tree, uncommitted writes included.
-  `KvgitProvider` answers it without reading the tree; `dir` and
-  `agentfs` raise `NotSupportedError`, as they do for `files_at`. A
-  provider written against the protocol needs the method.
 - **`files_at` / `working_files` views offer `get_many(paths)`**: the
   values of those paths, in one read.
 - **A `Store` holds its kvgit repository open until `close()`.** It used
