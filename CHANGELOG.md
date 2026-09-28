@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Breaking
-- **Requires kvgit 0.4.1 and monkeyfs 0.2.3.** nontainer is written
+- **Requires kvgit 0.4.1 and monkeyfs 0.2.4.** nontainer is written
   against kvgit's `Repo` / `Worktree` / `Snapshot` API; kvgit's `Staged`
   is gone.
 - **Upgrading a store is one-way. Back it up first.** kvgit 0.4 reads a
@@ -40,6 +40,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sessions)`, for a repository someone else owns and closes.
 
 ### Changed
+- **Bulk reads cost the change, not the tree.** Over a networked store
+  every separate read is a round trip, and several paths read a value
+  per file.
+  - The agent's git, both `ws.index` and the `ws-git` verbs, now finds
+    what changed from kvgit's structural diff, then reads only those
+    candidates, in one batched fetch per side. This covers `status`,
+    `commit`, `checkout`, `diff`, `show`, `stash`, `log -S` and the
+    merge check.
+  - `ws-git status` on a 200-file workspace went from ~406 store reads
+    to 13, and stays flat as the tree grows.
+  - An agno conversation loads its runs in one read, and an upsert
+    compares them in one.
+  - `ws.checkout(ref, paths=)` reads only the files it takes.
+  - The dud executor tars the workspace from one `read_many` rather than
+    a read per file.
+- **Providers gain `working_diff(commit)`**: file-level changes from a
+  commit to the live working tree, uncommitted writes included.
+  `KvgitProvider` answers it without reading the tree; `dir` and
+  `agentfs` raise `NotSupportedError`, as they do for `files_at`. A
+  provider written against the protocol needs the method.
+- **`files_at` / `working_files` views offer `get_many(paths)`**: the
+  values of those paths, in one read.
 - **A `Store` holds its kvgit repository open until `close()`.** It used
   to open the store afresh for every verb; now it opens it once and
   every session and verb shares it — one pool of connections to a

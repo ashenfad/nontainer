@@ -80,7 +80,7 @@ dependencies = [
     # 0.2.3: VirtualFS reads its metadata rows in one get_many when the
     # state offers one, so rebuilding a listing over a kvgit worktree is
     # one read rather than one per file.
-    "monkeyfs>=0.2.3",
+    "monkeyfs>=0.2.4",
     # 0.3.0: process workers come from a forkserver broker instead of
     # forking the embedding process — the arrangement executor.py's
     # pooling and fork-hazard notes describe

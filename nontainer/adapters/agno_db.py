@@ -70,6 +70,37 @@ def _kv(ws: Workspace) -> Any:
     return ws.provider.kv
 
 
+def _get_many(kv: Any, keys: list[str]) -> dict[str, Any]:
+    """The values of those ``keys`` that ``kv`` holds.
+
+    One batched read where the mapping offers ``get_many`` (a kvgit
+    worktree or snapshot does), so a conversation of a hundred runs is
+    one round trip to the store rather than a hundred; one read per key
+    where it does not.
+    """
+    if not keys:
+        return {}
+    batch = getattr(kv, "get_many", None)
+    if batch is not None:
+        return dict(batch(*keys))
+    found = {}
+    for key in keys:
+        value = kv.get(key)
+        if value is not None:
+            found[key] = value
+    return found
+
+
+def _runs_from(found: dict[str, Any], run_ids: Any) -> list[dict[str, Any]]:
+    """The runs ``found`` holds, in ``run_ids`` order, as fresh dicts."""
+    runs = []
+    for rid in run_ids:
+        run = found.get(RUN_PREFIX + str(rid))
+        if isinstance(run, dict):
+            runs.append(dict(run))
+    return runs
+
+
 def _commit_framework(ws: Workspace, info: dict) -> str | None:
     """Commit the framework's own write, tolerantly.
 
@@ -237,13 +268,8 @@ class KvgitSessionDb(JsonDb):
         return dict(record) if isinstance(record, dict) else None
 
     def _read_runs(self, run_ids: list[str]) -> list[dict[str, Any]]:
-        kv = _kv(self._ws)
-        runs = []
-        for rid in run_ids:
-            run = kv.get(RUN_PREFIX + rid)
-            if isinstance(run, dict):
-                runs.append(dict(run))
-        return runs
+        found = _get_many(_kv(self._ws), [RUN_PREFIX + rid for rid in run_ids])
+        return _runs_from(found, run_ids)
 
     def _assembled(self, record: dict[str, Any]) -> dict[str, Any]:
         """The session dict agno expects: the record with its
@@ -423,10 +449,11 @@ class KvgitSessionDb(JsonDb):
             run_ids = known[:kept] + incoming
 
             changed = False
-            for run in runs:
-                key = RUN_PREFIX + str(run["run_id"])
-                if kv.get(key) != run:
-                    kv[key] = run
+            keys = [RUN_PREFIX + str(run["run_id"]) for run in runs]
+            held = _get_many(kv, keys)
+            for key, run in zip(keys, runs):
+                if held.get(key) != run:
+                    kv[key] = held[key] = run
                     changed = True
 
             now = int(time.time())
@@ -703,6 +730,14 @@ class KvgitStoreDb(JsonDb):
             return None
         return repo.snapshot(branch=branch).get(key)
 
+    def _peek_many(self, branch: str, keys: list[str]) -> dict[str, Any]:
+        """:meth:`_peek` for several keys at once: one snapshot of the
+        branch head, read in one batch."""
+        repo = self._kvgit()
+        if not keys or branch not in repo.branches:
+            return {}
+        return _get_many(repo.snapshot(branch=branch), keys)
+
     def _exists(self, session_id: str) -> bool:
         return session_id in self._branches()
 
@@ -786,12 +821,9 @@ class KvgitStoreDb(JsonDb):
         found: list[dict[str, Any]] = []
         for branch, record in matched:
             data = {k: v for k, v in record.items() if k != "run_ids"}
-            runs = []
-            for rid in record.get("run_ids") or []:
-                run = self._peek(branch, RUN_PREFIX + str(rid))
-                if isinstance(run, dict):
-                    runs.append(dict(run))
-            data["runs"] = runs or None
+            run_ids = record.get("run_ids") or []
+            held = self._peek_many(branch, [RUN_PREFIX + str(rid) for rid in run_ids])
+            data["runs"] = _runs_from(held, run_ids) or None
             found.append(data)
         if not deserialize:
             return found, total
