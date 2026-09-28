@@ -41,6 +41,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import posixpath
+from collections.abc import Iterable
 from typing import Any
 
 #: Reserved store key holding this session's view, when it has one. Not
@@ -51,6 +52,27 @@ VIEW_KEY = "__ws_view__"
 
 #: Layout version of the record.
 VIEW_VERSION = 1
+
+
+def read_many(fs: Any, paths: Iterable[str]) -> dict[str, bytes]:
+    """Whole files by path, for those of ``paths`` that are files.
+
+    One batched read where ``fs`` offers ``read_many`` (monkeyfs's
+    ``VirtualFS`` answers it with one fetch from the store), one
+    ``read`` per path where it does not. A path that is not a file is
+    left out rather than raised on.
+    """
+    paths = list(paths)
+    batch = getattr(fs, "read_many", None)
+    if batch is not None:
+        return batch(paths)
+    found: dict[str, bytes] = {}
+    for path in paths:
+        try:
+            found[path] = fs.read(path)
+        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            continue
+    return found
 
 
 def _record(raw: Any) -> dict | None:
@@ -327,6 +349,11 @@ class ViewFS:
         if not self._reachable(path):
             self._refuse_missing(path, "read")
         return self._fs.read(path, *args, **kwargs)
+
+    def read_many(self, paths: Iterable[str]) -> dict[str, bytes]:
+        # What the view hides is left out, as a path that is not a file
+        # is: a batch read is no way around the view.
+        return read_many(self._fs, [path for path in paths if self._reachable(path)])
 
     def exists(self, path: str) -> bool:
         return self._reachable(path) and self._fs.exists(path)
@@ -675,6 +702,16 @@ class SubtreeFS:
 
     def read(self, path: str, *args: Any, **kwargs: Any) -> Any:
         return self._fs.read(self._under(path), *args, **kwargs)
+
+    def read_many(self, paths: Iterable[str]) -> dict[str, bytes]:
+        named: dict[str, list[str]] = {}
+        for path in paths:
+            named.setdefault(self._under(path), []).append(path)
+        return {
+            path: data
+            for under, data in read_many(self._fs, list(named)).items()
+            for path in named[under]
+        }
 
     def open(self, path: str, mode: str = "r", **kwargs: Any) -> Any:
         return self._fs.open(self._under(path), mode, **kwargs)

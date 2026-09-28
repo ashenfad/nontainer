@@ -89,6 +89,7 @@ from typing import Any
 
 from .agentgit import HASH_RE, MERGE_TOOL, PICK_TOOL, AgentGit
 from .errors import CommitNotFoundError, NotSupportedError, WorkspaceError
+from .protocol import read_files
 from .wsverb import FerrySpec, abspath, tag
 
 _VERBS = (
@@ -808,7 +809,7 @@ def _stash_push(git: AgentGit, ws: Any, ctx: Any, args: list[str]) -> Any:
 
     taken = (max(n for n, _ in _stash_names(ws)) + 1) if _stash_names(ws) else 0
     branch = f"{ws.session}.stash-{taken}"
-    live = git.working_files()
+    live = read_files(git.working_files(), modified)
     files = {path: live.get(path) for path in modified}
     child = ws.fork(branch, at=head, inherit="fresh")
     try:
@@ -868,11 +869,11 @@ def _stash_show(git: AgentGit, ws: Any, ctx: Any, word: str | None) -> Any:
     """What one stash holds, as a diff against the agent's head."""
     _, branch, _ = _stash_pick(ws, word)
     provider = ws._provider
-    new = provider.files_at(provider.branch_head(branch))
+    stashed = provider.branch_head(branch)
+    new = provider.files_at(stashed)
     old = git.head_files()
-    changed = sorted(
-        path for path in set(old) | set(new) if old.get(path) != new.get(path)
-    )
+    head = git.head
+    changed = sorted(provider.diff(head, stashed).paths if head else new)
     body = _render_diff(ws, changed, old, new)
     if body:
         ctx.stdout.write("\n".join(body) + "\n")
@@ -1293,16 +1294,15 @@ def _show_tagged(ws: Any, ctx: Any, name: str, commit: str) -> Any:
         lines.append(f"    {message}")
     lines.append("")
     ctx.stdout.write("\n".join(lines) + "\n")
-    body = _render_diff(ws, sorted(set(old) | set(new)), old, new)
+    changed = ws._provider.diff(base, entry.id).paths if base else new
+    body = _render_diff(ws, sorted(changed), old, new)
     if body:
         ctx.stdout.write("\n".join(body) + "\n")
-    _show_tag_tail(ws, ctx, new, commit)
+    _show_tag_tail(ws, ctx, entry.id, commit)
     return None
 
 
-def _show_tag_tail(
-    ws: Any, ctx: Any, committed: Mapping[str, Any], commit: str
-) -> None:
+def _show_tag_tail(ws: Any, ctx: Any, committed: str, commit: str) -> None:
     """What the tagged tree holds that its last ws-git commit does not.
 
     Nothing at all where the two trees agree, which is every tag taken
@@ -1310,15 +1310,13 @@ def _show_tag_tail(
     tagged state is never shown a commit and left to assume it is the
     whole of it.
     """
-    tagged = ws._provider.files_at(commit)
-    changed = sorted(
-        path
-        for path in set(committed) | set(tagged)
-        if committed.get(path) != tagged.get(path)
-    )
+    provider = ws._provider
+    changed = sorted(provider.diff(committed, commit).paths)
     if not changed:
         return
-    body = _render_diff(ws, changed, committed, tagged)
+    body = _render_diff(
+        ws, changed, provider.files_at(committed), provider.files_at(commit)
+    )
     if not body:
         return
     ctx.stdout.write("changes at the tag after its last ws-git commit:\n")
@@ -1338,6 +1336,8 @@ def _render_diff(
 ):
     """Unified diff lines for these paths between two trees."""
     out: list[str] = []
+    old = read_files(old, paths)
+    new = read_files(new, paths)
     for path in paths:
         show = _show(ws, path)
         before = _decode(old.get(path)) if path in old else b""
@@ -1506,8 +1506,9 @@ def _diff_check(
     if paths:
         want = {p for p in want if _under_any(p, paths)}
     hits: list[str] = []
+    values = read_files(live, want)
     for path in sorted(want):
-        value = _decode(live.get(path))
+        value = _decode(values.get(path))
         if value is None:
             continue
         for lineno, line in enumerate(value.split(b"\n"), start=1):
@@ -1530,19 +1531,17 @@ def _diff_branch(
     delegate was sent to do, then what else it touched. The merge takes
     both — the grouping is what keeps the second from going unnoticed.
     """
-    from .views import VIEW_KEY, parse_seed
-
     provider = ws._provider
     theirs = tagged.commit if tagged is not None else git.source_commit(name)
     ours = git.head or provider.head
-    old = provider.files_at(ours)
-    new = provider.files_at(theirs)
-    changed = sorted(
-        path for path in set(old) | set(new) if old.get(path) != new.get(path)
-    )
+    change = provider.diff(ours, theirs)
+    changed = sorted(change.paths)
     if not changed:
         return None
-    seed = parse_seed(provider.key_at(theirs, VIEW_KEY))
+    # Read once for both groups below.
+    old = read_files(provider.files_at(ours), changed)
+    new = read_files(provider.files_at(theirs), changed)
+    seed = change.seed
     if not seed:
         body = _render_diff(ws, changed, old, new)
         if body:
@@ -1681,17 +1680,19 @@ def _pickaxe(provider: Any, walk: Any, needle: str):
             changed: Any = set(new)
         else:
             changed = provider.diff(parent, entry.id).paths
-        delta = sum(_occurrences(new, p, needle) for p in changed) - sum(
-            _occurrences(old, p, needle) for p in changed
+        after = read_files(new, changed)
+        before = read_files(old, changed)
+        delta = sum(_occurrences(after.get(p), needle) for p in changed) - sum(
+            _occurrences(before.get(p), needle) for p in changed
         )
         if delta:
             yield entry, ("+" if delta > 0 else "-")
 
 
-def _occurrences(files: Mapping[str, Any], path: str, needle: str) -> int:
-    """How many times ``needle`` occurs in one file of a tree. Absent
-    and undecodable both count none."""
-    raw = _decode(files.get(path)) if path in files else None
+def _occurrences(value: Any, needle: str) -> int:
+    """How many times ``needle`` occurs in one stored file value.
+    Absent (``None``) and undecodable both count none."""
+    raw = _decode(value)
     if raw is None:
         return 0
     try:

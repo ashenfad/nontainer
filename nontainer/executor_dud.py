@@ -84,6 +84,7 @@ from .executor import (
     _truncate,
     flatten_grants,
 )
+from .views import read_many
 from .workspace import PythonResult, TerminalResult
 
 #: The guest-side flattener dud calls to serialize rich ``ui`` values
@@ -1305,14 +1306,18 @@ class DudExecutor:
         buf = io.BytesIO()
         # Plain tar: gzip dominated reactivation ~4:1 at scale and buys
         # nothing on a local socket (guest extract auto-detects either).
+        # Every file in one batched read: over a networked store that
+        # is one round trip for the tree rather than one per file.
+        names = fs.list(base or "/", recursive=True)
+        contents = read_many(fs, [f"{base}/{rel}" for rel in names])
         with tarfile.open(fileobj=buf, mode="w") as tf:
-            for rel in fs.list(base or "/", recursive=True):
-                full = f"{base}/{rel}"
-                if fs.isfile(full):
-                    data = fs.read(full)
-                    info = tarfile.TarInfo(name=rel)
-                    info.size = len(data)
-                    tf.addfile(info, io.BytesIO(data))
+            for rel in names:
+                data = contents.get(f"{base}/{rel}")
+                if data is None:
+                    continue  # a directory: the files under it carry it
+                info = tarfile.TarInfo(name=rel)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
         self._session.push_tree(buf.getvalue())
         self._tree_stale = False
 

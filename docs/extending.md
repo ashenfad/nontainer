@@ -25,7 +25,7 @@ need to be: `Workspace` owns the single-writer invariant.
 ```
 session · caps · fs · kv · dirty · head · frozen · frozen_at
 commit / checkout / history / fork / discard / merge / apply / commit_at
-commit_keys / files_at / working_files / key_at
+commit_keys / files_at / working_files / working_diff / key_at
 branch_head / expand_commit
 tag / check_tag / tags / tag_info / delete_tag / at_tag / diff
 mount · close
@@ -65,7 +65,17 @@ needs to be readable rides along.
 session's files by workspace path — at a commit, and live with
 uncommitted writes included and uncommitted deletions excluded. Both
 are read views rather than copies: values are read on demand, so
-comparing two trees costs the blobs it actually reads.
+comparing two trees costs the blobs it actually reads. A view may also
+offer `get_many(paths)` — the values of those paths it holds, in one
+read — and the agent's git uses it where it has one, so a provider over
+a networked store can answer a whole diff in a round trip per side.
+
+**What changed, cheaply.** `diff(a, b)` is two commits' file-level
+changes and `working_diff(commit)` is one commit's against the working
+tree. The agent's git asks these rather than walking two views, so a
+provider that can find a change without reading every file — kvgit
+diffs its keysets structurally and reads only the candidates — makes
+`status`, `commit` and `checkout` cost the change and not the tree.
 
 **A provider holds no index.** The agent's git is metadata built over
 `commit_keys` and those two views, and `ws.index` owns it. That one

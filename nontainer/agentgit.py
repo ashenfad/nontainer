@@ -47,7 +47,8 @@ The substrate surface this needs is small and provider-shaped:
 ``caps``, ``kv`` (the blob, by ordinary key access), ``fs`` (working
 tree writes), ``files_at`` / ``working_files`` (a commit's files and
 the live ones), ``commit_keys`` (the one keyed-commit primitive),
-``diff``, ``history``, ``head``, ``dirty``. ``caps.index`` gates the
+``diff`` / ``working_diff`` (what changed, commit to commit and commit
+to tree), ``history``, ``head``, ``dirty``. ``caps.index`` gates the
 whole fiction; providers without it refuse verb by verb.
 """
 
@@ -65,7 +66,7 @@ from .errors import (
     NotSupportedError,
     WorkspaceError,
 )
-from .protocol import CommitInfo, WorkspaceStatus, expand_commit
+from .protocol import CommitInfo, WorkspaceStatus, expand_commit, read_files
 
 #: Reserved store key holding the agent's index and commit graph. Not a
 #: file key (the VFS prefixes its own), so no path can collide with it.
@@ -475,18 +476,13 @@ class AgentGit:
         status or sweeping one into a commit would report a file the
         session can neither read nor stage.
         """
-        live = self._provider.working_files()
         if head is None:
-            return self._visible(set(live))
+            return self._visible(set(self._provider.working_files()))
         if head == self._provider.head and not self._provider.dirty:
             # The agent's head IS the store's, with nothing pending:
             # the common clean case pays no tree walk.
             return set()
-        base = self._provider.files_at(head)
-        live_paths, base_paths = set(live), set(base)
-        modified = live_paths ^ base_paths
-        modified |= {p for p in live_paths & base_paths if live[p] != base[p]}
-        return self._visible(modified)
+        return self._visible(set(self._provider.working_diff(head).paths))
 
     def _visible(self, paths: set[str]) -> set[str]:
         """``paths`` less anything this session's view hides."""
@@ -507,7 +503,7 @@ class AgentGit:
         stored = blob["unresolved"]
         if not stored:
             return None, []
-        live = self._provider.working_files()
+        live = read_files(self._provider.working_files(), stored)
         unresolved = [p for p in stored if _has_markers(live.get(p))]
         if not unresolved:
             return None, []
@@ -661,8 +657,13 @@ class AgentGit:
 
         provider = self._provider
         fs = provider.fs
-        live = provider.working_files()
-        base = provider.files_at(head) if head is not None else {}
+        # Every value the commit reads, fetched up front: the tree for
+        # the paths it takes and the ones it leaves out, the head for
+        # the ones it puts back and the marked ones it leaves alone.
+        live_files = provider.working_files()
+        base_files = provider.files_at(head) if head is not None else {}
+        live = read_files(live_files, {*files, *reverted, *blob["unresolved"]})
+        base = read_files(base_files, {*reverted, *blob["unresolved"]})
         # What the working tree holds for the paths this commit leaves
         # out, so it can hold it again once the commit is made.
         pending = {path: live.get(path) for path in reverted}
@@ -670,7 +671,7 @@ class AgentGit:
         for path in reverted:
             if path in base:
                 _put(fs, path, base[path])
-            elif path in live:
+            elif path in live_files:
                 fs.remove(path)
         for path in files:
             if path in live:
@@ -1002,16 +1003,15 @@ class AgentGit:
             )
         if not is_agent_commit(entry.info):
             raise ValueError(_NOT_YOURS.format(commit=commit[:7]))
-        target = provider.files_at(commit)
-        live = provider.working_files()
+        change = provider.working_diff(commit)
         fs = provider.fs
-        gone = sorted(set(live) - set(target))
-        changed = sorted(
-            path for path in target if path not in live or live[path] != target[path]
-        )
+        gone = sorted(change.added)
+        changed = sorted(change.removed | change.modified)
         # Captured before the rewrite: if the commit below fails, this
         # is what the tree has to hold again.
+        live = read_files(provider.working_files(), [*gone, *changed])
         pending = {path: live.get(path) for path in (*gone, *changed)}
+        target = read_files(provider.files_at(commit), changed)
         for path in gone:
             fs.remove(path)
         for path in changed:
@@ -1083,12 +1083,7 @@ class AgentGit:
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"]
         if virtual is None:
             return ()
-        live = self._provider.files_at(head)
-        base = self._provider.files_at(virtual)
-        live_paths, base_paths = set(live), set(base)
-        modified = live_paths ^ base_paths
-        modified |= {p for p in live_paths & base_paths if live[p] != base[p]}
-        return tuple(sorted(modified))
+        return tuple(sorted(self._provider.diff(virtual, head).paths))
 
     def record_merge(
         self, source: str, commit: str, conflicts: Iterable[str] = ()

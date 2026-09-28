@@ -223,6 +223,9 @@ class DirProvider:
     def working_files(self) -> Any:
         raise self._unsupported("working_files")
 
+    def working_diff(self, commit: str) -> Any:
+        raise self._unsupported("working_diff")
+
     # -- tags: unsupported ---------------------------------------------
 
     def tag(

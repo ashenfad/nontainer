@@ -66,6 +66,19 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*$")
 SHORT_ID_RE = re.compile(r"[0-9a-f]{7,39}")
 
 
+def read_files(files: Mapping[str, Any], paths: Iterable[str]) -> dict[str, Any]:
+    """The values of those ``paths`` that ``files`` holds.
+
+    One batched read where the view offers ``get_many`` (the provider's
+    tree views do), one read per path where it does not — a plain dict
+    standing in for the empty tree, say.
+    """
+    batch = getattr(files, "get_many", None)
+    if batch is not None:
+        return batch(paths)
+    return {path: files[path] for path in paths if path in files}
+
+
 def expand_commit(commit: str, ids: "Iterable[str]", *, where: str) -> str:
     """A commit id typed short → the whole one it names among ``ids``.
 
@@ -654,6 +667,21 @@ class WorkspaceProvider(Protocol):
         """The live working tree's files, by workspace path (requires
         ``caps.index``) — uncommitted writes included, uncommitted
         deletions excluded."""
+        ...
+
+    def working_diff(self, commit: str) -> WorkspaceDiff:
+        """File-level changes from one commit to the live working tree
+        (requires ``caps.index``).
+
+        :meth:`diff` with the working tree — uncommitted writes and
+        deletions included — as the second side: ``added`` is in the
+        tree and not at ``commit``, ``removed`` the other way round, and
+        ``modified`` differs in content. A provider should make this
+        cost the change rather than the tree, which is why it is a
+        method and not a comparison of :meth:`files_at` against
+        :meth:`working_files`. ``seed`` is empty. Unknown commits raise
+        ``CommitNotFoundError``.
+        """
         ...
 
     def key_at(self, commit: str, key: str) -> Any:

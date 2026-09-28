@@ -210,6 +210,28 @@ class _FileView(Mapping):
     def __getitem__(self, path: str) -> Any:
         return self._handle.get(self._index[path])
 
+    def get_many(self, paths: Iterable[str]) -> dict[str, Any]:
+        """The values of those ``paths`` this tree holds, in one read.
+
+        What comparing or rendering many files at once should use: one
+        batched fetch from the store rather than one per path. Each
+        path's key is ENCODED rather than looked up, so this never lists
+        the tree: a few paths out of thousands cost those few reads.
+        """
+        vfs = self._provider.fs
+        keys: dict[str, list[str]] = {}
+        for path in paths:
+            # The VFS owns the path encoding, as it owns the decoding
+            # the path index uses. A content key cannot collide with a
+            # framework key under the same prefix (the metadata rows,
+            # the cwd): those are spelled in lowercase, which base32
+            # never produces.
+            keys.setdefault(vfs._encode_path(path), []).append(path)
+        if not keys:
+            return {}
+        found = self._handle.get_many(*keys)
+        return {path: value for key, value in found.items() for path in keys[key]}
+
     def __iter__(self) -> Iterator[str]:
         return iter(self._index)
 
@@ -238,6 +260,11 @@ class _Overlay(MutableMapping):
     @property
     def dirty(self) -> bool:
         return bool(self._updates or self._removed)
+
+    @property
+    def pending(self) -> set[str]:
+        """The keys written or deleted over the snapshot."""
+        return set(self._updates) | self._removed
 
     def discard(self) -> None:
         self._updates.clear()
@@ -797,6 +824,49 @@ class KvgitProvider:
         writes not committed yet, and excluding deletions not committed
         yet."""
         return _FileView(self, self._state)
+
+    def working_diff(self, commit: str) -> WorkspaceDiff:
+        """File-level changes from one commit to the live working tree.
+
+        What :meth:`diff` answers between two commits, with the working
+        tree — uncommitted writes and deletions included — as the second
+        side. The candidates are the keys the store's own diff names
+        between ``commit`` and this branch's head, plus the keys written
+        or deleted since that head; only those are read, in one batched
+        fetch per side, and a candidate is kept only if its bytes
+        differ. So asking what changed costs the change, not the tree.
+        """
+        from kvgit import UnknownCommitError
+
+        if self._wt is None:
+            head = self._state.snapshot.commit
+            pending = self._state.pending
+        else:
+            head = self._wt.head
+            status = self._wt.status()
+            pending = set(status.updated) | set(status.removed)
+        candidates = pending
+        if commit != head:
+            try:
+                raw = self._repo.diff(commit, head)
+            except UnknownCommitError as e:
+                raise CommitNotFoundError(str(e)) from None
+            candidates |= set(raw.added) | set(raw.removed) | set(raw.modified)
+        keys = self._file_keys(candidates)
+        if not keys:
+            return WorkspaceDiff(frozenset(), frozenset(), frozenset())
+        before = self._snapshot(commit).get_many(*keys)
+        after = self._state.get_many(*keys)
+        added, removed, modified = set(), set(), set()
+        for key, path in keys.items():
+            if key not in before:
+                if key in after:
+                    added.add(path)
+            elif key not in after:
+                removed.add(path)
+            elif before[key] != after[key]:
+                modified.add(path)
+        return WorkspaceDiff(frozenset(added), frozenset(removed), frozenset(modified))
 
     def key_at(self, commit: str, key: str) -> Any:
         """One store key's value at a commit, or ``None`` if absent.
@@ -1754,8 +1824,10 @@ class KvgitProvider:
             # A commit that cannot be opened cannot be compared; the
             # pointer diff is then the most this can honestly say.
             return frozenset(keys.values())
+        before = at_a.get_many(*keys)
+        after = at_b.get_many(*keys)
         return frozenset(
-            path for key, path in keys.items() if at_a.get(key) != at_b.get(key)
+            path for key, path in keys.items() if before.get(key) != after.get(key)
         )
 
     def _file_keys(self, keys: Iterable[str]) -> dict[str, str]:

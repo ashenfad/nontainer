@@ -73,6 +73,7 @@ from .protocol import (
     WorkspaceDiff,
     WorkspaceProvider,
     WorkspaceStatus,
+    read_files,
 )
 from .views import (
     VIEW_KEY,
@@ -2301,19 +2302,17 @@ class Workspace:
         """
         wanted = normalize_view(paths, self._root)
         source, files = self._take_source(ref)
-        taken: dict[str, Any] = {}
+        taken: set[str] = set()
         mirrored: list[str] = []
         for path in wanted:
-            under = {
-                p: v for p, v in files.items() if p == path or p.startswith(path + "/")
-            }
+            under = {p for p in files if p == path or p.startswith(path + "/")}
             if not under:
                 raise CommitNotFoundError(
                     f"nothing at {path!r} in {source} — a take makes a path "
                     "match the ref, and that ref holds no such file or "
                     "directory."
                 )
-            taken.update(under)
+            taken |= under
             if path not in files:
                 # the ref holds it as a directory, so its subtree is
                 # what the take is about, not just the files in it
@@ -2329,7 +2328,8 @@ class Workspace:
         # a file the view hides may not be dropped any more than it may
         # be overwritten.
         self._refuse_hidden(sorted(taken) + removed)
-        for path, value in sorted(taken.items()):
+        values = read_files(files, taken)
+        for path, value in sorted(values.items()):
             data = value if isinstance(value, bytes) else bytes(value)
             parent = posixpath.dirname(path)
             if parent not in ("", "/"):
