@@ -1370,6 +1370,7 @@ rt.cache_enabled -> bool
 rt.commands / rt.framework_commands   # the live mappings
 rt.stale -> bool ; rt.mark_stale() ; rt.sync_if_stale()
 rt.diff() -> StagedDiff | None
+rt.warm() -> None                     # start the session worker now
 rt.reap_idle(max_age: float) -> int   # close workers idle >= max_age
                                       # seconds; how many it closed
 rt.close() -> None
@@ -1394,13 +1395,26 @@ runtime keeps running. Closing it releases only its executor.
 belongs to the workspace, so that `ws.files.fs` and execution see the same
 tree.
 
+**The session worker starts on first use.** Under process/kernel
+isolation, `run_python` runs on a worker the runtime keeps for the
+workspace's life, and it starts with the first execution that needs
+it: not at open. A workspace opened to read files, serve a snapshot or
+list history never starts one. The sandbox and its policy are still
+built at open, so a bad configuration fails there. What moves to the
+first `run_python` is the worker's start: its latency, about 14ms with
+`preload_grants`, and any failure to start it. **`rt.warm()`** starts
+it now, for a host that knows code is coming (a chat session opening)
+and wants that first call to pay nothing. It is idempotent, and a
+no-op on a closed runtime and wherever there is nothing to start
+(in-process isolation, `DudExecutor`).
+
 **`rt.reap_idle(max_age)`** releases what a runtime holds warm and
 unused. On `LocalExecutor` under process/kernel isolation that is the
 resident view workers apps' handler dispatch keeps
 (`PythonConfig.warm_view_workers`): every one idle for at least
 `max_age` seconds is closed, and the next request for its view starts
 a fresh one. A worker mid-request is never touched, and neither is the
-session worker `run_python` runs on. It returns how many it closed,
+session worker `run_python` runs on, once started. It returns how many it closed,
 and 0 wherever there is nothing idle to release — in-process
 isolation, a static publication, a closed runtime, `DudExecutor` (one
 guest serves every call) and any executor that does not declare
@@ -1678,8 +1692,8 @@ class PythonConfig:
   copy-on-write instead of importing its own copy. It is the big lever on
   worker cost and moves both numbers at once — with `dataframes()` granted,
   a worker goes from ~176ms and ~77MB to ~14ms and ~33MB here. It applies to
-  **every** worker including the session worker each workspace holds for its
-  life, so across many open workspaces it moves more memory than
+  **every** worker including the session worker each workspace holds from its
+  first execution on, so across many open workspaces it moves more memory than
   `warm_view_workers` does.
 
   Off by default because preloading runs your grants' *import-time code in

@@ -84,6 +84,7 @@ def test_close_shuts_down_the_worker():
         KvgitProvider.open(None, session="iso-close"),
         python=PythonConfig(isolation="process"),
     )
+    w.run_python("1")  # the worker starts with the first execution
     proc = w._sandbox._process
     assert proc.is_alive()
     w.close()
@@ -310,3 +311,136 @@ def test_a_preloaded_worker_still_runs_granted_code():
         assert r.namespace["v"] == 9.0
     finally:
         ws.close()
+
+
+# -- the session worker starts on first use (#159) ---------------------------
+
+
+def _iso_ws(session):
+    return Workspace(
+        KvgitProvider.open(None, session=session),
+        python=PythonConfig(isolation="process"),
+    )
+
+
+def _worker(w):
+    return w._sandbox._process
+
+
+def test_opening_a_workspace_starts_no_worker():
+    w = _iso_ws("lazy-open")
+    try:
+        assert _worker(w) is None
+        w.files.write("a.txt", b"a")
+        w.commit()
+        assert w.files.read("a.txt") == b"a"
+        assert _worker(w) is None
+    finally:
+        w.close()
+
+
+def test_the_first_execution_starts_the_worker_and_later_ones_reuse_it():
+    w = _iso_ws("lazy-first")
+    try:
+        assert w.run_python("x = 1 + 1\nx").error is None
+        first = _worker(w)
+        assert first is not None and first.is_alive()
+        w.run_python("2")
+        assert _worker(w) is first
+    finally:
+        w.close()
+
+
+def test_shell_work_alone_starts_no_worker():
+    w = _iso_ws("lazy-shell")
+    try:
+        assert w.terminal("echo hi > greet.txt; cat greet.txt").stdout.strip() == "hi"
+        assert _worker(w) is None
+    finally:
+        w.close()
+
+
+def test_a_frozen_snapshot_starts_no_worker_until_it_runs_code(tmp_path):
+    from nontainer import Store
+
+    st = Store(tmp_path)
+    cfg = PythonConfig(isolation="process")
+    ws = st.open("a", python=cfg)
+    ws.files.write("x.txt", b"x")
+    ws.commit()
+    st.tags.add(ws, "t1")
+    frozen = st.tags.at("t1", python=cfg)
+    try:
+        assert frozen.frozen
+        assert frozen.files.read("x.txt") == b"x"
+        assert _worker(frozen) is None
+        assert _worker(ws) is None
+        assert frozen.run_python("open('x.txt').read()").error is None
+        assert _worker(frozen) is not None
+    finally:
+        frozen.close()
+        ws.close()
+        st.close()
+
+
+def test_warm_starts_the_worker_once():
+    w = _iso_ws("lazy-warm")
+    try:
+        w.runtime.warm()
+        started = _worker(w)
+        assert started is not None and started.is_alive()
+        w.runtime.warm()
+        w.run_python("1")
+        assert _worker(w) is started
+    finally:
+        w.close()
+
+
+def test_closing_without_executing_is_clean_and_warm_after_close_does_nothing():
+    w = _iso_ws("lazy-close")
+    w.close()
+    w.runtime.warm()
+    assert _worker(w) is None
+
+
+def test_racing_starts_make_one_worker():
+    """Several threads reaching the not-yet-started worker at once —
+    the start is what races, so that is what they call. (Executions on
+    the session worker are serialized by the workspace lock; only view
+    calls run concurrently, each on a sandbox of its own.)"""
+    import threading
+
+    w = _iso_ws("lazy-race")
+    started: list = []
+    errors: list = []
+    gate = threading.Barrier(6)
+
+    def first_call():
+        try:
+            gate.wait()
+            w.runtime.warm()
+            started.append(_worker(w))
+        except Exception as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=first_call) for _ in range(6)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+        assert errors == []
+        assert len({id(p) for p in started}) == 1
+        assert w.run_python("1").error is None
+        assert _worker(w) is started[0]
+    finally:
+        w.close()
+
+
+def test_in_process_isolation_has_nothing_to_warm():
+    w = Workspace(KvgitProvider.open(None, session="lazy-none"))
+    try:
+        w.runtime.warm()
+        assert w.run_python("1 + 1").error is None
+    finally:
+        w.close()

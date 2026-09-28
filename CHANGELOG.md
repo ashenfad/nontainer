@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- **Opening a workspace starts no worker** (#159). Under `isolation="process"` or `"kernel"`, the session worker that `run_python` runs on now starts with the first execution that needs it, not at open.
+  - A workspace opened to read files, serve a frozen snapshot, list history or run shell commands never starts one. In the issue's repro, opening a session and a tagged snapshot went from 4 processes to none.
+  - The sandbox and its policy are still built at open, so a bad configuration fails there as before.
+  - **What moves to the first `run_python`** is the worker's start-up latency (about 14ms with `preload_grants`), and any failure to start the worker. A host that relied on `open()` to surface a broken worker now sees that failure on the first execution.
+
 ### Added
+- **`ws.runtime.warm()`** starts the session worker now, for a host that wants the first `run_python` to pay no start-up cost, such as a chat session opening. It is idempotent, and a no-op where there is nothing to start (in-process isolation, `DudExecutor`, a closed runtime). Executors may define `warm()`, and `Runtime.warm` calls it where it exists.
 - **`test_app(action_timeout_ms=)`**: how long a `click`, `type`,
   `select` or `read` waits for its element before failing (default
   5000, as before). It sits beside `load_timeout_ms` and
