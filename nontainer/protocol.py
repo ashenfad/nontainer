@@ -994,12 +994,18 @@ class Executor(Protocol):
     # -- lifecycle -------------------------------------------------------
 
     def open(self, context: ExecutionContext) -> None:
-        """Bind to a workspace's state and start any resident machinery
-        (LocalExecutor: build the default sandbox, fork the isolation
-        worker; a VM executor: boot/resume and materialize the tree).
+        """Bind to a workspace's state and prepare what execution will
+        need. LocalExecutor builds the default sandbox and its policy
+        here, so a bad configuration fails at open; its isolation worker
+        starts with the first execution. DudExecutor's guest likewise
+        boots, or resumes, and receives the tree on first use. The
+        optional ``warm()`` member starts either early (``Runtime.warm``
+        calls it where it exists). An executor may instead
+        start eagerly here when it has nothing to gain by waiting.
 
         Called once, by ``Runtime.__init__``, as its LAST step — so no
-        construction failure after this point can orphan a worker. A
+        construction failure after this point can orphan whatever it
+        does start. A
         workspace builds one runtime for itself, and a fork or a frozen
         open builds another for the workspace it returns. Not
         re-entrant."""
