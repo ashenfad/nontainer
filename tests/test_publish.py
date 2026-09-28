@@ -1011,6 +1011,52 @@ def test_unpublish_clears_a_stranded_branch_whose_tag_never_landed(
     ws.close()
 
 
+def _publication_commit_dies(monkeypatch):
+    """Die on the publication branch's commit: the reserved branch is
+    made, and nothing is written on it."""
+    from kvgit import Worktree
+
+    real = Worktree.commit
+
+    def dying(self, *args, **kwargs):
+        if self.branch.startswith("@store/pub/"):
+            raise RuntimeError("the machine went away before the commit")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Worktree, "commit", dying)
+
+
+def test_a_publish_that_died_before_committing_is_simply_retried(tmp_path, monkeypatch):
+    """A reserved branch that holds nothing yet is nobody's state: the
+    retry writes on it rather than refusing it as a leftover."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _publication_commit_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", version="v1")
+    monkeypatch.undo()
+    assert "@store/pub/scoreboard/v1" in store._branches()
+
+    version = store.publish(ws, "scoreboard", version="v1")
+    assert version.open().files.read("app/index.html") == b"<h1>scores</h1>"
+    ws.close()
+
+
+def test_unpublish_clears_a_branch_that_died_before_committing(tmp_path, monkeypatch):
+    """Nothing on the branch carries a publish's provenance, and nothing
+    has to: an empty branch is cleared without it."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    _publication_commit_dies(monkeypatch)
+    with pytest.raises(RuntimeError):
+        store.publish(ws, "scoreboard", version="v1")
+    monkeypatch.undo()
+
+    store.unpublish("scoreboard", "v1", min_age=0)
+    assert "@store/pub/scoreboard/v1" not in store._branches()
+    ws.close()
+
+
 def test_unpublish_refuses_what_is_not_there(tmp_path):
     store = Store(tmp_path)
     ws = seeded(store)

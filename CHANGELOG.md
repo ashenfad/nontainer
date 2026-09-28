@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `provider.staged`. A frozen provider — a workspace opened at a tag or
   a commit — reads a kvgit `Snapshot` and has no worktree.
 
+### Fixed
+- **A publish that died before committing no longer strands its
+  version.** The reserved branch is made before the commit, so a crash
+  in between left an empty branch: a retry refused it as another
+  attempt's leftover, and `unpublish` refused it for carrying no
+  publish provenance, so that version could be neither published nor
+  cleared. An empty branch holds nobody's state; a retry now writes on
+  it and `unpublish` clears it.
+
 ### Changed
 - **Merging a branch this session already contains writes nothing.** A
   merge whose source is already in this session's history returns the
