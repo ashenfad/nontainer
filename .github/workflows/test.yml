@@ -119,6 +119,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev,apps,agno,mcp,postgres]"
 
+    # The app tests publish to the store and serve from it, and they run
+    # only with a browser: without one they skip, and the store's
+    # publication paths would go untested here.
+    - name: Install Playwright browser
+      run: python -m playwright install --with-deps chromium
+
     - name: Run the whole suite on Postgres
       run: |
         pytest tests/ -q
