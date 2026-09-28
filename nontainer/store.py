@@ -898,10 +898,11 @@ class Store:
         sweep.
 
         This is a store-level operation, not a live-session one: close
-        any open :class:`Workspace` on these sessions first (a kvgit
-        store handle pins its branch). It does not touch anything a
-        caller keeps *beside* the workspace store (an app's own db
-        files, transcripts) — that bookkeeping is the caller's.
+        any open :class:`Workspace` on these sessions first. Nothing
+        stops a delete under an open one, and that workspace's next
+        commit then fails — its branch is gone. It does not touch
+        anything a caller keeps *beside* the workspace store (an app's
+        own db files, transcripts) — that bookkeeping is the caller's.
         """
         self._require_own_layout("delete")
         names = {sessions} if isinstance(sessions, str) else set(sessions)
