@@ -1480,7 +1480,12 @@ code is the session's `PythonConfig`: the grants, the isolation rung,
 the timeout and tick budget, `warm_view_workers`, `preload_grants`.
 `isolation="kernel"` on a platform that cannot apply the kernel
 mechanisms raises sandtrap's `IsolationUnavailable` when the worker
-spawns, rather than running agent code with no kernel restrictions.
+spawns, rather than running agent code with no kernel restrictions;
+so does `isolation="process"` where there is no multiprocessing
+(Pyodide). The worker spawns with the first execution, so that is
+where the error arrives. A host that wants to know at open, to fall
+back to another rung say, calls `ws.runtime.warm()` right after
+opening, which spawns it then.
 
 ### `DudExecutor` — a real machine (the `[dud]` extra)
 
