@@ -42,7 +42,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agno.db.json import JsonDb
 from agno.session import AgentSession, Session
@@ -50,6 +50,9 @@ from agno.session import AgentSession, Session
 from ..errors import NotSupportedError, WorkspaceError
 from ..planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from ..workspace import Workspace
+
+if TYPE_CHECKING:
+    from ..store import Store
 
 # The session record's key is core's too: a fork rebinds that record to
 # the session it makes, so there is one name for it rather than two
@@ -658,19 +661,22 @@ class KvgitStoreDb(JsonDb):
 
     def __init__(
         self,
-        store: str | Path,
+        store: Store | str | Path,
         *,
         open: Callable[[str], Workspace],
         db_path: str | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(db_path=db_path, **kwargs)
-        # The same ``store`` the embedder passes to ``workspace()``; the
-        # kvgit store lives in its ``kvgit/`` subdirectory.
-        self._store = Path(store).expanduser() / "kvgit"
+        # The embedder's own ``Store``, so this db reads the very
+        # repository its workspaces write through — whatever backend
+        # that store keeps its data in. A path is taken as
+        # ``Store(path)``, which finds the backend the same way.
+        from ..store import Store
+
+        self._store = store if isinstance(store, Store) else Store(store)
         self._open = open
         self._view_kwargs: dict[str, Any] = {"db_path": db_path, **kwargs}
-        self._repo: Any = None
 
     def owns(self, workspace: Workspace) -> bool:
         """Whether this db commits the turns of ``workspace``: true when
@@ -681,14 +687,8 @@ class KvgitStoreDb(JsonDb):
     # -- the store -----------------------------------------------------
 
     def _kvgit(self) -> Any:
-        """The kvgit repository under the store, opened on first use."""
-        if self._repo is None:
-            from kvgit import Repo
-            from kvgit.kv.disk import Disk
-
-            self._store.mkdir(parents=True, exist_ok=True)
-            self._repo = Repo(Disk(str(self._store)))
-        return self._repo
+        """The store's kvgit repository, shared with its workspaces."""
+        return self._store.repo
 
     def _branches(self) -> list[str]:
         return list(self._kvgit().branches)

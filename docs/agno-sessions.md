@@ -232,8 +232,10 @@ as it was at that commit.
 A `KvgitSessionDb` is a view over one branch, which is the right
 building block and a narrower object than agno expects a db to be.
 `KvgitStoreDb` is the agno-shaped face over it: one db per kvgit
-store, one branch per session, built from the store path and the
-embedder's `open(session_id) -> Workspace`.
+store, one branch per session, built from the embedder's `Store` (or
+its path) and its `open(session_id) -> Workspace`. Given the `Store`,
+the db reads the repository that store's workspaces write through,
+whatever backend it is on.
 
 ```python
 from nontainer.adapters.agno_db import KvgitStoreDb

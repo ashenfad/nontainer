@@ -328,6 +328,7 @@ class KvgitProvider:
         *,
         session: str,
         frozen_at: str | None = None,
+        owns_repo: bool = True,
     ) -> None:
         """``handle`` is a kvgit ``Worktree`` on the session's branch or,
         for a frozen provider, a ``Snapshot`` of the commit it reads.
@@ -335,11 +336,14 @@ class KvgitProvider:
         the provider a snapshot: see :meth:`at_tag`. Only a frozen
         provider takes one — a provider on a branch head never is.
 
-        The provider owns ``repo`` from here: :meth:`close` closes it.
+        ``owns_repo`` says whether :meth:`close` closes ``repo``. A
+        provider opened on its own owns the repository it opened; one a
+        ``Store`` opens borrows the store's, which the store closes.
         """
         _validate_branch(session)
         self._session = session
         self._repo = repo
+        self._owns_repo = owns_repo
         self._frozen_at = frozen_at
         self._wt: Any | None = None
         self._state: Any
@@ -409,6 +413,21 @@ class KvgitProvider:
         return cls(repo, worktree, session=session)
 
     @classmethod
+    def on(cls, repo: Any, session: str) -> "KvgitProvider":
+        """A provider on ``session``'s branch of a repository someone
+        else owns — a ``Store``'s — created empty if it is new. Closing
+        the provider leaves the repository open."""
+        _validate_branch(session)
+        worktree = repo.worktree(session, create=True)
+        return cls(repo, worktree, session=session, owns_repo=False)
+
+    def _take_repo(self) -> None:
+        """Make this provider the repository's owner, so closing it
+        closes the repository: for a provider whose store was built for
+        it alone and goes out of scope as soon as it is opened."""
+        self._owns_repo = True
+
+    @classmethod
     def delete(
         cls, path: str | Path, sessions: Iterable[str], *, min_age: float = 3600
     ) -> None:
@@ -447,13 +466,24 @@ class KvgitProvider:
         from kvgit import Repo
         from kvgit.kv.disk import Disk
 
-        requested = set(sessions)
-        if not requested:
+        if not set(sessions):
             return  # nothing asked: don't touch the store
         p = Path(path).expanduser()
         if not p.is_dir():
             return  # never-materialized (or non-kvgit) store: nothing here
+        repo = Repo(Disk(str(p)))
+        try:
+            cls.delete_in(repo, sessions, min_age=min_age)
+        finally:
+            repo.close()
 
+    @staticmethod
+    def delete_in(repo: Any, sessions: Iterable[str], *, min_age: float = 3600) -> None:
+        """:meth:`delete`, on a repository already open: the named
+        branches, their session tags, then one sweep."""
+        requested = set(sessions)
+        if not requested:
+            return
         # Legacy cleanup: stores that ran the old code minted a hidden
         # ``__void__`` anchor branch that pinned a dead session's entire
         # history (create_branch forks from the current commit), silently
@@ -462,19 +492,15 @@ class KvgitProvider:
         # delete.
         names = requested | {"__void__"}
         prefixes = tuple(f"{s}/" for s in requested)
-        repo = Repo(Disk(str(p)))
-        try:
-            for tag in [t for t in repo.tags if t.startswith(prefixes)]:
-                repo.tags.delete(tag)
-            # Missing names (including __void__ on stores that never had
-            # one) are skipped, and a dir that isn't a kvgit store has no
-            # branches to match, so the old tolerance is preserved.
-            for name in names:
-                if name in repo.branches:
-                    repo.branches.delete(name)
-            repo.gc(min_age=min_age)
-        finally:
-            repo.close()
+        for tag in [t for t in repo.tags if t.startswith(prefixes)]:
+            repo.tags.delete(tag)
+        # Missing names (including __void__ on stores that never had one)
+        # are skipped, and a store with no kvgit data has no branches to
+        # match, so the old tolerance is preserved.
+        for name in names:
+            if name in repo.branches:
+                repo.branches.delete(name)
+        repo.gc(min_age=min_age)
 
     # -- identity ------------------------------------------------------
 
@@ -739,7 +765,9 @@ class KvgitProvider:
                 self._repo.branches.create(name, at=at)
             except UnknownCommitError as e:
                 raise CommitNotFoundError(at) from e
-        child = KvgitProvider(self._repo, self._repo.worktree(name), session=name)
+        child = KvgitProvider(
+            self._repo, self._repo.worktree(name), session=name, owns_repo=False
+        )
         if legacy_keys(child.kv):
             migrate_provider(child)
         return child
@@ -1052,7 +1080,7 @@ class KvgitProvider:
                 f"No such tag: {name!r} in scope {scope!r}"
             ) from None
         return KvgitProvider(
-            self._repo, snapshot, session=self._session, frozen_at=name
+            self._repo, snapshot, session=self._session, frozen_at=name, owns_repo=False
         )
 
     def diff(self, a: str, b: str) -> WorkspaceDiff:
@@ -1775,4 +1803,5 @@ class KvgitProvider:
         if self._closed:
             return
         self._closed = True
-        self._repo.close()
+        if self._owns_repo:
+            self._repo.close()

@@ -116,6 +116,23 @@ def test_the_toolkit_accepts_a_store_db_that_owns_its_workspace(registry, tmp_pa
 # -- listing -------------------------------------------------------------------
 
 
+def test_a_store_db_reads_the_backend_of_the_store_it_is_handed(tmp_path):
+    """Built from the embedder's Store, the db reads the repository that
+    store's workspaces write through, whatever backend it is on — not
+    a disk store it would find under the path."""
+    from kvgit.kv.memory import Memory
+
+    from nontainer import Store
+
+    st = Store(tmp_path / "store", kv=Memory())
+    with st.open("chat-1") as ws:
+        ws.files.write("a.txt", "A")
+        ws.commit()
+    db = KvgitStoreDb(st, open=st.open, db_path=str(tmp_path / "agno"))
+    assert db._exists("chat-1")
+    assert not (tmp_path / "store" / "kvgit").exists()
+
+
 def test_get_sessions_lists_every_branch_in_the_store(registry, tmp_path):
     db, ws1, agent1 = build(registry, tmp_path, "chat-1", user_id="ann")
     run_turn(agent1, write_turn("a.txt", "A"))

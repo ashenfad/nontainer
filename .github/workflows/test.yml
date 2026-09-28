@@ -82,3 +82,43 @@ jobs:
           print('agno', agno.__version__)"
     - name: Run the agno adapter tests
       run: python -m pytest tests/ -v -k agno
+
+  # The whole suite again with every Store keeping its kvgit data in
+  # PostgreSQL rather than on disk (tests/conftest.py gives each store
+  # path its own table). Tests of the on-disk layout itself are marked
+  # disk_only and skip here.
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NONTAINER_TEST_KV: postgres
+      NONTAINER_TEST_PG_DSN: host=localhost user=postgres password=postgres dbname=nontainer_test
+      NONTAINER_TEST_PG_URL: postgresql://postgres:postgres@localhost/nontainer_test
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev,apps,agno,mcp,postgres]"
+
+    - name: Run the whole suite on Postgres
+      run: |
+        pytest tests/ -q

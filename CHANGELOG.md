@@ -24,16 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `provider.staged`. A frozen provider — a workspace opened at a tag or
   a commit — reads a kvgit `Snapshot` and has no worktree.
 
-### Fixed
-- **A publish that died before committing no longer strands its
-  version.** The reserved branch is made before the commit, so a crash
-  in between left an empty branch: a retry refused it as another
-  attempt's leftover, and `unpublish` refused it for carrying no
-  publish provenance, so that version could be neither published nor
-  cleared. An empty branch holds nobody's state; a retry now writes on
-  it and `unpublish` clears it.
+### Added
+- **A store's kvgit data can live in PostgreSQL.**
+  `Store(path, kv="postgresql://...")`, or `NONTAINER_KV` in the
+  environment (`NONTAINER_KV_TABLE` names the table, default `kvgit`),
+  with the new `postgres` extra; `kv=` also takes any kvgit `KVStore`.
+  With neither, a store keeps its data on disk under `<path>/kvgit`, as
+  before. The publication registry stays a file under `path`.
+- **`Store.repo`**: the kvgit repository a store's sessions share.
+- **`KvgitStoreDb` takes the embedder's `Store`**, and then reads the
+  repository that store's workspaces write through, whatever its
+  backend. A path still works, and finds the backend the way
+  `Store(path)` does.
+- `KvgitProvider.on(repo, session)` and `KvgitProvider.delete_in(repo,
+  sessions)`, for a repository someone else owns and closes.
 
 ### Changed
+- **A `Store` holds its kvgit repository open until `close()`.** It used
+  to open the store afresh for every verb; now it opens it once and
+  every session and verb shares it — one pool of connections to a
+  networked backend. Closing a workspace leaves the store's repository
+  open; `store.close()` closes it (a store used again reopens it).
+  `nontainer.workspace(...)` hands its one-off store's backend to the
+  workspace it returns, so closing that workspace closes it.
 - **Merging a branch this session already contains writes nothing.** A
   merge whose source is already in this session's history returns the
   current head as its commit instead of adding an empty merge commit.
@@ -46,6 +59,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A listing reads every file's metadata in one request** (monkeyfs
   0.2.3), and a commit's reads no longer grow with how many files it
   writes or deletes (kvgit 0.4).
+
+### Fixed
+- **A publish that died before committing no longer strands its
+  version.** The reserved branch is made before the commit, so a crash
+  in between left an empty branch: a retry refused it as another
+  attempt's leftover, and `unpublish` refused it for carrying no
+  publish provenance, so that version could be neither published nor
+  cleared. An empty branch holds nobody's state; a retry now writes on
+  it and `unpublish` clears it.
 
 ## 0.7.11 - 2026-09-26
 

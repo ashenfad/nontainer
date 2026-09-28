@@ -26,7 +26,11 @@ from nontainer.store import _published_rows, _under
 
 
 def provider(tmp_path, session):
-    return KvgitProvider.open(tmp_path / "kvgit", session=session)
+    """A provider on ``session`` of the store at ``tmp_path``, owning the
+    repository its store opened (the store is built for it alone)."""
+    p = KvgitProvider.on(Store(tmp_path).repo, session)
+    p._take_repo()
+    return p
 
 
 def to_legacy(tmp_path, session, *, table=True, cwd=True, keep_slot=False):

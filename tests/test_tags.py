@@ -25,11 +25,11 @@ def kv_ws():
 
 def _store_tags(tmp_path):
     """Every tag in the store, as kvgit stores it (prefixes included)."""
-    from kvgit import Repo
-    from kvgit.kv.disk import Disk
-
-    with Repo(Disk(str(tmp_path / "kvgit"))) as repo:
-        return dict(repo.tags.items())
+    store = Store(tmp_path)
+    try:
+        return dict(store.repo.tags.items())
+    finally:
+        store.close()
 
 
 # -- round trip, both scopes -------------------------------------------------
@@ -589,6 +589,7 @@ def test_store_tags_list_info_matches_info_per_name(tmp_path):
     assert {name: info.id for name, info in described.items()} == store.tags.list()
 
 
+@pytest.mark.disk_only
 def test_store_tags_list_info_opens_the_backend_once(tmp_path, monkeypatch):
     store = Store(tmp_path)
     with store.open("author") as ws:
@@ -606,9 +607,13 @@ def test_store_tags_list_info_opens_the_backend_once(tmp_path, monkeypatch):
         return real(*args, **kwargs)
 
     monkeypatch.setattr(kvgit.kv.disk, "Disk", counting)
-    described = store.tags.list_info()
+    # A store opens its backend once and shares it, so a fresh store
+    # object is what shows the listing costs one open, not one per tag.
+    described = Store(tmp_path).tags.list_info()
 
     assert set(described) == {"v1", "v2", "v3"}
+    assert len(opens) == 1
+    store.tags.list_info()  # the first store's backend is already open
     assert len(opens) == 1
 
 
