@@ -35,7 +35,9 @@ def dir_ws(tmp_path):
 # kvgit data in PostgreSQL instead of on disk: one table per store path,
 # so two Store objects on one path share a store exactly as they share a
 # directory. NONTAINER_TEST_PG_DSN names the database (default
-# dbname=nontainer_test); it is dropped and recreated.
+# dbname=nontainer_test); it is dropped and recreated. Under pytest-xdist
+# each worker takes a database of its own (nontainer_test_gw0, ...): one
+# worker dropping a database the others are using would sever them.
 if os.environ.get("NONTAINER_TEST_KV") == "postgres":
     import sys
 
@@ -45,14 +47,33 @@ if os.environ.get("NONTAINER_TEST_KV") == "postgres":
 
     import nontainer.store  # noqa: F401 - loads the module patched below
 
-    _dsn = os.environ.get("NONTAINER_TEST_PG_DSN", "dbname=nontainer_test")
-    _dbname = psycopg.conninfo.conninfo_to_dict(_dsn)["dbname"]
-    _admin = psycopg.conninfo.make_conninfo(_dsn, dbname="postgres")
+    _base = os.environ.get("NONTAINER_TEST_PG_DSN", "dbname=nontainer_test")
+    _basename = psycopg.conninfo.conninfo_to_dict(_base)["dbname"]
+    _worker = os.environ.get("PYTEST_XDIST_WORKER")
+    _dbname = f"{_basename}_{_worker}" if _worker else _basename
+    _dsn = psycopg.conninfo.make_conninfo(_base, dbname=_dbname)
+    _admin = psycopg.conninfo.make_conninfo(_base, dbname="postgres")
     with psycopg.connect(_admin, autocommit=True) as _c:
         _c.execute(f'DROP DATABASE IF EXISTS "{_dbname}" WITH (FORCE)')
         _c.execute(f'CREATE DATABASE "{_dbname}"')
+        if _worker:
+            # NONTAINER_TEST_PG_URL still names the base database, and a
+            # test that opens it gives its table a name of its own, so
+            # the database only has to exist. Workers race to make it.
+            try:
+                _c.execute(f'CREATE DATABASE "{_basename}"')
+            except psycopg.errors.DuplicateDatabase:
+                pass
+            except psycopg.errors.UniqueViolation:
+                pass
+    # Several workers share the server's connection limit (100 by
+    # default), so each keeps its pool well under a share of it.
     _pool = ConnectionPool(
-        _dsn, min_size=2, max_size=32, kwargs={"autocommit": True}, open=True
+        _dsn,
+        min_size=2,
+        max_size=16 if _worker else 32,
+        kwargs={"autocommit": True},
+        open=True,
     )
 
     def _postgres_backend(path, create):

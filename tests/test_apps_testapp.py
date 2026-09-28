@@ -6,6 +6,12 @@ from nontainer import Workspace
 from nontainer.apps import enable_apps, render_test_app
 from nontainer.providers import KvgitProvider
 
+# The budget for an action or assert a test EXPECTS to fail — an element
+# that never appears, a predicate that never holds. The defaults (5s per
+# action, 2s per assert) are for pages that are slow to get there; a
+# miss is the same miss after half a second.
+MISS_MS = 500
+
 APP_HTML = """<!doctype html>
 <html><body>
 <h1 id="title">Scores</h1>
@@ -100,7 +106,7 @@ def test_run_flushes_the_request_log(app_ws):
 
 def test_assert_failure_fails_run(app_ws):
     ws, rt = app_ws
-    result = rt.test_app([{"assert": "1 === 2"}])
+    result = rt.test_app([{"assert": "1 === 2"}], assert_timeout_ms=MISS_MS)
     assert not result.ok
     assert result.results[0].error == "assertion is falsy"
 
@@ -194,7 +200,7 @@ def test_select_falls_back_to_visible_label(widget_ws):
 
 def test_select_reports_an_unmatched_option(widget_ws):
     ws, rt = widget_ws
-    result = rt.test_app([{"select": ["#make", "Rivian"]}])
+    result = rt.test_app([{"select": ["#make", "Rivian"]}], action_timeout_ms=MISS_MS)
     assert not result.ok
     assert "no option matching 'Rivian'" in result.results[0].error
 
@@ -886,7 +892,7 @@ def test_an_assert_still_retries_under_the_enforced_csp(chromium_available):
 def test_a_failing_assert_does_not_blame_the_app_for_csp(chromium_available):
     ws, rt = _csp_ws("csp8", b"<html><body><div id='x'>hi</div></body></html>")
     try:
-        result = rt.test_app([{"assert": "1 === 2"}])
+        result = rt.test_app([{"assert": "1 === 2"}], assert_timeout_ms=MISS_MS)
         assert not result.ok
         assert result.results[0].error == "assertion is falsy"
         assert not result.rejected
@@ -989,7 +995,9 @@ def test_a_failed_action_captures_the_page(chromium_available):
     happens -- the agent re-runs the whole test just to look."""
     ws, rt = _csp_ws("audit3", b"<html><body><div id='x'>hi</div></body></html>")
     try:
-        result = rt.test_app([{"click": "#nope"}, {"screenshot": True}])
+        result = rt.test_app(
+            [{"click": "#nope"}, {"screenshot": True}], action_timeout_ms=MISS_MS
+        )
         assert not result.ok
         assert result.screenshots, "no screenshot at the moment of failure"
         assert "page at failure:" in result.results[0].error
@@ -1005,7 +1013,7 @@ def test_a_selector_miss_names_what_is_present(chromium_available):
 <table><tr data-key="42"><td>x</td></tr></table></body></html>"""
     ws, rt = _csp_ws("audit4", body)
     try:
-        result = rt.test_app([{"click": "#reefresh"}])
+        result = rt.test_app([{"click": "#reefresh"}], action_timeout_ms=MISS_MS)
         error = result.results[0].error
         assert "#refresh" in error and "#title" in error
         assert '[data-key="42"]' in error
