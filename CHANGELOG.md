@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`test_app` takes a viewport of any size.** `viewport` accepts a new `"hd"` preset (1920×1080), a size as `"WIDTHxHEIGHT"`, or `{"width": W, "height": H}`, also sent as a JSON string, which is how models tend to send an object. The agno and MCP tools accept all of these. A page built to a fixed size, such as a slide or a 1920×1080 video stage, was cropped in every screenshot at the only sizes on offer.
+
+### Changed
+- **An unknown `viewport` is refused, not silently run at the desktop size.** The error lists the forms it accepts. A test at a size nobody asked for used to report as passing.
+
 ## 0.8.1 - 2026-09-28
 
 ### Changed

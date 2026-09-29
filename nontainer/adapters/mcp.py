@@ -290,11 +290,14 @@ def build_server(
         from .render import test_app_description
 
         @server.tool(name="test_app", description=test_app_description(workspace))
-        async def test_app(actions: list[dict], viewport: str = "desktop") -> list:
-            from ..apps.testapp import coerce_actions
+        async def test_app(
+            actions: list[dict], viewport: str | dict = "desktop"
+        ) -> list:
+            from ..apps.testapp import coerce_actions, coerce_viewport
 
             try:
                 actions = coerce_actions(actions)
+                viewport = coerce_viewport(viewport)
             except ValueError as e:
                 return [f"test_app failed: {e}"]
             # async + to_thread: Playwright's sync API refuses to run on

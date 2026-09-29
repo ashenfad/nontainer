@@ -566,7 +566,9 @@ Pass a list of actions, executed in order:
   {"read": "#selector"}           {"eval": "js expression"}
   {"assert": "js expression"}     (retries until truthy, ~2s)
   {"screenshot": true}            {"wait": ms}
-viewport: "desktop" | "tablet" | "mobile".
+viewport: "desktop" | "tablet" | "mobile" | "hd" (1920x1080), or a size,
+"WIDTHxHEIGHT". A fixed-size page (a slide, a video stage) needs a
+viewport that fits it, or every screenshot of it is cropped.
 
 The app is served under a path prefix: frontend code MUST use relative
 URLs (fetch('api/x'), never fetch('/api/x')). Prefer {"assert": ...}

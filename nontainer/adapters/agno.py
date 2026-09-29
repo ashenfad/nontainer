@@ -685,17 +685,19 @@ class WorkspaceTools(Toolkit):
             from ..apps import render_test_app
             from .render import test_app_description
 
-            # actions is annotated loose: models routinely send the list
-            # as a JSON STRING, and agno's pydantic layer would reject it
-            # on the annotation BEFORE coerce_actions gets its chance
+            # actions and viewport are annotated loose: models routinely
+            # send a list or an object as a JSON STRING, and agno's
+            # pydantic layer would reject it on the annotation BEFORE the
+            # coerce_* helpers get their chance
             def test_app(
-                actions: "list[dict] | str", viewport: str = "desktop"
+                actions: "list[dict] | str", viewport: "str | dict" = "desktop"
             ) -> ToolResult:
                 """Verify the app headlessly."""
-                from ..apps.testapp import coerce_actions
+                from ..apps.testapp import coerce_actions, coerce_viewport
 
                 try:
                     actions = coerce_actions(actions)
+                    viewport = coerce_viewport(viewport)
                 except ValueError as e:
                     return ToolResult(content=f"test_app failed: {e}")
                 with self._lock:

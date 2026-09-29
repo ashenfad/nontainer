@@ -807,6 +807,14 @@ Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"assert": js}`, `{"goto": "about.html"}`, `{"screenshot": true}`,
 `{"wait": ms}`.
 
+`viewport` is a preset (`"desktop"` 1280×800, `"tablet"`, `"mobile"`,
+`"hd"` 1920×1080), a size as `"WIDTHxHEIGHT"`, or `{"width": W,
+"height": H}` (a JSON string of one is accepted too; models send objects
+that way). Anything else is refused with the forms it accepts, rather
+than silently run at the desktop size. A page built to a fixed size (a
+slide, a video composition's 1920×1080 stage) needs a viewport that
+holds it: at `"desktop"` every screenshot of it loses its right third.
+
 - Waiting is two-tier. The idiom is OUTCOME-based — assertions that
   retry — and the `assert` action follows it, polled from the harness
   with `page.evaluate` until truthy or ~2s. (NOT Playwright's
