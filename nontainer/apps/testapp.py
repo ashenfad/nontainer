@@ -145,9 +145,14 @@ def coerce_viewport(viewport: Any) -> dict[str, int]:
             viewport = {"width": int(m.group(1)), "height": int(m.group(2))}
     if not isinstance(viewport, dict):
         raise ValueError(f"{usage} — got {type(viewport).__name__}")
+    # Both keys, no defaults: {"widht": 1920, "height": 1080} filled in
+    # from desktop would test at 1280x1080 and pass.
+    missing = [k for k in ("width", "height") if k not in viewport]
+    if missing:
+        raise ValueError(f"{usage} — missing {' and '.join(missing)}")
     try:
-        width = int(viewport.get("width", VIEWPORTS["desktop"]["width"]))
-        height = int(viewport.get("height", VIEWPORTS["desktop"]["height"]))
+        width = int(viewport["width"])
+        height = int(viewport["height"])
     except (TypeError, ValueError) as e:
         raise ValueError(f"{usage} ({e})") from e
     max_w, max_h = _VIEWPORT_MAX

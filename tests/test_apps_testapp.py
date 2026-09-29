@@ -209,6 +209,26 @@ def test_a_run_that_fails_still_returns_its_grid(app_ws):
     assert _png_size(ws.files.fs.read(grid)) == (1280, 800 + 30)
 
 
+def test_a_grid_is_tiled_after_its_runs_context_closes(app_ws, monkeypatch):
+    """The concurrency limit bounds open browser contexts. Tiling opens
+    one of its own, so it must wait for the run's to close, or a grid
+    run holds two contexts in one slot."""
+    from nontainer.apps import driver_playwright
+
+    open_at_tiling: list[int] = []
+    tile = driver_playwright._tile_grid
+
+    async def spy(browser, tiles, width, height):
+        open_at_tiling.append(len(browser.contexts))
+        return await tile(browser, tiles, width, height)
+
+    monkeypatch.setattr(driver_playwright, "_tile_grid", spy)
+    ws, rt = app_ws
+    result = rt.test_app([{"screenshot": True, "grid": "g"}])
+    assert result.ok, render_test_app(result)
+    assert open_at_tiling == [0]
+
+
 def test_viewport_takes_hd_and_a_size(app_ws):
     ws, rt = app_ws
     for viewport, width in (
@@ -525,7 +545,9 @@ def test_coerce_viewport_accepts_presets_sizes_and_objects():
         ("widescreen", "viewport must be one of"),
         ("100x100", "out of range"),
         ("9000x1080", "out of range"),
-        ({"width": "wide"}, "viewport must be one of"),
+        ({"width": "wide", "height": 800}, "viewport must be one of"),
+        ({"widht": 1920, "height": 1080}, "missing width"),
+        ({"width": 1920}, "missing height"),
         ([1920, 1080], "got list"),
         ("{not json", "viewport must be one of"),
     ],
