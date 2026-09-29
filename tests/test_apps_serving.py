@@ -740,16 +740,33 @@ class _Gate:
         return self.release.wait(10)
 
 
-@pytest.mark.parametrize("isolation", ["none", "process"])
+def _executor_settings(kind: str, gate: "_Gate") -> dict:
+    if kind == "dud":
+        pytest.importorskip("dud")
+        from nontainer.executor_dud import DudExecutor
+
+        return {
+            "python": PythonConfig(host_objects={"gate": gate}),
+            "executor_factory": lambda: DudExecutor(backend="subprocess"),
+        }
+    return {"python": PythonConfig(host_objects={"gate": gate}, isolation=kind)}
+
+
+@pytest.mark.parametrize("executor", ["none", "process", "dud"])
 def test_closing_a_published_snapshot_mid_request_is_safe(
-    tmp_path, isolation, monkeypatch
+    tmp_path, executor, monkeypatch
 ):
     """A published snapshot borrows its Store's repository, so closing
     it closes nothing a request reads through: a handler mid-call when
-    the snapshot closes still reads the store and answers, and a request
-    that reaches the snapshot after it closed is served too. An embedder
-    evicting a snapshot (a newer version published, an unpublish, an
-    idle reap) never breaks a request routed to it.
+    the snapshot closes still reads the store and answers, on every
+    executor. (A dud guest serves one call at a time, so there close()
+    waits for the call rather than returning at once; the call still
+    finishes.)
+
+    What is NOT promised, and so not tested: a request dispatched to a
+    snapshot after it closed. A closed DudExecutor refuses it; the
+    in-process executor happens to serve it. An embedder takes a
+    snapshot out of routing before closing it.
 
     The spy is what catches a regression on every backend: on disk a
     closed repository goes on reading, so only on a pool-backed one
@@ -765,22 +782,19 @@ def test_closing_a_published_snapshot_mid_request_is_safe(
         ws = store.open("author")
         fs = ws.files.fs
         fs.makedirs("/workspace/app/api", exist_ok=True)
-        fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
         fs.write("/workspace/app/data.txt", b"payload")
         fs.write(
             "/workspace/app/api/slow.py",
             b"def get(req):\n"
             b"    gate.hold()\n"
-            b"    return {'read': open('/workspace/app/data.txt').read()}\n",
+            b"    return {'read': open('app/data.txt').read()}\n",
         )
         ws.commit()
         pub = store.publish(ws, "demo")
         ws.close()
 
         gate = _Gate()
-        snap = pub.open(
-            python=PythonConfig(host_objects={"gate": gate}, isolation=isolation)
-        )
+        snap = pub.open(**_executor_settings(executor, gate))
         runtime = AppRuntime(snap, AppsConfig(), frozen=True, log_sink=lambda m: None)
         answer: dict = {}
 
@@ -795,16 +809,18 @@ def test_closing_a_published_snapshot_mid_request_is_safe(
 
         request = threading.Thread(target=call)
         request.start()
-        assert gate.entered.wait(10), "the handler never started"
-        snap.close()  # the request is inside its handler
+        assert gate.entered.wait(30), "the handler never started"
+        # From another thread: on dud, close() waits for the call.
+        closer = threading.Thread(target=snap.close)
+        closer.start()
+        if executor == "dud":
+            closer.join(0.5)
+            assert closer.is_alive(), "a dud close() did not wait for the call"
         gate.release.set()
-        request.join(10)
+        request.join(30)
+        closer.join(30)
+        assert not closer.is_alive(), "close() never returned"
         assert answer == {"status": 200, "body": b'{"read": "payload"}'}
         assert closed == [], "closing a snapshot closed the store's repository"
-
-        # after the close: a request routed to the snapshot is served
-        assert runtime.dispatch(make_request("GET", "/index.html")).status == 200
-        after = runtime.dispatch(make_request("GET", "/api/slow"))
-        assert (after.status, after.content) == (200, b'{"read": "payload"}')
     finally:
         store.close()

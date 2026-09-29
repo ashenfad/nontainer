@@ -427,8 +427,10 @@ class Publication:
         written or committed. Close it when done — it holds an executor
         when it has something to run. It reads through this store's
         repository and does not hold it open, so closing it while a
-        request is in flight is safe: the request finishes, and the
-        store stays open for the rest. ``ws.session`` names the
+        request is in flight is safe: the request finishes (a dud-backed
+        one makes close() wait for it), and the store stays open for the
+        rest. A closed one runs no new handlers, so take it out of
+        routing before closing it. ``ws.session`` names the
         publication's own branch, because
         that is where the state lives: a publication belongs to no
         session.
