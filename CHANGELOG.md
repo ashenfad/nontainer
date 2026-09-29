@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`test_app` takes a viewport of any size.** `viewport` accepts a new `"hd"` preset (1920×1080), a size as `"WIDTHxHEIGHT"`, or `{"width": W, "height": H}`, also sent as a JSON string, which is how models tend to send an object. The agno and MCP tools accept all of these. A page built to a fixed size, such as a slide or a 1920×1080 video stage, was cropped in every screenshot at the only sizes on offer.
+- **Screenshot grids: many frames for the context cost of one.** `{"screenshot": true, "grid": "name", "label": "…"}` collects the frame instead of returning it. When the run ends, each grid comes back as one image: its frames tiled in the order they were taken, as wide as the viewport, each captioned with its label.
+  - A grid holds up to 12 frames and takes one slot of the screenshot cap. Past 12, a frame is skipped with a note, as a screenshot past the cap is.
+  - Any actions can come between frames, so a grid covers many states of an app or many moments of a video.
+  - A run that stops at a failure still returns its grids.
+  - The driver tiles in the browser, on a fresh context, so there is no imaging dependency.
 
 ### Changed
 - **An unknown `viewport` is refused, not silently run at the desktop size.** The error lists the forms it accepts. A test at a size nobody asked for used to report as passing.

@@ -25,6 +25,7 @@ screenshot is written — belongs to the caller, and none of it is here.
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from concurrent.futures import Future
 from typing import Any
@@ -47,6 +48,77 @@ _CSP_INIT_SCRIPT = (
 )
 
 _SELECTOR_ACTIONS = ("click", "type", "select", "read")
+
+#: Frames one grid holds. A grid is one image in the model's context
+#: however many frames it tiles, so the bound is on legibility: past a
+#: dozen, each frame is too small to read a layout from.
+_GRID_MAX_TILES = 12
+_GRID_CAPTION_PX = 30
+_GRID_GAP_PX = 4
+
+
+def _grid_slug(name: Any) -> str:
+    """A grid name as it can appear in a file name."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
+    return slug or "grid"
+
+
+def _grid_columns(n: int) -> int:
+    return 1 if n == 1 else 2 if n <= 4 else 3 if n <= 9 else 4
+
+
+async def _tile_grid(
+    browser: Any, tiles: list[tuple[str, bytes]], width: int, height: int
+) -> bytes:
+    """One image of ``tiles`` (``(caption, png)`` in capture order), laid
+    out as many columns wide as their count needs and as wide as the
+    viewport they were taken in, each captioned.
+
+    Tiled by the browser rather than an imaging library, so the driver
+    needs nothing it does not already have: the frames go onto a page as
+    images and the page is captured once. A fresh context, not the run's:
+    the run's routes answer every request from the app and its init
+    scripts are the embedder's, and neither belongs on this page."""
+    import base64
+    import html
+
+    cols = _grid_columns(len(tiles))
+    tile_w = (width - _GRID_GAP_PX * (cols - 1)) // cols
+    tile_h = round(tile_w * height / width)
+    cells = "".join(
+        '<figure><img src="data:image/png;base64,'
+        + base64.b64encode(png).decode()
+        + '"><figcaption>'
+        + html.escape(caption)
+        + "</figcaption></figure>"
+        for caption, png in tiles
+    )
+    page_html = (
+        "<!doctype html><html><head><style>"
+        f"html,body{{margin:0;background:#1f2328;width:{width}px}}"
+        f"body{{display:grid;grid-template-columns:repeat({cols},{tile_w}px);"
+        f"gap:{_GRID_GAP_PX}px}}"
+        "figure{margin:0}"
+        f"img{{display:block;width:{tile_w}px;height:{tile_h}px}}"
+        f"figcaption{{height:{_GRID_CAPTION_PX}px;line-height:{_GRID_CAPTION_PX}px;"
+        "padding:0 8px;color:#f0f3f6;font:15px/30px ui-monospace,Menlo,monospace;"
+        "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+        "</style></head><body>" + cells + "</body></html>"
+    )
+    rows = -(-len(tiles) // cols)
+    context = await browser.new_context(
+        viewport={
+            "width": width,
+            "height": rows * (tile_h + _GRID_CAPTION_PX) + _GRID_GAP_PX * (rows - 1),
+        },
+        device_scale_factor=1,
+    )
+    try:
+        page = await context.new_page()
+        await page.set_content(page_html, wait_until="load")
+        return await page.screenshot(full_page=True)
+    finally:
+        await context.close()
 
 
 def require_playwright() -> None:
@@ -169,6 +241,12 @@ async def _drive(
     screenshots: dict[str, bytes] = {}
     refusals: dict[Refusal, None] = {}  # ordered de-dupe
     shot_counter = 0
+    # Frames bound for a grid, by grid name, and the path each grid's
+    # tiled image will be written to. A grid takes its screenshot slot
+    # when its first frame is taken, which is where its path sits in
+    # capture order; the image itself is made once the run is over.
+    grids: dict[str, list[tuple[str, bytes]]] = {}
+    grid_paths: dict[str, str] = {}
     loop = asyncio.get_running_loop()
 
     def _refuse(refusal: Refusal) -> None:
@@ -330,6 +408,52 @@ async def _drive(
         screenshots[path] = png
         return path
 
+    async def _capture_tile(page: Any, grid: Any, label: Any) -> tuple[str | None, str]:
+        """A frame for a grid. Returns the grid's path, or ``None`` and
+        why it was skipped -- the cap was reached before the grid began,
+        or the grid is full. Both are soft skips, as a plain screenshot
+        past the cap is."""
+        nonlocal shot_counter
+        name = str(grid)
+        if name not in grids:
+            if shot_counter >= spec.max_screenshots:
+                return None, f"skipped: screenshot cap ({spec.max_screenshots}) reached"
+            shot_counter += 1
+            path = f"{spec.screenshot_dir}/grid-{_grid_slug(name)}-{shot_counter}.png"
+            grids[name] = []
+            grid_paths[name] = path
+            screenshots[path] = b""  # holds its place in capture order
+        tiles = grids[name]
+        if len(tiles) >= _GRID_MAX_TILES:
+            return None, (
+                f"skipped: grid {name!r} already holds {_GRID_MAX_TILES} frames "
+                "(start another grid for more)"
+            )
+        png = await page.screenshot()
+        tiles.append((str(label) if label is not None else str(len(tiles) + 1), png))
+        return grid_paths[name], ""
+
+    async def _compose_grids() -> None:
+        """Each grid's frames as one image, at the path its frames were
+        promised. A grid that cannot be tiled fails the actions that fed
+        it, rather than leaving them pointing at an image that is not
+        there."""
+        width = spec.width or 1280
+        height = spec.height or 800
+        for name, tiles in grids.items():
+            path = grid_paths[name]
+            try:
+                screenshots[path] = await _tile_grid(browser, tiles, width, height)
+            except Exception as e:
+                screenshots.pop(path, None)
+                for j, outcome in enumerate(outcomes):
+                    if outcome.value == path:
+                        outcomes[j] = ActionOutcome(
+                            outcome.index,
+                            ok=False,
+                            error=f"grid {name!r} could not be assembled: {e}",
+                        )
+
     async with sema:
         context = await browser.new_context(
             **(
@@ -462,6 +586,16 @@ async def _drive(
                             ActionOutcome(i, ok=passed, value=passed, error=why)
                         )
                         continue
+                    elif "screenshot" in action and action.get("grid") is not None:
+                        # One frame of a grid: every shot sharing the name
+                        # comes back as ONE tiled image, so a run can look
+                        # at a dozen states for the context cost of one.
+                        value, skipped = await _capture_tile(
+                            page, action["grid"], action.get("label")
+                        )
+                        if value is None:
+                            outcomes.append(ActionOutcome(i, ok=True, error=skipped))
+                            continue
                     elif "screenshot" in action:
                         shot = await _capture(page, "shot")
                         if shot is None:
@@ -539,6 +673,9 @@ async def _drive(
                     break  # later actions depend on earlier ones
 
             await _collect_csp(page)
+            # After a failure too: the frames taken before it are what
+            # the agent will want to look at.
+            await _compose_grids()
             return _report(True)
         finally:
             await context.close()

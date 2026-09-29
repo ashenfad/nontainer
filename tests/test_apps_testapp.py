@@ -138,6 +138,77 @@ def test_screenshot_cap_soft_skips(app_ws):
     assert "skipped" in render_test_app(result)
 
 
+def _png_size(png: bytes) -> tuple[int, int]:
+    import struct
+
+    return struct.unpack(">II", png[16:24])
+
+
+def test_screenshots_in_a_grid_come_back_as_one_image(app_ws):
+    """Frames sharing a grid are tiled into one captioned image at one
+    path, as wide as the viewport; a plain screenshot beside them is
+    its own image as before."""
+    ws, rt = app_ws
+    result = rt.test_app(
+        [
+            {"screenshot": True, "grid": "States", "label": "first"},
+            {"read": "#title"},
+            {"screenshot": True, "grid": "States", "label": "second"},
+            {"screenshot": True},
+        ]
+    )
+    assert result.ok, render_test_app(result)
+    grid, plain = result.screenshots
+    assert grid.endswith("/grid-states-1.png")
+    assert result.results[0].value == result.results[2].value == grid
+    assert result.results[3].value == plain
+    # two frames: two columns of (1280 - 4) // 2 = 638px, 399px tall at
+    # the viewport's 1280x800 proportions, plus a 30px caption
+    assert _png_size(ws.files.fs.read(grid)) == (1280, 399 + 30)
+    assert _png_size(ws.files.fs.read(plain)) == (1280, 800)
+
+
+def test_a_grid_takes_one_slot_of_the_cap(app_ws):
+    ws, rt = app_ws
+    result = rt.test_app(
+        [{"screenshot": True, "grid": "g"} for _ in range(3)] + [{"screenshot": True}],
+        max_screenshots=1,
+    )
+    assert result.ok, render_test_app(result)
+    assert len(result.screenshots) == 1  # the grid, holding three frames
+    assert all(r.error is None for r in result.results[:3])
+    assert "cap (1) reached" in (result.results[3].error or "")
+
+
+def test_a_grid_holds_twelve_frames_and_skips_the_rest(app_ws):
+    ws, rt = app_ws
+    result = rt.test_app([{"screenshot": True, "grid": "g"} for _ in range(13)])
+    assert result.ok, render_test_app(result)
+    assert all(r.error is None for r in result.results[:12])
+    assert result.results[12].ok
+    assert "already holds 12 frames" in result.results[12].error
+    # twelve frames tile four columns wide and three rows deep
+    width, height = _png_size(ws.files.fs.read(result.screenshots[0]))
+    tile_h = round((1280 - 3 * 4) // 4 * 800 / 1280)
+    assert (width, height) == (1280, 3 * (tile_h + 30) + 2 * 4)
+
+
+def test_a_run_that_fails_still_returns_its_grid(app_ws):
+    """The frames before a failure are what the agent wants to see."""
+    ws, rt = app_ws
+    result = rt.test_app(
+        [
+            {"screenshot": True, "grid": "before", "label": "loaded"},
+            {"assert": "false"},
+        ],
+        assert_timeout_ms=200,
+    )
+    assert not result.ok
+    grid = result.results[0].value
+    assert grid in result.screenshots
+    assert _png_size(ws.files.fs.read(grid)) == (1280, 800 + 30)
+
+
 def test_viewport_takes_hd_and_a_size(app_ws):
     ws, rt = app_ws
     for viewport, width in (
@@ -532,6 +603,50 @@ def test_agno_test_app_tool_sizes_the_viewport_and_refuses_a_bad_one(app_ws):
     assert "PASS" in out.content and "1920" in out.content
     out = run(actions=[{"eval": "window.innerWidth"}], viewport="widescreen")
     assert out.content.startswith("test_app failed: viewport must be one of")
+
+
+def test_agno_test_app_tool_returns_a_grid_as_one_image(app_ws):
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
+
+    ws, rt = app_ws
+    out = (
+        WorkspaceTools(ws, apps=rt)
+        .functions["test_app"]
+        .entrypoint(
+            actions=[
+                {"screenshot": True, "grid": "g", "label": str(n)} for n in range(4)
+            ]
+        )
+    )
+    assert "PASS" in out.content
+    assert len(out.images) == 1
+
+
+@pytest.mark.asyncio
+async def test_mcp_test_app_tool_returns_image_content(app_ws):
+    pytest.importorskip("mcp")
+    from nontainer.adapters.mcp import build_server
+
+    ws, rt = app_ws
+    server = build_server(ws, apps=rt)
+    tools = {t.name for t in await server.list_tools()}
+    assert "test_app" in tools
+
+    result = await server.call_tool("test_app", {"actions": [{"screenshot": True}]})
+    contents = result[0] if isinstance(result, tuple) else result
+    types = {type(c).__name__ for c in contents}
+    assert "ImageContent" in types
+    assert any("PASS" in getattr(c, "text", "") for c in contents)
+
+
+# -- the served CSP, enforced during verification -----------------------------
+#
+# Interception reproduces a CSP's ORIGIN rules. A CSP also governs
+# BEHAVIOUR -- eval, new Function, blob workers, blob module scripts --
+# and none of that involves a request to intercept. Those used to pass
+# here and fail only once published, silently: a refused script does not
+# throw, so a page-level try/catch sees nothing either.
 
 
 def _csp_ws(session, body: bytes, **cfg):
