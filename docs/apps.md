@@ -804,8 +804,8 @@ test_app(actions: list[Action], viewport: str|dict = "desktop") -> TestAppResult
 
 Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,
-`{"assert": js}`, `{"goto": "about.html"}`, `{"screenshot": true}`,
-`{"wait": ms}`.
+`{"assert": js}`, `{"goto": "about.html"}`, `{"screenshot": true}`
+(optionally with `"grid"` and `"label"`, below), `{"wait": ms}`.
 
 `viewport` is a preset (`"desktop"` 1280×800, `"tablet"`, `"mobile"`,
 `"hd"` 1920×1080), a size as `"WIDTHxHEIGHT"`, or `{"width": W,
@@ -887,6 +887,18 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   the file).
 - Result caps mirror `max_observation`; screenshot count capped per
   call.
+- **Grids: many frames for the context cost of one.** Screenshots that
+  name the same `grid` are not returned one by one. When the run ends,
+  each grid becomes one image: its frames tiled in the order they were
+  taken, as wide as the viewport, each captioned with its `label` (or
+  its position). A grid holds up to 12 frames and takes one slot of the
+  screenshot cap, when its first frame is taken; past 12 a frame is
+  skipped with a note, as a screenshot past the cap is. Anything can
+  happen between frames — clicks, seeks, a `goto` — which is what makes
+  a grid the way to look at many states of one app, or many moments of
+  one video. A run that stops at a failure still returns the grids it
+  started, with the frames taken before it. The driver tiles them in
+  the browser, on a fresh context, so there is no imaging dependency.
 - **One shared Chromium per process, a fresh context per call.** Sync
   Playwright pins a browser to one thread, so instead we run *async*
   Playwright on a dedicated loop-thread and marshal every call to it

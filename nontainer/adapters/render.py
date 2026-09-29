@@ -566,6 +566,10 @@ Pass a list of actions, executed in order:
   {"read": "#selector"}           {"eval": "js expression"}
   {"assert": "js expression"}     (retries until truthy, ~2s)
   {"screenshot": true}            {"wait": ms}
+  {"screenshot": true, "grid": "name", "label": "after save"}
+    Shots sharing a grid come back as ONE image, tiled and captioned
+    with their labels (up to 12), and count once against the
+    screenshot cap: use a grid to look at many states in one run.
 viewport: "desktop" | "tablet" | "mobile" | "hd" (1920x1080), or a size,
 "WIDTHxHEIGHT". A fixed-size page (a slide, a video stage) needs a
 viewport that fits it, or every screenshot of it is cropped.
