@@ -70,7 +70,16 @@ VIEWPORTS = {
     "desktop": {"width": 1280, "height": 800},
     "tablet": {"width": 768, "height": 1024},
     "mobile": {"width": 390, "height": 844},
+    # A fixed 1920x1080 stage (a video composition, a slide) seen whole:
+    # at "desktop" its right third is cut off every screenshot.
+    "hd": {"width": 1920, "height": 1080},
 }
+
+#: The bounds a sized viewport must fall in. Below the floor nothing
+#: lays out; above the ceiling one screenshot is a very large image in
+#: the model's context.
+_VIEWPORT_MIN = 200
+_VIEWPORT_MAX = (3840, 2400)
 
 # JSON (not plain text): the app's own res.json() error path can then
 # actually read and display it
@@ -104,6 +113,50 @@ def coerce_actions(actions: Any) -> list[dict[str, Any]]:
             f"got {type(actions).__name__}"
         )
     return actions
+
+
+def coerce_viewport(viewport: Any) -> dict[str, int]:
+    """A viewport as the model sent it, resolved to a size: a preset
+    name, ``"WIDTHxHEIGHT"``, or ``{"width": .., "height": ..}`` (also
+    as a JSON string, which is how models tend to send an object).
+    Raises ValueError with an agent-actionable message otherwise, rather
+    than quietly testing at a size nobody asked for."""
+    import json
+
+    usage = (
+        f"viewport must be one of {', '.join(repr(k) for k in VIEWPORTS)}, "
+        '"WIDTHxHEIGHT" (e.g. "1920x1080") or {"width": W, "height": H}'
+    )
+    if viewport is None:
+        return dict(VIEWPORTS["desktop"])
+    if isinstance(viewport, str):
+        text = viewport.strip()
+        if text.startswith("{"):
+            try:
+                viewport = json.loads(text)
+            except ValueError as e:
+                raise ValueError(f"{usage} ({e})") from e
+        elif text.lower() in VIEWPORTS:
+            return dict(VIEWPORTS[text.lower()])
+        else:
+            m = re.fullmatch(r"(\d+)\s*[x×]\s*(\d+)", text.lower())
+            if m is None:
+                raise ValueError(f"{usage} — got {viewport!r}")
+            viewport = {"width": int(m.group(1)), "height": int(m.group(2))}
+    if not isinstance(viewport, dict):
+        raise ValueError(f"{usage} — got {type(viewport).__name__}")
+    try:
+        width = int(viewport.get("width", VIEWPORTS["desktop"]["width"]))
+        height = int(viewport.get("height", VIEWPORTS["desktop"]["height"]))
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"{usage} ({e})") from e
+    max_w, max_h = _VIEWPORT_MAX
+    if not (_VIEWPORT_MIN <= width <= max_w and _VIEWPORT_MIN <= height <= max_h):
+        raise ValueError(
+            f"viewport {width}x{height} is out of range: width "
+            f"{_VIEWPORT_MIN}-{max_w}, height {_VIEWPORT_MIN}-{max_h}"
+        )
+    return {"width": width, "height": height}
 
 
 # ---------------------------------------------------------------------------
@@ -477,14 +530,7 @@ def build_spec(
 ) -> DriveSpec:
     """Everything one run has been decided to be, before a browser is
     involved."""
-    vp = (
-        VIEWPORTS.get(viewport, VIEWPORTS["desktop"])
-        if isinstance(viewport, str)
-        else {
-            "width": int(viewport.get("width", 1280)),
-            "height": int(viewport.get("height", 800)),
-        }
-    )
+    vp = coerce_viewport(viewport)
     # One declaration (AppsConfig.script_hosts) drives interception AND
     # the served CSP: what verifies headlessly matches what serves.
     from .serve import resolve_csp

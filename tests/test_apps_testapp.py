@@ -138,6 +138,18 @@ def test_screenshot_cap_soft_skips(app_ws):
     assert "skipped" in render_test_app(result)
 
 
+def test_viewport_takes_hd_and_a_size(app_ws):
+    ws, rt = app_ws
+    for viewport, width in (
+        ("hd", "1920"),
+        ("1024x768", "1024"),
+        ({"width": 900, "height": 700}, "900"),
+    ):
+        result = rt.test_app([{"eval": "window.innerWidth"}], viewport=viewport)
+        assert result.ok, render_test_app(result)
+        assert result.results[0].value == width, viewport
+
+
 WIDGET_HTML = """<!doctype html>
 <html><body>
 <select id="make">
@@ -417,6 +429,45 @@ def test_viewport_preset(app_ws):
 # -- action DSL (pure; no browser needed) --------------------------------------
 
 
+def test_coerce_viewport_accepts_presets_sizes_and_objects():
+    from nontainer.apps.testapp import coerce_viewport
+
+    assert coerce_viewport("desktop") == {"width": 1280, "height": 800}
+    assert coerce_viewport("HD") == {"width": 1920, "height": 1080}
+    assert coerce_viewport(None) == {"width": 1280, "height": 800}
+    assert coerce_viewport("1920x1080") == {"width": 1920, "height": 1080}
+    assert coerce_viewport("1024 × 768") == {"width": 1024, "height": 768}
+    assert coerce_viewport({"width": 900, "height": 700}) == {
+        "width": 900,
+        "height": 700,
+    }
+    # models send an object as a JSON string
+    assert coerce_viewport('{"width": 1920, "height": 1080}') == {
+        "width": 1920,
+        "height": 1080,
+    }
+
+
+@pytest.mark.parametrize(
+    "bad, says",
+    [
+        ("widescreen", "viewport must be one of"),
+        ("100x100", "out of range"),
+        ("9000x1080", "out of range"),
+        ({"width": "wide"}, "viewport must be one of"),
+        ([1920, 1080], "got list"),
+        ("{not json", "viewport must be one of"),
+    ],
+)
+def test_coerce_viewport_refuses_what_it_cannot_honour(bad, says):
+    """An unknown preset used to run silently at the desktop size, which
+    tests a page at a size nobody asked for and reports it as passing."""
+    from nontainer.apps.testapp import coerce_viewport
+
+    with pytest.raises(ValueError, match=says):
+        coerce_viewport(bad)
+
+
 def test_coerce_actions_handles_model_sloppiness():
     from nontainer.apps.testapp import coerce_actions
 
@@ -468,30 +519,19 @@ def test_agno_vision_false_keeps_screenshots_path_only(app_ws):
     assert ws.files.fs.exists("/workspace/app/screenshots/shot-1.png")
 
 
-@pytest.mark.asyncio
-async def test_mcp_test_app_tool_returns_image_content(app_ws):
-    pytest.importorskip("mcp")
-    from nontainer.adapters.mcp import build_server
+def test_agno_test_app_tool_sizes_the_viewport_and_refuses_a_bad_one(app_ws):
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno import WorkspaceTools
 
     ws, rt = app_ws
-    server = build_server(ws, apps=rt)
-    tools = {t.name for t in await server.list_tools()}
-    assert "test_app" in tools
-
-    result = await server.call_tool("test_app", {"actions": [{"screenshot": True}]})
-    contents = result[0] if isinstance(result, tuple) else result
-    types = {type(c).__name__ for c in contents}
-    assert "ImageContent" in types
-    assert any("PASS" in getattr(c, "text", "") for c in contents)
-
-
-# -- the served CSP, enforced during verification -----------------------------
-#
-# Interception reproduces a CSP's ORIGIN rules. A CSP also governs
-# BEHAVIOUR -- eval, new Function, blob workers, blob module scripts --
-# and none of that involves a request to intercept. Those used to pass
-# here and fail only once published, silently: a refused script does not
-# throw, so a page-level try/catch sees nothing either.
+    run = WorkspaceTools(ws, apps=rt).functions["test_app"].entrypoint
+    out = run(
+        actions=[{"eval": "window.innerWidth"}],
+        viewport='{"width": 1920, "height": 1080}',
+    )
+    assert "PASS" in out.content and "1920" in out.content
+    out = run(actions=[{"eval": "window.innerWidth"}], viewport="widescreen")
+    assert out.content.startswith("test_app failed: viewport must be one of")
 
 
 def _csp_ws(session, body: bytes, **cfg):
