@@ -448,12 +448,6 @@ class KvgitProvider:
         worktree = repo.worktree(session, create=True)
         return cls(repo, worktree, session=session, owns_repo=False)
 
-    def _take_repo(self) -> None:
-        """Make this provider the repository's owner, so closing it
-        closes the repository: for a provider whose store was built for
-        it alone and goes out of scope as soon as it is opened."""
-        self._owns_repo = True
-
     @classmethod
     def delete(
         cls, path: str | Path, sessions: Iterable[str], *, min_age: float = 3600

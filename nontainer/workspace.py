@@ -1512,6 +1512,10 @@ class Workspace:
         # a workspace built straight from a provider: no store claims
         # it, and none may act on its behalf.
         self._store: "Store | None" = None
+        # Whether closing this workspace closes that store too: true only
+        # for the workspace() helper's, whose store was built for it
+        # alone. Forks carry _store but never this.
+        self._owns_store = False
         python_config = python or PythonConfig()
         self._cache_enabled = cache
         self._max_observation = max_observation
@@ -3538,6 +3542,9 @@ class Workspace:
                         pass
                 self._attached.clear()
                 self._provider.close()
+                # Last, after everything that reads through it.
+                if self._owns_store and self._store is not None:
+                    self._store.close()
 
     def __enter__(self) -> "Workspace":
         return self
@@ -3984,11 +3991,9 @@ def workspace(
             root=root,
         )
         # The store was built for this one workspace and nothing else
-        # holds it, so the workspace takes its repository: closing the
-        # workspace closes the backend under it.
-        take = getattr(ws._provider, "_take_repo", None)
-        if callable(take):
-            take()
+        # holds it, so the workspace owns it: closing the workspace
+        # closes the store, and with it the backend.
+        ws._owns_store = True
         return ws
     # A ready provider is one session's substrate, already built. It
     # goes in as the factory's answer for every id, and the id is
