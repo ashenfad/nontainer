@@ -723,3 +723,88 @@ def test_the_router_serves_a_publication_with_no_handlers(tmp_path):
     assert missing.status_code == 404
     assert missing.json() == {"error": "no such endpoint: /api/anything"}
     snapshot.close()
+
+
+class _Gate:
+    """A host object a handler calls to say it is running, and then to
+    wait until the test lets it go on."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def hold(self) -> bool:
+        self.entered.set()
+        return self.release.wait(10)
+
+
+@pytest.mark.parametrize("isolation", ["none", "process"])
+def test_closing_a_published_snapshot_mid_request_is_safe(
+    tmp_path, isolation, monkeypatch
+):
+    """A published snapshot borrows its Store's repository, so closing
+    it closes nothing a request reads through: a handler mid-call when
+    the snapshot closes still reads the store and answers, and a request
+    that reaches the snapshot after it closed is served too. An embedder
+    evicting a snapshot (a newer version published, an unpublish, an
+    idle reap) never breaks a request routed to it.
+
+    The spy is what catches a regression on every backend: on disk a
+    closed repository goes on reading, so only on a pool-backed one
+    would a snapshot that closed the store show up as a failed request."""
+    import threading
+
+    from nontainer import Store
+    from nontainer.apps import AppRuntime, AppsConfig
+    from nontainer.apps import request as make_request
+
+    store = Store(tmp_path)
+    try:
+        ws = store.open("author")
+        fs = ws.files.fs
+        fs.makedirs("/workspace/app/api", exist_ok=True)
+        fs.write("/workspace/app/index.html", b"<h1>hi</h1>")
+        fs.write("/workspace/app/data.txt", b"payload")
+        fs.write(
+            "/workspace/app/api/slow.py",
+            b"def get(req):\n"
+            b"    gate.hold()\n"
+            b"    return {'read': open('/workspace/app/data.txt').read()}\n",
+        )
+        ws.commit()
+        pub = store.publish(ws, "demo")
+        ws.close()
+
+        gate = _Gate()
+        snap = pub.open(
+            python=PythonConfig(host_objects={"gate": gate}, isolation=isolation)
+        )
+        runtime = AppRuntime(snap, AppsConfig(), frozen=True, log_sink=lambda m: None)
+        answer: dict = {}
+
+        def call() -> None:
+            wire = runtime.dispatch(make_request("GET", "/api/slow"))
+            answer["status"], answer["body"] = wire.status, wire.content
+
+        closed: list[bool] = []
+        repo = store.repo
+        real_close = repo.close
+        monkeypatch.setattr(repo, "close", lambda: (closed.append(True), real_close()))
+
+        request = threading.Thread(target=call)
+        request.start()
+        assert gate.entered.wait(10), "the handler never started"
+        snap.close()  # the request is inside its handler
+        gate.release.set()
+        request.join(10)
+        assert answer == {"status": 200, "body": b'{"read": "payload"}'}
+        assert closed == [], "closing a snapshot closed the store's repository"
+
+        # after the close: a request routed to the snapshot is served
+        assert runtime.dispatch(make_request("GET", "/index.html")).status == 200
+        after = runtime.dispatch(make_request("GET", "/api/slow"))
+        assert (after.status, after.content) == (200, b'{"read": "payload"}')
+    finally:
+        store.close()
