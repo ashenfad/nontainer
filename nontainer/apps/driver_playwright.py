@@ -673,9 +673,12 @@ async def _drive(
                     break  # later actions depend on earlier ones
 
             await _collect_csp(page)
-            # After a failure too: the frames taken before it are what
-            # the agent will want to look at.
-            await _compose_grids()
-            return _report(True)
         finally:
             await context.close()
+        # After a failure too: the frames taken before it are what the
+        # agent will want to look at. The app's context is closed first,
+        # so tiling takes this run's slot of the semaphore rather than a
+        # second context on top of it: the concurrency limit is a bound
+        # on open contexts, which is what costs the browser memory.
+        await _compose_grids()
+        return _report(True)
