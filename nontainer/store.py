@@ -424,9 +424,12 @@ class Publication:
         current one).
 
         Reads see the published files and nothing else; nothing can be
-        written or committed. Close it when done — it holds a store
-        handle of its own, and an executor when it has something to
-        run. ``ws.session`` names the publication's own branch, because
+        written or committed. Close it when done — it holds an executor
+        when it has something to run. It reads through this store's
+        repository and does not hold it open, so closing it while a
+        request is in flight is safe: the request finishes, and the
+        store stays open for the rest. ``ws.session`` names the
+        publication's own branch, because
         that is where the state lives: a publication belongs to no
         session.
 
@@ -1522,8 +1525,12 @@ class Store:
         caller's to close.
 
         Close the workspaces this store opened first — they read and
-        commit through that repository. The store can be used again
-        afterwards; the repository reopens on its next use.
+        commit through that repository. That includes frozen ones being
+        served (``pub.open()``, ``resolve``, ``tags.at``): each reads
+        through this repository without holding it open, so on a
+        pool-backed store, closing it under a request in flight fails
+        that request. Stop serving, then close. The store can be used
+        again afterwards; the repository reopens on its next use.
         """
         with self._kvgit_lock:
             repo, self._kvgit = self._kvgit, None

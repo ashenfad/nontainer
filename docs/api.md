@@ -602,8 +602,20 @@ as `kv=` is the caller's: `store.close()` lets go of it without closing
 it. Close the workspaces first, then the store; a store used again
 after `close()` reopens its repository.
 `nontainer.workspace(...)` builds a store for the one workspace it
-returns, and hands that workspace the store's backend: closing the
-workspace closes it.
+returns, and that workspace owns it: closing the workspace closes the
+store, and with it the backend.
+
+**Closing a served snapshot is safe mid-request; closing the store is
+not.** A frozen workspace (`pub.open()`, `store.resolve(...)`,
+`store.tags.at(...)`) borrows its store's repository, so closing it
+closes nothing a request reads through. A request already inside a
+handler finishes normally, and one routed to the snapshot after it
+closed is still served. So an embedder can evict a snapshot from its
+cache (a newer version published, an unpublish, an idle reap) without
+coordinating with traffic. The store's repository is another matter:
+every snapshot reads through it, and `store.close()` closes it under
+them, which on a PostgreSQL store closes the connection pool and fails
+any request in flight. Stop serving before closing the store.
 
 **`AppRuntime.close()` is a no-op**, kept so the symmetric shape can be
 written. An app runtime holds no workers of its own: handler calls run
