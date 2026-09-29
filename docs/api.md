@@ -605,17 +605,27 @@ after `close()` reopens its repository.
 returns, and that workspace owns it: closing the workspace closes the
 store, and with it the backend.
 
-**Closing a served snapshot is safe mid-request; closing the store is
+**Closing a served snapshot mid-request is safe; closing the store is
 not.** A frozen workspace (`pub.open()`, `store.resolve(...)`,
 `store.tags.at(...)`) borrows its store's repository, so closing it
-closes nothing a request reads through. A request already inside a
-handler finishes normally, and one routed to the snapshot after it
-closed is still served. So an embedder can evict a snapshot from its
-cache (a newer version published, an unpublish, an idle reap) without
-coordinating with traffic. The store's repository is another matter:
-every snapshot reads through it, and `store.close()` closes it under
-them, which on a PostgreSQL store closes the connection pool and fails
-any request in flight. Stop serving before closing the store.
+closes nothing a request reads through, and a request already inside a
+handler finishes normally on every executor. On `DudExecutor` the guest
+serves one call at a time, so `close()` waits for that call rather than
+returning at once.
+
+What a closed snapshot does not do is run new handlers: on
+`DudExecutor` a request that reaches one raises `RuntimeError:
+DudExecutor is closed`, while static files still serve. (The in-process
+executor happens to keep running handlers, but that is not a promise.) So
+evict in order: take the snapshot out of routing, then close it. Where
+a request can look a snapshot up before an eviction and dispatch after
+it, keep a count of requests holding it and close when that count
+reaches zero.
+
+The store's repository is another matter: every snapshot reads through
+it, and `store.close()` closes it under them, which on a PostgreSQL
+store closes the connection pool and fails any request in flight. Stop
+serving before closing the store.
 
 **`AppRuntime.close()` is a no-op**, kept so the symmetric shape can be
 written. An app runtime holds no workers of its own: handler calls run
