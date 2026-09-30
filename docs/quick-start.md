@@ -218,11 +218,11 @@ Or from the terminal: `tar -czf out.tgz out` then `ws.files.get("out.tgz", ...)`
 | backend | what it is | versioning |
 |---|---|---|
 | `kvgit` (default) | one shared store, branch per session | ✅ commits, O(1) forks, checkout |
-| `dir` | a plain real directory per session | ❌ (but sqlite/mmap/C extensions work natively) |
 | `agentfs` | one SQLite file per session ([Turso AgentFS](https://github.com/tursodatabase/agentfs)) | ❌ (spike) — but SQL-inspectable |
 
-Pick kvgit for fork/undo/history, `dir` when agent code needs real files,
-`agentfs` for the one-file-artifact + SQL-audit story. Or implement
+Pick kvgit for fork/undo/history, and `agentfs` for the one-file-artifact
++ SQL-audit story. When agent code needs real files (sqlite, mmap, C
+extensions), give it a writable `Mount`. Or implement
 `WorkspaceProvider` and bring your own — the protocol is in
 [extending.md](extending.md).
 

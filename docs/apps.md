@@ -457,8 +457,8 @@ prefer, which is why the list is no longer phrased as a ranking.
 Deliberately out of scope:
 
 - **esbuild as a termish command** — needs real files; viable later
-  as an opt-in injected command restricted to the `dir` backend or a
-  writable `Mount` ("external binaries need real files" — the same
+  as an opt-in injected command restricted to a writable `Mount`
+  ("external binaries need real files" — the same
   rule as sqlite app state). The materialize-shuttle variant (export
   /workspace/app to a temp dir, build, re-import dist/) is explicitly rejected:
   mostly-works complexity of exactly the kind this design keeps
@@ -1390,7 +1390,7 @@ relative-URL rule holds unchanged.
   real I/O and don't need one.
 - **App state on a virtual filesystem.** Relational / high-tempo state
   wants sqlite, a C extension that bypasses the virtual fs — so it needs
-  the `dir` backend or a writable `Mount`. A documented sharp edge, not
+  a writable `Mount`. A documented sharp edge, not
   a solvable one.
 - **One driver.** The `AppDriver` seam exists and has two consumers,
   but only one implementation: a headless browser on the host. A driver

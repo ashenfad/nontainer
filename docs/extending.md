@@ -158,8 +158,8 @@ session ids first where a bad name could escape the store root
 branch handle, so even the last session on a store deletes cleanly, and
 one garbage-collection sweep follows the deletion. `path` is the
 store directory — the same `store/kvgit` that `open` takes for kvgit;
-the parent store base for dir/agentfs (they resolve `<session>/` and
-`<session>.db` under it).
+the parent store base for agentfs (it resolves `<session>.db` under
+it).
 
 ## `Executor` — where code runs
 
