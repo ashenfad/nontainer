@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Security
+- **Removing the `dir` backend closes a way for agent code to run code on the host.** The backend kept its cache as a pickle file inside the session's own directory, where agent code could overwrite it, and loaded that file whenever the session was opened.
+  - Only stores created with `backend="dir"` were affected; the default kvgit backend never was.
+  - Reported privately; thanks to the reporter.
+
 ### Removed
 - **The `dir` backend** (`backend="dir"`, `nontainer.providers.DirProvider`). It was unused and unversioned, and it may come back later in a new form.
   - `Store(backend="dir")` and `workspace(..., backend="dir")` now raise `ValueError`, naming the default `kvgit` backend (on disk, or PostgreSQL with `kv=`) and `agentfs` instead.

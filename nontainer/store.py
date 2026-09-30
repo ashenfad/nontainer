@@ -673,7 +673,7 @@ class Store:
         self._path = Path(path).expanduser() if path else Path.home() / ".nontainer"
         if backend == "dir":
             raise ValueError(
-                "the 'dir' backend was removed in nontainer 0.9.0: use the "
+                "the 'dir' backend was removed in nontainer 0.8.3: use the "
                 "default 'kvgit' backend (on disk, or PostgreSQL with kv=), "
                 "or 'agentfs'"
             )
