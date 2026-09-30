@@ -310,6 +310,33 @@ def test_one_call_per_turn_is_said_once_per_description():
     assert py.count("call per turn") == 1
 
 
+def test_test_app_description_names_every_action_the_driver_runs():
+    """The description is what the model has to go on. An action the
+    driver runs but the description leaves out is one an agent meets
+    only in a skill, and then doubts: `goto` was missing, and an agent
+    checking a video seeked the player page instead of the composition
+    because nothing it had been told said it could leave index.html.
+    Read from the driver's own dispatch, so a new action cannot land
+    undescribed."""
+    import re
+    from pathlib import Path
+
+    from nontainer.adapters.render import test_app_description
+
+    driver = (
+        Path(__file__).resolve().parents[1]
+        / "nontainer"
+        / "apps"
+        / "driver_playwright.py"
+    )
+    actions = set(re.findall(r'(?:if|elif) "([a-z]+)" in action', driver.read_text()))
+    assert {"click", "goto", "screenshot", "wait"} <= actions  # the scan works
+    desc = test_app_description(root="/workspace")
+    missing = sorted(a for a in actions if f'{{"{a}"' not in desc)
+    assert not missing, f"test_app description leaves out: {missing}"
+    assert "starts on index.html" in desc
+
+
 def test_test_app_description_spells_paths_from_the_workspace_root():
     """The screenshots and the log are files the agent tails in the
     terminal, so test_app spells them the way the terminal's own notes

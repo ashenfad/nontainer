@@ -566,6 +566,8 @@ Pass a list of actions, executed in order:
   {"read": "#selector"}           {"eval": "js expression"}
   {"assert": "js expression"}     (retries until truthy, ~2s)
   {"screenshot": true}            {"wait": ms}
+  {"goto": "other.html"}          loads another page of the app. A run
+    starts on index.html; the actions after a goto run on that page.
   {"screenshot": true, "grid": "name", "label": "after save"}
     Shots sharing a grid come back as ONE image, tiled and captioned
     with their labels (up to 12), and count once against the

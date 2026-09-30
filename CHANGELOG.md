@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **The `test_app` tool description lists `goto`.** The driver has always run `{"goto": "page.html"}`, and `docs/apps.md` documented it, but the description the model reads left it out. An agent checking a video had only a skill's example to go on, doubted it, and first seeked the player page instead of the composition. The description now names it, and says a run starts on `index.html` and that the actions after a `goto` run on the new page. A test reads the driver's own dispatch and fails if any action it runs is missing from the description.
+
 ## 0.8.3 - 2026-09-30
 
 ### Security
