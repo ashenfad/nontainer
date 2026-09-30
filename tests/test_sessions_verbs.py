@@ -898,10 +898,11 @@ def test_a_workspace_with_no_store_cannot_read_its_neighbours(tmp_path):
 
 def test_merge_refuses_where_the_substrate_cannot(store, tmp_path):
     """The facade refusal, in the terminal's words."""
-    from nontainer import Workspace
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    w = Workspace(DirProvider(tmp_path / "plain", session="plain"))
+    from nontainer import Workspace
+
+    w = Workspace(PlainProvider(tmp_path / "plain", session="plain"))
     try:
         with pytest.raises(NotSupportedError):
             w.merge("other")

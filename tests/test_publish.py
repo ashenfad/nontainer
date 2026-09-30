@@ -743,7 +743,8 @@ def test_a_workspace_from_another_store_is_refused(tmp_path):
 
 
 def test_unversioned_and_factory_stores_refuse(tmp_path):
-    plain = Store(tmp_path / "dir", backend="dir")
+    pytest.importorskip("agentfs_sdk")
+    plain = Store(tmp_path / "agentfs", backend="agentfs")
     ws = plain.open("author")
     ws.files.write("app/index.html", "<h1>hi</h1>")
     with pytest.raises(NotSupportedError, match="kvgit"):

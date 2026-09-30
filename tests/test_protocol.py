@@ -189,7 +189,8 @@ def test_the_protocol_names_every_member_core_calls(member):
 
 
 def test_the_bundled_providers_satisfy_the_protocol(tmp_path):
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
+
     from nontainer.providers.kvgit import KvgitProvider
 
     kv = KvgitProvider.open(None, session="s")
@@ -197,7 +198,7 @@ def test_the_bundled_providers_satisfy_the_protocol(tmp_path):
         assert _missing(kv, WorkspaceProvider) == set()
     finally:
         kv.close()
-    d = DirProvider(tmp_path / "dir", session="s")
+    d = PlainProvider(tmp_path / "dir", session="s")
     try:
         assert _missing(d, WorkspaceProvider) == set()
     finally:
@@ -208,9 +209,9 @@ def test_an_unversioned_provider_is_honestly_not_frozen(tmp_path):
     """``frozen`` is a real attribute on every bundled provider, so a
     workspace reads it rather than defaulting it — and a substrate that
     has no tags to freeze at answers False rather than raising."""
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    provider = DirProvider(tmp_path / "dir", session="s")
+    provider = PlainProvider(tmp_path / "dir", session="s")
     try:
         assert provider.frozen is False
         assert provider.frozen_at is None

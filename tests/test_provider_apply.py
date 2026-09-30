@@ -230,9 +230,9 @@ def test_commit_at_reads_any_commit_in_the_store(kv_ws):
 
 
 def test_dir_provider_apply_unsupported(tmp_path):
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    provider = DirProvider(tmp_path / "ws", session="dir")
+    provider = PlainProvider(tmp_path / "ws", session="dir")
     with pytest.raises(NotSupportedError, match="apply"):
         provider.apply("a", "b")
     provider.close()

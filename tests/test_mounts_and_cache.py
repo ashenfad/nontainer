@@ -1,9 +1,9 @@
 """Mounts (workspace volumes) and Cache key rules."""
 
 import pytest
+from plain_provider import PlainProvider
 
 from nontainer import Cache, CacheError, Mount, Workspace
-from nontainer.providers import DirProvider
 
 
 def test_readonly_mount_visible_to_both_tools(tmp_path):
@@ -11,7 +11,7 @@ def test_readonly_mount_visible_to_both_tools(tmp_path):
     src.mkdir()
     (src / "a.csv").write_text("x,y\n1,2\n")
 
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, mounts={"/data": Mount(src)})
 
     r = ws.terminal("cat /data/a.csv")
@@ -27,7 +27,7 @@ def test_readonly_mount_visible_to_both_tools(tmp_path):
 def test_readonly_mount_blocks_writes(tmp_path):
     src = tmp_path / "datasets"
     src.mkdir()
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, mounts={"/data": Mount(src)})
     r = ws.terminal("echo nope > /data/new.txt")
     assert not r
@@ -38,7 +38,7 @@ def test_readonly_mount_blocks_writes(tmp_path):
 def test_writable_mount(tmp_path):
     src = tmp_path / "scratch"
     src.mkdir()
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, mounts={"/scratch": Mount(src, readonly=False)})
     r = ws.terminal("echo hi > /scratch/out.txt")
     assert r, r.stderr
@@ -49,7 +49,7 @@ def test_writable_mount(tmp_path):
 def test_bad_mount_points_rejected(tmp_path):
     src = tmp_path / "d"
     src.mkdir()
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     with pytest.raises(ValueError):
         Workspace(p, mounts={"/": Mount(src)})
     with pytest.raises(ValueError):

@@ -5,17 +5,16 @@ import pytest
 from nontainer import SessionIdError, workspace
 
 
-def test_dir_backend(tmp_path):
-    with workspace("user-42", store=tmp_path, backend="dir") as ws:
-        assert ws.session == "user-42"
-        r = ws.terminal("echo hi > f.txt; cat f.txt")
-        assert r.stdout.strip() == "hi"
-    assert (tmp_path / "user-42" / "workspace" / "f.txt").exists()
+def test_the_removed_dir_backend_is_refused_by_name(tmp_path):
+    """0.9.0 removed the 'dir' backend. Asking for it names what to use
+    instead rather than failing somewhere deeper."""
+    with pytest.raises(ValueError, match="'dir' backend was removed.*kvgit"):
+        workspace("user-42", store=tmp_path, backend="dir")  # type: ignore[arg-type]
 
 
 def test_session_validated(tmp_path):
     with pytest.raises(SessionIdError):
-        workspace("../etc", store=tmp_path, backend="dir")
+        workspace("../etc", store=tmp_path)
 
 
 def test_unknown_backend_rejected(tmp_path):
@@ -24,9 +23,9 @@ def test_unknown_backend_rejected(tmp_path):
 
 
 def test_provider_override(tmp_path):
-    from nontainer.providers import DirProvider
+    from plain_provider import PlainProvider
 
-    p = DirProvider(tmp_path / "custom", session="s1")
+    p = PlainProvider(tmp_path / "custom", session="s1")
     with workspace("s1", provider=p) as ws:
         assert ws.session == "s1"
         assert ws.terminal("pwd")
@@ -37,9 +36,10 @@ def test_contract_breaking_executor_close_still_closes_provider(tmp_path):
     executors are an extension surface: a third-party one that raises
     anyway must not skip the provider close (a held kvgit store). The
     violation surfaces as a RuntimeWarning, not silence."""
+    from plain_provider import PlainProvider
+
     from nontainer import Workspace
     from nontainer.executor import LocalExecutor
-    from nontainer.providers import DirProvider
 
     closed = []
 
@@ -47,7 +47,7 @@ def test_contract_breaking_executor_close_still_closes_provider(tmp_path):
         def close(self):
             raise OSError("contract? what contract")
 
-    class WitnessProvider(DirProvider):
+    class WitnessProvider(PlainProvider):
         def close(self):
             closed.append(True)
             super().close()

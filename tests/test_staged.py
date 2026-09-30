@@ -358,9 +358,9 @@ def test_frozen_verbs_refused_status_open(kv_ws):
 
 
 def test_dir_provider_has_no_index(tmp_path):
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    ws = Workspace(DirProvider(tmp_path / "ws", session="dir"))
+    ws = Workspace(PlainProvider(tmp_path / "ws", session="dir"))
     try:
         for call in (
             lambda: ws.index.stage(["/workspace/a.txt"]),
@@ -1124,12 +1124,13 @@ def test_every_provider_takes_the_documented_merge_signature():
     against the protocol rather than against one implementation."""
     import inspect
 
+    from plain_provider import PlainProvider
+
     from nontainer.protocol import WorkspaceProvider
     from nontainer.providers.agentfs import AgentFSProvider
-    from nontainer.providers.dir import DirProvider
 
     documented = set(inspect.signature(WorkspaceProvider.merge).parameters)
-    for cls in (KvgitProvider, DirProvider, AgentFSProvider):
+    for cls in (KvgitProvider, PlainProvider, AgentFSProvider):
         taken = set(inspect.signature(cls.merge).parameters)
         assert documented <= taken, cls.__name__
 
@@ -1138,12 +1139,13 @@ def test_merge_passes_both_keywords_to_the_provider(tmp_path):
     """The other half: what the facade actually calls with, on a
     provider that has merge without an index — where a drift in the
     call would land first."""
+    from plain_provider import PlainProvider
+
     from nontainer.protocol import Capabilities, MergeOutcome
-    from nontainer.providers.dir import DirProvider
 
     seen = {}
 
-    class MergingDirProvider(DirProvider):
+    class MergingPlainProvider(PlainProvider):
         """The documented contract and nothing else."""
 
         @property
@@ -1160,7 +1162,7 @@ def test_merge_passes_both_keywords_to_the_provider(tmp_path):
                 merged=True, commit="c0ffee", conflicts=(), auto_merged=()
             )
 
-    ws = Workspace(MergingDirProvider(tmp_path / "ws", session="plain"))
+    ws = Workspace(MergingPlainProvider(tmp_path / "ws", session="plain"))
     try:
         out = ws.merge("other")
         assert out.merged

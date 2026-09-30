@@ -146,10 +146,6 @@ KvgitProvider.on(repo, session)        # borrow a Repo someone else closes (a St
 KvgitProvider.delete(path, sessions)   # drop branches (path = the on-disk store dir)
 KvgitProvider.delete_in(repo, sessions)   # the same, on a Repo already open
 
-DirProvider(root, *, session)
-    .root              # the real directory
-DirProvider.delete(path, sessions)     # rmtree dirs (path = the store base)
-
 AgentFSProvider(db_path, *, session)                     # [agentfs] extra
     .db_path           # the SQLite artifact
 AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
@@ -157,8 +153,8 @@ AgentFSProvider.delete(path, sessions) # unlink dbs (path = the store base)
 
 Each `delete(path, sessions)` is the store-level teardown primitive
 `Store.delete` dispatches to — plural, idempotent, and validating
-session ids first where a bad name could escape the store root (dir,
-agentfs). Kvgit's works on the store's `Repo` rather than through a
+session ids first where a bad name could escape the store root
+(agentfs). Kvgit's works on the store's `Repo` rather than through a
 branch handle, so even the last session on a store deletes cleanly, and
 one garbage-collection sweep follows the deletion. `path` is the
 store directory — the same `store/kvgit` that `open` takes for kvgit;

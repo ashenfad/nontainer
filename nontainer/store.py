@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from .protocol import Executor
     from .workspace import Mount, PythonConfig, Workspace
 
-Backend = Literal["kvgit", "dir", "agentfs"]
+Backend = Literal["kvgit", "agentfs"]
 
 #: Environment variable naming the kvgit backend a :class:`Store` uses
 #: when it is not handed one: a PostgreSQL URL (``postgresql://...``).
@@ -672,6 +672,12 @@ class Store:
         provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
     ) -> None:
         self._path = Path(path).expanduser() if path else Path.home() / ".nontainer"
+        if backend == "dir":
+            raise ValueError(
+                "the 'dir' backend was removed in nontainer 0.9.0: use the "
+                "default 'kvgit' backend (on disk, or PostgreSQL with kv=), "
+                "or 'agentfs'"
+            )
         self._backend = backend
         self._provider_factory = provider_factory
         self._kv = kv
@@ -839,17 +845,9 @@ class Store:
         base = self._path
         if self._backend == "kvgit":
             names: Iterable[str] = self._branches()
-        elif self._backend == "dir":
-            # A session IS a directory here, so only directories are
-            # sessions. A store directory holds other things — the
-            # kvgit/ subtree when both backends share one, an embedder's
-            # own db file, a stray note — and reporting a plain file as
-            # a session hands the caller a name that open() cannot use.
-            names = (
-                (p.name for p in base.iterdir() if p.is_dir()) if base.is_dir() else ()
-            )
         elif self._backend == "agentfs":
-            # Same rule the other way: a session is one db FILE.
+            # A session is one db FILE; anything else in the directory
+            # (an embedder's own files, a stray note) is not a session.
             names = (
                 (p.stem for p in base.glob("*.db") if p.is_file())
                 if base.is_dir()
@@ -878,7 +876,6 @@ class Store:
           outlive the session that made it, and its commits stay
           reachable through the tag even once every branch that reached
           them is gone.
-        - ``"dir"``: removes the ``<path>/<session>/`` directory trees.
         - ``"agentfs"``: unlinks the ``<path>/<session>.db`` files.
 
         Plural because a caller often owns more than one branch/dir/db
@@ -912,11 +909,7 @@ class Store:
         self._require_own_layout("delete")
         names = {sessions} if isinstance(sessions, str) else set(sessions)
         self._require_session_names(names)
-        if self._backend == "dir":
-            from .providers.dir import DirProvider
-
-            DirProvider.delete(self._path, names)
-        elif self._backend == "kvgit":
+        if self._backend == "kvgit":
             from .providers.kvgit import KvgitProvider
 
             repo = self._kvgit_repo()
@@ -1727,10 +1720,6 @@ class Store:
         if self._provider_factory is not None:
             return self._provider_factory(session)
         validate_session_id(session)
-        if self._backend == "dir":
-            from .providers.dir import DirProvider
-
-            return DirProvider(self._path / session, session=session)
         if self._backend == "kvgit":
             from .providers.kvgit import KvgitProvider
 

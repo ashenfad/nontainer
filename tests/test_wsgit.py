@@ -591,9 +591,9 @@ def test_snapshot_wsgit_reads_snapshot():
 
 
 def test_no_index_provider_refused(tmp_path):
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    provider = DirProvider(tmp_path / "ws", session="dir")
+    provider = PlainProvider(tmp_path / "ws", session="dir")
     w = Workspace(provider)
     register_wsgit(w)
     try:

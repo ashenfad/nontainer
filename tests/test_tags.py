@@ -461,16 +461,16 @@ def test_a_same_bytes_rewrite_is_not_a_change(kv_ws):
 # -- unversioned providers ---------------------------------------------------
 
 
-def test_dir_workspace_has_no_tags(dir_ws):
-    assert not dir_ws.caps.tags
+def test_dir_workspace_has_no_tags(plain_ws):
+    assert not plain_ws.caps.tags
     for call in (
-        lambda: dir_ws.tags.add("v1"),
-        lambda: dir_ws.tags.list(),
-        lambda: dir_ws.tags.info("v1"),
-        lambda: dir_ws.tags.delete("v1"),
-        lambda: dir_ws.tags.at("v1"),
-        lambda: dir_ws.diff("a", "b"),
-        lambda: dir_ws.changed_since("v1"),
+        lambda: plain_ws.tags.add("v1"),
+        lambda: plain_ws.tags.list(),
+        lambda: plain_ws.tags.info("v1"),
+        lambda: plain_ws.tags.delete("v1"),
+        lambda: plain_ws.tags.at("v1"),
+        lambda: plain_ws.diff("a", "b"),
+        lambda: plain_ws.changed_since("v1"),
     ):
         with pytest.raises(NotSupportedError):
             call()
@@ -648,9 +648,9 @@ def test_diff_is_gated_on_versioning_not_on_tags():
 
 
 def test_an_unversioned_provider_refuses_diff(tmp_path):
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    ws = Workspace(DirProvider(tmp_path / "d", session="plain"))
+    ws = Workspace(PlainProvider(tmp_path / "d", session="plain"))
     try:
         with pytest.raises(NotSupportedError):
             ws.diff("a", "b")

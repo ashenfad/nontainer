@@ -340,9 +340,7 @@ def _build_parser() -> Any:
     parser.add_argument(
         "--store", default=None, help="store directory (default ~/.nontainer)"
     )
-    parser.add_argument(
-        "--backend", default="kvgit", choices=["kvgit", "dir", "agentfs"]
-    )
+    parser.add_argument("--backend", default="kvgit", choices=["kvgit", "agentfs"])
     parser.add_argument(
         "--session",
         action="append",

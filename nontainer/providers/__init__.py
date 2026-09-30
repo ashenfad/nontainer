@@ -2,10 +2,9 @@
 
 from typing import Any
 
-from .dir import DirProvider
 from .kvgit import KvgitProvider
 
-__all__ = ["DirProvider", "KvgitProvider", "AgentFSProvider"]
+__all__ = ["KvgitProvider", "AgentFSProvider"]
 
 
 def __getattr__(name: str) -> Any:

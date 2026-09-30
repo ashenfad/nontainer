@@ -1,9 +1,10 @@
 """Results pin the commit their call created (host-facing state ids)."""
 
 import pytest
+from plain_provider import PlainProvider
 
 from nontainer import Workspace
-from nontainer.providers import DirProvider, KvgitProvider
+from nontainer.providers import KvgitProvider
 
 
 @pytest.fixture
@@ -58,7 +59,7 @@ def test_turn_mode_defers_ids_to_end_turn(kv_ws):
 
 
 def test_unversioned_provider_yields_none(tmp_path):
-    ws = Workspace(DirProvider(tmp_path / "ws", session="s1"))
+    ws = Workspace(PlainProvider(tmp_path / "ws", session="s1"))
     assert ws.terminal("echo x > f.txt").commit is None
     assert ws.files.write("g.txt", "y").commit is None
     assert ws.head is None and not ws.uncommitted

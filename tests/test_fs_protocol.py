@@ -61,8 +61,9 @@ import pytest
 import termish
 import termish.fs
 from monkeyfs import base as monkeyfs_base
+from plain_provider import PlainProvider
 
-from nontainer.providers import DirProvider, KvgitProvider
+from nontainer.providers import KvgitProvider
 
 #: The protocol, as termish's ``FileSystem`` declares it. Spelled out
 #: rather than derived so that a method vanishing from termish is a
@@ -214,7 +215,7 @@ def _kvgit_fs() -> Iterator[Any]:
 @contextlib.contextmanager
 def _dir_fs() -> Iterator[Any]:
     root = tempfile.mkdtemp()
-    provider = DirProvider(root, session="fs_conformance")
+    provider = PlainProvider(root, session="fs_conformance")
     try:
         yield provider.fs
     finally:
@@ -254,7 +255,7 @@ FILESYSTEMS: list[tuple[str, Callable[[], Any], tuple[Any, ...], tuple[Any, ...]
     ("termish.MemoryFS", _memory_fs, (), ()),
     ("monkeyfs.VirtualFS", _virtual_fs, (), ()),
     ("KvgitProvider.fs", _kvgit_fs, (), ()),
-    ("DirProvider.fs", _dir_fs, (), ()),
+    ("IsolatedFS (tests/plain_provider)", _dir_fs, (), ()),
     ("AgentFSProvider.fs", _agentfs_fs, (_needs_agentfs,), (_needs_agentfs,)),
 ]
 

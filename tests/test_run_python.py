@@ -3,6 +3,7 @@
 import math
 
 import pytest
+from plain_provider import PlainProvider
 
 from nontainer import (
     ModuleGrant,
@@ -10,11 +11,10 @@ from nontainer import (
     PythonConfig,
     Workspace,
 )
-from nontainer.providers import DirProvider
 
 
-def test_basic_exec(dir_ws):
-    r = dir_ws.run_python("total = sum(range(10))\nprint(total)")
+def test_basic_exec(plain_ws):
+    r = plain_ws.run_python("total = sum(range(10))\nprint(total)")
     assert r
     assert r.error is None
     assert r.stdout.strip() == "45"
@@ -22,43 +22,43 @@ def test_basic_exec(dir_ws):
     assert r.duration >= 0
 
 
-def test_error_is_result_not_exception(dir_ws):
-    r = dir_ws.run_python("1/0")
+def test_error_is_result_not_exception(plain_ws):
+    r = plain_ws.run_python("1/0")
     assert not r
     assert r.error is not None
     assert "ZeroDivisionError" in r.error
 
 
-def test_runtime_error_renders_the_full_traceback(dir_ws):
+def test_runtime_error_renders_the_full_traceback(plain_ws):
     """Line numbers are what a repair loop aims at: 'NameError' alone
     sends an agent bisecting; 'line 3' sends it to line 3."""
-    r = dir_ws.run_python("a = 1\nb = 2\nc = missing_name\n")
+    r = plain_ws.run_python("a = 1\nb = 2\nc = missing_name\n")
     assert not r
     assert "Traceback (most recent call last)" in r.error
     assert "line 3" in r.error
     assert "NameError" in r.error
 
 
-def test_error_frames_hide_host_install_paths(dir_ws):
+def test_error_frames_hide_host_install_paths(plain_ws):
     """Frames inside granted libraries keep their module-relative path
     (that's the signal) but lose the host install prefix (that's a
     leak): json/decoder.py, not /…/python3.x/json/decoder.py."""
-    r = dir_ws.run_python("import json\njson.loads('{nope')")
+    r = plain_ws.run_python("import json\njson.loads('{nope')")
     assert not r
     assert 'File "json/' in r.error
     assert "python3." not in r.error
 
 
-def test_machinery_frames_are_dropped(dir_ws):
+def test_machinery_frames_are_dropped(plain_ws):
     """A gate raising through __st_import__ or a monkeyfs interceptor
     is OUR plumbing — an agent reading those frames would go debugging
     the sandbox instead of its own line."""
-    r = dir_ws.run_python("import subprocess")
+    r = plain_ws.run_python("import subprocess")
     assert not r
     assert "line 1" in r.error  # the agent's frame survives
     assert "gates.py" not in r.error and "__st_import__" not in r.error
 
-    r = dir_ws.run_python("open('/no/such/file')")
+    r = plain_ws.run_python("open('/no/such/file')")
     assert not r
     assert "FileNotFoundError" in r.error
     assert "monkeyfs" not in r.error
@@ -95,19 +95,19 @@ def test_pathological_tracebacks_get_middle_elided():
     assert len(out.splitlines()) == 49
 
 
-def test_bare_final_expression_echoes_notebook_style(dir_ws):
+def test_bare_final_expression_echoes_notebook_style(plain_ws):
     """Agents carry the Jupyter prior: a trailing `df.head()` should
     display. Silence costs a wasted retry-with-print."""
-    r = dir_ws.run_python("x = 41\nx + 1")
+    r = plain_ws.run_python("x = 41\nx + 1")
     assert r.stdout.strip() == "42"
     # print(x) is itself a None-valued expression — no double echo
-    r = dir_ws.run_python("print('once')")
+    r = plain_ws.run_python("print('once')")
     assert r.stdout.strip() == "once"
 
 
-def test_echo_is_config_disableable(dir_ws, tmp_path):
+def test_echo_is_config_disableable(plain_ws, tmp_path):
     ws = Workspace(
-        DirProvider(tmp_path / "quiet", session="quiet"),
+        PlainProvider(tmp_path / "quiet", session="quiet"),
         python=PythonConfig(echo="none"),
     )
     r = ws.run_python("1 + 1")
@@ -115,50 +115,50 @@ def test_echo_is_config_disableable(dir_ws, tmp_path):
     ws.close()
 
 
-def test_huge_echoed_value_is_bounded(dir_ws):
+def test_huge_echoed_value_is_bounded(plain_ws):
     """An echoed value rides the prints stream, so a bare expression
     over a big object gets reprobate's structural elision — not 1MB+
     of repr in the observation."""
-    r = dir_ws.run_python("data = [list(range(50)) for _ in range(5000)]\ndata")
+    r = plain_ws.run_python("data = [list(range(50)) for _ in range(5000)]\ndata")
     assert r.truncated
     assert len(r.stdout) < 40_000
 
 
-def test_terminal_python_keeps_script_semantics(dir_ws):
+def test_terminal_python_keeps_script_semantics(plain_ws):
     """The terminal `python` builtin feeds pipelines: a bare trailing
     expression must NOT inject repr lines (python -c semantics, not a
     REPL) — even though it shares the interactive sandbox."""
-    r = dir_ws.terminal("python -c '41 + 1'")
+    r = plain_ws.terminal("python -c '41 + 1'")
     assert r.stdout == ""
-    r = dir_ws.terminal("python -c 'print(41 + 1)'")
+    r = plain_ws.terminal("python -c 'print(41 + 1)'")
     assert r.stdout.strip() == "42"
 
 
-def test_namespace_out_filters_underscore(dir_ws):
-    r = dir_ws.run_python("_private = 1\npublic = 2")
+def test_namespace_out_filters_underscore(plain_ws):
+    r = plain_ws.run_python("_private = 1\npublic = 2")
     assert "public" in r.namespace
     assert "_private" not in r.namespace
 
 
-def test_inputs_bound_and_not_echoed_back(dir_ws):
-    r = dir_ws.run_python("doubled = [x * 2 for x in xs]", inputs={"xs": [1, 2, 3]})
+def test_inputs_bound_and_not_echoed_back(plain_ws):
+    r = plain_ws.run_python("doubled = [x * 2 for x in xs]", inputs={"xs": [1, 2, 3]})
     assert r.namespace["doubled"] == [2, 4, 6]
     assert "xs" not in r.namespace  # injected names are not re-reported
 
 
-def test_unpicklable_inputs_rejected(dir_ws):
+def test_unpicklable_inputs_rejected(plain_ws):
     with pytest.raises(TypeError, match="not picklable"):
-        dir_ws.run_python("pass", inputs={"f": open(__file__)})
+        plain_ws.run_python("pass", inputs={"f": open(__file__)})
 
 
-def test_fs_round_trip_between_tools(dir_ws):
-    dir_ws.run_python("open('out.txt', 'w').write('from python')")
-    r = dir_ws.terminal("cat out.txt")
+def test_fs_round_trip_between_tools(plain_ws):
+    plain_ws.run_python("open('out.txt', 'w').write('from python')")
+    r = plain_ws.terminal("cat out.txt")
     assert r.stdout.strip() == "from python"
 
 
 def test_registered_module(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, python=PythonConfig(modules=[math]))
     r = ws.run_python("import math\nroot = math.sqrt(16)")
     assert r, r.error
@@ -167,7 +167,7 @@ def test_registered_module(tmp_path):
 
 
 def test_module_grant_wraps_module(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, python=PythonConfig(modules=[ModuleGrant(math)]))
     r = ws.run_python("import math\nv = math.floor(3.7)")
     assert r, r.error
@@ -175,8 +175,8 @@ def test_module_grant_wraps_module(tmp_path):
     ws.close()
 
 
-def test_unregistered_import_blocked(dir_ws):
-    r = dir_ws.run_python("import socket")
+def test_unregistered_import_blocked(plain_ws):
+    r = plain_ws.run_python("import socket")
     assert not r
 
 
@@ -190,7 +190,7 @@ def test_host_objects_live_binding(tmp_path):
             return self.n
 
     counter = Counter()
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, python=PythonConfig(host_objects={"counter": counter}))
     r = ws.run_python("val = counter.bump()")
     assert r, r.error
@@ -200,7 +200,7 @@ def test_host_objects_live_binding(tmp_path):
 
 
 def test_plain_data_host_object(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, python=PythonConfig(host_objects={"config": {"k": 7}}))
     r = ws.run_python("v = config['k']")
     assert r, r.error
@@ -211,24 +211,24 @@ def test_plain_data_host_object(tmp_path):
 # -- cache ---------------------------------------------------------------
 
 
-def test_cache_round_trip_across_calls(dir_ws):
-    r1 = dir_ws.run_python("cache['score'] = 42")
+def test_cache_round_trip_across_calls(plain_ws):
+    r1 = plain_ws.run_python("cache['score'] = 42")
     assert r1, r1.error
-    r2 = dir_ws.run_python("doubled = cache['score'] * 2")
+    r2 = plain_ws.run_python("doubled = cache['score'] * 2")
     assert r2, r2.error
     assert r2.namespace["doubled"] == 84
 
 
-def test_cache_host_side_view(dir_ws):
-    dir_ws.run_python("cache['k'] = [1, 2]")
-    assert dir_ws.cache["k"] == [1, 2]
-    dir_ws.cache["j"] = "host-written"
-    r = dir_ws.run_python("v = cache['j']")
+def test_cache_host_side_view(plain_ws):
+    plain_ws.run_python("cache['k'] = [1, 2]")
+    assert plain_ws.cache["k"] == [1, 2]
+    plain_ws.cache["j"] = "host-written"
+    r = plain_ws.run_python("v = cache['j']")
     assert r.namespace["v"] == "host-written"
 
 
 def test_cache_disabled(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, cache=False)
     with pytest.raises(NotSupportedError):
         _ = ws.cache
@@ -238,29 +238,30 @@ def test_cache_disabled(tmp_path):
 
 
 def test_cache_persists_across_instances(tmp_path):
-    p1 = DirProvider(tmp_path / "ws", session="s1")
-    ws1 = Workspace(p1)
-    ws1.run_python("cache['stay'] = 'put'")
-    ws1.close()
+    from nontainer import Store
 
-    p2 = DirProvider(tmp_path / "ws", session="s1")
-    ws2 = Workspace(p2)
-    assert ws2.cache["stay"] == "put"
-    ws2.close()
+    store = Store(tmp_path)
+    try:
+        with store.open("s1") as ws1:
+            ws1.run_python("cache['stay'] = 'put'")
+        with store.open("s1") as ws2:
+            assert ws2.cache["stay"] == "put"
+    finally:
+        store.close()
 
 
 # -- workspace-level guards ----------------------------------------------
 
 
-def test_versioning_verbs_raise_on_dir(dir_ws):
+def test_versioning_verbs_raise_on_dir(plain_ws):
     with pytest.raises(NotSupportedError):
-        dir_ws.commit()
+        plain_ws.commit()
     with pytest.raises(NotSupportedError):
-        dir_ws.fork("other")
+        plain_ws.fork("other")
 
 
 def test_closed_workspace_rejects_calls(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p)
     ws.close()
     with pytest.raises(Exception, match="closed"):
@@ -271,7 +272,7 @@ def test_closed_workspace_rejects_calls(tmp_path):
 
 
 def test_oversized_print_gets_structural_elision(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, max_observation=500)
     r = ws.run_python("print(list(range(100000)))")
     assert r, r.error
@@ -283,7 +284,7 @@ def test_oversized_print_gets_structural_elision(tmp_path):
 
 
 def test_small_stdout_stays_verbatim(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, max_observation=500)
     r = ws.run_python("print('exact text', 42)")
     assert r.stdout.strip() == "exact text 42"
@@ -292,7 +293,7 @@ def test_small_stdout_stays_verbatim(tmp_path):
 
 
 def test_many_prints_share_budget(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, max_observation=600)
     r = ws.run_python("for i in range(50):\n    print(f'row {i}', list(range(1000)))")
     assert r.truncated
@@ -302,7 +303,7 @@ def test_many_prints_share_budget(tmp_path):
 
 
 def test_pure_writes_fall_back_to_head_cut(tmp_path):
-    p = DirProvider(tmp_path / "ws", session="s1")
+    p = PlainProvider(tmp_path / "ws", session="s1")
     ws = Workspace(p, max_observation=100)
     # sys.stdout.write via print's file arg isn't available; use a
     # single huge print STRING — reprobate still hard-caps it.

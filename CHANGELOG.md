@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Removed
+- **The `dir` backend** (`backend="dir"`, `nontainer.providers.DirProvider`). It was unused and unversioned, and it may come back later in a new form.
+  - `Store(backend="dir")` and `workspace(..., backend="dir")` now raise `ValueError`, naming the default `kvgit` backend (on disk, or PostgreSQL with `kv=`) and `agentfs` instead.
+  - The MCP adapter's and `nontainer.migrate`'s `--backend` choices drop `dir`.
+  - The quick-start's first example uses the default backend.
+  - The provider protocol still admits unversioned providers, and the workspace's refusals on them are still tested, against a test-only provider (`tests/plain_provider.py`).
+
 ## 0.8.2 - 2026-09-29
 
 ### Added

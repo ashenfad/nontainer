@@ -17,7 +17,7 @@ pip install nontainer[agentfs]  # + AgentFS backend
 ```python
 from nontainer import workspace
 
-with workspace("demo", backend="dir", store="/tmp/nt") as ws:
+with workspace("demo", store="/tmp/nt") as ws:
     r = ws.terminal("mkdir -p data; echo 'a,b\n1,2' > data/in.csv; cat data/in.csv | wc -l")
     print(r.stdout)      # 2
     print(bool(r))       # True (exit code 0)
