@@ -56,8 +56,7 @@ store.close() -> None                     # also a context manager
 ```
 
 Store layout is the backend's: kvgit keeps one shared store with a
-branch per session, `dir` keeps `<path>/<session>/`, `agentfs` keeps
-`<path>/<session>.db`.
+branch per session, `agentfs` keeps `<path>/<session>.db`.
 
 **Where a kvgit store keeps its data.** On disk under `<path>/kvgit`
 (SQLite, through kvgit's `Disk`) unless told otherwise:
@@ -96,9 +95,8 @@ layout `open` built —
 `kvgit` deletes the named branches from `<path>/kvgit`, and with each
 branch the session-scoped tags it owns, leaving store-scoped ones
 alone, since that scope exists so a publication outlives its session;
-`dir` removes the `<path>/<session>/` trees; `agentfs` unlinks the
-`<path>/<session>.db` files. Plural because a caller often owns more
-than one branch/dir/db per logical session (an app publishing snapshot
+`agentfs` unlinks the `<path>/<session>.db` files. Plural because a
+caller often owns more than one branch/db per logical session (an app publishing snapshot
 branches, a batch cleanup); `sessions` may be a single id or any
 iterable. Idempotent — a name that doesn't exist and a store that was
 never created are both no-ops. Store-level, not live-session: close
@@ -125,7 +123,7 @@ does not hold is a `ValueError` rather than a new branch. `dry_run`
 reports and writes nothing. The same thing from a shell:
 
 ```
-python -m nontainer.migrate [--store DIR] [--backend kvgit|dir|agentfs]
+python -m nontainer.migrate [--store DIR] [--backend kvgit|agentfs]
                             [--session NAME ...] [--dry-run]
 ```
 
@@ -526,8 +524,8 @@ workspace(
 
 Sugar for `Store(store, backend=backend).open(session, ...)` — the
 shortest way in when a caller has one session in mind. Session
-resolution: `kvgit` → branch per session in one shared store; `dir` →
-`store/<session>/`; `agentfs` → `store/<session>.db`. `provider`
+resolution: `kvgit` → branch per session in one shared store;
+`agentfs` → `store/<session>.db`. `provider`
 overrides `backend`/`store` entirely, the same substitution
 `Store(provider_factory=...)` makes, for one session. Session ids are
 validated (`SESSION_ID_RE`) on every path — they often flow from
@@ -1773,12 +1771,11 @@ the importable modules stays true to what the sandbox actually allows.
 
 Which substrate a store uses is `backend=` on `Store` /
 `nontainer.workspace`, or a `provider_factory` for one of your own.
-Three ship:
+Two ship:
 
 | backend | what it is | pick it for |
 |---|---|---|
 | `kvgit` (default) | one shared store, a branch per session | fork, undo, history, merge, tags |
-| `dir` | a plain real directory per session | agent code that needs real files — C extensions, subprocesses, sqlite, mmap |
 | `agentfs` | one SQLite file per session ([Turso AgentFS](https://github.com/tursodatabase/agentfs)), the `[agentfs]` extra | the one-file-artifact and SQL-audit story |
 
 They declare what they can do rather than pretending equivalence, and
@@ -1787,7 +1784,6 @@ They declare what they can do rather than pretending equivalence, and
 | | versioned | staging | cheap_fork | merge | tags | sql_audit |
 |---|---|---|---|---|---|---|
 | Kvgit | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| Dir | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | AgentFS | ❌ (spike) | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 A verb a backend lacks raises `NotSupportedError` naming the
@@ -2191,7 +2187,7 @@ build_server(workspace, *, tools="auto", apps=None, sessions=None,
 ```
 
 CLI: `python -m nontainer.adapters.mcp --session S [--store DIR]
-[--backend kvgit|dir] [--tools auto|terminal|split] [--no-cache]
+[--backend kvgit] [--tools auto|terminal|split] [--no-cache]
 [--module NAME ...] [--apps] [--mount POINT=DIR[:rw] ...]` (stdio
 transport). `--apps` enables the apps loop — a `test_app` tool
 (screenshots return as MCP image content; needs the `[apps]` extra +

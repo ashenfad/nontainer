@@ -346,7 +346,7 @@ see is modified, and what its view hides is not its business.
 **Providers degrade honestly.** kvgit does all of it. AgentFS refuses
 `fork` and `merge` by name until it has a merge engine — a fork you
 cannot merge back is a trap, not a rung — while `diff` and take still
-work. The `dir` backend refuses both.
+work. An unversioned provider refuses both.
 
 ## Tags have two scopes, and nontainer picks them
 

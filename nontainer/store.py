@@ -638,8 +638,7 @@ class Store:
             the same default :func:`nontainer.workspace` has always
             had. Each backend lays out its own tree underneath: kvgit
             keeps one shared store at ``<path>/kvgit`` with a branch
-            per session, ``dir`` keeps ``<path>/<session>/``, and
-            ``agentfs`` keeps ``<path>/<session>.db``.
+            per session, and ``agentfs`` keeps ``<path>/<session>.db``.
         backend: Which substrate the sessions live on.
         kv: Where a ``"kvgit"`` store keeps its data: a kvgit
             ``KVStore`` (``kvgit.kv.postgres.Postgres(...)``, say), or a
@@ -980,8 +979,8 @@ class Store:
         (a restore, a fork from it, a revert or cherry-pick of it).
 
         Close any workspace open on these sessions first, as for
-        :meth:`delete`. The ``dir`` and ``agentfs`` backends keep no
-        table, so there only the cwd key moves, with no commit to name.
+        :meth:`delete`. The ``agentfs`` backend keeps no table, so
+        there only the cwd key moves, with no commit to name.
 
         Returns ``{session: LayoutMigration}`` for every session
         examined, clean ones included (``report.clean``).
