@@ -2,9 +2,9 @@ import hashlib
 import os
 
 import pytest
+from plain_provider import PlainProvider
 
 from nontainer import Workspace
-from nontainer.providers import DirProvider
 
 
 @pytest.fixture(scope="module")
@@ -23,9 +23,10 @@ def chromium_available():
 
 
 @pytest.fixture
-def dir_ws(tmp_path):
-    """A dir-backed workspace with default (stdlib-only) python config."""
-    provider = DirProvider(tmp_path / "ws", session="test-session")
+def plain_ws(tmp_path):
+    """A workspace on an unversioned plain directory (tests/plain_provider),
+    with the default (stdlib-only) python config."""
+    provider = PlainProvider(tmp_path / "ws", session="test-session")
     ws = Workspace(provider)
     yield ws
     ws.close()

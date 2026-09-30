@@ -369,10 +369,11 @@ def test_revert_of_a_commit_that_is_not_there(ws):
 
 
 def test_a_provider_without_a_merge_engine_refuses_by_name(tmp_path):
-    from nontainer import Workspace
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    ws = Workspace(DirProvider(tmp_path / "ws", session="dir"))
+    from nontainer import Workspace
+
+    ws = Workspace(PlainProvider(tmp_path / "ws", session="dir"))
     try:
         assert not ws.caps.merge
         with pytest.raises(NotSupportedError, match="cannot revert"):

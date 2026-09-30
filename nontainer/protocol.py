@@ -21,12 +21,10 @@ Providers are session-scoped: one provider instance == one session's
 world. Session resolution (e.g. "kvgit branch per session id") happens
 in the factory that builds the provider, not here.
 
-The three that ship, under ``nontainer.providers``:
+The two that ship, under ``nontainer.providers``:
 
 - ``KvgitProvider``   (default) — a kvgit ``Worktree`` per session branch.
   staging=True, cheap_fork=True, merge=True, tags=True, index=True.
-- ``DirProvider``     — a real directory via monkeyfs ``IsolatedFS``.
-  versioned=False; the tools work, the time-travel verbs raise.
 - ``AgentFSProvider`` (spike, the ``[agentfs]`` extra) — Turso AgentFS
   via its Python SDK. sql_audit=True, fuse_mount=True (opt-in);
   versioning is not wired, so the commit verbs raise there too.

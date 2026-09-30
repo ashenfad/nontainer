@@ -8,7 +8,7 @@ class WorkspaceError(Exception):
 class NotSupportedError(WorkspaceError):
     """The active provider lacks the capability for this operation.
 
-    Raised by e.g. ``Workspace.fork()`` on a plain-dir provider. Check
+    Raised by e.g. ``Workspace.fork()`` on an unversioned provider. Check
     ``workspace.caps`` before calling capability-gated methods.
     """
 

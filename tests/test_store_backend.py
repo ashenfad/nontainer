@@ -131,7 +131,7 @@ def test_an_explicit_backend_wins_over_the_environment(tmp_path, monkeypatch):
 
 def test_repo_is_a_kvgit_store_verb(tmp_path):
     with pytest.raises(NotSupportedError):
-        Store(tmp_path, backend="dir").repo
+        Store(tmp_path, backend="agentfs").repo
 
 
 def _postgres_url() -> str | None:

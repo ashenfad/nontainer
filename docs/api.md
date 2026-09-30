@@ -35,7 +35,7 @@ sessions live in, and it owns the verbs about the *set* of them.
 Store(
     path: str | Path | None = None,       # default ~/.nontainer
     *,
-    backend: "kvgit" | "dir" | "agentfs" = "kvgit",
+    backend: "kvgit" | "agentfs" = "kvgit",
     kv: KVStore | str | None = None,      # kvgit: where its data lives (below)
     provider_factory: Callable[[str], WorkspaceProvider] | None = None,
 )
@@ -511,7 +511,7 @@ workspace(
     session: str,
     *,
     store: str | Path | None = None,      # default ~/.nontainer
-    backend: "kvgit" | "dir" | "agentfs" = "kvgit",
+    backend: "kvgit" | "agentfs" = "kvgit",
     provider: WorkspaceProvider | None = None,   # overrides backend/store
     python: PythonConfig | None = None,
     mounts: dict[str, Mount] | None = None,

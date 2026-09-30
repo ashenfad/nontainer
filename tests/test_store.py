@@ -369,25 +369,13 @@ def test_session_scoped_tags_stay_off_the_store_surface(tmp_path):
 # -- other backends ----------------------------------------------------------
 
 
-def test_dir_backend_session_set(tmp_path):
-    st = Store(tmp_path, backend="dir")
-    with st.open("s1") as ws:
-        ws.terminal("echo hi > f.txt")
-    assert st.sessions() == ["s1"]
-    assert st.exists("s1")
-    st.delete("s1")
-    assert st.sessions() == []
-
-
 def test_unversioned_backends_have_no_refs_or_tags(tmp_path):
-    st = Store(tmp_path, backend="dir")
-    with st.open("s1"):
-        pass
+    st = Store(tmp_path, backend="agentfs")
     with pytest.raises(NotSupportedError):
         st.resolve("s1@abc")
     with pytest.raises(NotSupportedError):
         st.tags
-    assert st.clean() == 0  # a whole-directory session has nothing to sweep
+    assert st.clean() == 0  # an unversioned store has nothing to sweep
 
 
 # -- bring your own substrate ------------------------------------------------
@@ -465,21 +453,6 @@ def test_tags_add_accepts_forks_and_snapshots_of_its_own(tmp_path):
             kid.terminal("echo y > y.txt")
             st.tags.add(kid, "from-a-fork")
     assert "from-a-fork" in st.tags.list()
-
-
-def test_dir_backend_lists_directories_only(tmp_path):
-    """A session IS a directory on this backend, so a stray file in the
-    store is not one — reporting it would hand back a name open()
-    cannot use."""
-    tmp_path.mkdir(exist_ok=True)
-    (tmp_path / "notes.txt").write_text("not a session")
-    (tmp_path / "loose").write_text("nor is this")
-    st = Store(tmp_path, backend="dir")
-    with st.open("real"):
-        pass
-    assert st.sessions() == ["real"]
-    assert not st.exists("loose")
-    assert not st.exists("notes.txt")
 
 
 def test_agentfs_backend_lists_files_only(tmp_path):

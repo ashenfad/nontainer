@@ -1,39 +1,25 @@
-"""DirProvider: the plain-directory substrate.
+"""A test-only unversioned provider: a plain directory, no history.
 
-The degenerate provider — a real directory via monkeyfs ``IsolatedFS``,
-no versioning machinery at all. The agent still gets the full terminal
-+ sandboxed python + cache experience, against a folder you can open
-in Finder. Time-travel verbs raise ``NotSupportedError``.
+nontainer ships only versioned providers in-tree (kvgit) plus the
+optional AgentFS spike, but the provider protocol still admits
+unversioned ones, and the workspace has to behave well on them: the
+tools work, and every time-travel verb refuses by name. This is the
+provider those tests run against.
 
-Because the files are real, this is also where C-extension workloads
-live happily (sqlite, mmap, subprocesses via future mounts) without
-FUSE — the least-surprising backend precisely because it has the
-fewest virtual behaviors.
-
-Layout:
-
-- ``<root>/``                  — the workspace tree the agent sees
-- ``<root>/.nontainer/kv.pkl`` — the kv store (cache + framework keys)
-
-The ``.nontainer`` directory is framework-internal but visible to the
-agent (v1 keeps it simple: documented, not hidden). Cache key rules
-still hold at the Cache layer regardless of what the agent does to
-the file directly — worst case it corrupts its own cache, which is
-its own workspace to break.
+It is the old ``DirProvider`` (removed in 0.9.0), minus the kv file it
+kept inside the session's own tree: the kv here is an in-memory dict.
 """
 
 from __future__ import annotations
 
-import pickle
-import shutil
-from collections.abc import Iterable, Iterator, MutableMapping
+from collections.abc import Iterable, MutableMapping
 from pathlib import Path
 from typing import Any
 
 from monkeyfs import IsolatedFS
 
-from ..errors import NotSupportedError
-from ..protocol import (
+from nontainer.errors import NotSupportedError
+from nontainer.protocol import (
     Capabilities,
     CommitInfo,
     TagInfo,
@@ -41,10 +27,7 @@ from ..protocol import (
     validate_session_id,
 )
 
-_KV_DIR = ".nontainer"
-_KV_FILE = "kv.pkl"
-
-_DIR_CAPS = Capabilities(
+_PLAIN_CAPS = Capabilities(
     versioned=False,
     staging=False,
     cheap_fork=False,
@@ -55,76 +38,8 @@ _DIR_CAPS = Capabilities(
 )
 
 
-class _FileKV(MutableMapping[str, Any]):
-    """A dict persisted to a pickle file on every mutation.
-
-    Adequate for cache-sized data on an unversioned provider. Not
-    safe for concurrent writers — but neither is the provider (see
-    protocol.py concurrency note).
-    """
-
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._data: dict[str, Any] = {}
-        if path.exists():
-            with open(path, "rb") as f:
-                self._data = pickle.load(f)
-
-    def _flush(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        with open(tmp, "wb") as f:
-            pickle.dump(self._data, f, protocol=pickle.HIGHEST_PROTOCOL)
-        tmp.replace(self._path)
-
-    def __getitem__(self, key: str) -> Any:
-        return self._data[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        self._data[key] = value
-        self._flush()
-
-    def __delitem__(self, key: str) -> None:
-        del self._data[key]
-        self._flush()
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(list(self._data))
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._data
-
-
-class DirProvider:
-    """``WorkspaceProvider`` over a plain directory. See module docstring."""
-
-    @classmethod
-    def delete(cls, path: str | Path, sessions: Iterable[str]) -> None:
-        """Delete the named sessions' directories under the store root.
-
-        ``path`` is the store base (the parent that holds one
-        ``<session>/`` tree per session), NOT a single session's root —
-        this is plural, like the other providers' ``delete``. Deleting
-        a session that doesn't exist is a no-op; so is deleting from a
-        store dir that was never created.
-
-        Ids are validated FIRST, all of them, before anything is
-        removed: ``validate_session_id`` forbids path separators and
-        leading dots, so ``base / session`` can't climb out of the
-        store root — a hostile name raises ``SessionIdError`` instead
-        of ``rmtree``-ing something outside the store.
-        """
-        names = [validate_session_id(s) for s in sessions]
-        base = Path(path).expanduser().resolve()
-        if not base.is_dir():
-            return  # never-materialized store: nothing to delete
-        for session in names:
-            target = base / session
-            if target.is_dir():
-                shutil.rmtree(target)
+class PlainProvider:
+    """A ``WorkspaceProvider`` over a plain directory, unversioned. See the module docstring."""
 
     def __init__(self, root: str | Path, *, session: str) -> None:
         validate_session_id(session)
@@ -132,7 +47,9 @@ class DirProvider:
         self._root = Path(root).expanduser().resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._fs = IsolatedFS(str(self._root))
-        self._kv = _FileKV(self._root / _KV_DIR / _KV_FILE)
+        # In memory, so nothing about it lives in the tree agent code can
+        # reach, and nothing is ever loaded from a file.
+        self._kv: dict[str, Any] = {}
         self._closed = False
 
     # -- identity ------------------------------------------------------
@@ -143,7 +60,7 @@ class DirProvider:
 
     @property
     def caps(self) -> Capabilities:
-        return _DIR_CAPS
+        return _PLAIN_CAPS
 
     @property
     def root(self) -> Path:
@@ -195,7 +112,7 @@ class DirProvider:
     def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
         raise self._unsupported("history")
 
-    def fork(self, name: str, *, at: str | None = None) -> "DirProvider":
+    def fork(self, name: str, *, at: str | None = None) -> "PlainProvider":
         if at is not None:
             from ..errors import NotSupportedError
 
@@ -250,7 +167,7 @@ class DirProvider:
     def delete_tag(self, name: str, *, scope: str = "session") -> None:
         raise self._unsupported("delete_tag")
 
-    def at_tag(self, name: str, *, scope: str = "session") -> "DirProvider":
+    def at_tag(self, name: str, *, scope: str = "session") -> "PlainProvider":
         raise self._unsupported("at_tag")
 
     def diff(self, a: str, b: str) -> "WorkspaceDiff":
@@ -278,7 +195,7 @@ class DirProvider:
 
     def mount(self) -> Any:
         raise NotSupportedError(
-            "DirProvider needs no mount(): the workspace is already a real "
+            "PlainProvider needs no mount(): the workspace is already a real "
             f"directory at {self._root}"
         )
 

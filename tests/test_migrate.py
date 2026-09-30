@@ -357,30 +357,6 @@ def test_a_head_with_only_the_table_is_refused_too(tmp_path):
     assert excinfo.value.keys == (LEGACY_TABLE_KEY,)
 
 
-def test_a_dir_session_carrying_the_old_cwd_key(tmp_path):
-    """Every backend kept nontainer's own cwd key once. A dir session
-    holds no table, so only the cwd moves, and there is no commit."""
-    store = Store(tmp_path, backend="dir")
-    with store.open("plain") as ws:
-        ws.terminal("mkdir -p deep")
-    from nontainer.providers.dir import DirProvider
-
-    p = DirProvider(tmp_path / "plain", session="plain")
-    p.kv.pop(VirtualFS.CWD_KEY, None)
-    p.kv[LEGACY_CWD_KEY] = "/workspace/deep"
-    p.close()
-
-    with pytest.raises(LegacyLayoutError) as excinfo:
-        store.open("plain")
-    assert "--backend=dir" in str(excinfo.value)
-
-    report = store.migrate_layout()["plain"]
-    assert report.found == (LEGACY_CWD_KEY,)
-    assert report.cwd == "/workspace/deep" and report.commit is None
-    with store.open("plain") as ws:
-        assert ws.terminal("pwd").stdout.strip() == "/workspace/deep"
-
-
 # -- the paths that make an old tree live ---------------------------------------
 
 

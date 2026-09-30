@@ -242,9 +242,9 @@ def test_history_carries_each_commits_parents(kv_ws):
 
 
 def test_dir_provider_merge_unsupported(tmp_path):
-    from nontainer.providers.dir import DirProvider
+    from plain_provider import PlainProvider
 
-    p = DirProvider(tmp_path / "ws", session="dir")
+    p = PlainProvider(tmp_path / "ws", session="dir")
     with pytest.raises(NotSupportedError, match="merge"):
         p.merge("anything")
     p.close()
@@ -389,7 +389,9 @@ def test_workspace_merge_refuses_a_dirty_target(kv_ws):
 
 def test_workspace_merge_needs_the_capability(tmp_path):
     """Providers that cannot merge say so from the facade too."""
-    with workspace("s1", store=tmp_path, backend="dir") as ws:
+    from plain_provider import PlainProvider
+
+    with Workspace(PlainProvider(tmp_path / "ws", session="s1")) as ws:
         assert ws.caps.merge is False
         with pytest.raises(NotSupportedError, match="merge"):
             ws.merge("other")

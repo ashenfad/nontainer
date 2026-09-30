@@ -10,9 +10,11 @@ apps from core churn and makes it portable across providers.
 import re
 from pathlib import Path
 
+from plain_provider import PlainProvider
+
 from nontainer import Workspace
 from nontainer.apps import enable_apps, request
-from nontainer.providers import DirProvider, KvgitProvider
+from nontainer.providers import KvgitProvider
 
 APPS_DIR = Path(__file__).resolve().parents[1] / "nontainer" / "apps"
 
@@ -88,7 +90,7 @@ def test_apps_runs_on_kvgit_provider():
 def test_apps_runs_on_dir_provider(tmp_path):
     """An unversioned, non-staging provider: same apps code, unchanged —
     atomicity degrades honestly (caps-gated), nothing reaches internals."""
-    ws = Workspace(DirProvider(tmp_path / "ws", session="surface-dir"))
+    ws = Workspace(PlainProvider(tmp_path / "ws", session="surface-dir"))
     try:
         _exercise(ws)
     finally:

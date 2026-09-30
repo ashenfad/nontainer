@@ -125,8 +125,8 @@ def _owns_cwd(provider_fs: Any) -> bool:
     their cwd is now equally transient: it starts at the workspace root
     each time the session is opened.
 
-    False for the filesystems that hold cwd in memory (``IsolatedFS``
-    on the dir backend, the AgentFS adapter). There the workspace
+    False for the filesystems that hold cwd in memory (a plain
+    ``IsolatedFS``, the AgentFS adapter). There the workspace
     writes the key itself — inert to the filesystem, read back when the
     session is reopened, which is the persistence those backends would
     otherwise have no way to get.
@@ -597,7 +597,7 @@ def _state_identity(provider: Any) -> "Callable[[], str | None] | None":
     executor must never tag a tree with a state it doesn't hold).
 
     Fully lazy and shape-agnostic: ``head``/``dirty`` may be properties
-    that RAISE on unversioned providers (DirProvider), and ``head`` is a
+    that RAISE on unversioned providers (AgentFSProvider), and ``head`` is a
     property on KvgitProvider but may be a method elsewhere — every
     access happens inside the closure, any failure means "no identity".
     """
@@ -3929,7 +3929,7 @@ def workspace(
     session: str,
     *,
     store: str | Path | None = None,
-    backend: Literal["kvgit", "dir", "agentfs"] = "kvgit",
+    backend: Literal["kvgit", "agentfs"] = "kvgit",
     provider: WorkspaceProvider | None = None,
     python: PythonConfig | None = None,
     mounts: Mapping[str, Mount] | None = None,
@@ -3951,8 +3951,6 @@ def workspace(
 
     - ``"kvgit"``: one shared store at ``store`` (default
       ``~/.nontainer``); ``session`` is a branch. Forks share storage.
-    - ``"dir"``: ``store/<session>/`` as a plain directory
-      (``IsolatedFS``). No versioning; time-travel verbs raise.
     - ``"agentfs"``: ``store/<session>.db``, one AgentFS file per
       session (unversioned spike).
 

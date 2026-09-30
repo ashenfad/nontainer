@@ -3,7 +3,7 @@
 Run over stdio (the common local-agent shape)::
 
     python -m nontainer.adapters.mcp --session my-project
-    python -m nontainer.adapters.mcp --backend dir --store ./scratch \\
+    python -m nontainer.adapters.mcp --store ./scratch \\
         --module math --module json --tools split
     python -m nontainer.adapters.mcp --session webdev --apps  # + curl/test_app
 
@@ -329,7 +329,7 @@ def _build_parser() -> "Any":
     )
     parser.add_argument("--session", default="default")
     parser.add_argument("--store", default=None, help="store directory")
-    parser.add_argument("--backend", default="kvgit", choices=["kvgit", "dir"])
+    parser.add_argument("--backend", default="kvgit", choices=["kvgit"])
     parser.add_argument(
         "--tools", default="auto", choices=["auto", "terminal", "split"]
     )
