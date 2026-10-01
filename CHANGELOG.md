@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.4 - 2026-09-30
 
 ### Added
 - **The sessions helper says when an answer lands.** An embedder that wanted to act on a delegate's answer the moment it arrived had to poll `list()` or `take()`; nothing in `Sessions` notified anyone.
