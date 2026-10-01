@@ -55,10 +55,11 @@ own step, and nothing here takes it.
 from __future__ import annotations
 
 import inspect
+import logging
 import random
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -75,6 +76,8 @@ from .protocol import SESSION_ID_RE, Answer, Job
 if TYPE_CHECKING:
     from .protocol import SessionRunner
     from .workspace import Workspace
+
+_logger = logging.getLogger("nontainer.sessions")
 
 #: What joins a parent's name to a child's pet name. A slash would read
 #: better and is what the design asked for, but a session id becomes a
@@ -167,6 +170,17 @@ class Sessions:
     ``Sessions`` for a delegate passes the delegate's chain, so an
     answer three hops down still names every source.
 
+    ``on_answer(name, answer)`` is called once for every answer that is
+    recorded, on the worker thread that ran the job, once the job has
+    settled: the answer is collectable, the branch is free for a
+    resume, and the child handle is closed. It is how an embedder hears
+    that an answer landed without polling — to start the parent's next
+    turn, say, when nobody is talking to it. A cancelled job's answer
+    is discarded rather than recorded, so it calls nothing. The hook
+    may also be set after construction; one that raises is logged and
+    the job is unaffected. :meth:`wait` is the same news for a caller
+    that would rather block for it.
+
     Not a context the parent workspace owns: build it, and
     :meth:`close` it (or use it as a context manager) when the session
     ends. Closing joins the workers; the branches stay.
@@ -180,7 +194,9 @@ class Sessions:
         budget: Any = None,
         max_workers: int = 4,
         chain: Iterable[str] = (),
+        on_answer: "Callable[[str, Answer], None] | None" = None,
     ) -> None:
+        self.on_answer = on_answer
         self._ws = workspace
         self._runner = runner
         self._forked_at_ok = _accepts_forked_at(runner)
@@ -190,6 +206,10 @@ class Sessions:
             max_workers=max_workers, thread_name_prefix="nontainer-sessions"
         )
         self._lock = threading.Lock()
+        #: Notified, under the lock, whenever an answer becomes
+        #: collectable or a job stops running without one (a cancel, a
+        #: close), which is everything :meth:`wait` waits for.
+        self._settled = threading.Condition(self._lock)
         self._jobs: dict[str, Job] = {}
         self._answers: dict[str, Answer] = {}
         self._futures: dict[str, Future] = {}
@@ -402,7 +422,8 @@ class Sessions:
         answers to the parent the moment they exist rather than
         waiting for it to ask: an embedder polls this where it can
         reach the model — nontainer's agno adapter drains it into the
-        next tool result — and nothing here blocks or notifies.
+        next tool result. Taking never blocks; ``on_answer`` and
+        :meth:`wait` are how a caller learns there is something to take.
 
         Collecting through this TOUCHES each job exactly as
         :meth:`result` does, and marks it collected, so an answer is
@@ -430,6 +451,55 @@ class Sessions:
                 self._jobs[name] = replace(job, touched=now)
                 taken.append((name, answer))
         return taken
+
+    def outstanding(self) -> list[str]:
+        """The jobs this session has not heard the end of: still
+        running, or answered and not yet collected. Oldest ask first.
+
+        A runner asks this of a child that has just replied. A reply
+        given while the child's own delegates are outstanding is the
+        child waiting for them, not its answer (see ``SessionRunner``).
+        """
+        with self._lock:
+            names = [
+                name
+                for name, job in self._jobs.items()
+                if job.status == "running"
+                or (name in self._uncollected and job.status != "expired")
+            ]
+            return sorted(names, key=lambda n: (self._jobs[n].started, n))
+
+    def wait(self, timeout: float | None = None) -> list[str]:
+        """Block until an answer is waiting to be collected, or until no
+        job is running; the names with an answer waiting, in landing
+        order.
+
+        Collects nothing: :meth:`take` or :meth:`result` does that, and
+        the names returned are the ones they will hand over. An empty
+        list means there is nothing to wait for (no job running and
+        none answered), or that ``timeout`` seconds passed first, or
+        that the helper closed. A job cancelled while this waits stops
+        counting as running, so a wait on it alone ends.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._settled:
+            while True:
+                ready = [
+                    name
+                    for name in self._uncollected
+                    if self._jobs[name].status != "expired" and name in self._answers
+                ]
+                if ready:
+                    return sorted(
+                        ready, key=lambda n: (self._jobs[n].finished or 0.0, n)
+                    )
+                running = any(job.status == "running" for job in self._jobs.values())
+                if not running or self._closed:
+                    return []
+                left = None if deadline is None else deadline - time.monotonic()
+                if left is not None and left <= 0:
+                    return []
+                self._settled.wait(left)
 
     def base(self, name: str) -> str | None:
         """The commit job ``name`` was forked from.
@@ -469,6 +539,7 @@ class Sessions:
                 return job
             job = replace(job, status="cancelled", finished=time.time())
             self._jobs[name] = job
+            self._settled.notify_all()
             future = self._futures.get(name)
             token = self._busy.get(name)
         if future is not None and future.cancel():
@@ -592,6 +663,7 @@ class Sessions:
             if self._closed:
                 return
             self._closed = True
+            self._settled.notify_all()
         self._pool.shutdown(wait=True)
         with self._lock:
             children = list(self._children.values())
@@ -916,9 +988,9 @@ class Sessions:
             except BaseException as exc:  # noqa: BLE001 - the job must resolve
                 answer = Answer(text=_error_text(exc), status="failed")
             try:
-                return self._land(name, task, answer, token)
+                settled = self._land(name, task, answer, token)
             except BaseException as exc:  # noqa: BLE001 - as must the landing
-                failed = replace(
+                settled = replace(
                     answer,
                     status="failed",
                     text=(
@@ -927,8 +999,9 @@ class Sessions:
                     ),
                     branch=name,
                 )
-                self._record(name, failed, token)
-                return failed
+                self._record(name, settled, token)
+            self._announce(name, settled)
+            return settled
         finally:
             # The branch is free again however this went, including the
             # ways that record no answer: a job the caller cancelled
@@ -938,6 +1011,21 @@ class Sessions:
             # so this frees the branch only while it is still this
             # run's to free.
             self._release(name, token)
+
+    def _announce(self, name: str, answer: Answer) -> None:
+        """Call ``on_answer`` for an answer that was recorded. Not for a
+        job cancelled first: its answer was discarded, and that is not
+        news. Never raises, because the job has already resolved."""
+        callback = self.on_answer
+        if callback is None:
+            return
+        with self._lock:
+            if self._answers.get(name) is not answer:
+                return
+        try:
+            callback(name, answer)
+        except Exception:  # noqa: BLE001 - the job is settled either way
+            _logger.warning("sessions: on_answer raised for %s", name, exc_info=True)
 
     def _session_of(self, name: str) -> str:
         with self._lock:
@@ -1113,6 +1201,7 @@ class Sessions:
             self._release_locked(name, token)
             self._answers[name] = answer
             self._uncollected.add(name)
+            self._settled.notify_all()
             self._jobs[name] = replace(
                 job,
                 status=answer.status,

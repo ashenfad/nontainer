@@ -1286,6 +1286,15 @@ class SessionRunner(Protocol):
     caller passes it only to a runner whose signature accepts it (by
     name or through ``**kwargs``), so a runner written without it keeps
     working unchanged.
+
+    A reply is the answer only when the child has nothing outstanding.
+    A delegate may delegate, and one that ends its turn to wait for its
+    own delegates replies with that waiting. A runner checks the
+    child's helper (``Sessions.outstanding``) after each reply; while
+    it is not empty, it waits (``Sessions.wait``), runs a turn that
+    delivers the answers, and returns the reply given once nothing is
+    outstanding. Returning the waiting reply strands the deeper
+    answers.
     """
 
     def run(

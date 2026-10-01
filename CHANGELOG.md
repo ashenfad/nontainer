@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **The sessions helper says when an answer lands.** An embedder that wanted to act on a delegate's answer the moment it arrived had to poll `list()` or `take()`; nothing in `Sessions` notified anyone.
+  - **`on_answer(name, answer)`**, passed to `Sessions(...)` or set later, is called once for every answer recorded. It runs on the worker thread that ran the job, after the job has settled: the answer is collectable, the branch is free for a `resume`, and the child handle is closed. A cancelled job's answer is discarded, so it calls nothing. A hook that raises is logged and leaves the job alone.
+  - **`wait(timeout=None)`** blocks until an answer is waiting to be collected, or until no job is running, and returns the names with an answer waiting. It collects nothing.
+  - **`outstanding()`** lists the jobs not yet heard the end of: running, or answered and not collected.
+- **A runner's obligation is written down.** A delegate that ends its turn to wait for its own delegates replies with that waiting, and a runner that returns it as the answer strands the deeper answers. `SessionRunner` and `docs/sessions.md` now say what a runner does instead: while the child has anything outstanding, wait, run a turn that delivers the answers, and return the reply given once nothing is outstanding.
+
 ### Fixed
 - **The `test_app` tool description lists `goto`.** The driver has always run `{"goto": "page.html"}`, and `docs/apps.md` documented it, but the description the model reads left it out. An agent checking a video had only a skill's example to go on, doubted it, and first seeked the player page instead of the composition. The description now names it, and says a run starts on `index.html` and that the actions after a `goto` run on the new page. A test reads the driver's own dispatch and fails if any action it runs is missing from the description.
 

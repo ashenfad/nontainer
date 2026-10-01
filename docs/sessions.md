@@ -23,12 +23,15 @@ primitives.
 ```python
 from nontainer.sessions import Sessions
 
-sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=())
+sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=(), on_answer=None)
 sessions.ask(task, *, name=None, paths=None, inherit="fresh",
              fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
 sessions.take() -> list[tuple[str, Answer]]   # every answer not yet collected
+sessions.outstanding() -> list[str]  # running, or answered and not yet collected
+sessions.wait(timeout=None) -> list[str]   # blocks until an answer is waiting or none runs
+sessions.on_answer = fn              # fn(name, answer), once per recorded answer
 sessions.cancel(name) -> Job
 sessions.keep(name) -> Job           # out of the retention sweep, for good
 sessions.base(name) -> str | None    # the commit it was forked from
@@ -173,13 +176,31 @@ twice. A cancelled job never appears, since its answer was discarded,
 and an expired one drops out with its branch; a delegate asked again
 (`resume`) lands a new answer and appears again.
 
-Notification is still the embedder's, and nothing here does it. The
-agno adapter's inbox (the [API reference](api.md) has the wiring) is
-one such notifier: with `tool_hooks` bound it calls `take()` at every
-tool result and delivers the answers there — mid-turn rather than on
-the next one — framed as the delegation mechanism speaking rather than
-as the person the agent works for. `inbox.on_delivered` is where an
-embedder records that delivery.
+The helper says when an answer lands; what the parent does about it
+is the embedder's. Two ways to hear it, both without polling:
+
+- **`on_answer(name, answer)`** is called once for every answer that is
+  recorded, on the worker thread that ran the job, after the job has
+  settled: the answer is collectable, the branch is free for a
+  `resume`, and the child handle is closed. A cancelled job's answer is
+  discarded rather than recorded, so it calls nothing, and a hook that
+  raises is logged without touching the job. It is the place to start
+  the parent's next turn when nobody is talking to it.
+- **`wait(timeout=None)`** blocks until an answer is waiting to be
+  collected, or until no job is running, and returns the names with an
+  answer waiting. It collects nothing. An empty list means there was
+  nothing to wait for, the timeout passed, or the helper closed.
+
+`outstanding()` lists the jobs not yet heard the end of: still running,
+or answered and not collected.
+
+Delivering an answer is still the embedder's too. The agno adapter's
+inbox (the [API reference](api.md) has the wiring) is one way: with
+`tool_hooks` bound it calls `take()` at every tool result and delivers
+the answers there — mid-turn rather than on the next one — framed as
+the delegation mechanism speaking rather than as the person the agent
+works for. `inbox.on_delivered` is where an embedder records that
+delivery.
 
 ### Retention: an idle TTL the embedder sweeps
 
@@ -237,6 +258,19 @@ helper calls it on a worker thread of its own, so a runner with an
 async loop blocks on its own future inside it. A runner that raises
 does not lose the job — it resolves as `failed` with the exception's
 text as the answer.
+
+**A reply is not always the answer.** A delegate may delegate, and an
+agent told to end its turn while its own delegates work (rather than
+poll for them) replies "waiting on them" with its delegates still
+running. Returned as the answer, that strands their results: the parent
+gets the waiting message, and the delegate's delegates answer to a
+session nobody runs again. So a runner checks the child's own helper
+after each reply. While `outstanding()` is not empty, the reply is the
+child waiting: the runner blocks in `wait()`, runs another turn that
+delivers what `take()` hands over, and returns the reply the child
+gives once nothing is outstanding. A runner bounds those extra turns by
+its own measure, and when it stops early it should say in the answer
+which delegates went unread.
 
 `forked_at` is the parent's commit the child was forked from (`None`
 when the parent's provider keeps no commits). It is a parameter rather
