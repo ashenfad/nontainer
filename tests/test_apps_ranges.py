@@ -52,6 +52,9 @@ def test_what_is_answered_with_the_whole_file():
     for spec in (None, "", "bytes=0-1,5-6", "items=0-1", "bytes=x-y", "bytes=5-2"):
         assert _ranged(spec) is None, spec
     assert _ranged("bytes=0-1", **{"if-range": '"v1"'}) is None
+    # digits int() refuses or that no file size needs: never converted
+    for spec in ("bytes=\u00b2-", "bytes=-\u0663", "bytes=-" + "9" * 5000):
+        assert _ranged(spec) is None, spec[:20]
     assert _byte_range(request("GET", "/x", headers={"Range": "bytes=0-1"}), 10) == (
         0,
         1,
@@ -108,6 +111,9 @@ def test_a_static_file_answers_the_range_it_is_asked_for(served, path):
     beyond = _get(served, path, range="bytes=5000-")
     assert beyond.status == 416
     assert beyond.headers["content-range"] == "bytes */1024"
+
+    overlong = _get(served, path, range="bytes=-" + "9" * 5000)
+    assert overlong.status == 200 and overlong.content == BODY
 
 
 def test_the_size_caps_judge_the_file_not_the_part(served):
