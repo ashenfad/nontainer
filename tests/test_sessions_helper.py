@@ -1547,3 +1547,33 @@ def test_outstanding_runs_from_asked_to_collected(parent, store):
         assert sessions.outstanding() == [job.name]  # answered, not collected
         sessions.take()
         assert sessions.outstanding() == []
+
+
+def test_a_resume_between_landing_and_the_hook_does_not_silence_it(
+    parent, store, monkeypatch
+):
+    """``_record`` frees the branch before the run is done, so a resume
+    can start in between and replace the job's current answer. The first
+    answer was recorded all the same, so the hook still hears it: once
+    per recorded answer, the second one included."""
+    heard = []
+    two = threading.Event()
+    original = Sessions._land
+    resumed = []
+
+    def land_then_resume(self, name, task, answer, token):
+        out = original(self, name, task, answer, token)
+        if not resumed:
+            resumed.append(self.ask("again", resume=name))
+        return out
+
+    def on_answer(name, answer):
+        heard.append(str(answer))
+        if len(heard) == 2:
+            two.set()
+
+    monkeypatch.setattr(Sessions, "_land", land_then_resume)
+    with Sessions(parent, Echo(), max_workers=2, on_answer=on_answer) as sessions:
+        sessions.ask("first")
+        assert two.wait(10)
+    assert sorted(heard) == ["answering again", "answering first"]

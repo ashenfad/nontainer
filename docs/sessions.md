@@ -182,8 +182,10 @@ is the embedder's. Two ways to hear it, both without polling:
 - **`on_answer(name, answer)`** is called once for every answer that is
   recorded, on the worker thread that ran the job, after the job has
   settled: the answer is collectable, the branch is free for a
-  `resume`, and the child handle is closed. A cancelled job's answer is
-  discarded rather than recorded, so it calls nothing, and a hook that
+  `resume`, and the child handle is closed. An answer a `resume` has
+  replaced by then is still reported, since it was recorded. A
+  cancelled job's answer is discarded rather than recorded, so it calls
+  nothing, and a hook that
   raises is logged without touching the job. It is the place to start
   the parent's next turn when nobody is talking to it.
 - **`wait(timeout=None)`** blocks until an answer is waiting to be
