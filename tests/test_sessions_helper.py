@@ -1440,3 +1440,110 @@ def test_a_resumed_delegate_is_taken_again(parent, store):
 
         taken = sessions.take()
         assert [(name, str(a)) for name, a in taken] == [(job.name, "second pass")]
+
+
+# -- hearing back: on_answer, wait, outstanding ----------------------------------
+
+
+def test_on_answer_is_called_once_the_job_has_settled(parent, store):
+    """The hook is how an embedder hears an answer landed without
+    polling, so when it runs the answer must already be collectable and
+    the branch free for a resume."""
+    heard = []
+    done = threading.Event()
+
+    def on_answer(name, answer):
+        job = next(j for j in sessions.list() if j.name == name)
+        heard.append((name, str(answer), job.status, sessions.outstanding()))
+        done.set()
+
+    runner = Scripted(store, {"/workspace/report.md": "polished\n"}, text="polished")
+    with Sessions(parent, runner, on_answer=on_answer) as sessions:
+        job = sessions.ask("polish it")
+        assert done.wait(10)
+        assert heard == [(job.name, "polished", "answered", [job.name])]
+        # and it is still there for whoever collects it
+        assert [n for n, _ in sessions.take()] == [job.name]
+
+
+def test_on_answer_may_be_set_later_and_hears_a_failure_too(parent, store):
+    class Broken:
+        def run(self, session, task, *, budget=None):
+            raise RuntimeError("the model went away")
+
+    heard = []
+    with Sessions(parent, Broken()) as sessions:
+        sessions.on_answer = lambda name, answer: heard.append(answer.status)
+        sessions.ask("try", wait=True)
+    assert heard == ["failed"]
+
+
+def test_on_answer_is_not_called_for_a_cancelled_job(parent, store):
+    """A cancelled job's answer is discarded, so it is not news."""
+    release = threading.Event()
+    heard = []
+    runner = Echo(release=release)
+    with Sessions(parent, runner, on_answer=lambda *a: heard.append(a)) as sessions:
+        job = sessions.ask("go")
+        sessions.cancel(job.name)
+        release.set()
+        sessions.close()  # joins the worker
+    assert heard == []
+
+
+def test_a_hook_that_raises_leaves_the_job_alone(parent, store, caplog):
+    def broken(name, answer):
+        raise ValueError("embedder bug")
+
+    runner = Scripted(store, {}, text="fine")
+    with caplog.at_level("WARNING", logger="nontainer.sessions"):
+        with Sessions(parent, runner, on_answer=broken) as sessions:
+            job = sessions.ask("go")
+            landed(sessions, job.name)
+            sessions.close()
+            assert str(sessions.result(job.name)) == "fine"
+    assert "on_answer raised" in caplog.text
+
+
+def test_wait_returns_when_an_answer_lands_and_collects_nothing(parent, store):
+    release = threading.Event()
+    runner = Echo(release=release)
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("go")
+        threading.Timer(0.2, release.set).start()
+        assert sessions.wait(timeout=10) == [job.name]
+        # still waiting to be collected, so a second wait returns at once
+        assert sessions.wait(timeout=10) == [job.name]
+        assert [n for n, _ in sessions.take()] == [job.name]
+        # collected, and nothing runs: nothing to wait for
+        assert sessions.wait(timeout=10) == []
+
+
+def test_wait_ends_on_a_timeout_or_a_cancel(parent, store):
+    release = threading.Event()
+    runner = Echo(release=release)
+    with Sessions(parent, runner) as sessions:
+        job = sessions.ask("go")
+        started = time.monotonic()
+        assert sessions.wait(timeout=0.2) == []
+        assert time.monotonic() - started >= 0.2
+
+        threading.Timer(0.2, sessions.cancel, args=(job.name,)).start()
+        started = time.monotonic()
+        assert sessions.wait(timeout=10) == []
+        assert time.monotonic() - started < 5
+        release.set()
+
+
+def test_outstanding_runs_from_asked_to_collected(parent, store):
+    release = threading.Event()
+    runner = Echo(release=release)
+    with Sessions(parent, runner) as sessions:
+        assert sessions.outstanding() == []
+        job = sessions.ask("go")
+        assert sessions.outstanding() == [job.name]  # running
+        release.set()
+        landed(sessions, job.name)
+        assert sessions.outstanding() == [job.name]  # answered, not collected
+        sessions.take()
+        assert sessions.outstanding() == []
