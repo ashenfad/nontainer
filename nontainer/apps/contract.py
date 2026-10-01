@@ -96,7 +96,18 @@ def _coerce(value: Any, typ: type) -> tuple[bool, Any]:
     return False, None
 
 
-_HEADER_ALLOW = frozenset({"content-type", "accept", "authorization", "user-agent"})
+_HEADER_ALLOW = frozenset(
+    {
+        "content-type",
+        "accept",
+        "authorization",
+        "user-agent",
+        # A media element seeking into a file asks for part of it; a
+        # static path answers with that part (see dispatch's ranges).
+        "range",
+        "if-range",
+    }
+)
 
 
 def filter_headers(raw: Any) -> dict[str, str]:
@@ -121,6 +132,8 @@ _RESPONSE_HEADER_ALLOW = frozenset(
         "last-modified",
         "content-disposition",
         "location",
+        "accept-ranges",
+        "content-range",
     }
 )
 """``vary`` belongs with ``cache-control`` and cannot be split from it.

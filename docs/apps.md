@@ -292,7 +292,19 @@ executor can carry ...`). `LocalExecutor` has no ceiling.
 execution, up to 64 MiB of body, so the defaults work there unchanged.
 
 Declared `static_assets` are exempt; a static file from the workspace
-is held to the caps like a handler's body.
+is held to the caps like a handler's body. A file asked for a byte
+range at a time is judged whole, so one too big to serve is not served
+in pieces either.
+
+Static files, from the workspace and from `static_assets` alike, answer
+a single `Range: bytes=…` with `206 Partial Content`, read only the
+bytes asked for, and say `Accept-Ranges: bytes` on a whole response.
+That is what lets a browser seek an `<audio>` or `<video>` clip: without
+it, a player started part-way into a clip plays it from its beginning,
+or not at all. Several ranges, another unit, or a Range carrying
+`If-Range` get the whole file; a range starting past the end gets `416`.
+Media files carry their own content type (`audio/wav`, `audio/mpeg`,
+`video/mp4`, …), as do `gif`, `webp` and `jpeg` images.
 
 `ws-curl` on a `DudExecutor` prints at most 768 KiB of body to stdout,
 which is the frame its answer rides back into the guest on. A larger
