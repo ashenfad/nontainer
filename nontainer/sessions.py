@@ -174,9 +174,9 @@ class Sessions:
     recorded, on the worker thread that ran the job, once the job has
     settled: the answer is collectable, the branch is free for a
     resume, and the child handle is closed. An answer a resume has
-    replaced by then is still reported: it was recorded. It is how an embedder hears
-    that an answer landed without polling — to start the parent's next
-    turn, say, when nobody is talking to it. A cancelled job's answer
+    replaced by then is still reported: it was recorded. It is how an
+    embedder hears that an answer landed without polling — to start
+    the parent's next turn, say, when nobody is talking to it. A cancelled job's answer
     is discarded rather than recorded, so it calls nothing. The hook
     may also be set after construction; one that raises is logged and
     the job is unaffected. :meth:`wait` is the same news for a caller
