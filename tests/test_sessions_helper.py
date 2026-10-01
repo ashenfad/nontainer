@@ -1563,8 +1563,11 @@ def test_a_resume_between_landing_and_the_hook_does_not_silence_it(
 
     def land_then_resume(self, name, task, answer, token):
         out = original(self, name, task, answer, token)
+        # Claimed before asking: the resumed run lands through this
+        # wrapper too, possibly before ``ask`` has returned here.
         if not resumed:
-            resumed.append(self.ask("again", resume=name))
+            resumed.append(name)
+            self.ask("again", resume=name)
         return out
 
     def on_answer(name, answer):
