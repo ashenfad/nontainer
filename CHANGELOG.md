@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **An app's audio and video can be scrubbed.** Static files ignored HTTP `Range` requests and always came back whole, so a browser could not seek a media clip it had not already cached. In a scrubbed video, a clip started part-way through played from its beginning, or stayed silent until playback crossed its start. Found in a HyperFrames video whose narration went quiet after every scrub.
+  - **Static files answer a single byte range** with `206 Partial Content` and `Content-Range`, reading only the bytes asked for, and say `Accept-Ranges: bytes` on a whole response. Several ranges, another unit, or a Range with `If-Range` get the whole file, which a server may always do; a range past the end gets `416`. This covers workspace files and declared `static_assets`, in the live preview, published apps and `test_app` alike.
+  - **`range` and `if-range` reach dispatch,** and **`accept-ranges` and `content-range` reach the client**: both header allowlists were missing them.
+  - **The response caps judge the whole file,** so a file too big to serve is not served a range at a time.
+  - **Media and more image types are named:** `wav`, `mp3`, `ogg`, `opus`, `m4a`, `aac`, `flac`, `mp4`, `webm`, `mov`, plus `jpeg`, `gif`, `webp`, `avif`, `ico`, `pdf` and `csv`. They were served as `application/octet-stream`.
+
 ## 0.8.4 - 2026-09-30
 
 ### Added

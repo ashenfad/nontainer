@@ -115,6 +115,27 @@ _STATIC_TYPES = {
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
+    ".ico": "image/x-icon",
+    # Media an app plays. The browser sniffs most of these whatever the
+    # type says, but a named type is what a reader of the response, and
+    # a strict client, goes by.
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".flac": "audio/flac",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".pdf": "application/pdf",
+    ".csv": "text/csv; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
     # Vendored bundles bring these. A font survives the octet-stream
     # fallback; wasm does NOT — WebAssembly.instantiateStreaming refuses
@@ -175,6 +196,84 @@ def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
             raise ValueError(f"static_assets source is not a directory: {real}")
         out[prefix] = ReadOnlyFS(IsolatedFS(str(real)))
     return out
+
+
+def _byte_range(request: Request, size: int) -> tuple[int, int] | str | None:
+    """The single byte range ``request`` asks of a ``size``-byte file, as
+    ``(first, last)`` inclusive; ``"unsatisfiable"`` for one that lies
+    outside it; ``None`` to answer with the whole file.
+
+    The whole file answers a request with no ``Range``, one in a form
+    this does not take (several ranges, another unit, bad syntax: a
+    server may ignore a Range it does not support), and one carrying
+    ``If-Range``: these responses carry no validator, so a client's
+    condition cannot be confirmed, and the spec's answer to that is the
+    whole representation.
+    """
+    headers = {str(k).lower(): str(v) for k, v in (request.headers or {}).items()}
+    spec = headers.get("range", "").strip()
+    if not spec or "if-range" in headers:
+        return None
+    unit, _, ranges = spec.partition("=")
+    if unit.strip().lower() != "bytes" or "," in ranges:
+        return None
+    first_s, dash, last_s = ranges.strip().partition("-")
+    if not dash or not (first_s.isdigit() or (first_s == "" and last_s.isdigit())):
+        return None
+    if last_s and not last_s.isdigit():
+        return None
+    if first_s == "":  # a suffix: the last N bytes
+        n = int(last_s)
+        if n == 0 or size == 0:
+            return "unsatisfiable"
+        return max(0, size - n), size - 1
+    first = int(first_s)
+    if last_s and int(last_s) < first:
+        return None  # malformed: ignored, as a Range a server does not take
+    if first >= size:
+        return "unsatisfiable"
+    last = int(last_s) if last_s else size - 1
+    return first, min(last, size - 1)
+
+
+def _static_file(fs: Any, path: str, request: Request) -> WireResponse:
+    """A static file, whole or the byte range the request asks for.
+
+    Ranges are what let a media element seek. Without them a browser
+    can only seek within what it already holds, and an audio or video
+    clip that a player starts part-way through (a scrubbed video) plays
+    from its beginning instead, or not at all. Only the asked-for bytes
+    are read.
+    """
+    content_type = _content_type(path)
+    size = fs.getsize(path)
+    wanted = _byte_range(request, size)
+    if wanted == "unsatisfiable":
+        return WireResponse(
+            416,
+            b"",
+            content_type,
+            {"content-range": f"bytes */{size}", "accept-ranges": "bytes"},
+        )
+    if wanted is None:
+        return WireResponse(
+            200, fs.read(path), content_type, {"accept-ranges": "bytes"}
+        )
+    first, last = wanted
+    return WireResponse(
+        206,
+        fs.read(path, first, last - first + 1),
+        content_type,
+        {"content-range": f"bytes {first}-{last}/{size}", "accept-ranges": "bytes"},
+    )
+
+
+def _full_size(resp: WireResponse) -> int:
+    """The size of the whole file behind a static response: a range
+    answers with part of it, and the caps judge the file, not the
+    part, so a file too big to serve is not served a piece at a time."""
+    total = resp.headers.get("content-range", "").rpartition("/")[2]
+    return int(total) if total.isdigit() else len(resp.content)
 
 
 def _content_type(path: str) -> str:
@@ -665,7 +764,7 @@ class AppRuntime:
         # embedder already made.
         if not api and not asset:
             refusal = size_refusal(
-                len(resp.content),
+                _full_size(resp),
                 resp.content_type,
                 self._config.max_response_bytes,
                 self._config.max_binary_response_bytes,
@@ -888,7 +987,7 @@ class AppRuntime:
         fs = self._ws.files.fs
         if not fs.exists(path) or not fs.isfile(path):
             raise HttpError(404, f"not found: {request.path}")
-        return WireResponse(200, fs.read(path), _content_type(path)), False
+        return _static_file(fs, path, request), False
 
     def _asset_response(self, rel: str, request: Request) -> WireResponse | None:
         """Serve ``rel`` from a declared asset directory, or ``None`` if
@@ -908,7 +1007,7 @@ class AppRuntime:
             if not fs.exists(inner) or not fs.isfile(inner):
                 raise HttpError(404, f"not found: {request.path}")
             self._note_shadowed_asset(rel)
-            return WireResponse(200, fs.read(inner), _content_type(inner))
+            return _static_file(fs, inner, request)
         return None
 
     def _note_shadowed_asset(self, rel: str) -> None:
