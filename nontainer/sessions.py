@@ -173,7 +173,8 @@ class Sessions:
     ``on_answer(name, answer)`` is called once for every answer that is
     recorded, on the worker thread that ran the job, once the job has
     settled: the answer is collectable, the branch is free for a
-    resume, and the child handle is closed. It is how an embedder hears
+    resume, and the child handle is closed. An answer a resume has
+    replaced by then is still reported: it was recorded. It is how an embedder hears
     that an answer landed without polling — to start the parent's next
     turn, say, when nobody is talking to it. A cancelled job's answer
     is discarded rather than recorded, so it calls nothing. The hook
@@ -234,6 +235,10 @@ class Sessions:
         #: earlier run's exit must not then hand it away.
         self._busy: dict[str, int] = {}
         self._token = 0
+        #: The runs whose answer ``_record`` recorded, by token, until
+        #: ``on_answer`` has been told. Kept apart from ``_answers``,
+        #: which a resume may already have emptied by then.
+        self._recorded: set[int] = set()
         self._closed = False
 
     def __repr__(self) -> str:
@@ -1000,7 +1005,7 @@ class Sessions:
                     branch=name,
                 )
                 self._record(name, settled, token)
-            self._announce(name, settled)
+            self._announce(name, settled, token)
             return settled
         finally:
             # The branch is free again however this went, including the
@@ -1012,16 +1017,20 @@ class Sessions:
             # run's to free.
             self._release(name, token)
 
-    def _announce(self, name: str, answer: Answer) -> None:
-        """Call ``on_answer`` for an answer that was recorded. Not for a
+    def _announce(self, name: str, answer: Answer, token: int) -> None:
+        """Call ``on_answer`` for an answer this run recorded. Not for a
         job cancelled first: its answer was discarded, and that is not
-        news. Never raises, because the job has already resolved."""
+        news. Asked of the run rather than of the job's current answer,
+        because a resume between the recording and here has already
+        replaced that, and the answer was recorded all the same. Never
+        raises, because the job has already resolved."""
+        with self._lock:
+            if token not in self._recorded:
+                return
+            self._recorded.discard(token)
         callback = self.on_answer
         if callback is None:
             return
-        with self._lock:
-            if self._answers.get(name) is not answer:
-                return
         try:
             callback(name, answer)
         except Exception:  # noqa: BLE001 - the job is settled either way
@@ -1201,6 +1210,7 @@ class Sessions:
             self._release_locked(name, token)
             self._answers[name] = answer
             self._uncollected.add(name)
+            self._recorded.add(token)
             self._settled.notify_all()
             self._jobs[name] = replace(
                 job,
