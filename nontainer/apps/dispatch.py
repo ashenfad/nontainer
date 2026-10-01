@@ -198,6 +198,12 @@ def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
     return out
 
 
+# One range: ASCII digits only (``str.isdigit`` also takes digits
+# ``int`` refuses), and no more of them than any file size needs, so a
+# position thousands of digits long is not converted at all.
+_RANGE_SPEC = re.compile(r"([0-9]{0,18})-([0-9]{0,18})")
+
+
 def _byte_range(request: Request, size: int) -> tuple[int, int] | str | None:
     """The single byte range ``request`` asks of a ``size``-byte file, as
     ``(first, last)`` inclusive; ``"unsatisfiable"`` for one that lies
@@ -217,11 +223,10 @@ def _byte_range(request: Request, size: int) -> tuple[int, int] | str | None:
     unit, _, ranges = spec.partition("=")
     if unit.strip().lower() != "bytes" or "," in ranges:
         return None
-    first_s, dash, last_s = ranges.strip().partition("-")
-    if not dash or not (first_s.isdigit() or (first_s == "" and last_s.isdigit())):
+    m = _RANGE_SPEC.fullmatch(ranges.strip())
+    if m is None or m.group(1) == m.group(2) == "":
         return None
-    if last_s and not last_s.isdigit():
-        return None
+    first_s, last_s = m.groups()
     if first_s == "":  # a suffix: the last N bytes
         n = int(last_s)
         if n == 0 or size == 0:
