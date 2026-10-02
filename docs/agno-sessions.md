@@ -113,7 +113,9 @@ fires the per-turn commit when a session db is wired in.
 that commit comes from the `end_turn` post hook. With a
 `KvgitSessionDb` on the same workspace it comes from the db instead:
 `upsert_session` writes its keys and then, if the upsert added or
-changed a run, commits them. The post hook becomes a no-op on such a
+changed a run, commits them, with `info={"tool": "turn", "runs":
+{run_id: status}}` naming the runs that write changed. The post hook
+becomes a no-op on such a
 workspace, so wiring it stays harmless and existing embedder code
 keeps working.
 

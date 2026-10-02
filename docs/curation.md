@@ -135,6 +135,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection (`--trace`, `.trace/`, `changed.md`) | proposed |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | built (unreleased); `.trace/` paths arrive with the projection |
+| a turn commit naming the runs it carried (`"runs": {id: status}`) | built (unreleased) |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
 | `Sessions.ask(take=...)`: a fork point with paths taken in | proposed |
 | `metadata.requires` read from `SKILL.md` and checked at install | proposed |
@@ -167,7 +168,7 @@ were run, not just read.
   (`planes.CONVERSATION_PREFIX`); the run format is the adapter's.
 - **A turn's files and its run share a commit** under `commit="turn"`:
   the db commits when agno persists the run, with `info={"tool":
-  "turn"}`. Under `commit="call"` each mutating tool call commits under
+  "turn", "runs": {run_id: status}}` naming the runs it carried. Under `commit="call"` each mutating tool call commits under
   its own name and the run lands in a trailing commit, so the commits
   between two run landings are one run's work either way. agno can
   also persist a run before it ends (`checkpoint="tool-batch"`), with
@@ -388,9 +389,10 @@ s/analyst-42/.trace/runs/014-77b0e2d1/changed.md
 
 Finding the landings means walking the branch's history once. The
 answer belongs to an immutable commit, so it is computed on first read
-and kept. Stamping the run into the commit that lands it — `{"tool":
-"turn", "run": "<id>"}` — lets the walk read commit info instead of a
-session record per commit.
+and kept. The commit that lands a run names it — `{"tool": "turn",
+"runs": {"<id>": "COMPLETED"}}`, or `"RUNNING"` for a checkpoint agno
+wrote mid-run — so the walk reads commit info instead of a session
+record per commit.
 
 ### `ws-git show <ref>:<path>`
 
@@ -1077,7 +1079,7 @@ ws.apply(base, theirs, *, paths=None) -> MergeOutcome
     # the named-base three-way, public, landing in the agent's graph as revert does
 Sessions.ask(..., take={path: ref})                 # a fork point with paths taken in
 store.heads(sessions=None) -> dict[str, str]        # a watermark in one call
-# and where a run lands, its commit info says which: {"tool": "turn", "run": "<id>"}
+# where a run lands, its commit info says which: {"tool": "turn", "runs": {"<id>": "COMPLETED"}}
 
 class TraceSource(Protocol):                        # nontainer.traces
     def runs(self, read) -> list[RunInfo]                    # at one commit
@@ -1121,8 +1123,7 @@ Later: `store.specimen(...)`, `.trace/abandoned/`, and a self-trace
 ## Build order
 
 1. **`ws-git show <ref>:<path>` and the run stamp.** Both are small and
-   useful before anything else here exists. The `show` half is built;
-   the run stamp is next.
+   useful before anything else here exists. Both are built.
 2. **The trace projection**: local rung, agno source, redaction hook.
    It pays for itself in delegation alone — a parent reading how a
    delegate reached its answer, not only the answer.

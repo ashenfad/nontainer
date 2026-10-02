@@ -2079,8 +2079,14 @@ knowledge) is inherited unchanged and writes to `db_path`: those are
 cross-session and must not version with one branch.
 
 **The commit trigger.** `upsert_session` writes its keys and then, when
-the upsert added or changed a run, commits with `{"tool": "turn"}`
-— so the commit happens at the moment agno persists the run. This is
+the upsert added or changed a run, commits with `{"tool": "turn",
+"runs": {run_id: status}}` — so the commit happens at the moment agno
+persists the run, and names the runs that write changed, each with the
+status agno gave it: `"COMPLETED"` for a finished run, `"RUNNING"` for
+one agno checkpointed mid-run (`checkpoint="tool-batch"`), which a
+later commit names again when it ends. A run agno hands back unchanged
+is not written again, so it is not named: reading a history for the
+commit that landed a run is a walk for the first one that names it. This is
 why `session_db=` exists: agno runs post hooks *before* it persists the
 session, so `tk.end_turn` would commit the files without the
 conversation. With a session db wired, `end_turn` is a no-op and stays
