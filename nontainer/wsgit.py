@@ -1249,6 +1249,13 @@ def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     # own, and a store tag that shared one of those names would take a
     # verb about your history somewhere else entirely.
     if word != "HEAD" and not HASH_RE.fullmatch(word) and word not in git.tags():
+        if word == ws.session:
+            # This session's own name, which ws-git branch lists: a
+            # session before a store tag, as for any other name.
+            raise ValueError(
+                f"{word!r} is this session, not a commit: ws-git show HEAD "
+                "shows your last commit, and ws-git log lists the others."
+            )
         if _is_session(ws, word):
             # A session is a branch, and show names one commit: say
             # where its commits are listed and how to name one.
@@ -1373,7 +1380,7 @@ def _show_path(git: AgentGit, ws: Any, ctx: Any, ref: str, path: str) -> Any:
             entries.add(head + slash)
     if not entries:
         hint = ""
-        if "@" not in ref and _is_session(ws, ref):
+        if "@" not in ref and (ref == ws.session or _is_session(ws, ref)):
             # A bare session reads at what its agent last committed,
             # so its newer work in progress is not there to find.
             hint = (
@@ -1400,7 +1407,10 @@ def _commit_for_read(git: AgentGit, ws: Any, ref: str) -> str:
     # take them: a hash or a bookmark of this session's.
     if HASH_RE.fullmatch(ref) or ref in git.tags():
         return ws._ref_commit(ws.session, ref)
-    if _is_session(ws, ref):
+    # This session's own name too, which _is_session leaves out: a
+    # session is read before a store tag of the same name, and this one
+    # is read the way another session would read it.
+    if ref == ws.session or _is_session(ws, ref):
         return git.source_commit(ref)
     tagged = _store_tag_ref(ws, ref)
     if tagged is not None:
