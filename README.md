@@ -109,6 +109,7 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https:
 
 - [Design notes](docs/design.md) -- execution model, commit granularity, tool exposure, and what's still ahead
 - [Browser roadmap](docs/browser-roadmap.md) -- where browser-side serving and compute stand: what shipped, what is next, and the design behind both
+- [Curation](docs/curation.md) -- agents learning from each other's sessions: traces as files, a wiki, skills that ship code, and a gate with no answer key
 
 **Seeing it run**
 

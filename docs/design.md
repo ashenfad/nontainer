@@ -609,6 +609,12 @@ pitch; the pitch is the *workspace*.
   embedder shapes for that audience), `test_app` as a driver protocol,
   the one contract note (`open` binds lazily), and why warmth is the
   embedder's.
+- **Curation** — agents learning from each other's sessions: a
+  conversation read as files beside the tree that wrote it, a wiki kept
+  from what recurs, skills that ship code and upgrade three-way, and a
+  gate that has no answer key, so it tries a skill on forks of real
+  states and then on probation. Written up in
+  [curation.md](curation.md), with a ledger of what is built.
 - **run-ts** — a Node sidecar wrapping
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,
   bridged over an RPC filesystem. The only piece that needs Node;
