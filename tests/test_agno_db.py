@@ -6,6 +6,7 @@ faked, so no key and no network.
 """
 
 import copy
+import inspect
 import json
 from typing import Any, AsyncIterator, Iterator, List
 
@@ -282,6 +283,8 @@ def test_a_checkpointed_run_is_stamped_running_then_finished(tmp_path):
     """agno can persist a run before it ends; the commit that carries
     that checkpoint says so, and the one that lands the finished run
     names the same run again."""
+    if "checkpoint" not in inspect.signature(Agent.__init__).parameters:
+        pytest.skip("this agno has no checkpointing (agno 2.x)")
     ws, db, tk, agent = build(tmp_path)
     agent.checkpoint = "tool-batch"
     out = run_turn(agent, write_turn("a.txt", "A"))
