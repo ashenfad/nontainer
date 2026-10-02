@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`ws-git show` reads other sessions, and one file at a time.** `ws-git log <session>` printed commit ids that `show` then refused, and the only way to read a delegate's file at a commit was to put up a worktree and take it down again.
+  - **`show <session>@<commit>`** shows one of another session's commits: its message and its change, measured against that session's own graph. The commit half may be a short id or that session's own bookmark. The spelling `worktree add` prints for a store tag (`@store/tag/<name>@<commit>`) shows the tagged state, as the bare tag does.
+  - **`show <ref>:<path>`** prints one file at one state, git's `rev:path`. The ref is any the read verbs take: `HEAD`, a commit or bookmark of yours, a session (what its agent last committed), `<session>@<commit>`, or a store tag. The path is read from the root; a leading `/` means the root too, and `./` the working directory. A directory lists its entries, and a binary file says how big it is instead of printing it. Since it moves nothing, it reads at any commit a session holds, the framework's included.
+  - **A bare session name** given to `show` is refused with the two verbs that reach its commits, `ws-git log <session>` and `ws-git show <session>@<commit>`. A path a state does not hold is refused naming the state, and for a bare session it says that its work since its last commit is not there.
+
 ## 0.8.5 - 2026-10-01
 
 ### Fixed
