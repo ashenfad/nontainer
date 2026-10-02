@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **`show <ref>:<path>`** prints one file at one state, git's `rev:path`. The ref is any the read verbs take: `HEAD`, a commit or bookmark of yours, a session (what its agent last committed), `<session>@<commit>`, or a store tag. The path is read from the root; a leading `/` means the root too, and `./` the working directory. A directory lists its entries, and a binary file says how big it is instead of printing it. Since it moves nothing, it reads at any commit a session holds, the framework's included.
   - **A bare session name** given to `show` is refused with the two verbs that reach its commits, `ws-git log <session>` and `ws-git show <session>@<commit>`. A path a state does not hold is refused naming the state, and for a bare session it says that its work since its last commit is not there.
 
+### Fixed
+- **The session db stores each run once.** Every run an agno session db stored was stored again on the next turn, so each commit after it held a second copy instead of sharing the first. Two causes, both in `nontainer.adapters.agno_db`:
+  - **Reads handed agno the stored dicts.** Runs were copied one level deep, and agno's `from_dict` rewrites nested dicts in place, so reading a session turned the stored run's message metrics into `MessageMetrics` objects. Reads now hand agno deep copies of the runs and the session record.
+  - **An unchanged run read as changed.** agno's own load and save turns some empty fields from `None` into `[]`, so a run handed back untouched differed from the stored one. Deciding whether a run changed now treats `None`, an absent key and an empty list or dict as the same.
+
 ## 0.8.5 - 2026-10-01
 
 ### Fixed

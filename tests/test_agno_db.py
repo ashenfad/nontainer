@@ -5,6 +5,7 @@ the toolkit, the workspace and the sandbox all execute; only the LLM is
 faked, so no key and no network.
 """
 
+import copy
 import json
 from typing import Any, AsyncIterator, Iterator, List
 
@@ -231,6 +232,34 @@ def test_session_db_must_be_over_the_same_workspace(tmp_path):
         WorkspaceTools(ws, commit="turn", session_db=db)
     ws.close()
     other.close()
+
+
+def test_a_read_leaves_the_stored_run_as_it_was(tmp_path):
+    """agno's from_dict rewrites the dicts it is handed in place; the
+    db hands it copies, so reading a session cannot turn what the
+    branch stores into agno objects."""
+    ws, db, tk, agent = build(tmp_path)
+    out = run_turn(agent, write_turn("a.txt", "A"))
+    stored = kv_of(ws)[RUN_PREFIX + out.run_id]
+    before = copy.deepcopy(stored)
+
+    db.get_session(ws.session)
+
+    assert kv_of(ws)[RUN_PREFIX + out.run_id] == before
+
+
+def test_later_turns_leave_an_earlier_run_where_it_was(tmp_path):
+    """agno writes a session back with its earlier runs; one it hands
+    back unchanged is not stored again, so every later commit shares
+    it rather than holding a copy of its own."""
+    ws, db, tk, agent = build(tmp_path)
+    first = run_turn(agent, write_turn("a.txt", "A"))
+    stored = copy.deepcopy(kv_of(ws)[RUN_PREFIX + first.run_id])
+
+    run_turn(agent, write_turn("b.txt", "B"))
+    run_turn(agent, write_turn("c.txt", "C"))
+
+    assert kv_of(ws)[RUN_PREFIX + first.run_id] == stored
 
 
 def test_per_call_mode_commits_its_trailing_write(tmp_path):

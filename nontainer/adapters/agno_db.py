@@ -39,6 +39,7 @@ branch. Session state versions, world state does not.
 
 from __future__ import annotations
 
+import copy
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -92,13 +93,43 @@ def _get_many(kv: Any, keys: list[str]) -> dict[str, Any]:
 
 
 def _runs_from(found: dict[str, Any], run_ids: Any) -> list[dict[str, Any]]:
-    """The runs ``found`` holds, in ``run_ids`` order, as fresh dicts."""
+    """The runs ``found`` holds, in ``run_ids`` order, as copies.
+
+    Deep copies: agno's ``from_dict`` rewrites the nested dicts it is
+    handed in place (a message's ``metrics`` becomes a ``MessageMetrics``
+    object), and the store can hand back the very dict it holds. A
+    shallow copy let one read turn the stored run into agno objects,
+    so the next turn's write saw it as changed and stored it again."""
     runs = []
     for rid in run_ids:
         run = found.get(RUN_PREFIX + str(rid))
         if isinstance(run, dict):
-            runs.append(dict(run))
+            runs.append(copy.deepcopy(run))
     return runs
+
+
+def _same(held: Any, run: Any) -> bool:
+    """Whether a run agno writes back says what the stored one says.
+
+    agno's own load-and-save of a session turns some of a run's empty
+    fields from ``None`` into ``[]`` (``events``, for one), so a run
+    written on one turn and handed back unchanged on the next differs
+    from what is stored by nothing but that. Read as a change, every
+    run was stored a second time a turn after it landed. ``None``, an
+    absent key and an empty list or dict are taken to say the same
+    thing; anything else is compared as it is.
+    """
+
+    def empty(value: Any) -> bool:
+        return value is None or value == [] or value == {}
+
+    if empty(held) and empty(run):
+        return True
+    if isinstance(held, dict) and isinstance(run, dict):
+        return all(_same(held.get(k), run.get(k)) for k in held.keys() | run.keys())
+    if isinstance(held, list) and isinstance(run, list):
+        return len(held) == len(run) and all(map(_same, held, run))
+    return held == run
 
 
 def _commit_framework(ws: Workspace, info: dict) -> str | None:
@@ -265,7 +296,8 @@ class KvgitSessionDb(JsonDb):
         """The stored session dict (minus runs), or None on a branch
         that has never held a session."""
         record = _kv(self._ws).get(SESSION_KEY)
-        return dict(record) if isinstance(record, dict) else None
+        # a copy agno may rewrite in place, as with the runs
+        return copy.deepcopy(record) if isinstance(record, dict) else None
 
     def _read_runs(self, run_ids: list[str]) -> list[dict[str, Any]]:
         found = _get_many(_kv(self._ws), [RUN_PREFIX + rid for rid in run_ids])
@@ -452,7 +484,7 @@ class KvgitSessionDb(JsonDb):
             keys = [RUN_PREFIX + str(run["run_id"]) for run in runs]
             held = _get_many(kv, keys)
             for key, run in zip(keys, runs):
-                if held.get(key) != run:
+                if not _same(held.get(key), run):
                     kv[key] = held[key] = run
                     changed = True
 
@@ -820,7 +852,7 @@ class KvgitStoreDb(JsonDb):
 
         found: list[dict[str, Any]] = []
         for branch, record in matched:
-            data = {k: v for k, v in record.items() if k != "run_ids"}
+            data = {k: copy.deepcopy(v) for k, v in record.items() if k != "run_ids"}
             run_ids = record.get("run_ids") or []
             held = self._peek_many(branch, [RUN_PREFIX + str(rid) for rid in run_ids])
             data["runs"] = _runs_from(held, run_ids) or None
