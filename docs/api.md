@@ -2083,7 +2083,7 @@ the upsert added or changed a run, commits with `{"tool": "turn",
 "runs": {run_id: status}}` — so the commit happens at the moment agno
 persists the run, and names the runs that write changed, each with the
 status agno gave it: `"COMPLETED"` for a finished run, `"RUNNING"` for
-one agno checkpointed mid-run (`checkpoint="tool-batch"`), which a
+one agno checkpointed mid-run (`checkpoint="tool-batch"`, agno 3), which a
 later commit names again when it ends. A run agno hands back unchanged
 is not written again, so it is not named: reading a history for the
 commit that landed a run is a walk for the first one that names it. This is
