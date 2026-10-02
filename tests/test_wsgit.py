@@ -2044,3 +2044,21 @@ def test_show_path_needs_a_ref_before_the_colon(peer_ws):
     r = peer_ws.terminal("ws-git show :note.md")
     assert r.exit_code == 2
     assert "needs a ref before the colon" in r.stderr
+
+
+def test_show_reads_this_sessions_own_name_as_a_session(peer_ws, store):
+    """``ws-git branch`` lists this session too, so its name is a
+    session ref here as anywhere: read at its last ws-git commit, and
+    ahead of a store tag that shares the name."""
+    peer_ws.terminal("echo one > a.md")
+    peer_ws.terminal("ws-git commit -m one")
+    store.tags.add(peer_ws, "main")  # a store tag named like the session
+    peer_ws.terminal("echo two > a.md")
+    peer_ws.terminal("ws-git commit -m two")
+
+    r = peer_ws.terminal("ws-git show main:a.md")
+    assert (r.exit_code, r.stdout) == (0, "two\n"), r.stderr
+
+    r = peer_ws.terminal("ws-git show main")
+    assert r.exit_code == 1
+    assert "is this session" in r.stderr and "ws-git show HEAD" in r.stderr
