@@ -83,6 +83,7 @@ stable-contract alias it is in git.
 from __future__ import annotations
 
 import difflib
+import posixpath
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -120,7 +121,7 @@ _USAGE = (
 _SUPPORTED = (
     "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
     "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
-    "log [<session>] [-n N] [--all] [-S <string>] | show <ref> | "
+    "log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | "
     "checkout <ref> [-- <paths>] | "
     "tag [[-f] <name> [<commit>] | -d <name>] | "
     "stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | "
@@ -176,7 +177,10 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     or vanished (-)
   show <ref>        one commit: its message and its diff. A store tag
                     shows the state it names: the commit it stands on,
-                    then anything written after it
+                    then anything written after it. <session>@<commit>
+                    shows one of that session's commits
+  show <ref>:<path> one file at that state, the path from the root; a
+                    directory lists what is in it
   checkout <ref>    restore the tree to a commit of yours (the restore
                     is a new commit)
   checkout <ref> -- <paths>
@@ -1227,30 +1231,227 @@ def _sparse_checkout(ws: Any, ctx: Any, rest: list[str]) -> Any:
 
 
 def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
-    from termish import CommandResult
-
     if len(rest) != 1 or rest[0].startswith("-"):
-        return _usage_error("show takes one ref (a commit from ws-git log).")
+        return _usage_error(
+            "show takes one ref (a commit from ws-git log), or <ref>:<path> "
+            "for one file at that state."
+        )
     word = rest[0]
+    # The colon is the path's: no ref spelling holds one (a store tag
+    # may not, and neither may a session id), so the first one splits.
+    if ":" in word:
+        ref, _, path = word.partition(":")
+        return _show_path(git, ws, ctx, ref, path)
+    if "@" in word:
+        return _show_elsewhere(git, ws, ctx, word)
     # This session's own spellings first, as the take form reads them:
     # HEAD, a hash and a bookmark of this session's are states of its
     # own, and a store tag that shared one of those names would take a
     # verb about your history somewhere else entirely.
     if word != "HEAD" and not HASH_RE.fullmatch(word) and word not in git.tags():
+        if _is_session(ws, word):
+            # A session is a branch, and show names one commit: say
+            # where its commits are listed and how to name one.
+            raise ValueError(
+                f"{word!r} is a session, not a commit: ws-git log {word} lists "
+                f"its commits, and ws-git show {word}@<commit> shows one."
+            )
         tagged = _store_tag_ref(ws, word)
         if tagged is not None:
             return _show_tagged(ws, ctx, word, tagged.commit)
-    commit = git.resolve(rest[0])
+    return _show_commit(git, ws, ctx, git.resolve(word), word)
+
+
+def _show_elsewhere(git: AgentGit, ws: Any, ctx: Any, word: str) -> Any:
+    """``show <session>@<commit>``: one commit of another session, read
+    the way ``log <session>`` reads that session's commits.
+
+    The commit half is that session's to resolve — a short id against
+    its history, a bookmark in its own blob — and what shows is the
+    change measured against its parent in THAT session's graph, as
+    ``show`` measures one of yours. The spelling ``worktree add``
+    prints for a store tag (``@store/tag/<name>@<commit>``) shows the
+    tagged state, as the bare tag does.
+    """
+    from .store import Ref
+
+    parsed = Ref.parse(word)
+    if parsed.tag is not None:
+        return _show_tagged(ws, ctx, parsed.tag, _tag_commit(ws, parsed))
+    if parsed.session == ws.session:
+        return _show_commit(git, ws, ctx, git.resolve(parsed.commit), word)
+    # The one funnel first, so a word that names nothing there is
+    # refused naming the session it was looked for on.
+    whole = ws._ref_commit(parsed.session, parsed.commit)
+    other = _other_session(ws, parsed.session)
+    try:
+        theirs = AgentGit(other)
+        try:
+            commit = theirs.resolve(whole)
+        except ValueError:
+            # Expanded already, so the one refusal left is a commit the
+            # framework made for that session: no change of its agent's
+            # to show, though a tree to read.
+            raise ValueError(
+                f"{parsed.commit} is a commit on {parsed.session!r} that its "
+                f"agent did not make (ws-git log {parsed.session} lists the "
+                f"ones it did); ws-git show {word}:<path> reads a file at it."
+            ) from None
+        return _show_commit(
+            theirs,
+            other,
+            ctx,
+            commit,
+            word,
+            decoration=f" (session: {parsed.session})",
+        )
+    finally:
+        other.close()
+
+
+def _tag_commit(ws: Any, parsed: Any) -> str:
+    """The commit a store-tag ref names, checked against the tag.
+
+    The ref spells the commit as well as the tag, and a tag never
+    moves — so a commit half that is not the tag's (or a prefix of it)
+    names a state the tag does not, and is refused rather than read.
+    """
+    tagged = ws._store_tag_ref(parsed.tag)
+    if tagged is None or not tagged.commit.startswith(parsed.commit):
+        raise ValueError(
+            f"no store tag {parsed.tag!r} at {parsed.commit}: "
+            f"ws-git log {parsed.tag} shows the commit it names"
+        )
+    return tagged.commit
+
+
+def _show_path(git: AgentGit, ws: Any, ctx: Any, ref: str, path: str) -> Any:
+    """``show <ref>:<path>``: one file at one state, git's ``rev:path``.
+
+    The ref is read as every read verb reads one: ``HEAD``, a commit or
+    a bookmark of yours, a session (its last ws-git commit, as ``diff``
+    and ``checkout -- <paths>`` read it), ``<session>@<commit>``, or a
+    store tag. Any commit a ref names is a state with files in it, so
+    this form takes the framework's commits too, which ``show <commit>``
+    refuses — there is a tree to read at every one of them, if no
+    change of the agent's to show.
+
+    A file prints as it is. A directory lists what is in it, git's
+    ``tree`` shape. A binary file says so and how big it is, since its
+    bytes would come back as noise; ``checkout <ref> -- <path>`` takes
+    it into the tree.
+    """
+    if not ref:
+        return _usage_error(
+            "show :<path> needs a ref before the colon "
+            "(HEAD:<path> for your last commit)."
+        )
+    commit = _commit_for_read(git, ws, ref)
+    target = _ref_path(ws, ctx, path)
+    view = ws._provider.files_at(commit)
+    found = read_files(view, [target])
+    spelled = f"{ref}:{path}"
+    if target in found:
+        data = _decode(found[target])
+        text = None
+        if data is not None and b"\x00" not in data:
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                text = None
+        if text is None:
+            size = f"{len(data)} bytes" if data is not None else "not bytes"
+            ctx.stdout.write(f"binary file {spelled} ({size})\n")
+            return None
+        ctx.stdout.write(text)
+        return None
+    prefix = target.rstrip("/") + "/"
+    entries: set[str] = set()
+    for held in view:
+        if held.startswith(prefix):
+            head, slash, _ = held[len(prefix) :].partition("/")
+            entries.add(head + slash)
+    if not entries:
+        hint = ""
+        if "@" not in ref and _is_session(ws, ref):
+            # A bare session reads at what its agent last committed,
+            # so its newer work in progress is not there to find.
+            hint = (
+                f" (a session reads at its last ws-git commit; "
+                f"ws-git log {ref} --all lists every commit it holds)"
+            )
+        raise ValueError(f"path {path!r} does not exist in {ref!r}{hint}")
+    ctx.stdout.write(f"tree {spelled}\n\n" + "\n".join(sorted(entries)) + "\n")
+    return None
+
+
+def _commit_for_read(git: AgentGit, ws: Any, ref: str) -> str:
+    """The commit one ref names, for a verb that only reads a tree."""
+    from .store import Ref
+
+    if ref == "HEAD":
+        return git.resolve("HEAD")
+    if "@" in ref:
+        parsed = Ref.parse(ref)
+        if parsed.tag is not None:
+            return _tag_commit(ws, parsed)
+        return ws._ref_commit(parsed.session, parsed.commit)
+    # Your own spellings before anyone else's, as the other read verbs
+    # take them: a hash or a bookmark of this session's.
+    if HASH_RE.fullmatch(ref) or ref in git.tags():
+        return ws._ref_commit(ws.session, ref)
+    if _is_session(ws, ref):
+        return git.source_commit(ref)
+    tagged = _store_tag_ref(ws, ref)
+    if tagged is not None:
+        return tagged.commit
+    raise ValueError(ws._no_such_ref(ref))
+
+
+def _ref_path(ws: Any, ctx: Any, path: str) -> str:
+    """The path half of ``<ref>:<path>`` → a workspace-absolute path.
+
+    Relative to the workspace root, as git reads ``rev:path`` against
+    the top of the tree — the ref may be another session's, so the
+    caller's working directory says nothing about it. ``./`` and
+    ``../`` opt into the working directory, as in git. A leading ``/``
+    is the root's too (``Ref``'s own ``:/path`` spelling), unless the
+    path already names the root, which is how every verb prints a
+    path outside it.
+    """
+    if path in (".", "..") or path.startswith(("./", "../")):
+        return _abspath(ctx, path)
+    root = ws.root.rstrip("/")
+    if root and (path == root or path.startswith(root + "/")):
+        return posixpath.normpath(path)
+    rel = path.strip("/")
+    if not rel:
+        return root or "/"
+    return posixpath.normpath(f"{root}/{rel}")
+
+
+def _show_commit(
+    git: AgentGit,
+    ws: Any,
+    ctx: Any,
+    commit: str,
+    spelled: str,
+    *,
+    decoration: str = "",
+) -> Any:
+    """One commit of the agent's graph: its message and its change."""
+    from termish import CommandResult
+
     entry = git.entry(commit)
     if entry is None:
-        return CommandResult(exit_code=1, stderr=f"no commit {rest[0]!r} here")
+        return CommandResult(exit_code=1, stderr=f"no commit {spelled!r} here")
     parents = entry.info.get("virtual_parents") or []
     parent = parents[0] if parents else None
     files = entry.info.get("files")
     new = git.files_at(commit)
     old = git.files_at(parent) if parent else {}
     want = set(files) if isinstance(files, list) else (set(new) | set(old))
-    lines = [f"commit {entry.id}"]
+    lines = [f"commit {entry.id}{decoration}"]
     message = entry.info.get("message")
     if message:
         lines.append("")

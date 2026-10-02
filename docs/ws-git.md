@@ -43,6 +43,8 @@ Git's spelling is on the left, what it does here on the right.
 | `log <session>` | another session's commits |
 | `log <tag>` | the commits the tagged state holds |
 | `show <ref>` | one commit: its message and its diff. A store tag shows the state it names: the commit it stands on, then whatever landed after it |
+| `show <session>@<commit>` | one of another session's commits, measured against that session's own graph |
+| `show <ref>:<path>` | one file at that state, the path read from the root; a directory lists what is in it |
 | `checkout <ref>` | restore your tree to one of your commits |
 | `checkout <ref> -- <paths>` | make just those paths match that ref, which may name another session or a store tag |
 | `tag` | your bookmarks, one `name -> commit` per line |
@@ -154,14 +156,18 @@ business:
   back. `checkout` and `show` take one of *your* commits; a commit of
   this session that is not one of yours is refused by name, because
   taking one as your head would strand your whole log behind it.
+  `show <ref>:<path>` is the exception, since it reads a tree and moves
+  nothing: any commit `log --all` prints has files to read.
 - **a session name** — what that session's agent last committed, or its
   branch head when it never used ws-git. `merge <session>`,
   `diff <session>`, `log <session>` and `checkout <session> -- <paths>`
-  all read a name that way, so they cannot disagree about what a
-  delegate said.
+  all read a name that way, and so does `show <session>:<path>`, so
+  they cannot disagree about what a delegate said. A bare session name
+  is not a commit for `show` itself to show: `log <session>` lists its
+  commits, and `show <session>@<commit>` shows one.
 - **`<session>@<commit>`** — one exact state on one session: this commit
   on this branch. `cherry-pick` requires this form, and
-  `worktree add` accepts it.
+  `worktree add` and `show` accept it.
 - **a tag** — a name you gave one of your own commits with `ws-git tag`.
   It is a ref wherever a ref is taken, and `<session>@<tag>` reads
   another session's bookmark the way `<session>@<commit>` reads one of
@@ -430,6 +436,43 @@ merge to be outstanding, and the way back from either is
 Non-file contested state — something no merge function can resolve —
 aborts instead, changes nothing, and says so.
 
+## Reading a file at a state
+
+`ws-git show <ref>:<path>` prints one file as it is at one state — git's
+`rev:path` — without putting up a worktree:
+
+```
+$ ws-git show polish:auth.py
+def login(user):
+    return user.strip().lower()
+
+$ ws-git show polish@dd906ff:helpers
+tree polish@dd906ff:helpers
+
+fmt.py
+parse/
+
+$ ws-git show myapp/v1:app/logo.png
+binary file myapp/v1:app/logo.png (2048 bytes)
+```
+
+The ref is any ref the read verbs take: `HEAD` or a commit or bookmark
+of yours, a session (what its agent last committed), `<session>@<commit>`,
+or a store tag. The path is read from the root, as git reads `rev:path`
+from the top of the tree, because the state may be another session's
+and your working directory says nothing about it; a leading `/` means
+the root too, and `./` opts into the working directory. A directory
+lists what is in it, a subdirectory with its slash, and a binary file
+says how big it is rather than printing it — `ws-git checkout <ref> --
+<path>` takes it into your tree.
+
+It reads the committed state, never anything written since: a
+session's work in progress is not in its last commit, and the refusal
+for a path that is not there says which state was read. Unlike
+`show <commit>`, it takes any commit a session holds — the framework's
+included, from `log --all` — since it moves nothing and every commit
+has a tree to read.
+
 ## Worktrees
 
 `ws-git worktree add <dir> <session>` checks another session's tree out
@@ -546,12 +589,13 @@ while a merge is still outstanding.
 ## Bringing a delegate's work back
 
 A delegate works on a branch of its own and touches none of your files.
-You bring the work back yourself, and there are five ways, in rising
+You bring the work back yourself, and there are six ways, in rising
 order of commitment:
 
 | you want | type |
 |---|---|
 | to read what it changed | `ws-git diff <name>` |
+| to read one of its files | `ws-git show <name>:<path>` |
 | to read its tree with ordinary tools | `ws-git worktree add <dir> <name>` |
 | all of it | `ws-git merge <name>` |
 | some files | `ws-git checkout <name> -- <paths>` |

@@ -1903,3 +1903,144 @@ def test_show_at_a_tag_reports_what_landed_after_its_last_commit(peer_ws, store)
     assert tail, r.stdout
     assert "notes.md" not in head
     assert "+written after the commit" in tail
+
+
+# -- show across sessions, and show <ref>:<path> -----------------------
+
+
+@pytest.fixture
+def author(store):
+    """A session whose agent committed through ws-git, then wrote past
+    its last commit — the shape a delegate's branch has."""
+    peer = store.open("author")
+    register_wsgit(peer)
+    peer.terminal("mkdir -p helpers && echo 'x = 1' > helpers/x.py")
+    peer.terminal("echo hi > note.md")
+    peer.files.write("/workspace/blob.bin", b"\x00\x01\x02")
+    peer.terminal("ws-git commit -m 'first take'")
+    peer.terminal("ws-git tag shipped")
+    peer.terminal("echo wip > wip.md")
+    head = peer.head
+    peer.close()
+    return head
+
+
+def test_show_reads_another_sessions_commit(peer_ws, author):
+    """What a verb prints, a verb accepts: an id ``log <session>``
+    printed shows as ``<session>@<id>``, measured against that
+    session's own graph."""
+    first = peer_ws.terminal("ws-git log author").stdout.split()[0]
+    r = peer_ws.terminal(f"ws-git show author@{first}")
+    assert r.exit_code == 0, r.stderr
+    assert re.match(
+        r"commit [0-9a-f]{40} \(session: author\)\n\n    first take\n", r.stdout
+    ), r.stdout
+    assert "+hi" in r.stdout and "+x = 1" in r.stdout
+    assert "wip" not in r.stdout
+    # that session's own bookmark is a spelling of the commit half
+    r = peer_ws.terminal("ws-git show author@shipped")
+    assert r.exit_code == 0, r.stderr
+    assert "    first take\n" in r.stdout
+
+
+def test_show_of_a_bare_session_says_how_to_name_one_of_its_commits(peer_ws, author):
+    r = peer_ws.terminal("ws-git show author")
+    assert r.exit_code == 1
+    assert "ws-git log author" in r.stderr
+    assert "ws-git show author@<commit>" in r.stderr
+
+
+def test_show_refuses_another_sessions_unknown_or_framework_commit(peer_ws, author):
+    """A word that names nothing there is refused naming the session it
+    was looked for on; a commit the framework made for that session has
+    no change of its agent's to show, and the refusal points at the
+    path form, which reads a tree at any commit."""
+    r = peer_ws.terminal("ws-git show author@zzzzzzz")
+    assert r.exit_code == 1
+    assert "session 'author'" in r.stderr
+
+    framework = author[:7]
+    r = peer_ws.terminal(f"ws-git show author@{framework}")
+    assert r.exit_code == 1
+    assert "its agent did not make" in r.stderr
+    assert f"ws-git show author@{framework}:<path>" in r.stderr
+    r = peer_ws.terminal(f"ws-git show author@{framework}:wip.md")
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout == "wip\n"
+
+
+def test_show_path_prints_one_file_at_one_state(peer_ws, author):
+    """``<ref>:<path>`` is git's ``rev:path``: the file as it was there,
+    the path read from the root."""
+    for ref in ("author", "author@shipped", f"author@{author[:7]}"):
+        r = peer_ws.terminal(f"ws-git show {ref}:note.md")
+        assert (r.exit_code, r.stdout) == (0, "hi\n"), (ref, r.stderr)
+    r = peer_ws.terminal("ws-git show author:helpers/x.py")
+    assert r.stdout == "x = 1\n"
+
+    peer_ws.terminal("echo mine > mine.md")
+    peer_ws.terminal("ws-git commit -m mine")
+    r = peer_ws.terminal("ws-git show HEAD:mine.md")
+    assert (r.exit_code, r.stdout) == (0, "mine\n"), r.stderr
+    peer_ws.terminal("echo changed > mine.md")
+    # the committed state, not the tree as it stands
+    assert peer_ws.terminal("ws-git show HEAD:mine.md").stdout == "mine\n"
+
+
+def test_show_path_spellings_of_the_path(peer_ws, author):
+    """Relative to the root, with or without a leading slash (``Ref``'s
+    own ``:/path``); a path that names the root is taken as given; and
+    ``./`` opts into the working directory, as in git."""
+    for path in ("note.md", "/note.md", "/workspace/note.md"):
+        r = peer_ws.terminal(f"ws-git show author:{path}")
+        assert r.stdout == "hi\n", (path, r.stderr)
+    peer_ws.terminal("mkdir -p helpers && cd helpers")
+    r = peer_ws.terminal("ws-git show author:x.py")
+    assert r.exit_code == 1  # read from the root, not the cwd
+    r = peer_ws.terminal("ws-git show author:./x.py")
+    assert r.stdout == "x = 1\n", r.stderr
+
+
+def test_show_path_lists_a_directory(peer_ws, author):
+    r = peer_ws.terminal("ws-git show author:helpers")
+    assert r.stdout == "tree author:helpers\n\nx.py\n", r.stderr
+    r = peer_ws.terminal("ws-git show author:")
+    assert r.stdout == "tree author:\n\nblob.bin\nhelpers/\nnote.md\n", r.stderr
+
+
+def test_show_path_says_a_binary_file_is_binary(peer_ws, author):
+    r = peer_ws.terminal("ws-git show author:blob.bin")
+    assert (r.exit_code, r.stdout) == (0, "binary file author:blob.bin (3 bytes)\n")
+
+
+def test_show_path_refuses_a_path_the_state_does_not_hold(peer_ws, author):
+    """Work written past a session's last commit is not at that commit,
+    and the refusal for a bare session says which state it read."""
+    r = peer_ws.terminal("ws-git show author:wip.md")
+    assert r.exit_code == 1
+    assert "path 'wip.md' does not exist in 'author'" in r.stderr
+    assert "its last ws-git commit" in r.stderr
+    r = peer_ws.terminal("ws-git show nobody:note.md")
+    assert r.exit_code == 1
+    assert "unknown session or store tag 'nobody'" in r.stderr
+
+
+def test_show_path_reads_a_store_tag(peer_ws, tagged):
+    """A store tag reads frozen at its commit, bare or in the spelling
+    ``worktree add`` prints, whose commit half must be the tag's."""
+    r = peer_ws.terminal("ws-git show myapp/v1:app.py")
+    assert r.stdout == "print('one')\n", r.stderr
+    r = peer_ws.terminal(f"ws-git show @store/tag/myapp/v1@{tagged[:7]}:app.py")
+    assert r.stdout == "print('one')\n", r.stderr
+    r = peer_ws.terminal(f"ws-git show @store/tag/myapp/v1@{tagged[:7]}")
+    assert r.exit_code == 0, r.stderr
+    assert "(tag: myapp/v1)" in r.stdout
+    r = peer_ws.terminal("ws-git show @store/tag/myapp/v1@0000000:app.py")
+    assert r.exit_code == 1
+    assert "no store tag 'myapp/v1' at 0000000" in r.stderr
+
+
+def test_show_path_needs_a_ref_before_the_colon(peer_ws):
+    r = peer_ws.terminal("ws-git show :note.md")
+    assert r.exit_code == 2
+    assert "needs a ref before the colon" in r.stderr
