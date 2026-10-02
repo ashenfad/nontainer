@@ -167,9 +167,11 @@ class KvgitSessionDb(JsonDb):
 
     **The commit trigger.** ``upsert_session`` writes its keys and then,
     when the upsert added or changed a run, commits the workspace
-    with ``info={"tool": "turn"}``. So the turn's files, cache, cwd and
-    conversation land in ONE commit, at the moment agno persists the
-    run. The db and not a post hook fires it because agno's run loop
+    with ``info={"tool": "turn", "runs": {run_id: status}}`` — the runs
+    that write changed, in order, each with the status agno gave it
+    (``"COMPLETED"``, or ``"RUNNING"`` for a checkpoint). So the turn's
+    files, cache, cwd and conversation land in ONE commit, at the moment
+    agno persists the run, and the commit says which run it carried. The db and not a post hook fires it because agno's run loop
     executes post hooks BEFORE it persists the session: a hook-driven
     commit would capture the turn's files but not its conversation, and
     the conversation would ride into the next turn's commit — exactly
@@ -480,13 +482,19 @@ class KvgitSessionDb(JsonDb):
                 )
             run_ids = known[:kept] + incoming
 
-            changed = False
+            # The runs this write changes, each with its status, for the
+            # commit that lands them to name: a reader of the history
+            # can then tell which commit carried which run without
+            # reading the session record at every commit. Usually one
+            # run; a checkpointed run is written again, as RUNNING
+            # first and then finished.
+            written: dict[str, Any] = {}
             keys = [RUN_PREFIX + str(run["run_id"]) for run in runs]
             held = _get_many(kv, keys)
             for key, run in zip(keys, runs):
                 if not _same(held.get(key), run):
                     kv[key] = held[key] = run
-                    changed = True
+                    written[str(run["run_id"])] = run.get("status")
 
             now = int(time.time())
             stored = {k: v for k, v in data.items() if k != "runs"}
@@ -500,7 +508,7 @@ class KvgitSessionDb(JsonDb):
                 stored["updated_at"] = now
             kv[SESSION_KEY] = stored
 
-            if changed:
+            if written:
                 # The conversation is the framework's own write, and it
                 # has to be durable at the moment agno persists the
                 # run. An agent that left a ws-git composition open
@@ -508,7 +516,7 @@ class KvgitSessionDb(JsonDb):
                 # against the agent's own last commit, so this one
                 # leaves its staged set staged and its work in progress
                 # uncommitted.
-                _commit_framework(self._ws, {"tool": "turn"})
+                _commit_framework(self._ws, {"tool": "turn", "runs": written})
 
         if not deserialize:
             out = dict(stored)

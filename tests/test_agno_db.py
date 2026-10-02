@@ -134,11 +134,12 @@ def test_a_turn_is_one_commit_holding_files_and_conversation(tmp_path):
     ws, db, tk, agent = build(tmp_path)
     before = len(list(ws.log()))
 
-    run_turn(agent, write_turn("a.txt", "A"))
+    out = run_turn(agent, write_turn("a.txt", "A"))
 
     entries = list(ws.log())
     assert len(entries) == before + 1
-    assert entries[0].info == {"tool": "turn"}
+    # the commit names the run it carried, and how that run ended
+    assert entries[0].info == {"tool": "turn", "runs": {out.run_id: "COMPLETED"}}
     assert not ws.uncommitted  # the turn is fully committed, nothing left staged
     assert ws.files.fs.read("a.txt") == b"A"
     assert len(run_keys(ws)) == 1
@@ -184,11 +185,11 @@ def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     before = ws.index.status()
     marks = len(list(ws.log()))
 
-    run_turn(agent, ["thinking out loud"])
+    out = run_turn(agent, ["thinking out loud"])
 
     entries = list(ws.log())
     assert len(entries) == marks + 1
-    assert entries[0].info == {"tool": "turn"}
+    assert entries[0].info == {"tool": "turn", "runs": {out.run_id: "COMPLETED"}}
     # the conversation landed — the bug was that it did not
     assert len(run_keys(ws)) == 1
     assert len(db.get_session(ws.session).runs) == 1
@@ -262,17 +263,46 @@ def test_later_turns_leave_an_earlier_run_where_it_was(tmp_path):
     assert kv_of(ws)[RUN_PREFIX + first.run_id] == stored
 
 
+def test_each_turn_commit_names_only_the_run_it_carried(tmp_path):
+    """agno writes the session back with its earlier runs; the stamp
+    names what that write changed, so a second turn's commit carries
+    the second run and not the first."""
+    ws, db, tk, agent = build(tmp_path)
+    first = run_turn(agent, write_turn("a.txt", "A"))
+    second = run_turn(agent, write_turn("b.txt", "B"))
+
+    turns = [e for e in ws.log() if e.info.get("tool") == "turn"]
+    assert [e.info["runs"] for e in turns[:2]] == [
+        {second.run_id: "COMPLETED"},
+        {first.run_id: "COMPLETED"},
+    ]
+
+
+def test_a_checkpointed_run_is_stamped_running_then_finished(tmp_path):
+    """agno can persist a run before it ends; the commit that carries
+    that checkpoint says so, and the one that lands the finished run
+    names the same run again."""
+    ws, db, tk, agent = build(tmp_path)
+    agent.checkpoint = "tool-batch"
+    out = run_turn(agent, write_turn("a.txt", "A"))
+
+    stamps = [e.info["runs"] for e in ws.log() if e.info.get("tool") == "turn"]
+    assert stamps[0] == {out.run_id: "COMPLETED"}
+    assert {out.run_id: "RUNNING"} in stamps[1:]
+
+
 def test_per_call_mode_commits_its_trailing_write(tmp_path):
     """Every mutating call commits; the db's own write closes the turn,
     so the head at the next user message includes the conversation."""
     ws, db, tk, agent = build(tmp_path, commit="call")
     before = len(list(ws.log()))
 
-    run_turn(agent, write_turn("a.txt", "A"))
+    out = run_turn(agent, write_turn("a.txt", "A"))
 
     entries = list(ws.log())
     assert len(entries) == before + 2  # the file_write call, then the turn
-    assert entries[0].info == {"tool": "turn"}
+    assert entries[0].info == {"tool": "turn", "runs": {out.run_id: "COMPLETED"}}
+    assert entries[1].info["tool"] == "file_write"
     assert not ws.uncommitted
     assert len(db.get_session(ws.session).runs) == 1
     ws.close()
