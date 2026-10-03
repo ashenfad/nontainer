@@ -232,6 +232,15 @@ can hold a range is enough.
   `agno-versions` CI matrix.
 - **`compress_tool_results` must stay `True`,** or agno never calls the
   manager.
+- **A compression of an earlier run must be kept.** agno sends earlier
+  runs as copies and drops them before storing the run, so it keeps only
+  the compressions made in a result's own run. One made in a later run
+  is lost, and the same result is compressed again every turn after.
+  The studio copies such compressions onto the session's original
+  messages, which a pre hook hands it and agno stores when the run ends
+  (nontainer-studio #78). The adapter has to do the same, for folds as
+  well as tool results: anything it computes about an earlier run must
+  be stored, or it is computed again every turn.
 - **Token counts are estimates** until the response reports real usage.
   The trigger uses agno's own estimate, `model.count_tokens(messages,
   tools, response_format)`, the same one `should_compress` uses today.
