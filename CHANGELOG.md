@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`ws-git add`** is `stage` under git's name, which is the one agents type. `add <paths>` stages those paths, a directory (`.` included) stages what is modified under it, and `-A` (`--all`) stages everything modified. Other flags are refused with a usage line naming `stage`. An agent's `ws-git add -A >/dev/null` used to fail unseen, so its next commit took whatever happened to be modified.
 
+### Changed
+- **Requires termish 0.2.1,** whose shell is closer to GNU for what agents type in the terminal:
+  - `>/dev/null` discards instead of leaving a `/dev/null` file in the session's tree, where `ws-git status` showed it and a commit swept it in.
+  - grep and sed read POSIX basic regexes without `-E`, so `\+`, `\?`, `\{n\}` and `\(...\)` work, and a bare `|` or `+` is a literal character.
+  - grep exits 1 when nothing matches.
+  - `test` and `[` exist, so `[ -f x ] && ...` works.
+
 ### Fixed
 - **A merge in the same call as a `cd` lands.** A terminal call's writes are committed when the call ends, so `cd /workspace && ws-git merge x` reached `ws.merge` with the `cd` still uncommitted. It was refused with advice for the host ("ws.commit() them"), which an agent cannot follow. `ws-git merge`, `revert`, `cherry-pick` and `stash pop` now commit the call's pending writes first, as autocommit would at the end of the call. The agent's own rule is unchanged: a file that differs from its last ws-git commit still stops a merge, in ws-git's words.
 
