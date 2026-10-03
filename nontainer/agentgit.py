@@ -1070,7 +1070,20 @@ class AgentGit:
 
     # -- merge ---------------------------------------------------------
 
-    def source_commit(self, source: str) -> str:
+    def source_head(self, source: str) -> str:
+        """``source``'s store head, read once.
+
+        A verb that both checks a source and then merges it reads the
+        head here and hands it to :meth:`source_commit`,
+        :meth:`source_uncommitted` and :meth:`source_unresolved`, so all
+        three see one state. Read separately, a source that commits in
+        between — a delegate still running — is checked at one state
+        and merged at another.
+        """
+        self._require("ws-git merge")
+        return self._provider.branch_head(source)
+
+    def source_commit(self, source: str, *, head: str | None = None) -> str:
         """The commit to merge for another session.
 
         Its last AGENT commit, whose tree is exactly what that agent
@@ -1081,11 +1094,14 @@ class AgentGit:
         honest answer.
         """
         self._require("ws-git merge")
-        head = self._provider.branch_head(source)
+        if head is None:
+            head = self._provider.branch_head(source)
         blob = parse_blob(self._provider.key_at(head, BLOB_KEY))
         return blob["head"] or head
 
-    def source_uncommitted(self, source: str) -> tuple[str, ...]:
+    def source_uncommitted(
+        self, source: str, *, head: str | None = None
+    ) -> tuple[str, ...]:
         """Paths on ``source`` its agent has written and not committed.
 
         The other side of :meth:`_modified`, read across the store
@@ -1101,7 +1117,8 @@ class AgentGit:
         a capture taken after the last commit leaves nothing pending.
         """
         self._require("ws-git merge")
-        head = self._provider.branch_head(source)
+        if head is None:
+            head = self._provider.branch_head(source)
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"]
         if virtual is None:
             return ()
@@ -1110,7 +1127,9 @@ class AgentGit:
         changed = self._provider.diff(virtual, head).paths
         return tuple(sorted(drop_ignored(changed, self._ws.root)))
 
-    def source_unresolved(self, source: str) -> tuple[str | None, tuple[str, ...]]:
+    def source_unresolved(
+        self, source: str, *, head: str | None = None
+    ) -> tuple[str | None, tuple[str, ...]]:
         """An unresolved merge on ``source``: where it came from, and the
         paths that still carry its markers in the tree a merge of
         ``source`` would take.
@@ -1123,7 +1142,8 @@ class AgentGit:
         report: they were already on its side of the merge.
         """
         self._require("ws-git merge")
-        head = self._provider.branch_head(source)
+        if head is None:
+            head = self._provider.branch_head(source)
         blob = parse_blob(self._provider.key_at(head, BLOB_KEY))
         stored = blob["unresolved"]
         if not stored:
