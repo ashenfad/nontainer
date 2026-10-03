@@ -32,6 +32,7 @@ Git's spelling is on the left, what it does here on the right.
 | ws-git | what it does here |
 |---|---|
 | `stage <paths>` | add paths to the index. Silent, like `git add` |
+| `add <paths>` / `add -A` | `stage` under git's name: a directory (`.` included) stages what is modified under it, and `-A` everything modified |
 | `unstage <paths>` | drop paths from the index |
 | `commit [-m MSG]` | commit the staged set, or everything modified when nothing is staged |
 | `reset` | abandon the composition and keep the tree. Mixed-only |
@@ -659,6 +660,12 @@ rather than merged at a state its agent has moved past. Both refusals
 name the same two fixes: commit the work, or check out the last commit
 to drop it. A session that has never made a ws-git commit has no such
 commit to differ from, so there only an open index refuses.
+
+What the rest of the same terminal call wrote is not work in that
+sense: a `cd`, or a file the shell touched on the way, is committed for
+you before `merge`, `revert`, `cherry-pick` or `stash pop` runs, so
+`cd /workspace && ws-git merge <name>` lands as it would on its own.
+Only what differs from your last ws-git commit stops one.
 
 `ws-git branch <name> --paths <paths>` is the other direction: forking a
 session and narrowing what it can **see**, not what its branch holds.

@@ -2062,3 +2062,94 @@ def test_show_reads_this_sessions_own_name_as_a_session(peer_ws, store):
     r = peer_ws.terminal("ws-git show main")
     assert r.exit_code == 1
     assert "is this session" in r.stderr and "ws-git show HEAD" in r.stderr
+
+
+# -- verbs that land a commit settle the call's own writes first --------
+
+
+@pytest.fixture
+def kid(store):
+    """A session with a commit of its own, and a delegate of it that
+    committed one more file."""
+    parent = store.open("parent")
+    register_wsgit(parent)
+    parent.terminal("echo a > a.md && ws-git commit -m base")
+    child = parent.fork("parent.kid", inherit="fresh")
+    register_wsgit(child)
+    child.terminal("echo k > kid.md && ws-git commit -m kid")
+    child.close()
+    yield parent
+    parent.close()
+
+
+def test_a_merge_after_a_cd_in_the_same_call_lands(kid):
+    """A call's own writes are committed when it ends, so a ``cd`` before
+    the merge left a write no commit had taken, and the merge was
+    refused with advice for the host (``ws.commit()``). The verb commits
+    them itself now: they are the framework's, not the agent's."""
+    r = kid.terminal("cd /workspace && ws-git merge parent.kid")
+    assert r.exit_code == 0, r.stderr
+    assert "ws.commit()" not in r.stderr
+    assert kid.files.read("/workspace/kid.md") == b"k\n"
+
+
+def test_revert_and_stash_pop_settle_the_same_way(kid):
+    kid.terminal("echo b > b.md && ws-git commit -m b")
+    head = kid.terminal("ws-git log").stdout.split()[0]
+    r = kid.terminal(f"cd /workspace && ws-git revert {head}")
+    assert r.exit_code == 0, r.stderr
+    r = kid.terminal(
+        "echo s > s.md && ws-git stash && cd /workspace && ws-git stash pop"
+    )
+    assert r.exit_code == 0, r.stderr
+    assert kid.files.read("/workspace/s.md") == b"s\n"
+
+
+def test_work_in_flight_still_refuses_a_merge_in_the_agents_terms(kid):
+    """Settling takes the framework's writes, not the agent's rule: a
+    file that differs from its last ws-git commit still stops a merge,
+    and the refusal names ws-git's verbs, not the host's."""
+    r = kid.terminal("echo dirty > a.md && ws-git merge parent.kid")
+    assert r.exit_code == 1
+    assert "ws-git commit" in r.stderr
+    assert "ws.commit()" not in r.stderr
+
+
+# -- add is stage under git's name ---------------------------------------
+
+
+@pytest.fixture
+def edited(ws):
+    ws.terminal("echo a > a.md && ws-git commit -m base")
+    ws.terminal("mkdir -p src && echo x > src/x.py && echo y > src/y.py")
+    ws.terminal("echo b > b.md")
+    return ws
+
+
+def _staged(w):
+    return sorted(
+        line[3:]
+        for line in w.terminal("ws-git status").stdout.splitlines()
+        if line.startswith("M ")
+    )
+
+
+def test_add_a_path_or_a_directory_stages_what_is_modified_there(edited):
+    edited.terminal("ws-git add b.md")
+    assert _staged(edited) == ["b.md"]
+    edited.terminal("ws-git reset && ws-git add src")
+    assert _staged(edited) == ["src/x.py", "src/y.py"]
+    edited.terminal("ws-git reset && cd src && ws-git add .")
+    assert _staged(edited) == ["src/x.py", "src/y.py"]
+
+
+def test_add_all_stages_everything_modified(edited):
+    edited.terminal("ws-git add -A")
+    assert _staged(edited) == ["b.md", "src/x.py", "src/y.py"]
+
+
+def test_add_refuses_what_it_does_not_mean(edited):
+    r = edited.terminal("ws-git add -p")
+    assert r.exit_code == 2
+    assert "ws-git stage under git's name" in r.stderr
+    assert edited.terminal("ws-git add").exit_code == 2

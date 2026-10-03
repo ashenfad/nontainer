@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`ws-git add`** is `stage` under git's name, which is the one agents type. `add <paths>` stages those paths, a directory (`.` included) stages what is modified under it, and `-A` (`--all`) stages everything modified. Other flags are refused with a usage line naming `stage`. An agent's `ws-git add -A >/dev/null` used to fail unseen, so its next commit took whatever happened to be modified.
+
+### Fixed
+- **A merge in the same call as a `cd` lands.** A terminal call's writes are committed when the call ends, so `cd /workspace && ws-git merge x` reached `ws.merge` with the `cd` still uncommitted. It was refused with advice for the host ("ws.commit() them"), which an agent cannot follow. `ws-git merge`, `revert`, `cherry-pick` and `stash pop` now commit the call's pending writes first, as autocommit would at the end of the call. The agent's own rule is unchanged: a file that differs from its last ws-git commit still stops a merge, in ws-git's words.
+
 ## 0.8.6 - 2026-10-03
 
 ### Changed
