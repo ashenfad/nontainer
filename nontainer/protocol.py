@@ -1259,8 +1259,9 @@ class Answer:
     """The delegate left work its last ws-git commit does not hold, so
     what it committed is not everything it did. Rare: when a delegate
     answers, whatever it wrote past its last commit is committed for it,
-    and this holds only when that could not be done (an unresolved merge
-    of its own, say). A merge refuses such a source rather than bringing
+    and this holds only when that is not done: while a merge of its own
+    is unresolved, whose markers would otherwise reach the caller
+    unannounced, or when the commit fails. A merge refuses such a source rather than bringing
     back a state the delegate has moved on from, and this says so before
     the caller tries: the fix is to take paths, or to ask the delegate
     again. False for a delegate that never used ws-git — its branch head

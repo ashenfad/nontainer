@@ -1087,9 +1087,13 @@ class Sessions:
         Only a delegate that used ws-git has a remainder: one that never
         did answers at its branch head, where autocommit already put
         every write. Authoring output is not work and never counts.
-        Best-effort: a remainder that cannot be committed (an unresolved
-        merge, say) is left as it is, and the answer reports it as
-        uncommitted, as it always has.
+
+        Not while a merge of the delegate's own is unresolved: its
+        conflict markers would go into the commit and on to whoever
+        merges the answer, with nothing saying they were there. That
+        remainder is left as it is, and the answer reports it as
+        uncommitted, so the merge refuses it, as it always has. A
+        commit that fails for any other reason is left the same way.
         """
         refresh = getattr(child.provider, "refresh", None)
         if refresh is not None and child.caps.versioned:
@@ -1099,6 +1103,12 @@ class Sessions:
         try:
             status = child.index.status()
             if not (status.staged or status.unstaged):
+                return
+            if status.merge_unresolved:
+                _logger.info(
+                    "sessions: %s answered mid-merge; leaving its work uncommitted",
+                    name,
+                )
                 return
             if status.unstaged:
                 child.index.stage(status.unstaged)

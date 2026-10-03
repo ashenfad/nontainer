@@ -153,8 +153,9 @@ than it did, and have its merge refused. So when it answers, whatever
 it wrote past its last commit is committed for it, under a message
 saying the delegation mechanism made the commit, and the answer names
 that commit; the delegate's own commits stay in its log as the
-checkpoints they were. Committing the rest is best-effort: where it
-cannot be done (an unresolved merge of the delegate's own, say),
+checkpoints they were. Not while a merge of the delegate's own is
+unresolved, though: its conflict markers would go into that commit and
+on to the caller unannounced. Then, or if the commit fails,
 `answer.uncommitted` is True, the merge refuses, and the caller takes
 paths or asks again.
 

@@ -573,6 +573,48 @@ def test_what_a_delegate_left_uncommitted_is_committed_for_it(parent, store):
     assert parent.files.read("/workspace/notes.md") == b"wip\n"
 
 
+def test_a_delegate_answering_mid_merge_is_not_committed_for(parent, store):
+    """Conflict markers of a merge the delegate has not resolved would
+    go into a commit made for it and on to the parent with nothing
+    saying they were there. So that remainder is left uncommitted, and
+    the merge refuses the branch, as it always has."""
+
+    class MidMerge:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "# Rates\n\nnorth 5\n")
+                child.index.commit("north is 5")
+                side = child.fork(f"{session}-side")
+                try:
+                    side.files.write("/workspace/report.md", "# Rates\n\nnorth 6\n")
+                    side.index.commit("north is 6")
+                finally:
+                    side.close()
+                child.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
+                child.index.commit("north is 7")
+                assert child.merge(f"{session}-side").conflicts
+                child.files.write("/workspace/notes.md", "still deciding\n")
+            finally:
+                child.close()
+            return "two figures for north; not settled"
+
+    with Sessions(parent, MidMerge()) as sessions:
+        answer = sessions.ask("settle the north figure", wait=True)
+
+    assert answer.uncommitted is True
+    child = store.open(answer.branch)
+    try:
+        log = [c.info.get("message", "") for c in child.index.log()]
+        assert not any(m.startswith("Work the delegate") for m in log)
+        assert child.index.status().merge_unresolved
+    finally:
+        child.close()
+    assert "left work uncommitted" in render_answer(answer)
+    with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
+        parent.merge(answer.branch)
+
+
 def test_a_remainder_that_cannot_be_committed_is_still_reported(
     parent, store, monkeypatch
 ):
