@@ -283,6 +283,15 @@ can hold a range is enough.
   pins all of it, along with the usage on history copies and a summary
   call made from inside `compress`. Its name puts it in the
   `agno-versions` CI matrix.
+- **`store_history_messages` must stay off,** which is agno's default.
+  agno strips `from_history` messages before storing a run only when it
+  is off; turned on, the summary pair would be stored inside the new
+  run, in every transcript built from it. The adapter's docs say so,
+  and nontainer's session dbs back it up: the adapter gives the
+  messages it inserts ids with a marker prefix, and the db drops any
+  such message from a run before writing it. That holds whatever the
+  agent's flags are, and it is the same recognition that makes applying
+  a fold idempotent.
 - **agno 2.1.0 has no `CompressionManager`,** and that is nontainer's
   agno floor. The adapter needs a later agno. The seam test skips on
   2.1.0, and the adapter should say which version it needs when it is
