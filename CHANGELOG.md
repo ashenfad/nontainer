@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.7 - 2026-10-03
 
 ### Added
 - **`ws-git add`** is `stage` under git's name, which is the one agents type. `add <paths>` stages those paths, a directory (`.` included) stages what is modified under it, and `-A` (`--all`) stages everything modified. Other flags are refused with a usage line naming `stage`. An agent's `ws-git add -A >/dev/null` used to fail unseen, so its next commit took whatever happened to be modified.
