@@ -29,14 +29,17 @@ bound, and it doesn't use tool-result compression.
 ## The short version
 
 - **Trigger:** the request about to be sent is over a token budget.
-- **Fold:** every run before the last few is summarised into one
-  summary. The next fold summarises the previous summary plus the runs
-  since, so there is only ever one summary in context.
+- **Fold:** every earlier run is summarised into one summary. Only the
+  run in progress stays as it is: it holds the person's latest message,
+  and its messages are what the harness stores. The next fold
+  summarises the previous summary plus the runs since, so there is only
+  ever one summary in context. This is what Claude Code's compaction
+  does.
 - **Record:** each fold writes a record (which runs it covers, the
   summary, and the sizes before and after) into the workspace. Records
   are only ever added. The stored runs are never touched.
-- **Model's view:** system prompt, the summary, then the runs after the
-  fold, word for word.
+- **Model's view:** system prompt, the summary, then any runs after the
+  fold, word for word, and the run in progress.
 - **Person's view:** the full transcript, with a marker where a fold
   happened that opens to the summary. What the agent remembers is then
   something the person can read.
@@ -128,10 +131,13 @@ harness:
 
 - **Records:** read, write and list them in the workspace.
 - **Policy:** given the ordered run ids and the request's token count,
-  is it time, and where is the cut? It always cuts at run boundaries,
-  so a tool call is never separated from its result. It keeps the last
-  `keep_runs` runs verbatim, and declines a fold that would cover too
-  little to be worth the summary (`min_fold_runs`).
+  is it time? A fold covers every earlier run, so a cut always falls at
+  a run boundary and a tool call is never separated from its result.
+  There are no knobs beyond the budget: no tail of recent runs kept
+  verbatim, and no minimum, since right after a fold the context is
+  small and the next fold waits for the budget to be crossed again. A
+  kept tail can come back as an option if summaries lose the exchange
+  just before the fold.
 - **View:** given the ordered run ids and the record in force, return
   the summary (or none) and the run ids to send verbatim.
 - **Summary prompt:** what to keep (decisions, file paths, names, open
@@ -165,6 +171,12 @@ its name.
   after that. The adapter asks the core for the cut, calls `summarize`,
   writes the record and applies it, all before the model call goes out.
   The turn waits for the summary, as it does in Claude Code.
+- **Measuring the request** uses what the provider reported rather than
+  a tokenizer. `compress` is handed the run's metrics, which carry the
+  input tokens of the run's previous request; a run's first request
+  uses the last stored run's. Anything appended since is estimated at
+  four characters a token. The count is exact where most of the request
+  is, and nothing needs `tiktoken` or `tokenizers`.
 - **The summary's shape** is a user/assistant pair (a "summary of the
   conversation so far" message and a short acknowledgement), so roles
   still alternate for every provider.
@@ -178,6 +190,23 @@ already in the provider's cache. A separate cheaper model sees the
 history cold, which is cheaper per token and costs more overall for a
 long history. The adapter's default `summarize` does the former; the
 embedder can pass the latter.
+
+A cache hit needs the request to start the same way, and a provider
+puts the tool definitions ahead of the messages (Anthropic does). So
+the summary request carries the agent's tool list unchanged, and
+forbids calling a tool (`tool_choice="none"`) rather than leaving the
+tools out. Leaving them out would miss the cache on the whole history.
+
+**A fold that would not fit.** The summary request is at least as long
+as the history it summarises. When that is past the model's window,
+the plain request fails, and so does every later turn's: the session
+would be stuck. So a fold too large for one request is summarised from
+a reduced copy of the history: tool results become placeholders
+(`[tool result: 48,213 chars]`) and long tool-call arguments are cut
+off. If that is still too large, it is summarised in chunks, in order
+and at message boundaries, each chunk folded into the summary so far.
+This path misses the cache and only runs in this edge case. It is what
+lets a session recover after a single run outgrew the window.
 
 ## Other harnesses
 
@@ -196,8 +225,9 @@ to run ids, splice in the summary, and pass a `summarize`.
 
 ## The embedder's side (the studio)
 
-- **Budget:** a per-model watermark, as the studio already computes for
-  `compress_token_limit`.
+- **Budget:** a per-model watermark, 60% of the model's context window.
+  The studio computed the same figure for tool-result compression
+  before #79 removed it. The core has no default of its own.
 - **Marker:** a transcript event ("Context compacted: 12 turns
   summarised") that expands to the summary. It is a projection of the
   record, so a reload shows it again.
@@ -246,11 +276,17 @@ can hold a range is enough.
 - **One run is not bounded.** Folds cut at run boundaries and never
   touch the run in progress, whose messages are what agno stores. A
   single very long run (a delegate's 60 tool calls, a huge file read)
-  can still outgrow the window. A mid-run fallback can come later if
-  this happens in practice.
-- **Token counts are estimates** until the response reports real usage.
-  The trigger uses agno's own estimate, `model.count_tokens(messages,
-  tools, response_format)`, the same one `should_compress` uses today.
+  can still outgrow the window, and that turn ends in the provider's
+  error. The session recovers on the next turn, through the reduced or
+  chunked fold above. Preventing the overflow itself means compacting
+  within the run, as Claude Code does mid-turn. Here that would mean
+  sending the model a different list from the one agno stores, which is
+  seam research for later, if this happens in practice.
+- **A run folded mid-turn returns once.** A fold made during a run
+  cannot cover that run, so on the next turn it arrives in full as an
+  earlier run. If it was what crossed the budget, the next turn's first
+  request folds again, summarising the summary plus that run: one more
+  summary call, and then it settles.
 - **The summary is lossy.** That is the trade. The full conversation
   stays in the branch, the person sees all of it, and chaptering's
   browsable originals are the later answer for the agent.
@@ -263,7 +299,7 @@ from nontainer.adapters.agno_compaction import CompactingCompression
 
 compression = CompactingCompression(
     ws,
-    policy=Policy(budget=150_000, keep_runs=2, min_fold_runs=3),
+    policy=Policy(budget=150_000),
     on_fold=lambda fold: emit_marker(fold),
 )
 agent = Agent(
@@ -287,7 +323,9 @@ folds(ws)      # -> list[Fold], oldest first
 
 | Step | State |
 |---|---|
-| The studio sends every earlier run (nontainer-studio #78) | open |
+| The studio sends every earlier run (nontainer-studio #78) | merged |
+| The studio drops tool-result compression (nontainer-studio #79) | open |
+| Spike: the agno seam against agno's real run loop | next |
 | `__compaction__/` plane and the `Fold` record | not started |
 | Core: policy, view, summary prompt | not started |
 | agno adapter (`CompactingCompression`) | not started |
@@ -296,8 +334,10 @@ folds(ws)      # -> list[Fold], oldest first
 
 ## Open questions
 
-- **`keep_runs` or a token tail?** Runs never cut a turn in half, but
-  one run can be enormous. #9873 offers either. Runs first.
+- **A kept tail.** Keeping the last run or two verbatim protects the
+  exchange just before a fold. Left out to start; an option to add if
+  summaries prove lossy there.
+- **Compacting within a run.** See the rough edge above.
 - **Manual compaction.** A "compact now" for the person (Claude Code's
   `/compact`) is a fold with the budget check skipped. Cheap to add once
   the fold exists.
