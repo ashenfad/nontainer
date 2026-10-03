@@ -324,7 +324,7 @@ folds(ws)      # -> list[Fold], oldest first
 | Step | State |
 |---|---|
 | The studio sends every earlier run (nontainer-studio #78) | merged |
-| The studio drops tool-result compression (nontainer-studio #79) | open |
+| The studio drops tool-result compression (nontainer-studio #79) | merged |
 | Spike: the agno seam against agno's real run loop | next |
 | `__compaction__/` plane and the `Fold` record | not started |
 | Core: policy, view, summary prompt | not started |
