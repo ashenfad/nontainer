@@ -615,6 +615,55 @@ def test_a_delegate_answering_mid_merge_is_not_committed_for(parent, store):
         parent.merge(answer.branch)
 
 
+def test_a_delegate_left_mid_merge_is_refused_rather_than_merged(parent, store):
+    """A delegate whose last commit IS an unresolved merge has nothing
+    past that commit, so nothing reads as uncommitted. Merged as it
+    stands, it would hand its conflict markers over as file content and
+    the outcome would report no conflict. The merge refuses instead,
+    naming the session and the two ways out (issue #172)."""
+
+    class LeftMidMerge:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "# Rates\n\nnorth 5\n")
+                child.index.commit("north is 5")
+                side = child.fork(f"{session}-side")
+                try:
+                    side.files.write("/workspace/report.md", "# Rates\n\nnorth 6\n")
+                    side.index.commit("north is 6")
+                finally:
+                    side.close()
+                child.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
+                child.index.commit("north is 7")
+                assert child.merge(f"{session}-side").conflicts
+            finally:
+                child.close()
+            return "two figures for north; not settled"
+
+    with Sessions(parent, LeftMidMerge()) as sessions:
+        answer = sessions.ask("settle the north figure", wait=True)
+
+    assert answer.uncommitted is False
+    before = parent.files.read("/workspace/report.md")
+    with pytest.raises(WorkspaceError, match="has an unresolved merge from") as exc:
+        parent.merge(answer.branch)
+    assert "report.md" in str(exc.value)
+    assert "ws-git merge --abort in that session" in str(exc.value)
+    assert parent.files.read("/workspace/report.md") == before  # nothing landed
+
+    # resolved there, it merges as any other branch does
+    child = store.open(answer.branch)
+    try:
+        child.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
+        child.index.commit("north is 7, settled")
+    finally:
+        child.close()
+    outcome = parent.merge(answer.branch)
+    assert outcome.merged and not outcome.conflicts
+    assert parent.files.read("/workspace/report.md") == b"# Rates\n\nnorth 7\n"
+
+
 def test_a_remainder_that_cannot_be_committed_is_still_reported(
     parent, store, monkeypatch
 ):
