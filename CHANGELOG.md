@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - grep and sed read POSIX basic regexes without `-E`, so `\+`, `\?`, `\{n\}` and `\(...\)` work, and a bare `|` or `+` is a literal character.
   - grep exits 1 when nothing matches.
   - `test` and `[` exist, so `[ -f x ] && ...` works.
+- **Requires monkeyfs 0.2.5,** whose directory operations no longer depend on the working directory. A session's shell starts in `/workspace`, and from there `rmdir`, `mkdir` and `makedirs` checked a different path than the one they acted on: `rm -r` left the emptied directories behind, and `mkdir` over an existing file overwrote its metadata where it should have refused.
 
 ### Fixed
 - **A merge in the same call as a `cd` lands.** A terminal call's writes are committed when the call ends, so `cd /workspace && ws-git merge x` reached `ws.merge` with the `cd` still uncommitted. It was refused with advice for the host ("ws.commit() them"), which an agent cannot follow. `ws-git merge`, `revert`, `cherry-pick` and `stash pop` now commit the call's pending writes first, as autocommit would at the end of the call. The agent's own rule is unchanged: a file that differs from its last ws-git commit still stops a merge, in ws-git's words.
