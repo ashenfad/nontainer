@@ -95,6 +95,7 @@ from .wsverb import FerrySpec, abspath, tag
 
 _VERBS = (
     "stage",
+    "add",
     "unstage",
     "commit",
     "reset",
@@ -119,7 +120,8 @@ _USAGE = (
     "sparse-checkout) [...]"
 )
 _SUPPORTED = (
-    "supported: stage <paths> | unstage <paths> | commit [-m MSG] | reset | "
+    "supported: stage <paths> (or add <paths> | add -A) | unstage <paths> | "
+    "commit [-m MSG] | reset | "
     "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
     "log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | "
     "checkout <ref> [-- <paths>] | "
@@ -155,6 +157,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                tag|stash|branch|merge|revert|cherry-pick|worktree|
                sparse-checkout) [...]
   stage <paths>     add paths to the index
+  add <paths> | add -A
+                    stage under git's name; a directory (or .) stages
+                    what is modified under it, -A everything modified
   unstage <paths>   drop paths from the index
   commit [-m MSG]   commit the staged set, or everything modified when
                     nothing is staged. No -a and no pathspec: what you
@@ -330,6 +335,8 @@ def make_wsgit_command(ws: Any) -> Any:
                 return _status(git, ws, ctx, rest)
             if verb == "stage":
                 return _stage(git, ctx, rest)
+            if verb == "add":
+                return _add(git, ctx, rest)
             if verb == "unstage":
                 return _unstage(git, ctx, rest)
             if verb == "commit":
@@ -457,6 +464,43 @@ def _stage(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     if not rest or any(a.startswith("-") for a in rest):
         return _usage_error("stage needs at least one path.")
     git.stage([_abspath(ctx, a) for a in rest])
+    return None  # silent, like git add
+
+
+def _add(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+    """``stage`` under git's name, which is the one agents type.
+
+    Spelled the way git takes it: ``-A`` (``--all``) stages everything
+    modified, and a directory — ``.`` included — stages what is modified
+    under it. ``stage`` itself takes file paths only, so both expand to
+    the modified paths they cover. Anything with nothing modified under
+    it stages nothing, silently, as git does.
+    """
+    every = False
+    named: list[str] = []
+    for arg in rest:
+        if arg in ("-A", "--all"):
+            every = True
+        elif arg.startswith("-"):
+            return _usage_error(
+                "add takes paths, or -A for everything modified "
+                "(it is ws-git stage under git's name)."
+            )
+        else:
+            named.append(_abspath(ctx, arg))
+    if not every and not named:
+        return _usage_error("add needs at least one path, or -A.")
+    status = git.status()
+    modified = sorted(set(status.unstaged) | set(status.staged))
+    wanted: list[str] = list(modified) if every else []
+    for path in named:
+        if ctx.fs.isdir(path):
+            prefix = path.rstrip("/") + "/"
+            wanted.extend(m for m in modified if m.startswith(prefix))
+        else:
+            wanted.append(path)
+    if wanted:
+        git.stage(wanted)
     return None  # silent, like git add
 
 
@@ -844,6 +888,7 @@ def _stash_pop(git: AgentGit, ws: Any, ctx: Any, word: str | None) -> Any:
     """
     ws._require_unmerged(git, "stash pop")
     index, branch, _ = _stash_pick(ws, word)
+    _settle(ws)
     result = _merged(
         git,
         ws,
@@ -928,6 +973,24 @@ def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
     return None  # silent, like git branch
 
 
+def _settle(ws: Any) -> None:
+    """Commit what this terminal call has written so far, before a verb
+    that lands a commit of its own.
+
+    ``ws.merge``, ``ws.revert`` and ``ws.cherry_pick`` refuse a store
+    buffer holding writes no commit took, and tell the host to commit
+    them. An agent cannot, and the writes are usually nothing it would
+    call work: ``cd /workspace && ws-git merge x`` was refused for the
+    ``cd``, because the call's own writes are committed only when the
+    call ends. Committing them here is the framework's durability
+    commit, the one autocommit makes at the end of the call, made
+    earlier — invisible to the agent, whose own rule (nothing modified
+    since its last commit) the verbs still apply.
+    """
+    if ws.uncommitted and not ws.frozen:
+        ws.commit(info={"tool": "terminal"})
+
+
 def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if rest == ["--abort"]:
         source, commit = git.abort_merge()
@@ -940,6 +1003,7 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             "merge takes one session name (ws-git branch lists them), or --abort."
         )
     source = rest[0]
+    _settle(ws)
     return _merged(git, ws, ctx, ws.merge(source), source)
 
 
@@ -990,6 +1054,7 @@ def _revert(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if len(rest) != 1 or rest[0].startswith("-"):
         return _usage_error("revert takes one commit (a commit from ws-git log).")
     commit = git.resolve(rest[0])
+    _settle(ws)
     return _applied(
         git, ws, ctx, ws.revert(commit), verb="revert", what=commit[:7], noun="Revert"
     )
@@ -1003,6 +1068,7 @@ def _cherry_pick(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             f"<session>@<commit> (ws-git log {named} lists them)."
         )
     ref = _short_ref(_whole_ref(ws, rest[0]))
+    _settle(ws)
     return _applied(
         git,
         ws,
