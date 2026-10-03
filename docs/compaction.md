@@ -19,12 +19,12 @@ said it had never delegated. The moving window also changed the start
 of the prompt on every run, so from the fifth run on no run hit the
 prompt cache.
 
-The fix (nontainer-studio #78) sends every earlier run. That makes the
-history unbounded, and the only thing still bounding the context is
-agno's tool-result compression. It summarises old tool results past a
-watermark and never touches prose or tool-call arguments, so a long
-enough session will still outgrow the window. A large `file_write` is
-all argument. Compaction is the bound.
+The fix (nontainer-studio #78) sends every earlier run, so history is
+unbounded. agno's tool-result compression summarises old tool results
+past a watermark, but it never touches prose or tool-call arguments (a
+large `file_write` is all argument), and it has a cost of its own (see
+[Tool-result compression](#tool-result-compression)). Compaction is the
+bound, and it doesn't use tool-result compression.
 
 ## The short version
 
@@ -40,9 +40,9 @@ all argument. Compaction is the bound.
 - **Person's view:** the full transcript, with a marker where a fold
   happened that opens to the summary. What the agent remembers is then
   something the person can read.
-- **Cache:** one miss per fold. Between folds the prefix is stable,
-  which is the "waves, not a sliding window" rule the studio already
-  follows for tool results.
+- **Cache:** one miss per fold. Between folds the start of the prompt
+  is stable: the context shrinks in waves rather than through a sliding
+  window.
 
 ## What agno offers, and why not that
 
@@ -148,8 +148,11 @@ cache-friendly choice lives (below).
 agno calls its `compression_manager` before **every** model call, with
 the full message list for that request: system prompt, history and the
 current run (`agno/models/base.py`, `should_compress` then `compress`).
-The adapter is a `CompressionManager` subclass, so nothing of agno's is
-overridden:
+The adapter is a `CompressionManager` subclass. It replaces `compress`
+entirely and never calls agno's tool-result compression, so it only
+applies and makes folds. agno calls the manager only when
+`compress_tool_results=True`, so that flag stays on as the gate despite
+its name.
 
 - **Applying the record in force** replaces the folded runs' messages
   with the summary, edited in place in `messages`. History messages are
@@ -162,9 +165,6 @@ overridden:
   after that. The adapter asks the core for the cut, calls `summarize`,
   writes the record and applies it, all before the model call goes out.
   The turn waits for the summary, as it does in Claude Code.
-- **Tool-result compression** is the inner layer and runs as it does
-  today. Within a single long run there are no earlier runs to fold, so
-  it is all that bounds that run.
 - **The summary's shape** is a user/assistant pair (a "summary of the
   conversation so far" message and a short acknowledgement), so roles
   still alternate for every provider.
@@ -196,16 +196,26 @@ to run ids, splice in the summary, and pass a `summarize`.
 
 ## The embedder's side (the studio)
 
-- **Budget:** the per-model watermark the studio already computes,
-  `compress_token_limit`. Tool-result compression runs first because it
-  is cheaper and needs no turn boundary. The fold budget should sit
-  above it, so a fold happens only when compressing tool results was
-  not enough.
+- **Budget:** a per-model watermark, as the studio already computes for
+  `compress_token_limit`.
 - **Marker:** a transcript event ("Context compacted: 12 turns
   summarised") that expands to the summary. It is a projection of the
   record, so a reload shows it again.
 - **Delegates:** a delegate's turn budget is small enough that it
   should rarely fold. It runs the same mechanism if it does.
+
+## Tool-result compression
+
+Compaction doesn't use it, and an embedder using compaction shouldn't
+need it. If one enables agno's anyway, it has a cost to know about.
+agno rebuilds history from the stored runs every run, as copies that it
+drops before storing the run, so it keeps a compression only when it is
+made in the result's own run. A result that first crosses the watermark
+in a later run is compressed again on every turn after: a model call
+each, and a reworded summary that changes the prompt. With every
+earlier run sent, that grows with the conversation. nontainer-studio
+#78 works around it by writing the compression back onto the stored
+message. That fix belongs to the embedder, not to compaction.
 
 ## Chaptering, later
 
@@ -231,24 +241,12 @@ can hold a range is enough.
   drive agno's real run loop pin all three, and they belong in the
   `agno-versions` CI matrix.
 - **`compress_tool_results` must stay `True`,** or agno never calls the
-  manager.
-- **A compression of an earlier run must be stored.** agno rebuilds
-  history from the stored runs every run, as copies it drops before
-  storing the run, so anything computed on an earlier run's copy is
-  lost and computed again next turn. Folds are safe by design: the
-  summary is a record, and applying it needs no model call. Tool-result
-  compression is not. agno keeps a compression only when it is made in
-  the result's own run, so a result that first crosses the watermark
-  later is compressed again on every turn after. The studio fixes this
-  for now by copying the compression onto the session's original
-  message, which agno then stores (nontainer-studio #78). That rewrites
-  old runs, so a run is no longer one blob written once, and it relies
-  on a pre-hook receiving the session agno later saves. The adapter
-  should instead store these compressions as records in
-  `__compaction__/`, keyed by message id, and apply them as it applies a
-  fold. Runs then stay write-once, and every derived view lives in one
-  plane. Once folds exist the problem is smaller anyway: only the runs
-  kept word for word still have tool results to compress.
+  manager. The adapter doesn't compress tool results despite the name.
+- **One run is not bounded.** Folds cut at run boundaries and never
+  touch the run in progress, whose messages are what agno stores. A
+  single very long run (a delegate's 60 tool calls, a huge file read)
+  can still outgrow the window. A mid-run fallback can come later if
+  this happens in practice.
 - **Token counts are estimates** until the response reports real usage.
   The trigger uses agno's own estimate, `model.count_tokens(messages,
   tools, response_format)`, the same one `should_compress` uses today.
@@ -265,7 +263,6 @@ from nontainer.adapters.agno_compaction import CompactingCompression
 compression = CompactingCompression(
     ws,
     policy=Policy(budget=150_000, keep_runs=2, min_fold_runs=3),
-    tool_results_at=120_000,   # agno's compress_token_limit
     on_fold=lambda fold: emit_marker(fold),
 )
 agent = Agent(
@@ -273,7 +270,7 @@ agent = Agent(
     db=db,
     add_history_to_context=True,
     num_history_runs=sys.maxsize,
-    compress_tool_results=True,
+    compress_tool_results=True,   # the gate agno calls the manager behind
     compression_manager=compression,
 )
 ```
