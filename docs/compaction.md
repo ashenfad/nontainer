@@ -172,11 +172,21 @@ its name.
   writes the record and applies it, all before the model call goes out.
   The turn waits for the summary, as it does in Claude Code.
 - **Measuring the request** uses what the provider reported rather than
-  a tokenizer. `compress` is handed the run's metrics, which carry the
-  input tokens of the run's previous request; a run's first request
-  uses the last stored run's. Anything appended since is estimated at
-  four characters a token. The count is exact where most of the request
-  is, and nothing needs `tiktoken` or `tokenizers`.
+  a tokenizer. Every assistant message carries the input tokens of the
+  call that produced it, and keeps them in the copies a later run is
+  sent. So the latest assistant message in `messages` gives the size of
+  the previous request, whether that was earlier in this run or the end
+  of the last one. Anything after it is estimated at four characters a
+  token. The count is exact where most of the request is, and nothing
+  needs `tiktoken` or `tokenizers`.
+- **Applying a fold is idempotent.** The message list persists across a
+  run's model calls, so the summary pair spliced in before the first
+  call is still there before the second. The adapter recognises its own
+  messages (by an id it gives them) and leaves them be.
+- **The summary call** is made from inside `compress`, through the
+  agent's own model. `compress` is not handed the tool list, but
+  `should_compress` is, just before, so the adapter keeps it from
+  there.
 - **The summary's shape** is a user/assistant pair (a "summary of the
   conversation so far" message and a short acknowledgement), so roles
   still alternate for every provider.
@@ -268,9 +278,15 @@ can hold a range is enough.
 
 - **The seam is behavioural, not a contract.** It relies on agno passing
   `messages` by reference, honouring edits made to it in place, and
-  stripping `from_history` messages before storing a run. Tests that
-  drive agno's real run loop pin all three, and they belong in the
+  stripping `from_history` messages before storing a run.
+  `tests/test_agno_compaction_seam.py` drives agno's real run loop and
+  pins all of it, along with the usage on history copies and a summary
+  call made from inside `compress`. Its name puts it in the
   `agno-versions` CI matrix.
+- **agno 2.1.0 has no `CompressionManager`,** and that is nontainer's
+  agno floor. The adapter needs a later agno. The seam test skips on
+  2.1.0, and the adapter should say which version it needs when it is
+  imported with an older one, rather than fail somewhere inside.
 - **`compress_tool_results` must stay `True`,** or agno never calls the
   manager. The adapter doesn't compress tool results despite the name.
 - **One run is not bounded.** Folds cut at run boundaries and never
@@ -325,7 +341,7 @@ folds(ws)      # -> list[Fold], oldest first
 |---|---|
 | The studio sends every earlier run (nontainer-studio #78) | merged |
 | The studio drops tool-result compression (nontainer-studio #79) | merged |
-| Spike: the agno seam against agno's real run loop | next |
+| Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 3.0.1 and 3.0.11, sync and streaming |
 | `__compaction__/` plane and the `Fold` record | not started |
 | Core: policy, view, summary prompt | not started |
 | agno adapter (`CompactingCompression`) | not started |
