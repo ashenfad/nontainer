@@ -1075,3 +1075,21 @@ def test_a_handler_importing_the_helper_fails_as_a_request_would(keyed):
     report = run_pytest(keyed)
     assert report.failed == 1
     assert "cannot import name 'call' from 'host'" in (report.outcomes[0].message or "")
+
+
+def test_call_hands_the_handler_the_headers_serving_would(ws):
+    """Only the allowlisted headers reach a handler when served, so
+    `call` hands it the same subset: a cookie that passed here would be
+    missing in production (issue #152)."""
+    ws.files.fs.write(
+        "/workspace/app/api/whoami.py",
+        b"def get(req):\n    return {'headers': sorted(req.headers)}\n",
+    )
+    report = run(
+        ws,
+        "def test_headers():\n"
+        "    resp = call('whoami', headers={'Cookie': 'a=1', 'X-Tenant': 't',\n"
+        "                                   'Referer': 'r', 'Accept': 'text/plain'})\n"
+        "    assert resp.json['headers'] == ['accept', 'x-tenant']\n",
+    )
+    assert report.ok, report.outcomes

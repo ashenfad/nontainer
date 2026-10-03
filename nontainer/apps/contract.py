@@ -200,7 +200,8 @@ def make_request(
 ) -> Request:
     """Build a Request from a method + url-with-query, parsing the
     body as JSON eagerly (host-side — handlers never need a json
-    module for it)."""
+    module for it). Headers are held to the contract's allowlist
+    (:func:`filter_headers`) here, so every path to a handler agrees."""
     from urllib.parse import parse_qsl, urlsplit
 
     parts = urlsplit(url)
@@ -215,10 +216,13 @@ def make_request(
         method=method.upper(),
         path=parts.path,
         params=params,
-        # Lowercased: header names are case-insensitive, and a handler
-        # (or the encoder reading ``accept``) looks them up by one
-        # spelling whichever caller built the request.
-        headers={str(k).lower(): v for k, v in dict(headers or {}).items()},
+        # The allowlisted subset, lowercased, whichever caller built the
+        # request: the served router, test_app, ws-curl and ws-pytest's
+        # call all come through here, so a handler sees the same headers
+        # verified as served (a cookie that reached it under ws-curl
+        # would be missing once served). Lowercased because names are
+        # case-insensitive and a handler looks them up by one spelling.
+        headers=filter_headers(headers),
         body=body,
         json=parsed,
     )

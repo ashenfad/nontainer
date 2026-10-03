@@ -1233,3 +1233,30 @@ def test_curl_terminates_a_text_body_for_the_transcript():
         assert r.stdout == "no newline\n"
     finally:
         ws.close()
+
+
+def test_ws_curl_hands_the_handler_the_headers_serving_would():
+    """The served router lets through only the allowlisted headers; so
+    does ws-curl now, so what verified is what serves (issue #152)."""
+    ws, rt = make_ws()
+    write_handler(
+        ws, "whoami", "def get(req):\n    return {'headers': sorted(req.headers)}\n"
+    )
+    try:
+        r = ws.terminal(
+            "ws-curl -H 'Cookie: a=1' -H 'X-Tenant: t' -H 'Host: evil' "
+            "$APP_ORIGIN/api/whoami"
+        )
+        assert r, r.stderr
+        assert json.loads(r.stdout) == {"headers": ["x-tenant"]}
+    finally:
+        ws.close()
+
+
+def test_make_request_holds_headers_to_the_allowlist():
+    req = request(
+        "GET",
+        "/api/x",
+        headers={"Cookie": "a=1", "X-Trace": "z", "Content-Type": "a/b"},
+    )
+    assert req.headers == {"x-trace": "z", "content-type": "a/b"}
