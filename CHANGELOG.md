@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.6 - 2026-10-03
 
 ### Changed
 - **A delegate's answer is everything it wrote.** A delegate that made a ws-git commit and then wrote more used to answer with its last commit only: the answer reported the rest as uncommitted, and `ws-git merge` refused the branch. That happened whenever a delegate committed its work and then checked it. Now, when a delegate answers, whatever it wrote past its last commit is committed for it, under a message saying the delegation mechanism made the commit, and the answer names that commit. Its own commits stay in its log as checkpoints, and a delegate need not use ws-git at all. It is not made while a merge of the delegate's own is unresolved, since its conflict markers would reach the caller unannounced. `Answer.uncommitted` is now True only then, or when the commit fails, and the refusal and advice are as before.
