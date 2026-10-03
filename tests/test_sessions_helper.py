@@ -531,11 +531,64 @@ def test_cancel_before_landing_leaves_the_branch_untouched(parent, store):
         child.close()
 
 
-def test_a_delegate_that_left_work_uncommitted_says_so(parent, store):
-    """A delegate that used ws-git is the author of its own commits:
-    what it committed is what it submitted. The rest is reported, not
-    committed for it and not hidden — merge refuses such a source, so
-    the answer says that before the caller tries."""
+def test_what_a_delegate_left_uncommitted_is_committed_for_it(parent, store):
+    """Everything a delegate wrote is its answer. One that committed
+    part of its work and wrote more would otherwise answer with less
+    than it did and have its merge refused, so the rest is committed for
+    it when it answers, under a message that says who made the commit.
+    Its own commit stays in its log as a checkpoint."""
+
+    class HalfDone:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            try:
+                child.files.write("/workspace/report.md", "polished\n")
+                child.index.commit("the part I finished")
+                child.terminal("echo wip > /workspace/notes.md")
+            finally:
+                child.close()
+            return "polished the report; the notes are still rough"
+
+    with Sessions(parent, HalfDone()) as sessions:
+        answer = sessions.ask("polish the report", wait=True)
+
+    assert answer.uncommitted is False
+    assert sessions.list()[0].uncommitted is False
+    child = store.open(answer.branch)
+    try:
+        # the answer names the commit that holds everything
+        assert answer.ref == f"{answer.branch}@{child.index.head}"
+        log = [c.info.get("message", "") for c in child.index.log()]
+        assert log[0].startswith("Work the delegate had not committed")
+        assert "the part I finished" in log
+        assert child.index.status().unstaged == ()
+    finally:
+        child.close()
+    assert answer.changed["seed"] == ("/workspace/notes.md", "/workspace/report.md")
+    assert "left work uncommitted" not in render_answer(answer)
+
+    # and the merge takes all of it
+    assert parent.merge(answer.branch).merged
+    assert parent.files.read("/workspace/report.md") == b"polished\n"
+    assert parent.files.read("/workspace/notes.md") == b"wip\n"
+
+
+def test_a_remainder_that_cannot_be_committed_is_still_reported(
+    parent, store, monkeypatch
+):
+    """Committing the rest is best-effort. Where it fails, the answer
+    says what it always said: the work is left uncommitted, merge will
+    refuse it, and taking paths is the way through."""
+    from nontainer.workspace import WorkspaceIndex
+
+    plain = WorkspaceIndex.commit
+
+    def refuse_ours(self, message=None, **kwargs):
+        if (message or "").startswith("Work the delegate"):
+            raise RuntimeError("cannot commit here")
+        return plain(self, message, **kwargs)
+
+    monkeypatch.setattr(WorkspaceIndex, "commit", refuse_ours)
 
     class HalfDone:
         def run(self, session, task, *, budget=None):
@@ -552,25 +605,11 @@ def test_a_delegate_that_left_work_uncommitted_says_so(parent, store):
         answer = sessions.ask("polish the report", wait=True)
 
     assert answer.uncommitted is True
-    assert sessions.list()[0].uncommitted is True
-    # the answer names what it LANDED, and the paths still name it all
-    child = store.open(answer.branch)
-    try:
-        assert answer.ref == f"{answer.branch}@{child.index.head}"
-    finally:
-        child.close()
-    assert answer.changed["seed"] == ("/workspace/notes.md", "/workspace/report.md")
-
-    # merge refuses it, in its own words, and the tool said so first
     text = render_answer(answer)
     assert "left work uncommitted" in text
     assert f"ws-git checkout {answer.branch} -- <paths>" in text
-    assert "ws-git merge will refuse it" in text
-    assert "take all of it" not in text
     with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
         parent.merge(answer.branch)
-
-    # taking paths is the way through, and it works
     parent.checkout(answer.branch, paths=["report.md"])
     assert parent.files.read("/workspace/report.md") == b"polished\n"
     assert "left work uncommitted" in run_action(sessions, "list")

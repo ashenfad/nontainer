@@ -22,16 +22,16 @@ Two rules earn their place here rather than in the runner:
   parent's own edits. The runner is handed that commit (``forked_at``)
   before the first turn, because the provenance header a delegate
   arrives with names it.
-- **The helper never commits for the delegate.** A delegate is the
-  author of its own commits, and the answer names what it landed: its
-  last ws-git commit if it made one, its branch head if it never
-  touched ws-git — autocommit put every write there, so that head IS
-  its result. A delegate that used ws-git and then wrote past its last
-  commit is the one case in between: what it committed is what it
-  submitted, the answer reports the rest as left out
-  (``Answer.uncommitted``), and ``merge`` refuses it so the caller can
-  take paths or ask again. Committing on its behalf would destroy that
-  signal and put a commit nobody wrote in its log.
+- **Everything a delegate wrote is its answer.** A delegate need not
+  think about ws-git at all: autocommit puts every write on its branch,
+  and a delegate that never touched ws-git answers at its branch head.
+  One that did commit and then wrote more would otherwise answer with
+  less than it did — its last commit — and leave its merge refused. So
+  when it answers, the helper commits that remainder for it, as one
+  commit whose message says the delegation mechanism made it, and the
+  answer names that commit. Its own commits stay in its log as the
+  checkpoints they were. Authoring output (app logs, test_app
+  captures; see :mod:`nontainer.ignore`) is never part of it.
 
 Delivery is pull: :meth:`Sessions.ask` returns a :class:`Job` and the
 answer is collected later with :meth:`Sessions.result`. How a parent
@@ -1062,6 +1062,7 @@ class Sessions:
                 # Discarded, and the branch left exactly as the
                 # delegate left it.
                 return answer
+            self._commit_remainder(name, child)
             commit = self._landed(child)
             answer = replace(
                 answer,
@@ -1079,12 +1080,44 @@ class Sessions:
             except Exception:  # noqa: BLE001 - recording the answer wins
                 pass
 
+    def _commit_remainder(self, name: str, child: "Workspace") -> None:
+        """Commit what the delegate wrote past its own last ws-git
+        commit, so its answer is everything it did.
+
+        Only a delegate that used ws-git has a remainder: one that never
+        did answers at its branch head, where autocommit already put
+        every write. Authoring output is not work and never counts.
+        Best-effort: a remainder that cannot be committed (an unresolved
+        merge, say) is left as it is, and the answer reports it as
+        uncommitted, as it always has.
+        """
+        refresh = getattr(child.provider, "refresh", None)
+        if refresh is not None and child.caps.versioned:
+            refresh()
+        if not child.caps.index or child.index.head is None:
+            return
+        try:
+            status = child.index.status()
+            if not (status.staged or status.unstaged):
+                return
+            if status.unstaged:
+                child.index.stage(status.unstaged)
+            child.index.commit(
+                "Work the delegate had not committed when it answered, "
+                "committed by the delegation mechanism",
+                info={"committed_for": name},
+            )
+        except Exception as e:  # noqa: BLE001 - the answer reports the rest
+            _logger.warning(
+                "sessions: could not commit what %s left uncommitted: %s", name, e
+            )
+
     def _landed(self, child: "Workspace") -> str | None:
         """The commit the answer names: what the delegate LANDED.
 
-        Its last ws-git commit when it made one — a fork starts at no
-        commit of its own, so any head there is the delegate's own word
-        on what it did. Its branch head when it never touched ws-git,
+        Its last ws-git commit when it made one, which by now holds
+        everything it wrote (:meth:`_commit_remainder`). Its branch head
+        when it never touched ws-git,
         because autocommit put every write there and the fiction reads
         such a session at its store head, which is the honest answer
         for it. Either way this is the same commit ``merge`` and
@@ -1103,6 +1136,7 @@ class Sessions:
 
     def _uncommitted(self, child: "Workspace") -> bool:
         """Whether the delegate wrote past its own last ws-git commit.
+        Only when :meth:`_commit_remainder` could not commit the rest.
 
         Asked in the merge's own terms, from the parent's side, so the
         answer cannot say one thing and ``ws-git merge <name>`` another:

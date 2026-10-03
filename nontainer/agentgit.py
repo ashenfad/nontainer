@@ -491,7 +491,13 @@ class AgentGit:
         return self._visible(set(self._provider.working_diff(head).paths))
 
     def _visible(self, paths: set[str]) -> set[str]:
-        """``paths`` less anything this session's view hides."""
+        """``paths`` less anything this session's view hides, and less
+        authoring output (see :mod:`nontainer.ignore`): the logs and
+        captures the app runtime writes are never work, so no status
+        lists them and no commit takes them."""
+        from .ignore import drop_ignored
+
+        paths = drop_ignored(paths, self._ws.root)
         view = getattr(self._ws, "_view_fs", None)
         if view is None:
             return paths
@@ -606,8 +612,16 @@ class AgentGit:
         view = getattr(self._ws, "_view_fs", None)
         if view is not None:
             known = {path for path in known if view.sees(path)}
+        from .ignore import is_ignored
+
         fs = self._ws._fs
         for path in paths:
+            if is_ignored(path, self._ws.root):
+                raise ValueError(
+                    f"cannot stage {path!r}: it is authoring output (app logs "
+                    "and test_app captures), which stays on this branch and is "
+                    "never committed or merged"
+                )
             if path in known:
                 continue
             if fs.isdir(path):
@@ -1083,13 +1097,18 @@ class AgentGit:
 
         Empty for a session that never used ws-git — it has no agent
         commit to differ from, and its store head IS what it committed.
+        Authoring output is never work (see :mod:`nontainer.ignore`), so
+        a capture taken after the last commit leaves nothing pending.
         """
         self._require("ws-git merge")
         head = self._provider.branch_head(source)
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"]
         if virtual is None:
             return ()
-        return tuple(sorted(self._provider.diff(virtual, head).paths))
+        from .ignore import drop_ignored
+
+        changed = self._provider.diff(virtual, head).paths
+        return tuple(sorted(drop_ignored(changed, self._ws.root)))
 
     def record_merge(
         self, source: str, commit: str, conflicts: Iterable[str] = ()

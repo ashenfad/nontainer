@@ -1544,7 +1544,12 @@ def _decode(value: Any) -> bytes | None:
 def _render_diff(
     ws: Any, paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any]
 ):
-    """Unified diff lines for these paths between two trees."""
+    """Unified diff lines for these paths between two trees. Authoring
+    output is never work (see :mod:`nontainer.ignore`), so it is not
+    shown, whichever view asked."""
+    from .ignore import is_ignored
+
+    paths = [p for p in paths if not is_ignored(p, ws.root)]
     out: list[str] = []
     old = read_files(old, paths)
     new = read_files(new, paths)
@@ -1745,7 +1750,9 @@ def _diff_branch(
     theirs = tagged.commit if tagged is not None else git.source_commit(name)
     ours = git.head or provider.head
     change = provider.diff(ours, theirs)
-    changed = sorted(change.paths)
+    from .ignore import drop_ignored
+
+    changed = sorted(drop_ignored(change.paths, ws.root))
     if not changed:
         return None
     # Read once for both groups below.

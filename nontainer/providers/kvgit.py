@@ -42,7 +42,7 @@ cannot collide however a session is named.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 
@@ -1184,6 +1184,7 @@ class KvgitProvider:
         *,
         at: str | None = None,
         info: dict[str, Any] | None = None,
+        ignore: Callable[[str], bool] | None = None,
     ) -> MergeOutcome:
         """Merge another branch into this one.
 
@@ -1209,6 +1210,10 @@ class KvgitProvider:
         source whose head was migrated since and holds the same files.
         That is a migrated session whose agent has not committed since,
         and its head is merged instead — the same files, with rows.
+
+        ``ignore`` names paths that are never work (see
+        :mod:`nontainer.ignore`): this side keeps its own copy of each,
+        whatever the source did to it.
         """
         from kvgit import MergeConflict
 
@@ -1235,7 +1240,7 @@ class KvgitProvider:
         # describe bytes nothing holds.
         base = self._merge_base(self._wt.head, source_head)
         at_base = self._snapshot(base) if base is not None else None
-        merge_fns, merge_prefixes = self._three_way_rules(other, at_base)
+        merge_fns, merge_prefixes = self._three_way_rules(other, at_base, ignore)
 
         # Markers commit WITH the merge (flagged in the outcome), they
         # don't block it: the agent resolves with ordinary edit tools
@@ -1333,7 +1338,7 @@ class KvgitProvider:
         return not (change.added or change.removed or change.modified)
 
     def _three_way_rules(
-        self, other: Any, at_base: Any
+        self, other: Any, at_base: Any, ignore: Callable[[str], bool] | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """The rules a three-way over this session resolves by.
 
@@ -1372,6 +1377,11 @@ class KvgitProvider:
           handle: an ordinary commit that loses its CAS to a second
           handle on THIS session must still take that handle's
           conversation, which is this session's own.
+        - a path ``ignore`` names keeps ours, blob and row alike: it is
+          authoring output (see :mod:`nontainer.ignore`), never work to
+          bring across. Per key, from the enumeration above, because
+          paths are base32-encoded and a directory's key is no prefix
+          of its files' keys.
 
         No try/except around the enumeration: failing there means store
         trouble, and that must surface rather than silently narrow what
@@ -1392,6 +1402,17 @@ class KvgitProvider:
         merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
         for key in row_keys:
             merge_fns[key] = self._row_merge_fn(key, other, at_base)
+        if ignore is not None:
+            for key, path in self._file_keys(file_keys).items():
+                if ignore(path):
+                    merge_fns[key] = MergeChoice.OURS
+            for key in row_keys:
+                try:
+                    path = "/" + VirtualFS.path_for_metadata_key(key).lstrip("/")
+                except ValueError:
+                    continue
+                if ignore(path):
+                    merge_fns[key] = MergeChoice.OURS
         merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
         merge_fns[_VIEW_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
@@ -1407,6 +1428,7 @@ class KvgitProvider:
         theirs: str | None,
         *,
         info: dict[str, Any] | None = None,
+        ignore: Callable[[str], bool] | None = None,
     ) -> MergeOutcome:
         """Apply the change between two commits to the working tree.
 
@@ -1450,7 +1472,7 @@ class KvgitProvider:
             )
         at_base = current_layout(self._at_commit(base))
         at_theirs = current_layout(self._at_commit(theirs))
-        merge_fns, merge_prefixes = self._three_way_rules(at_theirs, at_base)
+        merge_fns, merge_prefixes = self._three_way_rules(at_theirs, at_base, ignore)
         # A key a policy gives to ours outright is not read at all: the
         # planes that take ours keep every key under them, and their
         # values are the one part of a session's state that is not

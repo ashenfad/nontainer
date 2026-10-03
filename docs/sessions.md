@@ -138,21 +138,32 @@ cancelled run holds its child until the runner is done with it. The
 check that a branch is free and the reservation of it are one critical
 section, so two callers resuming one child cannot both pass.
 
-**The helper never commits for the delegate.** A delegate is the
-author of its own commits, and the answer names what it *landed*:
+**Everything a delegate wrote is its answer.** A delegate need not
+think about ws-git at all, and the answer names what it *landed*:
 
 | the delegate | `answer.ref` names | `merge` / `checkout <name> -- <paths>` |
 |---|---|---|
 | never used ws-git | its branch head — autocommit put every write there | take that head |
 | used ws-git | its last ws-git commit | take that commit |
-| used ws-git, then wrote past it | its last ws-git commit | **refused**; `answer.uncommitted` is True |
+| used ws-git, then wrote past it | a commit of the rest, made for it when it answered | take that commit |
 
-What the delegate committed is what it submitted, so the third row
-refuses rather than bringing back a state the delegate has moved on
-from, and the answer reports the rest as left out instead of hiding
-it — the caller takes paths, or asks again. Committing on the
-delegate's behalf would destroy that signal and put a commit nobody
-wrote in its log.
+The third row is the one the helper acts on. A delegate that committed
+part of its work and then wrote more would otherwise answer with less
+than it did, and have its merge refused. So when it answers, whatever
+it wrote past its last commit is committed for it, under a message
+saying the delegation mechanism made the commit, and the answer names
+that commit; the delegate's own commits stay in its log as the
+checkpoints they were. Committing the rest is best-effort: where it
+cannot be done (an unresolved merge of the delegate's own, say),
+`answer.uncommitted` is True, the merge refuses, and the caller takes
+paths or asks again.
+
+**Authoring output is never part of an answer.** The app runtime's
+handler logs and test_app captures (`app/logs`, `app/screenshots`) stay
+on the delegate's branch and out of everything else: the answer's
+`changed` paths, the check for uncommitted work, and the merge, which
+keeps the asking session's own copies. A delegate that checks its work
+with test_app after its last write still answers with its work alone.
 
 The first row works because **a fork starts with a fresh ws-git state**
 (see `ws.fork` in the [API reference](api.md)): no head, nothing
