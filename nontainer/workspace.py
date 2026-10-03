@@ -3056,8 +3056,12 @@ class Workspace:
                 # The merge commit joins the agent's graph, so its own
                 # log walks through it instead of stopping at it.
                 parents = [head] if head is not None else []
-                self._require_source_clean(git, source)
-                at = git.source_commit(source)
+                # One read of the source's head for the checks and the
+                # merge alike: a source still running could otherwise be
+                # checked at one state and merged at the next.
+                source_head = git.source_head(source)
+                self._require_source_clean(git, source, source_head)
+                at = git.source_commit(source, head=source_head)
             try:
                 outcome = self._provider.merge(
                     source,
@@ -3107,7 +3111,9 @@ class Workspace:
         )
 
     @staticmethod
-    def _require_source_clean(git: "AgentGit", source: str) -> None:
+    def _require_source_clean(
+        git: "AgentGit", source: str, head: str | None = None
+    ) -> None:
         """Refuse a merge of work the SOURCE agent has not committed, or
         of a source still in the middle of an unresolved merge of its own.
 
@@ -3118,7 +3124,7 @@ class Workspace:
         delegate has moved past. Say so instead, and name the two
         fixes in the source's own terms.
         """
-        pending = git.source_uncommitted(source)
+        pending = git.source_uncommitted(source, head=head)
         if pending:
             raise WorkspaceError(
                 f"uncommitted ws-git work on {source!r}: {len(pending)} path(s) "
@@ -3127,7 +3133,7 @@ class Workspace:
                 "(ws-git commit -m ... in that session) or drop it "
                 "(ws-git checkout <its last commit>), then merge."
             )
-        origin, marked = git.source_unresolved(source)
+        origin, marked = git.source_unresolved(source, head=head)
         if marked:
             # Its last commit IS the conflicted merge, so nothing is
             # pending past it — but merged now, its markers would arrive

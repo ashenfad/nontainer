@@ -664,6 +664,50 @@ def test_a_delegate_left_mid_merge_is_refused_rather_than_merged(parent, store):
     assert parent.files.read("/workspace/report.md") == b"# Rates\n\nnorth 7\n"
 
 
+def test_a_merge_checks_and_takes_one_state_of_a_moving_source(
+    parent, store, monkeypatch
+):
+    """A source still running can move between the merge's check and
+    its choice of commit. Read once, the head the checks passed is the
+    head that is merged: a conflicted merge the source lands in between
+    is not taken, so its markers cannot arrive unreported."""
+    kid = parent.fork("analyst.kid", inherit="fresh")
+    try:
+        kid.files.write("/workspace/report.md", "# Rates\n\nnorth 5\n")
+        kid.index.commit("north is 5")
+        side = kid.fork("analyst.kid-side")
+        try:
+            side.files.write("/workspace/report.md", "# Rates\n\nnorth 6\n")
+            side.index.commit("north is 6")
+        finally:
+            side.close()
+        kid.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
+        kid.index.commit("north is 7")
+        clean = parent.provider.branch_head("analyst.kid")
+        assert kid.merge("analyst.kid-side").conflicts  # now mid-merge
+    finally:
+        kid.close()
+
+    # The first two reads see the clean state, every later one the source
+    # as it is now, conflicted: read separately, both checks would pass
+    # and the commit picked after them would be the conflicted one.
+    real = parent.provider.branch_head
+    reads = {"n": 0}
+
+    def moving(session):
+        if session != "analyst.kid":
+            return real(session)
+        reads["n"] += 1
+        return clean if reads["n"] <= 2 else real(session)
+
+    monkeypatch.setattr(parent.provider, "branch_head", moving)
+    outcome = parent.merge("analyst.kid")
+    assert outcome.merged
+    report = parent.files.read("/workspace/report.md").decode()
+    assert "<<<<<<<" not in report
+    assert report == "# Rates\n\nnorth 7\n"
+
+
 def test_a_remainder_that_cannot_be_committed_is_still_reported(
     parent, store, monkeypatch
 ):
