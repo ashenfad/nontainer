@@ -1118,7 +1118,7 @@ def test_a_merge_record_that_cannot_land_names_the_merge(kv_ws):
 
 
 def test_every_provider_takes_the_documented_merge_signature():
-    """``Workspace.merge`` passes ``at`` and ``info`` to whatever
+    """``Workspace.merge`` passes ``at``, ``info`` and ``ignore`` to whatever
     provider it has, including a third-party one with ``caps.merge``
     and no index. The signature is the contract, so it is checked
     against the protocol rather than against one implementation."""
@@ -1167,9 +1167,12 @@ def test_merge_passes_both_keywords_to_the_provider(tmp_path):
         out = ws.merge("other")
         assert out.merged
         assert seen["source"] == "other"
-        assert set(seen["kwargs"]) == {"at", "info"}
+        assert set(seen["kwargs"]) == {"at", "info", "ignore"}
         assert seen["kwargs"]["at"] is None
         assert seen["kwargs"]["info"] == {"virtual_parents": []}
+        # authoring output: what the merge keeps this side's copy of
+        assert seen["kwargs"]["ignore"]("/workspace/app/screenshots/a.png")
+        assert not seen["kwargs"]["ignore"]("/workspace/app/index.html")
     finally:
         ws.close()
 

@@ -342,7 +342,12 @@ landed on, and the view the session was given — is one record on your
 branch, and two rules cover all of it.
 
 **A merge takes yours.** `ws-git merge <session>` brings that session's
-files and nothing else. Your tags stay yours and none of its arrive;
+files and nothing else, and not all of those: authoring output (the app
+runtime's `app/logs` and test_app's `app/screenshots`) is never work,
+so a merge or cherry-pick keeps your own copies and `status`, `diff`
+and `commit` never list or take them. They stay on the branch that
+wrote them, where the agent that took a capture can read it, and a
+path checkout that names one outright still takes it. Your tags stay yours and none of its arrive;
 its stashes are its own, on its own branch and numbered there; the
 merge `merge --abort` finds is the one you started, never one the
 source left outstanding; and merging a delegate that was given a narrow

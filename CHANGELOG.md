@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- **A delegate's answer is everything it wrote.** A delegate that made a ws-git commit and then wrote more used to answer with its last commit only: the answer reported the rest as uncommitted, and `ws-git merge` refused the branch. That happened whenever a delegate committed its work and then checked it. Now, when a delegate answers, whatever it wrote past its last commit is committed for it, under a message saying the delegation mechanism made the commit, and the answer names that commit. Its own commits stay in its log as checkpoints, and a delegate need not use ws-git at all. `Answer.uncommitted` is now True only when that commit could not be made (an unresolved merge of the delegate's own, say), and the refusal and advice are as before.
+- **The provider protocol's `merge` and `apply` take `ignore`,** a predicate naming paths whose copy on the receiving side stands (see below). The workspace always passes it, as it passes `at` and `info`, so a third-party provider with `caps.merge` must accept it.
+
 ### Added
+- **Authoring output is never work.** The app runtime's handler logs and test_app captures (`app/logs`, `app/screenshots`) are the agent's instruments. Publications already left them out, but every other operation counted them as work, so a capture taken after a commit made a session dirty and a delegate's screenshots landed in its parent's tree. Now (see `nontainer.ignore`):
+  - ws-git's `status`, `diff` and `commit` never list or take them, and `ws-git add` of one is refused with the reason;
+  - the uncommitted check ignores them, so `merge` does not refuse a session over captures;
+  - `ws.diff`, `ws.changed_since` and a delegate's `changed` paths leave them out;
+  - a merge or cherry-pick keeps the receiving side's copies, and a path checkout of a directory neither brings nor drops them, though a checkout that names one outright takes it;
+  - they stay on the branch that wrote them, so the agent that took a capture can still read it.
 - **`ws-git show` reads other sessions, and one file at a time.** `ws-git log <session>` printed commit ids that `show` then refused, and the only way to read a delegate's file at a commit was to put up a worktree and take it down again.
   - **`show <session>@<commit>`** shows one of another session's commits: its message and its change, measured against that session's own graph. The commit half may be a short id or that session's own bookmark. The spelling `worktree add` prints for a store tag (`@store/tag/<name>@<commit>`) shows the tagged state, as the bare tag does.
   - **`show <ref>:<path>`** prints one file at one state, git's `rev:path`. The ref is any the read verbs take: `HEAD`, a commit or bookmark of yours, a session (what its agent last committed), `<session>@<commit>`, or a store tag. The path is read from the root; a leading `/` means the root too, and `./` the working directory. A directory lists its entries, and a binary file says how big it is instead of printing it. Since it moves nothing, it reads at any commit a session holds, the framework's included.

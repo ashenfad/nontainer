@@ -550,6 +550,7 @@ class WorkspaceProvider(Protocol):
         *,
         at: str | None = None,
         info: dict[str, Any] | None = None,
+        ignore: Callable[[str], bool] | None = None,
     ) -> MergeOutcome:
         """Merge another branch into this one (requires ``caps.merge``).
 
@@ -569,6 +570,9 @@ class WorkspaceProvider(Protocol):
         ``NotSupportedError``. ``info`` is caller metadata recorded on
         the merge commit (and on any follow-up the merge needs), which
         is how the agent-facing git threads a merge into its own graph.
+        ``ignore`` names paths that are never work (see
+        :mod:`nontainer.ignore`): this side keeps its own copy of each,
+        whatever the source did to it. Always passed, like the others.
         """
         ...
 
@@ -578,6 +582,7 @@ class WorkspaceProvider(Protocol):
         theirs: str | None,
         *,
         info: dict[str, Any] | None = None,
+        ignore: Callable[[str], bool] | None = None,
     ) -> MergeOutcome:
         """Apply the change between two commits here (requires
         ``caps.merge``).
@@ -608,6 +613,7 @@ class WorkspaceProvider(Protocol):
         with ``WorkspaceError`` on uncommitted changes here; a commit
         the provider does not hold raises ``CommitNotFoundError``.
         Providers without the capability raise ``NotSupportedError``.
+        ``ignore`` is a merge's: paths it names keep this side's copy.
         """
         ...
 
@@ -1250,12 +1256,15 @@ class Answer:
     sources through an intermediate delegate."""
 
     uncommitted: bool = False
-    """The delegate used ws-git and then wrote past its last commit, so
-    what it committed is not everything it did. A merge refuses such a
-    source rather than bringing back a state the delegate has moved on
-    from, and this says so before the caller tries: the fix is to take
-    paths, or to ask the delegate again. False for a delegate that
-    never used ws-git — its branch head IS its answer."""
+    """The delegate left work its last ws-git commit does not hold, so
+    what it committed is not everything it did. Rare: when a delegate
+    answers, whatever it wrote past its last commit is committed for it,
+    and this holds only when that could not be done (an unresolved merge
+    of its own, say). A merge refuses such a source rather than bringing
+    back a state the delegate has moved on from, and this says so before
+    the caller tries: the fix is to take paths, or to ask the delegate
+    again. False for a delegate that never used ws-git — its branch head
+    IS its answer."""
 
     def __str__(self) -> str:
         return self.text

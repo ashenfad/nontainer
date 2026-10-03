@@ -125,10 +125,14 @@ class PlainProvider:
     def discard(self) -> None:
         raise self._unsupported("discard")
 
-    def merge(self, source: str, *, at: Any = None, info: Any = None) -> Any:
+    def merge(
+        self, source: str, *, at: Any = None, info: Any = None, ignore: Any = None
+    ) -> Any:
         raise self._unsupported("merge")
 
-    def apply(self, base: Any, theirs: Any, *, info: Any = None) -> Any:
+    def apply(
+        self, base: Any, theirs: Any, *, info: Any = None, ignore: Any = None
+    ) -> Any:
         raise self._unsupported("apply")
 
     def commit_keys(self, info: Any = None, *, keys: Any = ()) -> Any:

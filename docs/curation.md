@@ -609,7 +609,8 @@ $ ws-git commit -m "sheets: read merged ranges through their anchor (merged-cell
 - **"One proposal" is the gate's policy, not the agent's discipline.**
   The gate can refuse a pass that changed more than one skill
   directory or made more than one commit; a pass that wrote past its
-  last commit is already refused at merge (`Answer.uncommitted`).
+  last commit has the rest committed for it when it answers, under
+  the delegation mechanism's message, which the gate can count.
 - **Parallel builders cost nothing extra.** Several passes at once,
   each a proposal judged against the same baseline: EvoSkill's
   frontier, with forks instead of a population table. Two accepted

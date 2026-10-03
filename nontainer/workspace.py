@@ -2304,12 +2304,24 @@ class Workspace:
         session's last agent commit, as a merge would read it), a store
         tag naming a commit, or a commit of this session.
         """
+        from .ignore import is_ignored
+
         wanted = normalize_view(paths, self._root)
         source, files = self._take_source(ref)
         taken: set[str] = set()
         mirrored: list[str] = []
         for path in wanted:
-            under = {p for p in files if p == path or p.startswith(path + "/")}
+            # Authoring output is not work, so mirroring a directory
+            # neither brings the ref's nor drops this session's; naming
+            # such a path outright still takes it, as git takes an
+            # ignored file it is told to.
+            named_ignored = is_ignored(path, self._root)
+            under = {
+                p
+                for p in files
+                if (p == path or p.startswith(path + "/"))
+                and (named_ignored or not is_ignored(p, self._root))
+            }
             if not under:
                 raise CommitNotFoundError(
                     f"nothing at {path!r} in {source} — a take makes a path "
@@ -2326,7 +2338,13 @@ class Workspace:
             path
             for path in here
             if path not in taken
-            and any(path.startswith(under + "/") for under in mirrored)
+            and any(
+                path.startswith(under + "/")
+                # this session's own captures stay, unless the directory
+                # being mirrored is itself authoring output
+                and (not is_ignored(path, self._root) or is_ignored(under, self._root))
+                for under in mirrored
+            )
         )
         # One refusal for the whole take, writes and removals together:
         # a file the view hides may not be dropped any more than it may
@@ -3036,7 +3054,10 @@ class Workspace:
                 at = git.source_commit(source)
             try:
                 outcome = self._provider.merge(
-                    source, at=at, info={"virtual_parents": parents}
+                    source,
+                    at=at,
+                    info={"virtual_parents": parents},
+                    ignore=self._ignores,
                 )
             except LegacyLayoutError as e:
                 if self._store is None:
@@ -3303,7 +3324,9 @@ class Workspace:
                 # The commit joins the agent's graph, so its own log
                 # walks through it instead of stopping at it.
                 info = {**info, "virtual_parents": [head] if head else []}
-            outcome = self._provider.apply(base, theirs, info=info)
+            outcome = self._provider.apply(
+                base, theirs, info=info, ignore=self._ignores
+            )
             if outcome.merged:
                 if indexed:
                     from .agentgit import AgentGit
@@ -3494,7 +3517,27 @@ class Workspace:
         reach a commit, never what makes two of them comparable."""
         with self._lock:
             self._require_versioned("diff")
-            return self._provider.diff(a, b)
+            return self._without_ignored(self._provider.diff(a, b))
+
+    def _ignores(self, path: str) -> bool:
+        """Whether ``path`` is authoring output, which is never work
+        (see :mod:`nontainer.ignore`)."""
+        from .ignore import is_ignored
+
+        return is_ignored(path, self._root)
+
+    def _without_ignored(self, diff: WorkspaceDiff) -> WorkspaceDiff:
+        """``diff`` less authoring output: logs and captures the app
+        runtime writes are the agent's instruments, not changes to its
+        work."""
+        from .ignore import drop_ignored
+
+        return replace(
+            diff,
+            added=frozenset(drop_ignored(diff.added, self._root)),
+            removed=frozenset(drop_ignored(diff.removed, self._root)),
+            modified=frozenset(drop_ignored(diff.modified, self._root)),
+        )
 
     def changed_since(self, ref: "str | Any") -> WorkspaceDiff:
         """What the files look like now versus at ``ref``.
@@ -3518,7 +3561,9 @@ class Workspace:
                 info = self._provider.tag_info(name, scope="session") or (
                     self._provider.tag_info(name, scope="store")
                 )
-            return self._provider.diff(info.id if info else name, self._provider.head)
+            return self._without_ignored(
+                self._provider.diff(info.id if info else name, self._provider.head)
+            )
 
     # ------------------------------------------------------------------
     # power modes / lifecycle

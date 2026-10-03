@@ -52,7 +52,12 @@ read through the filesystem (`tail app/logs/api.log`). Like `api/`,
 neither is ever served as static — not in the live preview, not from a
 publication, whatever the spelling (`/./logs/api.log`,
 `/x/../logs/api.log`, `/LOGS/api.log`) — and `store.publish` leaves both
-out of what it copies.
+out of what it copies. Nor are they ever work: ws-git's `status`,
+`diff` and `commit` never list or take them, the check for uncommitted
+work ignores them, and a merge or cherry-pick between sessions keeps
+the receiving side's own (see `nontainer.ignore`). So an agent, or a
+delegate, can check its app with test_app after its last commit and
+still be clean.
 
 Shared backend code lives under `app/` as well: a module at
 `/workspace/app/api/_data.py` imports as `from app.api._data import
