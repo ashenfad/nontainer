@@ -213,9 +213,10 @@ drops before storing the run, so it keeps a compression only when it is
 made in the result's own run. A result that first crosses the watermark
 in a later run is compressed again on every turn after: a model call
 each, and a reworded summary that changes the prompt. With every
-earlier run sent, that grows with the conversation. nontainer-studio
-#78 works around it by writing the compression back onto the stored
-message. That fix belongs to the embedder, not to compaction.
+earlier run sent, that grows with the conversation. The fix (writing
+the compression back onto the stored message, which nontainer-studio
+#78 did) belongs to the embedder, not to compaction. The studio has
+since dropped tool-result compression instead (#79).
 
 ## Chaptering, later
 
