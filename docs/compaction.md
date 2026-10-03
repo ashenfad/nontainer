@@ -232,15 +232,23 @@ can hold a range is enough.
   `agno-versions` CI matrix.
 - **`compress_tool_results` must stay `True`,** or agno never calls the
   manager.
-- **A compression of an earlier run must be kept.** agno sends earlier
-  runs as copies and drops them before storing the run, so it keeps only
-  the compressions made in a result's own run. One made in a later run
-  is lost, and the same result is compressed again every turn after.
-  The studio copies such compressions onto the session's original
-  messages, which a pre hook hands it and agno stores when the run ends
-  (nontainer-studio #78). The adapter has to do the same, for folds as
-  well as tool results: anything it computes about an earlier run must
-  be stored, or it is computed again every turn.
+- **A compression of an earlier run must be stored.** agno rebuilds
+  history from the stored runs every run, as copies it drops before
+  storing the run, so anything computed on an earlier run's copy is
+  lost and computed again next turn. Folds are safe by design: the
+  summary is a record, and applying it needs no model call. Tool-result
+  compression is not. agno keeps a compression only when it is made in
+  the result's own run, so a result that first crosses the watermark
+  later is compressed again on every turn after. The studio fixes this
+  for now by copying the compression onto the session's original
+  message, which agno then stores (nontainer-studio #78). That rewrites
+  old runs, so a run is no longer one blob written once, and it relies
+  on a pre-hook receiving the session agno later saves. The adapter
+  should instead store these compressions as records in
+  `__compaction__/`, keyed by message id, and apply them as it applies a
+  fold. Runs then stay write-once, and every derived view lives in one
+  plane. Once folds exist the problem is smaller anyway: only the runs
+  kept word for word still have tool results to compress.
 - **Token counts are estimates** until the response reports real usage.
   The trigger uses agno's own estimate, `model.count_tokens(messages,
   tools, response_format)`, the same one `should_compress` uses today.
