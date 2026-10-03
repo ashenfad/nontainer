@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **A merge in the same call as a `cd` lands.** A terminal call's writes are committed when the call ends, so `cd /workspace && ws-git merge x` reached `ws.merge` with the `cd` still uncommitted. It was refused with advice for the host ("ws.commit() them"), which an agent cannot follow. `ws-git merge`, `revert`, `cherry-pick` and `stash pop` now commit the call's pending writes first, as autocommit would at the end of the call. The agent's own rule is unchanged: a file that differs from its last ws-git commit still stops a merge, in ws-git's words.
+- **A session left mid-merge is refused rather than merged** (#172). A session whose last ws-git commit is an unresolved merge (a delegate that merged two of its own delegates' branches and answered without resolving, say) has nothing past that commit, so nothing read as uncommitted. Merged as it stood, it handed its conflict markers over as file content, and the outcome reported a clean merge with no conflicts. `Workspace.merge` and `ws-git merge` now refuse such a source, naming the paths that still carry markers and the two ways out in that session: resolve and commit, or `ws-git merge --abort`.
+- **A handler sees the same request headers however it is called** (#152). The served router and `test_app` let through only the allowlisted headers (`content-type`, `accept`, `authorization`, `user-agent`, `range`, `if-range` and `x-*`), but `ws-curl` and ws-pytest's `call` passed everything, so a handler that read `cookie` passed its tests and got nothing once served. `make_request`, which every path builds its request with, now applies the allowlist itself.
 
 ## 0.8.6 - 2026-10-03
 
