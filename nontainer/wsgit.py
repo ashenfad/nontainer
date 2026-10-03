@@ -336,7 +336,7 @@ def make_wsgit_command(ws: Any) -> Any:
             if verb == "stage":
                 return _stage(git, ctx, rest)
             if verb == "add":
-                return _add(git, ctx, rest)
+                return _add(git, ws, ctx, rest)
             if verb == "unstage":
                 return _unstage(git, ctx, rest)
             if verb == "commit":
@@ -467,14 +467,20 @@ def _stage(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     return None  # silent, like git add
 
 
-def _add(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
+def _add(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     """``stage`` under git's name, which is the one agents type.
 
-    Spelled the way git takes it: ``-A`` (``--all``) stages everything
-    modified, and a directory — ``.`` included — stages what is modified
-    under it. ``stage`` itself takes file paths only, so both expand to
-    the modified paths they cover. Anything with nothing modified under
-    it stages nothing, silently, as git does.
+    Spelled the way git takes it: a directory — ``.`` included — stages
+    what is modified under it, deletions too, so a directory removed
+    with ``rm -rf`` stages its removal; ``-A`` (``--all``) with no path
+    stages everything modified, and with paths it is those paths, as in
+    git. ``stage`` itself takes file paths only, so both expand to the
+    modified paths they cover, and a directory with nothing modified
+    under it stages nothing, silently, as git does.
+
+    Whether a path is a directory is asked of this session's own tree,
+    never of ``ctx.fs``: off-rung (a ferried verb) that is a capture
+    that can only write.
     """
     every = False
     named: list[str] = []
@@ -492,13 +498,17 @@ def _add(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
         return _usage_error("add needs at least one path, or -A.")
     status = git.status()
     modified = sorted(set(status.unstaged) | set(status.staged))
-    wanted: list[str] = list(modified) if every else []
-    for path in named:
-        if ctx.fs.isdir(path):
-            prefix = path.rstrip("/") + "/"
-            wanted.extend(m for m in modified if m.startswith(prefix))
-        else:
-            wanted.append(path)
+    if not named:
+        wanted = modified
+    else:
+        wanted = []
+        for path in named:
+            prefix = "/" if path == "/" else path.rstrip("/") + "/"
+            under = [m for m in modified if m.startswith(prefix)]
+            if under or ws.files.fs.isdir(path):
+                wanted.extend(under)
+            else:
+                wanted.append(path)
     if wanted:
         git.stage(wanted)
     return None  # silent, like git add

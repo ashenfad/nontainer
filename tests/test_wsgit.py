@@ -2153,3 +2153,30 @@ def test_add_refuses_what_it_does_not_mean(edited):
     assert r.exit_code == 2
     assert "ws-git stage under git's name" in r.stderr
     assert edited.terminal("ws-git add").exit_code == 2
+
+
+def test_add_with_a_path_and_all_stages_only_that_path(edited):
+    """git add -A . is limited to the pathspec; -A alone is everything."""
+    edited.terminal("cd src && ws-git add -A .")
+    assert _staged(edited) == ["src/x.py", "src/y.py"]
+
+
+def test_add_a_deleted_directory_stages_its_removal(edited):
+    edited.terminal("ws-git add -A && ws-git commit -m all")
+    edited.terminal("rm -r src")
+    r = edited.terminal("ws-git add src")
+    assert r.exit_code == 0, r.stderr
+    assert _staged(edited) == ["src/x.py", "src/y.py"]
+    edited.terminal("ws-git commit -m 'drop src'")
+    assert edited.terminal("ws-git show HEAD:src/x.py").exit_code == 1
+
+
+def test_add_works_through_the_ferried_context(edited):
+    """Ferried to a guest, ws-git gets a context whose fs only knows its
+    cwd and how to capture a write: add must not ask it anything else."""
+    from nontainer.wsverb import _guest_ctx
+
+    command = make_wsgit_command(edited)
+    for args in (["add", "src"], ["add", "b.md"], ["add", "."]):
+        assert command(_guest_ctx(args, "/workspace", {})) is None, args
+    assert _staged(edited) == ["b.md", "src/x.py", "src/y.py"]
