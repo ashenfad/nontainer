@@ -847,6 +847,12 @@ class _Settings:
         return dict(vars(self))
 
 
+def _show_root(git: Any, path: str) -> str:
+    """A workspace path as the agent types it: relative to the root."""
+    root = git._ws.root.rstrip("/")
+    return path[len(root) + 1 :] if root and path.startswith(root + "/") else path
+
+
 class WorkspaceFiles:
     """``ws.files``: the file surface of one session.
 
@@ -3102,7 +3108,8 @@ class Workspace:
 
     @staticmethod
     def _require_source_clean(git: "AgentGit", source: str) -> None:
-        """Refuse a merge of work the SOURCE agent has not committed.
+        """Refuse a merge of work the SOURCE agent has not committed, or
+        of a source still in the middle of an unresolved merge of its own.
 
         Symmetric with :meth:`_require_agent_clean`. The source is
         merged at its last agent commit, so a delegate that wrote
@@ -3112,15 +3119,29 @@ class Workspace:
         fixes in the source's own terms.
         """
         pending = git.source_uncommitted(source)
-        if not pending:
-            return
-        raise WorkspaceError(
-            f"uncommitted ws-git work on {source!r}: {len(pending)} path(s) "
-            "differ from that session's last ws-git commit, and a merge "
-            "takes only what has been committed. Land it there "
-            "(ws-git commit -m ... in that session) or drop it "
-            "(ws-git checkout <its last commit>), then merge."
-        )
+        if pending:
+            raise WorkspaceError(
+                f"uncommitted ws-git work on {source!r}: {len(pending)} path(s) "
+                "differ from that session's last ws-git commit, and a merge "
+                "takes only what has been committed. Land it there "
+                "(ws-git commit -m ... in that session) or drop it "
+                "(ws-git checkout <its last commit>), then merge."
+            )
+        origin, marked = git.source_unresolved(source)
+        if marked:
+            # Its last commit IS the conflicted merge, so nothing is
+            # pending past it — but merged now, its markers would arrive
+            # as file content and the outcome would report no conflict.
+            shown = ", ".join(_show_root(git, p) for p in sorted(marked)[:3])
+            more = ", ..." if len(marked) > 3 else ""
+            raise WorkspaceError(
+                f"{source!r} has an unresolved merge from {origin}: "
+                f"{len(marked)} path(s) still carry conflict markers "
+                f"({shown}{more}). A merge of it would bring the markers "
+                "here as file content. Resolve them there (edit, then "
+                "ws-git commit in that session) or abort it (ws-git merge "
+                "--abort in that session), then merge."
+            )
 
     def revert(self, commit: str) -> MergeOutcome:
         """Undo one commit's change, as a NEW commit; returns the outcome.

@@ -1110,6 +1110,28 @@ class AgentGit:
         changed = self._provider.diff(virtual, head).paths
         return tuple(sorted(drop_ignored(changed, self._ws.root)))
 
+    def source_unresolved(self, source: str) -> tuple[str | None, tuple[str, ...]]:
+        """An unresolved merge on ``source``: where it came from, and the
+        paths that still carry its markers in the tree a merge of
+        ``source`` would take.
+
+        ``(None, ())`` when there is none. The record is the one
+        ``source``'s own status reads (its blob at its head); the markers
+        are checked in :meth:`source_commit`'s tree, since that is what
+        arrives. A source merged in that state hands its conflict markers
+        over as ordinary file content, which nothing on this side would
+        report: they were already on its side of the merge.
+        """
+        self._require("ws-git merge")
+        head = self._provider.branch_head(source)
+        blob = parse_blob(self._provider.key_at(head, BLOB_KEY))
+        stored = blob["unresolved"]
+        if not stored:
+            return None, ()
+        taken = read_files(self._provider.files_at(blob["head"] or head), stored)
+        marked = tuple(p for p in stored if _has_markers(taken.get(p)))
+        return (blob["merge_source"], marked) if marked else (None, ())
+
     def record_merge(
         self, source: str, commit: str, conflicts: Iterable[str] = ()
     ) -> tuple[str, ...]:
