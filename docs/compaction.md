@@ -114,7 +114,7 @@ class Fold:
     summary: str
     runs: int              # how many turns it covers, earlier folds' included
     tokens_before: int     # the request size that crossed the budget
-    tokens_after: int      # the same request, folded (estimated, on the high side)
+    tokens_after: int      # the same request, folded (estimated)
     model: str             # what wrote the summary
     at: float
     first: str | None      # None = from the start; set for chaptering
@@ -400,8 +400,9 @@ the budget lowered to 15k, built a small Python module with tests over
 five turns, then crossed the budget on the sixth:
 
 - **The fold:** turn 6 folded the five earlier turns. Its first request
-  went from about 19.7k tokens to 7.4k; the record's estimate of the
-  folded size, about 11k, runs high.
+  went from about 19.7k tokens to 7.4k. The record's estimate of the
+  folded size, about 11k, ran high in this session; it is four
+  characters a token, so it is no bound either way.
 - **The summary:** written by the reduced path, since this provider
   refuses `tool_choice="none"` (above). It kept the facts the person
   asked to be remembered, every file with its methods and tests, the
