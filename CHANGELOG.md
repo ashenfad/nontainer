@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`ws-git` takes git's everyday spellings.** `diff --stat` prints a per-file summary, for your own changes and another session's. `--` separates paths, so `diff <session> -- <paths>` and `diff -- <paths>` work, and `diff <session> <paths>` filters too. `status -s`/`--short`, `log --oneline` and `log -5` are accepted: the first two are the format already printed. Each used to cost an agent a call to learn the spelling it had typed was refused.
+
+### Fixed
+- **`ws-git diff <session>` shows what a merge would bring.** It compared this session's last commit with the other session's, so everything this session did since the fork read as the other one undoing it. An agent merging three delegates read the frontend work it had already merged as the engine delegate "reverting" it. It took the engine's files one by one rather than merge, though the engine had never touched that file and the merge would have kept it. A session diff is now git's `A...B`: the other session's changes since the merge base, which is the base `merge` uses. A header names that base, and a line names any paths this session also changed since then, where the merge combines both sides or marks a conflict. A diff against a store tag is still a straight comparison. The kvgit provider exposes `merge_base(a, b)` for it.
+
 ## 0.8.9 - 2026-10-04
 
 ### Added

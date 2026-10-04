@@ -1143,11 +1143,18 @@ def test_diff_reads_a_word_that_is_both_a_path_and_a_session_as_the_path(ws, sto
     assert out.startswith("diff --git a/worker b/worker")
     assert "# " not in out  # not the grouped session diff
 
-    # with no such file here, the same word is the session
+    # with no such file here, the same word is the session: what it
+    # changed since the two last met
     ws.index.commit("edited")
     ws.terminal("rm worker")
     ws.index.commit("gone")
-    assert ws.terminal("ws-git diff worker").stdout.startswith("diff --git a/worker")
+    other = store.open("worker")
+    other.files.write("/workspace/notes.md", "from the worker\n")
+    other.commit(info={"tool": "test"})
+    other.close()
+    out = ws.terminal("ws-git diff worker").stdout
+    assert out.startswith("# what worker changed since ")
+    assert "diff --git a/notes.md b/notes.md" in out
 
 
 # -- the sparse checkout -------------------------------------------------------
@@ -1344,3 +1351,85 @@ def test_a_subtree_view_lists_in_its_own_namespace(tmp_path):
     assert paths == ["/app/api", "/app/api/h.py"]
     assert not any(p.startswith("/workspace") for p in paths)
     assert all(str(tmp_path) not in p for p in paths)
+
+
+# -- what another session changed: diff since the two last met ---------------
+
+
+def _work(store, name: str, **files: str) -> None:
+    """Write and commit files on another session, as its agent would."""
+    other = store.open(name)
+    register_wsgit(other)
+    try:
+        for path, text in files.items():
+            other.files.write(f"/workspace/{path}", text)
+        other.terminal(f"ws-git add -A && ws-git commit -m '{name} work'")
+    finally:
+        other.close()
+
+
+def test_a_session_diff_is_what_the_merge_would_bring(ws, store):
+    """Two delegates forked from one skeleton, the first merged. The
+    second never touched app.jsx, so its diff must not show the
+    first's merged work as if it were undoing it: a merge keeps that
+    work, and the diff says what the merge brings."""
+    _seed(ws, **{"app.jsx": "skeleton\n", "engine.js": "stub\n"})
+    ws.terminal("ws-git branch front && ws-git branch engine")
+    _work(store, "front", **{"app.jsx": "polished\n"})
+    _work(store, "engine", **{"engine.js": "real engine\n"})
+    assert ws.terminal("ws-git merge front").exit_code == 0
+
+    out = ws.terminal("ws-git diff engine").stdout
+    assert out.startswith("# what engine changed since ")
+    assert "what `ws-git merge engine` brings" in out
+    assert "engine.js" in out and "+real engine" in out
+    assert "app.jsx" not in out  # not the frontend's work, read backwards
+    assert "also changed here" not in out
+
+    assert ws.terminal("ws-git merge engine").exit_code == 0
+    assert ws.files.read("/workspace/app.jsx") == b"polished\n"
+
+
+def test_a_session_diff_names_what_both_sides_changed(ws, store):
+    _seed(ws, **{"app.jsx": "skeleton\n"})
+    ws.terminal("ws-git branch kid")
+    _work(store, "kid", **{"app.jsx": "kid's\n"})
+    ws.files.write("/workspace/app.jsx", "mine\n")
+    ws.index.commit("mine")
+    out = ws.terminal("ws-git diff kid").stdout
+    assert "# also changed here since then: app.jsx" in out
+
+
+def test_diff_takes_a_stat_and_a_separated_pathspec(ws, store):
+    _seed(ws, **{"a.txt": "one\ntwo\n", "b.txt": "b\n"})
+    ws.terminal("ws-git branch kid")
+    _work(store, "kid", **{"a.txt": "one\nTWO\nthree\n", "b.txt": "B\n"})
+
+    stat = ws.terminal("ws-git diff kid --stat").stdout.splitlines()
+    assert stat[1:] == [
+        " a.txt | 3 ++-",
+        " b.txt | 2 +-",
+        " 2 files changed, 3 insertions(+), 2 deletions(-)",
+    ]
+    only_b = ws.terminal("ws-git diff kid -- b.txt").stdout
+    assert "b.txt" in only_b and "a.txt" not in only_b
+
+    ws.files.write("/workspace/a.txt", "one\n")
+    own = ws.terminal("ws-git diff --stat").stdout
+    assert own == " a.txt | 1 -\n 1 file changed, 0 insertions(+), 1 deletion(-)\n"
+    assert ws.terminal("ws-git diff -- b.txt").stdout == ""
+    r = ws.terminal("ws-git diff nope -- a.txt")
+    assert r.exit_code == 2 and "not a session or a store tag" in (r.stdout + r.stderr)
+
+
+def test_status_and_log_take_gits_short_spellings(ws):
+    _seed(ws, **{"a.txt": "one\n"})
+    ws.files.write("/workspace/a.txt", "two\n")
+    plain = ws.terminal("ws-git status").stdout
+    assert ws.terminal("ws-git status -s").stdout == plain
+    assert ws.terminal("ws-git status --short").stdout == plain
+    ws.index.commit("second")
+    assert (
+        ws.terminal("ws-git log --oneline").stdout == ws.terminal("ws-git log").stdout
+    )
+    assert len(ws.terminal("ws-git log -1").stdout.splitlines()) == 1
