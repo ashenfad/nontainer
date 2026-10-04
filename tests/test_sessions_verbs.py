@@ -1433,3 +1433,38 @@ def test_status_and_log_take_gits_short_spellings(ws):
         ws.terminal("ws-git log --oneline").stdout == ws.terminal("ws-git log").stdout
     )
     assert len(ws.terminal("ws-git log -1").stdout.splitlines()) == 1
+
+
+def test_a_separately_opened_session_is_diffed_from_where_they_met(ws, store):
+    """Sessions opened separately in one store still meet at its root, so
+    a file only this session holds never reads as one the other deletes."""
+    _seed(ws, **{"mine.txt": "only here\n", "both.txt": "here\n"})
+    _work(store, "stranger", **{"theirs.txt": "only there\n", "both.txt": "there\n"})
+    out = ws.terminal("ws-git diff stranger").stdout
+    assert out.startswith("# what stranger changed since ")
+    assert "theirs.txt" in out
+    assert "mine.txt" not in out
+
+
+def test_a_session_with_no_shared_history_is_diffed_from_nothing(
+    ws, store, monkeypatch
+):
+    """With no common history at all, a merge resolves against the empty
+    tree: everything the other holds is what it brings, and nothing here
+    reads as something it deletes."""
+    _seed(ws, **{"mine.txt": "only here\n", "both.txt": "here\n"})
+    _work(store, "stranger", **{"theirs.txt": "only there\n", "both.txt": "there\n"})
+    monkeypatch.setattr(type(ws._provider), "merge_base", lambda self, a, b: None)
+    out = ws.terminal("ws-git diff stranger").stdout
+    assert out.startswith("# stranger shares no history with this session")
+    assert "# also here: both.txt" in out
+    assert "theirs.txt" in out
+    assert "mine.txt" not in out  # not shown as a deletion
+
+
+def test_stat_counts_a_change_to_the_final_newline(ws):
+    _seed(ws, **{"f.txt": "a\n"})
+    ws.files.write("/workspace/f.txt", "a")
+    assert ws.terminal("ws-git diff --stat").stdout == (
+        " f.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+    )

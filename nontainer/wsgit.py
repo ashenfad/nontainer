@@ -1883,35 +1883,57 @@ def _diff_branch(
     theirs = tagged.commit if tagged is not None else git.source_commit(name)
     ours = git.head or provider.head
     base = None
+    unrelated = False
     if tagged is None:
         find = getattr(provider, "merge_base", None)
-        base = find(ours, theirs) if find is not None else None
-    start = base or ours
-    change = provider.diff(start, theirs)
-    changed = sorted(ws._drop_ignored(change.paths))
+        if find is not None:
+            base = find(ours, theirs)
+            # No common history: a merge resolves against the empty
+            # tree, so everything that session holds is what it brings.
+            unrelated = base is None
+    lines: list[str] = []
+    if unrelated:
+        held = provider.files_at(theirs)
+        changed = sorted(ws._drop_ignored(held.keys()))
+        start_files: Mapping[str, Any] = {}
+        seed = provider.diff(ours, theirs).seed  # read off their commit
+        here = set(ws._drop_ignored(provider.files_at(ours).keys()))
+        header = (
+            f"# {name} shares no history with this session: all it holds "
+            f"is what `ws-git merge {name}` brings"
+        )
+        both_label = "# also here"
+    else:
+        start = base or ours
+        change = provider.diff(start, theirs)
+        changed = sorted(ws._drop_ignored(change.paths))
+        start_files = provider.files_at(start)
+        seed = change.seed
+        here = set(ws._drop_ignored(provider.diff(base, ours).paths)) if base else set()
+        header = (
+            f"# what {name} changed since {base[:7]}, where the two last met: "
+            f"what `ws-git merge {name}` brings"
+            if base
+            else ""
+        )
+        both_label = "# also changed here since then"
     if paths:
         changed = [p for p in changed if _under_any(p, paths)]
     if not changed:
         return None
-    lines: list[str] = []
-    if base is not None:
-        lines.append(
-            f"# what {name} changed since {base[:7]}, where the two last met: "
-            f"what `ws-git merge {name}` brings"
-        )
-        here = set(ws._drop_ignored(provider.diff(base, ours).paths))
+    if header:
+        lines.append(header)
         both = [p for p in changed if p in here]
         if both:
             shown = ", ".join(_show(ws, p) for p in both)
             lines.append(
-                f"# also changed here since then: {shown} "
+                f"{both_label}: {shown} "
                 "(the merge combines both sides, or marks a conflict)"
             )
     # Read once for both groups below.
-    old = read_files(provider.files_at(start), changed)
+    old = read_files(start_files, changed)
     new = read_files(provider.files_at(theirs), changed)
     render = _render_stat if stat else _render_diff
-    seed = change.seed
     if not seed:
         lines.extend(render(ws, changed, old, new))
     else:
@@ -1951,7 +1973,11 @@ def _render_stat(
             rows.append((_show(ws, path), 0, 0, True))
             continue
         plus = minus = 0
-        for line in difflib.unified_diff(ta.splitlines(), tb.splitlines(), lineterm=""):
+        # line endings kept, so a change to the final newline counts,
+        # as it does in the full diff and in git
+        for line in difflib.unified_diff(
+            ta.splitlines(keepends=True), tb.splitlines(keepends=True), lineterm=""
+        ):
             if line.startswith("+") and not line.startswith("+++"):
                 plus += 1
             elif line.startswith("-") and not line.startswith("---"):
