@@ -206,7 +206,7 @@ class FileResult:
         return (
             self.collection_error is not None
             or self.load_error is not None
-            or any(o.status != "passed" for o in self.outcomes)
+            or any(o.status in ("failed", "error") for o in self.outcomes)
         )
 
 

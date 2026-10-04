@@ -753,3 +753,43 @@ it("left out", () => { throw new Error("ran"); });
     )
     status = {o.name.split(" > ", 1)[1]: o.status for o in focused.outcomes}
     assert status == {"the one": "passed", "left out": "skipped"}
+
+
+def test_only_is_the_files_focus_before_the_name_filter_narrows_it(ws):
+    result = run(
+        ws,
+        "tests/onlyname.test.js",
+        """\
+it.only("focused", () => {});
+it("matched", () => { throw new Error("ran"); });
+""",
+        name="matched",
+    )
+    assert [o.status for o in result.outcomes] == ["skipped"]
+
+
+def test_describe_todo_is_a_skipped_entry_not_a_collection_error(ws):
+    result = run(
+        ws,
+        "tests/suitetodo.test.js",
+        'describe.todo("later suite");\nit("now", () => {});\n',
+    )
+    assert result.collection_error is None
+    status = {o.name.split(" > ", 1)[1]: o.status for o in result.outcomes}
+    assert status == {"later suite": "skipped", "now": "passed"}
+
+
+def test_an_object_title_leaves_trailing_punctuation_outside_the_key(ws):
+    result = run(
+        ws,
+        "tests/punct.test.js",
+        'it.each([{ a: 1, b: { c: 2 } }])("ends with $a. and $b.c.", () => {});\n',
+    )
+    assert result.outcomes[0].name.endswith("ends with 1. and 2.")
+
+
+def test_skipped_tests_do_not_spend_the_bail_budget(ws):
+    write(ws, "tests/a.test.js", 'it.skip("waits", () => {});\nit("runs", () => {});\n')
+    write(ws, "tests/b.test.js", 'it("also runs", () => {});\n')
+    results = run_js_tests(ws, ["tests/a.test.js", "tests/b.test.js"], bail=1)
+    assert [r.failed for r in results] == [False, False]
