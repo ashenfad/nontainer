@@ -35,7 +35,7 @@ dependencies = [
     # an injected command emits through. Plus a printf builtin, and a
     # control-flow keyword that raises one ParseError naming it
     # instead of three unrelated "command not found" lines.
-    "termish>=0.2.1",
+    "termish>=0.2.2",
     # 0.1.7: os.lchmod/os.lchflags, extended attributes, and 3.10's
     # Path.chmod no longer reach the real filesystem; os.utime stops
     # discarding ns= and retargeting symlinks; scandir stops describing
