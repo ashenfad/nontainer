@@ -791,6 +791,30 @@ class _Absorbed(NamedTuple):
     landed: bool = False
 
 
+def normalize_root(root: str) -> str:
+    """A workspace root as every executor reads it: absolute, normalized
+    by segment, with no ``.`` or ``..`` in it.
+
+    Anything a guest kernel would collapse (trailing, doubled, or
+    leading-only slashes) has to collapse here too, or the executors
+    silently disagree about the root: "//" left as-is rstrips to "",
+    which reads falsy downstream — the local side then composes
+    "/skills" (flat layout) while a guest falls back to dud's own
+    /workspace default. That split is the exact bug this root exists
+    to prevent. ``.`` and ``..`` are rejected rather than resolved: a
+    guest would normalize them and the VFS wouldn't, reopening the same
+    split. Anything that builds paths under a root an embedder passed
+    (``skills.mounts``) normalizes it here, to land where the workspace
+    looks.
+    """
+    if not root.startswith("/"):
+        raise ValueError(f"root must be an absolute path, got {root!r}")
+    parts = [p for p in root.split("/") if p]
+    if any(p in (".", "..") for p in parts):
+        raise ValueError(f"root must not contain . or .. segments, got {root!r}")
+    return "/" + "/".join(parts) if parts else "/"
+
+
 @dataclass(frozen=True)
 class _Settings:
     """The construction arguments a fork replays onto its own provider —
@@ -1534,21 +1558,7 @@ class Workspace:
         # workspace AT it, making agent absolute paths identical on
         # both). "/" selects the flat pre-0.2 layout (no VM-rung path
         # parity — a guest can't mount at the fs root).
-        if not root.startswith("/"):
-            raise ValueError(f"root must be an absolute path, got {root!r}")
-        # Normalize by segment. Anything a guest kernel would collapse
-        # (trailing, doubled, or leading-only slashes) has to collapse
-        # here too, or the executors silently disagree about the root:
-        # "//" left as-is rstrips to "", which reads falsy downstream —
-        # the local side then composes "/skills" (flat layout) while a
-        # guest falls back to dud's own /workspace default. That split
-        # is the exact bug this root exists to prevent.
-        parts = [p for p in root.split("/") if p]
-        if any(p in (".", "..") for p in parts):
-            # Rejected rather than resolved: a guest would normalize
-            # these and the VFS wouldn't, reopening the same split.
-            raise ValueError(f"root must not contain . or .. segments, got {root!r}")
-        self._root = "/" + "/".join(parts) if parts else "/"
+        self._root = normalize_root(root)
         # What is never work besides the built-ins (outside the root,
         # authoring output): the embedder's .gitignore. Compiled once,
         # so a bad pattern fails construction rather than a later status.
