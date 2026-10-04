@@ -494,6 +494,9 @@ function describe(name, fn) {
 }
 
 function block(name, fn, mode) {
+  // describe.todo, or a block with no body: one skipped entry under its
+  // name, so it shows in the report rather than vanishing.
+  if (typeof fn !== 'function') return add(name, undefined, { todo: true });
   suites.push(String(name));
   beforeFrames.push([]);
   afterFrames.push([]);
@@ -572,7 +575,7 @@ function title(template, args, index) {
   });
   const row = args.length === 1 && args[0] && typeof args[0] === 'object' ? args[0] : null;
   if (row && !Array.isArray(row)) {
-    out = out.replace(/\$([A-Za-z_][\w.]*)/g, (match, path) => {
+    out = out.replace(/\$([A-Za-z_]\w*(?:\.\w+)*)/g, (match, path) => {
       let v = row;
       for (const key of path.split('.')) v = v == null ? undefined : v[key];
       return v === undefined ? match : typeof v === 'string' ? v : fmt(v, 0);
@@ -690,7 +693,9 @@ export async function __run(load, options) {
   }
 
   const wanted = tests.filter((t) => !opts.name || t.name.includes(opts.name));
-  const focused = wanted.some((t) => t.only);
+  // Focus is the file's, decided before -t narrows it: `.only` then the
+  // name filter, as vitest applies them.
+  const focused = tests.some((t) => t.only);
   const runs = (t) => !t.skip && (!focused || t.only);
   // The last test each scope runs, so its afterAll follows that one.
   const last = new Map();
