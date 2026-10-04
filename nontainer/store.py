@@ -156,6 +156,7 @@ _FROZEN_SETTINGS = (
     "max_observation",
     "executor_factory",
     "root",
+    "ignore",
 )
 
 # What ``Publication.open`` takes: the same, without ``root``. A
@@ -743,6 +744,7 @@ class Store:
         max_observation: int = 32_000,
         executor_factory: "Callable[[], Executor] | None" = None,
         root: str = "/workspace",
+        ignore: "Iterable[str] | None" = None,
     ) -> "Workspace":
         """Open (or create) a session's :class:`Workspace`.
 
@@ -760,6 +762,10 @@ class Store:
         ``root`` is the workspace root — the absolute VFS path agent
         code sees its files under (default ``/workspace``). One value
         per session, inherited by forks.
+
+        ``ignore`` is the embedder's ``.gitignore``: patterns for what
+        is never work, besides everything outside the root (see
+        :mod:`nontainer.ignore`). Inherited by forks.
 
         A session whose head was written before monkeyfs 0.1.10 is
         refused with :class:`~nontainer.errors.LegacyLayoutError`, which
@@ -780,6 +786,7 @@ class Store:
                 max_observation=max_observation,
                 executor_factory=executor_factory,
                 root=root,
+                ignore=ignore,
             )
         except LegacyLayoutError as e:
             provider.close()

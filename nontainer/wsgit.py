@@ -1623,9 +1623,7 @@ def _render_diff(
     """Unified diff lines for these paths between two trees. Authoring
     output is never work (see :mod:`nontainer.ignore`), so it is not
     shown, whichever view asked."""
-    from .ignore import is_ignored
-
-    paths = [p for p in paths if not is_ignored(p, ws.root)]
+    paths = [p for p in paths if not ws._ignores(p)]
     out: list[str] = []
     old = read_files(old, paths)
     new = read_files(new, paths)
@@ -1826,9 +1824,7 @@ def _diff_branch(
     theirs = tagged.commit if tagged is not None else git.source_commit(name)
     ours = git.head or provider.head
     change = provider.diff(ours, theirs)
-    from .ignore import drop_ignored
-
-    changed = sorted(drop_ignored(change.paths, ws.root))
+    changed = sorted(ws._drop_ignored(change.paths))
     if not changed:
         return None
     # Read once for both groups below.

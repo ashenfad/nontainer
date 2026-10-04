@@ -370,12 +370,12 @@ def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
         assert child.terminal("ws-git sparse-checkout list").stdout == "seen.txt\n"
         assert child.terminal("ws-git sparse-checkout").stdout == "seen.txt\n"
 
-        # a new path anywhere is ordinary work. The child starts at no
-        # commit of its own, so what it can SEE reads as modified —
-        # and what its view hides is absent here as everywhere else
+        # a new path anywhere is ordinary work. What the child
+        # inherited is not, and what its view hides is absent here as
+        # everywhere else
         r = child.terminal("cat > note.md <<'EOF'\nnote\nEOF\nws-git status")
         assert r.exit_code == 0, r.stdout
-        assert r.stdout == "view: seen.txt\n M note.md\n M seen.txt\n"
+        assert r.stdout == "view: seen.txt\n M note.md\n"
         # the seed, not the view as it stands: a file the child made
         # joined its view because it made it
         assert child.terminal("ws-git sparse-checkout list").stdout == "seen.txt\n"

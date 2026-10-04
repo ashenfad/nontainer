@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`ignore=`: the embedder's `.gitignore`.** `workspace()` and `Store.open` take gitignore-style patterns, relative to the workspace root, for paths that are never work: `__pycache__/`, `*.log`, `/build/`. No ws-git status lists them, no commit or merge takes them, and no diff (and so no delegate's answer) names them. They are still written and kept for the session to read back. Forks, tags and publications inherit the patterns, and `ws.ignore` returns them. Negation (`!`) is refused when the workspace is built rather than half-supported. `ws-git add <path>` on an ignored path is refused, and the refusal says why.
+
+### Changed
+- **Paths outside the workspace root are never work.** Anything a session writes outside `ws.root`, such as scratch under `/tmp` or a library's cache at `/.matplotlib`, is no longer listed by ws-git status, taken by a commit or merge, or named in a diff. A delegate's commit used to sweep up a matplotlib font cache written at the filesystem root, and a scratch file under `/tmp` turned up in another's changed paths. A dud guest only ever sees the root's subtree, so local sessions now agree with it.
+
+### Fixed
+- **A delegate's first commit takes only what it changed.** A fork has no ws-git commit of its own, and until its first one every file it could see counted as modified, inherited ones included. Its first `ws-git add -A` and commit therefore carried its parent's work along with its own: one delegate's 56-file commit was mostly the parent's contract and seeded files. `ws-git diff` showed it all as added, and `status` listed inherited files as uncommitted. A fork now records the tree it started from (the fork point the fork already landed) as its base. `status`, `diff`, `add -A` and `commit` measure from that base until its first commit: right after a fork, `status` is clean. A session that is not a fork still reads, before its first commit, the way a repo does.
+
 ## 0.8.8 - 2026-10-03
 
 ### Added

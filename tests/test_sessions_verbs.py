@@ -161,7 +161,14 @@ def test_a_fork_starts_with_a_fresh_ws_git_state(ws):
             assert child.index.status().staged == ()
             assert child.index.log() == []
             assert child.index.tags() == {}
-            assert _blob(child) == {
+            blob = _blob(child)
+            # the tree it started from: its work is measured from there
+            base = blob.pop("base")
+            assert base is not None
+            assert set(child._provider.files_at(base)) == set(
+                ws._provider.working_files()
+            )
+            assert blob == {
                 "head": None,
                 "staged": [],
                 "merge_source": None,
@@ -230,11 +237,10 @@ def test_ws_git_log_in_a_fresh_child_is_empty_but_reaches_the_parents(ws, store)
     try:
         assert child.terminal("ws-git log").stdout.strip() == ""
         assert "seed" in child.terminal("ws-git log main").stdout
-        # nothing STAGED, whatever the parent had staged. Everything
-        # reads as modified instead, the way it does in a repo before
-        # its first commit.
-        porcelain = child.terminal("ws-git status --porcelain").stdout.splitlines()
-        assert porcelain and all(line.startswith(" ") for line in porcelain)
+        # nothing staged, whatever the parent had staged, and nothing
+        # modified: what a fork inherited is not work it did. Its
+        # status is measured from the tree it started from.
+        assert child.terminal("ws-git status --porcelain").stdout == ""
     finally:
         child.close()
 

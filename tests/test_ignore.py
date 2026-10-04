@@ -1,18 +1,21 @@
-"""Authoring output is never work.
+"""Paths that are never work.
 
-The app runtime writes handler logs and test_app captures into the app
-tree for the agent to read back. They stay on their own branch, and
-nothing that decides what a session's work IS sees them: ws-git status
-and commits, the uncommitted check, diffs, merges, cherry-picks and
-directory takes. The case that made this matter: a delegate commits its
-scene, checks it with test_app, and answers with captures newer than
-its commit.
+Three kinds: anything outside the workspace root (scratch under /tmp, a
+library's cache), the authoring output the app runtime writes beside an
+app (handler logs, test_app captures), and whatever the embedder's
+``ignore=`` patterns name. They stay on their own branch, and nothing
+that decides what a session's work IS sees them: ws-git status and
+commits, the uncommitted check, diffs, merges, cherry-picks and
+directory takes. The case that made the first two matter: a delegate
+commits its scene, checks it with test_app, and answers with captures
+newer than its commit; and a delegate's commit that swept up a font
+cache matplotlib wrote at the filesystem root.
 """
 
 import pytest
 
 from nontainer import Store
-from nontainer.ignore import IGNORED_DIRS, is_ignored
+from nontainer.ignore import IGNORED_DIRS, Patterns, is_ignored, why_ignored
 from nontainer.sessions import Sessions
 from nontainer.wsgit import register_wsgit
 
@@ -43,7 +46,7 @@ def test_which_paths_are_authoring_output():
     assert is_ignored("/workspace/app/screenshots", "/workspace")
     assert not is_ignored("/workspace/app/screenshots.html", "/workspace")
     assert not is_ignored("/workspace/app/index.html", "/workspace")
-    assert not is_ignored("/elsewhere/app/logs/x", "/workspace")
+    assert is_ignored("/elsewhere/app/logs/x", "/workspace")  # outside the root
     assert is_ignored("/app/logs/x", "/")  # the flat legacy layout
 
 
@@ -176,3 +179,142 @@ def test_a_delegate_that_checked_its_work_after_committing_merges_cleanly(store,
     assert ws.files.read("/workspace/app/intro.html") == b"<p>intro</p>\n"
     assert not ws.files.exists(SHOT)
     assert not ws.files.exists(LOG)
+
+
+# -- outside the root ------------------------------------------------------------
+
+
+def test_anything_outside_the_root_is_never_work(ws):
+    ws.files.write("/workspace/notes.md", "work\n")
+    ws.terminal(
+        "echo scratch > /tmp/t.mjs; mkdir -p /.matplotlib; echo cache > /.matplotlib/fontlist.json"
+    )
+    status = ws.terminal("ws-git status --porcelain").stdout
+    assert status == " M notes.md\n"
+    ws.terminal("ws-git add -A && ws-git commit -m work")
+    assert ws.terminal("ws-git status --porcelain").stdout == ""
+    # still there to read back
+    assert ws.terminal("cat /tmp/t.mjs").stdout == "scratch\n"
+
+
+def test_the_reason_is_named():
+    assert (
+        why_ignored("/tmp/x", "/workspace")
+        == "it is outside the workspace root (/workspace)"
+    )
+    assert "authoring output" in why_ignored(LOG, "/workspace")
+    assert why_ignored("/workspace/a.py", "/workspace") is None
+    assert why_ignored("/workspace", "/workspace") is None
+    assert why_ignored("/tmp/x", "/") is None  # a root at / leaves nothing outside
+
+
+# -- the embedder's patterns -----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "pattern, ignored, kept",
+    [
+        (
+            "__pycache__/",
+            ["__pycache__/m.pyc", "pkg/__pycache__/m.pyc"],
+            ["__pycache__.txt"],
+        ),
+        ("*.log", ["a.log", "deep/b.log"], ["a.log.txt", "logs/x"]),
+        ("/build/", ["build/out.js"], ["src/build/out.js"]),
+        ("data/raw", ["data/raw/x.csv", "data/raw"], ["other/data/raw/x.csv"]),
+        ("docs/**/*.tmp", ["docs/a.tmp", "docs/x/y/b.tmp"], ["a.tmp"]),
+        ("cache?", ["cache1/x", "cacheA"], ["cache12/x"]),
+        ("[ab].txt", ["a.txt", "x/b.txt"], ["c.txt"]),
+    ],
+)
+def test_patterns_follow_gitignore(pattern, ignored, kept):
+    p = Patterns([pattern])
+    for rel in ignored:
+        assert p.match(rel), (pattern, rel)
+    for rel in kept:
+        assert not p.match(rel), (pattern, rel)
+
+
+def test_a_directory_pattern_does_not_match_a_file_of_that_name():
+    assert not Patterns(["build/"]).match("build")
+    assert Patterns(["build"]).match("build")
+
+
+def test_blank_lines_and_comments_are_skipped_and_negation_is_refused():
+    assert Patterns(["", "# a comment", "*.log"]).source == ("*.log",)
+    assert Patterns("*.log\n\n# c\n*.tmp").source == ("*.log", "*.tmp")
+    with pytest.raises(ValueError, match="negation"):
+        Patterns(["*.log", "!keep.log"])
+
+
+def test_a_bad_pattern_fails_when_the_workspace_is_built(store):
+    with pytest.raises(ValueError, match="negation"):
+        store.open("bad", ignore=["!x"])
+
+
+@pytest.fixture
+def ignoring(store):
+    w = store.open("ignoring", ignore=["__pycache__/", "*.log"])
+    register_wsgit(w)
+    w.files.write("/workspace/app.py", "x = 1\n")
+    w.index.commit("start")
+    yield w
+    w.close()
+
+
+def test_status_and_commits_leave_matched_paths_out(ignoring):
+    assert ignoring.ignore == ("__pycache__/", "*.log")
+    ignoring.files.write("/workspace/__pycache__/app.cpython-313.pyc", b"\0")
+    ignoring.files.write("/workspace/run.log", "ran\n")
+    ignoring.files.write("/workspace/app.py", "x = 2\n")
+    assert ignoring.terminal("ws-git status --porcelain").stdout == " M app.py\n"
+    assert ignoring.terminal("ws-git add -A && ws-git commit -m two").exit_code == 0
+    assert ignoring.terminal("ws-git status --porcelain").stdout == ""
+    r = ignoring.terminal("ws-git add run.log")
+    assert r.exit_code != 0
+    assert "matches the session's ignore patterns" in (r.stdout + r.stderr)
+
+
+def test_a_fork_inherits_the_patterns_and_a_merge_keeps_them_out(ignoring):
+    kid = ignoring.fork("ignoring.kid")
+    try:
+        assert kid.ignore == ("__pycache__/", "*.log")
+        register_wsgit(kid)
+        kid.files.write("/workspace/__pycache__/x.pyc", b"\0")
+        kid.files.write("/workspace/kid.log", "kid\n")
+        kid.files.write("/workspace/feature.py", "y = 1\n")
+        kid.index.commit("feature")
+    finally:
+        kid.close()
+    outcome = ignoring.merge("ignoring.kid")
+    assert outcome.merged
+    assert ignoring.files.exists("/workspace/feature.py")
+    assert not ignoring.files.exists("/workspace/kid.log")
+    assert not ignoring.files.exists("/workspace/__pycache__/x.pyc")
+
+
+def test_a_delegate_answers_with_its_own_work_and_not_what_it_inherited(store, ws):
+    """A delegate starts from its parent's tree. What it inherited is
+    not work it did: its status, its commit and the paths its answer
+    names are what it changed, and nothing it wrote outside the root."""
+    ws.files.write("/workspace/SCHEMA.md", "contract\n")
+    ws.index.commit("phase 0")
+
+    class Builder:
+        def run(self, session, task, *, budget=None):
+            child = store.open(session)
+            register_wsgit(child)
+            try:
+                assert child.terminal("ws-git status --porcelain").stdout == ""
+                child.terminal("echo cache > /tmp/cache.json")
+                child.files.write("/workspace/app/engine.js", "export {}\n")
+                child.terminal("ws-git add -A && ws-git commit -m engine")
+            finally:
+                child.close()
+            return "built the engine"
+
+    with Sessions(ws, Builder()) as sessions:
+        answer = sessions.ask("build the engine", wait=True)
+
+    assert answer.uncommitted is False
+    assert answer.changed["seed"] == ("/workspace/app/engine.js",)

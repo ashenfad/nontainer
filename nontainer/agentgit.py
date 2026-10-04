@@ -212,8 +212,10 @@ def parse_blob(raw: Any) -> dict[str, Any]:
     head = parsed.get("head")
     source = parsed.get("merge_source")
     pre = parsed.get("pre_merge")
+    base = parsed.get("base")
     return {
         "head": head if isinstance(head, str) else None,
+        "base": base if isinstance(base, str) else None,
         "staged": sorted(_strings(parsed.get("staged"))),
         "merge_source": source if isinstance(source, str) else None,
         "unresolved": sorted(_strings(parsed.get("unresolved"))),
@@ -298,6 +300,7 @@ def _encode_blob(state: Mapping[str, Any]) -> bytes:
         {
             "version": BLOB_VERSION,
             "head": state.get("head"),
+            "base": state.get("base"),
             "staged": sorted(_strings(list(state.get("staged") or []))),
             "merge_source": state.get("merge_source"),
             "unresolved": sorted(_strings(list(state.get("unresolved") or []))),
@@ -335,7 +338,10 @@ def reset_for_fork(provider: Any, parent: str) -> str | None:
     commit marking where that was, every file the delegate inherited
     would read as one it added — a revert or a cherry-pick of that
     commit would then carry files the delegate never touched. One
-    hidden commit per fork is what makes the mark an invariant.
+    hidden commit per fork is what makes the mark an invariant. The
+    blob it writes records where it was as the child's ``base``, which
+    ``status``, ``diff`` and ``commit`` measure from until the child's
+    first commit, so its first commit takes only what it changed.
 
     Returns the commit it landed in, or ``None`` on a provider with no
     index (nothing there keeps this state). Keyed and self-committed,
@@ -345,7 +351,13 @@ def reset_for_fork(provider: Any, parent: str) -> str | None:
     """
     if not provider.caps.index:
         return None
-    provider.kv[BLOB_KEY] = _encode_blob(parse_blob(None))
+    # The tree the fork starts from, recorded as the base the child's
+    # work is measured against until its own first commit. The commit
+    # landing below changes nothing but this blob, so its files ARE
+    # this commit's.
+    fresh = parse_blob(None)
+    fresh["base"] = provider.head
+    provider.kv[BLOB_KEY] = _encode_blob(fresh)
     return provider.commit_keys({"tool": FORK_TOOL, "parent": parent}, keys=[BLOB_KEY])
 
 
@@ -464,13 +476,17 @@ class AgentGit:
 
     # -- the working tree against the agent's head ----------------------
 
-    def _modified(self, head: str | None) -> set[str]:
+    def _modified(self, head: str | None, base: str | None = None) -> set[str]:
         """Paths whose content differs from the agent's head.
 
-        With no head yet, every visible file counts as modified —
-        there is no baseline to compare against, exactly as in a repo
-        before its first commit, and a deletion is not a difference
-        because nothing recorded the file in the first place. The
+        With no head yet, a fork measures from ``base``, the tree it
+        started from (see :func:`reset_for_fork`): what a delegate
+        inherited is not work it did, so its first commit takes only
+        what it changed. With neither, every visible file counts as
+        modified — there is no baseline to compare against, exactly as
+        in a repo before its first commit, and a deletion is not a
+        difference because nothing recorded the file in the first
+        place. The
         comparison is a content one, so a framework commit that landed
         an edit does not hide it: the edit is still not in the agent's
         head.
@@ -482,8 +498,9 @@ class AgentGit:
         status or sweeping one into a commit would report a file the
         session can neither read nor stage.
         """
-        if head is None:
+        if head is None and base is None:
             return self._visible(set(self._provider.working_files()))
+        head = head or base
         if head == self._provider.head and not self._provider.dirty:
             # The agent's head IS the store's, with nothing pending:
             # the common clean case pays no tree walk.
@@ -495,9 +512,7 @@ class AgentGit:
         authoring output (see :mod:`nontainer.ignore`): the logs and
         captures the app runtime writes are never work, so no status
         lists them and no commit takes them."""
-        from .ignore import drop_ignored
-
-        paths = drop_ignored(paths, self._ws.root)
+        paths = self._ws._drop_ignored(paths)
         view = getattr(self._ws, "_view_fs", None)
         if view is None:
             return paths
@@ -528,7 +543,7 @@ class AgentGit:
         """
         self._require("ws-git status")
         blob = self._read()
-        modified = self._modified(blob["head"])
+        modified = self._modified(blob["head"], blob["base"])
         staged = set(blob["staged"])
         source, unresolved = self._merge_context(blob)
         return WorkspaceStatus(
@@ -612,15 +627,14 @@ class AgentGit:
         view = getattr(self._ws, "_view_fs", None)
         if view is not None:
             known = {path for path in known if view.sees(path)}
-        from .ignore import is_ignored
+        from .ignore import why_ignored
 
         fs = self._ws._fs
         for path in paths:
-            if is_ignored(path, self._ws.root):
+            why = why_ignored(path, self._ws.root, self._ws._ignore)
+            if why is not None:
                 raise ValueError(
-                    f"cannot stage {path!r}: it is authoring output (app logs "
-                    "and test_app captures), which stays on this branch and is "
-                    "never committed or merged"
+                    f"cannot stage {path!r}: {why}, so it is never committed or merged"
                 )
             if path in known:
                 continue
@@ -662,7 +676,7 @@ class AgentGit:
         self._writable("ws-git commit")
         blob = self._read()
         head = blob["head"]
-        modified = self._modified(head)
+        modified = self._modified(head, blob["base"])
         if not modified:
             raise WorkspaceError("nothing to commit")
         if blob["staged"]:
@@ -1122,10 +1136,8 @@ class AgentGit:
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"]
         if virtual is None:
             return ()
-        from .ignore import drop_ignored
-
         changed = self._provider.diff(virtual, head).paths
-        return tuple(sorted(drop_ignored(changed, self._ws.root)))
+        return tuple(sorted(self._ws._drop_ignored(changed)))
 
     def source_unresolved(
         self, source: str, *, head: str | None = None
@@ -1251,10 +1263,12 @@ class AgentGit:
         return self._provider.working_files()
 
     def head_files(self) -> Mapping[str, Any]:
-        """The files at the agent's head — empty before its first
-        commit, which is what makes everything read as added."""
-        head = self._read()["head"]
-        return self._provider.files_at(head) if head is not None else {}
+        """The files at the agent's head. Before its first commit, a
+        fork's are those it started from, and anything else's are none,
+        which is what makes everything read as added."""
+        blob = self._read()
+        ref = blob["head"] or blob["base"]
+        return self._provider.files_at(ref) if ref is not None else {}
 
 
 def _unique(paths: Iterable[str]) -> list[str]:

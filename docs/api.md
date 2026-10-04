@@ -519,6 +519,7 @@ workspace(
     max_observation: int = 32_000,
     executor_factory: Callable[[], Executor] | None = None,
     root: str = "/workspace",
+    ignore: Iterable[str] | None = None,   # the embedder's .gitignore
 ) -> Workspace
 ```
 
@@ -540,6 +541,28 @@ path in agent code names the same file on every executor. Forks
 inherit it. `root="/"` selects the flat layout, with agent files at the
 filesystem root and no VM path parity — a guest can't mount at the fs
 root.
+
+**What is never work.** Anything outside the root is never the agent's
+work: scratch under `/tmp`, a library's cache, whatever a session writes
+elsewhere in the filesystem. No ws-git status lists it, no commit or
+merge takes it, no diff (and so no delegate's answer) names it; it is
+still written and kept for the session to read back. The app runtime's
+authoring output (`<root>/app/logs`, `<root>/app/screenshots`) is
+treated the same way, and so is whatever `ignore` names: the
+embedder's `.gitignore`, a subset of its syntax matched against paths
+relative to the root:
+
+```python
+ws = store.open("chat-42", ignore=["__pycache__/", "*.log", "/build/"])
+ws.ignore   # ("__pycache__/", "*.log", "/build/")
+```
+
+A name with no `/` (or only a trailing one) matches at any depth; a
+leading or inner `/` anchors to the root; a trailing `/` matches a
+directory and everything below it; `*` and `?` stay within a segment
+and `**` crosses them; `#` lines and blank lines are skipped. Negation
+(`!`) is refused at construction rather than half-supported. Forks,
+tags and publications inherit the patterns. See `nontainer.ignore`.
 
 ## `Workspace`
 
@@ -942,9 +965,12 @@ for any reader; it is hidden from `ws.log()` and shown by `kind="all"`.
 Every fork lands it, a parent that never used ws-git included: the
 commit is the child's fork POINT as well as its reset, and
 `ws.cherry_pick` / `ws.revert` measure the change in the child's first
-commit against it — without the mark, every file the child inherited
-would read as one it added. Before its first commit a child reads the way a
-repo does before its first: everything it can see is modified.
+commit against it. The mark is also the child's **base**: until its
+first commit, `status`, `diff`, `add -A` and `commit` measure from the
+tree it started from, so what it inherited is not work it did and its
+first commit takes only what it changed. A session that is no fork has
+no base, and before its first commit reads the way a repo does before
+its first: everything it can see is modified.
 
 `paths` narrows the child's **view**, not its tree. Its branch holds
 everything this one had; its filesystem lists and reads only the seeded

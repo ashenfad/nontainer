@@ -341,8 +341,18 @@ against. A delegate is the author of its own commits — nothing composes
 one on its behalf, because a commit nobody wrote is a worse answer than
 an honest refusal, and a delegate that committed and then wrote past it
 is refused with what it left out reported. Before its first commit a
-delegate reads the way a repo does before its first: everything it can
-see is modified, and what its view hides is not its business.
+delegate is measured from the tree it was forked with: what it
+inherited is not work it did, and what its view hides is not its
+business.
+
+**Work lives under the root.** Anything a session writes outside the
+workspace root (scratch under `/tmp`, a library's cache at
+`/.matplotlib`) is the sandbox's state, never the agent's work: no
+status lists it, no commit or merge takes it, no diff shows it. A dud
+guest only ever sees the root's subtree, so local sessions now agree
+with it. Beside that, the app runtime's authoring output and whatever
+the embedder's `ignore=` patterns name (its `.gitignore`) are treated
+the same way; see `nontainer.ignore`.
 
 **Providers degrade honestly.** kvgit does all of it. AgentFS refuses
 `fork` and `merge` by name until it has a merge engine — a fork you

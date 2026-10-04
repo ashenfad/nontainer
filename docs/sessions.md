@@ -159,17 +159,21 @@ on to the caller unannounced. Then, or if the commit fails,
 `answer.uncommitted` is True, the merge refuses, and the caller takes
 paths or asks again.
 
-**Authoring output is never part of an answer.** The app runtime's
-handler logs and test_app captures (`app/logs`, `app/screenshots`) stay
-on the delegate's branch and out of everything else: the answer's
-`changed` paths, the check for uncommitted work, and the merge, which
-keeps the asking session's own copies. A delegate that checks its work
+**Some paths are never part of an answer.** Anything the delegate
+wrote outside the workspace root, the app runtime's handler logs and
+test_app captures (`app/logs`, `app/screenshots`), and whatever the
+embedder's ignore patterns name stay on the delegate's branch and out
+of everything else: the answer's `changed` paths, the check for
+uncommitted work, and the merge, which keeps the asking session's own
+copies. A delegate that checks its work
 with test_app after its last write still answers with its work alone.
 
 The first row works because **a fork starts with a fresh ws-git state**
 (see `ws.fork` in the [API reference](api.md)): no head, nothing
 staged, no inherited merge context, for `inherit="full"` as much as
-`"fresh"`.
+`"fresh"`. A delegate is measured from the tree it was forked with, so
+what it inherited never reads as its work and `ws-git add -A` takes
+only what it changed.
 
 Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
 parent learns a delegate finished — a dot in a rail, a message injected

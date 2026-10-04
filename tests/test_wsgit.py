@@ -545,18 +545,16 @@ def test_fork_wsgit_binds_fork():
             fork.files.fs.write("/workspace/kid.txt", b"kid\n")
             r = fork.terminal("ws-git stage kid.txt")
             assert r.exit_code == 0, r.stderr
-            # a fork starts at no commit of its own, so everything it
-            # holds reads as modified until its first one — and its
-            # log is its own, not a continuation of the parent's
-            assert fork.terminal("ws-git status").stdout == " M a.txt\nM  kid.txt\n"
+            # a fork starts at no commit of its own, measured from the
+            # tree it started from: a.txt came with it and is not its
+            # work. Its log is its own, not a continuation of the parent's
+            assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
             assert w.terminal("ws-git status").stdout == ""
             assert fork.terminal('ws-git commit -m "kid work"').exit_code == 0
             assert _subjects(w) == ["base"]
             assert _subjects(fork) == ["kid work"]
-            # a.txt was never in the fork's own commit, so it is still
-            # the fork's uncommitted work — the delegate said what it
-            # said, and nothing commits the rest for it
-            assert fork.terminal("ws-git status").stdout == " M a.txt\n"
+            # its commit took kid.txt alone, and nothing is left over
+            assert fork.terminal("ws-git status").stdout == ""
         finally:
             fork.close()
     finally:

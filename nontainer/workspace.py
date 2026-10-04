@@ -839,6 +839,7 @@ class _Settings:
     max_observation: int
     executor_factory: "Callable[[], Executor] | None"
     root: str
+    ignore: tuple[str, ...]
 
     def as_kwargs(self) -> dict[str, Any]:
         """Shallow field mapping for ``Workspace(**...)``. Deliberately
@@ -1508,6 +1509,7 @@ class Workspace:
         executor: "Executor | None" = None,
         executor_factory: "Callable[[], Executor] | None" = None,
         root: str = "/workspace",
+        ignore: "Iterable[str] | None" = None,
     ) -> None:
         self._provider = provider
         # Which Store opened this workspace, when one did. Stamped by
@@ -1547,6 +1549,12 @@ class Workspace:
             # these and the VFS wouldn't, reopening the same split.
             raise ValueError(f"root must not contain . or .. segments, got {root!r}")
         self._root = "/" + "/".join(parts) if parts else "/"
+        # What is never work besides the built-ins (outside the root,
+        # authoring output): the embedder's .gitignore. Compiled once,
+        # so a bad pattern fails construction rather than a later status.
+        from .ignore import Patterns
+
+        self._ignore = Patterns(ignore or ())
 
         # Single-writer enforcement: mutating public methods hold this
         # lock, so concurrent calls from a threading harness serialize
@@ -1678,6 +1686,7 @@ class Workspace:
             max_observation=self._max_observation,
             executor_factory=self._executor_factory,
             root=self._root,
+            ignore=self._ignore.source,
         )
 
         # -- versioned initialization baseline: root + cwd belong to
@@ -2310,8 +2319,6 @@ class Workspace:
         session's last agent commit, as a merge would read it), a store
         tag naming a commit, or a commit of this session.
         """
-        from .ignore import is_ignored
-
         wanted = normalize_view(paths, self._root)
         source, files = self._take_source(ref)
         taken: set[str] = set()
@@ -2321,12 +2328,12 @@ class Workspace:
             # neither brings the ref's nor drops this session's; naming
             # such a path outright still takes it, as git takes an
             # ignored file it is told to.
-            named_ignored = is_ignored(path, self._root)
+            named_ignored = self._ignores(path)
             under = {
                 p
                 for p in files
                 if (p == path or p.startswith(path + "/"))
-                and (named_ignored or not is_ignored(p, self._root))
+                and (named_ignored or not self._ignores(p))
             }
             if not under:
                 raise CommitNotFoundError(
@@ -2348,7 +2355,7 @@ class Workspace:
                 path.startswith(under + "/")
                 # this session's own captures stay, unless the directory
                 # being mirrored is itself authoring output
-                and (not is_ignored(path, self._root) or is_ignored(under, self._root))
+                and (not self._ignores(path) or self._ignores(under))
                 for under in mirrored
             )
         )
@@ -3547,24 +3554,34 @@ class Workspace:
             self._require_versioned("diff")
             return self._without_ignored(self._provider.diff(a, b))
 
+    @property
+    def ignore(self) -> tuple[str, ...]:
+        """The embedder's ignore patterns, as passed (see
+        :mod:`nontainer.ignore`). Paths outside the root and the app
+        runtime's authoring output are ignored besides these."""
+        return self._ignore.source
+
     def _ignores(self, path: str) -> bool:
-        """Whether ``path`` is authoring output, which is never work
-        (see :mod:`nontainer.ignore`)."""
+        """Whether ``path`` is never work: outside the root, authoring
+        output, or matched by the embedder's patterns (see
+        :mod:`nontainer.ignore`)."""
         from .ignore import is_ignored
 
-        return is_ignored(path, self._root)
+        return is_ignored(path, self._root, self._ignore)
 
-    def _without_ignored(self, diff: WorkspaceDiff) -> WorkspaceDiff:
-        """``diff`` less authoring output: logs and captures the app
-        runtime writes are the agent's instruments, not changes to its
-        work."""
+    def _drop_ignored(self, paths: Iterable[str]) -> set[str]:
+        """``paths`` less those :meth:`_ignores` names, as a set."""
         from .ignore import drop_ignored
 
+        return drop_ignored(paths, self._root, self._ignore)
+
+    def _without_ignored(self, diff: WorkspaceDiff) -> WorkspaceDiff:
+        """``diff`` less what is never work (see :meth:`_ignores`)."""
         return replace(
             diff,
-            added=frozenset(drop_ignored(diff.added, self._root)),
-            removed=frozenset(drop_ignored(diff.removed, self._root)),
-            modified=frozenset(drop_ignored(diff.modified, self._root)),
+            added=frozenset(self._drop_ignored(diff.added)),
+            removed=frozenset(self._drop_ignored(diff.removed)),
+            modified=frozenset(self._drop_ignored(diff.modified)),
         )
 
     def changed_since(self, ref: "str | Any") -> WorkspaceDiff:
@@ -4012,6 +4029,7 @@ def workspace(
     max_observation: int = 32_000,
     executor_factory: "Callable[[], Executor] | None" = None,
     root: str = "/workspace",
+    ignore: "Iterable[str] | None" = None,
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
 
@@ -4042,6 +4060,10 @@ def workspace(
     :attr:`Workspace.root`). One value per session, inherited by
     forks.
 
+    ``ignore`` is the embedder's ``.gitignore``: patterns for what is
+    never work, besides everything outside the root (see
+    :mod:`nontainer.ignore`). Inherited by forks.
+
     Every keyword :meth:`Store.open` takes is taken here and forwarded
     on both paths, so a setting is never reachable only by switching
     construction APIs; a test holds the two signatures together.
@@ -4060,6 +4082,7 @@ def workspace(
             max_observation=max_observation,
             executor_factory=executor_factory,
             root=root,
+            ignore=ignore,
         )
         # The store was built for this one workspace and nothing else
         # holds it, so the workspace owns it: closing the workspace
@@ -4081,4 +4104,5 @@ def workspace(
         max_observation=max_observation,
         executor_factory=executor_factory,
         root=root,
+        ignore=ignore,
     )
