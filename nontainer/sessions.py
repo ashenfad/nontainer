@@ -392,6 +392,7 @@ class Sessions:
         ended.
         """
         with self._lock:
+            name = self._resolve(name)
             job = self._jobs.get(name)
             if job is None:
                 raise SessionsError(self._unknown(name))
@@ -537,6 +538,7 @@ class Sessions:
                 helper writes nothing to the child's branch either way.
         """
         with self._lock:
+            name = self._resolve(name)
             job = self._jobs.get(name)
             if job is None:
                 raise SessionsError(self._unknown(name))
@@ -580,6 +582,7 @@ class Sessions:
         over nothing would read as a promise this cannot make.
         """
         with self._lock:
+            name = self._resolve(name)
             job = self._jobs.get(name)
             if job is None:
                 raise SessionsError(self._unknown(name))
@@ -693,6 +696,20 @@ class Sessions:
                 f"the sessions helper for {self._ws.session!r} is closed; "
                 "its workers are joined and no new job can be asked"
             )
+
+    def _resolve(self, name: str) -> str:
+        """The job ``name`` means: itself when a job has that name,
+        else the child this session scoped under it.
+
+        An agent that asked with ``name="backend"`` addresses the child
+        it named, and the child is ``<session>.backend`` — so the name
+        it gave works wherever a job's name is taken, rather than
+        costing it a refusal that lists the full one."""
+        name = str(name).strip()
+        if name in self._jobs:
+            return name
+        scoped = f"{self._ws.session}{SEPARATOR}{name}"
+        return scoped if scoped in self._jobs else name
 
     def _unknown(self, name: str) -> str:
         known = ", ".join(sorted(self._jobs)) or "none"
@@ -860,6 +877,7 @@ class Sessions:
         answered by the child at hand.
         """
         with self._lock:
+            resume = self._resolve(resume)
             job = self._jobs.get(resume)
             # Whether a run is in flight, which is not what the job's
             # status says: ``cancel`` marks a job cancelled at once and

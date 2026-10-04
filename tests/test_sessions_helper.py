@@ -1135,6 +1135,23 @@ def test_resume_continues_the_child(parent, store):
         child.close()
 
 
+def test_the_name_you_asked_with_addresses_the_child(parent, store):
+    """``name="backend"`` makes ``<session>.backend``; the name the agent
+    gave works wherever a job is named, so it is not refused for
+    leaving off the prefix it never typed."""
+    with Sessions(parent, Echo()) as sessions:
+        first = sessions.ask("build it", name="backend", wait=True)
+        assert first.branch == f"{parent.session}.backend"
+        assert sessions.result("backend").branch == first.branch
+        second = sessions.ask("fix the 404", resume="backend", wait=True)
+        assert second.branch == first.branch
+        assert second.text == "answering fix the 404"
+        assert sessions.keep("backend").name == first.branch
+        assert sessions.cancel("backend").name == first.branch
+        with pytest.raises(SessionsError, match="no job named 'frontend'"):
+            sessions.result("frontend")
+
+
 def test_resume_refuses_a_branch_this_session_has_no_job_for(parent, store):
     with Sessions(parent, Echo()) as sessions:
         with pytest.raises(SessionsError, match="no job named"):

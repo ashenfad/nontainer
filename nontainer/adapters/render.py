@@ -639,7 +639,9 @@ inherit="full" continues the conversation stored at that fork point, so
 the delegate IS the agent that was there as of that commit and your
 task is its next turn. resume=<name> gives a new task to a delegate you
 already have, conversation kept; it does one task at a time, so resume
-it after its answer arrives.
+it after its answer arrives. It goes on from its own branch as it left
+it, so resume one to revise its work (what to change, after reading its
+diff), and ask afresh for new work on your tree as it is now.
 
 A delegate's branch does not live forever: one that has gone unread
 long enough is swept, and its job then reads `expired` with nothing
