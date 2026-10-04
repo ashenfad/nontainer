@@ -482,21 +482,41 @@ const suites = [];
 const beforeFrames = [[]];
 const afterFrames = [[]];
 const tests = [];
+// One scope per describe block (and the file's own): its beforeAll and
+// afterAll hooks, run around the tests in it that run.
+const root = { all: [], after: [] };
+const scopes = [root];
+let skipping = 0; // inside a describe.skip
+let focusing = 0; // inside a describe.only
 
 function describe(name, fn) {
+  return block(name, fn, {});
+}
+
+function block(name, fn, mode) {
   suites.push(String(name));
   beforeFrames.push([]);
   afterFrames.push([]);
+  scopes.push({ all: [], after: [] });
+  if (mode.skip) skipping++;
+  if (mode.only) focusing++;
   try {
     fn();
   } finally {
     suites.pop();
     beforeFrames.pop();
     afterFrames.pop();
+    scopes.pop();
+    if (mode.skip) skipping--;
+    if (mode.only) focusing--;
   }
 }
 
 function it(name, fn) {
+  return add(name, fn, {});
+}
+
+function add(name, fn, mode) {
   tests.push({
     name: suites.concat([String(name)]).join(' > '),
     fn: fn,
@@ -505,6 +525,9 @@ function it(name, fn) {
     // whole block is collected before anything runs.
     before: beforeFrames.slice(),
     after: afterFrames.slice(),
+    scopes: scopes.slice(),
+    skip: Boolean(mode.skip || mode.todo || skipping || typeof fn !== 'function'),
+    only: Boolean(mode.only || focusing),
   });
 }
 
@@ -516,29 +539,92 @@ function afterEach(fn) {
   afterFrames[afterFrames.length - 1].push(fn);
 }
 
-for (const entry of [[describe, 'describe'], [it, 'it']]) {
-  for (const word of ['skip', 'only', 'todo', 'each', 'concurrent', 'runIf', 'skipIf']) {
-    entry[0][word] = () =>
-      refuse(
-        entry[1] + '.' + word,
-        'choose what runs from the command line: a path filter, or -t NAME'
-      );
+// Once per describe block (or file): before the first of its tests that
+// runs, and after the last. A test file is one page of its own, so
+// "once" is never more than the file.
+function beforeAll(fn) {
+  scopes[scopes.length - 1].all.push(fn);
+}
+
+function afterAll(fn) {
+  scopes[scopes.length - 1].after.push(fn);
+}
+
+// vitest's `.each` titles: printf-style %s %d %i %f %j %o %O %# %%, and
+// $name (or $name.path) from an object row.
+function title(template, args, index) {
+  let i = 0;
+  let out = String(template).replace(/%([sdifjoO#%])/g, (match, spec) => {
+    if (spec === '%') return '%';
+    if (spec === '#') return String(index);
+    if (i >= args.length) return match;
+    const v = args[i++];
+    if (spec === 'd' || spec === 'i') return String(Math.trunc(Number(v)));
+    if (spec === 'f') return String(Number(v));
+    if (spec === 'j' || spec === 'o' || spec === 'O') {
+      try {
+        return JSON.stringify(v);
+      } catch (e) {
+        return String(v);
+      }
+    }
+    return typeof v === 'string' ? v : fmt(v, 0);
+  });
+  const row = args.length === 1 && args[0] && typeof args[0] === 'object' ? args[0] : null;
+  if (row && !Array.isArray(row)) {
+    out = out.replace(/\$([A-Za-z_][\w.]*)/g, (match, path) => {
+      let v = row;
+      for (const key of path.split('.')) v = v == null ? undefined : v[key];
+      return v === undefined ? match : typeof v === 'string' ? v : fmt(v, 0);
+    });
   }
+  return out;
 }
 
-function beforeAll() {
-  refuse(
-    'beforeAll',
-    'each test file is one page of its own, so build shared state at module ' +
-      'scope, or set it up in beforeEach'
-  );
+function eachOf(register, word) {
+  return function (table) {
+    if (table && table.raw) {
+      refuse(
+        word + '.each`…`',
+        'pass the rows as an array: ' + word + ".each([[1, 2], [3, 4]])('%i + %i', ...)"
+      );
+    }
+    if (!Array.isArray(table)) {
+      throw new TypeError(word + '.each takes an array of rows');
+    }
+    return (name, fn) => {
+      table.forEach((row, index) => {
+        const args = Array.isArray(row) ? row : [row];
+        register(title(name, args, index), () => fn(...args));
+      });
+    };
+  };
 }
 
-function afterAll() {
-  refuse(
-    'afterAll',
-    'each test file is one page of its own, so nothing outlives it to tear down'
-  );
+// The modifiers vitest agents reach for. `.only` narrows the run to the
+// tests marked so (in this file); `.concurrent` runs in order, which a
+// single page does anyway.
+function modifiers(register, word) {
+  const as = (mode) => (name, fn) => register(name, fn, mode);
+  const plain = as({});
+  plain.skip = as({ skip: true });
+  plain.only = as({ only: true });
+  plain.todo = (name) => register(name, undefined, { todo: true });
+  plain.concurrent = as({});
+  plain.each = eachOf((n, f) => register(n, f, {}), word);
+  plain.skip.each = eachOf((n, f) => register(n, f, { skip: true }), word);
+  plain.only.each = eachOf((n, f) => register(n, f, { only: true }), word);
+  plain.concurrent.each = plain.each;
+  plain.runIf = (cond) => (cond ? plain : plain.skip);
+  plain.skipIf = (cond) => (cond ? plain.skip : plain);
+  return plain;
+}
+
+for (const [fn, register, word] of [
+  [describe, block, 'describe'],
+  [it, add, 'it'],
+]) {
+  Object.assign(fn, modifiers(register, word));
 }
 
 /* ---- the run ---- */
@@ -604,12 +690,42 @@ export async function __run(load, options) {
   }
 
   const wanted = tests.filter((t) => !opts.name || t.name.includes(opts.name));
+  const focused = wanted.some((t) => t.only);
+  const runs = (t) => !t.skip && (!focused || t.only);
+  // The last test each scope runs, so its afterAll follows that one.
+  const last = new Map();
+  wanted.forEach((t, i) => {
+    if (runs(t)) for (const scope of t.scopes) last.set(scope, i);
+  });
+  const entered = new Map(); // scope -> the error its beforeAll threw, or null
   const results = [];
-  for (const t of wanted) {
+  for (const [index, t] of wanted.entries()) {
+    if (!runs(t)) {
+      results.push({ name: t.name, ok: true, skipped: true, ms: 0, error: null });
+      continue;
+    }
     const started = performance.now();
     const state = { error: null };
     running = state;
+    // beforeAll for each scope this test is the first to enter. One that
+    // throws fails every test in its scope, as vitest does: they ran on
+    // a setup that never happened.
+    for (const scope of t.scopes) {
+      if (entered.has(scope)) continue;
+      let failed = null;
+      for (const hook of scope.all) {
+        try {
+          await hook();
+        } catch (e) {
+          failed = serialize(e);
+          break;
+        }
+      }
+      entered.set(scope, failed);
+    }
+    const setup = t.scopes.map((scope) => entered.get(scope)).find((e) => e);
     try {
+      if (setup) throw Object.assign(new Error('beforeAll failed: ' + setup.message), { stack: setup.stack });
       for (const frame of t.before) for (const hook of frame) await hook();
       // Called through a comma expression, not as t.fn(): a method call
       // would put the harness's own property name ("Object.fn") into
@@ -626,6 +742,17 @@ export async function __run(load, options) {
     const teardown = [];
     for (const frame of t.after.slice().reverse()) {
       for (const hook of frame.slice().reverse()) {
+        try {
+          await hook();
+        } catch (e) {
+          teardown.push(serialize(e));
+        }
+      }
+    }
+    // afterAll for each scope this was the last test of, innermost first
+    for (const scope of t.scopes.slice().reverse()) {
+      if (last.get(scope) !== index) continue;
+      for (const hook of scope.after.slice().reverse()) {
         try {
           await hook();
         } catch (e) {

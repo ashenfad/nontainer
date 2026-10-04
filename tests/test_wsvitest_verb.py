@@ -114,6 +114,18 @@ def test_the_default_reporter_is_counts_per_file(ws):
     assert " ✓ tests/good.test.js (2 tests)" in r.stdout
 
 
+def test_a_skipped_test_is_counted_as_vitest_counts_it(ws):
+    ws.files.fs.write(
+        "/workspace/tests/good.test.js",
+        b"it('runs', () => {});\nit.skip('waits', () => {});\n",
+    )
+    r = ws.terminal("ws-vitest --reporter=verbose")
+    assert r.exit_code == 0, out(r)
+    assert " ✓ tests/good.test.js (2 tests | 1 skipped)" in r.stdout
+    assert "   ↓ waits\n" in r.stdout
+    assert "      Tests  1 passed | 1 skipped (2)" in r.stdout
+
+
 def test_a_file_that_does_not_load_is_a_failed_suite(ws):
     ws.files.fs.write("/workspace/tests/broken.test.js", BROKEN.encode())
     r = ws.terminal("ws-vitest")

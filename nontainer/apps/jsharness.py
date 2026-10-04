@@ -333,6 +333,11 @@ def _outcome(rel: str, record: dict, sources: "_Sources") -> TestOutcome:
     name = f"{rel} > {record['name']}"
     duration = float(record.get("ms") or 0.0) / 1000.0
     error = record.get("error")
+    if record.get("skipped"):
+        # .skip, .todo, or left out by an .only in the same file
+        return TestOutcome(
+            name=name, file=rel, line=None, status="skipped", duration=0.0
+        )
     if not error:
         return TestOutcome(
             name=name, file=rel, line=None, status="passed", duration=duration

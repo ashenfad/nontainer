@@ -410,9 +410,9 @@ means the file it names on either rung.
 
 ## The harness surface
 
-`describe`, `it`/`test`, `beforeEach`/`afterEach`, `expect`, `vi` and
-`jest` are globals on the page, and the same names resolve through an
-import map:
+`describe`, `it`/`test`, `beforeEach`/`afterEach`,
+`beforeAll`/`afterAll`, `expect`, `vi` and `jest` are globals on the
+page, and the same names resolve through an import map:
 
 ```js
 import { describe, it, expect, vi } from 'vitest';   // or '@jest/globals'
@@ -430,6 +430,22 @@ import { describe, it, expect, vi } from 'vitest';   // or '@jest/globals'
 object under its other name. An `async` test is awaited, and
 `beforeEach` declared below an `it()` in the same block still applies to
 it — the block is collected before anything runs.
+
+`beforeAll` and `afterAll` run once around the block that declares them,
+or the file at the top level. A `beforeAll` that throws fails every test
+in its block, and the tests outside it still run.
+
+`it` and `describe` take vitest's modifiers:
+
+- **`.each(rows)`** registers one test (or block) per row. An array row
+  is spread into the arguments, and the title takes `%s`, `%d`/`%i`,
+  `%f`, `%j`/`%o`, `%#` (the row index) and, for object rows, `$name`.
+  The tagged-template table form is refused; pass the rows as an array.
+- **`.skip`**, **`.todo`** and **`.skipIf(cond)`** report a test as
+  skipped (`↓`), counted beside the passes as vitest counts it.
+- **`.only`** runs just the focused tests in that file, and the rest are
+  reported as skipped. **`.runIf(cond)`** is the inverse of `.skipIf`.
+- **`.concurrent`** is accepted and runs in order: a page is one thread.
 
 **Async work you forget to await still fails the test.** A rejected
 promise nobody handled, and an error thrown from a `setTimeout`, are
@@ -449,10 +465,6 @@ Refused with a message naming the replacement:
   snapshot plane; assert the value with `toEqual`.
 - **`expect.extend`** — the matcher set is fixed; write a helper
   function your test calls.
-- **`it.only` / `it.skip`** and the `describe` equivalents — choose what
-  runs from the command line, with a path filter or `-t NAME`.
-- **`beforeAll` / `afterAll`** — each test file is one page of its own,
-  so build shared state at module scope.
 
 **A module's exports are read-only in a browser**, so `vi.spyOn(mod,
 'fn')` on something you imported cannot replace anything. The harness

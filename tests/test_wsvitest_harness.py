@@ -632,3 +632,124 @@ def test_unstubbing_an_absent_global_removes_it_again(ws):
     assert [o.status for o in result.outcomes] == ["passed", "passed"], [
         (o.name, o.message) for o in result.outcomes
     ]
+
+
+# -- the vitest idioms agents reach for --------------------------------------
+#
+# Each was refused, and three delegates building one game hit the
+# refusals in turn: `it.each` table tests and `beforeAll` setup are what
+# vitest code is written with, and a refusal costs the agent a rewrite.
+
+
+def test_each_runs_a_test_per_row_with_vitests_titles(ws):
+    result = run(
+        ws,
+        "tests/each.test.js",
+        """\
+import { add } from "../app/util.js";
+it.each([[1, 2, 3], [2, 3, 5]])("add(%i, %i) is %i", (a, b, sum) => {
+  expect(add(a, b)).toBe(sum);
+});
+test.each([{ a: 1, b: 1, sum: 2 }])("objects: $a + $b = $sum", ({ a, b, sum }) => {
+  expect(add(a, b)).toBe(sum);
+});
+describe.each(["x", "y"])("suite %s", (letter) => {
+  it("row %# sees its letter", () => expect(typeof letter).toBe("string"));
+});
+""",
+    )
+    names = sorted(o.name.split(" > ", 1)[1] for o in result.outcomes)
+    assert names == [
+        "add(1, 2) is 3",
+        "add(2, 3) is 5",
+        "objects: 1 + 1 = 2",
+        "suite x > row %# sees its letter",
+        "suite y > row %# sees its letter",
+    ]
+    assert all(o.status == "passed" for o in result.outcomes)
+
+
+def test_a_tagged_template_table_is_refused_with_the_array_form(ws):
+    result = run(
+        ws,
+        "tests/tagged.test.js",
+        "it.each`a | b\n${1} | ${2}`('x', () => {});\n",
+    )
+    assert "pass the rows as an array" in (result.collection_error or "")
+
+
+def test_before_all_and_after_all_run_once_around_their_block(ws):
+    result = run(
+        ws,
+        "tests/all.test.js",
+        """\
+const log = [];
+beforeAll(() => log.push("file setup"));
+describe("block", () => {
+  beforeAll(() => log.push("block setup"));
+  afterAll(() => log.push("block teardown"));
+  it("one", () => log.push("one"));
+  it("two", () => log.push("two"));
+});
+it("after the block", () => {
+  expect(log).toEqual(["file setup", "block setup", "one", "two", "block teardown"]);
+});
+""",
+    )
+    assert [o.status for o in result.outcomes] == ["passed", "passed", "passed"]
+
+
+def test_a_failing_before_all_fails_its_blocks_tests_only(ws):
+    result = run(
+        ws,
+        "tests/setupfail.test.js",
+        """\
+describe("broken", () => {
+  beforeAll(() => { throw new Error("no fixture"); });
+  it("needs it", () => {});
+});
+it("does not", () => {});
+""",
+    )
+    assert outcome(result, "broken > needs it").status == "failed"
+    assert (
+        "beforeAll failed: no fixture" in outcome(result, "broken > needs it").message
+    )
+    assert outcome(result, "does not").status == "passed"
+
+
+def test_skip_todo_only_and_the_conditionals(ws):
+    result = run(
+        ws,
+        "tests/modes.test.js",
+        """\
+it.skip("skipped", () => { throw new Error("ran"); });
+it.todo("later");
+it.skipIf(true)("skipped by a condition", () => { throw new Error("ran"); });
+it.runIf(true)("run by a condition", () => {});
+describe.skip("a skipped block", () => {
+  it("inside it", () => { throw new Error("ran"); });
+});
+it.concurrent("concurrent runs in order", () => {});
+""",
+    )
+    status = {o.name.split(" > ", 1)[1]: o.status for o in result.outcomes}
+    assert status == {
+        "skipped": "skipped",
+        "later": "skipped",
+        "skipped by a condition": "skipped",
+        "run by a condition": "passed",
+        "a skipped block > inside it": "skipped",
+        "concurrent runs in order": "passed",
+    }
+
+    focused = run(
+        ws,
+        "tests/only.test.js",
+        """\
+it.only("the one", () => {});
+it("left out", () => { throw new Error("ran"); });
+""",
+    )
+    status = {o.name.split(" > ", 1)[1]: o.status for o in focused.outcomes}
+    assert status == {"the one": "passed", "left out": "skipped"}
