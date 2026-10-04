@@ -48,7 +48,7 @@ from typing import Any
 
 from ..agentgit import BLOB_KEY as _WS_BLOB_KEY
 from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
-from ..planes import CACHE_PREFIX, CONVERSATION_PREFIX
+from ..planes import CACHE_PREFIX, COMPACTION_PREFIX, CONVERSATION_PREFIX
 from ..protocol import (
     SHORT_ID_RE,
     Capabilities,
@@ -1363,10 +1363,11 @@ class KvgitProvider:
           same reason: the function has to know which file it describes.
         - the ws-git blob, the view seed and the cwd take ours: they
           are this session's position, not content to reconcile.
-        - THE PLANE POLICY, whole: this is filesystem-only. The cache
-          and the stored conversation are session-scoped by
-          construction — a delegate's working memory and a chat that
-          never happened here — so this side keeps every key under
+        - THE PLANE POLICY, whole: this is filesystem-only. The cache,
+          the stored conversation and compaction's folds over it are
+          session-scoped by construction — a delegate's working memory
+          and a chat that never happened here — so this side keeps
+          every key under
           those prefixes, and that has to include keys the other side
           merely ADDED. A merge function would not do it: kvgit
           consults one only where both sides changed a key, so a new
@@ -1419,6 +1420,7 @@ class KvgitProvider:
         merge_prefixes: dict[str, Any] = {
             CACHE_PREFIX: MergeChoice.OURS,
             CONVERSATION_PREFIX: MergeChoice.OURS,
+            COMPACTION_PREFIX: MergeChoice.OURS,
         }
         return merge_fns, merge_prefixes
 

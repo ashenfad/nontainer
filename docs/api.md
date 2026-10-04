@@ -2184,6 +2184,25 @@ session already open — a second `Workspace` over the same branch would
 split the turn across two staging buffers — and only the embedder
 knows which ones it is holding.
 
+### agno compaction (`nontainer.adapters.agno_compaction`, `[agno]` extra, agno 3.0+)
+
+`CompactingCompression(ws, policy, *, on_fold=None, summary_model=None)`
+is an agno `CompressionManager` that keeps a long conversation inside
+the context window. Pass it as the agent's `compression_manager`, with
+`add_history_to_context=True` and `num_history_runs=sys.maxsize`.
+Before every model call it splices the fold in force over the earlier
+runs; once a request reaches `policy.budget` tokens it folds every
+earlier run into one summary, records it in the workspace, and calls
+`on_fold(fold)`. The run in progress is never folded. It compresses no
+tool result, and a failure inside it is logged, never raised into the
+agent's call.
+
+The harness-neutral half is `nontainer.compaction`:
+`Policy(budget, window=None)`, the `Fold` record, `folds(ws)` (oldest
+first) and `in_force(ws, message_ids)`. The design, what agno behaviour
+it rides on, and its limits (one run longer than the window still
+fails) are in [compaction.md](compaction.md).
+
 ### MCP (`nontainer.adapters.mcp`, `[mcp]` extra)
 
 ```python

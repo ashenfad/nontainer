@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 from agno.db.json import JsonDb
 from agno.session import AgentSession, Session
 
+from ..compaction import is_ours
 from ..errors import NotSupportedError, WorkspaceError
 from ..planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from ..workspace import Workspace
@@ -145,6 +146,28 @@ def _commit_framework(ws: Workspace, info: dict) -> str | None:
     if ws.frozen or not ws.caps.versioned or not ws.uncommitted:
         return None
     return ws.commit(info=info)
+
+
+def _without_compaction(run: dict) -> dict:
+    """``run`` without the messages compaction inserted.
+
+    A fold's summary pair is put in what the model is sent, flagged as
+    history, and agno leaves history out of a stored run only while the
+    agent's ``store_history_messages`` is off. The pair's ids carry
+    compaction's mark, so it is dropped here whatever the agent's
+    settings are: a stored run holds what was said in it, never a
+    summary of what came before. Every path that stores a run passes
+    through here: a session upsert, agno 3's ``upsert_run``, and a
+    seeded fork.
+    """
+    messages = run.get("messages")
+    if isinstance(messages, list) and any(
+        isinstance(m, dict) and is_ours(m.get("id")) for m in messages
+    ):
+        run["messages"] = [
+            m for m in messages if not (isinstance(m, dict) and is_ours(m.get("id")))
+        ]
+    return run
 
 
 def _run_keys(kv: Any) -> list[str]:
@@ -257,7 +280,8 @@ class KvgitSessionDb(JsonDb):
         data = session.to_dict()
         data["session_id"] = self._ws.session
         runs = [
-            dict(run, session_id=self._ws.session) for run in (data.get("runs") or [])
+            _without_compaction(dict(run, session_id=self._ws.session))
+            for run in (data.get("runs") or [])
         ]
         run_ids = [str(run.get("run_id")) for run in runs]
         if any(not rid or rid == "None" for rid in run_ids):
@@ -433,7 +457,7 @@ class KvgitSessionDb(JsonDb):
             )
 
         data = session.to_dict()
-        runs = [dict(run) for run in (data.get("runs") or [])]
+        runs = [_without_compaction(dict(run)) for run in (data.get("runs") or [])]
         incoming: list[str] = []
         for run in runs:
             run_id = run.get("run_id")
@@ -558,7 +582,9 @@ class KvgitSessionDb(JsonDb):
         into the branch, staged for the next commit: only a session
         upsert closes a turn.
         """
-        run_data = run if isinstance(run, dict) else run.to_dict()
+        run_data = _without_compaction(
+            dict(run if isinstance(run, dict) else run.to_dict())
+        )
         run_id = run_data.get("run_id")
         if not run_id:
             return
