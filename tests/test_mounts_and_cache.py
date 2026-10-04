@@ -291,3 +291,41 @@ def test_a_snapshot_of_a_mounted_sessions_commit_is_clean_and_publishable(tmp_pa
     finally:
         source.close()
         store.close()
+
+
+def test_opening_a_mounted_sessions_branch_without_its_mounts_writes_nothing(tmp_path):
+    """A mounted session's cwd lives in the composition and is never
+    stored. Opened elsewhere without the mounts (a delegate's branch
+    read back after it answers, another session's read by ws-git), its
+    branch gets the same composition: the cwd is the root again, and
+    opening it lands no commit on a branch it was only opened to read."""
+    from nontainer import Store
+
+    data = tmp_path / "data"
+    data.mkdir()
+    store = Store(tmp_path / "store")
+    try:
+        ws = store.open("m", mounts={"/workspace/data": Mount(str(data))})
+        ws.terminal("mkdir -p sub; echo hi > sub/a.txt")
+        head = ws.provider.head
+        ws.close()
+
+        other = store.open("m")
+        try:
+            assert other.provider.head == head
+            assert not other.uncommitted
+            assert other.terminal("pwd").stdout.strip() == "/workspace"
+            assert other.terminal("cat sub/a.txt").stdout == "hi\n"
+            other.terminal("echo more > b.txt")  # and it still works as a session
+            assert other.provider.head != head
+            assert other.files.read("/workspace/b.txt") == b"more\n"
+        finally:
+            other.close()
+
+        fresh = store.open("fresh")  # a new session still stores its cwd
+        try:
+            assert fresh.provider.kv.get("__vfs_cwd__") == "/workspace"
+        finally:
+            fresh.close()
+    finally:
+        store.close()
