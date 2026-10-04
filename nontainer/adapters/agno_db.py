@@ -50,7 +50,7 @@ from agno.session import AgentSession, Session
 
 from ..compaction import is_ours
 from ..errors import NotSupportedError, WorkspaceError
-from ..planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
+from ..planes import COMPACTION_PREFIX, CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from ..workspace import Workspace
 
 if TYPE_CHECKING:
@@ -682,7 +682,8 @@ def fork_session(
 
     ``conversation="inherit"`` keeps the parent's runs — the branch is
     the same chat over its own files from here on. ``"fresh"`` deletes
-    the run keys and clears ``run_ids``: a clean chat over the forked
+    the run keys and compaction's folds over them, and clears
+    ``run_ids``: a clean chat over the forked
     files, which is not ``ws.fork(inherit="fresh")`` — that drops the
     record too, and this keeps a session there to write into. Run ids
     are left alone; agno mints fresh ones on its own fork only to
@@ -704,7 +705,13 @@ def fork_session(
         return child
     with child.lock:
         kv = _kv(child)
-        for key in _run_keys(kv):
+        # the runs, and compaction's folds over them: a summary of a
+        # chat the fresh one never had would never apply, only linger
+        for key in _run_keys(kv) + [
+            k
+            for k in list(kv.keys())
+            if isinstance(k, str) and k.startswith(COMPACTION_PREFIX)
+        ]:
             del kv[key]
         record = kv.get(SESSION_KEY)
         if isinstance(record, dict):
