@@ -114,7 +114,7 @@ class Fold:
     summary: str
     runs: int              # how many turns it covers, earlier folds' included
     tokens_before: int     # the request size that crossed the budget
-    tokens_after: int      # the same request, folded (estimated)
+    tokens_after: int      # the same request, folded (estimated, on the high side)
     model: str             # what wrote the summary
     at: float
     first: str | None      # None = from the start; set for chaptering
@@ -213,14 +213,22 @@ agent's own model, sent the same messages the agent was about to be
 sent plus one instruction to summarise. Almost all of that request is
 already in the provider's cache. A separate cheaper model sees the
 history cold, which is cheaper per token and costs more overall for a
-long history. The adapter's default `summarize` does the former; the
-embedder can pass the latter.
+long history. The adapter does the former by default; `summary_model=`
+gives the latter.
 
 A cache hit needs the request to start the same way, and a provider
 puts the tool definitions ahead of the messages (Anthropic does). So
 the summary request carries the agent's tool list unchanged, and
 forbids calling a tool (`tool_choice="none"`) rather than leaving the
 tools out. Leaving them out would miss the cache on the whole history.
+
+Not every provider accepts that. Meta's models on OpenRouter take only
+`tool_choice="auto"` and reject `"none"` with a 400, at once and at no
+token cost; the fold then takes the reduced path below, which misses
+the cache but sends a much shorter transcript. Retrying with `"auto"`
+was ruled out: the tools agno hands a compression manager are live
+`Function` objects, so a tool call the model made anyway would run a
+real workspace tool in the middle of compaction.
 
 **A fold that would not fit.** The summary request is at least as long
 as the history it summarises. When that is past the model's window,
@@ -381,8 +389,34 @@ in_force(ws, message_ids)  # -> Fold | None, the one a history with these ids ge
 | `__compaction__/` plane and the `Fold` record | released in 0.8.8 (`nontainer/compaction.py`, `planes.py`) |
 | Core: policy, texts, reduce and chunks | released in 0.8.8 |
 | agno adapter (`CompactingCompression`), with the db backstop | released in 0.8.8 (`nontainer/adapters/agno_compaction.py`) |
-| Studio: budget, marker event | not started |
+| Studio: budget, marker event (nontainer-studio #80) | merged |
+| Checked against a real model (`openrouter:meta/muse-spark-1.3-contributor`) | done; see below |
 | Chaptering | later; see above |
+
+## Checked live
+
+A studio session on `openrouter:meta/muse-spark-1.3-contributor`, with
+the budget lowered to 15k, built a small Python module with tests over
+five turns, then crossed the budget on the sixth:
+
+- **The fold:** turn 6 folded the five earlier turns. Its first request
+  went from about 19.7k tokens to 7.4k; the record's estimate of the
+  folded size, about 11k, runs high.
+- **The summary:** written by the reduced path, since this provider
+  refuses `tool_choice="none"` (above). It kept the facts the person
+  asked to be remembered, every file with its methods and tests, the
+  sandbox quirks met along the way and the workaround for each, and
+  the state of the work.
+- **After the fold:** asked without looking at any files, the agent
+  named the two fixes its first failing tests needed and why its tests
+  cannot import `tempfile`, both of which were only in the folded turns.
+- **Reuse:** the next two turns applied the same fold with no summary
+  call, and their requests were mostly read from the provider's cache.
+
+Before the fold, most of that session's requests missed the cache, with
+occasional large hits. That is OpenRouter routing successive calls to
+different providers, and it happens with or without compaction; pinning
+a provider order for a model is the fix for that, on the embedder's side.
 
 ## Open questions
 
