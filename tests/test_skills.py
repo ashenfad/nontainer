@@ -159,3 +159,102 @@ def test_agno_toolkit_instructions_include_catalog(ws):
     tk = WorkspaceTools(ws)
     assert "ev-data-cleaning" in tk.instructions
     assert "cat /workspace/skills/<name>/SKILL.md" in tk.instructions
+
+
+# -- mounted skills: never the agent's to change ----------------------------------
+
+
+def _skill(dirpath, name, description):
+    dirpath.mkdir(parents=True, exist_ok=True)
+    (dirpath / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\nDo it.\n"
+    )
+    return dirpath
+
+
+@pytest.fixture
+def starter(tmp_path):
+    root = tmp_path / "starter"
+    _skill(root / "building-apps", "building-apps", "how apps are built here")
+    _skill(root / "vids", "Making Videos", "how videos are made here")
+    (root / "notes").mkdir()  # no SKILL.md: not a skill
+    return root
+
+
+def test_mounts_name_each_skill_as_install_would(starter, tmp_path):
+    points = skills.mounts(starter)
+    assert sorted(points) == [
+        "/workspace/skills/building-apps",
+        "/workspace/skills/making-videos",  # from its frontmatter, slugged
+    ]
+    assert all(m.readonly for m in points.values())
+    one = skills.mounts(starter / "vids", root="/")
+    assert list(one) == ["/skills/making-videos"]
+
+
+def test_mounts_refuse_what_cannot_be_mounted(starter, tmp_path):
+    with pytest.raises(ValueError, match="not a directory"):
+        skills.mounts(tmp_path / "missing")
+    with pytest.raises(ValueError, match="no skills"):
+        skills.mounts(starter / "notes")
+    _skill(tmp_path / "other" / "building-apps", "building-apps", "a second one")
+    with pytest.raises(ValueError, match="two skills named 'building-apps'"):
+        skills.mounts(starter, tmp_path / "other")
+
+
+def test_a_mounted_skill_is_listed_read_only_and_never_work(starter, tmp_path):
+    from nontainer.wsgit import register_wsgit
+
+    w = workspace("mounted", store=tmp_path / "store", mounts=skills.mounts(starter))
+    register_wsgit(w)
+    try:
+        catalog = skills.catalog(w)
+        assert "- building-apps: how apps are built here" in catalog
+        assert "- making-videos: how videos are made here" in catalog
+        assert w.terminal("cat /workspace/skills/vids/SKILL.md").exit_code != 0
+        assert (
+            "Do it."
+            in w.terminal("cat /workspace/skills/making-videos/SKILL.md").stdout
+        )
+        # never work: no status, and no write
+        assert w.terminal("cd /workspace && ws-git status --porcelain").stdout == ""
+        r = w.terminal("echo x > /workspace/skills/building-apps/SKILL.md")
+        assert r.exit_code != 0 and "Read-only" in (r.stdout + r.stderr)
+
+        # an installed skill sits beside them, and is the agent's
+        skills.install(w, SKILL_MD)
+        assert "- ev-data-cleaning:" in skills.catalog(w)
+        with pytest.raises(Exception, match="mounted read-only"):
+            skills.install(w, starter / "building-apps")
+
+        # a fork sees the same skills
+        kid = w.fork("mounted.kid", inherit="fresh")
+        try:
+            assert "- making-videos:" in skills.catalog(kid)
+        finally:
+            kid.close()
+    finally:
+        w.close()
+
+
+def test_install_from_modules_leaves_a_mounted_library_skill_alone(
+    tmp_path, monkeypatch
+):
+    pkg = tmp_path / "mountlib"
+    _skill(pkg / "skills" / "using-mountlib", "using-mountlib", "how to drive mountlib")
+    (pkg / "__init__.py").write_text("x = 1\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    import mountlib
+
+    w = workspace(
+        "skills-mounted-mod",
+        store=tmp_path / "store",
+        python=PythonConfig(modules=[mountlib]),
+        mounts=skills.mounts(*skills.discover(mountlib)),
+    )
+    try:
+        assert skills.install_from_modules(w) == []
+        assert "- using-mountlib: how to drive mountlib" in skills.catalog(w)
+    finally:
+        w.close()
+        sys.modules.pop("mountlib", None)
