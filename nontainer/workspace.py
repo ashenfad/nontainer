@@ -110,6 +110,13 @@ def _cwd_key() -> str:
     return VirtualFS.CWD_KEY
 
 
+def _quiet_isdir(fs: Any, path: str) -> bool:
+    try:
+        return bool(fs.isdir(path))
+    except Exception:
+        return False
+
+
 def _owns_cwd(provider_fs: Any) -> bool:
     """Whether the provider's filesystem owns the cwd key itself.
 
@@ -1641,7 +1648,27 @@ class Workspace:
         # handed ONE filesystem object when it opens, so a tree
         # attached later has to reach it through that same object.
         self._attached: dict[str, _Attachment] = {}
-        self._fs = AttachFS(self._build_fs(viewed, normalized_mounts), self._root)
+        # A branch whose stored cwd is the mount park ("/" or none, on
+        # a tree that already exists) was last written by a mounted
+        # session, whose cwd lived in the composition and was never
+        # stored. Opened here without mounts it gets the same
+        # composition, mounts or not: its cwd is held in memory again,
+        # and opening it writes nothing. Storing a cwd here instead
+        # would land an "init" commit on a branch this handle may only
+        # have been opened to read: a delegate's, read back after it
+        # answers.
+        self._owns_cwd = _owns_cwd(provider.fs)
+        parked = (
+            not normalized_mounts
+            and self._owns_cwd
+            and self._root != "/"
+            and provider.kv.get(_cwd_key()) in (None, "/")
+            and _quiet_isdir(viewed, self._root)
+        )
+        self._composed = bool(normalized_mounts) or parked
+        self._fs = AttachFS(
+            self._build_fs(viewed, normalized_mounts, compose=parked), self._root
+        )
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
@@ -1715,8 +1742,7 @@ class Workspace:
         # workspace root on a fresh session. Guarded so a no-op chdir
         # doesn't dirty staging providers (which would turn read-only
         # tool calls into commits).
-        self._owns_cwd = _owns_cwd(provider.fs)
-        if normalized_mounts and self._owns_cwd:
+        if self._composed and self._owns_cwd:
             # The composition resolves paths before handing them down,
             # so the filesystem underneath has to sit at the root. Any
             # cwd under the key belongs to un-mounted sessions of this
@@ -1802,11 +1828,14 @@ class Workspace:
         return out
 
     @staticmethod
-    def _build_fs(base: Any, mounts: Mapping[str, Mount]) -> Any:
+    def _build_fs(
+        base: Any, mounts: Mapping[str, Mount], *, compose: bool = False
+    ) -> Any:
         """Compose the mounted views over ``base``. Takes mounts already
         through :meth:`_normalize_mounts` — paths here are absolute and
-        checked."""
-        if not mounts:
+        checked. ``compose`` builds the composition with no mounts, for
+        a branch whose cwd a composition held (see ``__init__``)."""
+        if not mounts and not compose:
             return base
         from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS
 
