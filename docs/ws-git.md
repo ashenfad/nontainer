@@ -343,10 +343,13 @@ landed on, and the view the session was given — is one record on your
 branch, and two rules cover all of it.
 
 **A merge takes yours.** `ws-git merge <session>` brings that session's
-files and nothing else, and not all of those: authoring output (the app
-runtime's `app/logs` and test_app's `app/screenshots`) is never work,
-so a merge or cherry-pick keeps your own copies and `status`, `diff`
-and `commit` never list or take them. They stay on the branch that
+files and nothing else, and not all of those. Some paths are never
+work: anything outside the workspace root (`/tmp`, a library's cache),
+authoring output (the app runtime's `app/logs` and test_app's
+`app/screenshots`), and whatever the embedder's ignore patterns name.
+A merge or cherry-pick keeps your own copies of those, and `status`,
+`diff` and `commit` never list or take them; `add` refuses one by name
+and says why. They stay on the branch that
 wrote them, where the agent that took a capture can read it, and a
 path checkout that names one outright still takes it. Your tags stay yours and none of its arrive;
 its stashes are its own, on its own branch and numbered there; the
@@ -357,8 +360,11 @@ because on this record a merge resolves to ours every time.
 
 **A fork starts with none of it.** A new session has no head, nothing
 staged, no tags, no stashes and no merge outstanding, so `ws-git log`
-there is empty until it commits and until then everything it can see
-reads as modified — the way a repo reads before its first commit. It
+there is empty until it commits. A fork is measured from the tree it
+started from: right after the fork `status` is clean, and its first
+commit takes only what it changed. A session that is no fork reads,
+before its first commit, the way a repo does: everything it can see is
+modified. It
 inherits the files, and a view only when it is forked with `--paths`:
 a fork of a narrowed session that is handed the whole tree sees the
 whole tree.

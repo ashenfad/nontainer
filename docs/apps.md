@@ -55,7 +55,9 @@ publication, whatever the spelling (`/./logs/api.log`,
 out of what it copies. Nor are they ever work: ws-git's `status`,
 `diff` and `commit` never list or take them, the check for uncommitted
 work ignores them, and a merge or cherry-pick between sessions keeps
-the receiving side's own (see `nontainer.ignore`). So an agent, or a
+the receiving side's own (see `nontainer.ignore`, which also covers
+everything outside the workspace root and the embedder's `ignore=`
+patterns). So an agent, or a
 delegate, can check its app with test_app after its last commit and
 still be clean.
 
