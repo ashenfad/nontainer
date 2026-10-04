@@ -467,6 +467,14 @@ class AgentGit:
         return self._provider.session
 
     @property
+    def base(self) -> str | None:
+        """The commit a fork started from, which its work is measured
+        against until its first ``ws-git commit``; ``None`` for a
+        session that is no fork (see :func:`reset_for_fork`)."""
+        self._require("ws-git base")
+        return self._read()["base"]
+
+    @property
     def head(self) -> str | None:
         """The agent's own head: the commit its last ``ws-git commit``
         made, or ``None`` before the first one. Not the store's head,
@@ -621,7 +629,8 @@ class AgentGit:
         composition where nothing would ever report it.
         """
         known = set(self._provider.working_files())
-        head = blob["head"]
+        # the agent's head, or a fork's base before its first commit
+        head = blob["head"] or blob["base"]
         if head is not None:
             known |= set(self._provider.files_at(head))
         view = getattr(self._ws, "_view_fs", None)
@@ -693,9 +702,12 @@ class AgentGit:
         fs = provider.fs
         # Every value the commit reads, fetched up front: the tree for
         # the paths it takes and the ones it leaves out, the head for
-        # the ones it puts back and the marked ones it leaves alone.
+        # the ones it puts back and the marked ones it leaves alone. A
+        # fork's first commit puts them back to its base: an inherited
+        # file it edited and did not stage is the base's, not absent.
         live_files = provider.working_files()
-        base_files = provider.files_at(head) if head is not None else {}
+        restore_from = head or blob["base"]
+        base_files = provider.files_at(restore_from) if restore_from is not None else {}
         live = read_files(live_files, {*files, *reverted, *blob["unresolved"]})
         base = read_files(base_files, {*reverted, *blob["unresolved"]})
         # What the working tree holds for the paths this commit leaves
