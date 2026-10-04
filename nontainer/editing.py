@@ -9,7 +9,11 @@ modes real agents hit constantly without changing what agents are told:
 2. trailing-whitespace-flexible (file has trailing spaces the agent
    didn't reproduce)
 3. indent-flexible (agent quoted the block at a different indent
-   baseline) — with the replacement re-indented to the file's baseline
+   baseline) — with the replacement re-indented to the file's baseline.
+   The quote must be the file's block shifted by one amount, or by one
+   amount after a first line the agent indented on its own (a quote
+   started mid-line); any other difference is not a match, because a
+   block re-indented on a guess is a silent reformat of the file
 
 Plus two ergonomics ported with it:
 
@@ -80,8 +84,38 @@ def _trailing_ws_pattern(search: str) -> re.Pattern:
     return re.compile("\n".join(parts))
 
 
+def _width(line: str) -> int:
+    """A line's indent, a tab counting four."""
+    leading = line[: len(line) - len(line.lstrip())]
+    return leading.count("\t") * 4 + leading.count(" ")
+
+
+def _shifts(search: str, matched_text: str) -> tuple[int, int] | None:
+    """``(first, rest)``: how far the file's block sits from the quote,
+    for the quote's first non-blank line and for the lines after it —
+    or ``None`` when the lines after it do not all sit one amount away.
+
+    ``first`` may differ from ``rest``: an agent quoting a block from
+    partway along its first line indents that line as it sees fit and
+    copies the rest as they are. Anything else that differs line by
+    line is not the file's block at another indent."""
+    pairs = [
+        (_width(m), _width(q))
+        for q, m in zip(search.split("\n"), matched_text.split("\n"))
+        if q.strip()
+    ]
+    if not pairs:
+        return None
+    deltas = [m - q for m, q in pairs]
+    rest = deltas[1:] or deltas[:1]
+    if any(d != rest[0] for d in rest):
+        return None
+    return deltas[0], rest[0]
+
+
 def _indent_flexible_matches(search: str, content: str) -> list[tuple[int, int, str]]:
-    """(start, end, matched_text) for structure-equal blocks at any indent."""
+    """(start, end, matched_text) for blocks equal to ``search`` but for
+    their indent, where the indent differs as :func:`_shifts` allows."""
     search_lines = search.split("\n")
     content_lines = content.split("\n")
 
@@ -108,6 +142,8 @@ def _indent_flexible_matches(search: str, content: str) -> list[tuple[int, int, 
         ):
             start_pos = sum(len(content_lines[k]) + 1 for k in range(start_line))
             matched_text = "\n".join(content_lines[start_line:end_line])
+            if _shifts(search, matched_text) is None:
+                continue
             matches.append((start_pos, start_pos + len(matched_text), matched_text))
     return matches
 
@@ -133,15 +169,25 @@ def _reindent(replacement: str, search: str, matched_text: str) -> str:
     delta = target_indent - (
         search_indent if repl_indent == search_indent else repl_indent
     )
+    # The quote's first line indented on its own (see _shifts): that
+    # line moves by its own amount and the lines after it by theirs,
+    # so a block whose body was quoted right is not moved with it.
+    first, rest = _shifts(search, matched_text) or (delta, delta)
+    split = first != rest and repl_indent == search_indent
 
     adjusted = []
+    seen_first = False
     for line in repl_lines:
         stripped = line.lstrip()
         if not stripped:
             adjusted.append("")
             continue
         current = line[: len(line) - len(stripped)]
-        new_indent = max(0, current.count("\t") * 4 + current.count(" ") + delta)
+        shift = delta
+        if split:
+            shift = rest if seen_first else first
+        seen_first = True
+        new_indent = max(0, current.count("\t") * 4 + current.count(" ") + shift)
         if target_char == "\t":
             leading = "\t" * (new_indent // 4) + " " * (new_indent % 4)
         else:

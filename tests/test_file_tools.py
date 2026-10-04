@@ -79,6 +79,47 @@ def test_edit_file_agent_tolerant_matching():
     ws.close()
 
 
+def test_a_quote_whose_first_line_alone_is_indented_keeps_the_body_where_it_is():
+    """An agent quoted a block with its first line indented and the
+    rest as the file has it. The edit used to shift every replacement
+    line by the first line's offset, moving a whole test file's body
+    two columns left without a word. The first line moves by its own
+    offset and the body by the body's."""
+    ws = make_ws()
+    try:
+        ws.files.write(
+            "t.js",
+            'describe("p", () => {\n  it("a", () => {\n    x(1);\n  });\n});\n',
+        )
+        out = ws.files.edit(
+            "t.js",
+            '  describe("p", () => {\n  it("a", () => {\n    x(1);\n  });',
+            '  describe("p", () => {\n  it("a", () => {\n    x(2);\n  });',
+        )
+        assert out.mode == "indent_flexible"
+        assert ws.files.fs.read("t.js").decode() == (
+            'describe("p", () => {\n  it("a", () => {\n    x(2);\n  });\n});\n'
+        )
+    finally:
+        ws.close()
+
+
+def test_a_quote_indented_differently_line_by_line_is_not_a_match():
+    """Beyond one shift (after an optional first line), a quote is not
+    the file's block at another indent, and guessing one reformats the
+    file. It fails with the did-you-mean the agent can correct from."""
+    ws = make_ws()
+    try:
+        ws.files.write("u.py", "def f():\n    a = 1\n        b = 2\n")
+        with pytest.raises(WorkspaceError, match="Did you mean"):
+            ws.files.edit("u.py", "def f():\n    a = 1\n    b = 2", "zzz")
+        assert (
+            ws.files.fs.read("u.py").decode() == "def f():\n    a = 1\n        b = 2\n"
+        )
+    finally:
+        ws.close()
+
+
 def test_files_read_list_and_exists():
     """The read side of ``ws.files``: bytes, presence, and a listing
     spelled the way the directory was asked for, so an entry can be
