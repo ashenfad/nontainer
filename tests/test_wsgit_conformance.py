@@ -105,7 +105,7 @@ def test_same_script_status_sees_fresh_write(ws):
     just-written file instead of reporting a clean tree."""
     r = ws.terminal("cat > fresh.txt <<'EOF'\nfresh\nEOF\nws-git status")
     assert r.exit_code == 0
-    assert r.stdout == " M fresh.txt\n"
+    assert r.stdout == " A fresh.txt\n"
 
 
 def test_stage_first_composition(ws):
@@ -124,7 +124,7 @@ def test_stage_first_composition(ws):
     ws.terminal("echo second >> a.txt")
     assert not ws.uncommitted
 
-    assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
+    assert ws.terminal("ws-git status").stdout == "A  a.txt\nA  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""
     assert ws.terminal("ws-git diff --cached").stdout == (
         "diff --git a/a.txt b/a.txt\n"
@@ -375,7 +375,7 @@ def test_a_narrowed_view_is_the_same_tree_on_both_rungs(ws, store):
         # everywhere else
         r = child.terminal("cat > note.md <<'EOF'\nnote\nEOF\nws-git status")
         assert r.exit_code == 0, r.stdout
-        assert r.stdout == "view: seen.txt\n M note.md\n"
+        assert r.stdout == "view: seen.txt\n A note.md\n"
         # the seed, not the view as it stands: a file the child made
         # joined its view because it made it
         assert child.terminal("ws-git sparse-checkout list").stdout == "seen.txt\n"

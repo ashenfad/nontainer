@@ -190,7 +190,7 @@ def test_anything_outside_the_root_is_never_work(ws):
         "echo scratch > /tmp/t.mjs; mkdir -p /.matplotlib; echo cache > /.matplotlib/fontlist.json"
     )
     status = ws.terminal("ws-git status --porcelain").stdout
-    assert status == " M notes.md\n"
+    assert status == " A notes.md\n"
     ws.terminal("ws-git add -A && ws-git commit -m work")
     assert ws.terminal("ws-git status --porcelain").stdout == ""
     # still there to read back
@@ -365,7 +365,7 @@ def test_a_forks_partial_first_commit_puts_the_rest_back_to_its_base(fork_of):
 def test_a_fork_can_stage_the_deletion_of_an_inherited_file(fork_of):
     _, kid = fork_of
     kid.files.remove("/workspace/c.txt")
-    assert kid.terminal("ws-git status --porcelain").stdout == " M c.txt\n"
+    assert kid.terminal("ws-git status --porcelain").stdout == " D c.txt\n"
     assert kid.terminal("ws-git add c.txt && ws-git commit -m drop").exit_code == 0
     assert kid.terminal("ws-git status --porcelain").stdout == ""
     assert not kid.files.exists("/workspace/c.txt")

@@ -56,7 +56,12 @@ class Request:
         string behave alike; bool accepts ``true/1/false/0``), and
         numerics follow JSON's single number type — an int passes for
         ``float``, an integral float for ``int``. bools are never
-        numbers (JSON ``true`` is not a valid ``int``)."""
+        numbers (JSON ``true`` is not a valid ``int``).
+
+        ``typ`` defaults to ``str``, so a JSON number is refused unless
+        it is asked for: ``req.require("score", int)``. The refusal says
+        what arrived, so a caller who sent ``10`` reads
+        ``field 'score' must be str (got the number 10)``."""
         if isinstance(self.json, dict) and name in self.json:
             value = self.json[name]
         elif name in self.params:
@@ -67,8 +72,28 @@ class Request:
             raise HttpError(400, f"missing required field: {name!r}")
         ok, coerced = _coerce(value, typ)
         if not ok:
-            raise HttpError(400, f"field {name!r} must be {typ.__name__}")
+            raise HttpError(
+                400, f"field {name!r} must be {typ.__name__} (got {_got(value)})"
+            )
         return coerced
+
+
+def _got(value: Any) -> str:
+    """What a refused value was, in JSON's words: the caller sent
+    JSON or a query string, and a Python type name is not what either
+    of them wrote."""
+    if isinstance(value, bool):
+        return f"the boolean {'true' if value else 'false'}"
+    if isinstance(value, (int, float)):
+        return f"the number {value!r}"
+    if isinstance(value, str):
+        shown = value if len(value) <= 40 else value[:37] + "..."
+        return f"the string {shown!r}"
+    if isinstance(value, list):
+        return "an array"
+    if isinstance(value, dict):
+        return "an object"
+    return type(value).__name__
 
 
 _BOOL_STRINGS = {"true": True, "1": True, "false": False, "0": False}

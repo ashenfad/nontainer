@@ -168,7 +168,8 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   status [--porcelain | -s | --short]
                     a view: line, a ## merging line while one is
                     outstanding, the staged and modified rows in git's
-                    XY columns, then a worktrees: block
+                    XY columns (M changed, A new, D deleted), then a
+                    worktrees: block
   diff [<session>] [--cached] [--check] [--stat] [[--] paths...]
                     unified diff against your last commit; --cached the
                     staged set; --check finds leftover conflict markers;
@@ -444,12 +445,17 @@ def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         )
     staged, unstaged = set(st.staged), set(st.unstaged)
     unresolved = set(st.merge_unresolved)
+    added, removed = set(st.added), set(st.removed)
     for path in sorted(staged | unstaged | unresolved):
         if path in unresolved:
             lines.append(f"UU {_show(ws, path)}")
         else:
-            x = "M" if path in staged else " "
-            y = "M" if path in unstaged else " "
+            # git's letters: A new, D deleted, M changed. A new file
+            # nothing staged shows as ` A` (git's intent-to-add), not
+            # `??`: a commit with nothing staged takes it.
+            kind = "A" if path in added else "D" if path in removed else "M"
+            x = kind if path in staged else " "
+            y = kind if path in unstaged else " "
             lines.append(f"{x}{y} {_show(ws, path)}")
     # A worktree sits outside the versioned tree, so no row above can
     # ever name a file in one; without this block a directory full of

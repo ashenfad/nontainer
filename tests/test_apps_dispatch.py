@@ -87,6 +87,29 @@ def test_require_param_coercion():
         req.require("half", int)
 
 
+def test_a_refusal_says_what_arrived():
+    """The default type is str, so a JSON number asked for without its
+    type is refused; the message names what was sent, which is what
+    points at the missing ``int``."""
+    req = request(
+        "POST",
+        "/api/x",
+        body=b'{"score": 10, "won": false, "tags": ["a"], "n": "x"}',
+    )
+    with pytest.raises(HttpError) as e:
+        req.require("score")
+    assert e.value.message == "field 'score' must be str (got the number 10)"
+    with pytest.raises(HttpError) as e:
+        req.require("won", int)
+    assert e.value.message == "field 'won' must be int (got the boolean false)"
+    with pytest.raises(HttpError) as e:
+        req.require("tags")
+    assert e.value.message.endswith("(got an array)")
+    with pytest.raises(HttpError) as e:
+        req.require("n", int)
+    assert e.value.message.endswith("(got the string 'x')")
+
+
 def test_require_json_null_is_missing():
     req = request("POST", "/api/x", body=b'{"n": null}')
     with pytest.raises(HttpError) as e:
