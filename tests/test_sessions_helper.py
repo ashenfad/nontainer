@@ -1148,6 +1148,11 @@ def test_the_name_you_asked_with_addresses_the_child(parent, store):
         assert second.text == "answering fix the 404"
         assert sessions.keep("backend").name == first.branch
         assert sessions.cancel("backend").name == first.branch
+        # what the tool says names the whole branch, which ws-git takes
+        said = run_action(sessions, "keep", name="backend")
+        assert said.startswith(f"{first.branch} kept")
+        said = run_action(sessions, "cancel", name="backend")
+        assert said.startswith(f"{first.branch} had already finished")
         with pytest.raises(SessionsError, match="no job named 'frontend'"):
             sessions.result("frontend")
 

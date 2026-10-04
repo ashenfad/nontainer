@@ -148,6 +148,21 @@ def _indent_flexible_matches(search: str, content: str) -> list[tuple[int, int, 
     return matches
 
 
+def _counterpart(search: str, repl_lines: list[str]) -> int | None:
+    """Which replacement line stands where the quote's first line did:
+    the one with its text, else the replacement's first line when it is
+    indented as the quote's first line was (that line, edited). ``None``
+    when neither, and then no line takes the first line's shift."""
+    head = next((line for line in search.split("\n") if line.strip()), "")
+    for i, line in enumerate(repl_lines):
+        if line.strip() and line.strip() == head.strip():
+            return i
+    for i, line in enumerate(repl_lines):
+        if line.strip():
+            return i if _width(line) == _width(head) else None
+    return None
+
+
 def _reindent(replacement: str, search: str, matched_text: str) -> str:
     """Shift ``replacement``'s indent so it drops in where ``matched_text``
     was, using the file's indent character."""
@@ -170,23 +185,22 @@ def _reindent(replacement: str, search: str, matched_text: str) -> str:
         search_indent if repl_indent == search_indent else repl_indent
     )
     # The quote's first line indented on its own (see _shifts): that
-    # line moves by its own amount and the lines after it by theirs,
-    # so a block whose body was quoted right is not moved with it.
+    # line's counterpart in the replacement moves by its own amount and
+    # every other line by the body's, so a block whose body was quoted
+    # right is not moved with it — nor is a line inserted around it.
     first, rest = _shifts(search, matched_text) or (delta, delta)
-    split = first != rest and repl_indent == search_indent
+    counterpart = _counterpart(search, repl_lines) if first != rest else None
 
     adjusted = []
-    seen_first = False
-    for line in repl_lines:
+    for i, line in enumerate(repl_lines):
         stripped = line.lstrip()
         if not stripped:
             adjusted.append("")
             continue
         current = line[: len(line) - len(stripped)]
         shift = delta
-        if split:
-            shift = rest if seen_first else first
-        seen_first = True
+        if first != rest:
+            shift = first if i == counterpart else rest
         new_indent = max(0, current.count("\t") * 4 + current.count(" ") + shift)
         if target_char == "\t":
             leading = "\t" * (new_indent // 4) + " " * (new_indent % 4)

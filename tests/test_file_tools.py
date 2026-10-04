@@ -104,6 +104,28 @@ def test_a_quote_whose_first_line_alone_is_indented_keeps_the_body_where_it_is()
         ws.close()
 
 
+def test_a_line_inserted_before_the_misindented_first_line_moves_with_the_body():
+    """The first line's own shift goes to ITS counterpart in the
+    replacement, found by its text, not to whatever line comes first:
+    a comment added above it is placed with the body."""
+    ws = make_ws()
+    try:
+        ws.files.write(
+            "t.js",
+            'describe("p", () => {\n  it("a", () => {\n    x(1);\n  });\n});\n',
+        )
+        ws.files.edit(
+            "t.js",
+            '  describe("p", () => {\n  it("a", () => {\n    x(1);\n  });',
+            '// the p suite\n  describe("p", () => {\n  it("a", () => {\n    x(2);\n  });',
+        )
+        assert ws.files.fs.read("t.js").decode() == (
+            '// the p suite\ndescribe("p", () => {\n  it("a", () => {\n    x(2);\n  });\n});\n'
+        )
+    finally:
+        ws.close()
+
+
 def test_a_quote_indented_differently_line_by_line_is_not_a_match():
     """Beyond one shift (after an optional first line), a quote is not
     the file's block at another indent, and guessing one reformats the
