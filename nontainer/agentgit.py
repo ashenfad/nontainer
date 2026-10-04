@@ -506,14 +506,25 @@ class AgentGit:
         status or sweeping one into a commit would report a file the
         session can neither read nor stage.
         """
+        return self._changes(head, base)[0]
+
+    def _changes(
+        self, head: str | None, base: str | None = None
+    ) -> tuple[set[str], set[str], set[str]]:
+        """``(modified, added, removed)``: :meth:`_modified`'s paths,
+        and which of them are new since the baseline and which are gone
+        from the tree. With no baseline every file is new."""
         if head is None and base is None:
-            return self._visible(set(self._provider.working_files()))
+            paths = self._visible(set(self._provider.working_files()))
+            return paths, set(paths), set()
         head = head or base
         if head == self._provider.head and not self._provider.dirty:
             # The agent's head IS the store's, with nothing pending:
             # the common clean case pays no tree walk.
-            return set()
-        return self._visible(set(self._provider.working_diff(head).paths))
+            return set(), set(), set()
+        diff = self._provider.working_diff(head)
+        paths = self._visible(set(diff.paths))
+        return paths, paths & set(diff.added), paths & set(diff.removed)
 
     def _visible(self, paths: set[str]) -> set[str]:
         """``paths`` less anything this session's view hides, and less
@@ -551,7 +562,7 @@ class AgentGit:
         """
         self._require("ws-git status")
         blob = self._read()
-        modified = self._modified(blob["head"], blob["base"])
+        modified, added, removed = self._changes(blob["head"], blob["base"])
         staged = set(blob["staged"])
         source, unresolved = self._merge_context(blob)
         return WorkspaceStatus(
@@ -560,6 +571,8 @@ class AgentGit:
             unstaged=tuple(sorted(modified - staged)),
             merge_source=source,
             merge_unresolved=tuple(unresolved),
+            added=tuple(sorted(added)),
+            removed=tuple(sorted(removed)),
         )
 
     # -- index ---------------------------------------------------------

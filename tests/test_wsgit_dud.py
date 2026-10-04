@@ -71,7 +71,7 @@ def test_dud_stage_first_composition(ws):
     ws.terminal("echo second >> a.txt")
     assert not ws.uncommitted
 
-    assert ws.terminal("ws-git status").stdout == "M  a.txt\nM  b.txt\n"
+    assert ws.terminal("ws-git status").stdout == "A  a.txt\nA  b.txt\n"
     assert ws.terminal("ws-git diff").stdout == ""
     assert ws.terminal("ws-git diff --cached").stdout == (
         "diff --git a/a.txt b/a.txt\n"
@@ -139,7 +139,7 @@ def test_dud_cwd_relative_staging(ws):
     r = ws.terminal("cd sub; ws-git stage f.txt")
     assert r.exit_code == 0
     assert r.stdout == ""
-    assert ws.terminal("ws-git status").stdout == "M  sub/f.txt\n"
+    assert ws.terminal("ws-git status").stdout == "A  sub/f.txt\n"
 
 
 def test_dud_merge_status_and_check(ws):
@@ -220,7 +220,7 @@ def test_dud_fork_wsgit_binds_fork():
             assert r.exit_code == 0, r.stdout
             # a fork starts at no commit of its own, measured from the
             # tree it started from: a.txt came with it and is not its work
-            assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
+            assert fork.terminal("ws-git status").stdout == "A  kid.txt\n"
             assert w.terminal("ws-git status").stdout == ""
         finally:
             fork.close()

@@ -70,7 +70,7 @@ def test_stage_first_composition(ws):
     assert not ws.uncommitted
     # ... and the composition does not notice.
     r = ws.terminal("ws-git status")
-    assert r.stdout == "M  a.txt\nM  b.txt\n"
+    assert r.stdout == "A  a.txt\nA  b.txt\n"
 
     # Everything staged: plain diff is empty, --cached shows both.
     assert ws.terminal("ws-git diff").stdout == ""
@@ -136,9 +136,21 @@ def test_show_takes_the_short_id_the_log_printed(ws):
     assert "first" in body and "+one" in body
 
 
+def test_status_letters_say_new_deleted_or_changed(ws):
+    """git's letters: a row says whether the file is new since the last
+    commit, gone, or changed, on whichever side of the index it is."""
+    ws.terminal("echo a > a.txt; echo b > b.txt; echo c > c.txt; ws-git commit -m base")
+    ws.terminal("echo more >> a.txt; rm b.txt; echo n > new.txt; echo s > staged.txt")
+    ws.terminal("ws-git add staged.txt c.txt")
+    ws.terminal("rm c.txt")
+    assert ws.terminal("ws-git status").stdout == (
+        " M a.txt\n D b.txt\nD  c.txt\n A new.txt\nA  staged.txt\n"
+    )
+
+
 def test_unstaged_diff_and_status_columns(ws):
     ws.files.fs.write("/workspace/a.txt", b"one\n")
-    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
+    assert ws.terminal("ws-git status").stdout == " A a.txt\n"
     ws.files.fs.write("/workspace/b.txt", b"two\n")
     assert ws.terminal("ws-git diff b.txt").stdout == (
         "diff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+two\n"
@@ -179,7 +191,7 @@ def test_unstage_leaves_the_work(ws):
     r = ws.terminal("ws-git unstage a.txt")
     assert r.exit_code == 0
     assert r.stdout == ""
-    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
+    assert ws.terminal("ws-git status").stdout == " A a.txt\n"
 
 
 def test_reset_abandons_the_index_not_the_tree(ws):
@@ -189,7 +201,7 @@ def test_reset_abandons_the_index_not_the_tree(ws):
     r = ws.terminal("ws-git reset")
     assert r.exit_code == 0
     assert r.stdout == ""
-    assert ws.terminal("ws-git status").stdout == " M a.txt\n"
+    assert ws.terminal("ws-git status").stdout == " A a.txt\n"
     assert ws.terminal("cat a.txt").stdout == "one\nsecond\n"
 
 
@@ -285,7 +297,7 @@ def test_relative_paths_resolve_against_cwd(ws):
     ws.files.fs.write("/workspace/sub/f.txt", b"one\n")
     r = ws.terminal("cd sub; ws-git stage f.txt")
     assert r.exit_code == 0
-    assert ws.terminal("ws-git status").stdout == "M  sub/f.txt\n"
+    assert ws.terminal("ws-git status").stdout == "A  sub/f.txt\n"
 
 
 def test_merge_status_and_diff_check(ws):
@@ -548,7 +560,7 @@ def test_fork_wsgit_binds_fork():
             # a fork starts at no commit of its own, measured from the
             # tree it started from: a.txt came with it and is not its
             # work. Its log is its own, not a continuation of the parent's
-            assert fork.terminal("ws-git status").stdout == "M  kid.txt\n"
+            assert fork.terminal("ws-git status").stdout == "A  kid.txt\n"
             assert w.terminal("ws-git status").stdout == ""
             assert fork.terminal('ws-git commit -m "kid work"').exit_code == 0
             assert _subjects(w) == ["base"]
@@ -577,7 +589,7 @@ def test_snapshot_wsgit_reads_snapshot():
             # The parent moves on; the snapshot doesn't follow.
             w.files.fs.write("/workspace/b.txt", b"two\n")
             w.terminal("ws-git stage b.txt")
-            assert w.terminal("ws-git status").stdout == "M  b.txt\n"
+            assert w.terminal("ws-git status").stdout == "A  b.txt\n"
             assert snap.terminal("ws-git status").stdout == ""
             r = snap.terminal("ws-git stage a.txt")
             assert r.exit_code == 1
@@ -661,7 +673,7 @@ def test_command_closure_direct_status_shape():
 
         ctx = Ctx(["status"])
         assert fn(ctx) is None
-        assert ctx.stdout.getvalue() == b"M  a.txt\n"
+        assert ctx.stdout.getvalue() == b"A  a.txt\n"
     finally:
         w.close()
 
@@ -1015,7 +1027,7 @@ def test_status_ends_with_the_worktrees(peer_ws):
     # file rows first, the block last
     peer_ws.files.fs.write("/workspace/a.txt", b"mine\n")
     out = peer_ws.terminal("ws-git status").stdout
-    assert out == " M a.txt\nworktrees:\n" + block
+    assert out == " A a.txt\nworktrees:\n" + block
     assert peer_ws.terminal("ws-git status --porcelain").stdout == out
 
 
@@ -1078,10 +1090,10 @@ def test_file_rows_use_the_sessions_root(store):
     register_wsgit(w)
     try:
         w.terminal("echo one > note.md")
-        assert w.terminal("ws-git status").stdout == " M note.md\n"
+        assert w.terminal("ws-git status").stdout == " A note.md\n"
 
         w.terminal("ws-git stage note.md")
-        assert w.terminal("ws-git status").stdout == "M  note.md\n"
+        assert w.terminal("ws-git status").stdout == "A  note.md\n"
         assert w.terminal("ws-git diff --cached").stdout == (
             "diff --git a/note.md b/note.md\n"
             "--- a/note.md\n"
@@ -2128,7 +2140,7 @@ def _staged(w):
     return sorted(
         line[3:]
         for line in w.terminal("ws-git status").stdout.splitlines()
-        if line.startswith("M ")
+        if line[:1] in ("M", "A", "D") and line[1:2] == " "
     )
 
 

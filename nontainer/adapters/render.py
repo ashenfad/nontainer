@@ -316,8 +316,9 @@ Handlers export verb functions; example __WS__/app/api/scores.py:
         return {"scores": cache.get("scores", [])[:limit]}
 
     def post(req):
-        name = req.require("name")     # 400 if missing from JSON body
-        scores = cache.get("scores", []) + [name]
+        name = req.require("name")          # a str, else a 400
+        points = req.require("points", int)  # a number takes its type
+        scores = cache.get("scores", []) + [[name, points]]
         cache["scores"] = scores       # NOT allowed in get() (read-only)
         return {"ok": True}
 """

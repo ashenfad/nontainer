@@ -332,6 +332,11 @@ class WorkspaceStatus:
     """Paths the merge left marked that still carry markers (empty
     unless a merge is outstanding), so resolving them one at a time
     shows progress."""
+    added: tuple[str, ...] = ()
+    """Of the staged and unstaged paths, those new since the agent's
+    last commit (every one, before the first commit)."""
+    removed: tuple[str, ...] = ()
+    """Of the staged and unstaged paths, those deleted since it."""
 
 
 class WorkspaceProvider(Protocol):

@@ -124,10 +124,14 @@ Clean is silent, as in git. Otherwise `status` prints, in this order:
   or cherry-pick that left markers behind, and how many files still
   carry them. Git has no equivalent line; a session has no working tree
   to leave a conflicted state in, so the state is named instead.
-- **the file rows**, in git's short `XY` columns: `M ` staged, ` M`
-  modified and not staged, `UU` left marked by a merge. A path is in one
-  column or the other, never both — staging a file moves it from the
-  right column to the left.
+- **the file rows**, in git's short `XY` columns: the left column is
+  staged and the right is not, and the letter says what changed since
+  your last commit: `M` changed, `A` new, `D` deleted. `UU` is a file
+  left marked by a merge. A path is in one column or the other, never
+  both — staging a file moves it from the right column to the left. A
+  new file nothing has staged shows as ` A`, not git's `??`, because a
+  commit with nothing staged takes it; git prints ` A` for a file
+  `git add -N` has announced, which is the same promise.
 - **a `worktrees:` block** when any are up, one line per worktree in the
   shape `worktree list` prints.
 
