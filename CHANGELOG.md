@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`ws-git diff <session>` shows what a merge would bring.** It compared this session's last commit with the other session's, so everything this session did since the fork read as the other one undoing it. An agent merging three delegates read the frontend work it had already merged as the engine delegate "reverting" it. It took the engine's files one by one rather than merge, though the engine had never touched that file and the merge would have kept it. A session diff is now git's `A...B`: the other session's changes since the merge base, which is the base `merge` uses. A header names that base, and a line names any paths this session also changed since then, where the merge combines both sides or marks a conflict. A diff against a store tag is still a straight comparison. The kvgit provider exposes `merge_base(a, b)` for it.
+- **A snapshot of a mounted session's commit is clean.** With mounts, the composition keeps the cwd and the store never records one. A frozen view of such a commit (`store.resolve("s@<commit>")`, `store.tags.at(...)`) therefore set its cwd while opening and reported itself `uncommitted`, so `store.publish` refused it as having staged changes. A frozen workspace commits nothing, and `uncommitted` is now always False for one.
 
 ## 0.8.9 - 2026-10-04
 

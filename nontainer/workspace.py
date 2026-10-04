@@ -1944,7 +1944,15 @@ class Workspace:
         composes, because every tool call commits. "Does the agent
         have uncommitted work" is ``ws.index.status()``, which
         measures against the agent's own last commit.
+
+        Always False on a frozen workspace, which commits nothing. Its
+        buffer can still hold the cwd it settled on while opening: a
+        commit made with mounts has no stored cwd (the composition
+        keeps it), so a snapshot of one starts at the root, and that
+        chdir is bookkeeping, not a change to the commit it is.
         """
+        if self._frozen:
+            return False
         return self._provider.dirty
 
     @property
