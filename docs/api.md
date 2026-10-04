@@ -1768,6 +1768,42 @@ class PythonConfig:
 - `Mount(path, readonly=True)` — a real directory in the workspace
   tree, visible to both tools, NOT versioned/forked.
 
+## Skills (`nontainer.skills`)
+
+Claude-Code-compatible skills: `<root>/skills/<name>/SKILL.md` with a
+`name`/`description` frontmatter, plus any reference files beside it.
+The agno toolkit appends a catalog of them to its instructions;
+reading one needs no tool beyond the terminal.
+
+```python
+skills.install(ws, source)            # bytes, a .md file, or a skill directory
+skills.install_from_modules(ws)       # every granted module's <pkg>/skills/
+skills.catalog(ws)                    # the instructions' skills primer
+skills.mounts(*sources, root="/workspace") -> dict[str, Mount]
+skills.discover(module)               # a package's skill directories
+```
+
+**Two kinds.** An *installed* skill is ordinary workspace files: it
+versions, forks and rewinds with the session, and the agent can write
+or improve one like any other file. A *mounted* skill is a read-only
+view of a directory on the host, for skills that are never the agent's
+to change, such as an embedder's starter set or a library's:
+
+```python
+ws = store.open("chat", mounts=skills.mounts(STARTER_SKILLS_DIR))
+ws = store.open("chat", mounts=skills.mounts(*skills.discover(mylib)))
+```
+
+`mounts` takes directories of skills (or single skill directories) and
+returns one read-only `Mount` per skill at `<root>/skills/<name>`,
+named as `install` would name it. Mounts are not versioned, so ws-git
+never lists a mounted skill and no commit, fork point or publication
+copies one; a fork sees the same directory. The catalog lists both
+kinds. `install` refuses a name that is mounted, and
+`install_from_modules` skips a library skill that is already mounted.
+An agent that wants to adapt a mounted skill copies it under a new
+name.
+
 ## Presets (`nontainer.presets`)
 
 Curated grant lists for the heavy libraries, with agex's accumulated

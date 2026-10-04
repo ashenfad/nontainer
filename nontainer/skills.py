@@ -12,6 +12,12 @@ reference/script files. The pieces divide cleanly:
 - STORAGE is ordinary workspace files — skills version, fork, publish,
   and rewind with everything else, and agents can author or improve
   them like any other file.
+- Skills that are never the agent's to change (an embedder's starter
+  set, a library's) can be MOUNTED instead: :func:`mounts` makes a
+  read-only ``Mount`` per skill at ``<root>/skills/<name>``. They sit
+  beside installed ones, the catalog lists both, and being mounts they
+  are not versioned, so ws-git never sees them and no commit carries
+  them. An agent that wants to adapt one copies it under a new name.
 
 Python libraries can EMBED skills: a package shipping
 ``<pkg>/skills/<name>/SKILL.md`` teaches every agent it's granted to
@@ -27,7 +33,7 @@ import re
 from typing import TYPE_CHECKING, Any, Iterator
 
 if TYPE_CHECKING:
-    from .workspace import Workspace
+    from .workspace import Mount, Workspace
 
 SKILLS_DIR = "skills"
 
@@ -121,6 +127,13 @@ def install(ws: "Workspace", source: Any) -> str:
 
     name = _slug(frontmatter(files["SKILL.md"]).get("name") or fallback)
     root = skills_root(ws)
+    if f"{root}/{name}" in _mounted(ws):
+        from .errors import WorkspaceError
+
+        raise WorkspaceError(
+            f"skill {name!r} is mounted read-only at {root}/{name}; "
+            "install this one under another name"
+        )
     with ws.lock:
         written = []
         for rel, data in files.items():
@@ -183,9 +196,82 @@ def install_from_modules(ws: "Workspace") -> list[str]:
         if not top or top in seen:
             continue
         seen.add(top)
+        mounted = _mounted(ws)
         for skill_dir in discover(top):
+            if f"{skills_root(ws)}/{_skill_name(skill_dir)}" in mounted:
+                continue  # the embedder mounted this one; nothing to copy
             installed.append(install(ws, skill_dir))
     return installed
+
+
+def mounts(*sources: Any, root: str = "/workspace") -> "dict[str, Mount]":
+    """Read-only mounts for skills that are never the agent's to change.
+
+    Each source is a directory on disk: one skill (it holds a
+    ``SKILL.md``) or a directory of them (``<name>/SKILL.md`` children),
+    as a path or a package resource (``discover(module)`` returns those).
+    Returns ``{"<root>/skills/<name>": Mount(dir, readonly=True)}``,
+    named as :func:`install` would name them, for ``workspace(...,
+    mounts=...)``::
+
+        ws = store.open("chat", mounts=skills.mounts(STARTER_SKILLS))
+
+    A mounted skill is a live, read-only view of its directory: it is
+    not versioned, so ws-git never lists it and no commit, fork point or
+    publication copies it, and a fork sees the same directory. The
+    catalog lists mounted and installed skills alike, and
+    :func:`install` refuses a name that is mounted.
+
+    Raises ``ValueError`` for a source that is not a directory on disk
+    (a package inside a zip has no directory to mount; ``install`` it),
+    for one with no skill in it, and for two skills with one name.
+    """
+    from pathlib import Path
+
+    from .workspace import Mount
+
+    base = "" if root == "/" else root.rstrip("/")
+    out: dict[str, Mount] = {}
+    for source in sources:
+        path = Path(os.fspath(source)) if not isinstance(source, Path) else source
+        if not path.is_dir():
+            raise ValueError(
+                f"skill source {source!s} is not a directory on disk; "
+                "install() a skill that has no directory to mount"
+            )
+        dirs = (
+            [path]
+            if (path / "SKILL.md").is_file()
+            else sorted(
+                c for c in path.iterdir() if c.is_dir() and (c / "SKILL.md").is_file()
+            )
+        )
+        if not dirs:
+            raise ValueError(f"no skills in {path} (a SKILL.md, or <name>/SKILL.md)")
+        for skill_dir in dirs:
+            point = f"{base}/{SKILLS_DIR}/{_skill_name(skill_dir)}"
+            if point in out:
+                raise ValueError(
+                    f"two skills named {point.rsplit('/', 1)[1]!r}: {out[point].path} and {skill_dir}"
+                )
+            out[point] = Mount(str(skill_dir.resolve()), readonly=True)
+    return out
+
+
+def _skill_name(skill_dir: Any) -> str:
+    """What a skill directory is called once installed or mounted: its
+    frontmatter name, or the directory's own."""
+    try:
+        meta = frontmatter((skill_dir / "SKILL.md").read_bytes())
+    except Exception:
+        meta = {}
+    return _slug(meta.get("name") or getattr(skill_dir, "name", "") or "skill")
+
+
+def _mounted(ws: "Workspace") -> set[str]:
+    """The workspace's mount points."""
+    settings = getattr(ws, "_settings", None)
+    return set(getattr(settings, "mounts", None) or ())
 
 
 def catalog(ws: "Workspace") -> str:
