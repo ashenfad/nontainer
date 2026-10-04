@@ -357,6 +357,7 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
     console = "\n".join(line for r in results for line in r.console)
     passed = sum(1 for o in outcomes if o.status == "passed")
     failed = sum(1 for o in outcomes if o.status == "failed")
+    skipped = sum(1 for o in outcomes if o.status == "skipped")
     error_count = sum(1 for o in outcomes if o.status == "error")
     if options.name and not collected:
         return _usage_report(f"no test matched -t {options.name!r}")
@@ -368,7 +369,7 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
         passed=passed,
         failed=failed,
         errors=error_count,
-        skipped=0,
+        skipped=skipped,
         duration=time.perf_counter() - started,
         exit_code=code,
         outcomes=tuple(outcomes),
@@ -421,12 +422,14 @@ def _ms(seconds: float) -> str:
     return f"{seconds * 1000:.0f}ms"
 
 
-def _count(label: str, failed: int, passed: int, total: int) -> str:
+def _count(label: str, failed: int, passed: int, total: int, skipped: int = 0) -> str:
     parts = []
     if failed:
         parts.append(f"{failed} failed")
     if passed:
         parts.append(f"{passed} passed")
+    if skipped:
+        parts.append(f"{skipped} skipped")
     body = " | ".join(parts) if parts else "no tests"
     return f"{label:>11}  {body} ({total})" if parts else f"{label:>11}  {body}"
 
@@ -462,13 +465,15 @@ def render_report(report: TestReport, *, verbose: bool = False) -> str:
         counts = f"{len(tests)} test{'' if len(tests) == 1 else 's'}"
         if bad:
             counts += f" | {len(bad)} failed"
+        skips = [o for o in tests if o.status == "skipped"]
+        if skips:
+            counts += f" | {len(skips)} skipped"
         out.append(f" {mark} {path} ({counts}) {duration}")
         for o in tests:
             if verbose:
-                out.append(
-                    f"   {'✓' if o.status == 'passed' else '×'} "
-                    f"{_short(o)} {_ms(o.duration)}"
-                )
+                mark = {"passed": "✓", "skipped": "↓"}.get(o.status, "×")
+                tail = "" if o.status == "skipped" else f" {_ms(o.duration)}"
+                out.append(f"   {mark} {_short(o)}{tail}")
             elif o.status == "failed":
                 out.append(f"   × {_short(o)}")
 
@@ -512,13 +517,21 @@ def render_report(report: TestReport, *, verbose: bool = False) -> str:
 
     out.append("")
     files = _by_file(report)
-    bad_files = sum(1 for _, group in files if any(o.status != "passed" for o in group))
+    bad_files = sum(
+        1 for _, group in files if any(o.status in ("failed", "error") for o in group)
+    )
     out.append(_count("Test Files", bad_files, len(files) - bad_files, len(files)))
     # A suite that would not load contributes no tests: vitest counts
     # files and tests separately, and folding an unloadable file into
     # the test count would invent a test nobody wrote.
     out.append(
-        _count("Tests", report.failed, report.passed, report.failed + report.passed)
+        _count(
+            "Tests",
+            report.failed,
+            report.passed,
+            report.failed + report.passed + report.skipped,
+            report.skipped,
+        )
     )
     out.append(f"{'Duration':>11}  {report.duration:.2f}s")
     for note in report.notes:
