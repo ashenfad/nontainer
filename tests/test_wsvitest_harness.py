@@ -793,3 +793,31 @@ def test_skipped_tests_do_not_spend_the_bail_budget(ws):
     write(ws, "tests/b.test.js", 'it("also runs", () => {});\n')
     results = run_js_tests(ws, ["tests/a.test.js", "tests/b.test.js"], bail=1)
     assert [r.failed for r in results] == [False, False]
+
+
+def test_a_skipped_test_does_not_hide_a_page_error_nothing_else_reported():
+    """The driver's page errors are the backstop when the harness
+    accounted for no failure. A skip is not a failure, so it must not
+    stand in for one and leave the run passing."""
+    from nontainer.apps.driver import ActionOutcome, DriveReport, PageError
+    from nontainer.apps.jsharness import _result
+
+    payload = {
+        "collected": 2,
+        "results": [
+            {"name": "runs", "ok": True, "ms": 1, "error": None},
+            {"name": "waits", "ok": True, "skipped": True, "ms": 0, "error": None},
+        ],
+    }
+    report = DriveReport(
+        loaded=True,
+        actions=(ActionOutcome(index=0, ok=True, value=payload),),
+        page_errors=(PageError("Error", "escaped the harness", ""),),
+    )
+    w = Workspace(KvgitProvider.open(None, session="backstop"))
+    try:
+        result = _result(w, "tests/x.test.js", report, [], 30_000)
+    finally:
+        w.close()
+    assert result.failed
+    assert any("escaped the harness" in (o.message or "") for o in result.outcomes)

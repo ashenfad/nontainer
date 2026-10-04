@@ -540,7 +540,7 @@ def _result(
     # accounted for nothing — otherwise the same failure would be
     # reported twice.
     unattributed = list(payload.get("stray") or ())
-    if not unattributed and not any(o.status != "passed" for o in outcomes):
+    if not unattributed and not any(o.status in ("failed", "error") for o in outcomes):
         unattributed = [
             {"name": e.name, "message": e.message, "stack": e.stack}
             for e in report.page_errors
