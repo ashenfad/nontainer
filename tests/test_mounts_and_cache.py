@@ -255,3 +255,39 @@ def test_fork_keeps_the_parents_resolved_mount_source(tmp_path, monkeypatch):
     finally:
         fork.close()
         ws.close()
+
+
+def test_a_snapshot_of_a_mounted_sessions_commit_is_clean_and_publishable(tmp_path):
+    """With mounts, the composition keeps the cwd and the store never
+    records one, so a frozen view of such a commit settles at the root
+    while it opens. That is bookkeeping: the view is exactly its commit,
+    reports nothing uncommitted, and publishes."""
+    from nontainer import Store
+
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "x.csv").write_text("a\n")
+    store = Store(tmp_path / "store")
+    ws = store.open("m", mounts={"/workspace/data": Mount(str(data))})
+    try:
+        ws.files.write("/workspace/app/index.html", "<h1>hi</h1>\n")
+        ws.commit(info={"tool": "test"})
+        commit = ws.provider.head
+        store.tags.add(ws, "v1")
+    finally:
+        ws.close()
+
+    for frozen in (store.resolve(f"m@{commit}"), store.tags.at("v1")):
+        try:
+            assert frozen.frozen and not frozen.uncommitted
+            assert frozen.files.read("/workspace/app/index.html") == b"<h1>hi</h1>\n"
+        finally:
+            frozen.close()
+
+    source = store.resolve(f"m@{commit}")
+    try:
+        published = store.publish(source, "mounted-app", version="v1")
+        assert published.version("v1") is not None
+    finally:
+        source.close()
+        store.close()
