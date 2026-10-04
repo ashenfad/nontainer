@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.8 - 2026-10-03
 
 ### Added
 - **Compaction** (`nontainer.compaction`, `nontainer.adapters.agno_compaction`; docs/compaction.md). Past a token budget, every earlier turn of a conversation is replaced, in what the model is sent, by one summary; the run in progress stays as it is. The stored conversation is never rewritten, and the person's transcript keeps everything. Each fold is a record in a new `__compaction__/` plane: a rewind takes it back with the turns it folded, a `full` fork carries it, a `fresh` fork drops it, and a merge never takes another session's. A fold names the last message it covers by id. If an edit has removed that message, an earlier fold still in reach applies, or else the full history is sent.
