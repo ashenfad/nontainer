@@ -258,3 +258,30 @@ def test_install_from_modules_leaves_a_mounted_library_skill_alone(
     finally:
         w.close()
         sys.modules.pop("mountlib", None)
+
+
+def test_mounts_normalize_the_root_as_the_workspace_does(starter, tmp_path):
+    points = skills.mounts(starter, root="//deep//nest//")
+    assert "/deep/nest/skills/building-apps" in points
+    w = workspace(
+        "odd-root", store=tmp_path / "store", root="//deep//nest//", mounts=points
+    )
+    try:
+        assert "- building-apps:" in skills.catalog(w)
+        with pytest.raises(Exception, match="mounted read-only"):
+            skills.install(w, starter / "building-apps")
+    finally:
+        w.close()
+    with pytest.raises(ValueError, match=r"\. or \.\."):
+        skills.mounts(starter, root="/a/../b")
+
+
+def test_a_skill_inside_a_zip_is_refused_with_the_way_out(tmp_path):
+    import zipfile
+
+    archive = tmp_path / "lib.zip"
+    with zipfile.ZipFile(archive, "w") as z:
+        z.writestr("ziplib/skills/zipped/SKILL.md", "---\nname: zipped\n---\n")
+    resource = zipfile.Path(archive, "ziplib/skills/zipped/")
+    with pytest.raises(ValueError, match="install\\(\\)"):
+        skills.mounts(resource)

@@ -228,12 +228,22 @@ def mounts(*sources: Any, root: str = "/workspace") -> "dict[str, Mount]":
     """
     from pathlib import Path
 
-    from .workspace import Mount
+    from .workspace import Mount, normalize_root
 
-    base = "" if root == "/" else root.rstrip("/")
+    # normalized as the workspace normalizes its root, or the points
+    # would not be where install() and the catalog look
+    root = normalize_root(root)
+    base = "" if root == "/" else root
     out: dict[str, Mount] = {}
     for source in sources:
-        path = Path(os.fspath(source)) if not isinstance(source, Path) else source
+        if not isinstance(source, (str, os.PathLike)):
+            # a package resource with no directory behind it (a zip
+            # import's zipfile.Path): nothing on disk to mount
+            raise ValueError(
+                f"skill source {source!s} is not a directory on disk; "
+                "install() a skill that has no directory to mount"
+            )
+        path = Path(os.fspath(source))
         if not path.is_dir():
             raise ValueError(
                 f"skill source {source!s} is not a directory on disk; "
