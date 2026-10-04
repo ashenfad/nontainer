@@ -1447,20 +1447,24 @@ def run_action(
                 return f"sessions {action} needs a name (`sessions list` has them)."
             if action == "result":
                 return render_answer(sessions.result(name))
+            # The job's own name, not the one typed: a short name finds
+            # its child, and the verbs these lines suggest take the whole
+            # branch name (ws-git knows no short one).
             if action == "cancel":
                 job = sessions.cancel(name)
                 if job.status != "cancelled":
                     return (
-                        f"{name} had already finished ({job.status}); nothing to stop."
+                        f"{job.name} had already finished ({job.status}); "
+                        "nothing to stop."
                     )
                 return (
-                    f"{name} cancelled: its answer will be discarded. A delegate "
-                    "already working cannot be interrupted, and its branch is "
-                    f"left as it is (ws-git diff {name})."
+                    f"{job.name} cancelled: its answer will be discarded. A "
+                    "delegate already working cannot be interrupted, and its "
+                    f"branch is left as it is (ws-git diff {job.name})."
                 )
-            sessions.keep(name)
+            job = sessions.keep(name)
             return (
-                f"{name} kept: the retention sweep will leave its branch "
+                f"{job.name} kept: the retention sweep will leave its branch "
                 "alone from now on."
             )
         return (
