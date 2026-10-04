@@ -134,8 +134,8 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection (`--trace`, `.trace/`, `changed.md`) | proposed |
-| `ws-git show <session>@<commit>` and `<ref>:<path>` | built (unreleased); `.trace/` paths arrive with the projection |
-| a turn commit naming the runs it carried (`"runs": {id: status}`) | built (unreleased) |
+| `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths arrive with the projection |
+| a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
 | `Sessions.ask(take=...)`: a fork point with paths taken in | proposed |
 | `metadata.requires` read from `SKILL.md` and checked at install | proposed |

@@ -621,7 +621,7 @@ pitch; the pitch is the *workspace*.
   recorded in the workspace so rewind and fork carry it; the stored
   conversation and the person's transcript keep everything. A neutral
   core with a thin adapter per harness, agno's first. Basic
-  compaction and the agno adapter are built (unreleased); chaptering
+  compaction and the agno adapter shipped in 0.8.8; chaptering
   is the later part. Written up in [compaction.md](compaction.md),
   with a ledger.
 - **run-ts** — a Node sidecar wrapping

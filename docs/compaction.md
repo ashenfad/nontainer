@@ -1,6 +1,6 @@
 # Compaction
 
-> **Status, 2026-10-03: built, unreleased** (`nontainer.compaction`,
+> **Status, 2026-10-03: released in 0.8.8** (`nontainer.compaction`,
 > `nontainer.adapters.agno_compaction`). How a long
 > conversation stays inside the model's context window. Past a token
 > budget, the older turns are replaced, in what the model is sent, by
@@ -378,9 +378,9 @@ in_force(ws, message_ids)  # -> Fold | None, the one a history with these ids ge
 | The studio sends every earlier run (nontainer-studio #78) | merged |
 | The studio drops tool-result compression (nontainer-studio #79) | merged |
 | Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 3.0.1 and 3.0.11, sync and streaming |
-| `__compaction__/` plane and the `Fold` record | built (`nontainer/compaction.py`, `planes.py`) |
-| Core: policy, texts, reduce and chunks | built |
-| agno adapter (`CompactingCompression`), with the db backstop | built (`nontainer/adapters/agno_compaction.py`) |
+| `__compaction__/` plane and the `Fold` record | released in 0.8.8 (`nontainer/compaction.py`, `planes.py`) |
+| Core: policy, texts, reduce and chunks | released in 0.8.8 |
+| agno adapter (`CompactingCompression`), with the db backstop | released in 0.8.8 (`nontainer/adapters/agno_compaction.py`) |
 | Studio: budget, marker event | not started |
 | Chaptering | later; see above |
 
