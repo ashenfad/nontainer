@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.9 - 2026-10-04
 
 ### Added
 - **`ignore=`: the embedder's `.gitignore`.** `workspace()` and `Store.open` take gitignore-style patterns, relative to the workspace root, for paths that are never work: `__pycache__/`, `*.log`, `/build/`. No ws-git status lists them, no commit or merge takes them, and no diff (and so no delegate's answer) names them. They are still written and kept for the session to read back. Forks, tags and publications inherit the patterns, and `ws.ignore` returns them. Negation (`!`) is refused when the workspace is built rather than half-supported. `ws-git add <path>` on an ignored path is refused, and the refusal says why.
