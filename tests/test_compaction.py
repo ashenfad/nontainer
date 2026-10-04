@@ -119,6 +119,25 @@ def test_a_fresh_fork_drops_the_folds_and_a_full_one_keeps_them(ws):
         full.close()
 
 
+def test_fork_session_fresh_drops_the_folds_and_inherit_keeps_them(ws):
+    """agno_db's own fork verb: ``conversation="fresh"`` keeps the
+    session record but drops the runs, and the folds over them go too."""
+    pytest.importorskip("agno")
+    from nontainer.adapters.agno_db import fork_session
+
+    ws.terminal("echo one > a.txt")
+    record(ws, fold("a", "parent's"))
+    ws.commit(info={"tool": "test"})
+    fresh = fork_session(ws, "kid-fresh", conversation="fresh")
+    inherit = fork_session(ws, "kid-inherit", conversation="inherit")
+    try:
+        assert folds(fresh) == []
+        assert [f.summary for f in folds(inherit)] == ["parent's"]
+    finally:
+        fresh.close()
+        inherit.close()
+
+
 def test_a_merge_keeps_this_sessions_folds_and_takes_none_of_the_others(ws):
     ws.terminal("echo one > a.txt")
     record(ws, fold("a", "base"))

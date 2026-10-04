@@ -94,7 +94,9 @@ The records go in a plane of their own, `__compaction__/`, named in
 - **Fork with `inherit="full"`** copies runs and records together, so
   the child starts with the parent's summary and the parent's tail.
 - **Fork with `inherit="fresh"`** drops the conversation, and the
-  records with it.
+  records with it. So does agno_db's `fork_session(...,
+  conversation="fresh")`, which keeps the session record but drops the
+  runs.
 
 A record names the last message it covers by that message's id in the
 harness, its anchor. Ids are opaque strings to the core. agno gives
@@ -184,7 +186,14 @@ its name.
   the previous request, whether that was earlier in this run or the end
   of the last one. Anything after it is estimated at four characters a
   token. The count is exact where most of the request is, and nothing
-  needs `tiktoken` or `tokenizers`.
+  needs `tiktoken` or `tokenizers`. Providers differ in what that
+  number holds. OpenAI's (and so OpenRouter's) and Gemini's include
+  the tokens read from the prompt cache. Anthropic's counts only the
+  uncached part and reports cache reads and writes beside it, so for
+  agno's Claude (direct, Bedrock, Vertex) those are added. Counted
+  alone, a mostly cached request would look small and never fold.
+  After a switch to a different provider, the first request is measured
+  by the new model's rule from the old one's report.
 - **Applying a fold is idempotent.** The message list persists across a
   run's model calls, so the summary pair spliced in before the first
   call is still there before the second. The adapter recognises its own

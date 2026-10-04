@@ -923,7 +923,8 @@ fork — as the CHILD's conversation: a branch holds one session's, so
 the stored session record is rebound to the child's session id, with
 the session the conversation came from kept in
 `session_data["forked_from_session_id"]`. `"fresh"` drops every
-`__agno__/*` key on the child's first commit, for a delegate that starts a chat of its own over these files;
+`__agno__/*` key, and compaction's `__compaction__/*` folds over them,
+on the child's first commit, for a delegate that starts a chat of its own over these files;
 it touches no file. A brief, a summary, a distilled context is content
 the caller supplies with the child's task — nothing here can write one,
 since nontainer stores the conversation and does not interpret it.
@@ -2064,6 +2065,13 @@ agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk],
               post_hooks=[tk.end_turn])
 ```
 
+The db stores the conversation; sending it to the model is agno's
+`add_history_to_context=True`. Set `num_history_runs` with it: left
+unset, agno sends only the last three runs, so the agent forgets the
+start of the conversation, and the prompt's prefix changes every run,
+which defeats the prompt cache. `sys.maxsize` sends them all, and
+[compaction](compaction.md) keeps that inside the context window.
+
 `KvgitSessionDb` is an agno `JsonDb` whose **sessions table** lives in
 the branch:
 
@@ -2127,8 +2135,8 @@ Returns the forked `Workspace`. The fork's session key carries
 = <parent>` (where agno keeps fork lineage), written in a commit of
 the fork's own, so its head is consistent — `ws.fork` rebinds a
 conversation it carries. Drive it with an agent whose `session_id` is
-the fork name. `"fresh"` drops the run keys and empties `run_ids`,
-leaving the record: a clean chat over the forked files, under a
+the fork name. `"fresh"` drops the run keys (and compaction's folds
+over them) and empties `run_ids`, leaving the record: a clean chat over the forked files, under a
 session the db can write to. Rewind first to
 branch from any commit with the conversation as it was there.
 

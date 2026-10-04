@@ -54,6 +54,14 @@ keys are `__`-prefixed (`__vfs_cwd__`, `__cache__/...`), and the agent's
 `cache` view rejects `__` keys at write time, so agent code cannot
 reach these by construction.
 
+Compaction ([compaction.md](compaction.md)) keeps its folds beside
+these, under `__compaction__/`, and never writes a run. The summary it
+puts in what the model is sent is flagged as history, which agno leaves
+out of a stored run only while `store_history_messages` is off. So
+every path here that stores a run (the session upsert, agno 3's
+`upsert_run`, a seeded fork) drops the messages compaction marks as
+its own, whatever the agent's settings.
+
 ## One session per workspace
 
 A `KvgitSessionDb` is constructed from one workspace and holds
@@ -214,7 +222,8 @@ the conversation came from>`, which is where agno keeps fork
 lineage, so agno's own readers find it and it rides along on every
 later upsert. A branch holds one session's conversation, and the
 fork is a new session. With `conversation="fresh"` the run keys are
-deleted and `run_ids` cleared, giving a clean chat over the forked
+deleted, with compaction's folds over them, and `run_ids` cleared,
+giving a clean chat over the forked
 files under a session the db can write to. Run ids are
 left as they are: agno mints fresh ones on its own fork only to
 avoid collisions inside a shared db, and branches never share one.
