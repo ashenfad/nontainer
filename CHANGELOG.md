@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.10 - 2026-10-04
 
 ### Added
 - **`ws-git` takes git's everyday spellings.** `diff --stat` prints a per-file summary, for your own changes and another session's. `--` separates paths, so `diff <session> -- <paths>` and `diff -- <paths>` work, and `diff <session> <paths>` filters too. `status -s`/`--short`, `log --oneline` and `log -5` are accepted: the first two are the format already printed. Each used to cost an agent a call to learn the spelling it had typed was refused.
