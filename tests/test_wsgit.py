@@ -506,10 +506,10 @@ def test_edges_name_what_the_agent_can_do(ws):
         ("ws-git commit -a", "ws-git: commit stages nothing itself (no -a)"),
         ("ws-git commit path.txt", "ws-git: commit takes the staged set only"),
         ("ws-git commit -m", "ws-git: commit takes the staged set only"),
-        ("ws-git status --short", "ws-git: status takes no '--short'"),
+        ("ws-git status --branch", "ws-git: status takes no '--branch'"),
         ("ws-git reset --hard", "ws-git: reset is mixed-only"),
-        ("ws-git log --oneline", "ws-git: log takes no '--oneline'"),
-        ("ws-git diff --stat", "ws-git: diff takes no '--stat'."),
+        ("ws-git log --graph", "ws-git: log takes no '--graph'"),
+        ("ws-git diff --name-only", "ws-git: diff takes no '--name-only'."),
         ("ws-git checkout", "ws-git: checkout takes one ref"),
         ("ws-git show", "ws-git: show takes one ref"),
     ]:

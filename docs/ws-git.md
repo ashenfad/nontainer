@@ -36,11 +36,11 @@ Git's spelling is on the left, what it does here on the right.
 | `unstage <paths>` | drop paths from the index |
 | `commit [-m MSG]` | commit the staged set, or everything modified when nothing is staged |
 | `reset` | abandon the composition and keep the tree. Mixed-only |
-| `status [--porcelain]` | what is staged, what is modified, what a merge left marked |
-| `diff [--cached] [--check] [paths...]` | unified diff against your last commit |
-| `diff <session>` | your tree against another session's last commit, grouped by what that session was sent to do |
+| `status [--porcelain \| -s \| --short]` | what is staged, what is modified, what a merge left marked |
+| `diff [--cached] [--check] [--stat] [[--] paths...]` | unified diff against your last commit; `--stat` a summary per file |
+| `diff <session> [--stat] [[--] paths...]` | what that session changed since the two last met, which is what `merge <session>` brings (git's `A...B`), grouped by what it was sent to do |
 | `diff <tag>` | your tree against the commit a store tag names |
-| `log [-n N] [--all] [-S <string>]` | your own commits, newest first |
+| `log [-n N \| -N] [--oneline] [--all] [-S <string>]` | your own commits, newest first, one line each |
 | `log <session>` | another session's commits |
 | `log <tag>` | the commits the tagged state holds |
 | `show <ref>` | one commit: its message and its diff. A store tag shows the state it names: the commit it stands on, then whatever landed after it |
@@ -622,11 +622,19 @@ so a merge brings all of it back and not only what the delegate wrote.
 Read it, or take the files you want; merge it only if bringing the
 other state in is what you meant.
 
-`ws-git diff <name>` groups its changes by the view the delegate was
-given:
+`ws-git diff <name>` shows what that session changed since the two
+last met: its last commit measured from the merge base, which is what
+`ws-git merge <name>` brings. Your own work since then is not in it. A
+straight comparison of the two trees would show everything you did
+since the fork as if the delegate had undone it, and an agent reading
+one took a merge that would have kept its work for one that reverted
+it. Where you also changed a path the delegate changed, a line says so:
+there the merge combines both sides, or marks a conflict. The diff
+groups the delegate's changes by the view it was given:
 
 ```
 $ ws-git diff polish
+# what polish changed since 3f2a9c1, where the two last met: what `ws-git merge polish` brings
 # 1 path(s) in polish's seed
 diff --git a/auth.py b/auth.py
 --- a/auth.py

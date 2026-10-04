@@ -122,7 +122,7 @@ _USAGE = (
 _SUPPORTED = (
     "supported: stage <paths> (or add <paths> | add -A) | unstage <paths> | "
     "commit [-m MSG] | reset | "
-    "status [--porcelain] | diff [<session>] [--cached] [--check] [paths...] | "
+    "status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | "
     "log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | "
     "checkout <ref> [-- <paths>] | "
     "tag [[-f] <name> [<commit>] | -d <name>] | "
@@ -165,15 +165,17 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     nothing is staged. No -a and no pathspec: what you
                     left out stays in the tree, uncommitted
   reset             abandon the composition and keep the tree
-  status [--porcelain]
+  status [--porcelain | -s | --short]
                     a view: line, a ## merging line while one is
                     outstanding, the staged and modified rows in git's
                     XY columns, then a worktrees: block
-  diff [<session>] [--cached] [--check] [paths...]
+  diff [<session>] [--cached] [--check] [--stat] [[--] paths...]
                     unified diff against your last commit; --cached the
-                    staged set; a session name or a store tag diffs
-                    against that state; --check finds leftover conflict
-                    markers
+                    staged set; --check finds leftover conflict markers;
+                    --stat a summary per file. A session name shows what
+                    that session changed since the two last met, which
+                    is what `merge <session>` brings (git's A...B); a
+                    store tag diffs against the state it names
   log [<session>] [-n N] [--all] [-S <string>]
                     your own commits, newest first; a session name
                     shows that session's and a store tag the tagged
@@ -423,7 +425,8 @@ def _usage_error(detail: str) -> Any:
 
 def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     for flag in rest:
-        if flag != "--porcelain":
+        # -s/--short are git's names for the format this already prints
+        if flag not in ("--porcelain", "-s", "--short"):
             return _usage_error(f"status takes no {flag!r} (porcelain is the default).")
     st = git.status()
     lines: list[str] = []
@@ -1711,16 +1714,43 @@ def _unknown_pathspec(
 def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     cached = False
     check = False
+    stat = False
     words: list[str] = []
+    # git's separator: everything after a bare `--` is a path, so
+    # `diff <session> -- <paths>` and `diff -- <paths>` read as git's do
+    after: list[str] | None = None
     for flag in rest:
-        if flag == "--cached":
+        if after is not None:
+            after.append(flag)
+        elif flag == "--":
+            after = []
+        elif flag == "--cached":
             cached = True
         elif flag == "--check":
             check = True
+        elif flag == "--stat":
+            stat = True
         elif flag.startswith("-"):
             return _usage_error(f"diff takes no {flag!r}.")
         else:
             words.append(flag)
+    if after is not None:
+        if len(words) > 1:
+            return _usage_error("diff takes one ref before --.")
+        ref, words = (words[0] if words else None), after
+        if ref is not None:
+            tagged = _store_tag_ref(ws, ref)
+            if tagged is None and not _is_session(ws, ref):
+                return _usage_error(
+                    f"diff {ref} -- <paths>: {ref!r} is not a session or a store tag."
+                )
+            if cached or check:
+                return _usage_error(
+                    "diff <session> takes no --cached or --check: those "
+                    "read your own composition."
+                )
+            paths = [_abspath(ctx, word) for word in words]
+            return _diff_branch(git, ws, ctx, ref, tagged, paths=paths, stat=stat)
     paths = [_abspath(ctx, word) for word in words]
     # A word that is both a path here and a session elsewhere is the
     # PATH: the pathspec reading is the one that still works when the
@@ -1730,12 +1760,14 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if words and not _names_a_path(git, ws, paths[0]):
         tagged = _store_tag_ref(ws, words[0])
         if tagged is not None or _is_session(ws, words[0]):
-            if len(words) > 1 or cached or check:
+            if cached or check:
                 return _usage_error(
-                    "diff <session> takes no other argument (no pathspec, "
-                    "--cached or --check against another session)."
+                    "diff <session> takes no --cached or --check: those "
+                    "read your own composition."
                 )
-            return _diff_branch(git, ws, ctx, words[0], tagged)
+            return _diff_branch(
+                git, ws, ctx, words[0], tagged, paths=paths[1:], stat=stat
+            )
     if paths:
         unknown = _unknown_pathspec(git, ws, words, paths)
         if unknown is not None:
@@ -1748,7 +1780,8 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         want = {p for p in want if _under_any(p, paths)}
     if not want:
         return None
-    out = _render_diff(ws, sorted(want), git.head_files(), git.working_files())
+    render = _render_stat if stat else _render_diff
+    out = render(ws, sorted(want), git.head_files(), git.working_files())
     if out:
         ctx.stdout.write("\n".join(out) + "\n")
     return None
@@ -1818,47 +1851,133 @@ def _diff_check(
 
 
 def _diff_branch(
-    git: AgentGit, ws: Any, ctx: Any, name: str, tagged: Any = None
+    git: AgentGit,
+    ws: Any,
+    ctx: Any,
+    name: str,
+    tagged: Any = None,
+    *,
+    paths: list[str] | None = None,
+    stat: bool = False,
 ) -> Any:
-    """This session against another session's last commit, or against
-    the commit a store tag names.
+    """What another session changed, or how this one differs from the
+    commit a store tag names.
 
-    Grouped by the OTHER session's view when it has one: what a
+    Against a SESSION it is git's ``A...B``: that session's last commit
+    measured from the commit the two last met at, the base a merge
+    resolves against. That is exactly what ``ws-git merge <name>``
+    brings. Measured from this session's own commit instead, everything
+    this session did since the fork would read as the other one undoing
+    it, and an agent reading such a diff took a merge that would have
+    kept its work for one that reverted it. Paths this session ALSO
+    changed since the base are named, since there the merge combines the
+    two or marks a conflict. Against a store TAG it stays a comparison
+    with this session's last commit: a published state is a fixed
+    point, not a line of work that branched from this one.
+
+    Grouped by the other session's view when it has one: what a
     delegate was sent to do, then what else it touched. The merge takes
     both — the grouping is what keeps the second from going unnoticed.
     """
     provider = ws._provider
     theirs = tagged.commit if tagged is not None else git.source_commit(name)
     ours = git.head or provider.head
-    change = provider.diff(ours, theirs)
+    base = None
+    if tagged is None:
+        find = getattr(provider, "merge_base", None)
+        base = find(ours, theirs) if find is not None else None
+    start = base or ours
+    change = provider.diff(start, theirs)
     changed = sorted(ws._drop_ignored(change.paths))
+    if paths:
+        changed = [p for p in changed if _under_any(p, paths)]
     if not changed:
         return None
+    lines: list[str] = []
+    if base is not None:
+        lines.append(
+            f"# what {name} changed since {base[:7]}, where the two last met: "
+            f"what `ws-git merge {name}` brings"
+        )
+        here = set(ws._drop_ignored(provider.diff(base, ours).paths))
+        both = [p for p in changed if p in here]
+        if both:
+            shown = ", ".join(_show(ws, p) for p in both)
+            lines.append(
+                f"# also changed here since then: {shown} "
+                "(the merge combines both sides, or marks a conflict)"
+            )
     # Read once for both groups below.
-    old = read_files(provider.files_at(ours), changed)
+    old = read_files(provider.files_at(start), changed)
     new = read_files(provider.files_at(theirs), changed)
+    render = _render_stat if stat else _render_diff
     seed = change.seed
     if not seed:
-        body = _render_diff(ws, changed, old, new)
-        if body:
-            ctx.stdout.write("\n".join(body) + "\n")
-        return None
+        lines.extend(render(ws, changed, old, new))
+    else:
 
-    def seeded(path: str) -> bool:
-        return any(path == e or path.startswith(e + "/") for e in seed)
+        def seeded(path: str) -> bool:
+            return any(path == e or path.startswith(e + "/") for e in seed)
 
-    lines: list[str] = []
-    for label, group in (
-        (f"in {name}'s seed", [p for p in changed if seeded(p)]),
-        ("elsewhere", [p for p in changed if not seeded(p)]),
-    ):
-        if not group:
-            continue
-        lines.append(f"# {len(group)} path(s) {label}")
-        lines.extend(_render_diff(ws, group, old, new))
+        for label, group in (
+            (f"in {name}'s seed", [p for p in changed if seeded(p)]),
+            ("elsewhere", [p for p in changed if not seeded(p)]),
+        ):
+            if not group:
+                continue
+            lines.append(f"# {len(group)} path(s) {label}")
+            lines.extend(render(ws, group, old, new))
     if lines:
         ctx.stdout.write("\n".join(lines) + "\n")
     return None
+
+
+def _render_stat(
+    ws: Any, paths: list[str], old: Mapping[str, Any], new: Mapping[str, Any]
+) -> list[str]:
+    """git's ``--stat``: one line per file with its count of changed
+    lines and a bar of ``+`` and ``-``, then a total. Authoring output is
+    left out as in the full diff; a file that is not text is ``Bin``."""
+    paths = [p for p in paths if not ws._ignores(p)]
+    a = read_files(old, paths)
+    b = read_files(new, paths)
+    rows: list[tuple[str, int, int, bool]] = []
+    for path in paths:
+        before, after = a.get(path), b.get(path)
+        try:
+            ta = (before or b"").decode("utf-8")
+            tb = (after or b"").decode("utf-8")
+        except (UnicodeDecodeError, AttributeError):
+            rows.append((_show(ws, path), 0, 0, True))
+            continue
+        plus = minus = 0
+        for line in difflib.unified_diff(ta.splitlines(), tb.splitlines(), lineterm=""):
+            if line.startswith("+") and not line.startswith("+++"):
+                plus += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                minus += 1
+        rows.append((_show(ws, path), plus, minus, False))
+    if not rows:
+        return []
+    width = max(len(r[0]) for r in rows)
+    most = max((r[1] + r[2] for r in rows), default=0)
+    scale = min(1.0, 40 / most) if most else 1.0
+    out = []
+    for show, plus, minus, binary in rows:
+        if binary:
+            out.append(f" {show.ljust(width)} | Bin")
+            continue
+        bar = "+" * round(plus * scale) + "-" * round(minus * scale)
+        out.append(f" {show.ljust(width)} | {plus + minus} {bar}".rstrip())
+    ins = sum(r[1] for r in rows)
+    dels = sum(r[2] for r in rows)
+    n = len(rows)
+    out.append(
+        f" {n} file{'s' if n != 1 else ''} changed, "
+        f"{ins} insertion{'s' if ins != 1 else ''}(+), "
+        f"{dels} deletion{'s' if dels != 1 else ''}(-)"
+    )
+    return out
 
 
 def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
@@ -1871,6 +1990,10 @@ def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         flag = args.pop(0)
         if flag in ("-n", "--max-count") and args and args[0].isdigit():
             limit = int(args.pop(0))
+        elif flag[:1] == "-" and flag[1:].isdigit():
+            limit = int(flag[1:])  # git's -5 for -n 5
+        elif flag == "--oneline":
+            pass  # git's name for the format this already prints
         elif flag == "-S" and args:
             needle = args.pop(0)
         elif flag == "--all":
@@ -1879,7 +2002,7 @@ def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             session = flag
         else:
             return _usage_error(
-                f"log takes no {flag!r} (try: -n N, --all, -S <string>)."
+                f"log takes no {flag!r} (try: -n N, -N, --oneline, --all, -S <string>)."
             )
     if session is not None and session != ws.session:
         other = _other_session(ws, session)

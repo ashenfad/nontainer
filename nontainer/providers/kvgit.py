@@ -1724,6 +1724,13 @@ class KvgitProvider:
             out.add(paths.get(key, key))
         return out
 
+    def merge_base(self, ours: str, theirs: str) -> str | None:
+        """The commit a merge of these two would resolve against, or
+        ``None`` when they share none: what ``ws-git diff <session>``
+        measures the other side's changes from, so the diff shows what a
+        merge would bring."""
+        return self._merge_base(ours, theirs)
+
     def _merge_base(self, ours: str, theirs: str) -> str | None:
         """The commit a three-way merge of these two heads resolves against.
 

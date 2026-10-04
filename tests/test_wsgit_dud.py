@@ -177,7 +177,7 @@ def test_dud_edges_match_local(ws):
         ("ws-git rebase", "ws-git: no rebase here", 1),
         ("ws-git frobnicate", "ws-git: 'frobnicate' is not a ws-git command", 2),
         ("ws-git commit -a", "ws-git: commit stages nothing itself (no -a)", 2),
-        ("ws-git status --short", "ws-git: status takes no '--short'", 2),
+        ("ws-git status --branch", "ws-git: status takes no '--branch'", 2),
     ]:
         r = ws.terminal(cmd)
         assert r.exit_code == code, cmd
