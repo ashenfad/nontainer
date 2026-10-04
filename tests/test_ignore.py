@@ -318,3 +318,63 @@ def test_a_delegate_answers_with_its_own_work_and_not_what_it_inherited(store, w
 
     assert answer.uncommitted is False
     assert answer.changed["seed"] == ("/workspace/app/engine.js",)
+
+
+# -- a fork's base, before its first commit ----------------------------------------
+
+
+@pytest.fixture
+def fork_of(store):
+    parent = store.open("base-parent")
+    register_wsgit(parent)
+    parent.files.write("/workspace/a.txt", "a\n")
+    parent.files.write("/workspace/b.txt", "b\n")
+    parent.files.write("/workspace/c.txt", "c\n")
+    parent.index.commit("seed")
+    kid = parent.fork("base-parent.kid")
+    register_wsgit(kid)
+    yield parent, kid
+    kid.close()
+    parent.close()
+
+
+def test_a_forks_partial_first_commit_puts_the_rest_back_to_its_base(fork_of):
+    """Edits to two inherited files, one staged: the commit holds that
+    one, and the other is the base's in it, neither deleted nor taken."""
+    parent, kid = fork_of
+    kid.files.write("/workspace/a.txt", "a edited\n")
+    kid.files.write("/workspace/b.txt", "b edited\n")
+    assert kid.terminal("ws-git add a.txt && ws-git commit -m a").exit_code == 0
+    assert kid.terminal("ws-git status --porcelain").stdout == " M b.txt\n"
+    commit = kid.index.head
+    assert kid._provider.files_at(commit).keys() >= {
+        "/workspace/a.txt",
+        "/workspace/b.txt",
+    }
+    assert kid.terminal(f"ws-git show {commit[:7]}:b.txt").stdout == "b\n"
+    # merged into the parent, the commit changes a.txt and nothing else
+    kid.terminal("ws-git checkout -- b.txt")
+    kid.close()
+    outcome = parent.merge("base-parent.kid")
+    assert outcome.merged
+    assert parent.files.read("/workspace/a.txt") == b"a edited\n"
+    assert parent.files.read("/workspace/b.txt") == b"b\n"
+    assert parent.files.exists("/workspace/c.txt")
+
+
+def test_a_fork_can_stage_the_deletion_of_an_inherited_file(fork_of):
+    _, kid = fork_of
+    kid.files.remove("/workspace/c.txt")
+    assert kid.terminal("ws-git status --porcelain").stdout == " M c.txt\n"
+    assert kid.terminal("ws-git add c.txt && ws-git commit -m drop").exit_code == 0
+    assert kid.terminal("ws-git status --porcelain").stdout == ""
+    assert not kid.files.exists("/workspace/c.txt")
+
+
+def test_a_fork_puts_an_inherited_file_back_before_its_first_commit(fork_of):
+    _, kid = fork_of
+    kid.files.write("/workspace/a.txt", "oops\n")
+    r = kid.terminal("ws-git checkout -- a.txt")
+    assert r.exit_code == 0, r.stdout + r.stderr
+    assert kid.files.read("/workspace/a.txt") == b"a\n"
+    assert kid.terminal("ws-git status --porcelain").stdout == ""

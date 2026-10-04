@@ -646,7 +646,14 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             return _usage_error("checkout takes one ref before --.")
         if not paths:
             return _usage_error("checkout -- needs at least one path.")
-        ref = _take_ref(git, head[0] if head else "HEAD")
+        want = head[0] if head else "HEAD"
+        if want == "HEAD" and git.head is None and git.base is not None:
+            # Before a fork's first commit there is no HEAD to restore
+            # from, but there is the tree it started from: putting a
+            # path back means putting back what it inherited.
+            ref = git.base
+        else:
+            ref = _take_ref(git, want)
         # Ordinary writes into the tree, which a conflicted merge is
         # still composing: the guard the tree-moving verbs take.
         ws._require_unmerged(git, "checkout -- <paths>")
