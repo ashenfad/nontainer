@@ -379,3 +379,52 @@ def test_a_failure_inside_compaction_never_fails_the_agents_call(tmp_path):
     agent.compression_manager._apply = broken
     run_sync(agent, ["two"], "turn 2")
     assert stored(db, ws)[-1] == ["turn 2", "two"]
+
+
+# -- measuring ---------------------------------------------------------------------
+
+
+def _anthropic_like():
+    """A model whose class descends from one agno's Claude module
+    defines, without needing the anthropic SDK."""
+    base = type("Claude", (Scripted,), {"__module__": "agno.models.anthropic.claude"})
+    return type("BedrockClaude", (base,), {})()
+
+
+def _reply(**usage) -> Message:
+    m = Message(role="assistant", content="ok")
+    m.metrics = MessageMetrics(**usage)
+    return m
+
+
+def test_anthropic_cache_tokens_count_toward_the_request():
+    """Anthropic reports cached input apart from ``input_tokens``; a
+    mostly cached request must still measure as large."""
+    from nontainer.adapters.agno_compaction import _measure
+
+    history = [
+        Message(role="user", content="hi"),
+        _reply(input_tokens=500, cache_read_tokens=90_000, cache_write_tokens=2_000),
+    ]
+    assert _measure(history, None, _anthropic_like()) >= 92_500
+    # elsewhere input_tokens already includes the cached part
+    assert _measure(history, None, Scripted()) < 1_000
+
+
+@PATHS
+def test_a_mostly_cached_claude_request_still_folds(tmp_path, run):
+    ws, db, agent, _ = build(tmp_path, Policy(budget=50_000))
+    agent.model = _anthropic_like()
+    original = agent.model._next
+
+    def cached(messages, kwargs):
+        response = original(messages, kwargs)
+        response.response_usage = MessageMetrics(
+            input_tokens=200, cache_read_tokens=60_000, output_tokens=1
+        )
+        return response
+
+    agent.model._next = cached
+    run(agent, ["one"], "turn 1")
+    run(agent, ["SUMMARY", "two"], "turn 2")
+    assert [f.summary for f in folds(ws)] == ["SUMMARY"]

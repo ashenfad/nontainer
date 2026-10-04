@@ -161,7 +161,7 @@ class CompactingCompression(CompressionManager):
     # -- the work ------------------------------------------------------------
 
     def _compact(self, messages: list[Message]) -> None:
-        tokens = _measure(messages, self._tools)
+        tokens = _measure(messages, self._tools, self._agent_model or self.model)
         before = _size(messages)
         self._apply(messages)
         tokens -= before - _size(messages)
@@ -237,7 +237,9 @@ class CompactingCompression(CompressionManager):
         model = self._agent_model or self.model
         if self.summary_model is None and model is not None:
             request = list(prefix) + [Message(role="user", content=summary_request())]
-            needed = _measure(prefix, self._tools) + estimate_tokens(summary_request())
+            needed = _measure(prefix, self._tools, model) + estimate_tokens(
+                summary_request()
+            )
             if self.policy.fits(needed):
                 try:
                     reply = model.response(
@@ -318,21 +320,54 @@ def _size(messages: list[Message]) -> int:
     return sum(estimate_tokens(_content(m)) + 4 for m in messages)
 
 
-def _measure(messages: list[Message], tools: Any) -> int:
+def _measure(messages: list[Message], tools: Any, model: Any = None) -> int:
     """The request's size in tokens: what the provider reported for the
     latest call that produced one of these messages, plus an estimate
     for everything after it; all estimated when nothing was reported."""
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
-        metrics = getattr(m, "metrics", None)
-        reported = (
-            getattr(metrics, "input_tokens", None) if metrics is not None else None
-        )
+        reported = _reported_input(getattr(m, "metrics", None), model)
         if m.role == "assistant" and reported:
             # the reply itself is input to the next call, as is all after it
-            return int(reported) + _size(messages[i:])
+            return reported + _size(messages[i:])
     tool_text = json.dumps(tools, default=str) if tools else ""
     return _size(messages) + estimate_tokens(tool_text)
+
+
+def _reported_input(metrics: Any, model: Any) -> int:
+    """The whole input a call was charged for.
+
+    Providers disagree on what ``input_tokens`` counts. OpenAI's, and
+    so OpenRouter's, and Gemini's include the tokens read from the
+    prompt cache. Anthropic's count only the uncached part, with cache
+    reads and writes reported beside them, and agno passes those
+    numbers through as they come. Read alone, a mostly cached request
+    there would look small however close it is to the window, and
+    would never fold.
+    """
+    if metrics is None:
+        return 0
+    total = int(getattr(metrics, "input_tokens", 0) or 0)
+    if total and _cache_reported_apart(model):
+        total += int(getattr(metrics, "cache_read_tokens", 0) or 0)
+        total += int(getattr(metrics, "cache_write_tokens", 0) or 0)
+    return total
+
+
+def _cache_reported_apart(model: Any) -> bool:
+    """Whether ``model`` reports cached input apart from ``input_tokens``:
+    agno's Claude, which Bedrock's and Vertex's Claude extend. Checked
+    by module rather than imported, since that needs the anthropic SDK.
+
+    It is the model in use that is asked. After a switch to another
+    provider, the first request is measured from the previous model's
+    report under the new one's rule, and is off by the cached part for
+    that one call.
+    """
+    return any(
+        getattr(cls, "__module__", "") == "agno.models.anthropic.claude"
+        for cls in type(model).__mro__
+    )
 
 
 def _items(messages: list[Message]) -> list[Item]:
