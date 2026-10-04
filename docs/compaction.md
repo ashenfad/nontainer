@@ -1,6 +1,7 @@
 # Compaction
 
-> **Status, 2026-10-03: a design; nothing here is built.** How a long
+> **Status, 2026-10-03: built, unreleased** (`nontainer.compaction`,
+> `nontainer.adapters.agno_compaction`). How a long
 > conversation stays inside the model's context window. Past a token
 > budget, the older turns are replaced, in what the model is sent, by
 > one summary. The person still sees the whole transcript, and the
@@ -79,9 +80,12 @@ The records go in a plane of their own, `__compaction__/`, named in
 
 - **Not inside `__agno__/`.** That plane is the agno adapter's, and
   these records are not agno's.
-- **One key per fold** (`__compaction__/<n>`), never rewritten. The
-  latest is the one in force. Earlier ones stay as history, and also
-  let a reader say what the agent remembered at any commit.
+- **One key per fold** (`__compaction__/fold/000001`, and on), never
+  rewritten. The latest whose anchor is present is the one in force.
+  Earlier ones stay as history, and also let a reader say what the
+  agent remembered at any commit.
+- **Commit:** a fold made during a turn is written then and carried by
+  the turn's next commit, so it lands with the turn that made it.
 - **Merge policy is ours,** like the conversation. A delegate's folds
   describe a delegate's conversation and never merge into its caller.
 - **Rewind:** a checkout to an earlier commit takes the records with
@@ -89,27 +93,29 @@ The records go in a plane of their own, `__compaction__/`, named in
   folded.
 - **Fork with `inherit="full"`** copies runs and records together, so
   the child starts with the parent's summary and the parent's tail.
-- **Fork with `inherit="fresh"`** drops the conversation. A record whose
-  runs no longer exist is ignored (below), so `fresh` drops the records
-  too, in effect, without a special case.
+- **Fork with `inherit="fresh"`** drops the conversation, and the
+  records with it.
 
-A record names runs by id. Run ids are opaque strings to the core:
-agno's are UUIDs, and another harness's can be anything ordered and
-stable.
+A record names the last message it covers by that message's id in the
+harness, its anchor. Ids are opaque strings to the core. agno gives
+every message a UUID, stores it with the run, and keeps it in the
+copies a later run is sent, so the adapter finds the anchor in the
+history it is handed without reading the stored runs. That keeps it
+working over any agno db, not only nontainer's.
 
 ## The record
 
 ```python
 @dataclass(frozen=True)
 class Fold:
-    first: str | None    # first run folded; None = from the start
-    through: str         # last run folded
+    through: str           # id of the last message folded (the anchor)
     summary: str
-    runs: int            # how many runs it covers
-    tokens_before: int   # the request size that triggered it
-    tokens_after: int    # the same request, folded
-    model: str           # what wrote the summary
+    runs: int              # how many turns it covers, earlier folds' included
+    tokens_before: int     # the request size that crossed the budget
+    tokens_after: int      # the same request, folded (estimated)
+    model: str             # what wrote the summary
     at: float
+    first: str | None      # None = from the start; set for chaptering
 ```
 
 Basic compaction always folds from the start, so `first` is `None` and
@@ -117,9 +123,9 @@ each new fold covers everything its predecessor did plus more. `first`
 is there for chaptering: a fold over a range in the middle, with a name
 and a projection, is the same record with `first` set.
 
-**Failing open.** If `through` names a run the conversation does not
-hold (an edit unsaid it, a `fresh` fork dropped it), the record is
-ignored and the full history is sent. A cut in the wrong place would
+**Failing open.** If the anchor is not in the history (an edit unsaid
+that turn), the record is not in force; an earlier fold whose anchor is
+still there takes its place, and with none the full history is sent. A cut in the wrong place would
 hand the model a summary of turns that, as far as the person can see,
 never happened. An over-long request is visible and corrects itself on
 the next fold.
@@ -316,32 +322,44 @@ can hold a range is enough.
   stays in the branch, the person sees all of it, and chaptering's
   browsable originals are the later answer for the agent.
 
-## API sketch
+## API
 
 ```python
 from nontainer.compaction import Policy
 from nontainer.adapters.agno_compaction import CompactingCompression
 
-compression = CompactingCompression(
-    ws,
-    policy=Policy(budget=150_000),
-    on_fold=lambda fold: emit_marker(fold),
-)
 agent = Agent(
     ...,
     db=db,
     add_history_to_context=True,
-    num_history_runs=sys.maxsize,
-    compress_tool_results=True,   # the gate agno calls the manager behind
-    compression_manager=compression,
+    num_history_runs=sys.maxsize,          # every earlier run; agno's default is 3
+    compression_manager=CompactingCompression(
+        ws,
+        Policy(budget=120_000, window=200_000),
+        on_fold=lambda fold: emit_marker(fold),
+    ),
 )
 ```
+
+- **`Policy(budget, window=None)`:** fold once a request reaches
+  `budget` tokens. `window` is the model's context length; with it, a
+  fold whose summary request would not fit is made from a reduced
+  transcript at once, and without it only after the provider refuses
+  the plain request.
+- **`on_fold(fold)`** is called with each new record.
+- **`summary_model=`** writes summaries in place of the agent's own
+  model, from a transcript (so without the prompt cache).
+- agno turns its `compress_tool_results` flag on by itself for this
+  manager; it is the gate agno calls a manager behind. Nothing here
+  compresses a tool result.
+- The adapter needs agno 3.0 or later and says so when imported with an
+  older one.
 
 ```python
 from nontainer.compaction import folds, in_force
 
-in_force(ws)   # -> Fold | None, the record the next request uses
-folds(ws)      # -> list[Fold], oldest first
+folds(ws)                  # -> list[Fold], oldest first
+in_force(ws, message_ids)  # -> Fold | None, the one a history with these ids gets
 ```
 
 ## Where this stands
@@ -351,9 +369,9 @@ folds(ws)      # -> list[Fold], oldest first
 | The studio sends every earlier run (nontainer-studio #78) | merged |
 | The studio drops tool-result compression (nontainer-studio #79) | merged |
 | Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 3.0.1 and 3.0.11, sync and streaming |
-| `__compaction__/` plane and the `Fold` record | not started |
-| Core: policy, view, summary prompt | not started |
-| agno adapter (`CompactingCompression`) | not started |
+| `__compaction__/` plane and the `Fold` record | built (`nontainer/compaction.py`, `planes.py`) |
+| Core: policy, texts, reduce and chunks | built |
+| agno adapter (`CompactingCompression`), with the db backstop | built (`nontainer/adapters/agno_compaction.py`) |
 | Studio: budget, marker event | not started |
 | Chaptering | later; see above |
 

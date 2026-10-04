@@ -38,3 +38,10 @@ a new session: a record that still named the session it was copied
 from is one the adapter refuses to read for the child and refuses to
 write beside, so the child would have no memory and could not store
 its own turns."""
+
+COMPACTION_PREFIX = "__compaction__/"
+"""Compaction's records: one key per fold, never rewritten (see
+``nontainer.compaction`` and docs/compaction.md). A fold describes the
+conversation of the session that made it, so like the conversation it
+never merges into another session, and a fork that drops the
+conversation drops these with it."""

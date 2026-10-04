@@ -619,8 +619,10 @@ pitch; the pitch is the *workspace*.
   conversation are replaced in what the model is sent by one summary,
   recorded in the workspace so rewind and fork carry it; the stored
   conversation and the person's transcript keep everything. A neutral
-  core with a thin adapter per harness, agno's first. Written up in
-  [compaction.md](compaction.md).
+  core with a thin adapter per harness, agno's first. Basic
+  compaction and the agno adapter are built (unreleased); chaptering
+  is the later part. Written up in [compaction.md](compaction.md),
+  with a ledger.
 - **run-ts** — a Node sidecar wrapping
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,
   bridged over an RPC filesystem. The only piece that needs Node;

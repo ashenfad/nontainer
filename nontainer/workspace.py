@@ -64,7 +64,7 @@ from .errors import (
     WorkspaceError,
 )
 from .migrate import legacy_keys
-from .planes import CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
+from .planes import COMPACTION_PREFIX, CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from .protocol import (
     Capabilities,
     CommitInfo,
@@ -2794,8 +2794,8 @@ class Workspace:
         child is narrowed, REMOVED when it is not — a fork of a
         narrowed session that is given the whole tree must not inherit
         its parent's blinkers), the conversation, dropped whole for
-        ``inherit="fresh"`` and rebound to the child for
-        ``inherit="full"``, and the ws-git state, reset for BOTH
+        ``inherit="fresh"`` (with compaction's folds over it) and
+        rebound to the child for ``inherit="full"``, and the ws-git state, reset for BOTH
         inheritances (see ``agentgit.reset_for_fork``: a branch carries
         the workspace, never the agent's composition in progress). The
         first two land as one commit of the child's own, so its head is
@@ -2816,7 +2816,8 @@ class Workspace:
             for key in [
                 k
                 for k in list(kv.keys())
-                if isinstance(k, str) and k.startswith(CONVERSATION_PREFIX)
+                if isinstance(k, str)
+                and k.startswith((CONVERSATION_PREFIX, COMPACTION_PREFIX))
             ]:
                 del kv[key]
                 changed = True

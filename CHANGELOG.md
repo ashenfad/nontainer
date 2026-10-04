@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **Compaction** (`nontainer.compaction`, `nontainer.adapters.agno_compaction`; docs/compaction.md). Past a token budget, every earlier turn of a conversation is replaced, in what the model is sent, by one summary; the run in progress stays as it is. The stored conversation is never rewritten, and the person's transcript keeps everything. Each fold is a record in a new `__compaction__/` plane: a rewind takes it back with the turns it folded, a `full` fork carries it, a `fresh` fork drops it, and a merge never takes another session's. A fold names the last message it covers by id. If an edit has removed that message, an earlier fold still in reach applies, or else the full history is sent.
+  - **The harness-neutral half** is the record, `Policy(budget, window=None)`, the summary texts, and the shrinking and chunking a fold too large for one request needs.
+  - **The agno adapter** is `CompactingCompression`, passed as the agent's `compression_manager` (agno 3.0 or later). Before every model call it applies the fold in force, and folds again when the request is still over budget. It measures the request from the input tokens the provider reported, so no tokenizer is needed. By default the summary is written by the agent's own model, sent the same messages and the same tools with tool calls forbidden, so the request is mostly in the provider's cache.
+  - **A fold that would not fit one request**, by the policy's `window` or because the provider refused it, is written from a transcript with tool output cut down, in chunks if need be. So a session whose single run outgrew the window recovers on the next turn.
+  - It never compresses a tool result, and a failure inside it never fails the agent's own call.
+  - `on_fold` hands the embedder each new record, and `summary_model` puts another model on the summaries.
+- **A session db never stores compaction's messages.** `KvgitSessionDb` drops the summary pair from a run on every path that stores one, even when an agent has turned on agno's `store_history_messages`.
+
 ## 0.8.7 - 2026-10-03
 
 ### Added
