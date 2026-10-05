@@ -1392,3 +1392,30 @@ def test_press_refuses_what_is_not_a_key(chromium_available):
         assert not result.ok and "hold is milliseconds" in result.results[0].error
     finally:
         ws.close()
+
+
+def test_a_run_opened_at_a_busy_goto_page_keeps_its_stale_note(chromium_available):
+    """Opening at a leading goto's page settles it once; a page that never
+    goes quiet gets the stale-risk note on that goto, as an ordinary goto
+    would have."""
+    ws = Workspace(KvgitProvider.open(None, session="s-churn-goto"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/churn.html", CHURN_HTML.encode())
+    ws.files.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+    ws.commit()
+    try:
+        result = rt.test_app([{"goto": "churn.html"}], settle_cap=1.0)
+        assert result.ok, render_test_app(result)
+        assert "did not settle" in (result.results[0].error or "")
+    finally:
+        ws.close()
+
+
+def test_drive_spec_keeps_its_positional_fields():
+    """`DriveSpec` is the documented driver API; `start` is declared last
+    so a spec built by position keeps its viewport where it was."""
+    from nontainer.apps.driver import DriveSpec
+
+    spec = DriveSpec(lambda *a: None, "https://x/", (), 390, 844)
+    assert (spec.width, spec.height, spec.start) == (390, 844, "")

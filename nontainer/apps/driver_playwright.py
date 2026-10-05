@@ -517,7 +517,10 @@ async def _drive(
                 opened = await page.goto(
                     base + spec.start, timeout=spec.load_timeout_ms
                 )
-                await settle(page)
+                # A run opened at its first goto's page owes that goto
+                # the warning a busy page gets, as an ordinary goto
+                # would have attached it.
+                opened_note = await settle(page)
             except Exception as e:
                 await _collect_csp(page)
                 return _report(False, load_error=str(e))
@@ -658,6 +661,7 @@ async def _drive(
                                 "and that it is under the app root)"
                             )
                         value = spec.start
+                        note = opened_note
                     elif "goto" in action:
                         # Policy refusals live on `window`, so harvest
                         # them before the navigation discards the page.
