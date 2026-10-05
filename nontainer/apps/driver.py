@@ -62,15 +62,6 @@ class DriveSpec:
     """The coerced action list, in order. A driver stops at the first
     failure: later actions depend on earlier ones."""
 
-    start: str = ""
-    """The page the run opens, relative to ``base_url``; empty is the
-    app's index. Set when the first action is a ``goto``: the run opens
-    that page instead of loading the index only to leave it, which in a
-    tree with no index yet (a delegate trying its piece before the
-    shell exists) is a 404 in every report. A driver that honours it
-    takes that first ``goto`` as done; one that ignores it loads the
-    index and then goes, as before."""
-
     width: int | None = None
     height: int | None = None
     """Viewport, already resolved from any preset. ``None`` leaves the
@@ -131,6 +122,18 @@ class DriveSpec:
     its origin — an app that hardcoded an absolute path. It is answered
     rather than aborted so the app's own error path can display it, and
     reported as a refusal for the caller to phrase."""
+
+    start: str = ""
+    """The page the run opens, relative to ``base_url``; empty is the
+    app's index. Set when the first action is a ``goto``: the run opens
+    that page instead of loading the index only to leave it, which in a
+    tree with no index yet (a delegate trying its piece before the
+    shell exists) is a 404 in every report. A driver that honours it
+    takes that first ``goto`` as done; one that ignores it loads the
+    index and then goes, as before.
+
+    Declared last, so a caller constructing the spec by position keeps
+    its fields where they were."""
 
 
 @dataclass(frozen=True)
