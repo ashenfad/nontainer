@@ -635,41 +635,12 @@ class AppsConfig:
     JSON, which is why the text refusal suggests asking for Arrow.
 
     Declared last: see ``frontend_notes``."""
-    test_bind: Mapping[str, str] = field(default_factory=dict)
-    """What ``test_app`` binds for a run unless the call says otherwise:
-    ``{"db": "testdb"}`` hands every handler the host object ``testdb``
-    where it reads ``db``, for the requests that run makes and no
-    others. Both are names of host objects the session binds.
-
-    A browser check drives the app the way a person does, so with no
-    binding every check writes into the live store its published
-    versions serve over, and someone has to clean up after each one. A
-    test store as the default leaves the live one alone unless a check
-    asks for it (``bind={}``) — for a migration, say, which a fresh test
-    store cannot show. The handler's code is the code that publishes;
-    only what it is handed changes, as with ws-pytest's
-    ``call(..., db=testdb)``.
-
-    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Validate ``csp_extend`` at construction, where the traceback
         still points at the embedder's own call, rather than shipping a
         malformed directive into a served header (a stray ``;`` or
-        space would splice a new directive into the policy). And
-        ``test_bind``'s shape: two identifiers per entry."""
-        for name, other in dict(self.test_bind).items():
-            if not (
-                isinstance(name, str)
-                and isinstance(other, str)
-                and name.isidentifier()
-                and other.isidentifier()
-                and name != other
-            ):
-                raise ValueError(
-                    "test_bind maps a host object's name to another host "
-                    f"object's name: {name!r} -> {other!r}"
-                )
+        space would splice a new directive into the policy)."""
         if not self.csp_extend:
             return
         if self.csp is not None:
@@ -989,8 +960,8 @@ class AppRuntime:
 
         ``bind={"db": "testdb"}`` runs the page's requests against a
         different host object than the session binds under that name,
-        for this run only; omitted, the run uses ``AppsConfig.test_bind``,
-        and ``bind={}`` uses the real objects (see ``check_bind``)."""
+        for this run only (see ``check_bind``). Nothing is bound unless
+        a run says so."""
         from .testapp import run_test_app
 
         return run_test_app(self, actions, viewport=viewport, **kwargs)

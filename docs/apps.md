@@ -832,16 +832,17 @@ binds; anything else is refused before the browser starts, with the
 names there are. Requests from outside the run (a person on the live
 preview at the same moment) are untouched.
 
-A browser check drives the app the way a person does, so with nothing
-bound every check writes into the live store its published versions
-serve over. `AppsConfig(test_bind={"db": "testdb"})` makes the binding
-the default: a run omitting `bind` uses it, and `bind={}` runs against
-the real objects (after a migration, say, which a fresh test store
-cannot show). The tool's description says which applies, and the result
-says what a run bound (`TestAppResult.bound`), so a check against the
-test store never reads as one against the live store. nontainer does not
-reset or seed the bound object: it is the embedder's, and whatever it
-holds when the run starts is what the page sees.
+Nothing is bound unless a run asks: which names to bind, and when, is
+the embedder's to teach (a studio whose handlers keep state in `db` and
+which binds a test store as `testdb` teaches `bind={"db": "testdb"}` for a
+browser check). The result says what a run bound (`TestAppResult.bound`),
+so a run against a stand-in never reads as one against the real object.
+nontainer does not reset or seed the bound object: it is the embedder's,
+and whatever it holds when the run starts is what the page sees.
+
+`ws-curl` takes the same binding for one request:
+`ws-curl --bind db=testdb -X POST --json '{...}' $APP_ORIGIN/api/x`
+(repeatable), and says what it bound on stderr.
 
 Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,

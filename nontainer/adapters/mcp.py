@@ -291,7 +291,7 @@ def build_server(
 
         @server.tool(
             name="test_app",
-            description=test_app_description(workspace, config=apps.config),
+            description=test_app_description(workspace),
         )
         async def test_app(
             actions: list[dict],

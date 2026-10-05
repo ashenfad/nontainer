@@ -2420,21 +2420,17 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   callable into this dispatch) — and answers a DriveReport.
            #   The invariant: the driver's dispatcher is the dispatcher
            #   the publication will use. See apps.md.
-           max_binary_response_bytes=32_000_000,  # the largest body of
+           max_binary_response_bytes=32_000_000)  # the largest body of
            #   any type max_response_bytes does not cover: images,
            #   octet-stream, the Arrow stream a table return answers
-           #   with. Enforced the same way.
-           test_bind={})  # what test_app binds for a run unless the call
-           #   says: {"db": "testdb"} hands the run's handlers the host
-           #   object `testdb` where they read `db`, so a browser check
-           #   leaves the live store alone. Both names are host objects.
-           #   Fields are declared in this order, so positional
-           #   construction binds them this way.
+           #   with. Enforced the same way. Fields are declared in this
+           #   order, so positional construction binds them this way.
 
 AppRuntime.dispatch(request: Request, *, bind=None) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", bind=None, ...) -> TestAppResult
-# bind: {"name": "other"} for this run's requests only; None takes
-# AppsConfig.test_bind, {} runs against the real objects.
+# bind: {"name": "other"} has handlers read host object `other` where
+# they read `name`, for this run's (or this request's) requests only.
+# Nothing is bound unless asked. ws-curl takes it as --bind NAME=OTHER.
 
 request(method, url, *, body=b"", headers=None) -> Request  # convenience
 

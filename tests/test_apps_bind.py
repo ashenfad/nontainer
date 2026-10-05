@@ -5,14 +5,16 @@ the live store every published version serves over, and every live run
 of an agent ended with a manual DELETE. ``bind={"db": "testdb"}`` hands
 the run's handlers the test store under the name they read; the
 handler's code is the code that publishes, and only what it is handed
-changes. ``AppsConfig.test_bind`` makes that the default.
+changes. ``ws-curl --bind db=testdb`` is the same for one request.
+Nothing is bound unless asked: which names to bind is the embedder's to
+teach.
 """
 
 import pytest
 
 from nontainer import PythonConfig, Workspace
 from nontainer.adapters.render import test_app_description as describe_test_app
-from nontainer.apps import AppsConfig, enable_apps, render_test_app, request
+from nontainer.apps import enable_apps, render_test_app, request
 from nontainer.apps.testapp import check_bind, coerce_bind
 from nontainer.executor import ViewSpec
 from nontainer.executor_dud import _HOST_PRELUDE, _view_program
@@ -73,11 +75,11 @@ def test_a_bound_request_hands_the_handler_the_other_object(stores):
         ws.close()
 
 
-def test_check_bind_takes_the_default_and_the_opt_out(stores):
-    ws, rt = _ws(stores, AppsConfig(test_bind={"db": "testdb"}))
+def test_nothing_is_bound_unless_asked(stores):
+    ws, rt = _ws(stores)
     try:
-        assert check_bind(rt, None) == (("db", "testdb"),)  # the default
-        assert check_bind(rt, {}) == ()  # the real objects
+        assert check_bind(rt, None) == ()
+        assert check_bind(rt, {}) == ()
         assert check_bind(rt, {"testdb": "db"}) == (("testdb", "db"),)
     finally:
         ws.close()
@@ -93,13 +95,6 @@ def test_a_name_the_session_does_not_bind_is_refused_with_the_names_it_does(stor
             check_bind(rt, {"db": "db"})
     finally:
         ws.close()
-
-
-def test_the_config_default_is_two_names_per_entry():
-    with pytest.raises(ValueError, match="test_bind maps"):
-        AppsConfig(test_bind={"db": "db"})
-    with pytest.raises(ValueError, match="test_bind maps"):
-        AppsConfig(test_bind={"db": "test db"})
 
 
 def test_a_tools_bind_argument_may_arrive_as_a_json_string():
@@ -121,14 +116,42 @@ def test_the_guest_program_rebinds_before_the_host_module_is_built():
         _view_program("", {}, ViewSpec(bind=(("db; import os", "testdb"),)))
 
 
-def test_the_description_says_what_a_run_binds():
-    plain = describe_test_app(root="/workspace")
-    assert 'bind={"name": "other"}' in plain
-    defaulted = describe_test_app(
-        root="/workspace", config=AppsConfig(test_bind={"db": "testdb"})
-    )
-    assert "`db` as `testdb`" in defaulted
-    assert "bind={} runs against the real objects" in defaulted
+def test_the_description_names_the_parameter():
+    assert 'bind={"name": "other"}' in describe_test_app(root="/workspace")
+
+
+def test_ws_curl_binds_one_request_and_says_so(stores):
+    ws, rt = _ws(stores)
+    try:
+        r = ws.terminal(
+            'ws-curl --bind db=testdb -X POST --json \'{"name": "amy"}\' '
+            "$APP_ORIGIN/api/names"
+        )
+        assert r.exit_code == 0, r.stderr
+        assert "handlers read db as testdb" in r.stdout + r.stderr
+        assert stores["testdb"].rows == ["amy", "via import"]
+        assert stores["db"].rows == []
+
+        # unbound, as ever: what the session binds
+        r = ws.terminal(
+            'ws-curl -X POST --json \'{"name": "bo"}\' $APP_ORIGIN/api/names'
+        )
+        assert r.exit_code == 0 and "handlers read" not in r.stdout + r.stderr
+        assert stores["db"].rows == ["bo", "via import"]
+    finally:
+        ws.close()
+
+
+def test_ws_curl_refuses_a_bind_it_cannot_honour(stores):
+    ws, rt = _ws(stores)
+    try:
+        r = ws.terminal("ws-curl --bind db $APP_ORIGIN/api/names")
+        assert r.exit_code == 2 and "--bind takes NAME=OTHER" in r.stderr
+        r = ws.terminal("ws-curl --bind db=nope -X POST $APP_ORIGIN/api/names")
+        assert r.exit_code == 2 and "it binds: db, testdb" in r.stderr
+        assert stores["db"].rows == [] and stores["testdb"].rows == []
+    finally:
+        ws.close()
 
 
 PAGE = """<!doctype html><html><body><p id="out">...</p><script>
@@ -140,17 +163,18 @@ fetch('api/names', {method: 'POST', headers: {'content-type': 'application/json'
 
 @pytest.fixture
 def page_ws(chromium_available, stores):
-    ws, rt = _ws(stores, AppsConfig(test_bind={"db": "testdb"}))
+    ws, rt = _ws(stores)
     ws.files.fs.write("/workspace/app/index.html", PAGE.encode())
     ws.commit()
     yield ws, rt
     ws.close()
 
 
-def test_a_browser_run_writes_to_the_test_store_and_says_so(page_ws, stores):
+def test_a_bound_browser_run_writes_to_the_other_store_and_says_so(page_ws, stores):
     ws, rt = page_ws
     result = rt.test_app(
-        [{"assert": "document.getElementById('out').textContent === 'true'"}]
+        [{"assert": "document.getElementById('out').textContent === 'true'"}],
+        bind={"db": "testdb"},
     )
     assert result.ok, render_test_app(result)
     assert stores["testdb"].rows == ["from the page", "via import"]
@@ -159,10 +183,10 @@ def test_a_browser_run_writes_to_the_test_store_and_says_so(page_ws, stores):
     assert "this run's handlers read db as testdb" in render_test_app(result)
 
 
-def test_bind_empty_runs_the_page_against_the_real_objects(page_ws, stores):
+def test_an_unbound_run_uses_what_the_session_binds(page_ws, stores):
     ws, rt = page_ws
     result = rt.test_app(
-        [{"assert": "document.getElementById('out').textContent === 'true'"}], bind={}
+        [{"assert": "document.getElementById('out').textContent === 'true'"}]
     )
     assert result.ok, render_test_app(result)
     assert stores["db"].rows == ["from the page", "via import"]

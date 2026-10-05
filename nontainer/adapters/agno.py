@@ -725,7 +725,7 @@ class WorkspaceTools(Toolkit):
                     content += _media_note(len(shots))
                 return ToolResult(content=content, images=shots or None)
 
-            test_app.__doc__ = test_app_description(self._ws, config=apps.config)
+            test_app.__doc__ = test_app_description(self._ws)
             registered.append(test_app)
 
         self.sessions = None
