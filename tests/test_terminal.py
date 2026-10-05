@@ -161,6 +161,24 @@ def test_python_file(plain_ws):
     assert r.stdout.strip() == "5"
 
 
+def test_a_script_runs_as_main(plain_ws):
+    """`python file.py` runs the file as __main__, every form of it:
+    the usual `if __name__ == "__main__": main()` guard is how scripts
+    are written, and under any other name the script exits 0 having
+    done nothing. A delegate's data generator did exactly that."""
+    plain_ws.files.write(
+        "/workspace/gen.py",
+        "def main():\n    open('/workspace/out.txt', 'w').write('made')\n"
+        "    print('ran', __name__)\n\n"
+        "if __name__ == '__main__':\n    main()\n",
+    )
+    r = plain_ws.terminal("python3 gen.py")
+    assert r and r.stdout.strip() == "ran __main__"
+    assert plain_ws.files.fs.read("/workspace/out.txt") == b"made"
+    for form in ("python -c 'print(__name__)'", "echo 'print(__name__)' | python"):
+        assert plain_ws.terminal(form).stdout.strip() == "__main__"
+
+
 def test_python_stdin_pipe(plain_ws):
     r = plain_ws.terminal("echo 'print(6 * 7)' | python")
     assert r
