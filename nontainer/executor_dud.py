@@ -79,6 +79,7 @@ from .executor import (
     ViewSpec,
     _apply_diff,
     _is_plain_data,
+    _refuse_async_host_methods,
     _refuse_reserved_host_name,
     _refuse_shadowed_host_module,
     _truncate,
@@ -801,6 +802,7 @@ class DudExecutor:
         self._ws_root = "" if context.root == "/" else context.root.rstrip("/")
         cfg = context.python_config
         _refuse_reserved_host_name(cfg)
+        _refuse_async_host_methods(cfg)
         self._packages = self._prepare_config(cfg)
         # Live host objects cross as hostcall proxies behind dud's method
         # allowlist, granted their public methods in _make_session (dud 0.3

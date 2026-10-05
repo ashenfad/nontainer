@@ -327,3 +327,34 @@ async def test_mcp_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
         helper.close()
         ws.close()
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_slow_tool_leaves_the_event_loop_free():
+    """FastMCP runs a sync tool inline on its loop, so a long run_python
+    (or a ws-pytest, or a sessions ask with wait=true) held every other
+    request, ping and notification. The tools run their work on a
+    thread; the loop keeps serving meanwhile."""
+    import asyncio
+
+    ws = make_ws()
+    server = build_server(ws)
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        result = await server.call_tool(
+            "run_python", {"code": "import time\ntime.sleep(1)\nprint('slept')"}
+        )
+    finally:
+        beat.cancel()
+    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+    assert "slept" in text
+    assert ticks >= 10  # the loop ran throughout, not once at the end
+    ws.close()

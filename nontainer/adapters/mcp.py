@@ -21,6 +21,7 @@ agno adapter — see protocol.py's concurrency note).
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -37,6 +38,21 @@ from .render import (
     resolve_tools_mode,
     terminal_description,
 )
+
+
+async def _off_loop(work: "Callable[[], Any]") -> Any:
+    """Run a tool's blocking body on a worker thread.
+
+    FastMCP calls a sync tool inline on its event loop, so a long
+    ``run_python``, a ``ws-pytest`` in the terminal, or a ``sessions``
+    ask with ``wait=true`` held the loop for its whole run, and with it
+    every other request, ping and notification. Every tool here is
+    ``async`` and does its work through this, as ``test_app`` always
+    has. The per-workspace lock the bodies take still serializes calls
+    on one workspace."""
+    import anyio
+
+    return await anyio.to_thread.run_sync(work)
 
 
 def build_server(
@@ -97,16 +113,22 @@ def build_server(
         )
         + resource_note,
     )
-    def terminal(command: str) -> str:
-        with lock:
-            return render_terminal(workspace.terminal(command))
+    async def terminal(command: str) -> str:
+        def work() -> str:
+            with lock:
+                return render_terminal(workspace.terminal(command))
+
+        return await _off_loop(work)
 
     @server.tool(name="file_write", description=FILE_WRITE_DESCRIPTION + resource_note)
-    def file_write(path: str, content: str) -> list:
+    async def file_write(path: str, content: str) -> list:
         import mcp.types as types
 
-        with lock:
-            out = workspace.files.write(path, content)
+        def work() -> Any:
+            with lock:
+                return workspace.files.write(path, content)
+
+        out = await _off_loop(work)
         # Ground-truth artifact handle: the link exists because the
         # write succeeded — clients can fetch it without trusting prose.
         return [
@@ -119,35 +141,41 @@ def build_server(
         ]
 
     @server.tool(name="file_edit", description=FILE_EDIT_DESCRIPTION)
-    def file_edit(
+    async def file_edit(
         path: str, old_string: str, new_string: str, replace_all: bool = False
     ) -> str:
         from ..errors import WorkspaceError
 
-        with lock:
-            try:
-                out = workspace.files.edit(
-                    path, old_string, new_string, replace_all=replace_all
-                )
-            except WorkspaceError as e:
-                return f"edit failed: {e}"
-            if out.mode == "already_applied":
-                return f"no-op: replacement already present in {path}"
-            note = "" if out.mode == "exact" else f" (matched via {out.mode})"
-            return f"replaced {out.count} occurrence(s) in {path}{note}"
+        def work() -> str:
+            with lock:
+                try:
+                    out = workspace.files.edit(
+                        path, old_string, new_string, replace_all=replace_all
+                    )
+                except WorkspaceError as e:
+                    return f"edit failed: {e}"
+                if out.mode == "already_applied":
+                    return f"no-op: replacement already present in {path}"
+                note = "" if out.mode == "exact" else f" (matched via {out.mode})"
+                return f"replaced {out.count} occurrence(s) in {path}{note}"
+
+        return await _off_loop(work)
 
     @server.tool(name="view_image", description=VIEW_IMAGE_DESCRIPTION)
-    def view_image(path: str) -> list:
+    async def view_image(path: str) -> list:
         from mcp.server.fastmcp import Image
 
         from .render import read_workspace_image
 
-        with lock:
-            try:
-                data, fmt = read_workspace_image(workspace, path)
-            except ValueError as e:
-                return [f"view_image failed: {e}"]
-        return [f"{path} ({fmt}, {len(data)} bytes)", Image(data=data, format=fmt)]
+        def work() -> list:
+            with lock:
+                try:
+                    data, fmt = read_workspace_image(workspace, path)
+                except ValueError as e:
+                    return [f"view_image failed: {e}"]
+            return [f"{path} ({fmt}, {len(data)} bytes)", Image(data=data, format=fmt)]
+
+        return await _off_loop(work)
 
     # -- workspace files as MCP resources -------------------------------
     # The outbound artifact channel: any workspace file is readable as
@@ -234,9 +262,12 @@ def build_server(
             )
             + resource_note,
         )
-        def run_python(code: str) -> str:
-            with lock:
-                return render_python(workspace.run_python(code))
+        async def run_python(code: str) -> str:
+            def work() -> str:
+                with lock:
+                    return render_python(workspace.run_python(code))
+
+            return await _off_loop(work)
 
     if sessions is not None:
         from ..sessions import Sessions, run_action
@@ -257,7 +288,7 @@ def build_server(
         # a python keyword, so it can name neither the parameter here
         # nor the argument a model sends. The tool takes the word the
         # host API takes, one spelling everywhere.
-        def sessions_tool(
+        async def sessions_tool(
             action: str,
             task: str = "",
             name: str = "",
@@ -271,16 +302,20 @@ def build_server(
             # and takes the workspace's lock where it touches the
             # workspace, and holding one across a wait=true ask would
             # stall every other tool for as long as the delegate runs.
-            return run_action(
-                helper,
-                action,
-                task=task,
-                name=name,
-                paths=paths,
-                inherit=inherit,
-                fork_from=fork_from,
-                resume=resume,
-                wait=wait,
+            # Off the loop for the same reason: a wait=true ask blocks
+            # for the delegate's whole run.
+            return await _off_loop(
+                lambda: run_action(
+                    helper,
+                    action,
+                    task=task,
+                    name=name,
+                    paths=paths,
+                    inherit=inherit,
+                    fork_from=fork_from,
+                    resume=resume,
+                    wait=wait,
+                )
             )
 
     if apps is not None:

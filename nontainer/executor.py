@@ -245,6 +245,44 @@ shadow it, with nothing said either way.
 """
 
 
+def _refuse_async_host_methods(cfg: PythonConfig) -> None:
+    """Refuse a host object with ``async`` methods, at open, on every
+    rung alike.
+
+    None of them can call one yet, and each failed its own way: in
+    process, agent code got a bare coroutine object back, a value that
+    looks like a result from a call that never ran; under process
+    isolation the coroutine would not pickle; on the dud rung the codec
+    could not carry it. One refusal here, naming the methods, before
+    any code runs. The methods looked at are the public ones the
+    transport would expose (``rpc_surface``). Detection is static, so a
+    wrapped coroutine function not marked with
+    ``inspect.markcoroutinefunction`` slips past.
+    """
+    import inspect
+
+    from sandtrap import rpc_surface
+
+    for name, obj in cfg.host_objects.items():
+        if _is_plain_data(obj):
+            continue
+        methods, _ = rpc_surface(obj)
+        found = [
+            m
+            for m in methods
+            if inspect.iscoroutinefunction(getattr(obj, m, None))
+            or inspect.isasyncgenfunction(getattr(obj, m, None))
+        ]
+        if found:
+            raise ValueError(
+                f"host object {name!r} has async methods ({', '.join(found)}); "
+                "async host methods aren't supported yet. Expose sync methods "
+                "instead (run the coroutine on your own loop, e.g. "
+                "asyncio.run_coroutine_threadsafe(coro, loop).result()), or "
+                "pass a sync facade."
+            )
+
+
 def _refuse_reserved_host_name(cfg: PythonConfig) -> None:
     """Refuse a config whose own names collide with the ``host`` module.
 
@@ -681,6 +719,7 @@ class LocalExecutor:
         self._ctx = context
         cfg = context.python_config
         _refuse_reserved_host_name(cfg)
+        _refuse_async_host_methods(cfg)
         self._sandbox = self._build_sandbox()
         # View calls keep resident workers instead of forking per call.
         # Pooling only means anything where a call would otherwise fork:
