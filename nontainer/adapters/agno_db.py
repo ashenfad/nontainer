@@ -174,6 +174,87 @@ def _run_keys(kv: Any) -> list[str]:
     return [k for k in list(kv.keys()) if k.startswith(RUN_PREFIX)]
 
 
+def _run_rows(record: dict[str, Any], found: dict[str, Any]) -> list[dict[str, Any]]:
+    """The session's runs as agno 3's runs table holds them: one row
+    each (``run_id``, ``session_id``, ``run_type``, ``status``,
+    ``run_index``, ``run_data`` and the rest), built the way agno's own
+    adapters build them, so ``get_run``/``get_runs`` answer in agno's
+    shape. ``run_index`` is the run's place in the session's
+    ``run_ids``. agno 3 only, like the methods that call it."""
+    from agno.db.utils import build_single_run_row
+
+    rows = []
+    for index, rid in enumerate(record.get("run_ids") or []):
+        run = found.get(RUN_PREFIX + str(rid))
+        if isinstance(run, dict):
+            rows.append(
+                build_single_run_row(
+                    run=copy.deepcopy(run),
+                    session_id=record.get("session_id"),
+                    user_id=record.get("user_id"),
+                    run_index=index,
+                )
+            )
+    return rows
+
+
+def _run_out(row: dict[str, Any], deserialize: bool | None) -> Any:
+    """One row as ``get_run`` answers: the row itself, or the run
+    object agno deserializes it into."""
+    if not deserialize:
+        return row
+    from agno.db.utils import deserialize_run
+
+    return deserialize_run(row.get("run_type"), row["run_data"])
+
+
+def _select_runs(
+    rows: list[dict[str, Any]],
+    *,
+    user_id: str | None = None,
+    agent_id: str | None = None,
+    team_id: str | None = None,
+    workflow_id: str | None = None,
+    status: Any = None,
+    limit: int | None = None,
+    page: int | None = None,
+    sort_by: str | None = None,
+    sort_order: str | None = None,
+    deserialize: bool | None = True,
+) -> Any:
+    """``get_runs``' filters, order and pagination, as agno's own
+    ``JsonDb`` applies them, over rows the caller gathered."""
+    from agno.db.json.utils import apply_sorting
+    from agno.db.utils import validate_pagination
+
+    validate_pagination(limit, page)
+    for field, wanted in (
+        ("user_id", user_id),
+        ("agent_id", agent_id),
+        ("team_id", team_id),
+        ("workflow_id", workflow_id),
+    ):
+        if wanted is not None:
+            rows = [r for r in rows if r.get(field) == wanted]
+    if status is not None:
+        value = getattr(status, "value", status)
+        rows = [r for r in rows if r.get("status") == value]
+    total = len(rows)
+    if sort_by is not None:
+        rows = apply_sorting(rows, sort_by, sort_order)
+    else:
+        rows = sorted(
+            rows,
+            key=lambda r: (r.get("session_id") or "", r.get("run_index") or 0),
+        )
+    if limit is not None:
+        start = (page - 1) * limit if page is not None else 0
+        rows = rows[start : start + limit]
+    if not deserialize:
+        return rows, total
+    return [_run_out(row, True) for row in rows]
+
+
 class KvgitSessionDb(JsonDb):
     """agno ``BaseDb`` holding one agent session in one workspace branch.
 
@@ -602,6 +683,109 @@ class KvgitSessionDb(JsonDb):
                 record["run_ids"] = run_ids
                 kv[SESSION_KEY] = record
 
+    # -- runs (agno 3's runs table) ----------------------------------
+    #
+    # agno 3 moved runs out of the session row and gave BaseDb
+    # get_run/get_runs/delete_run/delete_runs. The runs here are the
+    # branch's RUN_PREFIX keys, the ones upsert_run writes, so these read
+    # and remove those. Inherited from JsonDb, they looked for a runs
+    # file under db_path that never exists, answered that no run was
+    # there and reported deletes that removed nothing.
+
+    def _run_ids(self) -> tuple[dict[str, Any] | None, list[str]]:
+        record = self._record()
+        return record, [str(r) for r in (record or {}).get("run_ids") or []]
+
+    def get_run(self, run_id: str, deserialize: bool | None = True, **_: Any) -> Any:
+        """The run, from this branch's runs, or None when it holds no
+        run by that id."""
+        record, run_ids = self._run_ids()
+        if record is None or str(run_id) not in run_ids:
+            return None
+        found = _get_many(_kv(self._ws), [RUN_PREFIX + str(run_id)])
+        rows = [
+            r for r in _run_rows(record, found) if str(r.get("run_id")) == str(run_id)
+        ]
+        return _run_out(rows[0], deserialize) if rows else None
+
+    def _rows(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """This branch's runs as rows, when ``session_id`` is its own or
+        unasked."""
+        record, run_ids = self._run_ids()
+        if record is None or (
+            session_id is not None and record.get("session_id") != session_id
+        ):
+            return []
+        found = _get_many(_kv(self._ws), [RUN_PREFIX + rid for rid in run_ids])
+        return _run_rows(record, found)
+
+    def get_runs(
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        team_id: str | None = None,
+        workflow_id: str | None = None,
+        status: Any = None,
+        limit: int | None = None,
+        page: int | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        deserialize: bool | None = True,
+        **_: Any,
+    ) -> Any:
+        """This branch's runs, filtered, ordered and paginated as agno's
+        own ``JsonDb`` does it."""
+        return _select_runs(
+            self._rows(session_id),
+            user_id=user_id,
+            agent_id=agent_id,
+            team_id=team_id,
+            workflow_id=workflow_id,
+            status=status,
+            limit=limit,
+            page=page,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            deserialize=deserialize,
+        )
+
+    def _delete_runs(self, run_ids: list[str]) -> list[str]:
+        """Remove those of ``run_ids`` this branch holds: their keys and
+        their ids in the session record. Committed when the workspace
+        was clean, as a delete between turns is; otherwise staged with
+        the turn in flight, so a run upserted and then deleted before
+        the turn's commit never lands. The ids it removed.
+
+        A forward change, like deleting a file: the commits before it
+        still hold the run, and a rewind brings it back. A compaction
+        fold anchored in a removed run stops applying, and an earlier
+        one, or the full history, takes its place."""
+        wanted = {str(r) for r in run_ids}
+        with self._ws.lock:
+            record, held = self._run_ids()
+            gone = [rid for rid in held if rid in wanted]
+            if record is None or not gone:
+                return []
+            was_clean = not self._ws.uncommitted
+            kv = _kv(self._ws)
+            for rid in gone:
+                if kv.get(RUN_PREFIX + rid) is not None:
+                    del kv[RUN_PREFIX + rid]
+            record["run_ids"] = [rid for rid in held if rid not in wanted]
+            record["updated_at"] = int(time.time())
+            kv[SESSION_KEY] = record
+            self._commit_management_write("delete_run", was_clean=was_clean)
+            return gone
+
+    def delete_run(self, run_id: str, **_: Any) -> bool:
+        """Remove one run; whether this branch held it."""
+        return bool(self._delete_runs([run_id]))
+
+    def delete_runs(self, run_ids: list[str], **_: Any) -> None:
+        """Remove the runs of ``run_ids`` this branch holds."""
+        self._delete_runs(list(run_ids))
+
     def _commit_management_write(self, tool: str, *, was_clean: bool) -> None:
         """Commit a delete or rename made between turns.
 
@@ -777,6 +961,11 @@ class KvgitStoreDb(JsonDb):
         self._store = store if isinstance(store, Store) else Store(store)
         self._open = open
         self._view_kwargs: dict[str, Any] = {"db_path": db_path, **kwargs}
+        # Sessions this db has written through. Their live workspaces
+        # can hold runs staged since the last commit, which a branch's
+        # committed head does not show, so looking a run up asks them
+        # first (see ``_holder``).
+        self._written: set[str] = set()
 
     def owns(self, workspace: Workspace) -> bool:
         """Whether this db commits the turns of ``workspace``: true when
@@ -816,6 +1005,36 @@ class KvgitStoreDb(JsonDb):
 
     def _view(self, session_id: str) -> KvgitSessionDb:
         return KvgitSessionDb(self._open(session_id), **self._view_kwargs)
+
+    def _write_view(self, session_id: str) -> KvgitSessionDb:
+        """The view a write goes through, remembered so a later run
+        lookup reads that session live (``_holder``)."""
+        self._written.add(session_id)
+        return self._view(session_id)
+
+    def _holder(self, run_id: str) -> str | None:
+        """The session holding run ``run_id``: one this db has written
+        through, read live so a run staged since its last commit is
+        found, else any branch whose committed session record lists it
+        (one key read per branch, as ``get_sessions`` reads). None when
+        no session holds it."""
+        rid = str(run_id)
+        for session_id in sorted(self._written):
+            if self._exists(session_id):
+                _, run_ids = self._view(session_id)._run_ids()
+                if rid in run_ids:
+                    return session_id
+        for branch in self._branches():
+            if branch in self._written:
+                continue
+            record = self._peek(branch, SESSION_KEY)
+            if (
+                isinstance(record, dict)
+                and record.get("session_id") == branch
+                and rid in [str(r) for r in record.get("run_ids") or []]
+            ):
+                return branch
+        return None
 
     # -- sessions ------------------------------------------------------
 
@@ -915,7 +1134,7 @@ class KvgitStoreDb(JsonDb):
         if not session_id:
             raise WorkspaceError("A session without a session_id cannot be stored.")
         if self._exists(session_id):
-            return self._view(session_id).upsert_session(
+            return self._write_view(session_id).upsert_session(
                 session, deserialize=deserialize, **kwargs
             )
 
@@ -933,7 +1152,7 @@ class KvgitStoreDb(JsonDb):
                 # this handle would otherwise be a second one over it.
                 child.close()
 
-        return self._view(session_id).upsert_session(
+        return self._write_view(session_id).upsert_session(
             session, deserialize=deserialize, **kwargs
         )
 
@@ -963,14 +1182,91 @@ class KvgitStoreDb(JsonDb):
     ) -> None:
         if not self._exists(session_id):
             return
-        self._view(session_id).upsert_run(
+        self._write_view(session_id).upsert_run(
             run, session_id, user_id=user_id, run_index=run_index, **kwargs
         )
+
+    # -- runs (agno 3's runs table) ----------------------------------
+
+    def get_run(self, run_id: str, deserialize: bool | None = True, **_: Any) -> Any:
+        """The run, from whichever session holds it (``_holder``), or
+        None. agno 3 asks by run id alone, as AgentOS's session service
+        does."""
+        holder = self._holder(run_id)
+        if holder is None:
+            return None
+        return self._view(holder).get_run(run_id, deserialize=deserialize)
+
+    def get_runs(
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        agent_id: str | None = None,
+        team_id: str | None = None,
+        workflow_id: str | None = None,
+        status: Any = None,
+        limit: int | None = None,
+        page: int | None = None,
+        sort_by: str | None = None,
+        sort_order: str | None = None,
+        deserialize: bool | None = True,
+        **_: Any,
+    ) -> Any:
+        """One session's runs, or with no ``session_id`` every session's,
+        filtered, ordered and paginated as agno's own ``JsonDb`` does
+        it. A session this db has written through is read live; the
+        rest at their committed heads, as ``get_sessions`` reads them."""
+        if session_id is not None:
+            branches = [session_id] if self._exists(session_id) else []
+        else:
+            branches = self._branches()
+        rows: list[dict[str, Any]] = []
+        for branch in branches:
+            if branch in self._written:
+                rows += self._view(branch)._rows()
+                continue
+            record = self._peek(branch, SESSION_KEY)
+            if not isinstance(record, dict) or record.get("session_id") != branch:
+                continue
+            run_ids = [str(r) for r in record.get("run_ids") or []]
+            held = self._peek_many(branch, [RUN_PREFIX + rid for rid in run_ids])
+            rows += _run_rows(record, held)
+        return _select_runs(
+            rows,
+            user_id=user_id,
+            agent_id=agent_id,
+            team_id=team_id,
+            workflow_id=workflow_id,
+            status=status,
+            limit=limit,
+            page=page,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            deserialize=deserialize,
+        )
+
+    def delete_run(self, run_id: str, **_: Any) -> bool:
+        """Remove the run from whichever session holds it; whether one
+        did."""
+        holder = self._holder(run_id)
+        if holder is None:
+            return False
+        return self._write_view(holder).delete_run(run_id)
+
+    def delete_runs(self, run_ids: list[str], **_: Any) -> None:
+        """Remove each run from whichever session holds it."""
+        by_session: dict[str, list[str]] = {}
+        for run_id in run_ids:
+            holder = self._holder(run_id)
+            if holder is not None:
+                by_session.setdefault(holder, []).append(run_id)
+        for holder, ids in by_session.items():
+            self._write_view(holder).delete_runs(ids)
 
     def delete_session(self, session_id: str, user_id: str | None = None) -> bool:
         if not self._exists(session_id):
             return False
-        return self._view(session_id).delete_session(session_id, user_id=user_id)
+        return self._write_view(session_id).delete_session(session_id, user_id=user_id)
 
     def delete_sessions(
         self, session_ids: list[str], user_id: str | None = None
