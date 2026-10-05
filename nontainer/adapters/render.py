@@ -566,6 +566,10 @@ Pass a list of actions, executed in order:
   {"select": ["#selector", val]}  (for <select>; "type" does not work)
   {"read": "#selector"}           {"eval": "js expression"}
   {"assert": "js expression"}     (retries until truthy, ~2s)
+  {"press": "ArrowLeft"}          real key presses, heard wherever the page
+    listens (window, document, an element); a list presses in order,
+    "hold": ms keeps each key down, "on": "#selector" focuses first.
+    Use it rather than dispatching KeyboardEvents from eval.
   {"screenshot": true}            {"wait": ms}
   {"goto": "other.html"}          loads another page of the app. A run
     starts on index.html; the actions after a goto run on that page.

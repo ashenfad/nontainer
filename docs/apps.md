@@ -846,8 +846,19 @@ and whatever it holds when the run starts is what the page sees.
 
 Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,
-`{"assert": js}`, `{"goto": "about.html"}`, `{"screenshot": true}`
-(optionally with `"grid"` and `"label"`, below), `{"wait": ms}`.
+`{"assert": js}`, `{"press": key}`, `{"goto": "about.html"}`,
+`{"screenshot": true}` (optionally with `"grid"` and `"label"`, below),
+`{"wait": ms}`.
+
+`press` sends real key events through the browser's keyboard
+(Playwright key names: `"ArrowLeft"`, `" "`, `"Enter"`, `"a"`). They reach
+the focused element and bubble to `document` and `window`, so a page
+hears them wherever it listens, which a `KeyboardEvent` dispatched from
+`eval` does not: it reaches only the target it is dispatched on, and a
+game listening on `window` never hears one sent to `document`. A list
+presses keys in order; `"hold": ms` keeps each key down that long (a
+ship that moves while the arrow is held); `"on": selector` focuses an
+element first.
 
 `viewport` is a preset (`"desktop"` 1280×800, `"tablet"`, `"mobile"`,
 `"hd"` 1920×1080), a size as `"WIDTHxHEIGHT"`, or `{"width": W,

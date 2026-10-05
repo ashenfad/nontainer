@@ -655,6 +655,39 @@ async def _drive(
                             )
                         note = await settle(page)
                         value = target
+                    elif "press" in action:
+                        # Real key events, through the browser's own
+                        # keyboard: they go to the focused element and
+                        # bubble to document and window, so a page hears
+                        # them wherever it listens. A KeyboardEvent
+                        # dispatched from eval reaches only the target it
+                        # is dispatched on, and agents kept dispatching
+                        # on document for games listening on window.
+                        keys = action["press"]
+                        keys = [keys] if isinstance(keys, str) else list(keys)
+                        if not keys or not all(isinstance(k, str) and k for k in keys):
+                            raise ValueError(
+                                'press takes a key or a list of keys, like "ArrowLeft", '
+                                '" " or ["ArrowUp", "Enter"] (Playwright key names)'
+                            )
+                        hold = int(action.get("hold", 0) or 0)
+                        if hold < 0 or hold > spec.action_timeout_ms:
+                            raise ValueError(
+                                f"hold is milliseconds, 0 to {spec.action_timeout_ms}"
+                            )
+                        if action.get("on"):
+                            await page.focus(
+                                action["on"], timeout=spec.action_timeout_ms
+                            )
+                        for key in keys:
+                            if hold:
+                                await page.keyboard.down(key)
+                                await page.wait_for_timeout(hold)
+                                await page.keyboard.up(key)
+                            else:
+                                await page.keyboard.press(key)
+                        note = await settle(page)
+                        value = " ".join(keys)
                     elif "wait" in action:
                         await page.wait_for_timeout(int(action["wait"]))
                     else:

@@ -1333,3 +1333,62 @@ def test_a_failed_request_is_named_in_the_report(chromium_available):
         assert "[failed requests]\nGET missing.js -> 404" in render_test_app(result)
     finally:
         ws.close()
+
+
+KEYS_PAGE = b"""<!doctype html><html><body>
+<p id="log"></p><input id="field">
+<script>
+const log = [];
+let held = 0, down = 0;
+window.addEventListener('keydown', e => {
+  if (!e.repeat) { log.push(e.key); down = performance.now(); }
+  document.getElementById('log').textContent = log.join(',');
+});
+window.addEventListener('keyup', e => { held = performance.now() - down; window.held = held; });
+document.getElementById('field').addEventListener('keydown', e => { window.fieldKey = e.key; });
+</script></body></html>"""
+
+
+def test_press_sends_real_keys_a_window_listener_hears(chromium_available):
+    """A game listening on window never heard a KeyboardEvent an agent
+    dispatched on document from eval, and delegate after delegate
+    rediscovered that. press goes through the browser's keyboard."""
+    ws = Workspace(KvgitProvider.open(None, session="keys"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", KEYS_PAGE)
+    ws.commit()
+    try:
+        result = rt.test_app(
+            [
+                {"press": "ArrowLeft"},
+                {"press": [" ", "Enter"]},
+                {
+                    "assert": "document.getElementById('log').textContent === 'ArrowLeft, ,Enter'"
+                },
+                {"press": "ArrowRight", "hold": 300},
+                {"assert": "window.held >= 250"},
+                {"press": "a", "on": "#field"},
+                {"assert": "window.fieldKey === 'a'"},
+            ]
+        )
+        assert result.ok, render_test_app(result)
+        assert result.results[1].value == "  Enter"  # what was pressed
+    finally:
+        ws.close()
+
+
+def test_press_refuses_what_is_not_a_key(chromium_available):
+    ws = Workspace(KvgitProvider.open(None, session="keys2"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", KEYS_PAGE)
+    ws.commit()
+    try:
+        result = rt.test_app([{"press": []}])
+        assert not result.ok
+        assert "press takes a key" in result.results[0].error
+        result = rt.test_app([{"press": "a", "hold": -5}])
+        assert not result.ok and "hold is milliseconds" in result.results[0].error
+    finally:
+        ws.close()
