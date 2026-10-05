@@ -499,9 +499,9 @@ _OPEN_HTTPS_TYPES = ("image", "xhr", "fetch", "stylesheet", "font")
 
 
 def coerce_bind(bind: Any) -> "dict[str, str] | None":
-    """A tool's ``bind`` argument as a mapping, or ``None`` for "the
-    embedder's default". Models send an object as a JSON string as
-    often as not, so a string is parsed rather than refused."""
+    """A tool's ``bind`` argument as a mapping, or ``None`` for none.
+    Models send an object as a JSON string as often as not, so a string
+    is parsed rather than refused."""
     if bind is None or (isinstance(bind, str) and not bind.strip()):
         return None
     if isinstance(bind, str):
@@ -519,11 +519,12 @@ def coerce_bind(bind: Any) -> "dict[str, str] | None":
 def check_bind(
     runtime: "AppRuntime", bind: "Mapping[str, str] | None"
 ) -> tuple[tuple[str, str], ...]:
-    """The binding a run uses: ``bind`` as given, or the embedder's
-    ``AppsConfig.test_bind`` when the call gives none, checked against
-    the host objects the session binds. A name nothing binds is refused
-    before the browser starts, with the names there are."""
-    chosen = runtime.config.test_bind if bind is None else bind
+    """``bind`` as a run's binding, checked against the host objects
+    the session binds: what test_app and ``ws-curl --bind`` hand a
+    handler in place of what. Nothing is bound unless asked; which
+    names to bind, and when, is the embedder's to teach. A name nothing
+    binds is refused before anything runs, with the names there are."""
+    chosen = bind or {}
     have = set(runtime.workspace.runtime.python_config.host_objects)
     known = ", ".join(sorted(have)) or "nothing"
     out = []

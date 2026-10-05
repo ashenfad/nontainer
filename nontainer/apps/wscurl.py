@@ -57,7 +57,8 @@ _REFUSED_VALUED = {
 }
 
 _SUPPORTED = (
-    "supported: -X -d/--data --json -H -A -i -o -w -f -L (plus silent "
+    "supported: -X -d/--data --json -H -A -i -o -w -f -L --bind NAME=OTHER "
+    "(plus silent "
     "no-ops: -s -S -k -g --compressed -4 -6) — this command dispatches "
     "straight into the workspace app; there is no network"
 )
@@ -121,6 +122,7 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
         write_fmt = None
         fail = False
         follow = False
+        bind: dict[str, str] = {}
 
         args = list(ctx.args)
         i = 0
@@ -158,6 +160,18 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             elif a in ("-i", "--include"):
                 include_headers = True
                 i += 1
+            elif a == "--bind" and i + 1 < len(args):
+                # handlers read the host object OTHER where they read
+                # NAME, for this request (test_app's bind, in curl's
+                # shape); repeatable
+                name, eq, other = args[i + 1].partition("=")
+                if not eq:
+                    return CommandResult(
+                        exit_code=2,
+                        stderr=f"ws-curl: --bind takes NAME=OTHER, not {args[i + 1]!r}\n",
+                    )
+                bind[name.strip()] = other.strip()
+                i += 2
             elif a in ("-o", "--output") and i + 1 < len(args):
                 out_file = args[i + 1]
                 i += 2
@@ -224,14 +238,33 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
             notes.append(
                 f"ws-curl: prefer {origin}/api/... over bare paths (deprecated)"
             )
+        # Unbound, the request is what it always was; a binding asked
+        # for is checked first, so a name nothing binds is refused
+        # before the handler runs.
+        binding: tuple[tuple[str, str], ...] = ()
+        if bind:
+            from .testapp import check_bind
+
+            try:
+                binding = check_bind(runtime, bind)
+            except ValueError as e:
+                return CommandResult(exit_code=2, stderr=f"ws-curl: {e}\n")
+        if binding:
+            # said every time, so a bound request never reads as one
+            # against what the session binds
+            swaps = ", ".join(f"{n} as {o}" for n, o in binding)
+            notes.append(f"ws-curl: handlers read {swaps}")
         explicit_method = method is not None
         if method is None:
             method = "POST" if body else "GET"
 
         hops = 0
         while True:
-            resp = runtime.dispatch(
-                make_request(method, url, body=body, headers=headers)
+            request = make_request(method, url, body=body, headers=headers)
+            resp = (
+                runtime.dispatch(request, bind=dict(binding))
+                if binding
+                else runtime.dispatch(request)
             )
             # The agent's next move after curl is `tail api.log`, and this
             # call is already inside a tool call that will commit — so
@@ -323,7 +356,8 @@ def make_curl_command(runtime: "AppRuntime") -> Any:
 
     curl.__doc__ = (
         "Test your app's endpoints without a server: "
-        "ws-curl [-X METHOD] [-d BODY] [-i] [-o FILE] [-w '%{http_code}'] URL "
+        "ws-curl [-X METHOD] [-d BODY] [-i] [-o FILE] [-w '%{http_code}'] "
+        "[--bind NAME=OTHER] URL "
         "(e.g. ws-curl $APP_ORIGIN/api/scores?limit=3)"
     )
     # Tags OUR registration and carries the ferry spec: the dud relay
