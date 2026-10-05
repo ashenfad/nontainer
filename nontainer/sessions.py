@@ -1182,7 +1182,8 @@ class Sessions:
     def _changed(self, base: str | None, child: "Workspace") -> dict:
         """The child's changed paths, grouped seed vs elsewhere.
 
-        The fork point against the child's head, read through the
+        Where the parent and child last met (the fork point, until the
+        parent merges the child) against the child's head, read through the
         PARENT — one store, so a commit on either branch is legible
         from both — and grouped the way ``WorkspaceDiff`` groups:
         under what the child was seeded with, and everywhere else. A
@@ -1193,7 +1194,20 @@ class Sessions:
         if base is None or head is None:
             return {"seed": (), "elsewhere": ()}
         with self._ws.lock:
-            diff = self._ws.diff(base, head)
+            # From where the two last met, when that is since the fork:
+            # a resumed delegate whose earlier answer was merged would
+            # otherwise list that work again as what this task changed
+            # (the base `ws-git diff <name>` and a merge use). A meeting
+            # point that is not past the fork — a child forked from
+            # another session's state shares little or nothing with
+            # this one — leaves the fork point, which is ITS start.
+            start = base
+            find = getattr(self._ws.provider, "merge_base", None)
+            if find is not None:
+                met = find(self._ws.head, head)
+                if met and met != base and find(base, met) == base:
+                    start = met
+            diff = self._ws.diff(start, head)
         return {
             "seed": tuple(sorted(diff.in_seed)),
             "elsewhere": tuple(sorted(diff.elsewhere)),
