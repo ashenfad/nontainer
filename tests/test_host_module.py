@@ -475,3 +475,47 @@ def test_the_module_refuses_patch_object():
         assert "AttributeError" in r.error
     finally:
         w.close()
+
+
+# -- async host methods are refused at open, on every rung ---------------------
+
+
+class AsyncDb:
+    """A host object with async methods, which no rung can call yet."""
+
+    async def fetch(self, q):
+        return q
+
+    async def stream(self):
+        yield 1
+
+    def query(self, n):
+        return n
+
+
+ASYNC_REFUSAL = r"host object 'db' has async methods \(fetch, stream\)"
+
+
+def test_async_host_methods_are_refused_at_open_locally(request, iso):
+    """In process, agent code got a bare coroutine back from a call that
+    never ran; under process isolation it would not pickle. Every
+    isolation level refuses the object the same way, before any code."""
+    with pytest.raises(ValueError, match=ASYNC_REFUSAL):
+        Workspace(
+            KvgitProvider.open(None, session=_session(f"async-{iso}", request.node)),
+            python=PythonConfig(isolation=iso, host_objects={"db": AsyncDb()}),
+        )
+
+
+def test_async_host_methods_are_refused_at_open_on_dud(request):
+    with pytest.raises(ValueError, match=ASYNC_REFUSAL):
+        _dud_ws(_session("async-dud", request.node), host_objects={"db": AsyncDb()})
+
+
+def test_a_sync_host_object_still_opens(request, iso):
+    w = _local_ws(_session(f"sync-{iso}", request.node), iso, host_objects={"db": Db()})
+    try:
+        r = w.run_python("from host import db\nout = db.query(1)")
+        assert r.error is None and r.namespace["out"] == ["ann"]
+    finally:
+        w.close()

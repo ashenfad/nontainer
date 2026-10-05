@@ -7,7 +7,8 @@ Design notes (see ``docs/design.md``):
   VFS imports), and files (artifacts). No resident interpreter state.
 - **Sync core.** termish and kvgit are synchronous (sandtrap is NOT
   the constraint — it has ``aexec()``); async harnesses wrap calls in
-  ``asyncio.to_thread`` (the adapters do this). A workspace is
+  ``asyncio.to_thread`` (both adapters do this: agno's async tools and
+  MCP's, which run every tool body on a worker thread). A workspace is
   single-writer and enforces it: mutating calls hold an internal
   ``RLock``, so a harness that threads parallel tool calls onto one
   session serializes safely (each call atomic + committed) instead
