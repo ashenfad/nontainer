@@ -286,6 +286,41 @@ def test_changed_groups_seed_and_elsewhere(parent, store):
     assert sessions.list()[0].changed == answer.changed
 
 
+def test_a_resumed_answer_lists_only_what_is_new_since_the_merge(parent, store):
+    """Sent back after its first answer was merged, a delegate's next
+    answer names what THIS task changed: measured from where the two
+    last met, as `ws-git diff <name>` and a merge are. From the fork
+    point, the merged work came back listed as changed again, and the
+    parent had to diff by hand to find the real delta."""
+
+    class ByTask(Scripted):
+        def run(self, session, task, *, budget=None):
+            self.writes = {"/workspace/" + task: task + "\n"}
+            return super().run(session, task, budget=budget)
+
+    with Sessions(parent, ByTask(store, {})) as sessions:
+        first = sessions.ask("api.py", wait=True)
+        assert first.changed["seed"] == ("/workspace/api.py",)
+        assert parent.merge(first.branch).merged
+        second = sessions.ask("export.py", resume=first.branch, wait=True)
+    assert second.changed == {"seed": ("/workspace/export.py",), "elsewhere": ()}
+
+
+def test_an_unmerged_resume_still_lists_everything_since_the_fork(parent, store):
+    """Nothing merged, nothing met since the fork: all of it is new to
+    the parent, and all of it is listed."""
+
+    class ByTask(Scripted):
+        def run(self, session, task, *, budget=None):
+            self.writes = {"/workspace/" + task: task + "\n"}
+            return super().run(session, task, budget=budget)
+
+    with Sessions(parent, ByTask(store, {})) as sessions:
+        first = sessions.ask("api.py", wait=True)
+        second = sessions.ask("export.py", resume=first.branch, wait=True)
+    assert second.changed["seed"] == ("/workspace/api.py", "/workspace/export.py")
+
+
 def test_a_child_with_the_whole_tree_reports_everything_as_seed(parent, store):
     runner = Scripted(store, {"/workspace/main.py": "print('x')\n"})
     with Sessions(parent, runner) as sessions:

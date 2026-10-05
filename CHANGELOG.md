@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **A script run from the terminal runs as `__main__`.** `python file.py` (and `-c`, and a piped program) ran with the sandbox's module name, so the usual `if __name__ == "__main__": main()` guard skipped `main()`, and the script exited 0 having done nothing. A delegate's data generator wrote no files that way, and the next step failed on a missing parquet. `run_python` and app handlers are unchanged.
 - **`sessions` takes `action="resume"`.** The description teaches `resume=<name>`, and a model filling in an `action` wrote `action="resume"`, which was refused as an unknown action. The agent then sent work back by forking a second delegate from the first one's commit. It is now the ask that continues the delegate named in `name` or `resume`. The unknown-action refusal names the spelling too.
+- **A resumed delegate's answer lists what that task changed.** An answer's changed paths were measured from the delegate's fork point. After the parent merged a first answer and sent the delegate back, the second answer listed the first round's files again as "changed, in what you sent it to do", and the parent had to diff by hand for the real delta. They are now measured from where the two last met, the base `ws-git diff <name>` and a merge use. Until the parent merges, that is still the fork point.
 
 ## 0.8.10 - 2026-10-04
 
