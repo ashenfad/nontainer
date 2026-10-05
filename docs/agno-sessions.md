@@ -62,6 +62,35 @@ every path here that stores a run (the session upsert, agno 3's
 `upsert_run`, a seeded fork) drops the messages compaction marks as
 its own, whatever the agent's settings.
 
+## agno 3's run methods
+
+agno 3 moved runs out of the session row and gave its databases
+`get_run`, `get_runs`, `delete_run` and `delete_runs`. Here they read
+and remove the branch's `__agno__/runs/` keys, the ones `upsert_run`
+writes:
+
+- `get_run(run_id)` and `get_runs(...)` answer in agno's shape: a run
+  object, or with `deserialize=False` the row agno's own adapters
+  build. `run_index` is the run's place in the session. `get_runs`
+  applies agno's filters, order and pagination.
+- `delete_run(run_id)` and `delete_runs(ids)` drop the run keys and
+  their ids from the session record. That's a forward change, like
+  deleting a file: the commits before it still hold the runs, and a
+  rewind brings them back. Between turns the delete is committed, as
+  `delete_session` is. During a turn it is staged with the turn, so a
+  run upserted and then deleted before the turn's commit never lands.
+- A compaction fold anchored in a deleted run stops applying, and an
+  earlier one, or the full history, takes its place.
+
+`KvgitStoreDb` answers these by run id alone, as agno 3 and AgentOS
+ask. It finds the session holding the run: first among the sessions
+it has written through, read live so a staged run is found, then in
+each branch's committed session record, one key read per branch, as
+`get_sessions` reads. `get_runs` without a `session_id` gathers every
+session's runs the same way.
+
+agno 2 has no runs table, so none of this applies there.
+
 ## One session per workspace
 
 A `KvgitSessionDb` is constructed from one workspace and holds
