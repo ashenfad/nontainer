@@ -1002,6 +1002,11 @@ class LocalExecutor:
                     )
                 else:
                     namespace[name] = obj
+            # A view's bindings: one host object handed over under
+            # another's name, before the host module is built from the
+            # namespace, so the import and the bare name agree.
+            for name, other in view.bind if view is not None else ():
+                namespace[name] = namespace[other]
 
             # Cache injection mirrors _build_sandbox's rpc-handler choice:
             # a read-only view gets the read-only wrapper (in-process) or

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **test_app can run a page against a test store.** `test_app(actions, bind={"db": "testdb"})` hands the run's handlers the host object `testdb` where they read `db`, by bare name and through `from host import db` alike, for the requests that run makes and no others. The handler's code is unchanged, as with ws-pytest's `call(..., db=testdb)`. `AppsConfig(test_bind=...)` makes a binding the default, and `bind={}` runs against the real objects. Names the session does not bind are refused with the ones it does, and the result says what was bound (`TestAppResult.bound`). The tool parameter is on both adapters, and the description names the default. In every live run of a delegated build, each browser check wrote into the live `db` the published app serves over and ended with a manual `DELETE`. `ViewSpec.bind` carries the binding to both executors, and `AppRuntime.dispatch` takes `bind=`.
+
 ### Fixed
 - **A script run from the terminal runs as `__main__`.** `python file.py` (and `-c`, and a piped program) ran with the sandbox's module name, so the usual `if __name__ == "__main__": main()` guard skipped `main()`, and the script exited 0 having done nothing. A delegate's data generator wrote no files that way, and the next step failed on a missing parquet. `run_python` and app handlers are unchanged.
 - **`sessions` takes `action="resume"`.** The description teaches `resume=<name>`, and a model filling in an `action` wrote `action="resume"`, which was refused as an unknown action. The agent then sent work back by forking a second delegate from the first one's commit. It is now the ask that continues the delegate named in `name` or `resume`. The unknown-action refusal names the spelling too.

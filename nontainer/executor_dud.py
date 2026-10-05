@@ -446,7 +446,14 @@ def _view_program(
     # whole of this prefix, and the result puts them back. That is
     # the number the api.log traceback shows an agent reading its
     # own handler.
-    prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + _HOST_PRELUDE
+    # A view's bindings (ViewSpec.bind) rebind the guest global before
+    # the host prelude builds the module from the globals, so the
+    # import and the bare name are the same object.
+    for pair in view.bind:
+        if not all(isinstance(n, str) and n.isidentifier() for n in pair):
+            raise ValueError(f"a view binding is two host object names: {pair!r}")
+    rebind = "".join(f"{name} = globals()[{other!r}]\n" for name, other in view.bind)
+    prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + rebind + _HOST_PRELUDE
     full = prefix + code + _VIEW_EPILOGUE
     return full, {"__nt_blob": blob, "__nt_boot": boot}, prefix.count("\n")
 

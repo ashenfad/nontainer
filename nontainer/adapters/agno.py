@@ -690,18 +690,28 @@ class WorkspaceTools(Toolkit):
             # pydantic layer would reject it on the annotation BEFORE the
             # coerce_* helpers get their chance
             def test_app(
-                actions: "list[dict] | str", viewport: "str | dict" = "desktop"
+                actions: "list[dict] | str",
+                viewport: "str | dict" = "desktop",
+                bind: "dict | str | None" = None,
             ) -> ToolResult:
                 """Verify the app headlessly."""
-                from ..apps.testapp import coerce_actions, coerce_viewport
+                from ..apps.testapp import (
+                    coerce_actions,
+                    coerce_bind,
+                    coerce_viewport,
+                )
 
                 try:
                     actions = coerce_actions(actions)
                     viewport = coerce_viewport(viewport)
+                    binding = coerce_bind(bind)
                 except ValueError as e:
                     return ToolResult(content=f"test_app failed: {e}")
                 with self._lock:
-                    result = apps.test_app(actions, viewport=viewport)
+                    try:
+                        result = apps.test_app(actions, viewport=viewport, bind=binding)
+                    except ValueError as e:
+                        return ToolResult(content=f"test_app failed: {e}")
                     shots = (
                         [
                             Image(content=self._ws.files.fs.read(p), format="png", id=p)
@@ -715,7 +725,7 @@ class WorkspaceTools(Toolkit):
                     content += _media_note(len(shots))
                 return ToolResult(content=content, images=shots or None)
 
-            test_app.__doc__ = test_app_description(self._ws)
+            test_app.__doc__ = test_app_description(self._ws, config=apps.config)
             registered.append(test_app)
 
         self.sessions = None

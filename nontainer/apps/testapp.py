@@ -35,8 +35,10 @@ stack frame, the screenshot files — take it one at a time.
 from __future__ import annotations
 
 import asyncio
+import json
 import posixpath
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -464,6 +466,11 @@ class TestAppResult:
 
     load_error: str | None = None
 
+    bound: tuple[tuple[str, str], ...] = ()
+    """The run's binding (``check_bind``): what its requests' handlers
+    read in place of what. Reported so a run against a test store
+    never passes for one against the live one."""
+
     def __bool__(self) -> bool:
         return self.ok
 
@@ -491,15 +498,62 @@ def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
 _OPEN_HTTPS_TYPES = ("image", "xhr", "fetch", "stylesheet", "font")
 
 
-def _serve(runtime: "AppRuntime", csp: str) -> Any:
+def coerce_bind(bind: Any) -> "dict[str, str] | None":
+    """A tool's ``bind`` argument as a mapping, or ``None`` for "the
+    embedder's default". Models send an object as a JSON string as
+    often as not, so a string is parsed rather than refused."""
+    if bind is None or (isinstance(bind, str) and not bind.strip()):
+        return None
+    if isinstance(bind, str):
+        try:
+            bind = json.loads(bind)
+        except ValueError as e:
+            raise ValueError(f'bind must be an object like {{"db": "testdb"}}: {e}')
+    if not isinstance(bind, Mapping):
+        raise ValueError(
+            f'bind must be an object like {{"db": "testdb"}}, not {type(bind).__name__}'
+        )
+    return dict(bind)
+
+
+def check_bind(
+    runtime: "AppRuntime", bind: "Mapping[str, str] | None"
+) -> tuple[tuple[str, str], ...]:
+    """The binding a run uses: ``bind`` as given, or the embedder's
+    ``AppsConfig.test_bind`` when the call gives none, checked against
+    the host objects the session binds. A name nothing binds is refused
+    before the browser starts, with the names there are."""
+    chosen = runtime.config.test_bind if bind is None else bind
+    have = set(runtime.workspace.runtime.python_config.host_objects)
+    known = ", ".join(sorted(have)) or "nothing"
+    out = []
+    for name, other in dict(chosen).items():
+        for word in (name, other):
+            if not isinstance(word, str) or word not in have:
+                raise ValueError(
+                    f"bind {name!r} -> {other!r}: {word!r} is not a host object "
+                    f"this session binds (it binds: {known})"
+                )
+        if name == other:
+            raise ValueError(f"bind {name!r} -> {other!r} binds a name to itself")
+        out.append((name, other))
+    return tuple(sorted(out))
+
+
+def _serve(
+    runtime: "AppRuntime", csp: str, bind: tuple[tuple[str, str], ...] = ()
+) -> Any:
     """How the app is served for a run: the same ``dispatch`` the curl
     builtin and the published router use. This is the invariant the
     driver seam is for — what verifies green is served by the code that
-    will serve the visitor."""
+    will serve the visitor. ``bind`` is the run's binding, applied to
+    its own requests only (see ``check_bind``)."""
+    binding = dict(bind)
 
     def serve(method: str, url: str, body: bytes, headers: Any) -> Any:
         wire = runtime.dispatch(
-            make_request(method, url, body=body, headers=filter_headers(headers))
+            make_request(method, url, body=body, headers=filter_headers(headers)),
+            bind=binding,
         )
         # Verification must see the wire the router would produce, so
         # the same response-header allowlist applies: a handler setting
@@ -532,6 +586,7 @@ def build_spec(
     action_timeout_ms: int = 5_000,
     assert_timeout_ms: int = 2_000,
     settle_cap: float = 5.0,
+    bind: tuple[tuple[str, str], ...] = (),
 ) -> DriveSpec:
     """Everything one run has been decided to be, before a browser is
     involved."""
@@ -550,7 +605,7 @@ def build_spec(
         dict.fromkeys((*runtime.config.script_hosts, *csp_script_origins(csp)))
     )
     return DriveSpec(
-        serve=_serve(runtime, csp),
+        serve=_serve(runtime, csp, bind),
         base_url=_BASE_URL,
         actions=tuple(actions or ()),
         width=vp["width"],
@@ -651,7 +706,10 @@ def _write_screenshots(
 
 
 def build_result(
-    runtime: "AppRuntime", spec: DriveSpec, report: DriveReport
+    runtime: "AppRuntime",
+    spec: DriveSpec,
+    report: DriveReport,
+    bound: tuple[tuple[str, str], ...] = (),
 ) -> TestAppResult:
     """One report, read against the workspace it ran on: stacks
     annotated with the agent's own source, refusals phrased as fixes,
@@ -678,6 +736,7 @@ def build_result(
             page_errors=page_errors,
             rejected=tuple(rejected),
             load_error=report.load_error or "the page did not load",
+            bound=bound,
         )
     results = tuple(
         _action_result(spec.actions[outcome.index], outcome, unsaved)
@@ -696,6 +755,7 @@ def build_result(
         page_errors=page_errors,
         screenshots=screenshots,
         rejected=tuple(rejected),
+        bound=bound,
     )
 
 
@@ -726,8 +786,9 @@ def run_test_app(
     workspace. A browser/launch failure comes back as ``load_error``
     (test_app never raises for app problems); a driver whose dependency
     is missing raises ImportError."""
+    bound = check_bind(runtime, kwargs.pop("bind", None))
     driver = pick_driver(runtime.config, runtime.workspace)
-    spec = build_spec(runtime, actions, **kwargs)
+    spec = build_spec(runtime, actions, bind=bound, **kwargs)
     try:
         try:
             report = driver.run(spec)
@@ -735,7 +796,7 @@ def run_test_app(
             raise
         except Exception as e:
             report = _driver_failed(driver, e)
-        return build_result(runtime, spec, report)
+        return build_result(runtime, spec, report, bound)
     finally:
         _flush_log(runtime)
 
@@ -749,8 +810,9 @@ async def arun_test_app(
     burning a waiting thread, and reads the report in a thread —
     assembly touches the workspace under its lock, which is not the
     caller's loop's business to block on."""
+    bound = check_bind(runtime, kwargs.pop("bind", None))
     driver = pick_driver(runtime.config, runtime.workspace)
-    spec = build_spec(runtime, actions, **kwargs)
+    spec = build_spec(runtime, actions, bind=bound, **kwargs)
     try:
         try:
             report = await adrive(driver, spec)
@@ -759,7 +821,9 @@ async def arun_test_app(
         except Exception as e:
             report = _driver_failed(driver, e)
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, build_result, runtime, spec, report)
+        return await loop.run_in_executor(
+            None, build_result, runtime, spec, report, bound
+        )
     finally:
         _flush_log(runtime)
 
@@ -791,6 +855,12 @@ def _console_excerpt(console: tuple[str, ...], tail: int = 10) -> list[str]:
 def render_test_app(result: TestAppResult) -> str:
     """Observation rendering for adapters (paths, never bytes)."""
     parts: list[str] = [f"test_app: {'PASS' if result.ok else 'FAIL'}"]
+    if result.bound:
+        swaps = ", ".join(f"{name} as {other}" for name, other in result.bound)
+        parts.append(
+            f"(this run's handlers read {swaps}: what it wrote is there, not in "
+            "the real one)"
+        )
     if result.load_error:
         parts.append(f"[load error] {result.load_error}")
     for r in result.results:

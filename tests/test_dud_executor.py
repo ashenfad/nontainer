@@ -392,6 +392,53 @@ def test_apps_dispatch_under_dud(ws):
         runtime.close()
 
 
+class _Rows:
+    """A host object a handler writes to: one public method."""
+
+    def __init__(self):
+        self.rows = []
+
+    def add(self, value):
+        self.rows.append(value)
+        return len(self.rows)
+
+
+def test_a_bound_request_reaches_the_other_host_object_under_dud():
+    """test_app's bind on this rung: the guest global is rebound before
+    the host module is built from the globals, so the bare name and the
+    import hand the handler the same (other) object, and the next
+    request reads the real one again."""
+    from nontainer import PythonConfig
+    from nontainer.apps import enable_apps, request
+
+    stores = {"db": _Rows(), "testdb": _Rows()}
+    w = Workspace(
+        KvgitProvider.open(None, session="dud-bind"),
+        executor=DudExecutor(backend="subprocess"),
+        python=PythonConfig(host_objects=stores),
+    )
+    try:
+        _seed_app(
+            w,
+            "b.py",
+            b"from host import db as imported\n"
+            b"def post(req):\n"
+            b"    db.add('bare')\n"
+            b"    imported.add('import')\n"
+            b"    return {'ok': True}\n",
+        )
+        runtime = enable_apps(w)
+        r = runtime.dispatch(request("POST", "/api/b"), bind={"db": "testdb"})
+        assert r.status == 200, r.content
+        assert stores["testdb"].rows == ["bare", "import"]
+        assert stores["db"].rows == []
+        assert runtime.dispatch(request("POST", "/api/b")).status == 200
+        assert stores["db"].rows == ["bare", "import"]
+        runtime.close()
+    finally:
+        w.close()
+
+
 def test_apps_readonly_get_rejects_cache_write(ws):
     """A GET that writes the cache hits the read-only view → 500."""
     from nontainer.apps import enable_apps, request
