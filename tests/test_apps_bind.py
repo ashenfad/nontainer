@@ -75,6 +75,42 @@ def test_a_bound_request_hands_the_handler_the_other_object(stores):
         ws.close()
 
 
+def test_a_swap_swaps(stores):
+    """Every right-hand side is read from the names as they were, so two
+    bindings that mention each other's names exchange the objects."""
+    ws, rt = _ws(stores)
+    try:
+        ws.files.fs.write(
+            "/workspace/app/api/both.py",
+            b"def post(req):\n    db.add('as db')\n    testdb.add('as testdb')\n"
+            b"    return {}\n",
+        )
+        rt.dispatch(request("POST", "/api/both"), bind={"db": "testdb", "testdb": "db"})
+        assert stores["testdb"].rows == ["as db"]
+        assert stores["db"].rows == ["as testdb"]
+        full, _, _ = _view_program(
+            "", {}, ViewSpec(bind=(("db", "testdb"), ("testdb", "db")))
+        )
+        ns = {"db": "D", "testdb": "T"}
+        exec(full[full.index("db, testdb, =") :].split("\n", 1)[0], ns)
+        assert (ns["db"], ns["testdb"]) == ("T", "D")
+    finally:
+        ws.close()
+
+
+def test_dispatch_refuses_a_bad_binding_itself(stores):
+    """A caller of the public dispatch gets the same refusal test_app
+    and ws-curl give, before the handler runs."""
+    ws, rt = _ws(stores)
+    try:
+        post = request("POST", "/api/names", body=b'{"name": "amy"}')
+        with pytest.raises(ValueError, match="'nope' is not a host object"):
+            rt.dispatch(post, bind={"db": "nope"})
+        assert stores["db"].rows == [] and stores["testdb"].rows == []
+    finally:
+        ws.close()
+
+
 def test_nothing_is_bound_unless_asked(stores):
     ws, rt = _ws(stores)
     try:
@@ -111,7 +147,7 @@ def test_the_guest_program_rebinds_before_the_host_module_is_built():
     globals, so the rebinding line has to come first for the import to
     see it."""
     full, _, _ = _view_program("x = 1\n", {}, ViewSpec(bind=(("db", "testdb"),)))
-    assert full.index("db = globals()['testdb']") < full.index(_HOST_PRELUDE)
+    assert full.index("db, = globals()['testdb'],") < full.index(_HOST_PRELUDE)
     with pytest.raises(ValueError, match="two host object names"):
         _view_program("", {}, ViewSpec(bind=(("db; import os", "testdb"),)))
 

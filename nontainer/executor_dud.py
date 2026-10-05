@@ -452,7 +452,13 @@ def _view_program(
     for pair in view.bind:
         if not all(isinstance(n, str) and n.isidentifier() for n in pair):
             raise ValueError(f"a view binding is two host object names: {pair!r}")
-    rebind = "".join(f"{name} = globals()[{other!r}]\n" for name, other in view.bind)
+    # One assignment: Python evaluates the whole right side before it
+    # binds any name, so a swap swaps rather than reading its own work.
+    rebind = ""
+    if view.bind:
+        targets = "".join(f"{name}, " for name, _ in view.bind)
+        sources = "".join(f"globals()[{other!r}], " for _, other in view.bind)
+        rebind = f"{targets}= {sources}\n"
     prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + rebind + _HOST_PRELUDE
     full = prefix + code + _VIEW_EPILOGUE
     return full, {"__nt_blob": blob, "__nt_boot": boot}, prefix.count("\n")
