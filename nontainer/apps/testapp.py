@@ -472,6 +472,13 @@ class TestAppResult:
     read in place of what. Reported so a run against a test store
     never passes for one against the live one."""
 
+    failed_requests: tuple[str, ...] = ()
+    """Requests the app answered with an error status, ``"GET
+    missing.js -> 404"``, each once with a count when repeated. The
+    browser's console reports these without saying which; an API call a
+    check expects to fail is here too, and is not a failure of the run
+    by itself."""
+
     def __bool__(self) -> bool:
         return self.ok
 
@@ -518,13 +525,19 @@ def coerce_bind(bind: Any) -> "dict[str, str] | None":
 
 
 def _serve(
-    runtime: "AppRuntime", csp: str, bind: tuple[tuple[str, str], ...] = ()
+    runtime: "AppRuntime",
+    csp: str,
+    bind: tuple[tuple[str, str], ...] = (),
+    failed: "list[str] | None" = None,
 ) -> Any:
     """How the app is served for a run: the same ``dispatch`` the curl
     builtin and the published router use. This is the invariant the
     driver seam is for — what verifies green is served by the code that
     will serve the visitor. ``bind`` is the run's binding, applied to
-    its own requests only (see ``check_bind``)."""
+    its own requests only (see ``check_bind``). ``failed`` collects
+    every request answered with an error status, by path: the browser's
+    console says only "Failed to load resource: 404", and the report
+    names what it was."""
     binding = dict(bind)
 
     def serve(method: str, url: str, body: bytes, headers: Any) -> Any:
@@ -548,6 +561,10 @@ def _serve(
         # will be served.
         if csp and wire.content_type.startswith("text/html"):
             out["content-security-policy"] = csp
+        if failed is not None and wire.status >= 400:
+            path = url[len(_BASE_URL) :] if url.startswith(_BASE_URL) else url
+            path = path.lstrip("/")  # as the page names it, relative
+            failed.append(f"{method.upper()} {path or 'index.html'} -> {wire.status}")
         return replace(wire, headers=out)
 
     return serve
@@ -564,6 +581,7 @@ def build_spec(
     assert_timeout_ms: int = 2_000,
     settle_cap: float = 5.0,
     bind: tuple[tuple[str, str], ...] = (),
+    failed: "list[str] | None" = None,
 ) -> DriveSpec:
     """Everything one run has been decided to be, before a browser is
     involved."""
@@ -581,10 +599,19 @@ def build_spec(
     script_hosts = tuple(
         dict.fromkeys((*runtime.config.script_hosts, *csp_script_origins(csp)))
     )
+    # A run whose first action is a goto opens that page (DriveSpec.start)
+    # rather than loading the index only to leave it.
+    first = actions[0] if actions else None
+    start = (
+        str(first["goto"]).lstrip("/")
+        if isinstance(first, dict) and "goto" in first
+        else ""
+    )
     return DriveSpec(
-        serve=_serve(runtime, csp, bind),
+        serve=_serve(runtime, csp, bind, failed),
         base_url=_BASE_URL,
         actions=tuple(actions or ()),
+        start=start,
         width=vp["width"],
         height=vp["height"],
         csp=csp,
@@ -687,6 +714,7 @@ def build_result(
     spec: DriveSpec,
     report: DriveReport,
     bound: tuple[tuple[str, str], ...] = (),
+    failed: "list[str] | None" = None,
 ) -> TestAppResult:
     """One report, read against the workspace it ran on: stacks
     annotated with the agent's own source, refusals phrased as fixes,
@@ -714,6 +742,7 @@ def build_result(
             rejected=tuple(rejected),
             load_error=report.load_error or "the page did not load",
             bound=bound,
+            failed_requests=_counted(failed),
         )
     results = tuple(
         _action_result(spec.actions[outcome.index], outcome, unsaved)
@@ -733,7 +762,16 @@ def build_result(
         screenshots=screenshots,
         rejected=tuple(rejected),
         bound=bound,
+        failed_requests=_counted(failed),
     )
+
+
+def _counted(lines: "list[str] | None") -> tuple[str, ...]:
+    """Each line once, in first-seen order, with ``(xN)`` when repeated."""
+    counts: dict[str, int] = {}
+    for line in lines or ():
+        counts[line] = counts.get(line, 0) + 1
+    return tuple(line if n == 1 else f"{line} (x{n})" for line, n in counts.items())
 
 
 def _flush_log(runtime: "AppRuntime") -> None:
@@ -764,8 +802,9 @@ def run_test_app(
     (test_app never raises for app problems); a driver whose dependency
     is missing raises ImportError."""
     bound = check_bind(runtime, kwargs.pop("bind", None))
+    failed: list[str] = []
     driver = pick_driver(runtime.config, runtime.workspace)
-    spec = build_spec(runtime, actions, bind=bound, **kwargs)
+    spec = build_spec(runtime, actions, bind=bound, failed=failed, **kwargs)
     try:
         try:
             report = driver.run(spec)
@@ -773,7 +812,7 @@ def run_test_app(
             raise
         except Exception as e:
             report = _driver_failed(driver, e)
-        return build_result(runtime, spec, report, bound)
+        return build_result(runtime, spec, report, bound, failed)
     finally:
         _flush_log(runtime)
 
@@ -788,8 +827,9 @@ async def arun_test_app(
     assembly touches the workspace under its lock, which is not the
     caller's loop's business to block on."""
     bound = check_bind(runtime, kwargs.pop("bind", None))
+    failed: list[str] = []
     driver = pick_driver(runtime.config, runtime.workspace)
-    spec = build_spec(runtime, actions, bind=bound, **kwargs)
+    spec = build_spec(runtime, actions, bind=bound, failed=failed, **kwargs)
     try:
         try:
             report = await adrive(driver, spec)
@@ -799,7 +839,7 @@ async def arun_test_app(
             report = _driver_failed(driver, e)
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, build_result, runtime, spec, report, bound
+            None, build_result, runtime, spec, report, bound, failed
         )
     finally:
         _flush_log(runtime)
@@ -856,6 +896,8 @@ def render_test_app(result: TestAppResult) -> str:
         parts.append(f"screenshots: {', '.join(result.screenshots)}")
     if result.rejected:
         parts.append("[rejected requests]\n" + "\n".join(result.rejected))
+    if result.failed_requests:
+        parts.append("[failed requests]\n" + "\n".join(result.failed_requests))
     if result.page_errors:
         parts.append("[page errors]\n" + "\n".join(result.page_errors))
     if result.console:
