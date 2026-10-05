@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.11 - 2026-10-05
 
 ### Added
 - **test_app and `ws-curl` can run handlers against another host object.** `test_app(actions, bind={"db": "testdb"})` hands the run's handlers the host object `testdb` where they read `db`, by bare name and through `from host import db` alike, for that run's requests and no others. `ws-curl --bind db=testdb ...` does the same for one request. The handler's code is unchanged, as with ws-pytest's `call(..., db=testdb)`. Nothing is bound unless asked, and which names to bind is the embedder's to teach. Names the session does not bind are refused with the ones it does. A run's result (`TestAppResult.bound`) and ws-curl's stderr say what was bound. In every live run of a delegated build, browser checks and ws-curl smoke tests wrote into the live `db` the published app serves over and ended with a manual `DELETE`. `ViewSpec.bind` carries the binding to both executors, and `AppRuntime.dispatch` takes `bind=`.
