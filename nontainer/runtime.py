@@ -481,8 +481,18 @@ class Runtime:
             stdin = ""
 
         # echo="none": script semantics by contract — a bare trailing
-        # expression must not inject repr lines into pipelines
-        result = self.exec_python(code, stdin=stdin, argv=argv, echo="none")
+        # expression must not inject repr lines into pipelines. And a
+        # script runs as __main__, as `python file.py` does anywhere: the
+        # sandbox's own module name would skip every `if __name__ ==
+        # "__main__": main()` guard, and the script would exit 0 having
+        # done nothing.
+        result = self.exec_python(
+            code,
+            inputs={"__name__": "__main__"},
+            stdin=stdin,
+            argv=argv,
+            echo="none",
+        )
         ctx.stdout.write(result.stdout)
         if result.error is not None:
             return CommandResult(exit_code=1, stderr=result.error)

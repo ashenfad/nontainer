@@ -1157,6 +1157,26 @@ def test_the_name_you_asked_with_addresses_the_child(parent, store):
             sessions.result("frontend")
 
 
+def test_action_resume_is_the_ask_that_continues_a_delegate(parent, store):
+    """The description says `resume=<name>`, and a model with an
+    `action` to fill in writes `action="resume"`. That was refused as an
+    unknown action, and an agent sent work back by forking a second
+    delegate from the first one's commit instead."""
+    with Sessions(parent, Echo()) as sessions:
+        first = sessions.ask("build it", name="data", wait=True)
+        said = run_action(
+            sessions, "resume", name=first.branch, task="add a year filter", wait=True
+        )
+        assert "answering add a year filter" in said
+        assert [j.name for j in sessions.list()] == [first.branch]  # no second fork
+        said = run_action(
+            sessions, "resume", resume="data", task="and a chart", wait=True
+        )
+        assert "answering and a chart" in said
+        assert "needs the delegate's name" in run_action(sessions, "resume", task="x")
+        assert 'resume="<name>"' in run_action(sessions, "sideways")
+
+
 def test_resume_refuses_a_branch_this_session_has_no_job_for(parent, store):
     with Sessions(parent, Echo()) as sessions:
         with pytest.raises(SessionsError, match="no job named"):

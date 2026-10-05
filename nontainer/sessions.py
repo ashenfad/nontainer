@@ -1427,6 +1427,17 @@ def run_action(
     words.
     """
     try:
+        if action == "resume":
+            # What the description's `resume=<name>` reads as to a model
+            # that has an action to fill in: the ask that continues a
+            # delegate, under the name it typed in either field.
+            resume = resume or name
+            if not resume.strip():
+                return (
+                    "sessions resume needs the delegate's name: "
+                    'action="ask", resume="<name>", task="..."'
+                )
+            action, name = "ask", ""
         if action == "ask":
             if not task.strip():
                 return "sessions ask needs a task: what should the delegate do?"
@@ -1469,7 +1480,8 @@ def run_action(
             )
         return (
             f"unknown action {action!r} — sessions takes ask, list, result, "
-            "cancel or keep."
+            "cancel or keep. A delegate you already have gets its next task "
+            'with action="ask", resume="<name>".'
         )
     except JobRunning as e:
         return str(e)
