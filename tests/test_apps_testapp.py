@@ -1330,7 +1330,10 @@ def test_a_failed_request_is_named_in_the_report(chromium_available):
         )
         assert "GET missing.js -> 404" in result.failed_requests
         assert any(r.startswith("GET nope.png -> 404") for r in result.failed_requests)
-        assert "[failed requests]\nGET missing.js -> 404" in render_test_app(result)
+        # the browser fetches the two in either order
+        rendered = render_test_app(result)
+        section = rendered.split("[failed requests]\n", 1)[1]
+        assert "GET missing.js -> 404" in section.splitlines()[:2]
     finally:
         ws.close()
 
