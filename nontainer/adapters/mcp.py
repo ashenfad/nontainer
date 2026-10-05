@@ -190,7 +190,12 @@ def build_server(
         "per line) — the index for workspace://{path} resources.",
         mime_type="text/plain",
     )
-    def workspace_tree() -> str:
+    async def workspace_tree() -> str:
+        # Off the loop like the tools: it takes the same lock, so on the
+        # loop it would wait out a slow tool and freeze the server.
+        return await _off_loop(_workspace_tree)
+
+    def _workspace_tree() -> str:
         with lock:
             lines: list[str] = []
             elided = False
@@ -215,9 +220,12 @@ def build_server(
                 lines.append("[... directories deeper than 32 levels elided]")
             return "\n".join(lines)
 
-    def workspace_file(path: str) -> "str | bytes":
-        with lock:
-            data = workspace.files.fs.read("/" + path.lstrip("/"))
+    async def workspace_file(path: str) -> "str | bytes":
+        def read() -> bytes:
+            with lock:
+                return workspace.files.fs.read("/" + path.lstrip("/"))
+
+        data = await _off_loop(read)
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
