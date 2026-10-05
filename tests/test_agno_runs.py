@@ -187,3 +187,32 @@ def test_the_store_takes_back_a_run_staged_through_it(store, opened, tmp_path):
     db.delete_runs(["r3"])
     ws.commit(info={"tool": "turn"})
     assert _ids(db.get_session("s1", SessionType.AGENT)) == ["r1"]
+
+
+def test_a_branch_naming_another_session_does_not_stand_in_for_it(
+    store, opened, tmp_path
+):
+    """A branch can hold another session's record under that session's
+    id: a snapshot that never rebinds it. A write through the store that
+    touches it must not make it a holder of that session's runs: a
+    delete would take the copy and report success, and a listing would
+    show the runs twice. (``ws.fork()`` rebinds the record, so a fork is
+    a session of its own and its copies are its runs.)"""
+    from nontainer.adapters.agno_db import RUN_PREFIX, SESSION_KEY
+
+    parent = opened("s1")
+    _seed(parent, _run(1))
+    # a branch holding the parent's record as it is, naming the parent,
+    # as a snapshot that never rebinds it does
+    snap = opened("s1-snap")
+    pkv, skv = parent.provider.kv, snap.provider.kv
+    skv[SESSION_KEY] = dict(pkv[SESSION_KEY])
+    skv[RUN_PREFIX + "r1"] = dict(pkv[RUN_PREFIX + "r1"])
+    snap.commit(info={"tool": "snapshot"})
+    db = KvgitStoreDb(store, open=opened, db_path=str(tmp_path / "agno"))
+    # a write aimed at the snapshot: the view ignores it, the store saw it
+    db.upsert_run(run=_run(9, session="s1-snap"), session_id="s1-snap")
+
+    assert [r.run_id for r in db.get_runs()] == ["r1"]  # once, the parent's
+    assert db.delete_run("r1") is True
+    assert _ids(db.get_session("s1", SessionType.AGENT)) == []

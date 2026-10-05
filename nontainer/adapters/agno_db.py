@@ -1021,8 +1021,15 @@ class KvgitStoreDb(JsonDb):
         rid = str(run_id)
         for session_id in sorted(self._written):
             if self._exists(session_id):
-                _, run_ids = self._view(session_id)._run_ids()
-                if rid in run_ids:
+                # Only a branch whose record names it holds a session, as
+                # below: a plain Workspace.fork() carries its parent's
+                # record, run ids and all, and must not stand in for it.
+                record, run_ids = self._view(session_id)._run_ids()
+                if (
+                    record is not None
+                    and record.get("session_id") == session_id
+                    and rid in run_ids
+                ):
                     return session_id
         for branch in self._branches():
             if branch in self._written:
@@ -1223,7 +1230,8 @@ class KvgitStoreDb(JsonDb):
         rows: list[dict[str, Any]] = []
         for branch in branches:
             if branch in self._written:
-                rows += self._view(branch)._rows()
+                # filtered to its own session, as the committed path is
+                rows += self._view(branch)._rows(branch)
                 continue
             record = self._peek(branch, SESSION_KEY)
             if not isinstance(record, dict) or record.get("session_id") != branch:
