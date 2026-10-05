@@ -818,8 +818,30 @@ Tool signature (exposed by adapters alongside terminal/run_python when
 `[apps]` is installed and enabled):
 
 ```
-test_app(actions: list[Action], viewport: str|dict = "desktop") -> TestAppResult
+test_app(actions: list[Action], viewport: str|dict = "desktop",
+         bind: dict | None = None) -> TestAppResult
 ```
+
+`bind={"db": "testdb"}` runs the page against a different host object
+than the session binds under that name: for the requests this run makes,
+a handler that reads `db` (bare, or `from host import db`) gets the host
+object `testdb`. Nothing else changes: the handler's code is the code
+that publishes, and only what it is handed differs, as with ws-pytest's
+`call(..., db=testdb)`. Both names must be host objects the session
+binds; anything else is refused before the browser starts, with the
+names there are. Requests from outside the run (a person on the live
+preview at the same moment) are untouched.
+
+A browser check drives the app the way a person does, so with nothing
+bound every check writes into the live store its published versions
+serve over. `AppsConfig(test_bind={"db": "testdb"})` makes the binding
+the default: a run omitting `bind` uses it, and `bind={}` runs against
+the real objects (after a migration, say, which a fresh test store
+cannot show). The tool's description says which applies, and the result
+says what a run bound (`TestAppResult.bound`), so a check against the
+test store never reads as one against the live store. nontainer does not
+reset or seed the bound object: it is the embedder's, and whatever it
+holds when the run starts is what the page sees.
 
 Actions: `{"click": selector}`, `{"type": [selector, text]}`,
 `{"select": [selector, value]}`, `{"read": selector}`, `{"eval": js}`,

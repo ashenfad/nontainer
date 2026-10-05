@@ -957,6 +957,15 @@ class ViewSpec:
     ``view_result_limit``; one with no such bound ignores it. ``None``
     leaves the executor's defaults."""
 
+    bind: tuple[tuple[str, str], ...] = ()
+    """``(name, other)`` pairs: for this execution, the host object
+    ``name`` IS the host object ``other`` — under the bare name and
+    through ``from host import name`` alike, since both read the one
+    binding. test_app's run against a test store is the consumer
+    (``db`` bound to ``testdb``): the handler's code is the code that
+    publishes, and only what it is handed changes. Both names must be
+    host objects; the caller checks that before asking."""
+
 
 @runtime_checkable
 class Executor(Protocol):

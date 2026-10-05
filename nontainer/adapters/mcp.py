@@ -289,15 +289,21 @@ def build_server(
         from ..apps import render_test_app
         from .render import test_app_description
 
-        @server.tool(name="test_app", description=test_app_description(workspace))
+        @server.tool(
+            name="test_app",
+            description=test_app_description(workspace, config=apps.config),
+        )
         async def test_app(
-            actions: list[dict], viewport: str | dict = "desktop"
+            actions: list[dict],
+            viewport: str | dict = "desktop",
+            bind: dict | str | None = None,
         ) -> list:
-            from ..apps.testapp import coerce_actions, coerce_viewport
+            from ..apps.testapp import coerce_actions, coerce_bind, coerce_viewport
 
             try:
                 actions = coerce_actions(actions)
                 viewport = coerce_viewport(viewport)
+                binding = coerce_bind(bind)
             except ValueError as e:
                 return [f"test_app failed: {e}"]
             # async + to_thread: Playwright's sync API refuses to run on
@@ -307,14 +313,17 @@ def build_server(
 
             def work() -> tuple[Any, list]:
                 with lock:
-                    result = apps.test_app(actions, viewport=viewport)
+                    result = apps.test_app(actions, viewport=viewport, bind=binding)
                     shots = [
                         Image(data=workspace.files.fs.read(p), format="png")
                         for p in result.screenshots
                     ]
                     return result, shots
 
-            result, shots = await anyio.to_thread.run_sync(work)
+            try:
+                result, shots = await anyio.to_thread.run_sync(work)
+            except ValueError as e:
+                return [f"test_app failed: {e}"]
             return [render_test_app(result), *shots]
 
     return server

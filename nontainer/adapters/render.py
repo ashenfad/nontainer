@@ -590,7 +590,10 @@ whether your fetch even reached the backend. Tail it to debug."""
 
 
 def test_app_description(
-    ws: Workspace | None = None, *, root: str | None = None
+    ws: Workspace | None = None,
+    *,
+    root: str | None = None,
+    config: Any = None,
 ) -> str:
     """The test_app tool description, written against a workspace root
     (``ws.root``, or ``root`` when there is no workspace to hand).
@@ -602,7 +605,31 @@ def test_app_description(
     about its app."""
     if root is None:
         root = ws.root if ws is not None else "/workspace"
-    return _TEST_APP_TEMPLATE.replace("__WS__", "" if root == "/" else root.rstrip("/"))
+    text = _TEST_APP_TEMPLATE + _bind_note(config)
+    return text.replace("__WS__", "" if root == "/" else root.rstrip("/"))
+
+
+def _bind_note(config: Any) -> str:
+    """What a run binds, said where the agent decides how to check.
+
+    With an embedder default (``AppsConfig.test_bind``) the note is the
+    default and the way out of it, since a check that wrote into a
+    test store must not read as one against the live store. Without
+    one, the parameter alone."""
+    default = dict(getattr(config, "test_bind", None) or {})
+    if default:
+        swaps = ", ".join(f"`{n}` as `{o}`" for n, o in sorted(default.items()))
+        return (
+            f"\n\nA run's handlers read {swaps}, so what the page writes "
+            "lands there and not in the real store, and that store starts as "
+            "it was left: seed it first for a page that needs data. "
+            "bind={} runs against the real objects, for a check that must "
+            "(after a migration, say)."
+        )
+    return (
+        '\n\nbind={"name": "other"} has handlers read the host object '
+        "`other` where they read `name`, for this run's requests only."
+    )
 
 
 #: The default-root rendering, for callers with no workspace in reach.

@@ -635,12 +635,41 @@ class AppsConfig:
     JSON, which is why the text refusal suggests asking for Arrow.
 
     Declared last: see ``frontend_notes``."""
+    test_bind: Mapping[str, str] = field(default_factory=dict)
+    """What ``test_app`` binds for a run unless the call says otherwise:
+    ``{"db": "testdb"}`` hands every handler the host object ``testdb``
+    where it reads ``db``, for the requests that run makes and no
+    others. Both are names of host objects the session binds.
+
+    A browser check drives the app the way a person does, so with no
+    binding every check writes into the live store its published
+    versions serve over, and someone has to clean up after each one. A
+    test store as the default leaves the live one alone unless a check
+    asks for it (``bind={}``) — for a migration, say, which a fresh test
+    store cannot show. The handler's code is the code that publishes;
+    only what it is handed changes, as with ws-pytest's
+    ``call(..., db=testdb)``.
+
+    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Validate ``csp_extend`` at construction, where the traceback
         still points at the embedder's own call, rather than shipping a
         malformed directive into a served header (a stray ``;`` or
-        space would splice a new directive into the policy)."""
+        space would splice a new directive into the policy). And
+        ``test_bind``'s shape: two identifiers per entry."""
+        for name, other in dict(self.test_bind).items():
+            if not (
+                isinstance(name, str)
+                and isinstance(other, str)
+                and name.isidentifier()
+                and other.isidentifier()
+                and name != other
+            ):
+                raise ValueError(
+                    "test_bind maps a host object's name to another host "
+                    f"object's name: {name!r} -> {other!r}"
+                )
         if not self.csp_extend:
             return
         if self.csp is not None:
@@ -737,27 +766,37 @@ class AppRuntime:
 
     # -- the core --------------------------------------------------------
 
-    def dispatch(self, request: Request) -> WireResponse:
+    def dispatch(
+        self, request: Request, *, bind: "Mapping[str, str] | None" = None
+    ) -> WireResponse:
+        """Serve one request. ``bind`` hands a handler one host object
+        under another's name for this request (``{"db": "testdb"}``),
+        which is how test_app runs a page against a test store; see
+        ``ViewSpec.bind``. The names are the caller's to have checked
+        (``check_bind``)."""
+        binding = tuple(sorted((bind or {}).items()))
         if self._frozen:
             # Frozen serving: read-only VFS, no workspace lock — the
             # executor makes concurrency safe its own way (LocalExecutor:
             # a fresh per-request sandbox, genuinely parallel;
             # DudExecutor: one guest channel, internally serialized).
-            return self._dispatch(request)
+            return self._dispatch(request, binding)
         # Mutable (authoring) dispatch is a mutating workspace call and
         # serializes like one, under the workspace's own single-writer
         # lock: with ordinary tool calls, with test_app's concurrent
         # route callbacks, and with screenshot writes. RLock — the curl
         # builtin dispatches from inside a locked terminal() call.
         with self._ws.lock:
-            return self._dispatch(request)
+            return self._dispatch(request, binding)
 
-    def _dispatch(self, request: Request) -> WireResponse:
+    def _dispatch(
+        self, request: Request, binding: tuple[tuple[str, str], ...] = ()
+    ) -> WireResponse:
         api = request.path.startswith("/api/")
         asset = False
         try:
             if api:
-                resp = self._dispatch_api(request)
+                resp = self._dispatch_api(request, binding)
             else:
                 resp, asset = self._dispatch_static(request)
         except HttpError as e:
@@ -786,7 +825,9 @@ class AppRuntime:
 
     # -- api -------------------------------------------------------------
 
-    def _dispatch_api(self, request: Request) -> WireResponse:
+    def _dispatch_api(
+        self, request: Request, binding: tuple[tuple[str, str], ...] = ()
+    ) -> WireResponse:
         # A workspace with no executor is one served as files: its tree
         # held no handler when it was opened, so no /api path here has
         # an endpoint behind it and the lookup below has nothing to
@@ -860,6 +901,7 @@ class AppRuntime:
             tick_limit=self._config.request_tick_limit,
             extra_classes=self._contract,
             result_bytes=largest,
+            bind=binding,
         )
         result = ws.runtime.exec_python(
             source + _trailer(verb, text_limit, binary_limit, carry_limit),
@@ -943,7 +985,12 @@ class AppRuntime:
         **kwargs: Any,
     ) -> Any:
         """Headless verification via Playwright (see testapp.py).
-        Requires the [apps] extra + `playwright install chromium`."""
+        Requires the [apps] extra + `playwright install chromium`.
+
+        ``bind={"db": "testdb"}`` runs the page's requests against a
+        different host object than the session binds under that name,
+        for this run only; omitted, the run uses ``AppsConfig.test_bind``,
+        and ``bind={}`` uses the real objects (see ``check_bind``)."""
         from .testapp import run_test_app
 
         return run_test_app(self, actions, viewport=viewport, **kwargs)
