@@ -489,7 +489,9 @@ async def _drive(
             await context.route("**/*", route_handler)
 
             try:
-                await page.goto(base, timeout=spec.load_timeout_ms)
+                opened = await page.goto(
+                    base + spec.start, timeout=spec.load_timeout_ms
+                )
                 await settle(page)
             except Exception as e:
                 await _collect_csp(page)
@@ -614,6 +616,23 @@ async def _drive(
                             )
                             continue
                         value = shot
+                    elif (
+                        "goto" in action
+                        and i == 0
+                        and spec.start
+                        and str(action["goto"]).lstrip("/") == spec.start
+                    ):
+                        # The run opened here (DriveSpec.start): this
+                        # goto is done, and going again would load the
+                        # page, and run its scripts, twice. Its status is
+                        # the opening load's, held to what any goto is.
+                        if opened is not None and not opened.ok:
+                            raise ValueError(
+                                f"goto {spec.start!r} -> HTTP {opened.status} "
+                                "(the page was not served; check the filename "
+                                "and that it is under the app root)"
+                            )
+                        value = spec.start
                     elif "goto" in action:
                         # Policy refusals live on `window`, so harvest
                         # them before the navigation discards the page.

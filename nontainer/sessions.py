@@ -1413,7 +1413,10 @@ def render_answer(answer: Answer) -> str:
         )
     else:
         lines.append(
-            f"next, in the terminal: ws-git diff {name} (read it) | "
+            # The summary first: a delegate's whole diff, or several
+            # of them in one call, is cut off long before it is read.
+            f"next, in the terminal: ws-git diff {name} --stat (what it "
+            f"touched), then ws-git diff {name} -- <paths> (read it) | "
             f"ws-git merge {name} (take all of it) | "
             f"ws-git checkout {name} -- <paths> (take some)"
         )

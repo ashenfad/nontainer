@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **test_app names the requests that failed.** A report's console tail said "Failed to load resource: the server responded with a status of 404 (Not Found)" and never which resource. Agents read that as a fault in their page and went looking. A new `[failed requests]` section (`TestAppResult.failed_requests`) lists each request the app answered with an error status, `GET missing.js -> 404`, once with a count. An API call a check expects to fail shows here too, and does not fail the run by itself.
+- **A run that starts with `goto` opens that page.** A run always loaded the index and then went where its first action said. A delegate testing its piece in a fork with no index yet, before the shell existed, got a 404 for `index.html` in every report. The run now opens the `goto` target directly (`DriveSpec.start`) and counts that `goto` as done, so the page loads, and its scripts run, once. A missing start page still fails that `goto` with its HTTP status. A driver that ignores `start` behaves as before.
+- **A delegate's answer suggests reading its diff summary first.** The next-step line now reads `ws-git diff <name> --stat` (what it touched), then `ws-git diff <name> -- <paths>`. An agent that diffed three delegates in one call had the output cut off before it was read.
+
 ## 0.8.11 - 2026-10-05
 
 ### Added

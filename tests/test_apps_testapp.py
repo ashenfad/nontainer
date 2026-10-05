@@ -1282,3 +1282,54 @@ def test_the_elision_count_describes_what_was_cut():
     shown = [line for line in excerpt if "more lines" not in line]
     claimed = next(line for line in excerpt if "more lines" in line)
     assert f"{len(console) - len(shown)} more lines" in claimed
+
+
+def test_a_run_that_starts_with_goto_opens_that_page(chromium_available):
+    """A run starting with a goto opens that page instead of loading the
+    index to leave it. A delegate testing its piece in a tree with no
+    index yet got an unexplained 404 in every report."""
+    ws = Workspace(KvgitProvider.open(None, session="start"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write(
+        "/workspace/app/check.html",
+        b"<!doctype html><p id=n>0</p><script>"
+        b"document.getElementById('n').textContent = String(Number(sessionStorage.n||0)+1);"
+        b"sessionStorage.n = document.getElementById('n').textContent;</script>",
+    )
+    ws.commit()
+    try:
+        result = rt.test_app(
+            [
+                {"goto": "check.html"},
+                {"assert": "document.getElementById('n').textContent === '1'"},
+            ]
+        )
+        assert result.ok, render_test_app(result)  # loaded once, not twice
+        assert result.failed_requests == ()  # no index.html 404
+        assert result.results[0].value == "check.html"
+    finally:
+        ws.close()
+
+
+def test_a_failed_request_is_named_in_the_report(chromium_available):
+    """The browser's console says "Failed to load resource: 404" and no
+    more; the report says which."""
+    ws = Workspace(KvgitProvider.open(None, session="fail"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write(
+        "/workspace/app/index.html",
+        b'<!doctype html><p id=x>hi</p><script src="missing.js"></script>'
+        b'<img src="nope.png"><img src="nope.png">',
+    )
+    ws.commit()
+    try:
+        result = rt.test_app(
+            [{"assert": "document.getElementById('x').textContent === 'hi'"}]
+        )
+        assert "GET missing.js -> 404" in result.failed_requests
+        assert any(r.startswith("GET nope.png -> 404") for r in result.failed_requests)
+        assert "[failed requests]\nGET missing.js -> 404" in render_test_app(result)
+    finally:
+        ws.close()
