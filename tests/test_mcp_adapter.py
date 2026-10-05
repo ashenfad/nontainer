@@ -358,3 +358,35 @@ async def test_a_slow_tool_leaves_the_event_loop_free():
     assert "slept" in text
     assert ticks >= 10  # the loop ran throughout, not once at the end
     ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_resource_read_during_a_slow_tool_leaves_the_loop_free():
+    """The resource readers take the tools' lock. Read on the loop while
+    a slow tool held it, a resource request froze the server just as a
+    sync tool did; they wait off the loop too."""
+    import asyncio
+
+    ws = make_ws()
+    server = build_server(ws)
+    ticks = 0
+
+    async def heartbeat():
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.05)
+            ticks += 1
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        slow = asyncio.create_task(
+            server.call_tool("run_python", {"code": "import time\ntime.sleep(1)"})
+        )
+        await asyncio.sleep(0.1)  # the tool holds the lock now
+        tree = await server.read_resource("workspace://-/tree")
+        await slow
+    finally:
+        beat.cancel()
+    assert tree is not None
+    assert ticks >= 10
+    ws.close()
