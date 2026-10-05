@@ -67,6 +67,31 @@ def _grid_columns(n: int) -> int:
     return 1 if n == 1 else 2 if n <= 4 else 3 if n <= 9 else 4
 
 
+_SCREENSHOT_RETRY_WAITS = (0.1, 0.4)
+"""Seconds before each retry of a screenshot Chromium refused with
+"Unable to capture screenshot"."""
+
+
+async def _screenshot(page: Any, **kwargs: Any) -> bytes:
+    """``page.screenshot``, with Chromium's transient refusal retried.
+
+    Headless Chromium now and then answers a capture with "Protocol
+    error (Page.captureScreenshot): Unable to capture screenshot", most
+    often on a loaded machine and a fresh page: the frame is not ready
+    to be read yet, and a moment later it is. Unretried, it failed an
+    agent's screenshot, a grid's tiling, and CI runs at random. Only
+    that error is retried, briefly; anything else is the page's or the
+    caller's, and raises at once."""
+    for wait in (*_SCREENSHOT_RETRY_WAITS, None):
+        try:
+            return await page.screenshot(**kwargs)
+        except Exception as e:
+            if wait is None or "Unable to capture screenshot" not in str(e):
+                raise
+            await asyncio.sleep(wait)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 async def _tile_grid(
     browser: Any, tiles: list[tuple[str, bytes]], width: int, height: int
 ) -> bytes:
@@ -116,7 +141,7 @@ async def _tile_grid(
     try:
         page = await context.new_page()
         await page.set_content(page_html, wait_until="load")
-        return await page.screenshot(full_page=True)
+        return await _screenshot(page, full_page=True)
     finally:
         await context.close()
 
@@ -402,7 +427,7 @@ async def _drive(
         nonlocal shot_counter
         if shot_counter >= spec.max_screenshots:
             return None
-        png = await page.screenshot()
+        png = await _screenshot(page)
         shot_counter += 1
         path = f"{spec.screenshot_dir}/{label}-{shot_counter}.png"
         screenshots[path] = png
@@ -429,7 +454,7 @@ async def _drive(
                 f"skipped: grid {name!r} already holds {_GRID_MAX_TILES} frames "
                 "(start another grid for more)"
             )
-        png = await page.screenshot()
+        png = await _screenshot(page)
         tiles.append((str(label) if label is not None else str(len(tiles) + 1), png))
         return grid_paths[name], ""
 
