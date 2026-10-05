@@ -419,6 +419,31 @@ def _is_csp_token(text: str) -> bool:
     return bool(text) and ";" not in text and not any(c.isspace() for c in text)
 
 
+def check_bind(
+    runtime: "AppRuntime", bind: "Mapping[str, str] | None"
+) -> tuple[tuple[str, str], ...]:
+    """``bind`` as a run's binding, checked against the host objects
+    the session binds: what ``dispatch(bind=)`` — and so test_app and
+    ``ws-curl --bind`` — hand a handler in place of what. Nothing is bound unless asked; which
+    names to bind, and when, is the embedder's to teach. A name nothing
+    binds is refused before anything runs, with the names there are."""
+    chosen = bind or {}
+    have = set(runtime.workspace.runtime.python_config.host_objects)
+    known = ", ".join(sorted(have)) or "nothing"
+    out = []
+    for name, other in dict(chosen).items():
+        for word in (name, other):
+            if not isinstance(word, str) or word not in have:
+                raise ValueError(
+                    f"bind {name!r} -> {other!r}: {word!r} is not a host object "
+                    f"this session binds (it binds: {known})"
+                )
+        if name == other:
+            raise ValueError(f"bind {name!r} -> {other!r} binds a name to itself")
+        out.append((name, other))
+    return tuple(sorted(out))
+
+
 @dataclass(frozen=True)
 class AppsConfig:
     request_timeout: float = 5.0
@@ -743,9 +768,9 @@ class AppRuntime:
         """Serve one request. ``bind`` hands a handler one host object
         under another's name for this request (``{"db": "testdb"}``),
         which is how test_app runs a page against a test store; see
-        ``ViewSpec.bind``. The names are the caller's to have checked
-        (``check_bind``)."""
-        binding = tuple(sorted((bind or {}).items()))
+        ``ViewSpec.bind``. A name the session does not bind is refused
+        here, with ``ValueError``, before anything runs (``check_bind``)."""
+        binding = check_bind(self, bind) if bind else ()
         if self._frozen:
             # Frozen serving: read-only VFS, no workspace lock — the
             # executor makes concurrency safe its own way (LocalExecutor:

@@ -1005,8 +1005,11 @@ class LocalExecutor:
             # A view's bindings: one host object handed over under
             # another's name, before the host module is built from the
             # namespace, so the import and the bare name agree.
+            # Every right-hand side is read from the names as they
+            # were, so {"db": "testdb", "testdb": "db"} swaps the two.
+            original = dict(namespace)
             for name, other in view.bind if view is not None else ():
-                namespace[name] = namespace[other]
+                namespace[name] = original[other]
 
             # Cache injection mirrors _build_sandbox's rpc-handler choice:
             # a read-only view gets the read-only wrapper (in-process) or

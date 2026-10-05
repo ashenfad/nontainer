@@ -50,6 +50,7 @@ from .csp import (
     csp_note,
     csp_script_origins,
 )
+from .dispatch import check_bind  # noqa: F401 - re-exported for callers
 from .driver import (
     ActionOutcome,
     DriveReport,
@@ -514,31 +515,6 @@ def coerce_bind(bind: Any) -> "dict[str, str] | None":
             f'bind must be an object like {{"db": "testdb"}}, not {type(bind).__name__}'
         )
     return dict(bind)
-
-
-def check_bind(
-    runtime: "AppRuntime", bind: "Mapping[str, str] | None"
-) -> tuple[tuple[str, str], ...]:
-    """``bind`` as a run's binding, checked against the host objects
-    the session binds: what test_app and ``ws-curl --bind`` hand a
-    handler in place of what. Nothing is bound unless asked; which
-    names to bind, and when, is the embedder's to teach. A name nothing
-    binds is refused before anything runs, with the names there are."""
-    chosen = bind or {}
-    have = set(runtime.workspace.runtime.python_config.host_objects)
-    known = ", ".join(sorted(have)) or "nothing"
-    out = []
-    for name, other in dict(chosen).items():
-        for word in (name, other):
-            if not isinstance(word, str) or word not in have:
-                raise ValueError(
-                    f"bind {name!r} -> {other!r}: {word!r} is not a host object "
-                    f"this session binds (it binds: {known})"
-                )
-        if name == other:
-            raise ValueError(f"bind {name!r} -> {other!r} binds a name to itself")
-        out.append((name, other))
-    return tuple(sorted(out))
 
 
 def _serve(
