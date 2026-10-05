@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **test_app's `press` action sends real key events.** `{"press": "ArrowLeft"}` goes through the browser's keyboard, so the page hears it wherever it listens: the focused element, `document` or `window`. A list presses keys in order, `"hold": ms` keeps each key down, and `"on": selector` focuses an element first. Agents testing games dispatched `KeyboardEvent`s from `eval`, which reach only the target they're dispatched on. Delegate after delegate found that a game listening on `window` never heard one sent to `document`.
+
 ### Fixed
 - **test_app names the requests that failed.** A report's console tail said "Failed to load resource: the server responded with a status of 404 (Not Found)" and never which resource. Agents read that as a fault in their page and went looking. A new `[failed requests]` section (`TestAppResult.failed_requests`) lists each request the app answered with an error status, `GET missing.js -> 404`, once with a count. An API call a check expects to fail shows here too, and does not fail the run by itself.
 - **A run that starts with `goto` opens that page.** A run always loaded the index and then went where its first action said. A delegate testing its piece in a fork with no index yet, before the shell existed, got a 404 for `index.html` in every report. The run now opens the `goto` target directly (`DriveSpec.start`) and counts that `goto` as done, so the page loads, and its scripts run, once. A missing start page still fails that `goto` with its HTTP status. A driver that ignores `start` behaves as before.
