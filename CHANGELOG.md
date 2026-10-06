@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The terminal says there is no `node`.** On the termish terminal, the description now says there is no `node`, `npm` or `npx`. When the session has them, it also names where JavaScript does run: `ws-vitest` for modules, and test_app for a page. Agents spent calls probing for node with `which` and `node --version`. A terminal that is a real shell (the VM and dud rungs) isn't told this.
 - **The sessions description says `paths` is a view, not a share of the work.** Agents gave delegates a `paths` view as if assigning files, then asked them to run checks that needed files outside it. The description says to leave `paths` out unless the delegate should read only those files, and not to ask a narrowed delegate to run the whole test suite or an end-to-end check.
 
+## Unreleased
+
+### Fixed
+- **The run methods answer on agno 2.** `KvgitSessionDb` and `KvgitStoreDb`'s `get_run` and `get_runs` were built for agno 3's runs table (#190) from agno 3's row helpers. On agno 2, a caller probing for them (`getattr(db, "get_run", …)`) got an `ImportError` (`build_single_run_row`, then `validate_pagination`). agno 2 never calls them itself. On agno 2 the rows are now built locally, in agno 3's shape, and deserialized by run type, so both answer the same on either major. CI now also runs every agno test on agno 2.8.5.
+
 ## 0.8.14 - 2026-10-06
 
 ### Changed
