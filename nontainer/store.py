@@ -49,7 +49,7 @@ from .protocol import (
 if TYPE_CHECKING:
     from .migrate import LayoutMigration
     from .protocol import Executor
-    from .workspace import Mount, PythonConfig, Workspace
+    from .workspace import Env, Mount, PythonConfig, Workspace
 
 Backend = Literal["kvgit", "agentfs"]
 
@@ -661,6 +661,14 @@ class Store:
             :meth:`clean`, :attr:`tags`) refuse: the layout is the
             factory's business, and guessing it would be worse than
             saying so.
+        memory: Keep everything in this process's memory and nothing on
+            disk: the sessions, their history, and the publication
+            registry. The data lives as long as this ``Store`` object
+            does; :meth:`close` releases the repository handle but not
+            the data. For scratch worlds and tests. ``path``, ``kv`` and
+            ``provider_factory`` each say where state lives, so each is
+            refused alongside it, and only the ``"kvgit"`` backend has a
+            memory form. ``NONTAINER_KV`` is not consulted.
     """
 
     def __init__(
@@ -670,8 +678,40 @@ class Store:
         backend: Backend = "kvgit",
         kv: Any = None,
         provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
+        memory: bool = False,
     ) -> None:
-        self._path = Path(path).expanduser() if path else Path.home() / ".nontainer"
+        if memory:
+            given = [
+                name
+                for name, value in (
+                    ("path", path),
+                    ("kv", kv),
+                    ("provider_factory", provider_factory),
+                )
+                if value is not None
+            ]
+            if given:
+                raise ValueError(
+                    f"memory=True keeps state in this process, so {', '.join(given)} "
+                    "has nowhere to apply: pass one or the other"
+                )
+            if backend != "kvgit":
+                raise ValueError(
+                    f"memory=True needs the 'kvgit' backend, not {backend!r}: "
+                    "agentfs keeps each session in a file"
+                )
+        self._memory = memory
+        # The in-memory backend, built on first use and kept for the
+        # Store's lifetime, so closing the repository (which a Memory
+        # backend survives) and reopening it finds the same data.
+        self._memory_backend: Any = None
+        self._path: Path | None = (
+            None
+            if memory
+            else Path(path).expanduser()
+            if path
+            else Path.home() / ".nontainer"
+        )
         if backend == "dir":
             raise ValueError(
                 "the 'dir' backend was removed in nontainer 0.8.3: use the "
@@ -691,10 +731,10 @@ class Store:
         # ``kv=`` stays the caller's.
         self._owns_backend = False
         # The publication registry for a store that has no directory of
-        # its own: a provider_factory decides where state lives, so
-        # there is nowhere to put the file. It then lives for as long as
-        # this Store object does. Every other store keeps it in
-        # ``<path>/publications.json``.
+        # its own: a provider_factory decides where state lives, and a
+        # memory store has no directory, so there is nowhere to put the
+        # file. It then lives for as long as this Store object does.
+        # Every other store keeps it in ``<path>/publications.json``.
         self._memory_registry: dict[str, Any] = {}
         # ...and since nothing else can reach that dict, its
         # read-modify-write serializes on a lock of this object's own.
@@ -705,9 +745,16 @@ class Store:
     # ------------------------------------------------------------------
 
     @property
-    def path(self) -> Path:
-        """The store directory. Layout underneath is the backend's."""
+    def path(self) -> Path | None:
+        """The store directory. Layout underneath is the backend's.
+        ``None`` for a memory store, which has none."""
         return self._path
+
+    @property
+    def memory(self) -> bool:
+        """Whether this store keeps everything in memory (see the
+        ``memory`` argument)."""
+        return self._memory
 
     @property
     def backend(self) -> str:
@@ -726,6 +773,8 @@ class Store:
     def __repr__(self) -> str:
         if self._provider_factory is not None:
             return f"Store(provider_factory={self._provider_factory!r})"
+        if self._memory:
+            return "Store(memory=True)"
         return f"Store({str(self._path)!r}, backend={self._backend!r})"
 
     # ------------------------------------------------------------------
@@ -743,8 +792,9 @@ class Store:
         autocommit: bool = True,
         max_observation: int = 32_000,
         executor_factory: "Callable[[], Executor] | None" = None,
-        root: str = "/workspace",
+        root: str | None = None,
         ignore: "Iterable[str] | None" = None,
+        env: "Env | None" = None,
     ) -> "Workspace":
         """Open (or create) a session's :class:`Workspace`.
 
@@ -752,6 +802,12 @@ class Store:
         it. ``session`` is validated against ``SESSION_ID_RE`` unless
         this store was built with a ``provider_factory``, which brings
         its own naming rules.
+
+        ``env`` is the session's environment as one value
+        (:class:`~nontainer.workspace.Env`): it stands in for
+        ``python``, ``mounts``, ``commands``, ``executor_factory``,
+        ``root`` and ``ignore``, and passing it with any of them is
+        refused.
 
         ``executor_factory`` selects the execution backend for this
         session and every fork of it (default: the in-process
@@ -772,21 +828,25 @@ class Store:
         names the :meth:`migrate_layout` call that fixes it.
         """
         from .errors import LegacyLayoutError
-        from .workspace import Workspace
+        from .workspace import Workspace, _env_fields
 
+        fields = _env_fields(
+            env,
+            python=python,
+            mounts=mounts,
+            commands=commands,
+            executor_factory=executor_factory,
+            root=root,
+            ignore=ignore,
+        )
         provider = self._session_provider(session)
         try:
             ws = Workspace(
                 provider,
-                python=python,
-                mounts=mounts,
-                commands=commands,
                 cache=cache,
                 autocommit=autocommit,
                 max_observation=max_observation,
-                executor_factory=executor_factory,
-                root=root,
-                ignore=ignore,
+                **fields,
             )
         except LegacyLayoutError as e:
             provider.close()
@@ -817,14 +877,16 @@ class Store:
         nothing is left holding it. ``open_kwargs`` are
         :meth:`open`'s, applied to the workspace this returns.
 
-        A lineage shares one workspace root, so ``root`` (when given)
-        opens the SOURCE too: ``paths`` is normalized against the root
-        the child will use, and a view recorded against some other root
-        would name paths the child cannot see.
+        A lineage shares one workspace root, so ``root`` (when given,
+        directly or as ``env.root``) opens the SOURCE too: ``paths`` is
+        normalized against the root the child will use, and a view
+        recorded against some other root would name paths the child
+        cannot see.
         """
-        source = self.open(
-            src, **{k: open_kwargs[k] for k in ("root",) if k in open_kwargs}
-        )
+        root = open_kwargs.get("root")
+        if root is None and open_kwargs.get("env") is not None:
+            root = open_kwargs["env"].root
+        source = self.open(src, **({"root": root} if root is not None else {}))
         try:
             child = source.fork(dst, at=at, inherit=inherit, paths=paths)
             # Its provider shares the source's store handle, which goes
@@ -1782,8 +1844,8 @@ class Store:
 
     def _registry_path(self) -> Path | None:
         """Where the registry file lives, or ``None`` for a store with
-        no layout of its own."""
-        if self._provider_factory is not None:
+        no layout of its own, or no directory."""
+        if self._provider_factory is not None or self._path is None:
             return None
         return self._path / _REGISTRY_FILE
 
@@ -2179,14 +2241,23 @@ class Store:
         first use; ``None`` when the store keeps its data on disk and
         nothing was ever written there (unless ``create``).
 
-        The backend is ``kv=`` when given, else ``NONTAINER_KV``, else
-        the store's ``kvgit`` directory. A ``Repo`` never writes by
-        being opened and makes no branch by being read, so every admin
-        read goes through here as well as every session.
+        The backend is the store's own memory for a memory store, else
+        ``kv=`` when given, else ``NONTAINER_KV``, else the store's
+        ``kvgit`` directory. A ``Repo`` never writes by being opened and
+        makes no branch by being read, so every admin read goes through
+        here as well as every session.
         """
         if self._kvgit is not None:
             return self._kvgit
         with self._kvgit_lock:
+            if self._kvgit is None and self._memory:
+                from kvgit import Repo
+                from kvgit.kv.memory import Memory
+
+                if self._memory_backend is None:
+                    self._memory_backend = Memory()
+                self._owns_backend = True
+                self._kvgit = Repo(self._memory_backend)
             if self._kvgit is None:
                 kv = self._kv if self._kv is not None else os.environ.get(KV_ENV)
                 self._owns_backend = not kv or isinstance(kv, str)
@@ -2679,6 +2750,13 @@ def store(
     backend: Backend = "kvgit",
     kv: Any = None,
     provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
+    memory: bool = False,
 ) -> Store:
     """Build a :class:`Store` (sugar, matching ``nontainer.workspace``)."""
-    return Store(path, backend=backend, kv=kv, provider_factory=provider_factory)
+    return Store(
+        path,
+        backend=backend,
+        kv=kv,
+        provider_factory=provider_factory,
+        memory=memory,
+    )

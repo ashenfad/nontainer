@@ -38,6 +38,7 @@ Store(
     backend: "kvgit" | "agentfs" = "kvgit",
     kv: KVStore | str | None = None,      # kvgit: where its data lives (below)
     provider_factory: Callable[[str], WorkspaceProvider] | None = None,
+    memory: bool = False,                 # everything in this process (below)
 )
 nontainer.store(...)                      # the same, as sugar
 
@@ -69,6 +70,16 @@ Store(path, kv=Postgres(dsn, table="sessions"))   # any kvgit KVStore
 #   NONTAINER_KV=postgresql://app@db.internal/nt
 #   NONTAINER_KV_TABLE=sessions                   # default "kvgit"
 ```
+
+**A memory store.** `Store(memory=True)` keeps the sessions, their
+history and the publication registry in this process and writes
+nothing to disk. The data lasts as long as the `Store` object does
+(`close()` releases the repository handle, not the data), and two
+memory stores share nothing. It is for scratch worlds and tests.
+`path`, `kv` and `provider_factory` each say where state lives and are
+refused alongside it, `NONTAINER_KV` is not consulted, and only the
+kvgit backend has a memory form. `store.path` is `None` for one, and
+`store.memory` is `True`.
 
 `kv=` wins over `NONTAINER_KV`, which wins over the disk default. A
 PostgreSQL store is shared by every process pointed at it, and any
@@ -518,8 +529,10 @@ workspace(
     autocommit: bool = True,
     max_observation: int = 32_000,
     executor_factory: Callable[[], Executor] | None = None,
-    root: str = "/workspace",
+    root: str | None = None,               # default "/workspace"
     ignore: Iterable[str] | None = None,   # the embedder's .gitignore
+    env: Env | None = None,                # the six above as one value
+    memory: bool = False,                  # Store(memory=True); refuses store/provider
 ) -> Workspace
 ```
 
@@ -1620,6 +1633,43 @@ readable on the runtime — `supports_commands`, `supports_ws_verbs` and
 `guest_to_host(path)` are under [Introspection](#introspection).
 Writing an executor of your own is
 [extending.md](extending.md#executor--where-code-runs).
+
+## `Env` — a session's environment as one value
+
+```python
+@dataclass(frozen=True)
+class Env:
+    python: PythonConfig = PythonConfig()
+    mounts: Mapping[str, Mount] = {}           # read-only once built
+    commands: Mapping[str, CommandFunc] = {}   # read-only once built
+    executor_factory: Callable[[], Executor] | None = None
+    root: str = "/workspace"                   # normalized
+    ignore: tuple[str, ...] = ()
+
+    @classmethod
+    def of(cls, ws: Workspace) -> Env          # read one back
+```
+
+What the world a session's agent works in holds, and where its code
+runs. `store.open(session, env=env)` and `workspace(session, env=env)`
+take it in place of the six keywords it bundles; passing it with any of
+them is refused, so neither can be silently ignored. A fork inherits it,
+as forks have always inherited these settings, and `Env.of(ws)` reads
+it back, with mounts normalized and commands as the session holds them
+now (the framework's own left out).
+
+```python
+env = Env(python=PythonConfig(host_objects={"db": db}), ignore=("*.log",))
+ws = store.open("chat-42", env=env)
+child = ws.fork("chat-42.trial")
+assert Env.of(child) == Env.of(ws)
+other = store.open("chat-43", env=dataclasses.replace(env, root="/home/agent"))
+```
+
+`cache`, `autocommit` and `max_observation` are not part of it: they say
+how a session behaves, not what its world holds. Frozen opens
+(`store.resolve`, `tags.at`, a publication's `open`) take the six
+keywords, not `env`.
 
 ## `PythonConfig`
 

@@ -493,7 +493,9 @@ def test_the_frozen_settings_are_store_opens_settings(tmp_path):
     """The two surfaces are hand-written lists, so they can drift. A
     frozen open takes every construction keyword ``Store.open`` takes
     except ``autocommit``, which a provider that commits nothing has
-    nothing to switch."""
+    nothing to switch, and ``env``, which is not a setting but a bundle
+    of six of them that ``Store.open`` expands; a frozen open takes
+    those six."""
     import inspect
 
     from nontainer.store import _FROZEN_SETTINGS
@@ -503,7 +505,7 @@ def test_the_frozen_settings_are_store_opens_settings(tmp_path):
         for name, p in inspect.signature(Store.open).parameters.items()
         if p.kind is inspect.Parameter.KEYWORD_ONLY
     }
-    assert set(_FROZEN_SETTINGS) == live - {"autocommit"}
+    assert set(_FROZEN_SETTINGS) == live - {"autocommit", "env"}
     # and each one is really a Workspace construction argument
     built = inspect.signature(Workspace.__init__).parameters
     assert set(_FROZEN_SETTINGS) <= set(built)

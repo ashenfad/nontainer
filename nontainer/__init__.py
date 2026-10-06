@@ -12,6 +12,7 @@ Public surface:
                            versioned; ws.files / ws.index / ws.tags
     Runtime             -- ws.runtime: how code runs against that state
     PythonConfig        -- what sandboxed code may touch
+    Env                 -- a session's environment as one value
     TerminalResult, PythonResult, WriteOutcome, RemoveOutcome, EditOutcome
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
@@ -83,6 +84,7 @@ from .protocol import (
 from .runtime import Runtime
 from .store import Publication, Ref, Store, Version, store
 from .workspace import (
+    Env,
     ModuleGrant,
     Mount,
     PythonConfig,
@@ -106,6 +108,7 @@ __all__ = [
     "Workspace",
     "Runtime",
     "PythonConfig",
+    "Env",
     "Mount",
     "ModuleGrant",
     "TerminalResult",
