@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Changed
+- **Requires sandtrap 0.4.1.**
+
 ### Fixed
+- **A package an agent wrote in the workspace imports and runs** (sandtrap 0.4.1). `import tern`, `from tern import X` and `from tern.cli import main` failed with "Import of 'tern' is not allowed", in `run_python` and in the terminal's `python`, whenever the import needed the package itself (`tern/__init__.py`) rather than one of its modules. Flat modules (`convert.py`) were unaffected. Packages now load as in CPython: `__init__.py` first, then the submodule, so a package's modules can import from it.
+- **`__version__`, `__author__` and `__all__` read on a module** (sandtrap 0.4.1). `from tern import __version__` was refused with every other dunder. These three now read as attributes and as from-imports, as plain data only.
+- **Top-level `await` in `run_python` is the script's error.** `ws.run_python("await f()")` raised a `SyntaxError` out of the call instead of returning a result with `error` set, as every other syntax error does. It now returns one, and the message says top-level await needs an async execution (sandtrap 0.4.1).
 - **A delegate forked from another session's state diffs as its own work.** `ws-git diff <name>` measures from where the two sessions last met. For a delegate forked from another session (`fork_from`), that is often only the store's first commit, so `--stat` listed the other session's whole tree as the delegate's changes, and an agent reported those files as "the delegate's other touches". When a session began from a state this session's history doesn't hold, the diff now measures from where it began, and its header says how many paths a merge would bring besides. `AgentGit.source_began` reads the commit a fork began at.
 - **A delegate's answer doesn't offer a merge as "take all of it" when the fork point is outside the asker's history.** Such an answer's provenance carries `"outside": True`. The next-step line offers the diff and `ws-git checkout <name> -- <paths>`, and says a merge would bring the source's files too. A fork point in the asker's own history (a store tag of one of its commits) reads as before.
 
