@@ -104,7 +104,7 @@ dependencies = [
     # ExecResult.dropped names the namespace values a worker could not
     # pickle back. Wrapped sandbox mode is removed; executor.py passes
     # mode="raw" explicitly, which is still accepted.
-    "sandtrap>=0.4.0",
+    "sandtrap>=0.4.1",
     # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
     # session teardown no longer needs the __void__ anchor dance
     # 0.3.3: the incremental orphan sweep no longer deletes chunks that

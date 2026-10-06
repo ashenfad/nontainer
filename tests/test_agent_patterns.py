@@ -108,6 +108,30 @@ def test_syntax_error_is_a_result(ws):
     assert r.error is not None  # SyntaxError reported, not raised to the host
 
 
+def test_top_level_await_is_a_result(ws):
+    """sandtrap rejects it at compile time; that came back raised out of
+    run_python rather than as the script's error."""
+    r = ws.run_python("x = 1\nawait f()")
+    assert "SyntaxError" in r.error and "top-level await" in r.error
+
+
+def test_a_package_the_agent_wrote_imports_and_runs(ws):
+    """A package's own modules import from it, as `tern/cli.py` reads
+    `__version__` off `tern`: refused as "Import of 'tern' is not
+    allowed" until sandtrap 0.4.1."""
+    ws.files.write("tern/__init__.py", '__version__ = "0.1.0"\n')
+    ws.files.write(
+        "tern/cli.py",
+        "from tern import __version__\n\ndef main():\n    print(__version__)\n",
+    )
+    r = ws.run_python("import tern\nfrom tern.cli import main\nmain()")
+    assert r.error is None, r.error
+    assert r.stdout == "0.1.0\n"
+    t = ws.terminal('python -c "from tern.cli import main; main()"')
+    assert t.exit_code == 0, t.stdout + t.stderr
+    assert t.stdout == "0.1.0\n"
+
+
 def test_traceback_points_at_the_offending_line(ws):
     r = ws.run_python("a = 1\nb = 2\nc = a / 0\n")
     assert not r
