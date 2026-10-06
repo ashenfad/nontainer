@@ -215,13 +215,21 @@ def _no_node_note(ws: Workspace, *, apps: bool) -> str:
     probing for one spends calls on `which`, `node --version`, `npx`.
     Said once, with where JavaScript does run here: only the routes this
     session has. Not said where the terminal is a real shell (the VM and
-    dud rungs), which has whatever its image installed."""
+    dud rungs), which has whatever its image installed, and not said of
+    a name the embedder injected as a command of its own."""
+    absent = [n for n in ("node", "npm", "npx") if n not in ws.runtime.commands]
+    if not absent:
+        return ""
+    names = [f"`{n}`" for n in absent]
+    spelled = (
+        names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+    )
     routes = []
     if "ws-vitest" in ws.runtime.commands:
         routes.append("`ws-vitest` runs JavaScript modules and their tests")
     if apps:
         routes.append("test_app runs a page in a browser")
-    note = "\n\nThere is no `node`, `npm` or `npx`"
+    note = f"\n\nThere is no {spelled}"
     return note + (": " + ", and ".join(routes) + "." if routes else ".")
 
 
