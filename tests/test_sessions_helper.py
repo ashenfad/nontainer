@@ -879,16 +879,94 @@ def test_ask_from_refuses_a_fork_point_nothing_names(parent, store, fork_point):
             sessions.ask("q", fork_from="sage@abcdef1")
 
 
-def test_ask_from_elsewhere_starts_a_fresh_conversation_by_default(
+def test_ask_from_elsewhere_continues_that_conversation_by_default(
     parent, store, fork_point
 ):
-    """The default is a delegate that starts a chat of its own over
-    that state: the conversation stored at the fork point is dropped on
-    the child's first commit."""
+    """Forked from elsewhere, the delegate is the agent that was there:
+    another session's files are already in reach through ws-git, and
+    its memory is what only a fork brings. So the conversation comes
+    along unless the ask says otherwise."""
     with Sessions(parent, Scripted(store, {})) as sessions:
         answer = sessions.ask("what is north?", fork_from="rates-2026", wait=True)
 
+    assert _conversation(store, answer.branch) == {
+        f"{CONVERSATION_PREFIX}runs/1": b"what are the rates?"
+    }
+
+
+def test_ask_from_elsewhere_with_fresh_takes_only_the_files(parent, store, fork_point):
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask(
+            "what is north?", fork_from="rates-2026", inherit="fresh", wait=True
+        )
+
     assert _conversation(store, answer.branch) == {}
+
+
+def test_an_ask_of_your_own_still_starts_fresh(parent, store):
+    """Forked from the asker, the delegate starts a chat of its own: the
+    brief carries what it needs, not the asker's whole conversation."""
+    kv = parent._provider.kv
+    kv[f"{CONVERSATION_PREFIX}session"] = {"session_id": "analyst", "run_ids": ["1"]}
+    kv[f"{CONVERSATION_PREFIX}runs/1"] = b"something private"
+    parent.commit(info={"tool": "test"})
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        answer = sessions.ask("polish it", wait=True)
+    assert f"{CONVERSATION_PREFIX}runs/1" not in _conversation(store, answer.branch)
+
+
+def test_ask_from_a_bare_session_name_forks_it_as_it_is_now(parent, store, fork_point):
+    """`fork_from="sage"` is that session at its latest commit, files and
+    conversation, as every ws-git verb reads a bare session name. An
+    agent asking another session about its work was refused for not
+    knowing a commit id it had no need of."""
+    later = store.open("sage")
+    later._provider.kv[f"{CONVERSATION_PREFIX}runs/2"] = b"said after the tag"
+    later.files.write("/workspace/rates.md", "# Rates\n\nnorth 9, south 7\n")
+    later.index.commit("kept talking")
+    head = later.head
+    later.close()
+
+    runner = Scripted(store, {}, text="north went to 9")
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("what changed?", fork_from="sage", wait=True)
+        assert sessions.list()[0].origin == ("sage", head)
+
+    assert _conversation(store, answer.branch) == {
+        f"{CONVERSATION_PREFIX}runs/1": b"what are the rates?",
+        f"{CONVERSATION_PREFIX}runs/2": b"said after the tag",
+    }
+    child = store.open(answer.branch)
+    try:
+        assert "north 9" in child.files.read("/workspace/rates.md").decode()
+    finally:
+        child.close()
+    # the chain names the session at the commit it was at
+    assert answer.provenance["chain"][0] == f"sage@{head}"
+    assert answer.provenance["from"] == "sage"
+
+
+def test_a_store_tag_wins_over_a_session_of_the_same_name(parent, store, fork_point):
+    """What already resolved keeps resolving the same way."""
+    sage = store.open("sage")
+    store.tags.add(sage, "analyst")  # a tag named like the asking session
+    tagged = sage.head
+    sage.close()
+    parent.files.write("/workspace/later.md", "moved on\n")
+    parent.commit(info={"tool": "test"})
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        sessions.ask("q", fork_from="analyst", wait=True)
+        assert sessions.list()[0].origin == ("analyst", tagged)
+
+
+def test_an_unknown_fork_point_names_the_sessions_and_tags_there_are(
+    parent, store, fork_point
+):
+    with Sessions(parent, Scripted(store, {})) as sessions:
+        with pytest.raises(SessionsError) as e:
+            sessions.ask("q", fork_from="nobody")
+    assert "sessions: analyst, sage" in str(e.value)
+    assert "store tags: rates-2026" in str(e.value)
 
 
 def test_ask_from_elsewhere_can_continue_that_conversation(parent, store, fork_point):

@@ -2039,7 +2039,9 @@ def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if session is not None and session != ws.session:
         other = _other_session(ws, session)
         try:
-            return _log_out(AgentGit(other), other, ctx, limit, every, needle)
+            return _log_out(
+                AgentGit(other), other, ctx, limit, every, needle, named=session
+            )
         finally:
             other.close()
     return _log_out(git, ws, ctx, limit, every, needle)
@@ -2052,17 +2054,34 @@ def _log_out(
     limit: int | None,
     every: bool,
     needle: str | None,
+    *,
+    named: str | None = None,
 ) -> Any:
     """One session's log: the agent's commits, or every commit the
     session holds with ``--all``, filtered to where a string appeared
     or vanished when one was named.
 
     The tags are that session's own, so a log of a neighbour carries
-    the neighbour's bookmarks and not this session's."""
+    the neighbour's bookmarks and not this session's.
+
+    An empty log of the agent's commits says why when the session holds
+    others: an agent that never ran ``ws-git commit`` has only its turn
+    commits and those it was forked from, which only ``--all`` lists, and a bare empty answer read as
+    "this session has no history" to an agent looking for a commit id.
+    ``named`` is the session as the caller typed it, for the hint."""
     walk = _walk(git, every)
     tags = _by_commit(git.tags())
     if needle is None:
         entries = [entry for entry, _ in _capped(walk, limit)]
+        if not entries and not every and (limit is None or limit > 0):
+            if _capped(_walk(git, True), 1):
+                where = f"in {named}" if named else "in this session"
+                spelled = f"ws-git log {named} --all" if named else "ws-git log --all"
+                ctx.stdout.write(
+                    f"# no ws-git commits {where}: `{spelled}` lists every "
+                    f"commit it holds, turn commits included\n"
+                )
+                return None
         return _log_lines(entries, ctx, tags)
     found = _capped(_pickaxe(ws._provider, walk, needle), limit)
     return _log_lines(

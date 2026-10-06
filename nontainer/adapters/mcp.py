@@ -301,7 +301,7 @@ def build_server(
             task: str = "",
             name: str = "",
             paths: "list[str] | str | None" = None,
-            inherit: str = "fresh",
+            inherit: str = "",
             fork_from: str = "",
             resume: str = "",
             wait: bool = False,
