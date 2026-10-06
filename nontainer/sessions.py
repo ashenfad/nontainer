@@ -216,6 +216,10 @@ class Sessions:
         self._futures: dict[str, Future] = {}
         self._children: dict[str, Workspace] = {}
         self._base: dict[str, str | None] = {}
+        # child -> the ref its answer descends from, when it was forked
+        # from elsewhere: settled when the ask resolved the fork point,
+        # since a bare name read again later may mean something else
+        self._sources: dict[str, str] = {}
         #: The jobs whose answer has landed and has not been collected
         #: since it landed. A name goes in when an answer is recorded
         #: and comes out when a caller collects it, through either
@@ -332,7 +336,12 @@ class Sessions:
             child_name, base = previous.name, None
             child = self._reopen(child_name)
         else:
-            origin = self._origin(fork_from) if fork_from is not None else None
+            source = None
+            if fork_from is not None:
+                given, commit, source = self._origin(fork_from)
+                origin = (given, commit)
+            else:
+                origin = None
             try:
                 child, child_name, base = self._fork(
                     name, paths=paths, inherit=inherit, at=origin[1] if origin else None
@@ -345,6 +354,9 @@ class Sessions:
                     f"{origin[0]!r} names commit {exc}, which this store does "
                     "not hold, so there is nothing to fork"
                 ) from exc
+            if source is not None:
+                with self._lock:
+                    self._sources[child_name] = source
         job = Job(
             name=child_name,
             task=task,
@@ -935,14 +947,21 @@ class Sessions:
             )
         return store.open(name, root=self._ws.root)
 
-    def _origin(self, fork_from: "str | Any") -> "tuple[str, str]":
-        """``(the fork point as the caller spelled it, its commit)``.
+    def _origin(self, fork_from: "str | Any") -> "tuple[str, str, str]":
+        """``(the fork point as the caller spelled it, its commit, the
+        ref an answer from there descends from)``.
 
-        Two spellings, one funnel each. A ``session@commit`` ref — or a
-        :class:`~nontainer.Ref` — resolves the way every other
-        cross-session read does, so a short commit id and a session's
-        own tag are spellings this takes too. Anything else is a store
-        tag, the name a commit outlives its session under.
+        A ``session@commit`` ref — or a :class:`~nontainer.Ref` —
+        resolves the way every other cross-session read does, so a short
+        commit id and a session's own tag are spellings this takes too.
+        A bare name is a store tag, the name a commit outlives its
+        session under, or else a session as it is now.
+
+        The third part is settled here, with the name: a store tag
+        enters a provenance chain as its bare commit (it belongs to no
+        session), and a session as ``session@commit``. Reading the
+        name again when the answer lands could classify it differently,
+        if a tag or session of that name came or went during the run.
         """
         from .store import Ref
 
@@ -960,13 +979,14 @@ class Sessions:
             )
         if isinstance(fork_from, Ref) or "@" in given:
             with self._ws.lock:
-                return given, self._ws.expand_ref(fork_from).commit
+                commit = self._ws.expand_ref(fork_from).commit
+            return given, commit, str(Ref(Ref.parse(given).session, commit))
         tags = self._store_tags()
         if given in tags:
-            return given, tags[given]
+            return given, tags[given], tags[given]
         head = self._session_head(given)
         if head is not None:
-            return given, head
+            return given, head, str(Ref(given, head))
         known = ", ".join(sorted(tags)) or "none"
         sessions = self._session_names()
         shown = ", ".join(sessions[:12]) + (" …" if len(sessions) > 12 else "")
@@ -1284,16 +1304,11 @@ class Sessions:
 
     def _descends_from(self, job: Job, base: str | None) -> str | None:
         """The ref a job's answer descends FROM."""
-        from .store import Ref
-
         if job.origin is not None:
-            given, commit = job.origin
-            if "@" in given:
-                return str(Ref(Ref.parse(given).session, commit))
-            if given not in self._store_tags() and given in self._session_names():
-                # a session by its bare name: the commit it was at
-                return str(Ref(given, commit))
-            return commit
+            # what the ask resolved, not the name read again now: a tag
+            # or session made or removed during the run would change it
+            with self._lock:
+                return self._sources.get(job.name, job.origin[1])
         return f"{self._ws.session}@{base}" if base else None
 
     def _record(self, name: str, answer: Answer, token: int) -> None:

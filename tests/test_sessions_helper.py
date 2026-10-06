@@ -959,6 +959,28 @@ def test_a_store_tag_wins_over_a_session_of_the_same_name(parent, store, fork_po
         assert sessions.list()[0].origin == ("analyst", tagged)
 
 
+def test_provenance_keeps_what_the_fork_point_resolved_to(parent, store, fork_point):
+    """A bare name is classified once, when the ask resolves it. A tag
+    of the same name made while the delegate runs does not turn the
+    session it was forked from into a sessionless commit."""
+    sage = store.open("sage")
+    head = sage.head
+    sage.close()
+
+    class TagsMidRun(Scripted):
+        def run(self, session, task, *, budget=None):
+            other = self.store.open("analyst")
+            try:
+                self.store.tags.add(other, "sage")
+            finally:
+                other.close()
+            return super().run(session, task, budget=budget)
+
+    with Sessions(parent, TagsMidRun(store, {})) as sessions:
+        answer = sessions.ask("what changed?", fork_from="sage", wait=True)
+    assert answer.provenance["chain"][0] == f"sage@{head}"
+
+
 def test_an_unknown_fork_point_names_the_sessions_and_tags_there_are(
     parent, store, fork_point
 ):
