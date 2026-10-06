@@ -32,7 +32,11 @@ pytest.importorskip("agno.compression.manager")
 
 from agno.agent import Agent  # noqa: E402
 from agno.compression.manager import CompressionManager  # noqa: E402
-from agno.metrics import MessageMetrics  # noqa: E402
+
+try:  # agno 2.6 and later; earlier, a message's metrics are models.metrics'
+    from agno.metrics import MessageMetrics  # noqa: E402
+except ImportError:  # pragma: no cover - exercised on agno 2.4 and 2.5
+    from agno.models.metrics import Metrics as MessageMetrics  # noqa: E402
 from agno.models.base import Model  # noqa: E402
 from agno.models.message import Message  # noqa: E402
 from agno.models.response import ModelResponse  # noqa: E402

@@ -316,9 +316,14 @@ can hold a range is enough.
   agent's flags are, and it is the same recognition that makes applying
   a fold idempotent.
 - **agno 2.1.0 has no `CompressionManager`,** and that is nontainer's
-  agno floor. The adapter needs a later agno. The seam test skips on
-  2.1.0, and the adapter should say which version it needs when it is
-  imported with an older one, rather than fail somewhere inside.
+  agno floor. The manager arrived in 2.4, but on 2.4 the summary the
+  adapter splices into a request is stored with the run
+  (`test_the_splice_never_reaches_the_stored_conversation` fails on
+  2.4.0 and 2.4.8). The adapter's floor is agno 2.5: the seam and
+  adapter tests pass on 2.5.0, 2.5.17, 2.6.0, 2.7.0, 2.8.0, 2.8.5 and
+  3.x, and CI runs them on 2.5.0. Imported on anything older, or on an
+  agno missing a hook, the adapter says what it needs rather than
+  failing somewhere inside.
 - **`compress_tool_results` must stay `True`,** or agno never calls the
   manager. The adapter doesn't compress tool results despite the name.
 - **One run is not bounded.** Folds cut at run boundaries and never
@@ -369,7 +374,7 @@ agent = Agent(
 - agno turns its `compress_tool_results` flag on by itself for this
   manager; it is the gate agno calls a manager behind. Nothing here
   compresses a tool result.
-- The adapter needs agno 3.0 or later and says so when imported with an
+- The adapter needs agno 2.5 or later and says so when imported with an
   older one.
 
 ```python
@@ -385,7 +390,7 @@ in_force(ws, message_ids)  # -> Fold | None, the one a history with these ids ge
 |---|---|
 | The studio sends every earlier run (nontainer-studio #78) | merged |
 | The studio drops tool-result compression (nontainer-studio #79) | merged |
-| Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 3.0.1 and 3.0.11, sync and streaming |
+| Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 2.5 and later (2.5.0 in CI) and on 3.0.1 and 3.0.11, sync and streaming |
 | `__compaction__/` plane and the `Fold` record | released in 0.8.8 (`nontainer/compaction.py`, `planes.py`) |
 | Core: policy, texts, reduce and chunks | released in 0.8.8 |
 | agno adapter (`CompactingCompression`), with the db backstop | released in 0.8.8 (`nontainer/adapters/agno_compaction.py`) |

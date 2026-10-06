@@ -1,4 +1,4 @@
-"""Compaction for agno (``[agno]`` extra, agno 3.0 or later).
+"""Compaction for agno (``[agno]`` extra, agno 2.5 or later).
 
 Wire it as the agent's compression manager::
 
@@ -46,16 +46,49 @@ from typing import TYPE_CHECKING, Any, Optional
 try:
     _agno_version = version("agno")
 except PackageNotFoundError:  # pragma: no cover - an unpackaged agno
-    _agno_version = "0"
-if int(_agno_version.split(".")[0]) < 3:
+    _agno_version = "unknown"
+
+# Gated on what the adapter uses rather than on agno's major version: agno
+# 2.x releases with a compression manager run it as 3.x does (#193). The
+# behaviour behind these names is what tests/test_agno_compaction_seam.py
+# pins, on the agno versions CI runs. One difference no name shows: agno
+# 2.4 has every hook, but the summary the adapter splices into a request
+# reaches the run it stores, so 2.5 is the floor as well.
+_FLOOR = (2, 5)
+_HOOKS = ("should_compress", "ashould_compress", "compress", "acompress")
+try:
+    from agno.compression.manager import CompressionManager
+    from agno.models.message import Message
+except ImportError as exc:
     raise ImportError(
-        f"nontainer.adapters.agno_compaction needs agno 3.0 or later "
-        f"(installed: {_agno_version}): it rides on agno's compression "
-        "manager, which earlier releases lack or call differently."
+        f"nontainer.adapters.agno_compaction needs an agno with a compression "
+        f"manager (agno.compression.manager; installed: agno {_agno_version}). "
+        "Upgrade agno."
+    ) from exc
+_missing = [h for h in _HOOKS if not callable(getattr(CompressionManager, h, None))]
+if "from_history" not in getattr(Message, "model_fields", {}):
+    _missing.append("Message.from_history")
+if _missing:
+    raise ImportError(
+        f"nontainer.adapters.agno_compaction needs agno's compression manager "
+        f"hooks, which agno {_agno_version} lacks: {', '.join(_missing)}. "
+        "Upgrade agno."
     )
 
-from agno.compression.manager import CompressionManager  # noqa: E402
-from agno.models.message import Message  # noqa: E402
+
+def _release(text: str) -> tuple[int, ...] | None:
+    try:
+        return tuple(int(part) for part in text.split(".")[:2])
+    except ValueError:  # an unpackaged or local agno: the hooks decided
+        return None
+
+
+if (_seen := _release(_agno_version)) is not None and _seen < _FLOOR:
+    raise ImportError(
+        f"nontainer.adapters.agno_compaction needs agno 2.5 or later "
+        f"(installed: {_agno_version}): before 2.5, the summary compaction "
+        "splices into a request is stored with the run."
+    )
 
 from ..compaction import (  # noqa: E402
     ACK,

@@ -187,6 +187,8 @@ def terminal_description(
     ``AppsConfig`` when the apps loop is enabled (``True`` accepted for
     the defaults; ``None``/``False`` = no apps section)."""
     desc = _TERMINAL_CORE
+    if ws.runtime.supports_commands:
+        desc += _no_node_note(ws, apps=bool(apps))
     if not split:
         desc += _PYTHON_IN_TERMINAL
         extras = _env_notes(ws)
@@ -206,6 +208,21 @@ def terminal_description(
     if primer:
         desc += "\n\n" + primer
     return desc
+
+
+def _no_node_note(ws: Workspace, *, apps: bool) -> str:
+    """The shell is termish, so there is no `node` to find, and an agent
+    probing for one spends calls on `which`, `node --version`, `npx`.
+    Said once, with where JavaScript does run here: only the routes this
+    session has. Not said where the terminal is a real shell (the VM and
+    dud rungs), which has whatever its image installed."""
+    routes = []
+    if "ws-vitest" in ws.runtime.commands:
+        routes.append("`ws-vitest` runs JavaScript modules and their tests")
+    if apps:
+        routes.append("test_app runs a page in a browser")
+    note = "\n\nThere is no `node`, `npm` or `npx`"
+    return note + (": " + ", and ".join(routes) + "." if routes else ".")
 
 
 def python_description(
@@ -638,7 +655,10 @@ blocks instead — worth it only for short work.
 
 paths narrows what the delegate SEES (["report.md", "src/"]) without
 narrowing its branch: it still holds everything, and it may create new
-files anywhere. A delegate forked from you starts with a fresh
+files anywhere. It is a view, not a share of the work: leave it out (the
+whole tree, the default) unless the delegate should read only those
+files, and do not ask a narrowed delegate to run anything that needs a
+file outside them, such as the whole test suite or an end-to-end check. A delegate forked from you starts with a fresh
 conversation over these files, so a brief, a summary, the context it
 needs — that goes IN the task, which is the only thing it is told.
 (inherit="full" would give it your conversation as of your last commit,

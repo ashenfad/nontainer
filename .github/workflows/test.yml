@@ -89,7 +89,17 @@ jobs:
   agno-versions:
     strategy:
       matrix:
-        agno: ["2.1.0", "3.0.1"]
+        # 2.1.0 is the [agno] extra's floor and 3.0.1 the first agno 3:
+        # both run every agno test. 2.5.0 is the compaction adapter's
+        # floor, the first agno whose compression manager holds the seam
+        # (#193), and runs the compaction tests.
+        include:
+          - agno: "2.1.0"
+            select: agno
+          - agno: "2.5.0"
+            select: agno_compaction
+          - agno: "3.0.1"
+            select: agno
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
@@ -116,7 +126,7 @@ jobs:
           assert agno.__version__ == '${{ matrix.agno }}', agno.__version__; \
           print('agno', agno.__version__)"
     - name: Run the agno adapter tests
-      run: python -m pytest tests/ -v -k agno
+      run: python -m pytest tests/ -v -k ${{ matrix.select }}
 
   # The whole suite again with every Store keeping its kvgit data in
   # PostgreSQL rather than on disk (tests/conftest.py gives each store
