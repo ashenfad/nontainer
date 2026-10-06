@@ -998,7 +998,7 @@ def test_a_diff_of_a_delegate_forked_elsewhere_shows_its_own_work(
     assert "status.py" in out
     assert "rates.md" not in out.split("\n", 1)[1]  # the header names none
     assert "a state this session's history does not hold" in out
-    assert f"`ws-git merge {answer.branch}` would also bring" in out
+    assert f"`ws-git merge {answer.branch}` would also bring 1 other path(s)" in out
     full = parent.terminal(f"ws-git diff {answer.branch}").stdout
     assert "+def status():" in full and "+# Rates" not in full
     # and the answer's next step does not offer the merge as "take all"
@@ -1006,6 +1006,34 @@ def test_a_diff_of_a_delegate_forked_elsewhere_shows_its_own_work(
     text = render_answer(answer)
     assert f"ws-git merge {answer.branch} would bring sage's files too" in text
     assert "(take all of it)" not in text
+
+
+def test_a_path_the_delegate_changed_is_not_counted_as_brought_besides(
+    parent, store, fork_point
+):
+    """sage's rates.md is the delegate's edit here, so it is in the diff
+    shown, not among what a merge would bring besides."""
+    runner = Scripted(store, {"/workspace/rates.md": "# Rates\n\nnorth 9\n"})
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("update", fork_from="sage", wait=True)
+    out = parent.terminal(f"ws-git diff {answer.branch} --stat").stdout
+    assert "brings these and nothing else" in out
+    assert "rates.md" in out
+
+
+def test_a_path_the_asker_also_holds_is_flagged_before_a_checkout(
+    parent, store, fork_point
+):
+    """The asker has main.py and the delegate wrote one too: a checkout of
+    it replaces the asker's, so the diff says so, as it says a merge
+    combines the two."""
+    runner = Scripted(store, {"/workspace/main.py": "print('theirs')\n"})
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("write main", fork_from="sage", wait=True)
+    out = parent.terminal(f"ws-git diff {answer.branch} --stat").stdout
+    flagged = [line for line in out.splitlines() if line.startswith("# also")]
+    assert flagged and "main.py" in flagged[0]
+    assert "a checkout of it replaces yours" in flagged[0]
 
 
 def test_a_fork_point_in_the_askers_history_is_not_outside(parent, store):

@@ -1913,21 +1913,44 @@ def _diff_branch(
         changed = sorted(ws._drop_ignored(change.paths))
         start_files = provider.files_at(start)
         seed = change.seed
-        here = set()
-        brought = len(
+        # What this session changed since the two last met, as the other
+        # branches measure it: a path both changed is where a merge
+        # combines the two and a checkout replaces this session's side.
+        here = set(
             ws._drop_ignored(
-                provider.diff(base, began).paths
+                provider.diff(base, ours).paths
                 if base
-                else provider.files_at(began).keys()
+                else provider.files_at(ours).keys()
             )
+        )
+        # The state's own paths a merge brings besides the ones shown: a
+        # path the delegate changed is in its diff already.
+        brought = len(
+            set(
+                ws._drop_ignored(
+                    provider.diff(base, began).paths
+                    if base
+                    else provider.files_at(began).keys()
+                )
+            )
+            - set(changed)
+        )
+        besides = (
+            f"would also bring {brought} other path(s) from that state"
+            if brought
+            else "brings these and nothing else"
         )
         header = (
             f"# what {name} changed since it began at {began[:7]}, a state "
             f"this session's history does not hold: `ws-git merge {name}` "
-            f"would also bring that state's files ({brought} path(s)), and "
-            f"`ws-git checkout {name} -- <paths>` takes only these"
+            f"{besides}, and `ws-git checkout {name} -- <paths>` takes "
+            "only these"
         )
-        both_label = ""
+        both_label = "# also changed here" if base else "# also here"
+        both_note = (
+            "(a checkout of it replaces yours; a merge combines both sides, "
+            "or marks a conflict)"
+        )
     elif unrelated:
         held = provider.files_at(theirs)
         changed = sorted(ws._drop_ignored(held.keys()))
@@ -1939,6 +1962,7 @@ def _diff_branch(
             f"is what `ws-git merge {name}` brings"
         )
         both_label = "# also here"
+        both_note = "(the merge combines both sides, or marks a conflict)"
     else:
         start = base or ours
         change = provider.diff(start, theirs)
@@ -1953,6 +1977,7 @@ def _diff_branch(
             else ""
         )
         both_label = "# also changed here since then"
+        both_note = "(the merge combines both sides, or marks a conflict)"
     if paths:
         changed = [p for p in changed if _under_any(p, paths)]
     if not changed:
@@ -1962,10 +1987,7 @@ def _diff_branch(
         both = [p for p in changed if p in here]
         if both:
             shown = ", ".join(_show(ws, p) for p in both)
-            lines.append(
-                f"{both_label}: {shown} "
-                "(the merge combines both sides, or marks a conflict)"
-            )
+            lines.append(f"{both_label}: {shown} {both_note}")
     # Read once for both groups below.
     old = read_files(start_files, changed)
     new = read_files(provider.files_at(theirs), changed)
