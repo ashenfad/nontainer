@@ -630,7 +630,7 @@ many paths a merge would bring besides:
 
 ```
 $ ws-git diff analyst.merry-cricket --stat
-# what analyst.merry-cricket changed since it began at 1bfb749, a state this session's history does not hold: `ws-git merge analyst.merry-cricket` would also bring that state's files (2 path(s)), and `ws-git checkout analyst.merry-cricket -- <paths>` takes only these
+# what analyst.merry-cricket changed since it began at 1bfb749, a state this session's history does not hold: `ws-git merge analyst.merry-cricket` would also bring 2 other path(s) from that state, and `ws-git checkout analyst.merry-cricket -- <paths>` takes only these
  status.py | 1 +
  1 file changed, 1 insertion(+), 0 deletions(-)
 ```
