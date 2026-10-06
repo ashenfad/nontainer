@@ -180,8 +180,14 @@ def _run_rows(record: dict[str, Any], found: dict[str, Any]) -> list[dict[str, A
     ``run_index``, ``run_data`` and the rest), built the way agno's own
     adapters build them, so ``get_run``/``get_runs`` answer in agno's
     shape. ``run_index`` is the run's place in the session's
-    ``run_ids``. agno 3 only, like the methods that call it."""
-    from agno.db.utils import build_single_run_row
+    ``run_ids``. On agno 2, which has no runs table and none of agno 3's
+    row helpers, the rows are built here in the same shape: agno 2 never
+    calls these methods, but a caller probing for them (``getattr(db,
+    "get_run", ...)``) must get an answer, not an ImportError."""
+    try:
+        from agno.db.utils import build_single_run_row
+    except ImportError:  # agno 2
+        build_single_run_row = _run_row
 
     rows = []
     for index, rid in enumerate(record.get("run_ids") or []):
@@ -203,9 +209,68 @@ def _run_out(row: dict[str, Any], deserialize: bool | None) -> Any:
     object agno deserializes it into."""
     if not deserialize:
         return row
-    from agno.db.utils import deserialize_run
+    try:
+        from agno.db.utils import deserialize_run
+    except ImportError:  # agno 2: see _run_rows
+        deserialize_run = _deserialize_run
 
     return deserialize_run(row.get("run_type"), row["run_data"])
+
+
+def _validate_pagination(limit: int | None, page: int | None) -> None:
+    """agno 3's ``validate_pagination``, for agno 2: a page needs a
+    limit, and pages count from 1."""
+    if page is not None and limit is None:
+        raise ValueError("`page` was provided without `limit`")
+    if page is not None and page < 1:
+        raise ValueError(f"`page` must be >= 1; got {page}")
+
+
+def _run_type(run: dict[str, Any]) -> str:
+    """agno 3's ``get_run_type`` for a stored run dict, for agno 2."""
+    if run.get("agent_id") or run.get("agent_name"):
+        return "agent"
+    if run.get("team_id") or run.get("team_name"):
+        return "team"
+    return "workflow"
+
+
+def _run_row(
+    run: dict[str, Any],
+    session_id: str | None,
+    user_id: str | None = None,
+    run_index: int | None = None,
+) -> dict[str, Any]:
+    """agno 3's ``build_single_run_row`` for a stored run dict, for agno 2:
+    the same keys, so ``get_runs``' filters and ``deserialize=False``
+    answer the same on both."""
+    now = int(time.time())
+    return {
+        "run_id": run.get("run_id"),
+        "session_id": session_id,
+        "run_type": _run_type(run),
+        "agent_id": run.get("agent_id"),
+        "team_id": run.get("team_id"),
+        "workflow_id": run.get("workflow_id"),
+        "user_id": user_id,
+        "parent_run_id": run.get("parent_run_id"),
+        "status": run.get("status"),
+        "run_index": run_index if run_index is not None else run.get("run_index"),
+        "run_data": run,
+        "created_at": run.get("created_at") or now,
+        "updated_at": now,
+    }
+
+
+def _deserialize_run(run_type: str | None, run_data: dict[str, Any]) -> Any:
+    """agno 3's ``deserialize_run``, for agno 2: the run class by type."""
+    from agno.run.agent import RunOutput
+    from agno.run.team import TeamRunOutput
+    from agno.run.workflow import WorkflowRunOutput
+
+    kind = run_type or _run_type(run_data)
+    cls = {"agent": RunOutput, "team": TeamRunOutput}.get(kind, WorkflowRunOutput)
+    return cls.from_dict(run_data)
 
 
 def _select_runs(
@@ -225,7 +290,11 @@ def _select_runs(
     """``get_runs``' filters, order and pagination, as agno's own
     ``JsonDb`` applies them, over rows the caller gathered."""
     from agno.db.json.utils import apply_sorting
-    from agno.db.utils import validate_pagination
+
+    try:
+        from agno.db.utils import validate_pagination
+    except ImportError:  # agno 2: see _run_rows
+        validate_pagination = _validate_pagination
 
     validate_pagination(limit, page)
     for field, wanted in (
