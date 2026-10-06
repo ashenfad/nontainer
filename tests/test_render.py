@@ -411,6 +411,29 @@ def test_the_termish_terminal_says_there_is_no_node():
         ws.close()
 
 
+def test_an_injected_node_is_not_denied():
+    """An embedder can inject `node` as a command of its own; the note
+    names only what is missing."""
+    ws = Workspace(
+        KvgitProvider.open(None, session="has-node"),
+        commands={"node": lambda ctx: None},
+    )
+    try:
+        desc = terminal_description(ws, split=True)
+        assert "There is no `npm` or `npx`." in desc
+        assert "no `node`" not in desc
+    finally:
+        ws.close()
+    every = Workspace(
+        KvgitProvider.open(None, session="has-all"),
+        commands={n: (lambda ctx: None) for n in ("node", "npm", "npx")},
+    )
+    try:
+        assert "There is no `" not in terminal_description(every, split=True)
+    finally:
+        every.close()
+
+
 def test_a_real_shell_is_not_told_there_is_no_node():
     """The dud rung's terminal is bash in a guest with an image of its
     own: whether it has node is the image's business."""
