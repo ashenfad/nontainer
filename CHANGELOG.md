@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.13 - 2026-10-06
 
 ### Changed
 - **`Sessions.ask`'s `inherit` follows `fork_from` when unset.** A child forked from elsewhere now carries the conversation there (`"full"`): it is the agent that was there, and the task is its next turn. A child of this session still starts `"fresh"`, as does a `resume`. Asking another session about its work took `inherit="full"`, which was easy to miss, and the fresh default answered from that state's files with none of its memory. **Callers that pass `fork_from` without `inherit` now get the conversation**: pass `inherit="fresh"` for the old behavior. The `sessions` tool's `inherit` argument follows the same rule when empty.
