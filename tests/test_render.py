@@ -389,3 +389,48 @@ def test_handler_example_is_the_embedders_where_the_store_differs():
     empty = apps_notes(AppsConfig(handler_example=""))
     assert "def get(req)" not in empty
     assert "ONLY verb functions" in empty
+
+
+def test_the_termish_terminal_says_there_is_no_node():
+    """Agents probe for `node` with `which` and `node --version`; the
+    termish shell has none, and says where JavaScript runs instead --
+    only the routes this session has."""
+    from nontainer.apps import AppsConfig, enable_apps
+
+    ws = Workspace(KvgitProvider.open(None, session="no-node"))
+    try:
+        plain = terminal_description(ws, split=True)
+        assert "There is no `node`, `npm` or `npx`." in plain
+        assert "ws-vitest" not in plain.split("no `node`")[1].split("\n")[0]
+        enable_apps(ws, AppsConfig())  # registers ws-vitest
+        with_apps = terminal_description(ws, split=True, apps=True)
+        line = next(x for x in with_apps.splitlines() if "no `node`" in x)
+        assert "`ws-vitest` runs JavaScript modules" in line
+        assert "test_app runs a page" in line
+    finally:
+        ws.close()
+
+
+def test_a_real_shell_is_not_told_there_is_no_node():
+    """The dud rung's terminal is bash in a guest with an image of its
+    own: whether it has node is the image's business."""
+    pytest.importorskip("dud")
+    from nontainer.executor_dud import DudExecutor
+
+    guest = Workspace(
+        KvgitProvider.open(None, session="no-node-guest"),
+        executor=DudExecutor(backend="subprocess"),
+    )
+    try:
+        assert "no `node`" not in terminal_description(guest, split=True)
+    finally:
+        guest.close()
+
+
+def test_the_sessions_description_says_paths_is_a_view_not_a_share():
+    """Delegates handed `paths` read it as the files they owned, and were
+    asked to run checks that needed files outside it."""
+    from nontainer.adapters.render import SESSIONS_DESCRIPTION
+
+    assert "It is a view, not a share of the work" in SESSIONS_DESCRIPTION
+    assert "end-to-end check" in SESSIONS_DESCRIPTION

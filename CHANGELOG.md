@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **The compaction adapter runs on agno 2.5 and later** (#193). It refused any agno below 3.0, but agno 2.x releases with a compression manager run it as 3.x does: the seam and adapter tests pass on 2.5.0, 2.5.17, 2.6.0, 2.7.0, 2.8.0 and 2.8.5. The gate now checks what the adapter uses (`CompressionManager`, its four hooks, `Message.from_history`), and names what's missing. On top of that it sets a floor of agno 2.5. agno 2.4 has every hook, but the summary the adapter splices into a request gets stored with the run (`test_the_splice_never_reaches_the_stored_conversation` fails on 2.4.0 and 2.4.8). CI runs the compaction tests on agno 2.5.0.
+- **The terminal says there is no `node`.** On the termish terminal, the description now says there is no `node`, `npm` or `npx`. When the session has them, it also names where JavaScript does run: `ws-vitest` for modules, and test_app for a page. Agents spent calls probing for node with `which` and `node --version`. A terminal that is a real shell (the VM and dud rungs) isn't told this.
+- **The sessions description says `paths` is a view, not a share of the work.** Agents gave delegates a `paths` view as if assigning files, then asked them to run checks that needed files outside it. The description says to leave `paths` out unless the delegate should read only those files, and not to ask a narrowed delegate to run the whole test suite or an end-to-end check.
+
 ## 0.8.14 - 2026-10-06
 
 ### Changed
