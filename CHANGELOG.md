@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.8.12 - 2026-10-05
 
 ### Added
 - **test_app's `press` action sends real key events.** `{"press": "ArrowLeft"}` goes through the browser's keyboard, so the page hears it wherever it listens: the focused element, `document` or `window`. A list presses keys in order, `"hold": ms` keeps each key down, and `"on": selector` focuses an element first. Agents testing games dispatched `KeyboardEvent`s from `eval`, which reach only the target they're dispatched on. Delegate after delegate found that a game listening on `window` never heard one sent to `document`.
