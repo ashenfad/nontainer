@@ -38,7 +38,7 @@ Git's spelling is on the left, what it does here on the right.
 | `reset` | abandon the composition and keep the tree. Mixed-only |
 | `status [--porcelain \| -s \| --short]` | what is staged, what is modified, what a merge left marked |
 | `diff [--cached] [--check] [--stat] [[--] paths...]` | unified diff against your last commit; `--stat` a summary per file |
-| `diff <session> [--stat] [[--] paths...]` | what that session changed since the two last met, which is what `merge <session>` brings (git's `A...B`), grouped by what it was sent to do |
+| `diff <session> [--stat] [[--] paths...]` | what that session changed since the two last met, which is what `merge <session>` brings (git's `A...B`), grouped by what it was sent to do; for a session forked from a state you don't hold, what it changed since it began |
 | `diff <tag>` | your tree against the commit a store tag names |
 | `log [-n N \| -N] [--oneline] [--all] [-S <string>]` | your own commits, newest first, one line each |
 | `log <session>` | another session's commits |
@@ -624,7 +624,16 @@ A delegate forked from another session's state, rather than from
 yours, shares no history with you: its branch holds that whole tree,
 so a merge brings all of it back and not only what the delegate wrote.
 Read it, or take the files you want; merge it only if bringing the
-other state in is what you meant.
+other state in is what you meant. `ws-git diff <name>` on such a
+delegate shows what it changed since it began, and its header says how
+many paths a merge would bring besides:
+
+```
+$ ws-git diff analyst.merry-cricket --stat
+# what analyst.merry-cricket changed since it began at 1bfb749, a state this session's history does not hold: `ws-git merge analyst.merry-cricket` would also bring that state's files (2 path(s)), and `ws-git checkout analyst.merry-cricket -- <paths>` takes only these
+ status.py | 1 +
+ 1 file changed, 1 insertion(+), 0 deletions(-)
+```
 
 `ws-git diff <name>` shows what that session changed since the two
 last met: its last commit measured from the merge base, which is what

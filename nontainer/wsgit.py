@@ -175,8 +175,10 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     staged set; --check finds leftover conflict markers;
                     --stat a summary per file. A session name shows what
                     that session changed since the two last met, which
-                    is what `merge <session>` brings (git's A...B); a
-                    store tag diffs against the state it names
+                    is what `merge <session>` brings (git's A...B), or
+                    since it began when it was forked from a state you
+                    don't hold; a store tag diffs against the state it
+                    names
   log [<session>] [-n N] [--all] [-S <string>]
                     your own commits, newest first; a session name
                     shows that session's and a store tag the tagged
@@ -1890,6 +1892,7 @@ def _diff_branch(
     ours = git.head or provider.head
     base = None
     unrelated = False
+    began = None
     if tagged is None:
         find = getattr(provider, "merge_base", None)
         if find is not None:
@@ -1897,8 +1900,35 @@ def _diff_branch(
             # No common history: a merge resolves against the empty
             # tree, so everything that session holds is what it brings.
             unrelated = base is None
+            began = _began_elsewhere(ws, git, provider, name, base, find)
     lines: list[str] = []
-    if unrelated:
+    if began is not None:
+        # Forked from a state this session's history does not hold: its
+        # own work is what it changed since it began. A merge brings
+        # that state's files as well, which a diff from where the two
+        # last met (often only the store's first commit) showed as the
+        # other session's changes.
+        start = began
+        change = provider.diff(start, theirs)
+        changed = sorted(ws._drop_ignored(change.paths))
+        start_files = provider.files_at(start)
+        seed = change.seed
+        here = set()
+        brought = len(
+            ws._drop_ignored(
+                provider.diff(base, began).paths
+                if base
+                else provider.files_at(began).keys()
+            )
+        )
+        header = (
+            f"# what {name} changed since it began at {began[:7]}, a state "
+            f"this session's history does not hold: `ws-git merge {name}` "
+            f"would also bring that state's files ({brought} path(s)), and "
+            f"`ws-git checkout {name} -- <paths>` takes only these"
+        )
+        both_label = ""
+    elif unrelated:
         held = provider.files_at(theirs)
         changed = sorted(ws._drop_ignored(held.keys()))
         start_files: Mapping[str, Any] = {}
@@ -2087,6 +2117,36 @@ def _log_out(
     return _log_lines(
         [entry for entry, _ in found], ctx, tags, {e.id: s for e, s in found}
     )
+
+
+def _began_elsewhere(
+    ws: Any, git: AgentGit, provider: Any, name: str, met: str | None, find: Any
+) -> str | None:
+    """Where session ``name`` began, when that is a state this session
+    does not hold; else ``None``.
+
+    A fork records the commit it began at. It began ELSEWHERE when the
+    two sessions last met before it began (``met`` is an ancestor of
+    that commit) and the tree it began with is not the tree at ``met``:
+    a delegate forked from another session's work, which shares only
+    the store's history with this one, or none at all (``met`` is
+    ``None``). A delegate forked from this session began with the tree
+    the two met at, and one merged since met it later than it began;
+    both read as before.
+    """
+    try:
+        began = git.source_began(name)
+    except Exception:  # noqa: BLE001 - no record reads as no fork
+        return None
+    if not began:
+        return None
+    if met is None:
+        return began
+    if began == met or find(met, began) != met:
+        return None
+    if not ws._drop_ignored(provider.diff(met, began).paths):
+        return None
+    return began
 
 
 def _by_commit(tags: Mapping[str, str]) -> dict[str, list[str]]:

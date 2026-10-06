@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **A delegate forked from another session's state diffs as its own work.** `ws-git diff <name>` measures from where the two sessions last met. For a delegate forked from another session (`fork_from`), that is often only the store's first commit, so `--stat` listed the other session's whole tree as the delegate's changes, and an agent reported those files as "the delegate's other touches". When a session began from a state this session's history doesn't hold, the diff now measures from where it began, and its header says how many paths a merge would bring besides. `AgentGit.source_began` reads the commit a fork began at.
+- **A delegate's answer doesn't offer a merge as "take all of it" when the fork point is outside the asker's history.** Such an answer's provenance carries `"outside": True`. The next-step line offers the diff and `ws-git checkout <name> -- <paths>`, and says a merge would bring the source's files too. A fork point in the asker's own history (a store tag of one of its commits) reads as before.
+
 ## 0.8.13 - 2026-10-06
 
 ### Changed

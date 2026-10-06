@@ -1138,6 +1138,18 @@ class AgentGit:
         blob = parse_blob(self._provider.key_at(head, BLOB_KEY))
         return blob["head"] or head
 
+    def source_began(self, source: str, *, head: str | None = None) -> str | None:
+        """The commit another session started from when it was forked,
+        or ``None`` for a session that is not a fork.
+
+        Every fork records it (see :func:`reset_for_fork`), and it
+        stays recorded past the session's own commits: it is where that
+        session's work begins, whoever it was forked from.
+        """
+        if head is None:
+            head = self._provider.branch_head(source)
+        return parse_blob(self._provider.key_at(head, BLOB_KEY))["base"]
+
     def source_uncommitted(
         self, source: str, *, head: str | None = None
     ) -> tuple[str, ...]:

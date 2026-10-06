@@ -1291,7 +1291,11 @@ class Sessions:
         hop = [source] if source else []
         if commit:
             hop.append(f"{child.session}@{commit}")
-        extra = {"from": job.origin[0]} if job.origin else {}
+        extra: dict[str, Any] = {}
+        if job.origin:
+            extra["from"] = job.origin[0]
+            if not self._holds(job.origin[1]):
+                extra["outside"] = True
         return {
             **answer.provenance,
             "session": child.session,
@@ -1301,6 +1305,17 @@ class Sessions:
             "chain": (*self._chain, *hop),
             **extra,
         }
+
+    def _holds(self, commit: str) -> bool:
+        """Whether ``commit`` is in this session's history, so that a
+        child forked there merges back as any fork does. ``True`` where
+        the provider cannot say: the ordinary guidance is the default."""
+        find = getattr(self._ws.provider, "merge_base", None)
+        if find is None:
+            return True
+        with self._ws.lock:
+            head = self._ws.head
+            return head is not None and find(commit, head) == commit
 
     def _descends_from(self, job: Job, base: str | None) -> str | None:
         """The ref a job's answer descends FROM."""
@@ -1455,6 +1470,18 @@ def render_answer(answer: Answer) -> str:
             f"{name} left work uncommitted, so what it committed is not "
             f"everything it did; ws-git merge will refuse it — take paths "
             f"with ws-git checkout {name} -- <paths>, or ask again."
+        )
+    elif answer.provenance.get("outside"):
+        # Forked from a state this session never held: a merge brings
+        # that state's files along with the delegate's work, which is
+        # rarely what an asker means by taking the answer.
+        source = answer.provenance.get("from", "another session")
+        lines.append(
+            f"next, in the terminal: ws-git diff {name} --stat (what it "
+            f"touched), then ws-git diff {name} -- <paths> (read it) | "
+            f"ws-git checkout {name} -- <paths> (take it). It began at "
+            f"{source}, which your history does not hold: ws-git merge "
+            f"{name} would bring {source}'s files too"
         )
     else:
         lines.append(
