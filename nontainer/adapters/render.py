@@ -626,7 +626,8 @@ SESSIONS_DESCRIPTION = """\
 Delegate work to a fork of this session — an agent with its own copy of
 the whole workspace — and collect its answer on a later turn.
   action="ask"     task="..." [name=] [paths=] [inherit=] [wait=]
-                   [fork_from="<session@commit or tag>"] [resume="<name>"]
+                   [fork_from="<session, session@commit or tag>"]
+                   [resume="<name>"]
   action="list"    your jobs: name, status, what you asked for
   action="result"  name="..." — the answer, once the job is done
   action="cancel"  name="..."     action="keep"  name="..."
@@ -637,18 +638,20 @@ blocks instead — worth it only for short work.
 
 paths narrows what the delegate SEES (["report.md", "src/"]) without
 narrowing its branch: it still holds everything, and it may create new
-files anywhere. inherit="fresh" (default) gives it a fresh conversation
-over these files; "full" continues the one at the fork point — yours,
-or another session's with fork_from= — never your staged work, since a
-delegate starts its own commits and not halfway through yours. A brief,
-a summary, the context it needs — that goes IN the task, which is the
-only thing it is told.
+files anywhere. A delegate forked from you starts with a fresh
+conversation over these files, so a brief, a summary, the context it
+needs — that goes IN the task, which is the only thing it is told.
+(inherit="full" would give it your conversation as of your last commit,
+never your staged work.)
 
-fork_from= starts the delegate from another session's state, or a tag's,
-instead of yours. It gets a fresh conversation there by default;
-inherit="full" continues the conversation stored at that fork point, so
-the delegate IS the agent that was there as of that commit and your
-task is its next turn. resume=<name> gives a new task to a delegate you
+fork_from= starts the delegate somewhere else: another session as it is
+now (its bare name), a commit of one (session@commit), or a store tag.
+Forked from elsewhere it IS the agent that was there, its memory and
+all, and your task is its next turn: this is how to ask another session
+about its work, or have it carry on. inherit="fresh" gives it that
+state's files and no conversation instead, though the files alone are
+already in reach (`ws-git show <session>:<path>`, `ws-git worktree add`).
+resume=<name> gives a new task to a delegate you
 already have, conversation kept; it does one task at a time, so resume
 it after its answer arrives. It goes on from its own branch as it left
 it, so resume one to revise its work (what to change, after reading its

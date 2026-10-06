@@ -235,7 +235,12 @@ def test_ws_git_log_in_a_fresh_child_is_empty_but_reaches_the_parents(ws, store)
     _seed(ws, **{"a.txt": "one\n"})
     child = ws.fork("child")
     try:
-        assert child.terminal("ws-git log").stdout.strip() == ""
+        # no commits of its own: only the pointer to --all, which walks
+        # back through the fork point to what it was forked from
+        out = child.terminal("ws-git log").stdout
+        assert out.startswith("# no ws-git commits in this session")
+        assert out.count("\n") == 1
+        assert "seed" in child.terminal("ws-git log --all").stdout
         assert "seed" in child.terminal("ws-git log main").stdout
         # nothing staged, whatever the parent had staged, and nothing
         # modified: what a fork inherited is not work it did. Its

@@ -278,7 +278,9 @@ def test_inherit_is_spelled_as_the_two_words_it_takes():
     from nontainer.sessions import Sessions
 
     for fn in (WS.fork, Sessions.ask):
-        assert typing.get_args(typing.get_type_hints(fn)["inherit"]) == (
-            "full",
-            "fresh",
-        ), fn
+        hint = typing.get_type_hints(fn)["inherit"]
+        # ask's is optional: unset follows where the child is forked from
+        words = [a for a in typing.get_args(hint) if a is not type(None)]
+        if len(words) == 1 and typing.get_origin(words[0]) is typing.Literal:
+            hint = words[0]
+        assert typing.get_args(hint) == ("full", "fresh"), fn

@@ -2190,3 +2190,22 @@ def test_add_works_through_the_ferried_context(edited):
     for args in (["add", "src"], ["add", "b.md"], ["add", "."]):
         assert command(_guest_ctx(args, "/workspace", {})) is None, args
     assert _staged(edited) == ["b.md", "src/x.py", "src/y.py"]
+
+
+def test_an_empty_log_says_where_the_history_is(peer_ws):
+    """A session whose agent never ran `ws-git commit` holds only turn
+    commits, and those are --all's. A bare empty answer read as "no
+    history" to an agent looking for a commit id to fork from."""
+    r = peer_ws.terminal("ws-git log peer")
+    assert r.exit_code == 0
+    assert r.stdout == (
+        "# no ws-git commits in peer: `ws-git log peer --all` lists every "
+        "commit it holds, turn commits included\n"
+    )
+    assert peer_ws.terminal("ws-git log peer --all").stdout.strip()  # it is there
+    # one's own session, the same
+    peer_ws.files.write("/workspace/x.md", "x\n")
+    peer_ws.commit(info={"tool": "test"})
+    assert "`ws-git log --all` lists" in peer_ws.terminal("ws-git log").stdout
+    # nothing at all says nothing
+    assert peer_ws.terminal("ws-git log -n 0").stdout == ""

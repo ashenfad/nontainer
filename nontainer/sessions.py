@@ -255,7 +255,7 @@ class Sessions:
         *,
         name: str | None = None,
         paths: "Iterable[str] | str | None" = None,
-        inherit: Literal["full", "fresh"] = "fresh",
+        inherit: 'Literal["full", "fresh"] | None' = None,
         fork_from: "str | Any | None" = None,
         resume: str | None = None,
         wait: bool = False,
@@ -280,19 +280,24 @@ class Sessions:
         ``paths`` narrows what the child's filesystem shows without
         narrowing its branch, and
         ``inherit`` decides whether the conversation at the fork point
-        comes along (``"fresh"`` here, where the child is starting work
-        of its own, against ``fork``'s own ``"full"`` default).
+        comes along. Unset, it follows where the child is forked: from
+        this session it starts ``"fresh"``, doing work of its own on
+        a brief; from anywhere else (``fork_from``) it is ``"full"``.
 
-        ``fork_from`` starts the child somewhere else: a commit named by a
-        store tag, or spelled ``session@commit`` (a short commit id and
-        a session's own tag resolve here the way they do for every
-        other verb). The child is forked THERE rather than here, and
-        the branch it came from is only read. ``inherit`` decides what
-        the child arrives with: ``"fresh"`` gives it a conversation of
-        its own over that state, and ``"full"`` gives it the
-        conversation the fork point holds — the delegate is then the
+        ``fork_from`` starts the child somewhere else: another session as
+        it is now, by its bare name; a commit named by a store tag; or
+        one spelled ``session@commit`` (a short commit id and a
+        session's own tag resolve here the way they do for every other
+        verb). A store tag wins over a session of the same name. The
+        child is forked THERE rather than here, and the branch it came
+        from is only read. It arrives, unless told otherwise, with the
+        conversation the fork point holds: the delegate is then the
         agent that was there, as of that commit, and the task is its
-        next turn.
+        next turn. That is what forking from elsewhere is for: another
+        session's files are already in reach (``ws-git show``,
+        ``checkout``, ``worktree``), and its agent's memory is not.
+        ``inherit="fresh"`` gives it a conversation of its own over
+        that state instead.
 
         ``resume`` gives a new task to a child this session already
         has: the same branch with its conversation kept, and no second
@@ -313,6 +318,8 @@ class Sessions:
         """
         self._check_open()
         started = time.time()
+        if inherit is None:
+            inherit = "full" if fork_from is not None and resume is None else "fresh"
         if inherit != "fresh" and resume is not None:
             raise SessionsError(
                 "inherit must be 'fresh' when resuming: a child resumed keeps "
@@ -954,10 +961,24 @@ class Sessions:
         if isinstance(fork_from, Ref) or "@" in given:
             with self._ws.lock:
                 return given, self._ws.expand_ref(fork_from).commit
-        return given, self._store_tag(given)
+        tags = self._store_tags()
+        if given in tags:
+            return given, tags[given]
+        head = self._session_head(given)
+        if head is not None:
+            return given, head
+        known = ", ".join(sorted(tags)) or "none"
+        sessions = self._session_names()
+        shown = ", ".join(sessions[:12]) + (" …" if len(sessions) > 12 else "")
+        raise SessionsError(
+            f"nothing named {given!r} on this store (sessions: {shown or 'none'}; "
+            f"store tags: {known}). A fork point is a session (as it is now), "
+            "a store tag, or a commit spelled 'session@commit'"
+        )
 
-    def _store_tag(self, name: str) -> str:
-        """The commit a store tag names.
+    def _store_tags(self) -> dict[str, str]:
+        """The store's tags, name -> commit; empty with no store or a
+        store that keeps none.
 
         A store tag belongs to no session and outlives the one that
         made it, which is what lets a commit be a fork point long after
@@ -967,27 +988,33 @@ class Sessions:
 
         store = self._ws.store
         if store is None:
-            raise SessionsError(
-                f"{name!r} is not a 'session@commit' ref, and session "
-                f"{self._ws.session!r} was not opened from a store, so there "
-                "are no store tags to look it up in"
-            )
+            return {}
         try:
-            tags = store.tags.list()
-        except NotSupportedError as exc:
-            raise SessionsError(
-                f"{name!r} is not a 'session@commit' ref, and this store has "
-                f"no tags to look it up in ({exc})"
-            ) from exc
-        commit = tags.get(name)
-        if commit is None:
-            known = ", ".join(sorted(tags)) or "none"
-            raise SessionsError(
-                f"nothing named {name!r} on this store (store tags: {known}). "
-                "A fork point is a commit, named by a store tag or spelled "
-                "'session@commit'"
-            )
-        return commit
+            return dict(store.tags.list())
+        except NotSupportedError:
+            return {}
+
+    def _session_names(self) -> list[str]:
+        store = self._ws.store
+        if store is None:
+            return []
+        try:
+            return sorted(store.sessions())
+        except Exception:  # noqa: BLE001 - a listing for a message
+            return []
+
+    def _session_head(self, name: str) -> str | None:
+        """Session ``name``'s latest commit, or None for a name no
+        session has. The commit holds the session's files and its
+        conversation alike, so a fork there with ``inherit="full"`` is
+        its agent as of its last turn."""
+        from .errors import NotSupportedError
+
+        try:
+            with self._ws.lock:
+                return self._ws.provider.branch_head(name)
+        except (ValueError, NotSupportedError):
+            return None
 
     def _work(self, name: str, task: str, budget: Any, token: int) -> Answer:
         """The worker body: run, then land. Never raises.
@@ -1263,6 +1290,9 @@ class Sessions:
             given, commit = job.origin
             if "@" in given:
                 return str(Ref(Ref.parse(given).session, commit))
+            if given not in self._store_tags() and given in self._session_names():
+                # a session by its bare name: the commit it was at
+                return str(Ref(given, commit))
             return commit
         return f"{self._ws.session}@{base}" if base else None
 
@@ -1430,7 +1460,7 @@ def run_action(
     task: str = "",
     name: str = "",
     paths: Any = None,
-    inherit: str = "fresh",
+    inherit: str = "",
     fork_from: str = "",
     resume: str = "",
     wait: bool = False,
@@ -1462,7 +1492,7 @@ def run_action(
                 task,
                 name=name or None,
                 paths=coerce_paths(paths),
-                inherit=inherit,
+                inherit=inherit or None,  # unset: follows fork_from
                 fork_from=fork_from or None,
                 resume=resume or None,
                 wait=wait,

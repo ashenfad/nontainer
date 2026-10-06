@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **`Sessions.ask`'s `inherit` follows `fork_from` when unset.** A child forked from elsewhere now carries the conversation there (`"full"`): it is the agent that was there, and the task is its next turn. A child of this session still starts `"fresh"`, as does a `resume`. Asking another session about its work took `inherit="full"`, which was easy to miss, and the fresh default answered from that state's files with none of its memory. **Callers that pass `fork_from` without `inherit` now get the conversation**: pass `inherit="fresh"` for the old behavior. The `sessions` tool's `inherit` argument follows the same rule when empty.
+
+### Added
+- **`fork_from` takes a bare session name**, the session as it is now (its latest commit, resolved when the ask is made). Only a store tag or `session@commit` worked before, so an agent asked to question another session was refused and found no commit id to spell. A name that is both a store tag and a session is the tag. An unknown name is refused, and the refusal lists the sessions and store tags there are.
+
+### Fixed
+- **An empty `ws-git log` says where the history is.** A session whose agent never ran `ws-git commit` holds only turn commits (and those it was forked from), which only `--all` lists. A bare empty answer read as "this session has no history" to an agent looking for a commit to fork from. The log now prints one comment line naming `ws-git log --all` (or `ws-git log <session> --all`) when the session holds commits that `--all` would list.
+
 ## 0.8.12 - 2026-10-05
 
 ### Added

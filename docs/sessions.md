@@ -24,7 +24,7 @@ primitives.
 from nontainer.sessions import Sessions
 
 sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=(), on_answer=None)
-sessions.ask(task, *, name=None, paths=None, inherit="fresh",
+sessions.ask(task, *, name=None, paths=None, inherit=None,
              fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
@@ -43,9 +43,11 @@ sessions.close()                     # joins the workers; the branches stay
 (`analyst.sleepy-otter` — a session id becomes a branch name and holds
 no separator, so the scope is a dot), hands the child to the runner on
 a worker thread and returns at once. `paths` narrows what the child
-SEES without narrowing its branch; `inherit` (`"fresh"` here, against
-`fork`'s own `"full"`) decides only whether the conversation comes
-along — a brief or a summary is content the task carries. `wait=True`
+SEES without narrowing its branch; `inherit` decides only whether the
+conversation comes along — a brief or a summary is content the task
+carries. Unset, it follows where the child is forked from: a child of
+this session starts `"fresh"` (against `fork`'s own `"full"`), and one
+forked from elsewhere carries the conversation there (below). `wait=True`
 blocks and returns the `Answer` instead.
 
 **A name you give is a name, not a preference.** `ask(name="editor")`
@@ -81,35 +83,42 @@ Two options move the two things that are not the task: where the child
 starts, and whether it starts a conversation.
 
 ```python
-sessions.ask("what is north?", fork_from="rates-2026", wait=True)
+sessions.ask("what did you find?", fork_from="sage", wait=True)
+sessions.ask("what is north?", fork_from="rates-2026", inherit="fresh", wait=True)
 answer = sessions.ask("read it", fork_from="sage@a3f9c2e", wait=True)
-sessions.ask("one like it", fork_from="myapp/v1", inherit="full", wait=True)
+sessions.ask("one like it", fork_from="myapp/v1", wait=True)
 sessions.ask("and south?", resume=answer.branch, wait=True)
 ```
 
-`fork_from` names another fork point: a commit named by a **store tag**
-(`store.tags.add(ws, "rates-2026")` — a name that belongs to no
-session and outlives the one that made it), or one spelled
-`session@commit`. The ref resolves the way every other cross-session
-read resolves one, so a short commit id and a session's own ws-git tag
-are spellings this takes too; anything with no `@` in it is a store
-tag. The child is forked THERE rather than here, and the branch it
-came from is only read: every ask forks, and the child is what the
-runner drives.
+`fork_from` names another fork point: a **session** by its bare name,
+as it is now (its latest commit, resolved once when the ask is made),
+a commit named by a **store tag** (`store.tags.add(ws, "rates-2026")` —
+a name that belongs to no session and outlives the one that made it),
+or one spelled `session@commit`. The ref resolves the way every other
+cross-session read resolves one, so a short commit id and a session's
+own ws-git tag are spellings this takes too. A name with no `@` that is
+both a store tag and a session is the tag: a tag is a name someone
+chose for one commit, and the session has the `session@commit`
+spelling. A name that is neither is refused, listing the sessions and
+store tags there are. The child is forked THERE rather than here, and
+the branch it came from is only read: every ask forks, and the child
+is what the runner drives — so asking a live session a question never
+touches it.
 
 `inherit` says what the child arrives with, and both values mean
-something with a fork point. `"fresh"`, the default, is a delegate
-that starts a chat of its own over that state. `"full"` keeps the
-conversation the fork point holds: the delegate is then the agent that
-was there, as of that commit, and the task is its next turn — which is
-how you ask the author of a published app for another one like it,
-long after the session that built it is gone (the commit is readable
-for as long as a store tag names it). What a fork inherits is the
-conversation at the FORK POINT, not this session's, so a full inherit
-from elsewhere carries none of yours. It arrives as the child's own: a
-branch holds one session's conversation, so the stored session record
-is rebound to the child, and the session it came from is kept as the
-child's lineage.
+something with a fork point. `"full"`, the default from elsewhere,
+keeps the conversation the fork point holds: the delegate is then the
+agent that was there, as of that commit, and the task is its next turn.
+That is how you ask another session about its work, or the author of a
+published app for another one like it, long after the session that
+built it is gone (the commit is readable for as long as a store tag
+names it). `"fresh"` is a delegate that starts a chat of its own over
+that state's files. What a fork inherits is the conversation at the
+FORK POINT, not this session's, so a full inherit from elsewhere
+carries none of yours. It arrives as the child's own: a branch holds
+one session's conversation, so the stored session record is rebound to
+the child, and the session it came from is kept as the child's
+lineage.
 
 A fork point outside the asker's own history shares none with it, so
 that child's branch holds the other state's whole tree, and a merge of
