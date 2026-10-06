@@ -981,6 +981,54 @@ def test_provenance_keeps_what_the_fork_point_resolved_to(parent, store, fork_po
     assert answer.provenance["chain"][0] == f"sage@{head}"
 
 
+def test_a_diff_of_a_delegate_forked_elsewhere_shows_its_own_work(
+    parent, store, fork_point
+):
+    """Measured from where the asker and the delegate last met, a
+    delegate forked from another session's state showed that state's
+    files as its own changes, and an agent read them as the delegate's
+    work. It is measured from where the delegate began, and says what a
+    merge would bring besides."""
+    runner = Scripted(store, {"/workspace/status.py": "def status():\n    return []\n"})
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("add status", fork_from="sage", wait=True)
+    assert answer.changed["seed"] == ("/workspace/status.py",)
+
+    out = parent.terminal(f"ws-git diff {answer.branch} --stat").stdout
+    assert "status.py" in out
+    assert "rates.md" not in out.split("\n", 1)[1]  # the header names none
+    assert "a state this session's history does not hold" in out
+    assert f"`ws-git merge {answer.branch}` would also bring" in out
+    full = parent.terminal(f"ws-git diff {answer.branch}").stdout
+    assert "+def status():" in full and "+# Rates" not in full
+    # and the answer's next step does not offer the merge as "take all"
+    assert answer.provenance["outside"] is True
+    text = render_answer(answer)
+    assert f"ws-git merge {answer.branch} would bring sage's files too" in text
+    assert "(take all of it)" not in text
+
+
+def test_a_fork_point_in_the_askers_history_is_not_outside(parent, store):
+    """A store tag of the asker's own commit is an ordinary ancestor: the
+    child merges back as any fork does."""
+    store.tags.add(parent, "mine")
+    with Sessions(parent, Scripted(store, {"/workspace/x.md": "x\n"})) as sessions:
+        answer = sessions.ask("x", fork_from="mine", wait=True)
+    assert answer.provenance["from"] == "mine"
+    assert "outside" not in answer.provenance
+
+
+def test_a_diff_of_a_delegate_forked_here_reads_as_before(parent, store):
+    runner = Scripted(store, {"/workspace/main.py": "print('rates!')\n"})
+    with Sessions(parent, runner) as sessions:
+        answer = sessions.ask("tweak", wait=True)
+    out = parent.terminal(f"ws-git diff {answer.branch} --stat").stdout
+    assert out.startswith(f"# what {answer.branch} changed since ")
+    assert "does not hold" not in out
+    assert "outside" not in answer.provenance
+    assert "(take all of it)" in render_answer(answer)
+
+
 def test_an_unknown_fork_point_names_the_sessions_and_tags_there_are(
     parent, store, fork_point
 ):

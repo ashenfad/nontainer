@@ -126,7 +126,10 @@ it brings all of that back, not only what the child wrote
 (`answer.changed` is measured against the fork point, which is the
 honest answer about the child and not about your tree). Take its
 files, or read it in place, unless bringing the other state in is what
-you meant. A fork point inside the asker's history — a store tag of
+you meant. Such an answer's provenance carries `"outside": True`, and
+its next step offers `ws-git checkout <name> -- <paths>` and says what
+a merge would bring rather than offering it as taking the work; `ws-git
+diff <name>` shows what the child changed since it began. A fork point inside the asker's history — a store tag of
 one of its own commits, say — is an ordinary ancestor, and the child
 merges back as any fork does.
 
