@@ -7,15 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **A memory store: `Store(memory=True)`** (and `nontainer.store(memory=True)`, `workspace(..., memory=True)`). Sessions, history and the publication registry live in this process and nothing is written to disk, not even the registry. The data lasts as long as the `Store` object does; `close()` releases the repository handle, not the data. Before this, `kv=Memory()` kept the data in memory but `path` still defaulted to `~/.nontainer`, where the registry lives, so a scratch world could still write there. `path`, `kv` and `provider_factory` each say where state lives and are refused alongside it, and `NONTAINER_KV` is not consulted. `Store.path` is `None` for a memory store, and `Store.memory` says whether a store is one.
+- **`Env`: a session's environment as one value.** A frozen bundle of `python`, `mounts`, `commands`, `executor_factory`, `root` and `ignore`. `Store.open(..., env=)` and `workspace(..., env=)` take it in place of those six keywords, and passing it with any of them is refused. `Env.of(ws)` reads it back, and a fork inherits it. Its mappings are read-only; derive a variant with `dataclasses.replace`. `cache`, `autocommit` and `max_observation` are not part of it: they say how a session behaves, not what its world holds.
+
 ### Changed
 - **The compaction adapter runs on agno 2.5 and later** (#193). It refused any agno below 3.0, but agno 2.x releases with a compression manager run it as 3.x does: the seam and adapter tests pass on 2.5.0, 2.5.17, 2.6.0, 2.7.0, 2.8.0 and 2.8.5. The gate now checks what the adapter uses (`CompressionManager`, its four hooks, `Message.from_history`), and names what's missing. On top of that it sets a floor of agno 2.5. agno 2.4 has every hook, but the summary the adapter splices into a request gets stored with the run (`test_the_splice_never_reaches_the_stored_conversation` fails on 2.4.0 and 2.4.8). CI runs the compaction tests on agno 2.5.0.
 - **The terminal says there is no `node`.** On the termish terminal, the description now says there is no `node`, `npm` or `npx`. When the session has them, it also names where JavaScript does run: `ws-vitest` for modules, and test_app for a page. Agents spent calls probing for node with `which` and `node --version`. A terminal that is a real shell (the VM and dud rungs) isn't told this.
 - **The sessions description says `paths` is a view, not a share of the work.** Agents gave delegates a `paths` view as if assigning files, then asked them to run checks that needed files outside it. The description says to leave `paths` out unless the delegate should read only those files, and not to ask a narrowed delegate to run the whole test suite or an end-to-end check.
 
-## Unreleased
-
 ### Fixed
 - **The run methods answer on agno 2.** `KvgitSessionDb` and `KvgitStoreDb`'s `get_run` and `get_runs` were built for agno 3's runs table (#190) from agno 3's row helpers. On agno 2, a caller probing for them (`getattr(db, "get_run", …)`) got an `ImportError` (`build_single_run_row`, then `validate_pagination`). agno 2 never calls them itself. On agno 2 the rows are now built locally, in agno 3's shape, and deserialized by run type, so both answer the same on either major. CI now also runs every agno test on agno 2.8.5.
+- **The agno toolkit's instructions name the commit mode.** Under `WorkspaceTools(ws, commit="turn")` they said "every mutating call is committed", which is false in that mode. They now say the work is committed at the end of each turn.
 
 ## 0.8.14 - 2026-10-06
 

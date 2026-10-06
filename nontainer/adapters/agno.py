@@ -788,7 +788,11 @@ class WorkspaceTools(Toolkit):
             and_python=", and sandboxed python" if split else "",
             or_python=" / run_python" if split else "",
             versioned_note=(
-                "; every mutating call is committed" if workspace.caps.versioned else ""
+                ""
+                if not workspace.caps.versioned
+                else "; your work is committed at the end of each turn"
+                if self._turn_commits
+                else "; every mutating call is committed"
             ),
         )
 

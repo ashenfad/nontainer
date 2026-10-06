@@ -34,6 +34,14 @@ def test_agno_toolkit_split_mode():
     ws.close()
 
 
+def test_agno_instructions_name_the_commit_mode():
+    per_call = WorkspaceTools(make_ws()).instructions or ""
+    per_turn = WorkspaceTools(make_ws(), commit="turn").instructions or ""
+    assert "every mutating call is committed" in per_call
+    assert "every mutating call is committed" not in per_turn
+    assert "committed at the end of each turn" in per_turn
+
+
 def test_agno_toolkit_terminal_only():
     ws = make_ws(cache=False)
     tk = WorkspaceTools(ws)
