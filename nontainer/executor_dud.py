@@ -82,14 +82,17 @@ from .executor import (
     _host_module_names,
     _named_classes,
     _refuse_async_host_methods,
+    _refuse_live_calls,
     _refuse_reserved_host_name,
     _refuse_shadowed_host_module,
     _refuse_unnameable_classes,
+    _stubbed,
     _truncate,
     _typed,
     _value,
     flatten_grants,
 )
+from .remote import Host
 from .views import read_many
 from .workspace import PythonResult, TerminalResult
 
@@ -177,6 +180,17 @@ _VIEW_BOOTSTRAP = (
     "            setattr(__nt_sys.modules[__nt_par], __nt_leaf, __nt_m)\n"
     "    for __nt_n in __nt_boot[__nt_mod]['names']:\n"
     "        globals()[__nt_n] = getattr(__nt_sys.modules[__nt_mod], __nt_n)\n"
+)
+
+# Runs AFTER the bootstrap, which made ``nontainer.remote`` and each
+# stub's module importable: a stubbed host object's name is bound to
+# its stub, built around the hostcall proxy dud injected under that
+# name, whose one method reaches the host half (``remote.Host``).
+_STUB_PRELUDE = (
+    "from nontainer.remote import stub as __nt_stub\n"
+    "for __nt_n, (__nt_mod, __nt_q) in __nt_stubs.items():\n"
+    "    globals()[__nt_n] = __nt_stub(\n"
+    "        __nt_n, __nt_mod, __nt_q, globals()[__nt_n].call)\n"
 )
 
 _HOST_NAMES_INPUT = "__nt_host_names"
@@ -444,17 +458,42 @@ def _class_boot(
     return imports, boot
 
 
+def _stubs(cfg: Any) -> dict[str, list[str]]:
+    """Each stubbed host object's stub, by module and qualified name."""
+    return {
+        name: [entry.stub.__module__, entry.stub.__qualname__]
+        for name, entry in cfg.host_objects.items()
+        if _stubbed(entry)
+    }
+
+
+def _guest_classes(cfg: Any) -> list[type]:
+    """What a guest boots for a run: the classes it needs, and ahead of
+    them, when there are stubs, a class from each module they run on,
+    so the modules ship too."""
+    need = _named_classes(cfg)
+    if _stubs(cfg):
+        from . import remote, values
+
+        need = [values.Encoded, remote.Remote, *need]
+    return need
+
+
 def _typed_program(values: Mapping[str, Any], cfg: Any) -> tuple[str, dict[str, Any]]:
-    """The guest prelude for a run with typed host data or classes:
-    ``(source, guest inputs)``. The classes' modules are imported or
-    rebuilt first, since the data, pickled in (host to guest, the trusted
-    direction), names them as it unpickles."""
+    """The guest prelude for a run with typed host data, classes or
+    stubs: ``(source, guest inputs)``. The classes' modules are imported
+    or rebuilt first, since the data, pickled in (host to guest, the
+    trusted direction), names them as it unpickles, and the stubs are
+    built around their proxies last."""
     import base64
 
-    imports, boot = _class_boot(tuple(cfg.classes), _named_classes(cfg))
+    imports, boot = _class_boot(tuple(cfg.classes), _guest_classes(cfg))
     blob = base64.b64encode(pickle.dumps(dict(values))).decode()
+    stubs = _stubs(cfg)
     source = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE
-    return source, {"__nt_blob": blob, "__nt_boot": boot}
+    if stubs:
+        source += _STUB_PRELUDE
+    return source, {"__nt_blob": blob, "__nt_boot": boot, "__nt_stubs": stubs}
 
 
 def _view_program(
@@ -464,6 +503,7 @@ def _view_program(
     *,
     bind: Sequence[type] = (),
     need: Sequence[type] = (),
+    stubs: Mapping[str, Sequence[str]] | None = None,
 ) -> tuple[str, dict[str, Any], int]:
     """The guest program for one view execution: ``(source, guest
     inputs, line offset)``. The guest inputs lack only the host-module
@@ -473,7 +513,9 @@ def _view_program(
     Separate from the session so what a guest with no nontainer
     installed receives can be run and checked anywhere. ``bind`` and
     ``need`` are the config's classes and those its typed host data
-    holds, which the handler gets as every run does."""
+    holds, which the handler gets as every run does; ``stubs`` the
+    stubbed host objects' stubs, by module and qualified name, which
+    ``need`` brings the modules of."""
     import base64
 
     blob = base64.b64encode(pickle.dumps(dict(inputs))).decode()
@@ -502,9 +544,11 @@ def _view_program(
         targets = "".join(f"{name}, " for name, _ in view.bind)
         sources = "".join(f"globals()[{other!r}], " for _, other in view.bind)
         rebind = f"{targets}= {sources}\n"
-    prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + rebind + _HOST_PRELUDE
+    stub = _STUB_PRELUDE if stubs else ""
+    prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + stub + rebind + _HOST_PRELUDE
     full = prefix + code + _VIEW_EPILOGUE
-    return full, {"__nt_blob": blob, "__nt_boot": boot}, prefix.count("\n")
+    guest = {"__nt_blob": blob, "__nt_boot": boot, "__nt_stubs": dict(stubs or {})}
+    return full, guest, prefix.count("\n")
 
 
 class _KvBytesCache(MutableMapping[str, bytes]):
@@ -853,11 +897,17 @@ class DudExecutor:
         # it rides into each exec as inputs instead (mirrors
         # LocalExecutor's direct namespace injection).
         # Typed host data (a HostObject with a type) is pickled in per
-        # exec, its classes imported or rebuilt from source first.
+        # exec, its classes imported or rebuilt from source first. A
+        # stubbed host object crosses as its host half, which the stub
+        # built around the proxy in the guest reaches by its one method.
         _refuse_unnameable_classes(cfg, "on a dud machine")
+        _refuse_live_calls(cfg, "on a dud machine")
         live: dict[str, Any] = {}
         for name, entry in cfg.host_objects.items():
-            if _typed(entry):
+            if _stubbed(entry):
+                # the host half: the guest's stub reaches it by `call`
+                live[name] = Host(name, entry.obj, entry.methods)
+            elif _typed(entry):
                 self._typed[name] = entry.obj
             elif _by_value(entry):
                 self._plain[name] = _value(entry)
@@ -1080,7 +1130,7 @@ class DudExecutor:
         cfg = ctx.python_config
         prefix = ""
         bound: set[str] = set()
-        if self._typed or cfg.classes:
+        if self._typed or cfg.classes or _stubs(cfg):
             prefix, guest = _typed_program(self._typed, cfg)
             merged.update(guest)
             bound = {*self._typed, *(k.__name__ for k in cfg.classes)}
@@ -1149,7 +1199,12 @@ class DudExecutor:
         merged.update(inputs)
         cfg = ctx.python_config
         full, guest_inputs, line_offset = _view_program(
-            code, merged, view, bind=tuple(cfg.classes), need=_named_classes(cfg)
+            code,
+            merged,
+            view,
+            bind=tuple(cfg.classes),
+            need=_guest_classes(cfg),
+            stubs=_stubs(cfg),
         )
         guest_inputs[_HOST_NAMES_INPUT] = self._host_module_names(ctx)
         timeout = (
