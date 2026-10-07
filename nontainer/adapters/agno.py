@@ -46,7 +46,6 @@ dedicated ``run_python`` tool whose description announces the magic.
 
 from __future__ import annotations
 
-import inspect
 import logging
 from typing import Any
 
@@ -342,32 +341,13 @@ class WorkspaceTools(Toolkit):
     def _collect(self) -> "list[Note]":
         """Everything to deliver with this tool result: the queued
         notes, then any delegate answer that has landed since the last
-        collection.
-
-        A delegate's answer is framed as the mechanism rather than the
-        principal, because that is what it is — prose written by
-        another model, evidence rather than instruction. Taking it
-        here is what makes an answer arrive mid-turn at all; the
-        ``sessions`` tool's own ``result`` action still reads answers
-        on demand, and neither hands over the same answer twice.
-        """
+        collection (:func:`~nontainer.sessions.answer_notes`)."""
         notes = self.inbox.drain()
-        helper = self.sessions
-        if helper is None:
+        if self.sessions is None:
             return notes
-        from ..sessions import render_answer
+        from ..sessions import answer_notes
 
-        for name, answer in helper.take():
-            notes.append(
-                self.inbox.deliver_now(
-                    render_answer(answer),
-                    kind="mechanism",
-                    label=f"delegate {name}",
-                    job=name,
-                    answer=answer,
-                )
-            )
-        return notes
+        return notes + answer_notes(self.sessions, self.inbox)
 
     def _with_notes(self, result: Any, notes: "list[Note]") -> Any:
         """The tool's result with the rendered notes appended, keeping
@@ -417,40 +397,9 @@ class WorkspaceTools(Toolkit):
             return None
 
     def _announce(self, notes: "list[Note]", *, allow_async: bool) -> Any:
-        """Tell the inbox's ``on_delivered`` that these notes landed.
-
-        A callback that raises must not cost the model its tool
-        result: the failure is logged and delivery stands, since the
-        text has already been built and the notes are already spent.
-        """
-        callback = self.inbox.on_delivered
-        if callback is None:
-            return None
-        try:
-            outcome = callback(notes)
-        except Exception:  # noqa: BLE001 - the tool result wins
-            _logger.warning("inbox on_delivered raised", exc_info=True)
-            return None
-        if not inspect.isawaitable(outcome):
-            return None
-        if allow_async:
-            return outcome
-        # A sync run loop has no event loop to await in, so an async
-        # callback cannot run at all here. Closing it keeps python
-        # from warning about a coroutine that was never awaited, and
-        # saying so once names the fix (bind the async hook instead).
-        close = getattr(outcome, "close", None)
-        if close is not None:
-            close()
-        if not self._async_callback_warned:
-            self._async_callback_warned = True
-            _logger.warning(
-                "inbox on_delivered returned an awaitable, which a sync tool "
-                "hook cannot await; it was discarded. Make the callback sync, "
-                "or bind the async hook (tool_hooks=[tk.adeliver]), which is "
-                "only right when the tool entrypoints are async."
-            )
-        return None
+        """Tell the inbox's ``on_delivered`` that these notes landed
+        (:meth:`~nontainer.inbox.Inbox.announce`)."""
+        return self.inbox.announce(notes, allow_async=allow_async)
 
     async def _aannounce(self, notes: "list[Note]") -> None:
         outcome = self._announce(notes, allow_async=True)
@@ -576,7 +525,6 @@ class WorkspaceTools(Toolkit):
         embedder reads it between turns."""
         self._ws = workspace
         self.inbox = inbox if inbox is not None else Inbox()
-        self._async_callback_warned = False
         self._run_seen: str | None = None
         self._run_warned: str | None = None
         if session_db is not None:

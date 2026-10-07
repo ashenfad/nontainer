@@ -52,9 +52,10 @@ class ReferenceSession:
     """The contract, and nothing else, on the turn API: each run is a
     turn (``ws.turn``) that runs the clock's replies, writes files
     through the workspace (one commit per call), delivers queued notes
-    on tool results, and ends by handing the turn its body (with a
-    closing note when it was cancelled or failed). The turn stores it,
-    settles the inbox and commits once, stamped with the run's status."""
+    on tool results (``turn.deliver``), and ends by handing the turn its
+    body (with a closing note when it was cancelled or failed). The turn
+    stores it, settles the inbox and commits once, stamped with the
+    run's status."""
 
     def __init__(self, ws, clock):
         self.ws = ws
@@ -106,7 +107,7 @@ class ReferenceSession:
                 )
                 self.ws.files.write(call.args["path"], call.args["content"])
                 self.ws.commit(info={"tool": call.name})
-                notes = self.inbox.drain()
+                text, notes = turn.deliver("ok")
                 if notes:
                     events.append(
                         Delivered(
@@ -115,7 +116,7 @@ class ReferenceSession:
                             )
                         )
                     )
-                messages.append({"role": "tool", "text": "ok"})
+                messages.append({"role": "tool", "text": text})
                 events.append(ToolEnded(call_id=call_id, name=call.name, result="ok"))
         if status in ("cancelled", "failed"):
             messages.append({"role": "note", "text": f"ended early: {message}"})

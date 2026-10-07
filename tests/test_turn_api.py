@@ -9,7 +9,7 @@ import pytest
 
 from nontainer import NotSupportedError, Store, TurnInProgress, conversation
 from nontainer.conversation import Index
-from nontainer.inbox import Inbox
+from nontainer.inbox import Inbox, split
 from nontainer.turns import Turns
 
 
@@ -298,3 +298,129 @@ def test_a_resume_names_a_run_the_conversation_holds(ws):
         turn.complete(body={"said": "all"})
     assert conversation.index_of(ws).runs == ("r1",)
     assert conversation.read_runs(ws.provider.kv, ["r1"]) == {"r1": {"said": "all"}}
+
+
+# -- delivery ---------------------------------------------------------------------
+
+
+def test_deliver_appends_what_is_queued_and_says_what_it_delivered(ws):
+    inbox = Inbox()
+    note = inbox.put("also mention the date")
+    with ws.turn("r1", inbox=inbox) as turn:
+        text, notes = turn.deliver("wrote a.txt")
+        assert notes == [note]
+        assert text.startswith("wrote a.txt") and "also mention the date" in text
+        assert split(text) == ("wrote a.txt", inbox.render(notes))
+        assert inbox.pending() == [] and inbox.delivered() == [note]
+        # nothing else queued: the next result goes through untouched
+        assert turn.deliver("wrote b.txt") == ("wrote b.txt", [])
+    assert inbox.delivered() == []  # the end settles
+
+
+def test_a_turn_without_an_inbox_delivers_nothing(ws):
+    with ws.turn("r1") as turn:
+        assert turn.deliver("ok") == ("ok", [])
+        assert turn.collect() == []
+
+
+def test_sources_add_their_notes_after_the_queue(ws):
+    inbox = Inbox()
+    inbox.put("from the person")
+
+    def source(given):
+        assert given is inbox
+        return [given.deliver_now("from a source", kind="mechanism", label="x")]
+
+    with ws.turn("r1", inbox=inbox, sources=[source]) as turn:
+        _, notes = turn.deliver("ok")
+    assert [n.text for n in notes] == ["from the person", "from a source"]
+    assert inbox.delivered() == []
+
+
+def test_notes_that_cannot_be_attached_wait_for_the_next_result(ws):
+    def broken(note):
+        raise RuntimeError("no frame today")
+
+    inbox = Inbox(frame=broken)
+    note = inbox.put("hold on")
+    with ws.turn("r1", inbox=inbox) as turn:
+        assert turn.deliver("ok") == ("ok", [])
+        assert inbox.pending() == [note] and inbox.delivered() == []
+        inbox.frame = None
+        assert turn.deliver("ok again")[1] == [note]
+
+
+def test_on_delivered_hears_of_each_delivery(ws):
+    heard = []
+    inbox = Inbox(on_delivered=heard.append)
+    inbox.put("one")
+    with ws.turn("r1", inbox=inbox) as turn:
+        turn.deliver("a")
+        turn.deliver("b")  # nothing to deliver, nothing heard
+    assert [[n.text for n in notes] for notes in heard] == [["one"]]
+
+
+def test_a_callback_that_raises_costs_only_a_warning(ws, caplog):
+    def angry(notes):
+        raise RuntimeError("nope")
+
+    inbox = Inbox(on_delivered=angry)
+    inbox.put("still lands")
+    with ws.turn("r1", inbox=inbox) as turn:
+        text, notes = turn.deliver("ok")
+    assert "still lands" in text and len(notes) == 1
+    assert "on_delivered raised" in caplog.text
+
+
+def test_an_async_callback_is_awaited_by_adeliver_and_discarded_by_deliver(ws, caplog):
+    heard = []
+
+    async def record(notes):
+        heard.extend(n.text for n in notes)
+
+    inbox = Inbox(on_delivered=record)
+
+    async def go():
+        async with ws.turn("r1", inbox=inbox) as turn:
+            inbox.put("awaited")
+            text, _ = await turn.adeliver("ok")
+            assert "awaited" in text
+            inbox.put("discarded")
+            text, _ = turn.deliver("ok")
+            assert "discarded" in text
+
+    asyncio.run(go())
+    assert heard == ["awaited"]
+    assert "cannot await" in caplog.text
+
+
+def test_a_delegates_answer_arrives_as_a_mechanism_note(ws):
+    """``answer_notes`` as a turn source: what the session's helper has
+    taken arrives on the next tool result, framed as the mechanism, and
+    is settled with the turn."""
+    from nontainer import Answer
+    from nontainer.sessions import answer_notes
+
+    class Helper:
+        def __init__(self, answers):
+            self.answers = answers
+
+        def take(self):
+            taken, self.answers = self.answers, []
+            return taken
+
+    helper = Helper([("s.child", Answer(text="the totals add up"))])
+    inbox = Inbox()
+    with ws.turn(
+        "r1", inbox=inbox, sources=[lambda i: answer_notes(helper, i)]
+    ) as turn:
+        text, (note,) = turn.deliver("ok")
+        assert turn.deliver("ok") == ("ok", [])  # taken once
+    assert (note.kind, note.label, note.job) == (
+        "mechanism",
+        "delegate s.child",
+        "s.child",
+    )
+    assert note.answer.text == "the totals add up"
+    assert "the totals add up" in text and "delegation mechanism" in text
+    assert inbox.delivered() == []

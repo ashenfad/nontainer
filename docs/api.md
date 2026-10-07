@@ -1721,7 +1721,7 @@ of an older commit reads it again and migrates on its next write.
 ## `nontainer.turns` — the turn, and what it streams
 
 ```python
-ws.turn(run_id=None, *, resume=False, inbox=None, harness=None) -> Turn
+ws.turn(run_id=None, *, resume=False, inbox=None, harness=None, sources=()) -> Turn
 ws.turns.begin(...) -> Turn          # the same, spelled for hook-based loops
 ws.turns.current -> Turn | None      # the turn open now
 
@@ -1729,6 +1729,9 @@ with ws.turn(run_id, inbox=inbox, harness="mine") as turn:   # or async with
     ...                                  # the loop: model calls, tool calls
     turn.complete(body=run)              # or leave the block normally
 turn.bind(run_id)                        # once, for a loop that mints the id
+turn.deliver(result) -> (text, notes)    # a tool result with its queued notes
+await turn.adeliver(result)              # the same, awaiting on_delivered
+turn.collect() -> list[Note]             # the notes alone, for a non-text result
 turn.interrupt(message, *, body=None)    # an error to resume from
 turn.end(status, *, body=None, record=..., message=None) -> str | None
 turn.status, turn.commit                 # how it ended; the commit it landed
@@ -1745,6 +1748,14 @@ session, and a workspace has one open at a time (another refuses with
 3. lands **one** commit with everything the turn left staged, stamped
    `{"tool": "turn", "runs": {run_id: status}}`, plus `"message"` when
    one is given. Nothing commits when nothing changed.
+
+Notes reach the model on tool results: call `turn.deliver(result)` on
+each one before the model sees it, and it appends what is queued in the
+inbox, then whatever each of `sources` adds (pass
+`lambda inbox: nontainer.sessions.answer_notes(helper, inbox)` for a
+session's delegate answers). The notes are delivered, not settled,
+until the turn ends; notes that cannot be appended stay queued for the
+next result. The inbox's `on_delivered` hears of each delivery.
 
 Leaving the `with` block normally completes the turn; a
 `CancelledError` cancels it and any other exception fails it, and the

@@ -39,14 +39,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal, Union
 
 from . import conversation
 from .conversation import Index
 from .errors import NotSupportedError, TurnInProgress
-from .inbox import Inbox, NoteKind
+from .inbox import Inbox, Note, NoteKind
 
 if TYPE_CHECKING:
     from .workspace import Workspace
@@ -66,6 +66,7 @@ __all__ = [
     "ThinkingDelta",
     "ToolEnded",
     "ToolStarted",
+    "Source",
     "Turn",
     "TurnEvent",
     "Turns",
@@ -231,6 +232,12 @@ def event_from_dict(data: Mapping[str, Any]) -> TurnEvent:
 
 _KEEP: Any = object()
 
+Source = Callable[[Inbox], "list[Note]"]
+"""Something that adds notes at each delivery, given the turn's inbox:
+:func:`nontainer.sessions.answer_notes` for a session's delegate
+answers. Notes a source adds should be minted delivered
+(``inbox.deliver_now``), so the turn's end settles them."""
+
 
 class Turn:
     """One turn on a workspace, from :meth:`Turns.begin` to :meth:`end`.
@@ -238,9 +245,10 @@ class Turn:
     ``run_id`` names the run. A loop that learns the id only once the
     run has started opens the turn without one and binds it then
     (:meth:`bind`). ``inbox`` is the session's :class:`~nontainer.inbox.Inbox`,
-    whose delivered notes the end settles. ``harness`` names the
-    harness, which storing a run body needs (see
-    :mod:`nontainer.conversation`).
+    whose notes :meth:`deliver` hands the model and the end settles;
+    ``sources`` add notes of their own at each delivery (a delegate's
+    answer, say). ``harness`` names the harness, which storing a run
+    body needs (see :mod:`nontainer.conversation`).
 
     A turn is a context manager, sync or async. Leaving the block
     normally completes it; a ``CancelledError`` (or any other exception
@@ -260,12 +268,14 @@ class Turn:
         resume: bool,
         inbox: Inbox | None,
         harness: str | None,
+        sources: Iterable[Source] = (),
     ) -> None:
         self._turns = turns
         self._run_id = run_id
         self.resume = resume
         self.inbox = inbox
         self.harness = harness
+        self.sources: tuple[Source, ...] = tuple(sources)
         self.status: RunStatus | None = None
         """How the turn ended; ``None`` while it is open."""
         self.commit: str | None = None
@@ -295,6 +305,77 @@ class Turn:
                 f"this turn's run is {self._run_id!r}; it cannot become {run_id!r}"
             )
         self._run_id = run_id
+
+    # -- delivery -----------------------------------------------------------
+
+    def collect(self) -> list[Note]:
+        """The notes to deliver on the tool result landing now: the
+        inbox's queue, then what each source adds. They are delivered
+        from here, not settled. Empty without an inbox.
+
+        For a result that is not text (one carrying images, say), call
+        this, attach the notes yourself (``inbox.render(notes)``), and
+        ``inbox.restore(notes)`` if they cannot be attached; otherwise
+        use :meth:`deliver`.
+        """
+        inbox = self.inbox
+        if inbox is None:
+            return []
+        notes = inbox.drain()
+        for source in self.sources:
+            notes.extend(source(inbox))
+        return notes
+
+    def deliver(self, result: str) -> tuple[str, list[Note]]:
+        """``result`` with the notes queued for it appended, and those
+        notes; ``(result, [])`` when there are none.
+
+        A tool result is where a running agent reads new text, so this
+        is where notes queued mid-turn reach it: call it on each tool
+        result before the model sees it. A tool that raised delivers
+        nothing, so the notes wait for the next result. The notes are
+        delivered, not settled: the turn's end settles them, and a loop
+        that throws an attempt away puts them back with
+        ``inbox.requeue()``. Notes that cannot be appended (a frame that
+        raises) go back to the queue and the result goes on unchanged.
+
+        The inbox's ``on_delivered`` hears of the notes; an awaitable it
+        returns is discarded here, so use :meth:`adeliver` from a loop.
+        """
+        text, notes = self._attach(result)
+        if notes and self.inbox is not None:
+            self.inbox.announce(notes, allow_async=False)
+        return text, notes
+
+    async def adeliver(self, result: str) -> tuple[str, list[Note]]:
+        """:meth:`deliver`, awaiting what ``on_delivered`` returns."""
+        text, notes = self._attach(result)
+        if notes and self.inbox is not None:
+            outcome = self.inbox.announce(notes, allow_async=True)
+            if outcome is not None:
+                try:
+                    await outcome
+                except Exception:  # noqa: BLE001 - the tool result wins
+                    _logger.warning("inbox on_delivered raised", exc_info=True)
+        return text, notes
+
+    def _attach(self, result: str) -> tuple[str, list[Note]]:
+        notes = self.collect()
+        if not notes or self.inbox is None:
+            return result, []
+        try:
+            return result + self.inbox.render(notes), notes
+        except Exception:  # noqa: BLE001 - the tool result wins
+            _logger.warning(
+                "%d note(s) could not be appended to a tool result; they stay "
+                "queued for the next one",
+                len(notes),
+                exc_info=True,
+            )
+            self.inbox.restore(notes)
+            return result, []
+
+    # -- ending -------------------------------------------------------------------
 
     def complete(self, *, body: Any = None, record: Any = _KEEP) -> str | None:
         """End the turn ``completed``. See :meth:`end`."""
@@ -452,6 +533,7 @@ class Turns:
         resume: bool = False,
         inbox: Inbox | None = None,
         harness: str | None = None,
+        sources: Iterable[Source] = (),
     ) -> Turn:
         """Open a turn; see :class:`Turn`.
 
@@ -477,7 +559,12 @@ class Turns:
                     f"session {ws.session!r}; end it before beginning another"
                 )
             self._current = Turn(
-                self, run_id, resume=resume, inbox=inbox, harness=harness
+                self,
+                run_id,
+                resume=resume,
+                inbox=inbox,
+                harness=harness,
+                sources=sources,
             )
             return self._current
 

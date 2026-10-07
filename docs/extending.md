@@ -494,7 +494,10 @@ harness hands it over, settles the inbox, and lands one commit stamped
 with the run and its status. With the context manager, an exception
 fails the turn and a `CancelledError` cancels it, so those endings hold
 by construction. A hook-based harness, whose run starts and ends in
-different callbacks, uses `ws.turns.begin` and `turn.end`.
+different callbacks, uses `ws.turns.begin` and `turn.end`. On each tool
+result the harness calls `turn.deliver(result)`, which appends the
+notes queued mid-turn (and delegate answers, through a source) so the
+model reads them, and the end settles them.
 
 A run ends `completed`, `cancelled` (stopped from outside), `interrupted`
 (an error the harness may resume from, such as a provider failure: the

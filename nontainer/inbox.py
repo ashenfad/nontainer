@@ -36,14 +36,18 @@ choice.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from .protocol import Answer
+
+_logger = logging.getLogger(__name__)
 
 #: Who a note is from, which decides how it is framed. ``principal``
 #: is whoever this session works for — the person at the keyboard for
@@ -209,6 +213,7 @@ class Inbox:
         self._pending: list[Note] = []
         self._delivered: list[Note] = []
         self._minted = 0
+        self._async_callback_warned = False
 
     def __repr__(self) -> str:
         with self._lock:
@@ -341,6 +346,45 @@ class Inbox:
     def render(self, notes: "list[Note]") -> str:
         """:func:`render`, with this inbox's framing applied."""
         return render(notes, frame=self.frame)
+
+    def announce(
+        self, notes: "list[Note]", *, allow_async: bool
+    ) -> "Awaitable[Any] | None":
+        """Tell ``on_delivered`` that these notes reached the model.
+
+        A callback that raises costs nothing but a logged warning: the
+        notes are already in the tool result. When it returns an
+        awaitable, an async delivery gets it back to await
+        (``allow_async``). A sync delivery has no loop to await it in,
+        so it is closed and discarded, and the first time that happens
+        a warning names the fix: a sync callback, or the async delivery
+        path.
+        """
+        callback = self.on_delivered
+        if callback is None or not notes:
+            return None
+        try:
+            outcome = callback(notes)
+        except Exception:  # noqa: BLE001 - the tool result wins
+            _logger.warning("inbox on_delivered raised", exc_info=True)
+            return None
+        if not inspect.isawaitable(outcome):
+            return None
+        if allow_async:
+            return outcome
+        close = getattr(outcome, "close", None)
+        if close is not None:
+            close()
+        if not self._async_callback_warned:
+            self._async_callback_warned = True
+            _logger.warning(
+                "inbox on_delivered returned an awaitable, which a sync "
+                "delivery cannot await; it was discarded. Make the callback "
+                "sync, or deliver through the async path (turn.adeliver, or "
+                "the agno toolkit's tk.adeliver, which is only right when the "
+                "tool entrypoints are async)."
+            )
+        return None
 
     def _mint(
         self,
