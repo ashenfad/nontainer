@@ -1076,8 +1076,9 @@ def _compile_generic(
         value = _compile(args[1], names, memo, bound) if len(args) > 1 else _ANY
         return _Map(_MAPS[origin], key, value)
     if origin is type:
-        upper = args[0] if args and isinstance(args[0], type) else object
-        return _Live(fmt(tp), lambda v: isinstance(v, type) and issubclass(v, upper))
+        upper = _upper(args[0] if args else Any, names, bound)
+        label = f"type[{' | '.join(c.__name__ for c in upper)}]"
+        return _Live(label, lambda v: isinstance(v, type) and issubclass(v, upper))
     if origin is abc.Callable:
         return _Live(fmt(tp), callable)
     if _is_record(origin):
@@ -1094,6 +1095,34 @@ def _compile_generic(
     if isinstance(origin, type):
         return _Live(fmt(tp), lambda v: isinstance(v, origin))
     raise Unsupported(f"no spec can be built for {fmt(tp)}")
+
+
+def _upper(arg: Any, names: Names, bound: Mapping[Any, Any] | None) -> tuple[type, ...]:
+    """The classes ``type[arg]`` takes subclasses of: a class, a spec of
+    one, text naming one, a union of them, or a type variable's bound.
+    An argument naming no class is :class:`Unsupported`, never widened
+    to ``object`` without a word."""
+    if isinstance(arg, Spec):
+        arg = arg.annotation
+    if isinstance(arg, (str, typing.ForwardRef)):
+        arg = _evaluate(arg, names)
+    if isinstance(arg, typing.TypeVar):
+        if bound and arg in bound:
+            return _upper(bound[arg], names, None)
+        return _upper(arg.__bound__ or object, names, None)
+    if arg is Any or arg is object:
+        return (object,)
+    origin = typing.get_origin(arg)
+    if origin is Union or origin is types.UnionType:
+        found: list[type] = []
+        for option in typing.get_args(arg):
+            found.extend(c for c in _upper(option, names, bound) if c not in found)
+        return tuple(found)
+    if isinstance(origin, type):
+        return (origin,)  # type[list[int]]: a subclass of list
+    if isinstance(arg, type):
+        return (arg,)
+    raise Unsupported(f"no spec can be built for type[{fmt(arg)}]")
 
 
 def _compile_class(tp: type, names: Names, memo: dict[Any, _Node]) -> _Node:

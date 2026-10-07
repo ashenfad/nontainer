@@ -155,6 +155,39 @@ def test_a_spec_stands_for_its_type():
     assert repr(nested) == "<Spec dict[str, Outer]>"
 
 
+def test_type_of_takes_subclasses_of_what_it_names():
+    """However the class is named, and never anything wider."""
+
+    class Base:
+        pass
+
+    class Sub(Base):
+        pass
+
+    class Other:
+        pass
+
+    def fits(tp, value, names=None):
+        try:
+            Spec.of(tp, names=names).check(value)
+        except Mismatch:
+            return False
+        return True
+
+    assert fits(type[Spec.of(int)], bool)
+    assert not fits(type[Spec.of(int)], str)
+    assert repr(Spec.of(type[Spec.of(int)])) == "<Spec type[int]>"
+    assert fits(type["Base"], Sub, {"Base": Base})
+    assert not fits(type["Base"], Other, {"Base": Base})
+    assert fits(type[Union[Base, Other]], Other)
+    assert not fits(type[Union[Base, Other]], int)
+    assert fits(type[Any], Other)
+    assert not fits(type[Any], 3)
+    assert fits(type[list[int]], list)
+    with pytest.raises(Unsupported, match=r"type\[Literal\[1\]\]"):
+        Spec.of(type[Literal[1]])
+
+
 def test_a_spec_names_the_record_and_enum_types_it_uses():
     @dataclasses.dataclass
     class Graded:
