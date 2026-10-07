@@ -1756,6 +1756,13 @@ arrive from another. The rules, the same for both:
   arrives as a list where one is declared, and an enum's value decodes
   as the member. The wire stays plain JSON other languages read.
 
+A spec stands for its type wherever one is taken: `Spec.of(spec)` is
+the spec itself, `list[spec]` compiles, and a `HostObject`'s `type` or a
+stubbed host object's annotation may be one. A type whose annotations
+name the locals of the function that defined it compiles only with
+those names, so compiling it once with them and handing the spec on is
+how it reaches code that doesn't have them.
+
 `encode` needs no type. A value becomes a JSON tree; what JSON lacks
 rides as numbered binary parts its leaves point to, tagged `"$nt"`:
 bytes, tables as Arrow IPC streams, arrays as `.npy` (read back without

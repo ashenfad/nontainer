@@ -129,6 +129,32 @@ def test_kinds_say_what_a_type_needs_carried():
     assert Spec.of(list[Score]).travels and not Spec.of(Iterator[int]).travels
 
 
+def test_a_spec_stands_for_its_type():
+    """Compiled with the names its type needed, it serves where those
+    names aren't at hand: alone, or inside another annotation."""
+
+    @dataclasses.dataclass
+    class Inner:
+        x: int
+
+    @dataclasses.dataclass
+    class Outer:
+        items: "list[Inner]"
+
+    with pytest.raises(Unsupported, match="Inner"):
+        Spec.of(Outer)
+    spec = Spec.of(Outer, names={"Inner": Inner})
+    assert Spec.of(spec) is spec
+    nested = Spec.of(dict[str, spec])
+    nested.check({"a": Outer([Inner(1)])})
+    with pytest.raises(Mismatch, match=r"at \['a'\]\.items\[0\]\.x"):
+        nested.check({"a": Outer([Inner("1")])})
+    assert nested.decode(encode({"a": Outer([Inner(2)])})) == {"a": Outer([Inner(2)])}
+    assert set(nested.types) == {Outer, Inner}
+    assert values.fmt(dict[str, spec]) == "dict[str, Outer]"
+    assert repr(nested) == "<Spec dict[str, Outer]>"
+
+
 def test_a_spec_names_the_record_and_enum_types_it_uses():
     @dataclasses.dataclass
     class Graded:

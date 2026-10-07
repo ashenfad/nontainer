@@ -323,6 +323,56 @@ def test_a_local_stub_is_fine_in_process_and_refused_elsewhere():
             store.open("b", profile=Profile(python=isolated))
 
 
+def test_a_spec_types_data_and_a_method_where_names_are_needed():
+    """A type whose annotations name the locals of the function that
+    defined it, compiled with them, in-process."""
+
+    @dataclasses.dataclass
+    class Inner:
+        x: int
+
+    @dataclasses.dataclass
+    class Outer:
+        items: "list[Inner]"
+
+    spec = nt_values.Spec.of(Outer, names={"Inner": Inner})
+
+    class Keeper:
+        def __init__(self):
+            self.kept = []
+
+        def keep(self, value: spec) -> int:  # type: ignore[valid-type]
+            self.kept.append(value)
+            return len(self.kept)
+
+    keeper = Keeper()
+    cfg = PythonConfig(
+        classes=(Outer, Inner),
+        host_objects={
+            "data": HostObject(Outer([Inner(1)]), type=spec),
+            "keeper": HostObject(keeper, stub=LedgerStub),
+        },
+    )
+    with Store(memory=True) as store:
+        ws = store.open("a", profile=Profile(python=cfg))
+        try:
+            out = run(
+                ws,
+                "print(keeper.keep(Outer([Inner(data.items[0].x + 1)])))\n"
+                "try:\n"
+                "    keeper.keep(Outer([Inner('x')]))\n"
+                "except TypeError as e:\n"
+                "    print(e)",
+            )
+        finally:
+            ws.close()
+    assert out.splitlines() == [
+        "1",
+        "keeper.keep(): at value.items[0].x: expected int, got str 'x'",
+    ]
+    assert keeper.kept == [Outer([Inner(2)])]
+
+
 def test_the_contract_is_the_public_methods():
     class Thing:
         Nested = Row
