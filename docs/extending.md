@@ -495,7 +495,8 @@ note, so the model remembers the work it did before the cut.
 
 **The harness corpus** (`nontainer.conformance`) is the contract as
 scenarios. Each runs a harness on a memory store with a scripted model,
-and checks how each turn ended, the kinds of event it streamed, the
+and checks how each turn ended, the kinds of event it streamed (every
+stream opening with `RunStarted` and closing with `RunEnded`), the
 files, the stored runs, the commits and the inbox. Exact text, token
 counts and timing are not checked. The scripted model is the clock: an
 outside event (a cancel, a queued note) fires when the model is asked

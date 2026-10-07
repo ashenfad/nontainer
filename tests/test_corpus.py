@@ -212,6 +212,75 @@ def test_a_harness_that_asks_for_more_than_the_script_is_caught():
     assert "script" in check(scenario, run(scenario, GreedyHarness()))
 
 
+def test_a_stream_must_open_with_run_started_and_close_with_run_ended():
+    """Checked on the raw stream, for every turn: a usage report after
+    the ending would otherwise pass, because the event comparison leaves
+    usage out, and a scenario that asserts no events would not look."""
+
+    class Late(ReferenceSession):
+        def _run(self, run_id, messages):
+            return [*super()._run(run_id, messages), Usage(input_tokens=1)]
+
+    class Headless(ReferenceSession):
+        def _run(self, run_id, messages):
+            return super()._run(run_id, messages)[1:]
+
+    def harness_of(cls):
+        class Harness(ReferenceHarness):
+            def open(self, ws, clock):
+                return cls(ws, clock)
+
+        return Harness()
+
+    writes_a_file = by_name("a-turn-that-writes-a-file")
+    failures = check(writes_a_file, run(writes_a_file, harness_of(Late)))
+    assert set(failures) == {"turn1.stream"}
+    assert "closed with Usage" in failures["turn1.stream"]
+
+    rewinds = by_name("a-checkout-rewinds-the-conversation-with-the-files")
+    assert all(t.events is None for t in rewinds.expect.turns)
+    failures = check(rewinds, run(rewinds, harness_of(Headless)))
+    assert set(failures) == {"turn1.stream", "turn2.stream", "turn3.stream"}
+
+
+def test_the_session_is_closed_when_a_turn_raises():
+    closed = []
+
+    class Broken(ReferenceSession):
+        def turn(self, prompt):
+            raise RuntimeError("the loop broke")
+
+        def close(self):
+            closed.append(self)
+
+    class BrokenHarness(ReferenceHarness):
+        def open(self, ws, clock):
+            return Broken(ws, clock)
+
+    with pytest.raises(RuntimeError, match="the loop broke"):
+        run(by_name("a-reply-alone-completes"), BrokenHarness())
+    assert len(closed) == 1
+    assert closed[0].ws._closed
+
+
+def test_every_session_and_workspace_the_runner_opens_is_closed_once():
+    opened, closed = [], []
+
+    class Tracked(ReferenceSession):
+        def close(self):
+            closed.append(self)
+
+    class TrackedHarness(ReferenceHarness):
+        def open(self, ws, clock):
+            opened.append(Tracked(ws, clock))
+            return opened[-1]
+
+    run(by_name("a-full-fork-carries-the-conversation"), TrackedHarness())
+    assert len(opened) == 2 and closed == opened
+    # the parent's workspace too, closed when the scenario moved to the fork
+    assert all(session.ws._closed for session in opened)
+
+
 # -- the format -----------------------------------------------------------------
 
 
