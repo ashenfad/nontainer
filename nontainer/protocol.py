@@ -649,7 +649,7 @@ class WorkspaceProvider(Protocol):
         the new commit hash, or ``None`` when none of them had anything
         pending.
 
-        ``keys`` are provider keys as stored (``__agno__/session``) or
+        ``keys`` are provider keys as stored (``__conversation__/index``) or
         absolute workspace paths, which the provider resolves to its
         own keys. Whatever bookkeeping a commit of those keys needs to
         be readable rides along.

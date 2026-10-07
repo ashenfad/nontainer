@@ -57,7 +57,7 @@ code around a workspace can only rely on it if its scope never depends
 on what the agent has staged. `commit_keys(info, keys=...)` takes
 exactly the keys it is given and returns `None` when none of them had
 anything pending. `keys` are provider keys as stored
-(`__agno__/session`) or absolute workspace paths, which the provider
+(`__conversation__/index`) or absolute workspace paths, which the provider
 resolves to its own keys; whatever bookkeeping a commit of those keys
 needs to be readable rides along.
 

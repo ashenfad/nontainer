@@ -18,13 +18,17 @@ from agno.agent import Agent  # noqa: E402
 from agno.session import AgentSession  # noqa: E402
 from test_agno_db import ScriptedModel, run_turn, write_turn  # noqa: E402
 
+from nontainer import conversation  # noqa: E402
 from nontainer.adapters.agno import WorkspaceTools  # noqa: E402
 from nontainer.adapters.agno_db import (  # noqa: E402
-    RUN_PREFIX,
-    SESSION_KEY,
     KvgitStoreDb,
     fork_session,
 )
+from nontainer.planes import (  # noqa: E402
+    CONVERSATION_INDEX_KEY,
+    CONVERSATION_RECORD_KEY,
+)
+from nontainer.planes import CONVERSATION_RUN_PREFIX as RUN_PREFIX  # noqa: E402
 
 
 class Registry:
@@ -194,7 +198,8 @@ def test_listing_ignores_a_branch_whose_record_names_another_session(
     run_turn(agent, write_turn("a.txt", "A"))
     stray = ws.fork("stray-1", inherit="fresh")
     registry.live["stray-1"] = stray
-    kv_of(stray)[SESSION_KEY] = dict(kv_of(ws)[SESSION_KEY])
+    for key in (CONVERSATION_INDEX_KEY, CONVERSATION_RECORD_KEY):
+        kv_of(stray)[key] = dict(kv_of(ws)[key])
     stray.commit(info={"tool": "test"})
 
     rows, total = db.get_sessions(deserialize=False)
@@ -311,7 +316,7 @@ def test_delete_clears_the_conversation_and_leaves_the_branch(registry, tmp_path
     run_turn(agent, write_turn("a.txt", "A"))
 
     assert db.delete_session("chat-1") is True
-    assert kv_of(ws).get(SESSION_KEY) is None
+    assert conversation.read_index(kv_of(ws)) is None
     assert ws.files.fs.read("a.txt") == b"A"
     assert "chat-1" in db._branches()
     assert db.delete_session("nope") is False

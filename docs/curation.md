@@ -159,8 +159,12 @@ were run, not just read.
   goes through one composed filesystem (`AttachFS`), so anything that
   is a filesystem can be attached the same way.
 - **The conversation is stored by run.** With `KvgitSessionDb`, the
-  session record lives at `__agno__/session` (its `run_ids` in order)
-  and each run at `__agno__/runs/<id>`. A run's messages hold the
+  conversation's index lives at `__conversation__/index` (the harness,
+  and its `runs` in order), agno's session record at
+  `__conversation__/record`, and each run at `__conversation__/runs/<id>`
+  (older sessions, under `__agno__/` until their next write). The index
+  names the harness, which is what a `TraceSource` picks a renderer by.
+  A run's messages hold the
   system prompt as it was built for that run, the user's input, the
   assistant's turns, and every tool call with its result. agno leaves
   out only the history it replayed into the run — the earlier runs hold

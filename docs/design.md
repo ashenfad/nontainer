@@ -306,14 +306,15 @@ takes ours:
 |---|---|
 | file keys (a VFS blob and the metadata row beside it) | three-way, marker merge; the row field-aware, its size taken from the merged bytes |
 | `__cache__/*` | ours — a delegate's working memory does not come back |
-| `__agno__/*` | ours — a delegate's conversation does not come back; what it has to say arrives as its answer |
+| `__conversation__/*`, and a session's older `__agno__/*` | ours — a delegate's conversation does not come back; what it has to say arrives as its answer. Both planes, so a delegate still on the old one brings neither |
 | `__compaction__/*` | ours — compaction's folds describe this session's conversation ([compaction.md](compaction.md)) |
 | cwd, the ws-git blob (head, staged set, tags, stash record, outstanding merge), the view record | ours |
 
 "Ours" has to own the *whole* prefix, not only contested keys: a merge
 function runs only where both sides changed a key, so a run the
-delegate added under `__agno__/runs/<id>` would ride in untouched. So
-those three are registered as a `MergeChoice` over the prefix — a
+delegate added under `__conversation__/runs/<id>` would ride in
+untouched. So those prefixes are registered as a `MergeChoice` over the
+prefix — a
 whole-side policy that also drops their-only adds — and only for the
 merge verb. An ordinary commit that loses its CAS to a second handle on
 the SAME session must still take that handle's conversation, which is

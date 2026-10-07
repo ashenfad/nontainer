@@ -28,19 +28,37 @@ extension point rather than through agex.
 ## Where the session goes
 
 agno's `AgentSession.to_dict()` is a flat dict plus a `runs` list of
-run dicts, each carrying a `run_id`. The workspace stores it as
+run dicts, each carrying a `run_id`. The workspace stores it on the
+harness-neutral conversation plane ([`nontainer.conversation`](api.md)),
 **one key per run**, not one blob:
 
 ```
-__agno__/session              session dict minus runs, plus
-                              "run_ids": [...] in order
-__agno__/runs/<run_id>        one run dict each
+__conversation__/index         core's index: harness "agno", the session,
+                               run ids in order, the session it forked from
+__conversation__/record        the session dict minus its runs
+__conversation__/runs/<id>     one run dict each
 ```
+
+The session id, its fork lineage (`session_data["forked_from_session_id"]`)
+and `run_ids` are read from the index, which core owns and a fork
+rebinds without touching the record; the record holds the rest of what
+agno stores.
+
+**Sessions stored before the plane was neutral** keep the conversation
+under `__agno__/` (`__agno__/session` with `run_ids`, and
+`__agno__/runs/<id>`). They read as they always did, through the same
+index, and the first write after moves them: the runs and the record
+go to `__conversation__/` and the `__agno__/` keys are removed, in that
+write's own commit. Older commits keep the old plane (history is
+append-only), so a checkout or fork of one reads the old plane again
+and migrates on its next write. Once a session has been written by this
+version, nontainer releases from before it cannot read its
+conversation.
 
 kvgit shares structure at the key level: a commit that changes one
 key writes a few HAMT nodes and reuses every other subtree by hash.
-A turn therefore adds one run key and rewrites the small session
-key; the hundred earlier runs are shared with every prior commit,
+A turn therefore adds one run key and rewrites the small index and
+record; the hundred earlier runs are shared with every prior commit,
 every fork, and every branch. Storing the whole session under one
 key would rewrite the entire conversation every turn and share
 nothing, because kvgit has no content-defined chunking of byte
@@ -49,10 +67,10 @@ streams — its dedup is per key and per codec leaf.
 Per-run keys also make runs individually addressable, which is what
 a rewind, a transcript projection, or an a2ui egress wants anyway.
 
-The `__agno__/` prefix follows the existing convention: framework
-keys are `__`-prefixed (`__vfs_cwd__`, `__cache__/...`), and the agent's
-`cache` view rejects `__` keys at write time, so agent code cannot
-reach these by construction.
+The `__conversation__/` prefix follows the existing convention:
+framework keys are `__`-prefixed (`__vfs_cwd__`, `__cache__/...`), and
+the agent's `cache` view rejects `__` keys at write time, so agent code
+cannot reach these by construction.
 
 Compaction ([compaction.md](compaction.md)) keeps its folds beside
 these, under `__compaction__/`, and never writes a run. The summary it
@@ -66,8 +84,7 @@ its own, whatever the agent's settings.
 
 agno 3 moved runs out of the session row and gave its databases
 `get_run`, `get_runs`, `delete_run` and `delete_runs`. Here they read
-and remove the branch's `__agno__/runs/` keys, the ones `upsert_run`
-writes:
+and remove the branch's stored runs, the ones `upsert_run` writes:
 
 - `get_run(run_id)` and `get_runs(...)` answer in agno's shape: a run
   object, or with `deserialize=False` the row agno's own adapters
@@ -94,8 +111,8 @@ agno 2 has no runs table, so none of this applies there.
 ## One session per workspace
 
 A `KvgitSessionDb` is constructed from one workspace and holds
-exactly one session: the one whose `session_id` is recorded in
-`__agno__/session`. There is no routing. Whatever agno writes
+exactly one session: the one the conversation's index names. There is
+no routing. Whatever agno writes
 through it lands in that branch.
 
 - `get_session(session_id)` returns the branch's session when the id
@@ -245,11 +262,11 @@ child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
 ```
 
 which does `ws.fork(name)`. A fork that carries the conversation
-rebinds one key as it takes it: `__agno__/session` gets `session_id
-= name` and `session_data["forked_from_session_id"] = <the session
-the conversation came from>`, which is where agno keeps fork
-lineage, so agno's own readers find it and it rides along on every
-later upsert. A branch holds one session's conversation, and the
+rebinds the index as it takes it: the index names `name` and records
+the session the conversation came from, and the db reads those back
+as `session_id` and `session_data["forked_from_session_id"]`, where
+agno keeps fork lineage, so agno's own readers find it and it rides
+along on every later upsert. A branch holds one session's conversation, and the
 fork is a new session. With `conversation="fresh"` the run keys are
 deleted, with compaction's folds over them, and `run_ids` cleared,
 giving a clean chat over the forked
@@ -375,7 +392,7 @@ add the session-db tests so a bump re-checks them.
 Against a real `Agent` with a scripted model (no LLM key):
 
 - a turn produces exactly one new commit, whose tree contains the
-  turn's file writes and one new `__agno__/runs/<id>` key;
+  turn's file writes and one new `__conversation__/runs/<id>` key;
 - `ws.checkout(previous_head)` followed by a run yields a
   conversation that does not contain the rewound turn;
 - `fork_session(..., conversation="inherit")` produces a branch whose

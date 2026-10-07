@@ -166,22 +166,19 @@ def test_status_costs_the_change_not_the_tree(tmp_path):
 
 def test_a_conversation_loads_its_runs_in_one_read(tmp_path):
     pytest.importorskip("agno")
-    from nontainer.adapters.agno_db import RUN_PREFIX, SESSION_KEY, KvgitSessionDb
+    from nontainer import conversation
+    from nontainer.adapters.agno_db import KvgitSessionDb
 
     kv = CountingMemory()
     st = Store(tmp_path, kv=kv)
     ws = st.open("chat")
     run_ids = [f"r{i}" for i in range(40)]
-    store = ws._provider.kv
-    for rid in run_ids:
-        store[RUN_PREFIX + rid] = {"run_id": rid, "session_id": "chat"}
-    store[SESSION_KEY] = {
-        "session_id": "chat",
-        "session_type": "agent",
-        "run_ids": run_ids,
-        "created_at": 1,
-        "updated_at": 1,
-    }
+    conversation.write(
+        ws._provider.kv,
+        conversation.Index(harness="agno", session="chat", runs=run_ids),
+        record={"session_type": "agent", "created_at": 1, "updated_at": 1},
+        runs={rid: {"run_id": rid, "session_id": "chat"} for rid in run_ids},
+    )
     ws.commit()
     db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))
 

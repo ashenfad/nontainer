@@ -11,24 +11,33 @@ Wire it as agno's ``db``::
     tk = WorkspaceTools(ws, commit="turn", session_db=db)
     agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk])
 
-Layout — one key per run, not one blob::
+Layout: the harness-neutral conversation plane (see
+:mod:`nontainer.conversation`), one key per run, not one blob::
 
-    __agno__/session          the session dict minus runs, plus
-                              "run_ids": [...] in order
-    __agno__/runs/<run_id>    one run dict each
+    __conversation__/index         core's index: harness "agno", the
+                                   session, run ids in order, lineage
+    __conversation__/record        agno's session dict minus its runs
+    __conversation__/runs/<id>     one run dict each
+
+The session id, its fork lineage (``session_data[
+"forked_from_session_id"]``) and ``run_ids`` are read from the index,
+which core owns and a fork rebinds; the record holds the rest of what
+agno stores. A branch written before the plane was neutral keeps the
+conversation under ``__agno__/``; it is read from there and moved by
+its next write.
 
 kvgit dedups per key, so a turn writes one new run key and rewrites
-the small session key while every earlier run is shared by hash with
-each prior commit, fork and branch. One key holding the whole
+the small index and record while every earlier run is shared by hash
+with each prior commit, fork and branch. One key holding the whole
 conversation would instead rewrite every turn and share nothing.
 
 Values are the JSON-shaped dicts agno hands over, never pickled agno
 objects, so a branch never depends on agno's class layout and dumping
 one to plain files stays trivial.
 
-The ``__agno__/`` prefix follows the framework convention (``__vfs_cwd__``,
-``__cache__/``): the agent's ``cache`` view rejects ``__`` keys at
-write time, so agent code cannot reach the conversation.
+The ``__conversation__/`` prefix follows the framework convention
+(``__vfs_cwd__``, ``__cache__/``): the agent's ``cache`` view rejects
+``__`` keys at write time, so agent code cannot reach the conversation.
 
 Only the sessions table lives in the branch. User memories, metrics,
 traces, evals and knowledge are inherited from agno's ``JsonDb`` and
@@ -48,19 +57,18 @@ from typing import TYPE_CHECKING, Any
 from agno.db.json import JsonDb
 from agno.session import AgentSession, Session
 
+from .. import conversation
 from ..compaction import is_ours
+from ..conversation import Index
 from ..errors import NotSupportedError, WorkspaceError
-from ..planes import COMPACTION_PREFIX, CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
+from ..planes import COMPACTION_PREFIX, CONVERSATION_RUN_PREFIX
 from ..workspace import Workspace
 
 if TYPE_CHECKING:
     from ..store import Store
 
-# The session record's key is core's too: a fork rebinds that record to
-# the session it makes, so there is one name for it rather than two
-# that could drift apart.
-SESSION_KEY = CONVERSATION_SESSION_KEY
-RUN_PREFIX = CONVERSATION_PREFIX + "runs/"
+HARNESS = "agno"
+"""The harness name this adapter writes into the conversation index."""
 
 
 def _kv(ws: Workspace) -> Any:
@@ -72,41 +80,71 @@ def _kv(ws: Workspace) -> Any:
     return ws.provider.kv
 
 
-def _get_many(kv: Any, keys: list[str]) -> dict[str, Any]:
-    """The values of those ``keys`` that ``kv`` holds.
-
-    One batched read where the mapping offers ``get_many`` (a kvgit
-    worktree or snapshot does), so a conversation of a hundred runs is
-    one round trip to the store rather than a hundred; one read per key
-    where it does not.
-    """
-    if not keys:
-        return {}
-    batch = getattr(kv, "get_many", None)
-    if batch is not None:
-        return dict(batch(*keys))
-    found = {}
-    for key in keys:
-        value = kv.get(key)
-        if value is not None:
-            found[key] = value
-    return found
-
-
 def _runs_from(found: dict[str, Any], run_ids: Any) -> list[dict[str, Any]]:
-    """The runs ``found`` holds, in ``run_ids`` order, as copies.
+    """The runs ``found`` holds (by id, as ``conversation.read_runs``
+    answers), in ``run_ids`` order.
 
-    Deep copies: agno's ``from_dict`` rewrites the nested dicts it is
-    handed in place (a message's ``metrics`` becomes a ``MessageMetrics``
-    object), and the store can hand back the very dict it holds. A
-    shallow copy let one read turn the stored run into agno objects,
-    so the next turn's write saw it as changed and stored it again."""
-    runs = []
-    for rid in run_ids:
-        run = found.get(RUN_PREFIX + str(rid))
-        if isinstance(run, dict):
-            runs.append(copy.deepcopy(run))
-    return runs
+    ``read_runs`` hands back deep copies: agno's ``from_dict`` rewrites
+    the nested dicts it is handed in place (a message's ``metrics``
+    becomes a ``MessageMetrics`` object), and the store can hand back the
+    very dict it holds. A shallow copy let one read turn the stored run
+    into agno objects, so the next turn's write saw it as changed and
+    stored it again."""
+    return [found[str(rid)] for rid in run_ids if isinstance(found.get(str(rid)), dict)]
+
+
+def _agno_record(index: Index, record: Any) -> dict[str, Any]:
+    """agno's session dict, minus its runs, as this db answers with it:
+    the stored record, with the session it belongs to, its fork lineage
+    and its run ids read from the index. The index is core's, and a fork
+    rebinds it without touching the record, so it is the one to trust."""
+    data = copy.deepcopy(record) if isinstance(record, dict) else {}
+    data["session_id"] = index.session
+    if index.forked_from:
+        session_data = dict(data.get("session_data") or {})
+        session_data["forked_from_session_id"] = index.forked_from
+        data["session_data"] = session_data
+    data["run_ids"] = list(index.runs)
+    return data
+
+
+def _read_agno(kv: Any) -> dict[str, Any] | None:
+    """The stored session, as :func:`_agno_record` assembles it, or
+    ``None`` where none is stored. A conversation another harness wrote
+    is not agno's to read, and reads as none."""
+    index = conversation.read_index(kv)
+    if index is None or index.harness != HARNESS:
+        return None
+    return _agno_record(index, conversation.read_record(kv, index))
+
+
+def _store(
+    kv: Any,
+    data: dict[str, Any],
+    *,
+    runs: dict[str, Any] | None = None,
+    drop: Any = (),
+) -> None:
+    """Write agno's session dict (with ``run_ids``) to the plane: the
+    index from its session, lineage and run ids, the record from the
+    rest, and ``runs`` by id. Staged; on a branch still on the legacy
+    plane, this is its migration. A conversation another harness wrote
+    is refused rather than overwritten."""
+    held = conversation.read_index(kv)
+    if held is not None and held.harness != HARNESS:
+        raise NotSupportedError(
+            f"This branch holds a conversation written by {held.harness!r}; "
+            "the agno db does not write over another harness's conversation."
+        )
+    lineage = (data.get("session_data") or {}).get("forked_from_session_id")
+    index = Index(
+        harness=HARNESS,
+        session=data.get("session_id"),
+        runs=tuple(data.get("run_ids") or ()),
+        forked_from=lineage,
+    )
+    record = {k: v for k, v in data.items() if k != "run_ids"}
+    conversation.write(kv, index, record=record, runs=runs, drop=drop)
 
 
 def _same(held: Any, run: Any) -> bool:
@@ -170,10 +208,6 @@ def _without_compaction(run: dict) -> dict:
     return run
 
 
-def _run_keys(kv: Any) -> list[str]:
-    return [k for k in list(kv.keys()) if k.startswith(RUN_PREFIX)]
-
-
 def _run_rows(record: dict[str, Any], found: dict[str, Any]) -> list[dict[str, Any]]:
     """The session's runs as agno 3's runs table holds them: one row
     each (``run_id``, ``session_id``, ``run_type``, ``status``,
@@ -191,7 +225,7 @@ def _run_rows(record: dict[str, Any], found: dict[str, Any]) -> list[dict[str, A
 
     rows = []
     for index, rid in enumerate(record.get("run_ids") or []):
-        run = found.get(RUN_PREFIX + str(rid))
+        run = found.get(str(rid))
         if isinstance(run, dict):
             rows.append(
                 build_single_run_row(
@@ -328,8 +362,8 @@ class KvgitSessionDb(JsonDb):
     """agno ``BaseDb`` holding one agent session in one workspace branch.
 
     A db instance is bound to one workspace and holds exactly one
-    session: the one whose ``session_id`` is recorded in
-    ``__agno__/session``. There is no routing — whatever agno writes
+    session: the one the conversation's index names (see
+    :mod:`nontainer.conversation`). There is no routing — whatever agno writes
     through it lands in that branch — so an id that does not match the
     branch's is refused rather than stored beside it.
 
@@ -446,16 +480,13 @@ class KvgitSessionDb(JsonDb):
                     "Refusing to seed a branch that already holds a "
                     "conversation; seeding is for a branch with no runs."
                 )
-            kv = _kv(self._ws)
-            for run, rid in zip(runs, run_ids):
-                kv[RUN_PREFIX + rid] = run
             now = int(time.time())
             stored = {k: v for k, v in data.items() if k != "runs"}
             stored["session_type"] = "agent"
             stored["run_ids"] = run_ids
             stored["created_at"] = data.get("created_at") or now
             stored["updated_at"] = now
-            kv[SESSION_KEY] = stored
+            _store(_kv(self._ws), stored, runs=dict(zip(run_ids, runs)))
             _commit_framework(
                 self._ws, {"tool": "fork_session", "conversation": "copy"}
             )
@@ -469,14 +500,13 @@ class KvgitSessionDb(JsonDb):
     # -- keys ----------------------------------------------------------
 
     def _record(self) -> dict[str, Any] | None:
-        """The stored session dict (minus runs), or None on a branch
-        that has never held a session."""
-        record = _kv(self._ws).get(SESSION_KEY)
-        # a copy agno may rewrite in place, as with the runs
-        return copy.deepcopy(record) if isinstance(record, dict) else None
+        """The stored session dict (minus runs, with ``run_ids``), or
+        None on a branch that has never held a session. A copy agno may
+        rewrite in place, as with the runs."""
+        return _read_agno(_kv(self._ws))
 
     def _read_runs(self, run_ids: list[str]) -> list[dict[str, Any]]:
-        found = _get_many(_kv(self._ws), [RUN_PREFIX + rid for rid in run_ids])
+        found = conversation.read_runs(_kv(self._ws), run_ids)
         return _runs_from(found, run_ids)
 
     def _assembled(self, record: dict[str, Any]) -> dict[str, Any]:
@@ -663,12 +693,13 @@ class KvgitSessionDb(JsonDb):
             # run; a checkpointed run is written again, as RUNNING
             # first and then finished.
             written: dict[str, Any] = {}
-            keys = [RUN_PREFIX + str(run["run_id"]) for run in runs]
-            held = _get_many(kv, keys)
-            for key, run in zip(keys, runs):
-                if not _same(held.get(key), run):
-                    kv[key] = held[key] = run
-                    written[str(run["run_id"])] = run.get("status")
+            changed: dict[str, Any] = {}
+            held = conversation.read_runs(kv, [str(run["run_id"]) for run in runs])
+            for run in runs:
+                rid = str(run["run_id"])
+                if not _same(held.get(rid), run):
+                    changed[rid] = held[rid] = run
+                    written[rid] = run.get("status")
 
             now = int(time.time())
             stored = {k: v for k, v in data.items() if k != "runs"}
@@ -680,7 +711,7 @@ class KvgitSessionDb(JsonDb):
             else:
                 stored["created_at"] = record.get("created_at") or now
                 stored["updated_at"] = now
-            kv[SESSION_KEY] = stored
+            _store(kv, stored, runs=changed)
 
             if written:
                 # The conversation is the framework's own write, and it
@@ -743,21 +774,21 @@ class KvgitSessionDb(JsonDb):
             record = self._record()
             if record is None or record.get("session_id") != session_id:
                 return
-            key = RUN_PREFIX + str(run_id)
-            if kv.get(key) != run_data:
-                kv[key] = dict(run_data)
+            rid = str(run_id)
+            held = conversation.read_runs(kv, [rid]).get(rid)
+            changed = {} if held == run_data else {rid: dict(run_data)}
             run_ids = list(record.get("run_ids") or [])
-            if run_id not in run_ids:
-                run_ids.append(str(run_id))
-                record["run_ids"] = run_ids
-                kv[SESSION_KEY] = record
+            if rid not in run_ids:
+                run_ids.append(rid)
+            if changed or run_ids != list(record.get("run_ids") or []):
+                _store(kv, dict(record, run_ids=run_ids), runs=changed)
 
     # -- runs (agno 3's runs table) ----------------------------------
     #
     # agno 3 moved runs out of the session row and gave BaseDb
     # get_run/get_runs/delete_run/delete_runs. The runs here are the
-    # branch's RUN_PREFIX keys, the ones upsert_run writes, so these read
-    # and remove those. Inherited from JsonDb, they looked for a runs
+    # branch's stored runs, the ones upsert_run writes, so these read and
+    # remove those. Inherited from JsonDb, they looked for a runs
     # file under db_path that never exists, answered that no run was
     # there and reported deletes that removed nothing.
 
@@ -771,7 +802,7 @@ class KvgitSessionDb(JsonDb):
         record, run_ids = self._run_ids()
         if record is None or str(run_id) not in run_ids:
             return None
-        found = _get_many(_kv(self._ws), [RUN_PREFIX + str(run_id)])
+        found = conversation.read_runs(_kv(self._ws), [str(run_id)])
         rows = [
             r for r in _run_rows(record, found) if str(r.get("run_id")) == str(run_id)
         ]
@@ -785,7 +816,7 @@ class KvgitSessionDb(JsonDb):
             session_id is not None and record.get("session_id") != session_id
         ):
             return []
-        found = _get_many(_kv(self._ws), [RUN_PREFIX + rid for rid in run_ids])
+        found = conversation.read_runs(_kv(self._ws), run_ids)
         return _run_rows(record, found)
 
     def get_runs(
@@ -837,13 +868,9 @@ class KvgitSessionDb(JsonDb):
             if record is None or not gone:
                 return []
             was_clean = not self._ws.uncommitted
-            kv = _kv(self._ws)
-            for rid in gone:
-                if kv.get(RUN_PREFIX + rid) is not None:
-                    del kv[RUN_PREFIX + rid]
             record["run_ids"] = [rid for rid in held if rid not in wanted]
             record["updated_at"] = int(time.time())
-            kv[SESSION_KEY] = record
+            _store(_kv(self._ws), record, drop=gone)
             self._commit_management_write("delete_run", was_clean=was_clean)
             return gone
 
@@ -878,10 +905,7 @@ class KvgitSessionDb(JsonDb):
             ):
                 return False
             was_clean = not self._ws.uncommitted
-            kv = _kv(self._ws)
-            for key in _run_keys(kv):
-                del kv[key]
-            del kv[SESSION_KEY]
+            conversation.clear(_kv(self._ws))
             self._commit_management_write("delete_session", was_clean=was_clean)
             return True
 
@@ -913,7 +937,7 @@ class KvgitSessionDb(JsonDb):
             session_data = dict(record.get("session_data") or {})
             session_data["session_name"] = session_name
             record["session_data"] = session_data
-            _kv(self._ws)[SESSION_KEY] = record
+            _store(_kv(self._ws), record)
             self._commit_management_write("rename_session", was_clean=was_clean)
         data = self._assembled(record)
         if not deserialize:
@@ -927,9 +951,9 @@ def fork_session(
     """Branch the files, the cache, the cwd AND the conversation.
 
     Forking is a workspace verb here, not an agno one. ``ws.fork(name)``
-    gives the new branch every key and rebinds ``__agno__/session``, so
-    the fork carries its own ``session_id`` (the branch name) and
-    records the parent in ``session_data["forked_from_session_id"]``,
+    gives the new branch every key and rebinds the conversation's index,
+    so the fork's session reads with its own ``session_id`` (the branch
+    name) and the parent in ``session_data["forked_from_session_id"]``,
     where agno keeps fork lineage, in a commit of the fork's own — its
     head is consistent from the start.
 
@@ -958,17 +982,26 @@ def fork_session(
         return child
     with child.lock:
         kv = _kv(child)
-        # the runs, and compaction's folds over them: a summary of a
-        # chat the fresh one never had would never apply, only linger
-        for key in _run_keys(kv) + [
+        # compaction's folds over the runs: a summary of a chat the
+        # fresh one never had would never apply, only linger
+        for key in [
             k
             for k in list(kv.keys())
             if isinstance(k, str) and k.startswith(COMPACTION_PREFIX)
         ]:
             del kv[key]
-        record = kv.get(SESSION_KEY)
-        if isinstance(record, dict):
-            kv[SESSION_KEY] = dict(record) | {"run_ids": []}
+        record = _read_agno(kv)
+        if record is not None:
+            stored = [
+                k[len(CONVERSATION_RUN_PREFIX) :]
+                for k in list(kv.keys())
+                if isinstance(k, str) and k.startswith(CONVERSATION_RUN_PREFIX)
+            ]
+            _store(
+                kv,
+                dict(record, run_ids=[]),
+                drop=set(stored) | set(record["run_ids"]),
+            )
     _commit_framework(child, {"tool": "fork_session", "conversation": conversation})
     return child
 
@@ -1051,23 +1084,17 @@ class KvgitStoreDb(JsonDb):
     def _branches(self) -> list[str]:
         return list(self._kvgit().branches)
 
-    def _peek(self, branch: str, key: str) -> Any:
-        """Read one key at a branch's committed head without opening the
-        branch as a workspace. A snapshot of the head reads that key
-        alone, and reading makes no branch, so a name the store does not
-        hold reads as absent."""
+    def _peek(self, branch: str) -> tuple[Any, dict[str, Any] | None]:
+        """A snapshot of a branch's committed head and the session it
+        holds, without opening the branch as a workspace: the snapshot
+        reads only the keys asked of it, and reading makes no branch, so
+        a name the store does not hold reads as ``(None, None)``. The
+        snapshot serves the session's runs too."""
         repo = self._kvgit()
         if branch not in repo.branches:
-            return None
-        return repo.snapshot(branch=branch).get(key)
-
-    def _peek_many(self, branch: str, keys: list[str]) -> dict[str, Any]:
-        """:meth:`_peek` for several keys at once: one snapshot of the
-        branch head, read in one batch."""
-        repo = self._kvgit()
-        if not keys or branch not in repo.branches:
-            return {}
-        return _get_many(repo.snapshot(branch=branch), keys)
+            return None, None
+        snapshot = repo.snapshot(branch=branch)
+        return snapshot, _read_agno(snapshot)
 
     def _exists(self, session_id: str) -> bool:
         return session_id in self._branches()
@@ -1103,7 +1130,7 @@ class KvgitStoreDb(JsonDb):
         for branch in self._branches():
             if branch in self._written:
                 continue
-            record = self._peek(branch, SESSION_KEY)
+            _, record = self._peek(branch)
             if (
                 isinstance(record, dict)
                 and record.get("session_id") == branch
@@ -1151,9 +1178,9 @@ class KvgitStoreDb(JsonDb):
         (``created_at`` or ``updated_at``, newest first unless asked
         otherwise) and paginated. Runs are read only for the page
         returned."""
-        matched: list[tuple[str, dict[str, Any]]] = []
+        matched: list[tuple[str, Any, dict[str, Any]]] = []
         for branch in self._branches():
-            record = self._peek(branch, SESSION_KEY)
+            snapshot, record = self._peek(branch)
             # A plain Workspace.fork() — a published snapshot, say —
             # inherits its parent's record under the parent's id. Only a
             # branch whose record names it holds a session.
@@ -1175,11 +1202,11 @@ class KvgitStoreDb(JsonDb):
                 continue
             if end_timestamp is not None and created > end_timestamp:
                 continue
-            matched.append((branch, record))
+            matched.append((branch, snapshot, record))
 
         key = sort_by if sort_by in ("created_at", "updated_at") else "created_at"
         matched.sort(
-            key=lambda item: item[1].get(key) or 0, reverse=sort_order != "asc"
+            key=lambda item: item[2].get(key) or 0, reverse=sort_order != "asc"
         )
         total = len(matched)
         if limit is not None:
@@ -1187,10 +1214,10 @@ class KvgitStoreDb(JsonDb):
             matched = matched[start : start + limit]
 
         found: list[dict[str, Any]] = []
-        for branch, record in matched:
-            data = {k: copy.deepcopy(v) for k, v in record.items() if k != "run_ids"}
+        for _branch, snapshot, record in matched:
+            data = {k: v for k, v in record.items() if k != "run_ids"}
             run_ids = record.get("run_ids") or []
-            held = self._peek_many(branch, [RUN_PREFIX + str(rid) for rid in run_ids])
+            held = conversation.read_runs(snapshot, run_ids)
             data["runs"] = _runs_from(held, run_ids) or None
             found.append(data)
         if not deserialize:
@@ -1302,11 +1329,11 @@ class KvgitStoreDb(JsonDb):
                 # filtered to its own session, as the committed path is
                 rows += self._view(branch)._rows(branch)
                 continue
-            record = self._peek(branch, SESSION_KEY)
+            snapshot, record = self._peek(branch)
             if not isinstance(record, dict) or record.get("session_id") != branch:
                 continue
             run_ids = [str(r) for r in record.get("run_ids") or []]
-            held = self._peek_many(branch, [RUN_PREFIX + rid for rid in run_ids])
+            held = conversation.read_runs(snapshot, run_ids)
             rows += _run_rows(record, held)
         return _select_runs(
             rows,
