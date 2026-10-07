@@ -143,6 +143,17 @@ def test_a_dict_with_a_records_fields_is_the_record_on_every_rung(ws, ledger):
     assert ledger.rows == [Row("ada", 3, Grade.PASS)]
 
 
+def test_a_refusal_traceback_is_the_code_line_and_the_error(ws):
+    r = ws.run_python("x = 1\nledger.add(Row('cy', '9', Grade.PASS))")
+    assert "line 2" in r.error
+    assert r.error.splitlines()[-1] == (
+        "TypeError: ledger.add(): at row.score: expected int, got str '9'"
+    )
+    # nontainer's plumbing, imported or rebuilt from source in a guest
+    assert "remote.py" not in r.error
+    assert "nontainer.remote" not in r.error
+
+
 def test_a_call_the_signature_refuses(ws):
     out = run(
         ws,

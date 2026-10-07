@@ -94,7 +94,7 @@ from .executor import (
 )
 from .remote import Host
 from .views import read_many
-from .workspace import PythonResult, TerminalResult
+from .workspace import PythonResult, TerminalResult, _trim_rendered_traceback
 
 #: The guest-side flattener dud calls to serialize rich ``ui`` values
 #: (see :mod:`nontainer.dud_outputs`). Named rather than discovered:
@@ -1327,8 +1327,11 @@ class DudExecutor:
         if result.error is not None:
             # The guest renders its own traceback (rendering happens
             # where the objects live); errors without one (Timeout,
-            # RunnerCrash) read as "Type: message".
+            # RunnerCrash) read as "Type: message". It is trimmed as the
+            # other rungs' are: plumbing frames and host install paths
+            # go.
             tb = _unshift_traceback(result.error.traceback.rstrip(), line_offset)
+            tb = _trim_rendered_traceback(tb) if tb else tb
             error = tb or f"{result.error.etype}: {result.error.message}"
 
         namespace = dict(result.outputs)
