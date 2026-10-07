@@ -1846,7 +1846,8 @@ contract (`nontainer.conformance`), are in
 class PythonConfig:
     modules: Sequence[ModuleType | ModuleGrant | Sequence[...]] = ()
     stdlib: bool = True                     # curated safe-stdlib set
-    host_objects: Mapping[str, Any] = {}
+    host_objects: Mapping[str, Any | HostObject] = {}
+    classes: Sequence[type] = ()            # bound by name in every run
     network: bool = False
     isolation: "none" | "process" | "kernel" = "none"
     timeout: float = 30.0
@@ -1903,6 +1904,23 @@ class PythonConfig:
   `recursive=True` to submodules, and dotted patterns match qualified
   names (`"DataFrame.eval"`, `"pandas.core*"`) — sandtrap ≥ 0.2.2
   semantics.
+- `HostObject(obj, type=None)` is a `host_objects` entry that says
+  more than the object. With `type`, `obj` is data of that type, sent
+  into the sandbox by value on every rung: in-process each run gets its
+  own copy (`nontainer.values.copy`), and under process isolation and
+  on dud a pickled copy (host to sandbox, the trusted direction), its
+  record and enum classes imported there or rebuilt from their module's
+  source. Either way a change to it lasts only the run, and never
+  reaches the host's object. The value is checked against the type when
+  the entry is made (`nontainer.values`, strictly), and a type with a
+  live part is refused. Without `type`, the entry is the object itself.
+- `classes` are bound by name in every run and importable from `host`:
+  the types agent code builds values of. In-process they are registered
+  with the policy; under process isolation the worker imports them by
+  qualified name; on dud the guest imports them or rebuilds their module
+  from its source, so that module should need nothing the guest lacks.
+  A class defined inside a function or in `__main__` can't be named from
+  another process, and is refused at open under isolation and on dud.
 - `host_objects` are bound into the program the executor runs — the
   top-level `run_python` code, and an app handler — and also arrive as a
   synthetic `host` module: `from host import db` resolves at the top

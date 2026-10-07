@@ -63,7 +63,7 @@ import sys
 import tarfile
 import threading
 import time
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -78,11 +78,16 @@ from .executor import (
     StagedDiff,
     ViewSpec,
     _apply_diff,
-    _is_plain_data,
+    _by_value,
+    _host_module_names,
+    _named_classes,
     _refuse_async_host_methods,
     _refuse_reserved_host_name,
     _refuse_shadowed_host_module,
+    _refuse_unnameable_classes,
     _truncate,
+    _typed,
+    _value,
     flatten_grants,
 )
 from .views import read_many
@@ -403,8 +408,62 @@ def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
     return value
 
 
+def _class_boot(
+    bind: Sequence[type], need: Sequence[type]
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """How a guest gets the classes a run needs: ``(import lines, boot)``
+    for ``_VIEW_BOOTSTRAP``. Those in ``bind`` are also bound by name.
+
+    Classes cross by SOURCE, not by install: grouped by defining module,
+    each module's source ships so the guest can synthesize it when the
+    import fails (VM rungs have no nontainer, nor the embedder's
+    modules). A module whose source can't be read falls back to a plain
+    import line, correct wherever the guest shares the host venv."""
+    import inspect
+
+    boot: dict[str, dict[str, Any]] = {}
+    for c in need:
+        mod, name = getattr(c, "__module__", None), getattr(c, "__name__", None)
+        if not mod or not name:
+            continue
+        entry = boot.setdefault(mod, {"src": None, "names": []})
+        if c in bind and name not in entry["names"]:
+            entry["names"].append(name)
+    imports = ""
+    for mod, entry in list(boot.items()):
+        try:
+            entry["src"] = inspect.getsource(sys.modules[mod])
+        except Exception:
+            names = entry["names"]
+            imports += (
+                f"from {mod} import {', '.join(names)}\n"
+                if names
+                else f"import {mod}\n"
+            )
+            del boot[mod]
+    return imports, boot
+
+
+def _typed_program(values: Mapping[str, Any], cfg: Any) -> tuple[str, dict[str, Any]]:
+    """The guest prelude for a run with typed host data or classes:
+    ``(source, guest inputs)``. The classes' modules are imported or
+    rebuilt first, since the data, pickled in (host to guest, the trusted
+    direction), names them as it unpickles."""
+    import base64
+
+    imports, boot = _class_boot(tuple(cfg.classes), _named_classes(cfg))
+    blob = base64.b64encode(pickle.dumps(dict(values))).decode()
+    source = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE
+    return source, {"__nt_blob": blob, "__nt_boot": boot}
+
+
 def _view_program(
-    code: str, inputs: Mapping[str, Any], view: ViewSpec
+    code: str,
+    inputs: Mapping[str, Any],
+    view: ViewSpec,
+    *,
+    bind: Sequence[type] = (),
+    need: Sequence[type] = (),
 ) -> tuple[str, dict[str, Any], int]:
     """The guest program for one view execution: ``(source, guest
     inputs, line offset)``. The guest inputs lack only the host-module
@@ -412,32 +471,15 @@ def _view_program(
     guest's line numbers run ahead of ``code``'s.
 
     Separate from the session so what a guest with no nontainer
-    installed receives can be run and checked anywhere."""
+    installed receives can be run and checked anywhere. ``bind`` and
+    ``need`` are the config's classes and those its typed host data
+    holds, which the handler gets as every run does."""
     import base64
-    import inspect
 
     blob = base64.b64encode(pickle.dumps(dict(inputs))).decode()
-    # Contract classes cross by SOURCE, not by install: group them by
-    # defining module and ship each module's source so the guest can
-    # synthesize it when the import fails (VM rungs have no nontainer).
-    # A module whose source can't be read falls back to a plain import
-    # line — the pre-VM behavior, correct wherever the guest shares
-    # the host venv.
-    boot: dict[str, dict[str, Any]] = {}
-    for c in view.extra_classes:
-        mod, name = getattr(c, "__module__", None), getattr(c, "__name__", None)
-        if not mod or not name:
-            continue
-        entry = boot.setdefault(mod, {"src": None, "names": []})
-        if name not in entry["names"]:
-            entry["names"].append(name)
-    imports = ""
-    for mod, entry in list(boot.items()):
-        try:
-            entry["src"] = inspect.getsource(sys.modules[mod])
-        except Exception:
-            imports += f"from {mod} import {', '.join(entry['names'])}\n"
-            del boot[mod]
+    imports, boot = _class_boot(
+        (*view.extra_classes, *bind), (*view.extra_classes, *bind, *need)
+    )
     # The host prelude runs AFTER the view prelude: plain-data host
     # objects reach the guest inside the pickle blob, so they are
     # globals only once it has been unpickled.
@@ -662,6 +704,7 @@ class DudExecutor:
         # path contract across executors.
         self._ws_root = ""
         self._plain: dict[str, Any] = {}  # plain-data host_objects
+        self._typed: dict[str, Any] = {}  # typed host data (HostObject type=)
         self._live: dict[str, Any] = {}  # live host_objects (for recovery)
         self._packages: list[str] = []  # image packages derived from grants
         self._cache: Any | None = None  # kv-backed cache view (for recovery)
@@ -809,12 +852,17 @@ class DudExecutor:
         # requires the grant explicitly). Plain data can't be proxied —
         # it rides into each exec as inputs instead (mirrors
         # LocalExecutor's direct namespace injection).
+        # Typed host data (a HostObject with a type) is pickled in per
+        # exec, its classes imported or rebuilt from source first.
+        _refuse_unnameable_classes(cfg, "on a dud machine")
         live: dict[str, Any] = {}
-        for name, obj in cfg.host_objects.items():
-            if _is_plain_data(obj):
-                self._plain[name] = obj
+        for name, entry in cfg.host_objects.items():
+            if _typed(entry):
+                self._typed[name] = entry.obj
+            elif _by_value(entry):
+                self._plain[name] = _value(entry)
             else:
-                live[name] = obj
+                live[name] = _value(entry)
         # One framework host object fronts every ``ws-*`` verb:
         # registered unconditionally when a workspace is bound, refused
         # at call time for a verb not registered there — so a post-open
@@ -975,14 +1023,15 @@ class DudExecutor:
     def _host_module_names(self, ctx: ExecutionContext) -> list[str]:
         """The guest globals the ``host`` module carries for one exec.
 
-        The config's ``host_objects`` plus ``cache`` — the same set
-        ``LocalExecutor`` builds its module from, so ``from host import
-        db`` names the same things on either rung. The ``ws_git`` and
-        ``ws_curl`` handlers this rung registers alongside them are
-        deliberately absent: they front terminal verbs that exist on one
-        rung only, and a name only one rung answers is not a contract.
+        The config's ``host_objects``, its ``classes`` and ``cache`` —
+        the same set ``LocalExecutor`` builds its module from, so ``from
+        host import db`` names the same things on either rung. The
+        ``ws_git`` and ``ws_curl`` handlers this rung registers alongside
+        them are deliberately absent: they front terminal verbs that
+        exist on one rung only, and a name only one rung answers is not
+        a contract.
         """
-        return [*ctx.python_config.host_objects, "cache"]
+        return _host_module_names(ctx.python_config)
 
     def exec_python(
         self,
@@ -1028,15 +1077,23 @@ class DudExecutor:
         merged = dict(self._plain)
         merged.update(inputs or {})
         merged[_HOST_NAMES_INPUT] = self._host_module_names(ctx)
+        cfg = ctx.python_config
+        prefix = ""
+        bound: set[str] = set()
+        if self._typed or cfg.classes:
+            prefix, guest = _typed_program(self._typed, cfg)
+            merged.update(guest)
+            bound = {*self._typed, *(k.__name__ for k in cfg.classes)}
+        program = prefix + _HOST_PRELUDE + code
         start = time.monotonic()
         try:
             with self._lock:
                 self._ensure_session()
                 result = self._with_recovery(
                     lambda: self._session.python(
-                        _HOST_PRELUDE + code,
+                        program,
                         inputs=merged,
-                        timeout=ctx.python_config.timeout,
+                        timeout=cfg.timeout,
                     )
                 )
         except NotRepresentable as exc:
@@ -1050,12 +1107,20 @@ class DudExecutor:
         # The prelude rode in ahead of the submitted code, so the guest's
         # line numbers run ahead of the ones whoever wrote that code
         # counted. Hand back theirs.
-        return self._map_result(
+        out = self._map_result(
             result,
             ctx,
             time.monotonic() - start,
-            line_offset=_HOST_PRELUDE_LINES,
+            line_offset=prefix.count("\n") + _HOST_PRELUDE_LINES,
         )
+        if bound:
+            # the guest harvests its globals, typed data and classes
+            # among them; they went in, and are not what the run made
+            out = replace(
+                out,
+                namespace={k: v for k, v in out.namespace.items() if k not in bound},
+            )
+        return out
 
     def _exec_view(
         self,
@@ -1080,8 +1145,12 @@ class DudExecutor:
         provider (so ``ws.files.fs`` reflects them, like LocalExecutor's
         write-through)."""
         merged = dict(self._plain)
+        merged.update(self._typed)
         merged.update(inputs)
-        full, guest_inputs, line_offset = _view_program(code, merged, view)
+        cfg = ctx.python_config
+        full, guest_inputs, line_offset = _view_program(
+            code, merged, view, bind=tuple(cfg.classes), need=_named_classes(cfg)
+        )
         guest_inputs[_HOST_NAMES_INPUT] = self._host_module_names(ctx)
         timeout = (
             view.timeout if view.timeout is not None else ctx.python_config.timeout

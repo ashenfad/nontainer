@@ -49,6 +49,7 @@ theirs is encoded or decoded, and pydantic is never imported at all.
 from __future__ import annotations
 
 import collections.abc as abc
+import copy as copying
 import dataclasses
 import datetime
 import decimal
@@ -80,6 +81,7 @@ __all__ = [
     "Unencodable",
     "Unsupported",
     "check",
+    "copy",
     "decode",
     "encode",
     "fmt",
@@ -1295,6 +1297,47 @@ def check(value: Any, tp: Any, *, names: Names = None, full: bool = False) -> No
 def decode(encoded: Encoded | bytes, tp: Any, *, names: Names = None) -> Any:
     """:meth:`Spec.decode` into ``tp``, compiled for the one call."""
     return Spec.of(tp, names=names).decode(encoded)
+
+
+# -- copying -------------------------------------------------------------------------
+
+
+def copy(value: Any) -> Any:
+    """A copy of ``value`` that can be changed without reaching the
+    original, made as cheaply as that allows: data deep-copied, a table
+    shallow-copied where its library copies on write (pandas from 3.0;
+    an Arrow table never changes in place), an array as a read-only view,
+    and bytes as they are."""
+    kind = type(value)
+    if value is None or kind in (str, int, float, bool, bytes):
+        return value
+    if kind is list:
+        return [copy(item) for item in value]
+    if kind is tuple:
+        return tuple(copy(item) for item in value)
+    if kind is dict:
+        return {key: copy(item) for key, item in value.items()}
+    table = _table_name(kind)
+    if table is not None:
+        return _copy_table(value, table)
+    if _is_array(kind):
+        view = value.view()
+        view.flags.writeable = False
+        return view
+    return copying.deepcopy(value)
+
+
+def _copy_table(value: Any, name: str) -> Any:
+    if name.startswith("pandas."):
+        import pandas
+
+        # copy-on-write is how pandas works from 3.0: a shallow copy is
+        # cheap, and a write to either side copies what it touches
+        return value.copy(deep=int(pandas.__version__.split(".")[0]) < 3)
+    if name.startswith("pyarrow."):
+        return value
+    clone = getattr(value, "clone", None)  # polars
+    return clone() if callable(clone) else copying.deepcopy(value)
 
 
 # -- encoding ------------------------------------------------------------------------

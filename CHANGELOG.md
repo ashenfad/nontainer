@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Typed host data and classes: `HostObject(obj, type=...)`, `PythonConfig.classes`.** Data of a declared type reaches the sandbox by value on every rung, a fresh copy each run, and classes are bound by name; on dud both cross by pickle and by module source.
 - **Typed values: `nontainer.values`.** A strict check of a value against its declared type (deep into records, sampled past 10,000 items), and an encoding that decodes only into that type, with tables as Arrow and arrays as `.npy`; standard library only, so it runs inside a VM guest.
 - **`turn.deliver(result)`.** Appends the notes queued for a tool result and returns them; `adeliver` awaits `on_delivered`, `collect` serves results that are not text, and `sources=` adds notes such as delegate answers.
 - **`nontainer.sessions.answer_notes(helper, inbox)` and `Inbox.announce`.** Delegate answers as delivered notes, and the `on_delivered` call; the agno toolkit's delivery is built on both, unchanged.

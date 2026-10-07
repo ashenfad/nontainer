@@ -765,3 +765,34 @@ def test_any_travels_as_plain_data_only():
         encode(Client())
     with pytest.raises(Mismatch, match="declare its type"):
         spec.decode(encode(pd.DataFrame({"x": [1]})))
+
+
+# -- copies --------------------------------------------------------------------------
+
+
+def test_a_copy_can_change_without_reaching_the_original():
+    ranking = Ranking("ada", [Score("ada", 7)])
+    copied = values.copy(ranking)
+    copied.scores.append(Score("bo", 1))
+    assert ranking == Ranking("ada", [Score("ada", 7)])
+    nested = {"a": [1, 2], "b": (b"x", [3])}
+    out = values.copy(nested)
+    out["a"].append(9)
+    out["b"][1].append(9)
+    assert nested == {"a": [1, 2], "b": (b"x", [3])}
+    assert out["b"][0] is nested["b"][0]  # bytes don't change
+
+
+def test_a_table_copy_is_shallow_and_an_array_copy_read_only():
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    frame = pd.DataFrame({"x": [1, 2]})
+    copied = values.copy(frame)
+    copied.loc[0, "x"] = 99
+    copied.drop(columns=["x"], inplace=True)
+    assert frame["x"].tolist() == [1, 2]
+    array = np.arange(3)
+    view = values.copy(array)
+    with pytest.raises(ValueError, match="read-only"):
+        view[0] = 9
+    assert array.flags.writeable and array.tolist() == [0, 1, 2]

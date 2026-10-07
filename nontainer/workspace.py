@@ -219,6 +219,63 @@ class ModuleGrant:
 
 
 @dataclass(frozen=True)
+class HostObject:
+    """A ``PythonConfig.host_objects`` entry with more said about it than
+    the object alone.
+
+    ``type`` declares ``obj`` data of that type, sent into the sandbox
+    by value on every rung: in-process the object itself; under process
+    isolation and on dud a copy, pickled in (the safe direction: the
+    sandbox only unpickles what the host wrote), with the record and
+    enum classes it holds imported there or rebuilt from their module's
+    source. It is checked against the type here, strictly
+    (:mod:`nontainer.values`), and a type with a live part is refused:
+    a live object needs no type, and reaches the sandbox as a proxy
+    under isolation, as a bare entry does.
+
+    An entry without a type is the object itself, exactly as if it had
+    been put in ``host_objects`` bare.
+    """
+
+    obj: Any
+
+    type: Any = None
+    """The type ``obj`` is data of, or ``None`` for an object passed as
+    it is."""
+
+    spec: Any = field(default=None, init=False, repr=False, compare=False)
+    """The compiled type (:class:`nontainer.values.Spec`), when there is
+    one."""
+
+    def __post_init__(self) -> None:
+        if self.type is None:
+            return
+        from .values import Mismatch, Spec, Unsupported
+
+        try:
+            spec = Spec.of(self.type)
+        except Unsupported as error:
+            raise TypeError(f"HostObject type: {error}") from None
+        if not spec.travels:
+            raise TypeError(
+                f"HostObject type {spec!r} has a live part, so its values can't "
+                "be sent by value; pass a live object without type= and it "
+                "reaches the sandbox as a proxy"
+            )
+        try:
+            spec.check(self.obj)
+        except Mismatch as error:
+            raise TypeError(f"HostObject value doesn't fit its type: {error}") from None
+        object.__setattr__(self, "spec", spec)
+
+    @property
+    def by_value(self) -> bool:
+        """Whether the entry is sent into the sandbox as a copy of its
+        data, rather than as a proxy to a live object."""
+        return self.type is not None
+
+
+@dataclass(frozen=True)
 class TerminalResult:
     """Outcome of one ``terminal()`` call (a full pipeline/script)."""
 
@@ -383,7 +440,22 @@ class PythonConfig:
     opens, so an object added to the mapping afterwards would reach
     in-process code and nowhere else. A different set is a different
     config, ``dataclasses.replace(python, host_objects={...})``, for a
-    workspace opened (or forked) with it."""
+    workspace opened (or forked) with it.
+
+    An entry may be a :class:`HostObject`, which can say more about the
+    object: ``HostObject(rows, type=list[Row])`` sends data of a declared
+    type into the sandbox by value on every rung."""
+
+    classes: Sequence[type] = field(default=(), hash=False)
+    """Classes bound by name in every run, and importable from ``host``:
+    the types agent code builds values of (a task's result type, say).
+    In-process they are registered with the sandbox policy; under
+    process isolation the worker imports them by their qualified name;
+    on dud the guest imports them, or rebuilds their module from its
+    source where it has no such module. A class defined inside a
+    function, or in a script's ``__main__``, can't be named from
+    another process, and is refused when a workspace opens with
+    isolation or on dud."""
 
     network: bool = False
     """Global network toggle for sandboxed code itself (sandtrap
@@ -524,6 +596,27 @@ class PythonConfig:
         object.__setattr__(
             self, "host_objects", MappingProxyType(dict(self.host_objects))
         )
+        classes = tuple(self.classes)
+        for klass in classes:
+            if not isinstance(klass, type):
+                raise TypeError(
+                    f"PythonConfig.classes holds classes, not {type(klass).__name__}"
+                )
+        names = [klass.__name__ for klass in classes]
+        twice = sorted({n for n in names if names.count(n) > 1})
+        if twice:
+            raise ValueError(
+                f"PythonConfig.classes has two classes named {twice[0]!r}: "
+                "code names them, so the names must differ"
+            )
+        clash = sorted(set(names) & {*self.host_objects, "host", "cache"})
+        if clash:
+            raise ValueError(
+                f"PythonConfig.classes has a class named {clash[0]!r}, which is "
+                "already a name in the sandbox (a host object, the host module "
+                "or the cache)"
+            )
+        object.__setattr__(self, "classes", classes)
 
 
 @dataclass(frozen=True)

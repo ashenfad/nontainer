@@ -81,7 +81,9 @@ from .protocol import (
 # Config/result types (and traceback rendering) stay in workspace.py:
 # they are the public vocabulary both sides of the seam speak. The
 # import is one-way — workspace.py only imports this module lazily.
+from .values import copy as copy_value
 from .workspace import (
+    HostObject,
     ModuleGrant,
     PythonConfig,
     PythonResult,
@@ -230,6 +232,56 @@ def _is_plain_data(obj: Any) -> bool:
     return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
 
 
+def _value(entry: Any) -> Any:
+    """A host object entry's object: a :class:`HostObject`'s, or the
+    entry itself."""
+    return entry.obj if isinstance(entry, HostObject) else entry
+
+
+def _by_value(entry: Any) -> bool:
+    """Whether a host object entry is sent into the sandbox as a copy of
+    its data rather than as a proxy: plain built-in data, or a
+    :class:`HostObject` with a type."""
+    if isinstance(entry, HostObject):
+        return entry.by_value or _is_plain_data(entry.obj)
+    return _is_plain_data(entry)
+
+
+def _typed(entry: Any) -> bool:
+    """Whether an entry is data of a declared type: sent by value, with
+    the classes it holds made available wherever it lands."""
+    return isinstance(entry, HostObject) and entry.by_value
+
+
+def _named_classes(cfg: PythonConfig) -> list[type]:
+    """The classes a run must be able to name: the config's, then those
+    the typed host data holds."""
+    found = list(cfg.classes)
+    for entry in cfg.host_objects.values():
+        if _typed(entry):
+            found.extend(t for t in entry.spec.types if t not in found)
+    return found
+
+
+def _refuse_unnameable_classes(cfg: PythonConfig, where: str) -> None:
+    """Refuse, at open, a class that can't be named from another
+    process: one defined inside a function or in a script's
+    ``__main__``. A run elsewhere imports each class by its module and
+    name (or rebuilds the module from its source), and neither finds
+    these."""
+    for klass in _named_classes(cfg):
+        if "<locals>" in klass.__qualname__:
+            why = "is defined inside a function"
+        elif klass.__module__ == "__main__":
+            why = "is defined in __main__"
+        else:
+            continue
+        raise ValueError(
+            f"{klass.__qualname__} {why}, so code running {where} can't name "
+            "it; define it at the top level of an importable module"
+        )
+
+
 HOST_MODULE = "host"
 """The module every execution can import the injected objects from.
 
@@ -263,9 +315,10 @@ def _refuse_async_host_methods(cfg: PythonConfig) -> None:
 
     from sandtrap import rpc_surface
 
-    for name, obj in cfg.host_objects.items():
-        if _is_plain_data(obj):
+    for name, entry in cfg.host_objects.items():
+        if _by_value(entry):
             continue
+        obj = _value(entry)
         methods, _ = rpc_surface(obj)
         found = [
             m
@@ -281,6 +334,12 @@ def _refuse_async_host_methods(cfg: PythonConfig) -> None:
                 "asyncio.run_coroutine_threadsafe(coro, loop).result()), or "
                 "pass a sync facade."
             )
+
+
+def _host_module_names(cfg: PythonConfig) -> list[str]:
+    """What the ``host`` module holds: the host objects, the classes and
+    the cache."""
+    return [*cfg.host_objects, *(k.__name__ for k in cfg.classes), "cache"]
 
 
 def _refuse_reserved_host_name(cfg: PythonConfig) -> None:
@@ -720,6 +779,8 @@ class LocalExecutor:
         cfg = context.python_config
         _refuse_reserved_host_name(cfg)
         _refuse_async_host_methods(cfg)
+        if cfg.isolation != "none":
+            _refuse_unnameable_classes(cfg, "in a worker process")
         self._sandbox = self._build_sandbox()
         # View calls keep resident workers instead of forking per call.
         # Pooling only means anything where a call would otherwise fork:
@@ -840,9 +901,11 @@ class LocalExecutor:
             if ctx.cache_enabled:
                 cache_obj = _ReadOnlyCache(Cache(ctx.kv)) if ro_cache else None
                 rpc_handlers["cache"] = self._cache_rpc_handler(cache_obj)
-            for name, obj in cfg.host_objects.items():
-                if not _is_plain_data(obj):
-                    rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(obj)
+            for name, entry in cfg.host_objects.items():
+                if not _by_value(entry):
+                    rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(
+                        _value(entry)
+                    )
 
         return sandbox(
             policy,
@@ -909,7 +972,7 @@ class LocalExecutor:
                     host_fs_access=grant.host_fs,
                 )
 
-        for klass in extra_classes:
+        for klass in (*extra_classes, *cfg.classes):
             policy.cls(klass)
 
         # Live (non-plain-data) host objects need attribute-level policy —
@@ -922,9 +985,9 @@ class LocalExecutor:
         # requirements — a host object whose class is defined inside a
         # function could not be serialized — for no gating in return.
         if cfg.isolation == "none":
-            for name, obj in cfg.host_objects.items():
-                if not _is_plain_data(obj):
-                    policy.cls(type(obj), name=name)
+            for name, entry in cfg.host_objects.items():
+                if not _by_value(entry):
+                    policy.cls(type(_value(entry)), name=name)
 
         # Loud construction-time warning when a kernel sandbox's policy
         # degrades a kernel restriction (seccomp/Landlock are monotonic).
@@ -1026,8 +1089,14 @@ class LocalExecutor:
                 sb = self._session_sandbox()
             bridged = hasattr(sb, "_rpc_handlers")
 
-            for name, obj in ctx.python_config.host_objects.items():
-                if bridged and not _is_plain_data(obj):
+            for name, entry in ctx.python_config.host_objects.items():
+                obj = _value(entry)
+                if _typed(entry) and not bridged:
+                    # data sent by value: each run its own copy, as a
+                    # worker's unpickled one is, so a change lasts the
+                    # run and never reaches the host's object
+                    obj = copy_value(obj)
+                if bridged and not _by_value(entry):
                     from sandtrap import RpcProxyMarker
 
                     # Methods RPC to the parent's live object; attribute READS
@@ -1041,6 +1110,8 @@ class LocalExecutor:
                     )
                 else:
                     namespace[name] = obj
+            for klass in ctx.python_config.classes:
+                namespace[klass.__name__] = klass
             # A view's bindings: one host object handed over under
             # another's name, before the host module is built from the
             # namespace, so the import and the bare name agree.
@@ -1076,7 +1147,7 @@ class LocalExecutor:
             # objects differ per call and pooled workers outlive one.
             host_module = {
                 name: namespace[name]
-                for name in (*ctx.python_config.host_objects, "cache")
+                for name in _host_module_names(ctx.python_config)
                 if name in namespace
             }
             start = time.monotonic()
