@@ -236,7 +236,8 @@ class HostObject:
     ``stub`` puts a class of the embedder's in front of the live
     ``obj``: code in the sandbox holds ``stub(remote)``, built there on
     every rung, and ``remote.<method>(...)`` calls ``obj``'s method of
-    that name, typed by its annotations (:mod:`nontainer.remote`). An
+    that name, typed by its annotations (:mod:`nontainer.remote`), each
+    a type or a compiled :class:`~nontainer.values.Spec`. An
     argument that doesn't fit its parameter's type raises ``TypeError``
     at the call; one that does reaches ``obj`` built afresh as its
     declared type on every rung (encoded and decoded, never unpickled),
@@ -259,7 +260,9 @@ class HostObject:
 
     type: Any = None
     """The type ``obj`` is data of, or ``None`` for an object passed as
-    it is."""
+    it is. A compiled :class:`nontainer.values.Spec` serves too, for a
+    type whose annotations name what its own module can't resolve (the
+    locals of the function that defined it)."""
 
     stub: Any = None
     """The class code in the sandbox holds in front of ``obj``, built as

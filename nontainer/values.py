@@ -175,6 +175,8 @@ def _expected(label: str, value: Any) -> Mismatch:
 def fmt(tp: Any) -> str:
     """``tp`` written the way code would write it: ``list[Score]``,
     ``int | None``."""
+    if isinstance(tp, Spec):
+        return fmt(tp.annotation)
     if tp is Any or tp is inspect.Parameter.empty:
         return "Any"
     if tp is None or tp is type(None):
@@ -1018,6 +1020,8 @@ def _compile(
     """``tp``'s node. ``bound`` holds the type arguments of the generic
     record being compiled, by its type variables: a variable resolves
     through it wherever it turns up, text evaluated late included."""
+    if isinstance(tp, Spec):
+        return tp._root  # compiled already, with the names it needed
     if tp is Any or tp is object or tp is inspect.Parameter.empty:
         return _ANY
     if tp is None or tp is type(None):
@@ -1253,7 +1257,14 @@ class Spec:
         """Compile ``annotation``. ``names`` resolve what it names beside
         its own module (the locals of a function that defined a type it
         uses). An annotation no spec can be built for raises
-        :class:`Unsupported`."""
+        :class:`Unsupported`.
+
+        A spec stands for its type wherever one is taken, here and
+        inside an annotation alike: compiled once with the names it
+        needed, it can be handed to code that has no such names, a
+        ``HostObject``'s ``type`` or a host method's annotation."""
+        if isinstance(annotation, Spec):
+            return annotation
         return cls(annotation, _compile(annotation, names, {}))
 
     def __repr__(self) -> str:
