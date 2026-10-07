@@ -152,3 +152,20 @@ def test_variables_ride_only_in_a_profile():
     import inspect
 
     assert "variables" not in inspect.signature(Store.open).parameters
+
+
+def test_store_fork_refuses_a_profile_with_its_fields_before_forking(tmp_path):
+    """A refused call must not leave the destination branch behind, or a
+    retry would fail with the branch already there."""
+    profile = _profile(tmp_path)
+    st = Store(memory=True)
+    ws = st.open("src", profile=profile)
+    ws.files.write("a.txt", "x")
+    ws.commit(info={"tool": "seed"})
+    ws.close()
+    with pytest.raises(TypeError, match="python"):
+        st.fork("src", "dst", profile=profile, python=PythonConfig())
+    assert "dst" not in st.sessions()
+    child = st.fork("src", "dst", profile=profile)
+    assert child.files.read("a.txt") == b"x"
+    child.close()
