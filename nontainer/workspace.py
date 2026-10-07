@@ -57,6 +57,7 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
+from . import conversation
 from .cache import Cache
 from .errors import (
     CommitNotFoundError,
@@ -65,7 +66,6 @@ from .errors import (
     WorkspaceError,
 )
 from .migrate import legacy_keys
-from .planes import COMPACTION_PREFIX, CONVERSATION_PREFIX, CONVERSATION_SESSION_KEY
 from .protocol import (
     Capabilities,
     CommitInfo,
@@ -3000,15 +3000,9 @@ class Workspace:
             del kv[VIEW_KEY]
             changed = True
         if inherit == "fresh":
-            for key in [
-                k
-                for k in list(kv.keys())
-                if isinstance(k, str)
-                and k.startswith((CONVERSATION_PREFIX, COMPACTION_PREFIX))
-            ]:
-                del kv[key]
+            if conversation.wipe(kv):
                 changed = True
-        elif self._rebind_conversation(kv, forked.session):
+        elif conversation.rebind(kv, forked.session, parent=self.session):
             changed = True
         if changed and forked.caps.versioned:
             forked.commit(
@@ -3016,39 +3010,6 @@ class Workspace:
                 | ({"paths": list(seed)} if seed else {})
             )
         reset_for_fork(forked, self.session)
-
-    def _rebind_conversation(self, kv: Any, child: str) -> bool:
-        """Make an inherited conversation the CHILD's own, and say
-        whether anything was written.
-
-        A branch holds one session's conversation, and a fork is a new
-        session: a record copied over under the name of the session it
-        came from is one the reader refuses to answer for and the
-        writer refuses to write beside, so the child would start with
-        no memory and could store none of its own turns. The session
-        it came from is kept in the field the conversation's own reader
-        keeps fork lineage in (see ``planes.CONVERSATION_SESSION_KEY``
-        for the two field names).
-
-        The record's own ``session_id`` is what names that session,
-        rather than this workspace: a fork from another session's
-        commit carries THAT session's conversation, and the record is
-        what knows it. A record that names none falls back to this
-        session, the branch the fork was taken on.
-        """
-        record = kv.get(CONVERSATION_SESSION_KEY)
-        if not isinstance(record, dict):
-            return False
-        came_from = record.get("session_id")
-        if came_from == child:
-            return False
-        record = dict(record)
-        record["session_id"] = child
-        session_data = dict(record.get("session_data") or {})
-        session_data["forked_from_session_id"] = came_from or self.session
-        record["session_data"] = session_data
-        kv[CONVERSATION_SESSION_KEY] = record
-        return True
 
     def _record_view(self, paths: tuple[str, ...]) -> None:
         """Keep the branch's view record in step with what this session

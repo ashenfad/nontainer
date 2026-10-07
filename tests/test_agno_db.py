@@ -24,13 +24,19 @@ from agno.models.message import Message  # noqa: E402
 from agno.models.response import ModelResponse  # noqa: E402
 from agno.session import AgentSession  # noqa: E402
 
+from nontainer import conversation  # noqa: E402
 from nontainer.adapters.agno import WorkspaceTools  # noqa: E402
 from nontainer.adapters.agno_db import (  # noqa: E402
-    RUN_PREFIX,
-    SESSION_KEY,
     KvgitSessionDb,
     fork_session,
 )
+from nontainer.planes import (  # noqa: E402
+    CONVERSATION_INDEX_KEY,
+    CONVERSATION_PREFIX,
+    CONVERSATION_RECORD_KEY,
+    LEGACY_CONVERSATION_PREFIX,
+)
+from nontainer.planes import CONVERSATION_RUN_PREFIX as RUN_PREFIX  # noqa: E402
 
 
 class ScriptedModel(Model):
@@ -124,6 +130,17 @@ def kv_of(ws) -> Any:
     return ws._provider.kv
 
 
+def index_of(ws) -> Any:
+    return conversation.read_index(kv_of(ws))
+
+
+def stored_conversation(ws) -> tuple:
+    return (
+        kv_of(ws).get(CONVERSATION_INDEX_KEY),
+        kv_of(ws).get(CONVERSATION_RECORD_KEY),
+    )
+
+
 def run_keys(ws) -> list:
     return sorted(k for k in kv_of(ws).keys() if k.startswith(RUN_PREFIX))
 
@@ -195,7 +212,7 @@ def test_the_turn_commit_leaves_an_agents_composition_alone(tmp_path):
     assert len(run_keys(ws)) == 1
     assert len(db.get_session(ws.session).runs) == 1
     head = ws._provider.repo.snapshot(commit=ws.head)
-    assert head.get(SESSION_KEY) is not None
+    assert head.get(CONVERSATION_INDEX_KEY) is not None
 
     # the composition is untouched, and the agent's files are durable
     # rather than being withheld from the store
@@ -365,7 +382,7 @@ def test_a_stale_session_is_refused_and_writes_nothing(tmp_path):
     stale = db.get_session(ws.session, deserialize=False)
     assert len(stale["runs"]) == 2
     ws.checkout(head)
-    before = dict(kv_of(ws).get(SESSION_KEY))
+    before = stored_conversation(ws)
 
     # the stale object appends a third run to its two
     third = dict(stale["runs"][-1])
@@ -375,7 +392,7 @@ def test_a_stale_session_is_refused_and_writes_nothing(tmp_path):
     with pytest.raises(NotSupportedError, match="cache_session"):
         db.upsert_session(AgentSession.from_dict(stale))
 
-    assert dict(kv_of(ws).get(SESSION_KEY)) == before
+    assert stored_conversation(ws) == before
     assert RUN_PREFIX + "run-from-the-future" not in kv_of(ws)
     assert len(db.get_session(ws.session).runs) == 1
     ws.close()
@@ -400,7 +417,7 @@ def test_a_limited_read_written_back_keeps_the_full_history(tmp_path):
     limited["runs"] = [*limited["runs"], third]
     db.upsert_session(AgentSession.from_dict(limited))
 
-    assert kv_of(ws)[SESSION_KEY]["run_ids"] == [*full, "run-3"]
+    assert list(index_of(ws).runs) == [*full, "run-3"]
     assert len(db.get_session(ws.session).runs) == 3
     assert ws.head != head and not ws.uncommitted  # the turn committed
     ws.close()
@@ -434,7 +451,7 @@ def test_a_foreign_session_id_is_refused(tmp_path):
 
     with pytest.raises(NotSupportedError, match="fork_session"):
         db.upsert_session(AgentSession(session_id="somewhere-else", agent_id="a"))
-    assert kv_of(ws)[SESSION_KEY]["session_id"] == ws.session
+    assert index_of(ws).session == ws.session
     ws.close()
 
 
@@ -455,7 +472,7 @@ def test_agno_fork_session_cannot_write_a_second_session(tmp_path):
 
     agent.fork_session()
 
-    assert kv_of(ws)[SESSION_KEY]["session_id"] == ws.session
+    assert index_of(ws).session == ws.session
     assert len(run_keys(ws)) == 1
     ws.close()
 
@@ -467,7 +484,7 @@ def test_team_sessions_are_not_supported(tmp_path):
     db = KvgitSessionDb(ws, db_path=str(tmp_path / "agno"))
     with pytest.raises(NotSupportedError, match="TeamSession"):
         db.upsert_session(TeamSession(session_id=ws.session, team_id="t"))
-    assert SESSION_KEY not in kv_of(ws)
+    assert index_of(ws) is None
     ws.close()
 
 
@@ -503,13 +520,11 @@ def test_fork_session_inherits_the_conversation(tmp_path):
     session = child_db.get_session("what-if")
     assert session is not None
     assert [r.run_id for r in session.runs] == parent_runs
-    assert (
-        kv_of(child)[SESSION_KEY]["session_data"]["forked_from_session_id"]
-        == ws.session
-    )
+    assert index_of(child).forked_from == ws.session
+    assert session.session_data["forked_from_session_id"] == ws.session
     assert child.files.fs.read("a.txt") == b"A" and child.files.fs.read("b.txt") == b"B"
     # the parent is untouched
-    assert kv_of(ws)[SESSION_KEY]["session_id"] == ws.session
+    assert index_of(ws).session == ws.session
     child.close()
     ws.close()
 
@@ -550,9 +565,9 @@ def test_the_fork_marker_survives_the_next_turn(tmp_path):
     )
     run_turn(child_agent, write_turn("c.txt", "C"))
 
-    record = kv_of(child)[SESSION_KEY]
-    assert record["session_data"]["forked_from_session_id"] == ws.session
-    assert record["session_id"] == "branch-b"
+    record = index_of(child)
+    assert record.forked_from == ws.session
+    assert record.session == "branch-b"
     assert len(child_db.get_session("branch-b").runs) == 2
     child.close()
     ws.close()
@@ -635,10 +650,11 @@ def test_runs_are_stored_as_plain_dicts_one_key_each(tmp_path):
     run = kv_of(ws)[key]
     assert isinstance(run, dict)
     json.dumps(run)  # JSON-shaped, not an object graph
-    record = kv_of(ws)[SESSION_KEY]
-    assert record["run_ids"] == [run["run_id"]]
-    assert "runs" not in record
+    assert list(index_of(ws).runs) == [run["run_id"]]
+    record = kv_of(ws)[CONVERSATION_RECORD_KEY]
+    assert "runs" not in record and "run_ids" not in record
     json.dumps(record)
+    json.dumps(kv_of(ws)[CONVERSATION_INDEX_KEY])
     ws.close()
 
 
@@ -646,9 +662,9 @@ def test_the_conversation_is_out_of_the_agents_reach(tmp_path):
     ws, db, tk, agent = build(tmp_path)
     run_turn(agent, ["hello"])
 
-    assert SESSION_KEY not in list(ws.cache)
+    assert CONVERSATION_INDEX_KEY not in list(ws.cache)
     with pytest.raises(ValueError, match="__"):
-        ws.cache[SESSION_KEY] = "nope"
+        ws.cache[CONVERSATION_INDEX_KEY] = "nope"
     ws.close()
 
 
@@ -662,7 +678,10 @@ def test_the_inherited_tables_stay_on_disk(tmp_path):
     db.upsert_user_memory(UserMemory(memory="likes tea", user_id="u1"))
 
     assert db.get_user_memories(user_id="u1")
-    assert not any(k.startswith("__agno__") for k in kv_of(ws).keys())
+    assert not any(
+        k.startswith((CONVERSATION_PREFIX, LEGACY_CONVERSATION_PREFIX))
+        for k in kv_of(ws).keys()
+    )
     assert (tmp_path / "agno").is_dir()
     ws.close()
 

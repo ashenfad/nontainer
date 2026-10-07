@@ -20,24 +20,43 @@ CACHE_PREFIX = "__cache__/"
 construction: a delegate's cache is its own working memory and is
 never merged back."""
 
-CONVERSATION_PREFIX = "__agno__/"
-"""The stored conversation: the session record and one key per run.
-Written by ``nontainer.adapters.agno_db``, which derives its own key
-names from this. A delegate's conversation never merges into its
-caller's — two chats that never happened together cannot be
-interleaved, and what a delegate has to say arrives as its answer."""
+CONVERSATION_PREFIX = "__conversation__/"
+"""The stored conversation, in any harness's format (see
+:mod:`nontainer.conversation`): a core-owned index, the harness's own
+session record, and one key per run. A delegate's conversation never
+merges into its caller's: two chats that never happened together cannot
+be interleaved, and what a delegate has to say arrives as its answer."""
 
-CONVERSATION_SESSION_KEY = CONVERSATION_PREFIX + "session"
-"""The one key of that plane that holds the session record rather than
-a run. Its ``session_id`` field names the session the conversation
-belongs to and ``session_data["forked_from_session_id"]`` the session
-it came from; that shape is the adapter's, named here because forking
-is core's verb and a fork that carries the conversation has to rewrite
-both fields. A branch holds one session's conversation, and a fork is
-a new session: a record that still named the session it was copied
-from is one the adapter refuses to read for the child and refuses to
-write beside, so the child would have no memory and could not store
-its own turns."""
+CONVERSATION_INDEX_KEY = CONVERSATION_PREFIX + "index"
+"""Core's index of the conversation: which harness wrote it, the session
+it belongs to, its runs in order, and the session it was forked from.
+Forking, deleting and reading run lineage need nothing else, so core
+never parses a harness's own record."""
+
+CONVERSATION_RECORD_KEY = CONVERSATION_PREFIX + "record"
+"""The harness's own session record, opaque to core."""
+
+CONVERSATION_RUN_PREFIX = CONVERSATION_PREFIX + "runs/"
+"""One key per run, in the harness's own format."""
+
+LEGACY_CONVERSATION_PREFIX = "__agno__/"
+"""Where the conversation lived before the plane was harness-neutral:
+the agno adapter's session record and runs. Still read when a head has
+no index (a session never written since, or a checkout or fork of an
+older commit), and removed by the first write after, so a head never
+holds both. Every plane rule covers both prefixes for as long as this
+one can be read."""
+
+LEGACY_SESSION_KEY = LEGACY_CONVERSATION_PREFIX + "session"
+"""The legacy plane's session record: agno's session dict minus its
+runs, with ``run_ids`` in order, ``session_id``, and fork lineage in
+``session_data["forked_from_session_id"]``."""
+
+LEGACY_RUN_PREFIX = LEGACY_CONVERSATION_PREFIX + "runs/"
+
+CONVERSATION_PREFIXES = (CONVERSATION_PREFIX, LEGACY_CONVERSATION_PREFIX)
+"""Both conversation planes, for the rules that must cover each: the
+merge policy, a fresh fork's wipe, a delete."""
 
 COMPACTION_PREFIX = "__compaction__/"
 """Compaction's records: one key per fold, never rewritten (see

@@ -76,10 +76,10 @@ our own anyway:
 ## Where the records live
 
 The records go in a plane of their own, `__compaction__/`, named in
-`planes.py` beside `__agno__/` and `__cache__/`.
+`planes.py` beside `__conversation__/` and `__cache__/`.
 
-- **Not inside `__agno__/`.** That plane is the agno adapter's, and
-  these records are not agno's.
+- **Not inside `__conversation__/`.** That plane holds what was said,
+  in the harness's own format, and these records are compaction's.
 - **One key per fold** (`__compaction__/fold/000001`, and on), never
   rewritten. The latest whose anchor is present is the one in force.
   Earlier ones stay as history, and also let a reader say what the

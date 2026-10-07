@@ -198,7 +198,11 @@ def test_a_branch_naming_another_session_does_not_stand_in_for_it(
     delete would take the copy and report success, and a listing would
     show the runs twice. (``ws.fork()`` rebinds the record, so a fork is
     a session of its own and its copies are its runs.)"""
-    from nontainer.adapters.agno_db import RUN_PREFIX, SESSION_KEY
+    from nontainer.planes import (
+        CONVERSATION_INDEX_KEY,
+        CONVERSATION_RECORD_KEY,
+        CONVERSATION_RUN_PREFIX,
+    )
 
     parent = opened("s1")
     _seed(parent, _run(1))
@@ -206,8 +210,12 @@ def test_a_branch_naming_another_session_does_not_stand_in_for_it(
     # as a snapshot that never rebinds it does
     snap = opened("s1-snap")
     pkv, skv = parent.provider.kv, snap.provider.kv
-    skv[SESSION_KEY] = dict(pkv[SESSION_KEY])
-    skv[RUN_PREFIX + "r1"] = dict(pkv[RUN_PREFIX + "r1"])
+    for key in (
+        CONVERSATION_INDEX_KEY,
+        CONVERSATION_RECORD_KEY,
+        CONVERSATION_RUN_PREFIX + "r1",
+    ):
+        skv[key] = dict(pkv[key])
     snap.commit(info={"tool": "snapshot"})
     db = KvgitStoreDb(store, open=opened, db_path=str(tmp_path / "agno"))
     # a write aimed at the snapshot: the view ignores it, the store saw it

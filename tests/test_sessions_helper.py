@@ -22,8 +22,13 @@ from nontainer import (
     SessionsError,
     Store,
     WorkspaceError,
+    conversation,
 )
-from nontainer.planes import CONVERSATION_PREFIX
+
+# These tests seed the conversation plane as sessions stored before it
+# was harness-neutral wrote it (``__agno__/``): what a fork carries, and
+# how it is rebound, is then the legacy plane's read and migration.
+from nontainer.planes import LEGACY_CONVERSATION_PREFIX as CONVERSATION_PREFIX
 from nontainer.sessions import (
     SEPARATOR,
     Sessions,
@@ -807,8 +812,17 @@ def fork_point(store):
     return commit
 
 
+def _index(store, session):
+    """The conversation's index on a branch, as core reads it."""
+    ws = store.open(session)
+    try:
+        return conversation.index_of(ws)
+    finally:
+        ws.close()
+
+
 def _conversation(store, session):
-    """The conversation keys stored on a branch, by key."""
+    """The legacy-plane keys stored on a branch, by key."""
     ws = store.open(session)
     try:
         kv = ws._provider.kv
@@ -1095,10 +1109,10 @@ def test_a_full_inherit_makes_the_conversation_the_childs_own(parent, store):
     with Sessions(parent, Scripted(store, {})) as sessions:
         answer = sessions.ask("and south?", inherit="full", wait=True)
 
-    record = _conversation(store, answer.branch)[f"{CONVERSATION_PREFIX}session"]
-    assert record["session_id"] == answer.branch
-    assert record["session_data"]["forked_from_session_id"] == "analyst"
-    assert kv[f"{CONVERSATION_PREFIX}session"]["session_id"] == "analyst"
+    index = _index(store, answer.branch)
+    assert index.session == answer.branch
+    assert index.forked_from == "analyst"
+    assert conversation.read_index(kv).session == "analyst"
 
 
 def test_a_full_inherit_from_elsewhere_names_the_session_it_came_from(parent, store):
@@ -1118,9 +1132,9 @@ def test_a_full_inherit_from_elsewhere_names_the_session_it_came_from(parent, st
             "and south?", fork_from="rates-2027", inherit="full", wait=True
         )
 
-    record = _conversation(store, answer.branch)[f"{CONVERSATION_PREFIX}session"]
-    assert record["session_id"] == answer.branch
-    assert record["session_data"]["forked_from_session_id"] == "sage"
+    index = _index(store, answer.branch)
+    assert index.session == answer.branch
+    assert index.forked_from == "sage"
 
 
 def test_a_full_inherit_from_a_session_ref_carries_that_commit(

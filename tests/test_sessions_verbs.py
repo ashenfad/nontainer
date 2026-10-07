@@ -10,7 +10,19 @@ of ``ws-git branch`` / ``merge`` / ``checkout -- <paths>`` /
 
 import pytest
 
-from nontainer import CommitNotFoundError, NotSupportedError, Store, WorkspaceError
+from nontainer import (
+    CommitNotFoundError,
+    NotSupportedError,
+    Store,
+    WorkspaceError,
+    conversation,
+)
+from nontainer.planes import (
+    CONVERSATION_PREFIX,
+    LEGACY_CONVERSATION_PREFIX,
+    LEGACY_RUN_PREFIX,
+    LEGACY_SESSION_KEY,
+)
 from nontainer.views import VIEW_KEY, parse_view
 from nontainer.wsgit import register_wsgit
 
@@ -75,54 +87,76 @@ def test_a_fork_at_an_earlier_commit_leaves_the_buffer_alone(ws):
 # -- inherit -------------------------------------------------------------------
 
 
+def _legacy_conversation(ws):
+    """A conversation stored the way it was before the plane was
+    harness-neutral: ``__agno__/`` keys, which a fork reads and moves."""
+    kv = ws._provider.kv
+    kv[LEGACY_SESSION_KEY] = {"session_id": "main", "run_ids": ["r1"]}
+    kv[LEGACY_RUN_PREFIX + "r1"] = {"run_id": "r1"}
+    ws.commit(info={"tool": "test"})
+    return kv
+
+
+def _plane_keys(ws):
+    return [
+        k
+        for k in ws._provider.kv.keys()
+        if k.startswith((CONVERSATION_PREFIX, LEGACY_CONVERSATION_PREFIX))
+    ]
+
+
 def test_inherit_fresh_drops_the_conversation_and_nothing_else(ws):
     _seed(ws, **{"a.txt": "one\n"})
-    kv = ws._provider.kv
-    kv["__agno__/session"] = {"session_id": "main"}
-    kv["__agno__/runs/r1"] = {"run_id": "r1"}
-    ws.commit(info={"tool": "test"})
+    _legacy_conversation(ws)
 
-    for inherit, expected in (("full", 2), ("fresh", 0)):
-        child = ws.fork(f"child-{inherit}", inherit=inherit)
-        try:
-            kept = [k for k in child._provider.kv.keys() if k.startswith("__agno__/")]
-            assert len(kept) == expected
-            assert child.files.read("/workspace/a.txt") == b"one\n"
-            assert not child.uncommitted
-        finally:
-            child.close()
-    fresh = ws.fork("child-fresh-again", inherit="fresh")
+    full = ws.fork("child-full", inherit="full")
     try:
-        assert fresh._provider.kv.get("__agno__/session") is None
+        assert conversation.index_of(full).runs == ("r1",)
+        assert full.files.read("/workspace/a.txt") == b"one\n"
+        assert not full.uncommitted
+    finally:
+        full.close()
+    fresh = ws.fork("child-fresh", inherit="fresh")
+    try:
+        assert conversation.index_of(fresh) is None
+        assert _plane_keys(fresh) == []
+        assert fresh.files.read("/workspace/a.txt") == b"one\n"
+        assert not fresh.uncommitted
     finally:
         fresh.close()
 
 
 def test_a_full_fork_carries_the_conversation_as_the_childs_own(ws):
     """A branch holds one session's conversation and a fork is a new
-    session, so the record the child inherits names the child, and the
-    session it came from is kept as its lineage. A record still naming
-    the parent is one the conversation's reader refuses to answer for
-    and its writer refuses to write beside."""
+    session, so the index the child inherits names the child, and the
+    session it came from is kept as its lineage. A conversation still
+    naming the parent is one the reader refuses to answer for and the
+    writer refuses to write beside. A parent still on the legacy plane
+    hands it over migrated, in the child's own fork commit."""
     _seed(ws, **{"a.txt": "one\n"})
-    kv = ws._provider.kv
-    kv["__agno__/session"] = {"session_id": "main", "run_ids": ["r1"]}
-    kv["__agno__/runs/r1"] = {"run_id": "r1"}
-    ws.commit(info={"tool": "test"})
+    kv = _legacy_conversation(ws)
 
     child = ws.fork("child")
     try:
-        record = child._provider.kv["__agno__/session"]
-        assert record["session_id"] == "child"
-        assert record["session_data"]["forked_from_session_id"] == "main"
-        assert record["run_ids"] == ["r1"]
-        assert child._provider.kv["__agno__/runs/r1"] == {"run_id": "r1"}
+        index = conversation.index_of(child)
+        assert index.session == "child"
+        assert index.forked_from == "main"
+        assert index.runs == ("r1",)
+        assert not index.legacy
+        assert conversation.read_runs(child._provider.kv, ["r1"]) == {
+            "r1": {"run_id": "r1"}
+        }
+        assert not any(
+            k.startswith(LEGACY_CONVERSATION_PREFIX) for k in _plane_keys(child)
+        )
         # the rewrite rides the child's own fork commit, so its head is
         # consistent for anything that reopens the branch
         assert not child.uncommitted
     finally:
         child.close()
-    assert kv["__agno__/session"]["session_id"] == "main"  # the parent is untouched
+    # the parent is untouched, still on the legacy plane
+    assert kv[LEGACY_SESSION_KEY]["session_id"] == "main"
+    assert conversation.index_of(ws).session == "main"
 
 
 def test_inherit_takes_only_its_two_words(ws):

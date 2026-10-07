@@ -956,10 +956,11 @@ to the past the fork branches from.
 `inherit` decides whether the stored conversation comes along, and
 nothing else. `"full"` (default) keeps it — the continue-where-I-am
 fork — as the CHILD's conversation: a branch holds one session's, so
-the stored session record is rebound to the child's session id, with
-the session the conversation came from kept in
-`session_data["forked_from_session_id"]`. `"fresh"` drops every
-`__agno__/*` key, and compaction's `__compaction__/*` folds over them,
+the conversation's index (`nontainer.conversation`) is rebound to the
+child's session id, with the session the conversation came from kept as
+its lineage. `"fresh"` drops the conversation, on both planes
+(`__conversation__/*` and a session's older `__agno__/*`), and
+compaction's `__compaction__/*` folds over it,
 on the child's first commit, for a delegate that starts a chat of its own over these files;
 it touches no file. A brief, a summary, a distilled context is content
 the caller supplies with the child's task — nothing here can write one,
@@ -1680,6 +1681,40 @@ how a session behaves, not what its world holds. Frozen opens
 (`store.resolve`, `tags.at`, a publication's `open`) take the six
 keywords, not `profile`.
 
+## `nontainer.conversation` — the stored conversation
+
+```python
+@dataclass(frozen=True)
+class Index:
+    harness: str                  # "agno", "agex": who can read the record and runs
+    session: str | None           # the session it belongs to; a fork rebinds it
+    runs: tuple[str, ...] = ()    # run ids, in order
+    forked_from: str | None = None
+    legacy: bool = False          # read from the old __agno__/ plane (not stored)
+
+read_index(kv) -> Index | None            # index_of(ws), index_at(provider, commit)
+read_record(kv, index=None) -> Any        # the harness's own session record (a copy)
+read_runs(kv, run_ids, index=None) -> dict[str, Any]   # by id, one batched read
+write(kv, index, *, record=..., runs=None, drop=())     # staged; migrates an old plane
+rebind(kv, child, *, parent) -> bool      # a full fork's: the index names the child
+wipe(kv) -> bool                          # a fresh fork's: both planes and compaction
+clear(kv) -> bool                         # both planes, compaction kept
+```
+
+A session's branch can hold the conversation that produced its files,
+in any harness's format, in the same commit as those files. Core reads
+only the index, at `__conversation__/index`: it is all that forking,
+deleting and lineage need. The harness keeps its own record at
+`__conversation__/record` and its runs at `__conversation__/runs/<id>`,
+and core never parses either. `kv` is the mapping the keys live in: a
+workspace's `provider.kv`, a frozen snapshot, or a forked provider's.
+
+A session written before the plane was harness-neutral holds the agno
+adapter's `__agno__/` keys. Those read through the same `Index`
+(`legacy=True`), and the next `write` moves them, removing the old keys
+in the same write. History keeps the old plane, so a checkout or fork
+of an older commit reads it again and migrates on its next write.
+
 ## `PythonConfig`
 
 ```python
@@ -2260,8 +2295,14 @@ the branch:
 
 | key | value |
 |---|---|
-| `__agno__/session` | session dict minus runs, plus ordered `run_ids` |
-| `__agno__/runs/<run_id>` | one run dict each |
+| `__conversation__/index` | core's index: harness `"agno"`, the session, ordered run ids, lineage |
+| `__conversation__/record` | session dict minus runs (and minus `run_ids`, which the index holds) |
+| `__conversation__/runs/<run_id>` | one run dict each |
+
+A session written before the plane was neutral holds `__agno__/session`
+and `__agno__/runs/<run_id>` instead; it reads the same and moves to
+`__conversation__/` on its next write (see
+[agno-sessions.md](agno-sessions.md#where-the-session-goes)).
 
 One key per run so kvgit shares every earlier run by hash; values are
 the JSON-shaped dicts agno hands over, never pickled agno objects.

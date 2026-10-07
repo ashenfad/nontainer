@@ -48,7 +48,7 @@ from typing import Any
 
 from ..agentgit import BLOB_KEY as _WS_BLOB_KEY
 from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
-from ..planes import CACHE_PREFIX, COMPACTION_PREFIX, CONVERSATION_PREFIX
+from ..planes import CACHE_PREFIX, COMPACTION_PREFIX, CONVERSATION_PREFIXES
 from ..protocol import (
     SHORT_ID_RE,
     Capabilities,
@@ -941,7 +941,7 @@ class KvgitProvider:
 
         ``keys`` are store keys as stored, or absolute workspace paths
         resolved to the keys the VFS wrote them under — the framework
-        planes (``__agno__/``, the cache) name themselves, and no store
+        planes (``__conversation__/``, the cache) name themselves, and no store
         key starts with ``/``.
 
         A file's metadata row rides along with its blob, and only with
@@ -1371,7 +1371,7 @@ class KvgitProvider:
           those prefixes, and that has to include keys the other side
           merely ADDED. A merge function would not do it: kvgit
           consults one only where both sides changed a key, so a new
-          ``__agno__/runs/<id>`` would ride in untouched. A
+          ``__conversation__/runs/<id>`` would ride in untouched. A
           ``MergeChoice`` over the prefix is the whole-side policy that
           also drops their-only adds and ignores their-only removes.
           Built for these two verbs ONLY, never registered on the
@@ -1417,10 +1417,13 @@ class KvgitProvider:
         merge_fns[_WS_BLOB_KEY] = MergeChoice.OURS
         merge_fns[_VIEW_KEY] = MergeChoice.OURS
         merge_fns[VirtualFS.CWD_KEY] = _keep_ours
+        # Both conversation planes: a merge from a session still on the
+        # legacy plane must not carry its ``__agno__/`` keys into one
+        # that has migrated, any more than its current plane.
         merge_prefixes: dict[str, Any] = {
             CACHE_PREFIX: MergeChoice.OURS,
-            CONVERSATION_PREFIX: MergeChoice.OURS,
             COMPACTION_PREFIX: MergeChoice.OURS,
+            **{prefix: MergeChoice.OURS for prefix in CONVERSATION_PREFIXES},
         }
         return merge_fns, merge_prefixes
 
