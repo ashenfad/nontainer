@@ -1,0 +1,88 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "kind": "event",
+          "text": "",
+          "what": "cancel"
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "never reached",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": [
+      {
+        "runs": [],
+        "tool": "file_write"
+      },
+      {
+        "runs": [
+          "cancelled"
+        ],
+        "tool": "turn"
+      }
+    ],
+    "files": {
+      "/workspace/a.txt": "a"
+    },
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": [
+      {
+        "closing_note": true,
+        "tool_results": 1
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "RunEnded:cancelled"
+        ],
+        "status": "cancelled"
+      }
+    ]
+  },
+  "name": "a-cancel-after-a-tool-keeps-the-run",
+  "needs": [
+    "keeps-aborted-runs"
+  ],
+  "summary": "A run stopped after its first tool call ends cancelled. Its file stays, and the run is kept with the tool's result and a closing note, in one run commit.",
+  "tiers": [
+    1
+  ],
+  "world": {
+    "files": {}
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote a",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "write b",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "b",
+                "path": "/workspace/b.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote b",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "after_turn": 1,
+      "kind": "checkout"
+    },
+    {
+      "kind": "turn",
+      "prompt": "what now?",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "a is written",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [
+      "/workspace/b.txt"
+    ],
+    "commits": null,
+    "files": {
+      "/workspace/a.txt": "a"
+    },
+    "inbox": null,
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 1
+      },
+      {
+        "closing_note": false,
+        "tool_results": 0
+      }
+    ],
+    "turns": [
+      {
+        "events": null,
+        "status": "completed"
+      },
+      {
+        "events": null,
+        "status": "completed"
+      },
+      {
+        "events": null,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-checkout-rewinds-the-conversation-with-the-files",
+  "needs": [],
+  "summary": "Checking out the commit an earlier turn ended on brings back that turn's files and conversation together: the later turn's file and run are gone, and the next turn follows the first.",
+  "tiers": [
+    2
+  ],
+  "world": {
+    "files": {}
+  }
+}

@@ -1,0 +1,83 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote a",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": [
+      {
+        "runs": [],
+        "tool": "file_write"
+      },
+      {
+        "runs": [
+          "completed"
+        ],
+        "tool": "turn"
+      }
+    ],
+    "files": {
+      "/workspace/a.txt": "a"
+    },
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 1
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-turn-that-writes-a-file",
+  "needs": [],
+  "summary": "A turn that calls a tool and then replies completes. The tool's commit lands, then the run's, and the run keeps the tool's result.",
+  "tiers": [
+    0,
+    1
+  ],
+  "world": {
+    "files": {}
+  }
+}

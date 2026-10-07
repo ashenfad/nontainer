@@ -1,0 +1,118 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a",
+      "resume": false,
+      "steps": [
+        {
+          "kind": "event",
+          "text": "and b",
+          "what": "queue_note"
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "kind": "event",
+          "text": "",
+          "what": "cancel"
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "never reached",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "go on",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "b",
+                "path": "/workspace/b.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote b",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "files": {
+      "/workspace/a.txt": "a",
+      "/workspace/b.txt": "b"
+    },
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": null,
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "Delivered",
+          "ToolEnded",
+          "RunEnded:cancelled"
+        ],
+        "status": "cancelled"
+      },
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-cancel-settles-what-was-delivered",
+  "needs": [
+    "keeps-aborted-runs"
+  ],
+  "summary": "A cancelled run keeps its messages, so the model read the notes on its tool results. The cancel settles them, and the next turn does not deliver them again.",
+  "tiers": [
+    3
+  ],
+  "world": {
+    "files": {}
+  }
+}

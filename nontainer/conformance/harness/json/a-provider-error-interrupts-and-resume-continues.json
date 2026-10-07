@@ -1,0 +1,133 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a and b",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "provider",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "",
+      "resume": true,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "b",
+                "path": "/workspace/b.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote both",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": [
+      {
+        "runs": [],
+        "tool": "file_write"
+      },
+      {
+        "runs": [
+          "interrupted"
+        ],
+        "tool": "turn"
+      },
+      {
+        "runs": [],
+        "tool": "file_write"
+      },
+      {
+        "runs": [
+          "completed"
+        ],
+        "tool": "turn"
+      }
+    ],
+    "files": {
+      "/workspace/a.txt": "a",
+      "/workspace/b.txt": "b"
+    },
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 2
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "RunEnded:interrupted"
+        ],
+        "status": "interrupted"
+      },
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-provider-error-interrupts-and-resume-continues",
+  "needs": [
+    "resume"
+  ],
+  "summary": "A provider error interrupts the run, which is stored as it stood. Resuming continues the same run in place: one run in the end, holding the tool results from before and after.",
+  "tiers": [
+    1
+  ],
+  "world": {
+    "files": {}
+  }
+}

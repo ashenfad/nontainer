@@ -1,9 +1,10 @@
 # Extending nontainer
 
-For implementers of the three seams: a new substrate, a new place code
-runs, or the agent loop behind a delegation. If you are embedding
-nontainer rather than extending it, the [API reference](api.md) is the
-page you want; why the seams are drawn here is in the
+For implementers of the three seams (a new substrate, a new place code
+runs, the agent loop behind a delegation) and of a harness, the loop
+that drives a session. If you are embedding nontainer rather than
+extending it, the [API reference](api.md) is the page you want; why
+the seams are drawn here is in the
 [design notes](design.md#three-seams-and-where-a-session-ends).
 
 The three contracts live in one module, `nontainer.protocol`, so an
@@ -465,6 +466,76 @@ runner that returns them is not required to get them right. How the
 helper calls it, what an answer names, what retention does and what
 refuses are all in [sessions.md](sessions.md).
 
+## A harness — the loop that drives a session
+
+A harness is what runs the model against a session: the agno adapter
+today, agex next. nontainer holds the conversation in the branch,
+delivers mid-turn notes and keeps the commits; a harness owns the loop.
+Two things are shared so that every harness can be read and checked
+the same way.
+
+**What a turn streams** is `nontainer.turns.TurnEvent`:
+
+| event | when |
+|---|---|
+| `RunStarted(run_id)` | first, always; the run id is what a cancel names |
+| `TextDelta(text)`, `ThinkingDelta(text)` | streamed model output |
+| `ToolStarted(call_id, name, args)` | before a tool runs |
+| `Delivered(notes)` | notes that rode out on a tool result, before that result's `ToolEnded` |
+| `ToolEnded(call_id, name, result, is_error)` | after a tool returns |
+| `Usage(input_tokens, cached_tokens)` | once per model call, where the harness reports it |
+| `Compacted(through, runs, first)` | a new compaction fold |
+| `RunEnded(status, message)` | last, always |
+
+A run ends `completed`, `cancelled` (stopped from outside), `interrupted`
+(an error the harness may resume from, such as a provider failure: the
+run is kept as it stood and resuming continues it in place) or `failed`
+(any other error). A cancelled or failed run is kept with a closing
+note, so the model remembers the work it did before the cut.
+
+**The harness corpus** (`nontainer.conformance`) is the contract as
+scenarios. Each runs a harness on a memory store with a scripted model,
+and checks how each turn ended, the kinds of event it streamed, the
+files, the stored runs, the commits and the inbox. Exact text, token
+counts and timing are not checked. The scripted model is the clock: an
+outside event (a cancel, a queued note) fires when the model is asked
+for the reply after it, so every harness sees the same timing.
+
+```python
+from nontainer.conformance import applies, check, run
+from nontainer.conformance.harness import SCENARIOS
+
+for scenario in SCENARIOS:
+    if applies(scenario, my_harness):
+        assert check(scenario, run(scenario, my_harness)) == {}
+```
+
+A harness implements `Harness.open(ws, clock)`, returning a session
+that runs a turn, resumes, cancels, reads its stored runs and the run
+statuses a commit records. Its scripted model asks `clock.next()` for
+each reply. It declares the capabilities it has (`resume`,
+`keeps-aborted-runs`); a scenario that needs one it lacks does not
+apply. It lists its `known_gaps`, the checks it fails today, and a
+test expects exactly those to fail.
+
+The agno adapter's harness is
+`nontainer.adapters.agno_conformance.AgnoHarness`. Its gaps today are
+in the commit stamps around a run that did not complete: keeping a
+cancelled or failed run commits a second time, and an errored run is
+stamped with agno's `error` whether it was interrupted or failed. On
+agno 2.1, a streamed run runs no post hook, so a completed turn leaves
+its delivered notes unsettled. Earlier agno releases also raise a run
+error out of the run and store a cancelled run without its messages,
+so the scenarios that need a kept run do not apply there.
+
+Scenarios are written in Python with builders (`turn`, `writes`,
+`says`, `cancel`, `queue_note`, `fails`, `resume`, `checkout`,
+`fork`). For harnesses in other languages, each is also committed as
+JSON under `nontainer/conformance/harness/json/`, with JSON Schemas for
+the format and for `TurnEvent` under `nontainer/conformance/schema/`.
+`python -m nontainer.conformance.export` regenerates them, and
+`tests/test_corpus_drift.py` fails when they drift.
+
 ## Conformance
 
 This is the page where naming tests is the point. An implementation is
@@ -477,6 +548,8 @@ expected to pass:
 | `tests/test_wsgit_conformance.py` | the same ws-git scripts read identically on the local and dud rungs |
 | `tests/test_wscurl_conformance.py` | the same for `ws-curl` |
 | `tests/test_wspytest_conformance.py`, `tests/test_wsvitest_conformance.py` | the same for the two test verbs |
+| `tests/test_conformance_agno.py` | the agno adapter against the harness corpus, known gaps expected to fail |
+| `tests/test_corpus.py` | the corpus format and runner, against a reference harness that passes every scenario |
 
 The cross-rung suites are the discriminating ones for a new executor:
 a same-script write-then-verb flow passes trivially where the command

@@ -1,0 +1,373 @@
+{
+  "$defs": {
+    "Checkout": {
+      "additionalProperties": false,
+      "description": "Check out the commit the ``after_turn``-th turn (counting from 1) ended on: the files and the conversation as they stood then.",
+      "properties": {
+        "after_turn": {
+          "type": "integer"
+        },
+        "kind": {
+          "const": "checkout"
+        }
+      },
+      "required": [
+        "kind",
+        "after_turn"
+      ],
+      "type": "object"
+    },
+    "CommitExp": {
+      "additionalProperties": false,
+      "description": "One commit: the tool its stamp names, and the statuses of the runs it records (a run commit's; empty for a tool's commit).",
+      "properties": {
+        "runs": {
+          "items": {
+            "enum": [
+              "completed",
+              "cancelled",
+              "interrupted",
+              "failed"
+            ]
+          },
+          "type": "array"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "type": "object"
+    },
+    "EventStep": {
+      "additionalProperties": false,
+      "description": "Something from outside the loop, fired when the model is asked for the next reply. ``cancel`` stops the run in flight. ``queue_note`` queues ``text`` in the session's inbox, as a person typing mid-turn does.",
+      "properties": {
+        "kind": {
+          "const": "event"
+        },
+        "text": {
+          "type": "string"
+        },
+        "what": {
+          "enum": [
+            "cancel",
+            "queue_note"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "what"
+      ],
+      "type": "object"
+    },
+    "Expect": {
+      "additionalProperties": false,
+      "description": "What must come of a scenario. ``turns`` has one entry per :class:`Turn` act, in order. ``files`` maps a path to its content at the end, and ``absent`` names paths that must not exist. ``runs`` is the stored conversation of the session the scenario ends in, oldest first; ``commits`` the commits it made on that session's branch, oldest first. ``None`` leaves a part unchecked.",
+      "properties": {
+        "absent": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "commits": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/CommitExp"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "inbox": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InboxExp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runs": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/RunExp"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "turns": {
+          "items": {
+            "$ref": "#/$defs/TurnExp"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "turns"
+      ],
+      "type": "object"
+    },
+    "Fork": {
+      "additionalProperties": false,
+      "description": "Fork the session as ``name`` and carry on in the fork. ``full`` carries the conversation, ``fresh`` starts the fork without one.",
+      "properties": {
+        "inherit": {
+          "enum": [
+            "full",
+            "fresh"
+          ]
+        },
+        "kind": {
+          "const": "fork"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "InboxExp": {
+      "additionalProperties": false,
+      "description": "The session's inbox at the end: notes still queued, and notes delivered but not yet settled.",
+      "properties": {
+        "delivered": {
+          "type": "integer"
+        },
+        "pending": {
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "ModelStep": {
+      "additionalProperties": false,
+      "description": "One model reply: text, reasoning, tool calls, or a failure. ``fail`` makes the call raise instead of replying: ``\"provider\"`` with a provider error (an overloaded endpoint, say), which a harness may resume from; ``\"error\"`` with any other exception.",
+      "properties": {
+        "fail": {
+          "enum": [
+            "",
+            "provider",
+            "error"
+          ]
+        },
+        "kind": {
+          "const": "model"
+        },
+        "text": {
+          "type": "string"
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/$defs/ToolCall"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RunExp": {
+      "additionalProperties": false,
+      "description": "One run of the stored conversation: whether it closes with a note saying the turn ended early, and how many tool results it keeps (``None``: unchecked).",
+      "properties": {
+        "closing_note": {
+          "type": "boolean"
+        },
+        "tool_results": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "Scenario": {
+      "additionalProperties": false,
+      "description": "One scenario: a world, the acts run in it, and what must come of them. ``tiers`` are the contract tiers it pins; ``needs`` are the :data:`CAPABILITIES` a harness must have for it to apply.",
+      "properties": {
+        "acts": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Turn"
+              },
+              {
+                "$ref": "#/$defs/Checkout"
+              },
+              {
+                "$ref": "#/$defs/Fork"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "expect": {
+          "$ref": "#/$defs/Expect"
+        },
+        "name": {
+          "type": "string"
+        },
+        "needs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "tiers": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "world": {
+          "$ref": "#/$defs/World"
+        }
+      },
+      "required": [
+        "name",
+        "summary",
+        "tiers",
+        "acts",
+        "expect"
+      ],
+      "type": "object"
+    },
+    "ToolCall": {
+      "additionalProperties": false,
+      "description": "One tool call in a model reply.",
+      "properties": {
+        "args": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "description": "One turn: ``prompt`` and the model's script for it. With ``resume``, the turn continues the last turn's interrupted run in place instead of starting a new one, and has no prompt.",
+      "properties": {
+        "kind": {
+          "const": "turn"
+        },
+        "prompt": {
+          "type": "string"
+        },
+        "resume": {
+          "type": "boolean"
+        },
+        "steps": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelStep"
+              },
+              {
+                "$ref": "#/$defs/EventStep"
+              }
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "TurnExp": {
+      "additionalProperties": false,
+      "description": "How one turn ended, and what it streamed. ``events`` are :class:`~nontainer.turns.TurnEvent` kinds in order, normalized: consecutive deltas of one kind are one entry, ``Usage`` is left out (not every harness reports it), a failed tool reads ``ToolEnded:error``, and the last entry names the ending, as in ``RunEnded:cancelled``. ``None`` leaves the stream unchecked.",
+      "properties": {
+        "events": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "cancelled",
+            "interrupted",
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "World": {
+      "additionalProperties": false,
+      "description": "The workspace a scenario starts in: files by path.",
+      "properties": {
+        "files": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  "$ref": "#/$defs/Scenario",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scenario"
+}
