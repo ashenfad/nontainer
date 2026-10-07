@@ -8,3285 +8,707 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- **`nontainer.turns`: what a turn streams, as one vocabulary.** `RunStarted`, `TextDelta`, `ThinkingDelta`, `ToolStarted`, `Delivered`, `ToolEnded`, `Usage`, `Compacted` and `RunEnded` are frozen dataclasses, each with a `kind` naming it, so a UI or a transcript can follow any loop the same way. `RunStatus` is how a run ended: `completed`, `cancelled`, `interrupted` (an error the harness may resume from) or `failed`. `event_from_dict` reads one back from JSON.
-- **`nontainer.conformance`: the harness contract as scenarios.** Each scenario runs a harness on a memory store with a scripted model, then checks how each turn ended, the kinds of event it streamed, the files, the stored runs, the commits and the inbox. The scripted model is the clock: a cancel or a queued note fires when the model is asked for its next reply, so every harness sees the same timing. The first eleven scenarios cover the tool surface, how a turn ends (completed, cancelled, failed, interrupted then resumed), the conversation (checkout, full and fresh forks) and the inbox. A harness declares the capabilities it has and lists its known gaps, and its test expects exactly those checks to fail. Each scenario is also committed as JSON, with JSON Schemas for the format and for the turn events, for harnesses in other languages; `python -m nontainer.conformance.export` regenerates them, and a drift test fails when they differ.
-- **`nontainer.adapters.agno_conformance.AgnoHarness`: the agno adapter under the corpus.** It wires `WorkspaceTools` the documented way, drives a streamed `arun` inside a turn, and ends the turn with `finish_turn`. It passes every scenario with no known gaps on agno 2.8.5, 3.0.1 and 3.0.11. agno 2.1 stores a cancelled run without its messages and raises a run error out of `arun`, so the scenarios that need a kept or resumable run do not apply to it; the rest pass there too.
-- **The turn: `ws.turn(run_id)` (`nontainer.turns.Turn`).** One run of a harness's loop on a workspace, one at a time (another is refused with `TurnInProgress`). Ending it stores the run's body when the harness hands it over (the run joining the conversation's index), settles the inbox's delivered notes, and lands one commit stamped `{"tool": "turn", "runs": {run_id: status}}` with how the run ended. It is a context manager, sync or async: leaving the block completes the turn, a `CancelledError` cancels it and any other exception fails it, and the exception goes on. `turn.interrupt(message)` ends it interrupted, and `ws.turn(run_id, resume=True)` continues that run in place. A hook-based loop uses `ws.turns.begin` and `turn.end`, and binds the run id once its loop mints one (`turn.bind`).
-- **`finish_turn` and `status_of_error` (`nontainer.adapters.agno`).** `status_of_error` reads agno's `RunError.error_type`: a provider error interrupts the run, which `acontinue_run` can resume in place, and anything else fails it. `finish_turn(turn, db, session_id, status, message)` keeps a cancelled or failed run with its closing note (best-effort, logged when it cannot), then ends the turn.
+- **The turn: `ws.turn(run_id)`.** One run of a harness's loop, one at a time (`TurnInProgress`); ending it settles the inbox and lands one commit stamped with how the run ended. Sync or async; `ws.turns.begin` / `turn.end` for hook-based loops.
+- **Turn events and `RunStatus`.** `nontainer.turns`: `RunStarted`, `TextDelta`, `ThinkingDelta`, `ToolStarted`, `Delivered`, `ToolEnded`, `Usage`, `Compacted`, `RunEnded`; a run ends `completed`, `cancelled`, `interrupted` or `failed`.
+- **The harness corpus: `nontainer.conformance`.** Scenarios that check a harness against the turn contract, a runner, and their JSON and JSON Schemas for other languages; `AgnoHarness` runs the agno adapter under it.
+- **`finish_turn` and `status_of_error`.** `nontainer.adapters.agno` helpers that classify an agno run error and end its turn, keeping a cancelled or failed run with its closing note.
 
 ### Changed
-- **Under a turn, the agno db and `end_turn` leave the commit to it.** While `ws.turn` is open, `KvgitSessionDb` stages the runs it writes instead of committing them, its management writes (a delete, a rename) ride the turn's commit, and `WorkspaceTools.end_turn` commits nothing in turn mode. Ending the turn lands them all at once, stamped with the turn's status rather than agno's. A cancelled or failed run kept with `keep_aborted_run` used to land in two commits (`CANCELLED`, then `COMPLETED`; `ERROR`, then `COMPLETED`); under a turn ended with `finish_turn` it lands in one, stamped `cancelled` or `failed`, and an interrupted run is stamped `interrupted` rather than `ERROR`. The turn's end settles the inbox too, which a post hook never did for a streamed run on agno 2.1. Without a turn, both behave as before.
+- **Under a turn, the agno db and `end_turn` leave the commit to it.** A cancelled or failed run lands in one commit stamped `cancelled` or `failed`, not two stamped with agno's status; without a turn nothing changes.
 
 ## 0.9.0 - 2026-10-06
 
 ### Added
-- **`nontainer.adapters.tools`: the workspace tools, defined once.** A `Toolset` holds each tool's name, description, JSON Schema and call, and returns a harness-neutral `ToolOutput` (text, images, the path written, `is_error`). The agno toolkit and the MCP server are now built on it, so their tools can no longer drift apart, and any other loop can use the tools directly through `Tool.parameters` and `Tool.call` / `acall`. Every tool's name, description and schema is unchanged for both adapters; a golden file (`tests/golden/tool_surface.json`) now pins them. `render.toolkit_instructions` is the agno toolkit's instructions, now shared.
-- **A memory store: `Store(memory=True)`** (and `nontainer.store(memory=True)`, `workspace(..., memory=True)`). Sessions, history and the publication registry live in this process and nothing is written to disk, not even the registry. The data lasts as long as the `Store` object does; `close()` releases the repository handle, not the data. Before this, `kv=Memory()` kept the data in memory but `path` still defaulted to `~/.nontainer`, where the registry lives, so a scratch world could still write there. `path`, `kv` and `provider_factory` each say where state lives and are refused alongside it, and `NONTAINER_KV` is not consulted. `Store.path` is `None` for a memory store, and `Store.memory` says whether a store is one.
-- **`Profile`: a session's world as one value.** A frozen bundle of `python`, `mounts`, `commands`, `executor_factory`, `root` and `ignore`, plus `variables`, the environment variables applied to `ws.runtime.env` when the session opens. `Store.open(..., profile=)` and `workspace(..., profile=)` take it in place of those six keywords, and passing it with any of them is refused. `Profile.of(ws)` reads it back, and a fork inherits it. Its mappings are read-only; derive a variant with `dataclasses.replace`. `cache`, `autocommit` and `max_observation` are not part of it: they say how a session behaves, not what its world holds.
+- **`nontainer.adapters.tools`: the workspace tools, defined once.** `Toolset` and a harness-neutral `ToolOutput`; the agno and MCP adapters are built on it, and a golden file pins the tool surface.
+- **`Store(memory=True)`.** A store that keeps everything in the process and writes nothing to disk, its registry included.
+- **`Profile`: a session's world as one value.** `python`, `mounts`, `commands`, `executor_factory`, `root`, `ignore` and `variables`; `Store.open(profile=)`, read back with `Profile.of(ws)`.
 
 ### Changed
-- **The conversation plane is harness-neutral: `__conversation__/`, read through `nontainer.conversation`.** Core owns an index (which harness wrote the conversation, the session it belongs to, its run ids in order, the session it forked from) at `__conversation__/index`; the harness keeps its own session record at `__conversation__/record` and its runs at `__conversation__/runs/<id>`. Core's fork (fresh and full), and the agno db's reads, writes, forks and deletes, go through the index, so core no longer writes agno's field names: a full fork rebinds the index, not agno's `session_id` and `session_data`. `conversation.index_of(ws)`, `index_at(provider, commit)`, `read_record` and `read_runs` are the reads; `write`, `rebind`, `wipe` and `clear` the writes. `planes.CONVERSATION_PREFIX` is now `__conversation__/`, and `planes.CONVERSATION_SESSION_KEY` and `agno_db.SESSION_KEY` / `RUN_PREFIX` are gone. **Storage note:** a session written before this keeps its conversation under `__agno__/`; it reads as before and moves to `__conversation__/` on its next write, in that write's own commit. **Once moved, nontainer releases older than this one cannot read that session's conversation.** Older commits keep the old plane, so a checkout or fork of one reads it again and migrates on its next write; both planes take `ours` in a merge, so a delegate still on the old one brings neither. Checked against a copy of a real studio store: ten sessions read through the old plane, migrated on a write with agno's view of each unchanged, and forked and deleted cleanly afterwards.
-- **The compaction adapter runs on agno 2.5 and later** (#193). It refused any agno below 3.0, but agno 2.x releases with a compression manager run it as 3.x does: the seam and adapter tests pass on 2.5.0, 2.5.17, 2.6.0, 2.7.0, 2.8.0 and 2.8.5. The gate now checks what the adapter uses (`CompressionManager`, its four hooks, `Message.from_history`), and names what's missing. On top of that it sets a floor of agno 2.5. agno 2.4 has every hook, but the summary the adapter splices into a request gets stored with the run (`test_the_splice_never_reaches_the_stored_conversation` fails on 2.4.0 and 2.4.8). CI runs the compaction tests on agno 2.5.0.
-- **The terminal says there is no `node`.** On the termish terminal, the description now says there is no `node`, `npm` or `npx`. When the session has them, it also names where JavaScript does run: `ws-vitest` for modules, and test_app for a page. Agents spent calls probing for node with `which` and `node --version`. A terminal that is a real shell (the VM and dud rungs) isn't told this.
-- **The sessions description says `paths` is a view, not a share of the work.** Agents gave delegates a `paths` view as if assigning files, then asked them to run checks that needed files outside it. The description says to leave `paths` out unless the delegate should read only those files, and not to ask a narrowed delegate to run the whole test suite or an end-to-end check.
+- **Storage: the conversation lives under `__conversation__/`.** Read through `nontainer.conversation`; a session moves off `__agno__/` on its next write, and releases before 0.9.0 cannot read it after that.
+- **Breaking: `planes.CONVERSATION_SESSION_KEY`, `agno_db.SESSION_KEY` and `RUN_PREFIX` are gone.** Use `nontainer.conversation`.
+- **The compaction adapter runs on agno 2.5 and later** (#193).
+- **Tool descriptions.** The terminal says there is no `node`; the sessions tool says `paths` is a view, not a share of the work.
 
 ### Fixed
-- **MCP's `run_python` reports the ui artifacts a call saved**, as the agno toolkit's always has. A call that assigned `ui = {...}`, or wrote into the ui directory itself, saved the files, but the MCP result never said so.
-- **The run methods answer on agno 2.** `KvgitSessionDb` and `KvgitStoreDb`'s `get_run` and `get_runs` were built for agno 3's runs table (#190) from agno 3's row helpers. On agno 2, a caller probing for them (`getattr(db, "get_run", …)`) got an `ImportError` (`build_single_run_row`, then `validate_pagination`). agno 2 never calls them itself. On agno 2 the rows are now built locally, in agno 3's shape, and deserialized by run type, so both answer the same on either major. CI now also runs every agno test on agno 2.8.5.
-- **The agno toolkit's instructions name the commit mode.** Under `WorkspaceTools(ws, commit="turn")` they said "every mutating call is committed", which is false in that mode. They now say the work is committed at the end of each turn.
+- **MCP `run_python` reports saved ui artifacts.** As the agno toolkit always has.
+- **`get_run` / `get_runs` work on agno 2.** They raised `ImportError` there.
+- **Turn-mode instructions.** The agno toolkit no longer claims every call is committed under `commit="turn"`.
 
 ## 0.8.14 - 2026-10-06
 
 ### Changed
-- **Requires sandtrap 0.4.1.**
+- **Requires sandtrap 0.4.1** (package imports, module dunders).
 
 ### Fixed
-- **A package an agent wrote in the workspace imports and runs** (sandtrap 0.4.1). `import tern`, `from tern import X` and `from tern.cli import main` failed with "Import of 'tern' is not allowed", in `run_python` and in the terminal's `python`, whenever the import needed the package itself (`tern/__init__.py`) rather than one of its modules. Flat modules (`convert.py`) were unaffected. Packages now load as in CPython: `__init__.py` first, then the submodule, so a package's modules can import from it.
-- **`__version__`, `__author__` and `__all__` read on a module** (sandtrap 0.4.1). `from tern import __version__` was refused with every other dunder. These three now read as attributes and as from-imports, as plain data only.
-- **Top-level `await` in `run_python` is the script's error.** `ws.run_python("await f()")` raised a `SyntaxError` out of the call instead of returning a result with `error` set, as every other syntax error does. It now returns one, and the message says top-level await needs an async execution (sandtrap 0.4.1).
-- **A delegate forked from another session's state diffs as its own work.** `ws-git diff <name>` measures from where the two sessions last met. For a delegate forked from another session (`fork_from`), that is often only the store's first commit, so `--stat` listed the other session's whole tree as the delegate's changes, and an agent reported those files as "the delegate's other touches". When a session began from a state this session's history doesn't hold, the diff now measures from where it began, and its header says how many paths a merge would bring besides. `AgentGit.source_began` reads the commit a fork began at.
-- **A delegate's answer doesn't offer a merge as "take all of it" when the fork point is outside the asker's history.** Such an answer's provenance carries `"outside": True`. The next-step line offers the diff and `ws-git checkout <name> -- <paths>`, and says a merge would bring the source's files too. A fork point in the asker's own history (a store tag of one of its commits) reads as before.
+- **Workspace packages import and run.** `import tern` no longer fails as "not allowed"; `__init__.py` loads first, as in CPython.
+- **Module `__version__`, `__author__`, `__all__` readable,** as plain data.
+- **Top-level `await` in `run_python` returns an error result** instead of raising `SyntaxError`.
+- **Forked delegates diff as their own work.** A session begun outside this history diffs from its start; new `AgentGit.source_began`.
+- **No plain merge offer for outside forks.** Such answers carry `"outside": True` and offer `ws-git checkout <name> -- <paths>`.
 
 ## 0.8.13 - 2026-10-06
 
-### Changed
-- **`Sessions.ask`'s `inherit` follows `fork_from` when unset.** A child forked from elsewhere now carries the conversation there (`"full"`): it is the agent that was there, and the task is its next turn. A child of this session still starts `"fresh"`, as does a `resume`. Asking another session about its work took `inherit="full"`, which was easy to miss, and the fresh default answered from that state's files with none of its memory. **Callers that pass `fork_from` without `inherit` now get the conversation**: pass `inherit="fresh"` for the old behavior. The `sessions` tool's `inherit` argument follows the same rule when empty.
-
 ### Added
-- **`fork_from` takes a bare session name**, the session as it is now (its latest commit, resolved when the ask is made). Only a store tag or `session@commit` worked before, so an agent asked to question another session was refused and found no commit id to spell. A name that is both a store tag and a session is the tag. An unknown name is refused, and the refusal lists the sessions and store tags there are.
+- **`fork_from` takes a bare session name,** resolved to its latest commit; a store tag wins a clash.
+
+### Changed
+- **Breaking: `inherit` follows `fork_from` when unset.** A child forked from elsewhere gets the conversation (`"full"`); pass `inherit="fresh"` for the old behavior.
 
 ### Fixed
-- **An empty `ws-git log` says where the history is.** A session whose agent never ran `ws-git commit` holds only turn commits (and those it was forked from), which only `--all` lists. A bare empty answer read as "this session has no history" to an agent looking for a commit to fork from. The log now prints one comment line naming `ws-git log --all` (or `ws-git log <session> --all`) when the session holds commits that `--all` would list.
+- **Empty `ws-git log` points to `ws-git log --all`** when only `--all` would list commits.
 
 ## 0.8.12 - 2026-10-05
 
 ### Added
-- **test_app's `press` action sends real key events.** `{"press": "ArrowLeft"}` goes through the browser's keyboard, so the page hears it wherever it listens: the focused element, `document` or `window`. A list presses keys in order, `"hold": ms` keeps each key down, and `"on": selector` focuses an element first. Agents testing games dispatched `KeyboardEvent`s from `eval`, which reach only the target they're dispatched on. Delegate after delegate found that a game listening on `window` never heard one sent to `document`.
+- **test_app's `press` sends real key events,** heard by `document` and `window` listeners; supports `"hold"` and `"on"`.
 
 ### Fixed
-- **test_app names the requests that failed.** A report's console tail said "Failed to load resource: the server responded with a status of 404 (Not Found)" and never which resource. Agents read that as a fault in their page and went looking. A new `[failed requests]` section (`TestAppResult.failed_requests`) lists each request the app answered with an error status, `GET missing.js -> 404`, once with a count. An API call a check expects to fail shows here too, and does not fail the run by itself.
-- **A run that starts with `goto` opens that page.** A run always loaded the index and then went where its first action said. A delegate testing its piece in a fork with no index yet, before the shell existed, got a 404 for `index.html` in every report. The run now opens the `goto` target directly (`DriveSpec.start`) and counts that `goto` as done, so the page loads, and its scripts run, once. A missing start page still fails that `goto` with its HTTP status. A driver that ignores `start` behaves as before.
-- **A delegate's answer suggests reading its diff summary first.** The next-step line now reads `ws-git diff <name> --stat` (what it touched), then `ws-git diff <name> -- <paths>`. An agent that diffed three delegates in one call had the output cut off before it was read.
-- **A screenshot Chromium refuses for a moment is retried.** Headless Chromium sometimes answers a capture with "Protocol error (Page.captureScreenshot): Unable to capture screenshot", most often on a loaded machine. The frame can be read a moment later. Unretried, it failed an agent's screenshot or a grid's tiling at random, and it was the one recurring flaky failure in CI: five failures across main and PR runs, every one this error. All three capture sites (a screenshot, a grid frame, a grid's tiling) now retry that error twice, after 0.1 s and 0.4 s. Any other error raises at once.
-- **MCP tools no longer block the server's event loop** (#176). FastMCP runs a sync tool inline on its loop, and six of the adapter's tools were sync: `terminal`, `file_write`, `file_edit`, `view_image`, `run_python` and `sessions`. A long `run_python`, a `ws-pytest`, or a `sessions` ask with `wait=true` (a delegate's whole run) held every other request, ping and notification until it finished. Every tool is now `async` and runs its work on a worker thread, as `test_app` already did. So do the `workspace://` resource readers, which take the same lock and would otherwise wait out a slow tool on the loop. The per-workspace lock still serializes calls on one workspace.
-- **A host object with `async` methods is refused when the executor opens** (#177). No executor can call one yet, and each failed differently. In process, agent code got a bare coroutine object back from a call that never ran. Under process isolation the coroutine wouldn't pickle, and on the dud rung the codec couldn't carry it. Every executor now refuses the object at open, before any code runs, naming the object and its async methods and saying what to do instead: expose sync methods, or pass a sync facade. Detection is static, so a wrapped coroutine function not marked with `inspect.markcoroutinefunction` slips past.
-- **agno 3's run methods read and remove the branch's runs** (#190). `KvgitSessionDb` and `KvgitStoreDb` inherited `get_run`, `get_runs`, `delete_run` and `delete_runs` from `JsonDb`, which looks for a runs file under `db_path` that never exists. Every run read as absent, `delete_run` returned `False`, and `delete_runs` returned normally having removed nothing. So a run upserted and then deleted stayed in the session. The reads now answer from the branch's run keys in agno's shape, and the deletes remove the keys and their ids from the session record: committed between turns, staged during one. `KvgitStoreDb` finds a run's session by id alone, as AgentOS asks. It reads first the sessions it has written through, live, then each branch's committed record. agno's agent loop never calls these methods. AgentOS and embedders that persist runs themselves do.
+- **test_app names failed requests.** New `[failed requests]` section, `TestAppResult.failed_requests`.
+- **A run starting with `goto` opens that page** (`DriveSpec.start`), not the index first.
+- **MCP tools no longer block the event loop** (#176). Tools and `workspace://` readers are `async` and run on a worker thread.
+- **Host objects with `async` methods refused at open** (#177). Expose sync methods or a sync facade.
+- **agno 3 run methods work** (#190). `get_run`, `get_runs`, `delete_run`, `delete_runs` on `KvgitSessionDb` and `KvgitStoreDb`.
+- **Smaller fixes:** delegate answers suggest `ws-git diff <name> --stat` first; transient Chromium screenshot errors are retried twice.
 
 ## 0.8.11 - 2026-10-05
 
 ### Added
-- **test_app and `ws-curl` can run handlers against another host object.** `test_app(actions, bind={"db": "testdb"})` hands the run's handlers the host object `testdb` where they read `db`, by bare name and through `from host import db` alike, for that run's requests and no others. `ws-curl --bind db=testdb ...` does the same for one request. The handler's code is unchanged, as with ws-pytest's `call(..., db=testdb)`. Nothing is bound unless asked, and which names to bind is the embedder's to teach. Names the session does not bind are refused with the ones it does. A run's result (`TestAppResult.bound`) and ws-curl's stderr say what was bound. In every live run of a delegated build, browser checks and ws-curl smoke tests wrote into the live `db` the published app serves over and ended with a manual `DELETE`. `ViewSpec.bind` carries the binding to both executors, and `AppRuntime.dispatch` takes `bind=`.
+- **Bind handlers to another host object.** `test_app(..., bind={"db": "testdb"})` and `ws-curl --bind db=testdb`; also `TestAppResult.bound`, `ViewSpec.bind`, `AppRuntime.dispatch(bind=)`.
 
 ### Fixed
-- **A script run from the terminal runs as `__main__`.** `python file.py` (and `-c`, and a piped program) ran with the sandbox's module name, so the usual `if __name__ == "__main__": main()` guard skipped `main()`, and the script exited 0 having done nothing. A delegate's data generator wrote no files that way, and the next step failed on a missing parquet. `run_python` and app handlers are unchanged.
-- **`sessions` takes `action="resume"`.** The description teaches `resume=<name>`, and a model filling in an `action` wrote `action="resume"`, which was refused as an unknown action. The agent then sent work back by forking a second delegate from the first one's commit. It is now the ask that continues the delegate named in `name` or `resume`. The unknown-action refusal names the spelling too.
-- **A resumed delegate's answer lists what that task changed.** An answer's changed paths were measured from the delegate's fork point. After the parent merged a first answer and sent the delegate back, the second answer listed the first round's files again as "changed, in what you sent it to do", and the parent had to diff by hand for the real delta. They are now measured from where the two last met, the base `ws-git diff <name>` and a merge use. Until the parent merges, that is still the fork point.
+- **Terminal scripts run as `__main__`,** so the `if __name__ == "__main__"` guard runs.
+- **`sessions` accepts `action="resume"`.**
+- **Resumed delegates list only that task's changes,** measured from where the sessions last met.
 
 ## 0.8.10 - 2026-10-04
 
 ### Added
-- **`ws-git` takes git's everyday spellings.** `diff --stat` prints a per-file summary, for your own changes and another session's. `--` separates paths, so `diff <session> -- <paths>` and `diff -- <paths>` work, and `diff <session> <paths>` filters too. `status -s`/`--short`, `log --oneline` and `log -5` are accepted: the first two are the format already printed. Each used to cost an agent a call to learn the spelling it had typed was refused.
-- **ws-vitest runs the vitest idioms agents write.** `it.each`/`test.each`/`describe.each` with vitest's title formats, `beforeAll`/`afterAll` scoped to their block, and `.skip`, `.only`, `.todo`, `.concurrent`, `.runIf` and `.skipIf` on `it` and `describe`. Each was refused, and a delegated game build hit the refusals one after another, rewriting table tests into loops and shared setup into module scope. Skipped tests are reported the way vitest reports them: `↓` in the verbose list and `N skipped` in the counts. The tagged-template `.each` table is still refused, naming the array form.
+- **`ws-git` takes git's everyday spellings.** `diff --stat`, `--` paths, `status -s`, `log --oneline`, `log -5`.
+- **ws-vitest runs common vitest idioms.** Array `.each`, scoped `beforeAll`/`afterAll`, `.skip`, `.only`, `.todo`, `.concurrent`, `.runIf`, `.skipIf`.
 
 ### Fixed
-- **`ws-git diff <session>` shows what a merge would bring.** It compared this session's last commit with the other session's, so everything this session did since the fork read as the other one undoing it. An agent merging three delegates read the frontend work it had already merged as the engine delegate "reverting" it. It took the engine's files one by one rather than merge, though the engine had never touched that file and the merge would have kept it. A session diff is now git's `A...B`: the other session's changes since the merge base, which is the base `merge` uses. A header names that base, and a line names any paths this session also changed since then, where the merge combines both sides or marks a conflict. A diff against a store tag is still a straight comparison. The kvgit provider exposes `merge_base(a, b)` for it.
-- **A snapshot of a mounted session's commit is clean.** With mounts, the composition keeps the cwd and the store never records one. A frozen view of such a commit (`store.resolve("s@<commit>")`, `store.tags.at(...)`) therefore set its cwd while opening and reported itself `uncommitted`, so `store.publish` refused it as having staged changes. A frozen workspace commits nothing, and `uncommitted` is now always False for one.
-- **Opening a mounted session's branch without its mounts writes nothing.** A mounted session's commits carry no cwd. So a handle opened on its branch without the mounts recorded one, as an `init` commit, on a branch it may only have been opened to read: a delegate's branch read back by `Sessions` after the delegate answered, or another session read by `ws-git`. Such a branch now gets the same composition its mounted session had, holding the cwd in memory. It opens at the root and writes nothing until it's asked to. A new session still records its cwd as before.
-- **`ws-git status` says what kind of change a row is.** Every row read `M`, so a file the session had just created looked like an edit to one it inherited. The rows use git's letters now: `A` new, `D` deleted, `M` changed. A new file nothing has staged shows as ` A` (git's intent-to-add) rather than `??`, because a commit with nothing staged takes it. `WorkspaceStatus` carries `added` and `removed` for the same split.
-- **`req.require` says what arrived when it refuses a value.** Its type defaults to `str`, so `req.require("score")` answered a JSON `10` with `field 'score' must be str`. That read like a broken check, and an agent stopped using `require` for numbers rather than pass `int`. It now reads `field 'score' must be str (got the number 10)`. The apps primer's handler example reads a number with `req.require("points", int)` beside the string, and no longer says `require` only checks for a missing field.
-- **A delegate answers to the name you gave it.** `sessions ask` with `name="backend"` makes the child `<session>.backend`, and `resume="backend"`, `result`, `keep` and `cancel` with `"backend"` were refused with `no job named 'backend' (have: <session>.backend)`. They now find that child. ask's own refusal of a taken name already told the agent to `resume=` with the short name. The `sessions` description adds that a resumed delegate goes on from its own branch as it left it: resume one to revise its work after reading its diff, and ask afresh for new work on your tree as it is now.
-- **`file_edit` no longer re-indents a block on a guess.** When an agent's `old_string` matched only with its indentation ignored, the replacement was shifted by however far the quote's FIRST line was off. A delegate quoted a test file's `describe` line indented two spaces and the body as it was, and every line of its replacement moved two columns left, with the edit reporting success. The fallback now takes a quote that is the file's block shifted by one amount, or by one amount after a first line indented on its own, and moves each part by its own amount. A quote that differs line by line any other way is not a match, and the agent gets the did-you-mean instead of a reformatted file.
+- **`ws-git diff <session>` shows what a merge would bring.** It is git's `A...B` from the merge base; providers expose `merge_base(a, b)`.
+- **Mounted sessions stay clean.** A frozen workspace is never `uncommitted`, and opening a branch without its mounts writes nothing.
+- **`ws-git status` uses git's letters** (`A`, `D`, `M`); `WorkspaceStatus` gains `added` and `removed`.
+- **Delegates answer to their short name** in `resume`, `result`, `keep` and `cancel`.
+- **`file_edit` no longer re-indents on a guess;** only a uniform indent shift matches.
+- **Smaller fixes:** `req.require` says what value arrived.
 
 ## 0.8.9 - 2026-10-04
 
 ### Added
-- **`ignore=`: the embedder's `.gitignore`.** `workspace()` and `Store.open` take gitignore-style patterns, relative to the workspace root, for paths that are never work: `__pycache__/`, `*.log`, `/build/`. No ws-git status lists them, no commit or merge takes them, and no diff (and so no delegate's answer) names them. They are still written and kept for the session to read back. Forks, tags and publications inherit the patterns, and `ws.ignore` returns them. Negation (`!`) is refused when the workspace is built rather than half-supported. `ws-git add <path>` on an ignored path is refused, and the refusal says why.
-
-- **Mounted skills.** `skills.mounts(*sources, root=...)` turns directories of skills into read-only `Mount`s at `<root>/skills/<name>`, for skills that are never the agent's to change, such as an embedder's starter set or a library's. They sit beside installed skills, and the catalog lists both. Being mounts, they are not versioned: ws-git never lists them, and no commit, fork point or publication copies them, which is how a seeded `skills/` directory ended up in a delegate's commit. `skills.install` refuses a name that is mounted, and `install_from_modules` skips a library skill that is already mounted.
+- **`ignore=`: gitignore-style non-work paths.** On `workspace()` and `Store.open`; ws-git skips them, forks inherit them, `ws.ignore` reads them.
+- **Mounted skills.** `skills.mounts(*sources, root=...)` mounts skill directories read-only and unversioned.
 
 ### Changed
-- **Requires termish 0.2.2,** whose globs and `ls` behave as bash's and GNU's do. In a session, `ls app/assets/*` used to list every file in the tree twice: `*` crossed `/`, matches came back absolute, and `ls` gave each file operand a header of its own. Now `*`, `?` and `[...]` stay within a path segment, directories included. A relative pattern expands to relative paths, dotfiles need a dot, `**` spans directories, and `a/[bc]*` is one word. `ls` lists file operands first, headers directories only when there's more than one operand, and reports a missing operand while listing the rest.
-- **Paths outside the workspace root are never work.** Anything a session writes outside `ws.root`, such as scratch under `/tmp` or a library's cache at `/.matplotlib`, is no longer listed by ws-git status, taken by a commit or merge, or named in a diff. A delegate's commit used to sweep up a matplotlib font cache written at the filesystem root, and a scratch file under `/tmp` turned up in another's changed paths. A dud guest only ever sees the root's subtree, so local sessions now agree with it.
+- **Requires termish 0.2.2** (bash/GNU-like globs and `ls`).
+- **Paths outside `ws.root` are never work** for ws-git status, commit, merge or diff.
 
 ### Fixed
-- **A delegate's first commit takes only what it changed.** A fork has no ws-git commit of its own, and until its first one every file it could see counted as modified, inherited ones included. Its first `ws-git add -A` and commit therefore carried its parent's work along with its own: one delegate's 56-file commit was mostly the parent's contract and seeded files. `ws-git diff` showed it all as added, and `status` listed inherited files as uncommitted. A fork now records the tree it started from (the fork point the fork already landed) as its base. `status`, `diff`, `add -A` and `commit` measure from that base until its first commit: right after a fork, `status` is clean. A partial first commit puts the edits it leaves out back to the base, not to nothing, and `ws-git checkout -- <path>` restores an inherited file from the base. A session that is not a fork still reads, before its first commit, the way a repo does.
+- **A fork's first commit takes only its changes;** a fork measures from the tree it started at.
 
 ## 0.8.8 - 2026-10-03
 
 ### Added
-- **Compaction** (`nontainer.compaction`, `nontainer.adapters.agno_compaction`; docs/compaction.md). Past a token budget, every earlier turn of a conversation is replaced, in what the model is sent, by one summary; the run in progress stays as it is. The stored conversation is never rewritten, and the person's transcript keeps everything. Each fold is a record in a new `__compaction__/` plane: a rewind takes it back with the turns it folded, a `full` fork carries it, a `fresh` fork drops it, and a merge never takes another session's. A fold names the last message it covers by id. If an edit has removed that message, an earlier fold still in reach applies, or else the full history is sent.
-  - **The harness-neutral half** is the record, `Policy(budget, window=None)`, the summary texts, and the shrinking and chunking a fold too large for one request needs.
-  - **The agno adapter** is `CompactingCompression`, passed as the agent's `compression_manager` (agno 3.0 or later). Before every model call it applies the fold in force, and folds again when the request is still over budget. It measures the request from the input tokens the provider reported, so no tokenizer is needed. By default the summary is written by the agent's own model, sent the same messages and the same tools with tool calls forbidden, so the request is mostly in the provider's cache.
-  - **Anthropic's cached input counts.** For agno's Claude (direct, Bedrock, Vertex) the cache reads and writes, which Anthropic reports apart from `input_tokens`, are added to the measure. Without them a mostly cached request would look small and never fold.
-  - **A fold that would not fit one request**, by the policy's `window` or because the provider refused it, is written from a transcript with tool output cut down, in chunks if need be. So a session whose single run outgrew the window recovers on the next turn.
-  - It never compresses a tool result, and a failure inside it never fails the agent's own call.
-  - `on_fold` hands the embedder each new record, and `summary_model` puts another model on the summaries.
-- **`fork_session(..., conversation="fresh")` drops compaction's folds** along with the runs, as `ws.fork(inherit="fresh")` does.
-- **A session db never stores compaction's messages.** `KvgitSessionDb` drops the summary pair from a run on every path that stores one, even when an agent has turned on agno's `store_history_messages`.
+- **Compaction of long conversations** (`nontainer.compaction`; docs/compaction.md). Past a token budget, earlier turns are sent as one summary; stored history is never rewritten.
+- **Storage: a new `__compaction__/` plane.** Rewinds and `full` forks carry folds; `fresh` forks and merges don't.
+- **`CompactingCompression` agno adapter** (`nontainer.adapters.agno_compaction`, agno 3.0+). With `Policy(budget, window=None)`, `on_fold` and `summary_model`.
+- **Compaction never stored or forked fresh.** `KvgitSessionDb` drops the summary pair; `fork_session(..., conversation="fresh")` drops folds.
 
 ## 0.8.7 - 2026-10-03
 
 ### Added
-- **`ws-git add`** is `stage` under git's name, which is the one agents type. `add <paths>` stages those paths, a directory (`.` included) stages what is modified under it, and `-A` (`--all`) stages everything modified. Other flags are refused with a usage line naming `stage`. An agent's `ws-git add -A >/dev/null` used to fail unseen, so its next commit took whatever happened to be modified.
+- **`ws-git add`, git's name for `stage`.** Takes paths, a directory or `-A`/`--all`.
 
 ### Changed
-- **Requires termish 0.2.1,** whose shell is closer to GNU for what agents type in the terminal:
-  - `>/dev/null` discards instead of leaving a `/dev/null` file in the session's tree, where `ws-git status` showed it and a commit swept it in.
-  - grep and sed read POSIX basic regexes without `-E`, so `\+`, `\?`, `\{n\}` and `\(...\)` work, and a bare `|` or `+` is a literal character.
-  - grep exits 1 when nothing matches.
-  - `test` and `[` exist, so `[ -f x ] && ...` works.
-- **Requires monkeyfs 0.2.5,** whose directory operations no longer depend on the working directory. A session's shell starts in `/workspace`, and from there `rmdir`, `mkdir` and `makedirs` checked a different path than the one they acted on: `rm -r` left the emptied directories behind, and `mkdir` over an existing file overwrote its metadata where it should have refused.
+- **Requires termish 0.2.1** (`>/dev/null`, POSIX regex, `test`/`[`).
+- **Requires monkeyfs 0.2.5** (cwd-independent directory operations).
 
 ### Fixed
-- **A merge in the same call as a `cd` lands.** A terminal call's writes are committed when the call ends, so `cd /workspace && ws-git merge x` reached `ws.merge` with the `cd` still uncommitted. It was refused with advice for the host ("ws.commit() them"), which an agent cannot follow. `ws-git merge`, `revert`, `cherry-pick` and `stash pop` now commit the call's pending writes first, as autocommit would at the end of the call. The agent's own rule is unchanged: a file that differs from its last ws-git commit still stops a merge, in ws-git's words.
-- **A session left mid-merge is refused rather than merged** (#172). A session whose last ws-git commit is an unresolved merge (a delegate that merged two of its own delegates' branches and answered without resolving, say) has nothing past that commit, so nothing read as uncommitted. Merged as it stood, it handed its conflict markers over as file content, and the outcome reported a clean merge with no conflicts. `Workspace.merge` and `ws-git merge` now refuse such a source, naming the paths that still carry markers and the two ways out in that session: resolve and commit, or `ws-git merge --abort`.
-- **A handler sees the same request headers however it is called** (#152). The served router and `test_app` let through only the allowlisted headers (`content-type`, `accept`, `authorization`, `user-agent`, `range`, `if-range` and `x-*`), but `ws-curl` and ws-pytest's `call` passed everything, so a handler that read `cookie` passed its tests and got nothing once served. `make_request`, which every path builds its request with, now applies the allowlist itself.
+- **A merge after a `cd` in one call lands.** `ws-git merge`, `revert`, `cherry-pick`, `stash pop` commit pending writes first.
+- **A session left mid-merge is refused as a source** (#172), naming the paths with conflict markers.
+- **Handlers see the same headers however called** (#152). `make_request` applies the allowlist.
 
 ## 0.8.6 - 2026-10-03
 
-### Changed
-- **A delegate's answer is everything it wrote.** A delegate that made a ws-git commit and then wrote more used to answer with its last commit only: the answer reported the rest as uncommitted, and `ws-git merge` refused the branch. That happened whenever a delegate committed its work and then checked it. Now, when a delegate answers, whatever it wrote past its last commit is committed for it, under a message saying the delegation mechanism made the commit, and the answer names that commit. Its own commits stay in its log as checkpoints, and a delegate need not use ws-git at all. It is not made while a merge of the delegate's own is unresolved, since its conflict markers would reach the caller unannounced. `Answer.uncommitted` is now True only then, or when the commit fails, and the refusal and advice are as before.
-- **The provider protocol's `merge` and `apply` take `ignore`,** a predicate naming paths whose copy on the receiving side stands (see below). The workspace always passes it, as it passes `at` and `info`, so a third-party provider with `caps.merge` must accept it.
-
 ### Added
-- **Authoring output is never work.** The app runtime's handler logs and test_app captures (`app/logs`, `app/screenshots`) are the agent's instruments. Publications already left them out, but every other operation counted them as work, so a capture taken after a commit made a session dirty and a delegate's screenshots landed in its parent's tree. Now (see `nontainer.ignore`):
-  - ws-git's `status`, `diff` and `commit` never list or take them, and `ws-git add` of one is refused with the reason;
-  - the uncommitted check ignores them, so `merge` does not refuse a session over captures;
-  - `ws.diff`, `ws.changed_since` and a delegate's `changed` paths leave them out;
-  - a merge or cherry-pick keeps the receiving side's copies, and a path checkout of a directory neither brings nor drops them, though a checkout that names one outright takes it;
-  - they stay on the branch that wrote them, so the agent that took a capture can still read it.
-- **`ws-git show` reads other sessions, and one file at a time.** `ws-git log <session>` printed commit ids that `show` then refused, and the only way to read a delegate's file at a commit was to put up a worktree and take it down again.
-  - **`show <session>@<commit>`** shows one of another session's commits: its message and its change, measured against that session's own graph. The commit half may be a short id or that session's own bookmark. The spelling `worktree add` prints for a store tag (`@store/tag/<name>@<commit>`) shows the tagged state, as the bare tag does.
-  - **`show <ref>:<path>`** prints one file at one state, git's `rev:path`. The ref is any the read verbs take: `HEAD`, a commit or bookmark of yours, a session (what its agent last committed), `<session>@<commit>`, or a store tag. The path is read from the root; a leading `/` means the root too, and `./` the working directory. A directory lists its entries, and a binary file says how big it is instead of printing it. Since it moves nothing, it reads at any commit a session holds, the framework's included.
-  - **A bare session name** given to `show` is refused with the two verbs that reach its commits, `ws-git log <session>` and `ws-git show <session>@<commit>`. A path a state does not hold is refused naming the state, and for a bare session it says that its work since its last commit is not there.
-- **A turn commit says which run it carried.** The agno session db committed a turn with `info={"tool": "turn"}`, so a reader of the history could find which commit held a run only by reading the stored session at every commit. The info is now `{"tool": "turn", "runs": {run_id: status}}`: the runs that write changed, in order, each with the status agno gave it. A run agno checkpointed mid-run (`checkpoint="tool-batch"`, which agno 2.x does not have) is named first as `"RUNNING"` and again when it finishes, and a run handed back unchanged is not named. The commit that landed a run is the first one that names it.
+- **Authoring output is never work** (`nontainer.ignore`). `app/logs` and `app/screenshots` stay out of ws-git, diffs and delegate changes.
+- **`ws-git show` reads other sessions and files.** `show <session>@<commit>` and `show <ref>:<path>`.
+- **Turn commits name their runs** in `info["runs"]`.
+
+### Changed
+- **A delegate's answer is everything it wrote.** Writes past its last commit are committed for it; `Answer.uncommitted` is True only mid-merge or if that commit fails.
+- **Breaking: provider `merge` and `apply` take `ignore`.** Third-party providers with `caps.merge` must accept it.
 
 ### Fixed
-- **The session db stores each run once.** Every run an agno session db stored was stored again on the next turn, so each commit after it held a second copy instead of sharing the first. Two causes, both in `nontainer.adapters.agno_db`:
-  - **Reads handed agno the stored dicts.** Runs were copied one level deep, and agno's `from_dict` rewrites nested dicts in place, so reading a session turned the stored run's message metrics into `MessageMetrics` objects. Reads now hand agno deep copies of the runs and the session record.
-  - **An unchanged run read as changed.** agno's own load and save turns some empty fields from `None` into `[]`, so a run handed back untouched differed from the stored one. Deciding whether a run changed now treats `None`, an absent key and an empty list or dict as the same.
+- **The session db stores each run once,** not again every turn.
 
 ## 0.8.5 - 2026-10-01
 
 ### Fixed
-- **An app's audio and video can be scrubbed.** Static files ignored HTTP `Range` requests and always came back whole, so a browser could not seek a media clip it had not already cached. In a scrubbed video, a clip started part-way through played from its beginning, or stayed silent until playback crossed its start. Found in a HyperFrames video whose narration went quiet after every scrub.
-  - **Static files answer a single byte range** with `206 Partial Content` and `Content-Range`, reading only the bytes asked for, and say `Accept-Ranges: bytes` on a whole response. Several ranges, another unit, or a Range with `If-Range` get the whole file, which a server may always do; a range past the end gets `416`. This covers workspace files and declared `static_assets`, in the live preview, published apps and `test_app` alike.
-  - **`range` and `if-range` reach dispatch,** and **`accept-ranges` and `content-range` reach the client**: both header allowlists were missing them.
-  - **The response caps judge the whole file,** so a file too big to serve is not served a range at a time.
-  - **Media and more image types are named:** `wav`, `mp3`, `ogg`, `opus`, `m4a`, `aac`, `flac`, `mp4`, `webm`, `mov`, plus `jpeg`, `gif`, `webp`, `avif`, `ico`, `pdf` and `csv`. They were served as `application/octet-stream`.
+- **App audio and video can be scrubbed.** Static files answer a single byte `Range` with `206`; range headers pass both allowlists.
+- **More media and image MIME types** (`mp3`, `mp4`, `webm`, `webp`, `pdf`, others) are no longer `application/octet-stream`.
 
 ## 0.8.4 - 2026-09-30
 
 ### Added
-- **The sessions helper says when an answer lands.** An embedder that wanted to act on a delegate's answer the moment it arrived had to poll `list()` or `take()`; nothing in `Sessions` notified anyone.
-  - **`on_answer(name, answer)`**, passed to `Sessions(...)` or set later, is called once for every answer recorded. It runs on the worker thread that ran the job, after the job has settled: the answer is collectable, the branch is free for a `resume`, and the child handle is closed. A cancelled job's answer is discarded, so it calls nothing. A hook that raises is logged and leaves the job alone.
-  - **`wait(timeout=None)`** blocks until an answer is waiting to be collected, or until no job is running, and returns the names with an answer waiting. It collects nothing.
-  - **`outstanding()`** lists the jobs not yet heard the end of: running, or answered and not collected.
-- **A runner's obligation is written down.** A delegate that ends its turn to wait for its own delegates replies with that waiting, and a runner that returns it as the answer strands the deeper answers. `SessionRunner` and `docs/sessions.md` now say what a runner does instead: while the child has anything outstanding, wait, run a turn that delivers the answers, and return the reply given once nothing is outstanding.
+- **`Sessions` reports when an answer lands.** `on_answer(name, answer)`, `wait(timeout=None)` and `outstanding()`.
+- **A runner's obligation is documented** in `SessionRunner` and docs/sessions.md.
 
 ### Fixed
-- **The `test_app` tool description lists `goto`.** The driver has always run `{"goto": "page.html"}`, and `docs/apps.md` documented it, but the description the model reads left it out. An agent checking a video had only a skill's example to go on, doubted it, and first seeked the player page instead of the composition. The description now names it, and says a run starts on `index.html` and that the actions after a `goto` run on the new page. A test reads the driver's own dispatch and fails if any action it runs is missing from the description.
+- **The `test_app` tool description lists `goto`.**
 
 ## 0.8.3 - 2026-09-30
 
 ### Security
-- **Removing the `dir` backend closes a way for agent code to run code on the host.** The backend kept its cache as a pickle file inside the session's own directory, where agent code could overwrite it, and loaded that file whenever the session was opened.
-  - Only stores created with `backend="dir"` were affected; the default kvgit backend never was.
-  - Reported privately; thanks to the reporter.
+- **Removing the `dir` backend closes a host code-execution hole.** Its pickle cache was agent-writable and loaded on open; only `backend="dir"` stores were affected.
 
 ### Removed
-- **The `dir` backend** (`backend="dir"`, `nontainer.providers.DirProvider`). It was unused and unversioned, and it may come back later in a new form.
-  - `Store(backend="dir")` and `workspace(..., backend="dir")` now raise `ValueError`, naming the default `kvgit` backend (on disk, or PostgreSQL with `kv=`) and `agentfs` instead.
-  - The MCP adapter's and `nontainer.migrate`'s `--backend` choices drop `dir`.
-  - The quick-start's first example uses the default backend.
-  - The provider protocol still admits unversioned providers, and the workspace's refusals on them are still tested, against a test-only provider (`tests/plain_provider.py`).
+- **Breaking: the `dir` backend** (`backend="dir"`, `nontainer.providers.DirProvider`). It now raises `ValueError`; `--backend` drops `dir`.
 
 ## 0.8.2 - 2026-09-29
 
 ### Added
-- **`test_app` takes a viewport of any size.** `viewport` accepts a new `"hd"` preset (1920×1080), a size as `"WIDTHxHEIGHT"`, or `{"width": W, "height": H}`, also sent as a JSON string, which is how models tend to send an object. The agno and MCP tools accept all of these. A page built to a fixed size, such as a slide or a 1920×1080 video stage, was cropped in every screenshot at the only sizes on offer.
-- **Screenshot grids: many frames for the context cost of one.** `{"screenshot": true, "grid": "name", "label": "…"}` collects the frame instead of returning it. When the run ends, each grid comes back as one image: its frames tiled in the order they were taken, as wide as the viewport, each captioned with its label.
-  - A grid holds up to 12 frames and takes one slot of the screenshot cap. Past 12, a frame is skipped with a note, as a screenshot past the cap is.
-  - Any actions can come between frames, so a grid covers many states of an app or many moments of a video.
-  - A run that stops at a failure still returns its grids.
-  - The driver tiles in the browser, on a fresh context, so there is no imaging dependency.
-
-### Documented
-- **Closing a served snapshot mid-request is safe; closing the store under it is not** (#164). A frozen workspace borrows its store's repository, so closing it (for instance, evicting a published version from a cache) never closes the store under a request, and a request already inside a handler finishes. That holds on every executor; on `DudExecutor`, whose guest serves one call at a time, `close()` waits for the call. A closed snapshot runs no new handlers (on `DudExecutor` a request that reaches one raises; static files still serve), so the documented eviction order is: take it out of routing, then close it. A regression test pins this on the in-process, process and dud executors, and fails if a snapshot ever closes the store's repository. `Store.close()` and `docs/api.md` state the ordering rule for the store: stop serving before closing it, since on PostgreSQL it closes the pool every snapshot reads through. The `Publication.open` docstring no longer claims each snapshot holds a store handle of its own.
+- **`test_app` viewports of any size.** `"hd"` (1920x1080), `"WIDTHxHEIGHT"`, or `{"width": W, "height": H}`.
+- **Screenshot grids in `test_app`.** `{"screenshot": true, "grid": "name"}` tiles up to 12 frames into one image.
 
 ### Changed
-- **`nontainer.workspace(...)` owns the store it builds.** The workspace holds its `Store` and closes it when it closes, instead of reaching into its provider to take the repository. The behaviour is the same (closing the workspace closes the backend under it), but it now works for any backend. `KvgitProvider._take_repo()` is gone.
-- **An unknown `viewport` is refused, not silently run at the desktop size.** The error lists the forms it accepts. A test at a size nobody asked for used to report as passing.
+- **`nontainer.workspace(...)` owns the store it builds;** `KvgitProvider._take_repo()` is gone.
+- **An unknown `viewport` is refused,** not run at desktop size.
+- **Documented close order** (#164). Closing a served snapshot mid-request is safe; stop serving before `Store.close()`.
 
 ## 0.8.1 - 2026-09-28
 
-### Changed
-- **`DudExecutor` boots its guest on first use** (#160), not at open. Opening a dud-backed workspace to read files, serve a frozen snapshot or list history no longer costs a machine (a subprocess or VM) or a full tree push. `ws.runtime.warm()` boots it ahead of the first execution.
-  - **What moves to the first execution:** the pooled VM acquire and tree push, and any failure to boot, including dud's `IsolationUnavailable` for a rung the host can't provide. Call `warm()` straight after opening to learn that at open.
-  - **Park-and-resume matches more often.** The pool is asked for the provider's state at first execution rather than at open, and a parked VM more likely holds that. Uncommitted writes still name no state, so they always get a push.
-- **Opening a workspace starts no worker** (#159). Under `isolation="process"` or `"kernel"`, the session worker that `run_python` runs on now starts with the first execution that needs it, not at open.
-  - A workspace opened to read files, serve a frozen snapshot, list history or run shell commands never starts one. In the issue's repro, opening a session and a tagged snapshot went from 4 processes to none.
-  - The sandbox and its policy are still built at open, so a bad configuration fails there as before.
-  - **What moves to the first `run_python`** is the worker's start-up latency (about 14ms with `preload_grants`), and any failure to start the worker. That includes sandtrap's `IsolationUnavailable`: `isolation="kernel"` on a platform without seccomp or Landlock, or `isolation="process"` without multiprocessing (Pyodide). `open()` no longer raises it. A host that wants to know at open, to fall back to another rung for instance, calls `ws.runtime.warm()` straight after opening.
-
 ### Added
-- **`ws.runtime.warm()`** starts the session worker now, for a host that wants the first `run_python` to pay no start-up cost, such as a chat session opening. On `DudExecutor` it boots the guest. It is idempotent, and a no-op where there is nothing to start (in-process isolation, a closed runtime). Executors may define `warm()`, and `Runtime.warm` calls it where it exists.
-- **`test_app(action_timeout_ms=)`**: how long a `click`, `type`,
-  `select` or `read` waits for its element before failing (default
-  5000, as before). It sits beside `load_timeout_ms` and
-  `assert_timeout_ms`.
+- **`ws.runtime.warm()` starts the worker now.** On `DudExecutor` it boots the guest; executors may define `warm()`.
+- **`test_app(action_timeout_ms=)`** for element waits (default 5000).
+
+### Changed
+- **Breaking: `DudExecutor` boots on first use** (#160). Boot failures move to first execution; call `ws.runtime.warm()` to see them at open.
+- **Breaking: opening a workspace starts no worker** (#159). `open()` no longer raises `IsolationUnavailable`; call `ws.runtime.warm()` instead.
 
 ## 0.8.0 - 2026-09-28
 
-### Breaking
-- **Requires kvgit 0.4.1 and monkeyfs 0.2.4.** nontainer is written
-  against kvgit's `Repo` / `Worktree` / `Snapshot` API; kvgit's `Staged`
-  is gone.
-- **Upgrading a store is one-way. Back it up first.** kvgit 0.4 reads a
-  store written by earlier nontainer releases as it is — sessions,
-  history, tags, publications and refs all read unchanged, and nothing
-  is rewritten on open — but the first commit stamps the store with
-  kvgit's storage version 4, after which nontainer 0.7.x (kvgit 0.3.x)
-  refuses to open its sessions.
-- **`KvgitProvider` is built from a kvgit `Repo`.** The constructor is
-  `KvgitProvider(repo, worktree, *, session)` rather than
-  `KvgitProvider(staged, *, session)`, and the host-side power tool is
-  `provider.worktree` (with `provider.repo`) rather than
-  `provider.staged`. A frozen provider — a workspace opened at a tag or
-  a commit — reads a kvgit `Snapshot` and has no worktree.
-- **The provider protocol gains `working_diff(commit)`**: file-level
-  changes from a commit to the live working tree, uncommitted writes
-  included. The agent's git calls it unconditionally, so a provider of
-  your own needs it — one that cannot answer raises
-  `NotSupportedError`, as the `dir` and `agentfs` providers do (and as
-  they do for `files_at`). `KvgitProvider` answers it without reading
-  the tree.
-
 ### Added
-- **A store's kvgit data can live in PostgreSQL.**
-  `Store(path, kv="postgresql://...")`, or `NONTAINER_KV` in the
-  environment (`NONTAINER_KV_TABLE` names the table, default `kvgit`),
-  with the new `postgres` extra; `kv=` also takes any kvgit `KVStore`.
-  With neither, a store keeps its data on disk under `<path>/kvgit`, as
-  before. The publication registry stays a file under `path`.
-- **`Store.repo`**: the kvgit repository a store's sessions share.
-- **`KvgitStoreDb` takes the embedder's `Store`**, and then reads the
-  repository that store's workspaces write through, whatever its
-  backend. A path still works, and finds the backend the way
-  `Store(path)` does.
-- `KvgitProvider.on(repo, session)` and `KvgitProvider.delete_in(repo,
-  sessions)`, for a repository someone else owns and closes.
+- **PostgreSQL backend for kvgit data.** `Store(path, kv="postgresql://...")` or `NONTAINER_KV` / `NONTAINER_KV_TABLE`, with the `postgres` extra.
+- **Repository accessors.** `Store.repo`, `KvgitProvider.on(repo, session)` and `KvgitProvider.delete_in(repo, sessions)`.
+- **`KvgitStoreDb` takes the embedder's `Store`;** a path still works.
 
 ### Changed
-- **Bulk reads cost the change, not the tree.** Over a networked store
-  every separate read is a round trip, and several paths read a value
-  per file.
-  - The agent's git, both `ws.index` and the `ws-git` verbs, now finds
-    what changed from kvgit's structural diff, then reads only those
-    candidates, in one batched fetch per side. This covers `status`,
-    `commit`, `checkout`, `diff`, `show`, `stash`, `log -S` and the
-    merge check.
-  - `ws-git status` on a 200-file workspace went from ~406 store reads
-    to 13, and stays flat as the tree grows.
-  - An agno conversation loads its runs in one read, and an upsert
-    compares them in one.
-  - `ws.checkout(ref, paths=)` reads only the files it takes.
-  - The dud executor tars the workspace from one `read_many` rather than
-    a read per file.
-- **`files_at` / `working_files` views offer `get_many(paths)`**: the
-  values of those paths, in one read.
-- **A `Store` holds its kvgit repository open until `close()`.** It used
-  to open the store afresh for every verb; now it opens it once and
-  every session and verb shares it — one pool of connections to a
-  networked backend. Closing a workspace leaves the store's repository
-  open; `store.close()` closes it (a store used again reopens it), and
-  with it a backend the store built from a URL or on disk — a `KVStore`
-  passed as `kv=` stays the caller's to close.
-  `nontainer.workspace(...)` hands its one-off store's backend to the
-  workspace it returns, so closing that workspace closes it.
-- **Merging a branch this session already contains writes nothing.** A
-  merge whose source is already in this session's history returns the
-  current head as its commit instead of adding an empty merge commit.
-  Every other merge still lands as a merge commit, never a fast-forward.
-- **Reading at a commit or another branch's head reads just what is
-  asked for**, rather than loading that commit's whole keyset: a file
-  at an old commit, a key from another session's head (the agno
-  session db's listing reads one record per session this way), a
-  store tag.
-- **A listing reads every file's metadata in one request** (monkeyfs
-  0.2.3), and a commit's reads no longer grow with how many files it
-  writes or deletes (kvgit 0.4).
+- **Requires kvgit 0.4.1 and monkeyfs 0.2.4** (`Repo`/`Worktree`/`Snapshot` API; `Staged` gone).
+- **Storage: upgrading a store is one-way; back it up.** The first commit stamps kvgit storage version 4, which nontainer 0.7.x cannot open.
+- **Breaking: `KvgitProvider` is built from a `Repo`.** `KvgitProvider(repo, worktree, *, session)`; `provider.worktree` replaces `provider.staged`.
+- **Breaking: providers need `working_diff(commit)`,** or must raise `NotSupportedError`.
+- **Bulk reads cost the change, not the tree.** ws-git verbs batch-read only changed paths; views gain `get_many(paths)`.
+- **A `Store` keeps its repository open until `close()`,** sharing one connection pool.
+- **Merging an already-contained branch writes nothing.**
 
 ### Fixed
-- **A publish that died before committing no longer strands its
-  version.** The reserved branch is made before the commit, so a crash
-  in between left an empty branch: a retry refused it as another
-  attempt's leftover, and `unpublish` refused it for carrying no
-  publish provenance, so that version could be neither published nor
-  cleared. An empty branch holds nobody's state; a retry now writes on
-  it and `unpublish` clears it.
+- **A publish that died before committing no longer strands its version.**
 
 ## 0.7.11 - 2026-09-26
 
-### Breaking
-- **Stores written before monkeyfs 0.1.10 need a one-time migration.**
-  Run `python -m nontainer.migrate --store <dir>` (add `--dry-run` to
-  see what it would change first), or `Store(<dir>).migrate_layout()`.
-  That layout kept every file's metadata in one `__vfs_metadata__`
-  table and nontainer's cwd under `__cwd__`, and until now every open
-  and every merge carried rules for both: an open dropped `__cwd__` and
-  fell back to its value, and both policy tables merged the old table
-  entry by entry and gave `__cwd__` to ours. Those rules are gone.
-  A writable open of a session whose head still carries either key now
-  raises `LegacyLayoutError`, naming the session, the keys, and the
-  exact migrate command; so does merging such a branch. The draining
-  they relied on never finished: monkeyfs removes a table entry only
-  when that path is written, so a branch whose old files were never
-  rewritten carried the table forever, and reopening on an older
-  version would not have cleared it. Frozen reads are not refused:
-  tags, publications, `store.resolve` and `ws.files.attach` read an old
-  tree through monkeyfs's table fallback, and `migrate_layout` never
-  rewrites a publication branch, a tag or an old commit. Such a
-  snapshot now opens at the workspace root rather than at the old
-  `__cwd__`.
-- **`Store.shared` and `HostObjectFactory` are removed.** Neither did
-  anything. `Store.shared(name)` raised `NotImplementedError` for a
-  shared plane that is no longer planned. `HostObjectFactory` was a
-  protocol exported from `nontainer` that nothing called, since the
-  sessions helper never took a factory. Code that imported or called
-  either now gets an `ImportError` or `AttributeError`.
-
 ### Added
-- **`ws.runtime.reap_idle(max_age)` drains warm view workers.** Under
-  process/kernel isolation a workspace keeps up to
-  `PythonConfig.warm_view_workers` resident workers per distinct view for
-  apps' handler dispatch, and nothing ever expired an idle one, so a host
-  holding workspaces open for its lifetime paid for every view that had
-  ever served a request — about 113MB a worker on a pandas/plotly
-  policy — until the workspace closed.
-  `Runtime.reap_idle(max_age: float) -> int` closes every view worker
-  that has sat idle for at least `max_age` seconds and returns how many
-  it closed; the next request for
-  that view starts a fresh one, which costs its start and nothing else,
-  since each view call is a fresh execution. A worker mid-request is never
-  touched, the session worker `run_python` runs on is never touched, and
-  shutdowns happen outside the pool's lock, so a concurrent request never
-  waits on one. Nothing calls it for the embedder: an expiry checked on
-  the next request would fire only under traffic, and the memory worth
-  reclaiming is held while nothing happens, so it is a verb to schedule
-  beside `sessions.sweep` and `store.clean`. It returns 0 wherever there
-  is nothing to reap — in-process isolation, a static publication, a
-  closed runtime, `DudExecutor` — so it can be called on every open
-  workspace unconditionally. Executors opt in by defining
-  `reap_idle(max_age) -> int`; `LocalExecutor` does.
-- **`Store.migrate_layout(sessions=None, *, dry_run=False)`** and
-  **`python -m nontainer.migrate [--store DIR] [--backend B]
-  [--session NAME ...] [--dry-run]`.** One commit per session head:
-  each table entry becomes the per-file row monkeyfs writes today (a
-  row already there wins), `__cwd__` moves into the filesystem's cwd
-  slot when that is empty, and both keys are deleted. A clean head is
-  left alone with no commit, so a second run changes nothing. Returns
-  a `LayoutMigration` report per session. `migrate_provider(provider)`
-  in `nontainer.migrate` does one provider, for a store built on a
-  `provider_factory`.
-- **Old commits land in the current layout wherever they become live.**
-  A restore (`ws.checkout(commit)`), a revert or cherry-pick, and a
-  fork from an old commit convert the old tree on the way in, so a
-  migrated session can still reach its own history; the old commits
-  themselves are never rewritten. A merge whose source commit
-  predates the migration takes the source's migrated head instead,
-  when no file changed in between.
-- **Handler JSON returns take numpy, pandas and stdlib data values.**
-  A `dict`/`list` return, or one as a `Response` body, encodes at any
-  depth: numpy scalars as native values, numpy arrays as lists,
-  `datetime`/`date`/`time`/`Timestamp`/`datetime64` as ISO 8601
-  strings (offset kept), `timedelta`/`Timedelta`/`timedelta64` as total
-  seconds, `Decimal` as a number, `pd.NaT`/`pd.NA` as `null`, and a
-  table (`DataFrame`, `Series`, pyarrow `Table`, an `__arrow_c_stream__`
-  object) as its rows, an array of row objects by the table rules below,
-  so `{"rows": df, "total": len(df)}` returns as it is. Each was a 500
-  before. A value still refused (a `set`, an unknown type) names its
-  path in the 500 and the `BAD RETURN` log line: `$.rows[3].tags: set
-  is not JSON-encodable (its order is unstable; return sorted(...))`.
-  Plain data encodes as fast as before and imports neither numpy nor
-  pandas.
-- **Handlers can return tables, negotiated by `Accept`.** A pandas
-  `DataFrame`, a `Series` (one column, named after it, or `0` when
-  unnamed, as `to_frame()` names it), a pyarrow `Table`, or any object
-  exposing `__arrow_c_stream__` (polars, a DuckDB relation) may be the
-  whole return. When the request's `Accept` names
-  `application/vnd.apache.arrow.stream` with q above 0 (and does not
-  rank JSON higher), it answers as an Arrow IPC stream of that type;
-  otherwise as JSON rows, the shape of `df.to_dict("records")`, encoded
-  by the same rules as any JSON return. Every response to a table return
-  carries `Vary: Accept`. The index follows one rule on both paths,
-  and the name decides: an unnamed `RangeIndex` or integer index is
-  row positions and is dropped (after a boolean filter it holds only
-  the old positions; pyarrow would keep it as `__index_level_0__`),
-  while a named index is kept, including the named `RangeIndex` pandas
-  3 makes from `set_index("id")` over consecutive ids (pyarrow would
-  drop that one). Every other index becomes columns named as
-  `reset_index()` names them: a named one keeps its name
-  (`df.groupby("year")["v"].sum()` answers with columns `year` and
-  `v`), an unnamed non-integer one becomes `index`, and a `MultiIndex`
-  gives a column per level. JSON rows for pandas never need pyarrow.
-  Arrow asked for where the handler's environment cannot import
-  pyarrow answers JSON rows when the request's `Accept` also accepts
-  JSON (with a `NOTE` line in `api.log` saying why), and 406 when Arrow
-  is the only acceptable type (with a `NOT ACCEPTABLE` line saying to
-  install pyarrow or request JSON); an `__arrow_c_stream__` object
-  asked for as JSON there is a bad return naming pyarrow. The response
-  wire gains `nt-noted-response/1` and `nt-not-acceptable/1` for these.
-  A table whose column labels cannot all be told apart once converted
-  is a bad return: duplicate labels, `MultiIndex` columns, and distinct
-  labels that meet as one JSON key or Arrow field name (`1` and `"1"`),
-  which would otherwise leave each row holding only one of the values.
-  See apps.md, "Table returns".
-- **`AppsConfig.max_binary_response_bytes`** (default 32 MB) caps any
-  body that is not text, beside `max_response_bytes` for text. Text is
-  `text/*`, JSON, XML and JavaScript types, the rule `ws-curl` already
-  used (now `nontainer.apps.contract.is_text_type`, shared by both).
-- **`ws.runtime.view_result_limit`** and **`ViewSpec.result_bytes`**.
-  An executor that can carry only so much back from one execution
-  declares it, and a view names the size of bytes value it needs
-  carried. `DudExecutor` sizes dud's `value` and `outputs` caps to
-  `result_bytes` for each view execution, up to a 64 MiB ceiling it
-  declares; at dud's defaults a handler's body could be at most about
-  6.29 MB before it was silently lost. `LocalExecutor` declares none.
+- **`ws.runtime.reap_idle(max_age)` drains idle view workers.** Closes warm view workers idle for `max_age` seconds and returns how many, for embedders to schedule beside `sessions.sweep`; `LocalExecutor` implements it.
+- **`Store.migrate_layout()` and `python -m nontainer.migrate`.** Convert each session head in one commit (`--dry-run` to preview), returning `LayoutMigration` reports; `migrate_provider(provider)` does a single provider.
+- **Old commits convert when they become live.** Restore, revert, cherry-pick and fork from a pre-migration commit migrate the tree on the way in; old commits are never rewritten.
+- **Handler JSON takes numpy, pandas and stdlib values.** Scalars, arrays, dates, `Decimal`, `NaT` and tables encode at any depth instead of a 500; a refused value names its path.
+- **Handlers can return tables, negotiated by `Accept`.** A `DataFrame`, `Series`, pyarrow `Table` or `__arrow_c_stream__` object answers as Arrow IPC or JSON rows; new `nt-noted-response/1` and `nt-not-acceptable/1` wire values.
+- **`AppsConfig.max_binary_response_bytes`** (default 32 MB) caps non-text bodies; `nontainer.apps.contract.is_text_type` decides what is text.
+- **`ws.runtime.view_result_limit` and `ViewSpec.result_bytes`.** Executors declare how much one execution carries back and views say what they need; `DudExecutor` sizes dud's caps up to 64 MiB.
 
 ### Changed
-- **NaN and ±Infinity in a handler's JSON return become `null`.** They
-  were written as the bare tokens `NaN` and `Infinity`, which are not
-  JSON: the handler answered 200 and the browser's `res.json()` threw,
-  with nothing in `api.log`. The same holds for numpy floats.
-- **Handler responses are encoded inside the sandbox, and every
-  executor answers with the same bytes.** The handler's return used to
-  cross back to the host and be encoded there; now the trailer dispatch
-  appends encodes it where the handler ran, and only `(status, content
-  type, headers, body bytes)` crosses, as a tuple of primitives the
-  host checks element by element. On `LocalExecutor` under process or
-  kernel isolation the host no longer unpickles the handler's return
-  object. A `Response` status outside 100 to 599, or an `HttpError`
-  status outside 400 to 599 (an error that would read as a success), is
-  now refused as a bad return (500, with a `BAD RETURN` line in `api.log`)
-  instead of being passed to the server. A wire value that is missing
-  or malformed answers 500 with an `ERROR` line in the log, where a
-  missing response used to answer 204. Executors other than the two
-  shipped here must carry that tuple back intact; see docs/extending.md.
-- **`AppsConfig.max_response_bytes` defaults to 10 MB, up from 2 MB,
-  and now caps text bodies only** (binary bodies have their own cap,
-  above). Both caps are enforced inside the handler's sandbox right
-  after its return is encoded, so an oversized body no longer crosses
-  back before being refused, and again on the host. Over a cap the
-  answer is still 500, but the message says what happened and what to
-  do (`JSON response is 12.3 MB, over the 10 MB limit for text:
-  aggregate or paginate on the server, or return a table and request
-  Arrow (limit 32 MB)`), in the response and as a `BAD RETURN` line in
-  `api.log`, where it used to be a bare `response too large` that
-  nothing logged. The effective cap is lowered to the executor's
-  `view_result_limit`, and the message names that limit when it binds.
-  An `HttpError`'s body is held to the same caps in the sandbox, so an
-  oversized message is refused as `HttpError message too large` rather
-  than crossing first.
-  A static file from the workspace is held to the same two caps;
-  declared `static_assets` stay exempt.
-- **Request header names are lowercased by `make_request`**, so
-  `req.headers["accept"]` finds the header whichever caller built the
-  request (`dispatch` called directly, or `call(headers=...)` in
-  `ws-pytest`), as the router and `ws-curl` already did.
+- **Breaking: old-layout stores need a one-time migration.** For stores written before monkeyfs 0.1.10, run `python -m nontainer.migrate --store <dir>`; a writable open or merge of an unmigrated head raises `LegacyLayoutError`.
+- **Storage: frozen reads of old layouts still work.** Tags, publications, `store.resolve` and `ws.files.attach` read old trees unmigrated; such a snapshot opens at the workspace root, not the old `__cwd__`.
+- **Breaking: handler responses are encoded in the sandbox.** Custom executors must carry the `(status, content type, headers, body)` tuple back intact; out-of-range statuses are a bad return, and a malformed wire value answers 500, not 204.
+- **NaN and Infinity in handler JSON become `null`.** They were bare invalid tokens that broke the browser's `res.json()`.
+- **`AppsConfig.max_response_bytes` is 10 MB, text only.** Up from 2 MB; both caps are enforced in the sandbox and on the host, bounded by `view_result_limit`, with a logged message saying what to do.
+- **`make_request` lowercases header names.** So `req.headers["accept"]` works however the request was built.
 
 ### Fixed
-- **`DudExecutor`: a handler returning a date, numpy value or `Decimal`
-  answered 204 with an empty body.** The return crossed the guest
-  boundary through dud's codec, which runs a plain `json.dumps` and
-  silently skips what that refuses, so the response never reached the
-  host. It is now encoded in the guest (see Changed), and answers what
-  `LocalExecutor` answers: `{"n": float("nan"), "d": date(2024, 1, 2)}`
-  is `200 {"n": null, "d": "2024-01-02"}` on both.
-- **`ws-pytest` with no paths collects `tests/` only.** It walked the
-  whole workspace except `app/`, although its help said `tests/`, so a
-  vendored library or copied example whose `test_*.py` could not import
-  failed a run in which every real test passed. Test files elsewhere
-  are named in a note (the first three and a count) and run when their
-  path is passed. `ws-vitest` names a `.test.js` outside `tests/` and
-  `app/` the same way instead of skipping it silently.
-- **`ws-vitest` reports no longer end with a note on where tests run.**
-  Where the browser runs is the embedder's concern and is in
-  `ws-vitest --help`; the agent was reading it after every run.
+- **`DudExecutor`: dates, numpy values, `Decimal` no longer answer 204.** Handlers now answer what `LocalExecutor` answers.
+- **`ws-pytest` with no paths collects `tests/` only.** Test files elsewhere are named in a note and run when passed; `ws-vitest` names stray `.test.js` files instead of skipping them.
+- **`ws-vitest` drops its note on where tests run.**
+
+### Removed
+- **Breaking: `Store.shared` and `HostObjectFactory` are gone.** Neither did anything; code using them now gets `ImportError` or `AttributeError`.
 
 ### Security
-- **Apps no longer serve their authoring log or screenshots.** A
-  publication copied all of `app/`, including `app/logs/api.log` (every
-  handler traceback and `print` from development, exception messages
-  included) and test_app's `app/screenshots/`, and static serving
-  refused only `app/api/`, so the live preview and every published
-  version served both to anyone holding the URL. Static serving now
-  refuses `logs/` and `screenshots/` as it refuses `api/`: on the
-  canonical path (`/./logs/api.log` and `/x/../logs/api.log` included)
-  and without regard to case, which also closes `/API/h.py` serving
-  handler source from a workspace on a case-insensitive host
-  filesystem. The refusal runs at serve time, so versions published
-  before this fix are covered. `store.publish` gains `exclude=`, which
-  leaves paths out from under `paths` and defaults to `("app/logs/",
-  "app/screenshots/")`, so new versions do not carry them at all; it is
-  recorded in the commit and on `Version.exclude`. A `static_assets`
-  prefix at `logs` or `screenshots` is refused when declared, as one at
-  `api` already was.
+- **Apps no longer serve their authoring log or screenshots.** Static serving refuses `logs/` and `screenshots/` like `api/`, case-insensitively and after path normalization, covering published versions; this also stops `/API/h.py` leaking handler source.
+- **`store.publish(exclude=)`.** Defaults to `("app/logs/", "app/screenshots/")`, recorded on `Version.exclude`; a `static_assets` prefix at `logs` or `screenshots` is refused.
 
 ## 0.7.10 - 2026-09-23
 
 ### Added
-- **`keep_aborted_run` keeps a failed or stopped run in the agent's
-  memory.** agno's history builder skips runs whose status is error or
-  cancelled, so a run cut short by a provider failure or a stop vanished
-  from what the model is shown next turn while every file its tool calls
-  wrote stayed in the workspace — memory and files disagreeing, which is
-  the divergence nontainer exists to prevent, and a model that cannot
-  remember its own work confabulates around it. The workspace already
-  treats an abort as an interrupt (nothing is undone, because undoing
-  cannot safely tell the attempt's writes from a host's concurrent
-  ones); `keep_aborted_run(db, session_id, run_id, note)` in
-  `nontainer.adapters.agno` makes the conversation match. It marks the
-  run completed and closes it with `[turn aborted early: {note} — the
-  work above this point is real and completed]`, so the model keeps
-  what it did and knows the turn ended early. agno 2.x stores runs
-  inline and `upsert_session` carries the change; agno 3 stores runs in
-  a table of their own, so the run also goes through `upsert_run`, and
-  a db that has not moved to that table (`NotImplementedError`) is
-  skipped the way agno's own storage layer skips it. Returns whether it
-  changed anything. Call it once the embedder has stopped trying to
-  finish the run — after any in-place resume, since it marks the run
-  completed.
-- **`tk.begin_turn` warns when agno restarts a run.** A run-level retry
-  (`Agent(retries=N)`) rebuilds the run from the user message and
-  forgets the failed attempt's tool calls, while the files they wrote
-  stay. On agno releases that hand pre hooks a `run_context`, a run id
-  seen twice is that restart, and the hook logs one warning per run
-  naming the fix: `Agent(retries=0)`, with `retries` set on the model
-  (`Model.retries`, default 0) to absorb transient provider errors,
-  since it retries one model call and keeps the turn's tool results. Nothing is undone; without a `run_context`
-  the hook only re-queues notes, as before.
+- **`keep_aborted_run(db, session_id, run_id, note)`.** In `nontainer.adapters.agno`: keeps a failed or stopped run in agent memory, marked completed with an aborted-early note; works on agno 2.x and 3.
+- **`tk.begin_turn` warns when agno restarts a run.** Run-level retries forget tool calls whose files remain; use `Agent(retries=0)` and set `Model.retries` for transient provider errors.
 
 ## 0.7.9 - 2026-09-22
 
-### Fixed
-- **A minted token never begins with a dash.** `mint_token()` returned
-  a raw `secrets.token_urlsafe` draw, and that alphabet includes `-`,
-  so about one token in 64 led with one. A capability token is not
-  only a secret: an embedder uses it as a publication name (the
-  session-id shape allows a leading dash, so `publish` accepts it), as
-  the prefix of the store tags minted under it
-  (`<token>/<version>/origin`), and as a word typed into ws-git verbs
-  — and every CLI reads a leading `-` as a flag, so `ws-git worktree
-  add old <tag>`, `ws-git diff <tag>` and `ws-git checkout <tag> --
-  paths` each came back a usage error for exactly the tokens that
-  drew one. What that looks like from outside is a mount that works
-  for most published apps and refuses for the occasional one, with
-  nothing about the failing app to explain it — a flake, rather than
-  the rule it is. The mint now draws again until the first character
-  is alphanumeric. Redrawing rather than rewriting the offending
-  character is what keeps the entropy of the token that is returned
-  untouched: every token handed back is a full `token_urlsafe` draw,
-  and about one draw in 64 is discarded. `_` is not a flag character
-  anywhere and stays in the alphabet. Neither the session-id shape
-  (`SESSION_ID_RE`) nor the ws-git argument guards moved: a leading
-  dash is a legal session id, and a CLI is entitled to read a leading
-  dash as a flag. The name is what had no business carrying one.
-
 ### Changed
-- **The inbox hook to bind is chosen by the tool entrypoints, not by
-  `run()` versus `arun()`.** The guidance in `docs/api.md` and in the
-  hook docstrings said to bind `tk.deliver` on a `run()` loop and
-  `tk.adeliver` on an `arun()` one, and that was wrong. agno picks the
-  execution path per TOOL CALL, in `Model.arun_function_call`: an
-  async tool entrypoint runs inline on the event loop, and a sync one
-  is handed to `asyncio.to_thread` — unless one of the tool hooks is a
-  coroutine function, in which case the whole call runs inline on the
-  loop too. Every tool `WorkspaceTools` registers is sync, so
-  `tk.adeliver` on an `arun()` loop blocked the event loop for the
-  length of each tool call: a cancel could not reach the run, and
-  nothing else on that loop ran. The rule is to match the hook to the
-  tool entrypoints. `tk.deliver` is right whenever the tools are sync,
-  which is always for `WorkspaceTools`, under `arun()` as much as
-  under `run()`; `tk.adeliver` is for an embedder that registers async
-  tools of its own beside the toolkit, and only then. No behavior
-  changed — the two hooks do what they always did — and a test now
-  pins the agno seam that decides.
+- **Inbox hook follows tool entrypoints, not `run()`/`arun()`.** Docs fix: `tk.deliver` suits `WorkspaceTools` (always sync) under `arun()` too; use `tk.adeliver` only beside your own async tools.
+
+### Fixed
+- **Minted tokens never begin with a dash.** `mint_token()` redraws until the first character is alphanumeric, so a token used as a publication name or tag never reads as a CLI flag.
 
 ## 0.7.8 - 2026-09-22
 
 ### Added
-- **A mid-run inbox: words reach a model that is already working.**
-  An agent loop is opaque while it runs — a human, or an embedder
-  acting for one, cannot get a sentence to the model until the run
-  ends, so a correction that arrives a second late waits for the work
-  it was meant to redirect to finish. The seam that does exist is the
-  tool result, and `nontainer.inbox.Inbox` is a thread-safe queue
-  anyone can `put()` into from any thread; the agno adapter's
-  `tk.deliver` / `tk.adeliver` tool hooks drain it at each tool result
-  and append the notes behind a visible `---- inbox ----` mark, closed
-  by a trailer carrying the block's length (`split()` cuts the block
-  back off for a transcript or a compression pass, and recognises it
-  by that trailer, so raw output quoting the mark is left whole). Delivery is at a tool result and never sooner: nothing is
-  interrupted, no message the model has read is rewritten, and a run
-  that ends without another tool call leaves its notes pending for the
-  next turn. Each note is framed with one line naming who is speaking
-  — `principal` (whoever this session works for: the person at the
-  keyboard, or the parent, for a delegate) or `mechanism` (the
-  machinery around the agent, framed as evidence rather than
-  instruction) — because text inside a tool result otherwise reads as
-  the tool's output, and the two carry different authority. Two hook
-  spellings because agno has two chains: the sync one skips a
-  coroutine hook, the async one hands a hook a coroutine `next_func`
-  a sync hook cannot drive. `tk.begin_turn` (a pre hook) re-queues
-  notes a retried attempt delivered and then threw away, and
-  `tk.end_turn` settles them.
-- **`Sessions.take()`: every delegate answer that landed and has not
-  been collected.** The collection point for an embedder that pushes,
-  in landing order. It touches each job exactly as `result` does and
-  marks it collected, and the two share that one mark, so an embedder
-  that reads answers between turns and takes them mid-turn never hands
-  the same answer over twice; cancelled and expired jobs never appear,
-  and a resumed delegate appears again when its new answer lands. With
-  the delivery hooks wired, a delegate's answer reaches the parent
-  mid-turn — as a `mechanism` note in the next tool result — instead
-  of waiting for the parent to ask on a later one.
+- **Mid-run inbox: `nontainer.inbox.Inbox`.** A thread-safe queue whose notes the agno `tk.deliver` / `tk.adeliver` hooks append to each tool result, framed as `principal` or `mechanism`; `split()` strips the block.
+- **`tk.begin_turn` / `tk.end_turn` hooks.** Re-queue notes a retried attempt threw away, then settle them.
+- **`Sessions.take()`.** Returns every landed, uncollected delegate answer in landing order, sharing the collected mark with `result`.
 
 ## 0.7.7 - 2026-09-20
 
-### Changed
-- **A binary read is ranged now, in-process, under process isolation,
-  and on any filesystem a workspace mounts.** The floors move to
-  `termish>=0.2.0`, `monkeyfs>=0.2.2` and `sandtrap>=0.4.0`, which
-  carry one protocol change between them: `FileSystem.read` takes
-  `(path, offset=0, size=-1)`, a binary `open()` is a lazy
-  block-cached stream over it instead of a `BytesIO` holding the whole
-  file, and sandtrap's process-isolation RPC bridge forwards both
-  arguments rather than materializing the file at `open()`. In a
-  handler's own terms: `pd.read_parquet(path, columns=[...])` hands
-  pyarrow a file object, pyarrow reads the footer and the two column
-  chunks it asked for, and only those bytes move. Two of twenty
-  columns was already 8% of the reads; it was 100% of the traffic,
-  because the whole-file buffer discarded a ranged access pattern that
-  was already there. Seeking to the end costs nothing: the length
-  comes from `stat()`. The defaults are the old whole-file read byte
-  for byte, so no caller changes — but a filesystem that does not
-  *accept* the two arguments raises `TypeError` the first time
-  anything opens a file in binary mode, which is what makes these
-  floors hard rather than polite.
-- **What a pipe carries, and what `>` writes, is bytes.** `cat
-  bin.dat > copy.dat` on a 256-byte file holding every byte value used
-  to write 512 bytes, because the payload between stages was `str` and
-  every byte that was not valid UTF-8 became the encoding of U+FFFD on
-  the way through. It writes 256 now. `ctx.stdin` and `ctx.stdout` are
-  still text streams, so a command that writes text needs no change;
-  `ctx.stdout.buffer` is the binary path, which nothing had before —
-  an injected command producing binary had no way to emit it.
-- **A control-flow keyword says what it is.** `for f in a b; do echo
-  $f; done` used to produce three unrelated failures, none of which
-  said that loops are unimplemented; it now raises one `ParseError`
-  naming the keyword and pointing at `xargs` or `find -exec`. `if` /
-  `then` / `else` point at `&&` and `||`. The rule is command position
-  only, so `echo for` and a file named `for` keep working.
-- **`printf` is a builtin**, with `%s`, `%d`, `%c`, `%%`, backslash
-  escapes and POSIX format reuse. Agents type `printf '...\n' > f` as
-  a matter of course and were getting `command not found`.
-- **A platform that refuses worker processes says so.**
-  `isolation="process"` where the OS has no worker primitive raises
-  sandtrap's `IsolationUnavailable` naming the platform, instead of a
-  bare `OSError` out of `multiprocessing` that reads as a bug in the
-  sandbox.
-
 ### Added
-- **`test_app` runs through an `AppDriver`.** Verification was one
-  490-line Playwright coroutine that also decided what an action means,
-  how a refusal reads and which stack frame is the agent's. It is a
-  protocol now: a driver takes one `DriveSpec` — the coerced actions,
-  the resolved viewport, the policy and script hosts, the timeouts, and
-  **how the app is served**, a callable into the same dispatch the
-  published router uses — and answers one `DriveReport`, raw
-  (per-action results, console lines with repeat counts, unparsed
-  stacks, refused requests, policy violations, screenshot bytes).
-  Everything the agent reads is written on the near side of it, which
-  is also where screenshots are now saved and stacks annotated, once
-  the run is over rather than mid-run. The invariant that makes this
-  worth having: the driver's dispatcher is the dispatcher the
-  publication will use, so preview and publication share a runtime by
-  construction. `AppsConfig.driver` sets one, `Runtime.app_driver`
-  lets an executor offer one, and the fallback is the headless Chromium
-  that was there before — so no run changes today. `ws-vitest` is the
-  second consumer, driving the same protocol with a hermetic spec of
-  its own.
-- **A publication with no handlers is served as files, and pays for no
-  executor.** Most published artifacts have no backend, and every
-  frozen open built a sandbox anyway. A published tree with no `.py`
-  file directly under `app/api/` — an `_`-prefixed module there is a
-  helper no URL routes to, not a handler — has nothing to execute, so
-  `Publication.open` now opens it with no executor at all: no sandbox,
-  no isolation worker, no warm view worker, and a threat model that is
-  the origin and nothing else. This is the DEFAULT; a handler is what
-  opts a publication into the executor-backed tier. Reads, the index,
-  tags and history are the same workspace either way,
-  `ws.runtime.executes` says which tier a handle is on, and a `/api/`
-  request against a static one is the 404 a path with no endpoint
-  behind it always was. Every execution raises instead, with one
-  message that names the publication and hands over the ref to resolve
-  if running code against the tree is what was wanted. The execution
-  settings still go at the open and are simply unused there
-  (`executor_factory` is never called), because an embedder serves
-  every publication from one table and should not have to know a
-  tree's tier before opening it. `store.resolve` and `store.tags.at`
-  are untouched: they name arbitrary states, and a frozen snapshot of
-  a session is a legitimate thing to run code against.
-- **`ws.files.read(path, offset, size)`** — the host-side file read
-  takes the same byte range the filesystem underneath does, so the
-  public API is not the one place the range stops. `offset` counts
-  from the start and must not be negative, a negative `size` reads to
-  the end, a read at or past the end returns `b""`, and one running
-  past the end is truncated to what is there.
-- **A test that termish and monkeyfs declare one filesystem
-  protocol** (`tests/test_fs_protocol.py`). Both libraries declare a
-  structural `FileSystem` and declare the same one — sixteen methods,
-  the same signatures, a field-for-field identical `FileMetadata` —
-  and neither imports the other, so no assertion inside either can
-  hold them to it. nontainer is the first place both are installed at
-  once. The test compares the sixteen signature by signature
-  (annotations as text; both modules are written under `from
-  __future__ import annotations`), compares the two `FileMetadata`
-  records field by field, asserts `read`'s range by parameter name and
-  default so that two libraries reverting together would still fail,
-  and runs BOTH libraries' shipped conformance kits —
-  `termish.fs.check_filesystem` and `monkeyfs.check_filesystem` —
-  against `termish.MemoryFS`, `monkeyfs.VirtualFS`,
-  `KvgitProvider.fs`, `DirProvider.fs` and `AgentFSProvider.fs` where
-  the extra is installed. The kits found three monkeyfs divergences on
-  the way in -- `VirtualFS.makedirs` returned silently for a directory
-  that already exists where `exist_ok=False` asks for `FileExistsError`,
-  `IsolatedFS.list_detailed` spelled `FileInfo.path` relative to the
-  filesystem root rather than to the queried directory, and a recursive
-  `list_detailed` on `VirtualFS` and `MountFS` put the entry's relative
-  path in `FileInfo.name` where the field is the basename -- settled in
-  monkeyfs 0.2.1 and 0.2.2, which is why 0.2.2 is the floor: every
-  filesystem in the table passes both kits with nothing expected to
-  fail.
+- **`test_app` runs through an `AppDriver`.** A driver takes a `DriveSpec` and returns a `DriveReport`, serving through the publication's own dispatch; set via `AppsConfig.driver` or `Runtime.app_driver`, default headless Chromium.
+- **Handler-less publications are served as static files.** `Publication.open` builds no executor when `app/api/` has no handler; `ws.runtime.executes` says which tier, and execution raises.
+- **`ws.files.read(path, offset, size)`.** Host-side reads take a byte range.
+
+### Changed
+- **Requires termish 0.2.0, monkeyfs 0.2.2 and sandtrap 0.4.0** (ranged binary reads).
+- **Breaking: `FileSystem.read` takes `(path, offset=0, size=-1)`.** Binary `open()` is a lazy ranged stream; a custom filesystem without the two arguments raises `TypeError`.
+- **Pipes and `>` carry bytes.** Binary data no longer turns into U+FFFD; `ctx.stdout.buffer` is the new binary path for commands.
+- **Control-flow keywords raise a clear `ParseError`.** `for`, `if` and friends in command position name the keyword and point at `xargs`, `find -exec`, `&&` or `||`.
+- **`printf` is a builtin.**
+- **Missing worker processes raise `IsolationUnavailable`.** Instead of a bare `OSError` under `isolation="process"`.
 
 ### Fixed
-- **The AgentFS filesystem answers the conformance kits.** Two
-  divergences the drift test found once the `agentfs` extra was
-  installed: `makedirs(exist_ok=False)` on an existing directory
-  returned quietly, because the walk that forgives an existing parent
-  also forgave the target, and `list_detailed` put a bare relative
-  name in `FileInfo.path` where every other backend puts the queried
-  directory joined with the entry. Both now match: `makedirs` and
-  `mkdir` raise `FileExistsError` with `EEXIST` for a taken path, and
-  `exist_ok` forgives an existing directory and not a file in the way;
-  `list_detailed` answers in the namespace it was asked in, relative
-  for a relative query and absolute for an absolute one.
-- **A directory named like a handler is a 404, not a 500.** The
-  handler lookup asked whether `app/api/<name>.py` existed, so a
-  directory carrying that name passed the check and failed the read
-  of it as source. The lookup asks `isfile` now, the same question the
-  static-tier detection asks of the published tree.
-- **A view placed a nested entry of a recursive listing by the wrong
-  path.** `ViewFS.list_detailed` decided whether an entry was reachable
-  by joining the queried directory onto `FileInfo.name`, which only
-  located a nested entry while the backend put the entry's relative
-  path in `name` -- monkeyfs's in-memory backend did, its real-directory
-  backend never did, so over a dir-backed workspace `hidden/deep/x.txt`
-  and `seen/deep/x.txt` were told apart by luck. `FileInfo.path` is the
-  field that says where an entry sits, on every backend, and the filter
-  reads it now. `SubtreeFS.list_detailed` handed back the source's
-  spelling of each path, under the prefix the view exists to hide; it
-  translates them the way every other path it returns is translated.
-- **`ws-curl` writes a binary body as bytes.** The response body went
-  out as text, so every byte that is not valid UTF-8 became U+FFFD:
-  `ws-curl $APP_ORIGIN/logo.png > logo.png` wrote a transliteration of
-  the PNG, three bytes per undecodable one, rather than the PNG. It
-  goes through `stdout.buffer` now, and the terminating newline — a
-  convenience for a transcript of text — is added only for a body that
-  is text, because a byte appended to a payload corrupts the file it
-  was redirected into.
-- **A `ws-*` verb can emit binary on the dud rung.** The off-rung
-  context the relay builds gave the command a `StringIO` for stdout,
-  which has no `.buffer`, so a verb writing bytes died there with an
-  `AttributeError` while working on the terminal rung. It is termish's
-  own stream type now, so text and bytes land in the order they were
-  written. The answer triple is JSON and its stdout is still text, so
-  undecodable bytes are replaced at that boundary — the rung's limit,
-  not the command's; a binary payload travels as a captured file. An
-  output budget is measured against the bytes rather than against
-  their transliteration.
-- **`AgentFSProvider`'s filesystem accepts the byte range.** Its
-  adapter declared `read(self, path)`, so under the new floors the
-  first binary `open()` against an AgentFS-backed workspace would have
-  raised `TypeError`. It takes `offset` and `size` and honours them by
-  slicing, which is the whole of what AgentFS can do — the SDK reads a
-  whole file or nothing — but slicing is the required behaviour, not
-  an optimization: a caller handed the file where it asked for the
-  tail reads the wrong bytes at the wrong position.
+- **AgentFS filesystem fixes.** `makedirs`/`mkdir` raise `FileExistsError` for a taken path, `list_detailed` answers in the queried namespace, and `read` accepts the byte range.
+- **A directory named like a handler is a 404.** It was a 500.
+- **Views place nested listing entries correctly.** `ViewFS` and `SubtreeFS` `list_detailed` now use and translate `FileInfo.path`.
+- **Binary output fixes.** `ws-curl` writes binary bodies as bytes (newline only for text); `ws-*` verbs can emit binary on the dud rung.
 
 ## 0.7.6 - 2026-09-16
 
 ### Added
-- **`AppsConfig.handler_example`: the example handler an embedder can
-  replace.** The apps notes show one handler before the rules, and that
-  example is what an agent copies for its first endpoint — including
-  where it keeps state, which the built-in block keeps in `cache`. An
-  embedder whose handlers must use a different store (an injected
-  database) could only correct that from `apps_primer` underneath, and
-  a rule under an example loses to the example. `None` keeps the
-  built-in block, `""` omits it, a string replaces it whole — the same
-  three states as `frontend_notes`, with `__WS__` substituted the same
-  way. What is nontainer's own contract stays either way: only verb
-  functions are routed, the return shapes, `HttpError`, and the
-  read-only filesystem and cache a GET handler runs under.
+- **`AppsConfig.handler_example`.** Replaces the example handler in the apps notes: `None` keeps the built-in, `""` omits it, a string replaces it.
 
 ### Changed
-- **Each rule in the agent-facing text has one home.** The tool
-  descriptions ride on every request, so a sentence repeated across
-  them is paid every turn: the unit-test tier was stated three times
-  (terminal, run_python, twice over for JavaScript) with different
-  details each time, and `from host import db` was explained in two
-  places. Each description now states its rule once and defers — the
-  test contract to `ws-pytest --help` / `ws-vitest --help`, which
-  gained every detail the descriptions dropped (`vi.stubFetch`, the
-  hermetic run, one test function per behaviour). Frontend tests live
-  in `tests/`, never beside the module under `app/`, because `app/` is
-  what publishes: the option is gone from the descriptions, from
-  `ws-vitest`'s own messages and from the docs, and a `.test.js` under
-  `app/` is still collected and still named in the run, so a misplaced
-  test runs rather than silently vanishing. The `test_app` description
-  spells the app's paths from the workspace root
-  (`/workspace/app/logs/api.log`), the way the terminal notes do,
-  rather than as a bare `/app/...` that no agent can tail;
-  `render.test_app_description(ws)` renders it and the adapters pass
-  their workspace.
+- **Agent-facing rules stated once.** Tool descriptions defer test details to `ws-pytest --help` / `ws-vitest --help`; frontend tests belong in `tests/`; new `render.test_app_description(ws)`.
 
 ## 0.7.5 - 2026-09-16
 
-### Fixed
-- **A nested mount's contents reach a dud guest.** The tree pushed to
-  the guest is the composed filesystem's recursive listing, which
-  stopped at an inner mount point, so a mount inside another mount
-  (`/workspace/data/out` under `/workspace/data`) started the guest with
-  no directory and no files. monkeyfs 0.1.11 lists what a read at each
-  path serves, however deeply the mounts nest, and the nested-mount
-  tests now read the inner files in the guest before writing beside
-  them.
-- **A handler's write into a read-only point answers the request
-  instead of raising out of dispatch.** An app handler runs under the
-  same rule as any other code: in-process a write into an attachment or
-  a read-only mount raises where it happens, and dispatch turns that
-  into a 500 with the message in `app/logs/api.log`. On a rung with a
-  tree of its own the write succeeded in the guest, and the view path
-  applied its harvest straight to the workspace filesystem — so the
-  `PermissionError` came out of `dispatch()` and the request got no
-  answer at all. The mutating view now harvests through the same split
-  every other call uses: the refused paths are dropped, the handler's
-  writes beside them land as they do in-process, and the refusal
-  becomes the call's error — the same 500, the same api.log entry, and
-  the same per-request rollback the in-process rung gives. The refusal
-  leads that error: in-process the handler stops at the write, while in
-  a guest it runs on and may fail again for a reason of its own, and
-  reporting the later failure instead would have the same handler fail
-  two different ways depending on the rung. The later exception is kept
-  under the refusal, so nothing is lost.
-- **A guest write into a read-only mount is refused, not raised.** A
-  read-only `Mount` is a host directory the session may only read, and
-  the in-process rung refuses a write to it where the write happens. On
-  a rung with a tree of its own the write succeeded in the guest and
-  the harvest carried it back into a read-only filesystem, raising
-  `PermissionError: Read-only filesystem: makedirs() modifies the
-  filesystem` out of `ws.terminal()` — the same crash an attachment
-  used to give, from the other kind of read-only point. The harvest now
-  asks one question, "which points refuse writes", and both kinds
-  answer it: create, modify, delete and makedirs under either are
-  dropped and named in the refusal the local rung gives, on an errored
-  result, and the message says which kind of point it was (`inside the
-  read-only mount at /workspace/ro` versus `inside the attachment at
-  /workspace/peek`). Writes outside the point land and commit with the
-  call as before, and a writable `Mount` still takes guest writes
-  straight through to the host directory — including one nested inside
-  a read-only mount, since the point that decides is the most specific
-  one over the path, the same one the composed filesystem routes the
-  write to.
-- **A `ui` value whose serializer raises writes no file on any rung.**
-  The set of values that render is closed, and the rule for one that
-  blows up on the way to a file is a problem note and nothing else — a
-  note sitting in the artifact slot, announced as an artifact, tells the
-  agent its figure arrived. The guest-side serializer wrote
-  `ui/<name>.txt` anyway, so the same figure failed two different ways
-  depending on the rung. It now writes nothing and reports the value in
-  a diagnosis binding of its own, and the diagnosis comes from the
-  function the host renderer uses, so an agent reads one explanation
-  wherever the value was serialized. That binding is also the only
-  place the host reads a `ui` diagnosis from: the notes used to ride
-  the values themselves, where a dict an agent assigned could wear the
-  shape and have a note of its own choosing read back as the harness
-  speaking.
-- **A guest write into an attachment is refused, not raised.** An
-  attachment is a frozen tree mounted read-only, which the in-process
-  rung refuses where the write happens. A rung that runs against a tree
-  of its own holds an ordinary copy there, so `echo x > peek/note.md`
-  succeeded in the guest and the harvest carried it back into a
-  read-only filesystem — `PermissionError` out of `ws.terminal()`, a
-  tool that never raises for command failure. The harvest now splits at
-  the attachment points: paths inside one are dropped and named in the
-  same `Read-only filesystem: write() modifies the filesystem` refusal
-  the local rung gives, on an errored result, while the call's writes
-  outside the attachment land as usual — committed by that call, under
-  that call's tool, the way an ordinary errored call commits what it
-  wrote — and the guest's copy is rebuilt from the attachment on its
-  next execution.
-
 ### Changed
-- **The kvgit floor is 0.3.9.** The merge base a metadata row's size is
-  recomputed against comes from kvgit's public `merge_base`, which is
-  the base its own merge uses, in place of a reach into its private
-  finder; that base is now the true lowest common ancestor in
-  merge-heavy histories. A commit that loses the fast-forward race
-  retries through the merge path instead of raising, so a lost race is
-  never reported as a conflict.
-- **The monkeyfs floor is 0.1.11.** A recursive listing of the composed
-  filesystem walks into every nested mount, which is what puts a nested
-  mount's files on a guest rung.
+- **Requires kvgit 0.3.9** (public `merge_base`; a lost fast-forward race retries via merge).
+- **Requires monkeyfs 0.1.11** (recursive listings walk nested mounts).
+
+### Fixed
+- **Nested mounts reach a dud guest.**
+- **Guest writes into read-only points are refused, not raised.** Writes into an attachment or read-only `Mount` are dropped and named in an errored result, as in-process; other writes land.
+- **Handler writes into read-only points answer 500.** They raised out of `dispatch()` on guest rungs; now the same 500, `api.log` entry and rollback as in-process.
+- **A `ui` value whose serializer raises writes no file.** On any rung; the diagnosis comes from a binding of its own, not the value.
 
 ## 0.7.4 - 2026-09-16
 
 ### Added
-- **`ws-pytest --help` states what a test gets without importing it.**
-  The help now carries the whole test-side contract — `call(module,
-  method=..., params=..., **objects)` with the response it returns,
-  what a keyword may stand in for and why a keyword the handler never
-  reads is refused, `Request` / `Response` / `HttpError` as bare names,
-  and `except HttpError` as the spelling of an exception check — with a
-  handler and its test as the example. It was written down only in the
-  docs and the tool description before, so the agent that types the
-  verb had to be told about `call` by someone else or discover it by
-  accident. The tool description now defers to the help rather than
-  restating a second copy of the contract.
-- **`types`, `dataclasses` and a narrowed `typing` in the default
-  stdlib grant.** The vocabulary for describing a record, which agent
-  code reaches for constantly and a test reaches for to build a
-  stand-in: `SimpleNamespace` and `MappingProxyType` from `types`, the
-  `dataclass` decorator with `field`/`fields`/`asdict`/`astuple`/
-  `replace`/`InitVar`/`KW_ONLY`, and `typing`'s annotation names
-  (`Any`, `Optional`, `Protocol`, `TypedDict`, `NamedTuple`, …).
-  Each grant is an allowlist, and three names are deliberately outside
-  it: `typing.get_type_hints` and `typing.ForwardRef` both `eval` a
-  string annotation host-side with real builtins, which would turn an
-  annotation an agent wrote into code the sandbox never sees (an
-  annotation nothing evaluates is inert, which is what makes the rest
-  safe); `dataclasses.make_dataclass` interpolates field names it was
-  handed as strings into source it `exec`s, while the decorator reads
-  a class body, where a name is an identifier by construction. The
-  rest of `types` is the interpreter's own machinery — `FunctionType`,
-  `CodeType` — and stays refused.
+- **`ws-pytest --help` states the whole test contract.** `call(...)`, `Request` / `Response` / `HttpError` and an example; the tool description defers to it.
+- **`types`, `dataclasses` and narrowed `typing` granted.** `typing.get_type_hints`, `typing.ForwardRef`, `dataclasses.make_dataclass` and interpreter types stay refused, since they evaluate strings host-side.
 
 ### Changed
-- **sandtrap floor is 0.3.7.** Its dunder allowlist reads `__name__`,
-  `__qualname__`, `__module__` and `__doc__` as the exact strings they
-  are, without running a host descriptor — so `type(e).__name__`, the
-  way a test says which error came back, is no longer an
-  `AttributeError`. `__class__` and `__dict__` still are.
-- **`from host import call` is how a test reaches a handler.** The
-  helper was a bare name the composition put in scope, which nothing
-  in the workspace announced: an agent reading `from host import db`
-  in a handler had no reason to think a test could ask for anything
-  the same way. It is now imported with the same sentence, rewritten
-  in the composed copy to the closure the preamble defines (it closes
-  over the handlers composed into that one program, so no module can
-  hand it out) on the statement's own line, so line numbers hold. A
-  bare `call` with no import still works, and a handler that imports
-  it gets the ImportError a request gives it.
+- **Requires sandtrap 0.3.7** (`type(e).__name__` readable).
+- **`from host import call` reaches a handler in tests.** A bare `call` still works.
 
 ### Fixed
-- **A frozen record hashes whatever its metadata holds.** `TagInfo`
-  raised on `hash` for any tag carrying info, since its `info` dict took
-  part in the hash; every mapping field on an exported frozen record
-  (`TagInfo`, `CommitInfo`, `Job`, `Answer`, `PythonResult`,
-  `PythonConfig`, `StagedDiff`, `ExecutionContext`) is now left out of
-  the hash and still compared, and a test pins the rule for every such
-  record the package exports.
-- **A handler's own global no longer hides the session's object from
-  `host`.** `db = "local"` beside `import host` left `host.db` reading
-  the module's string, or missing altogether, where a request keeps the
-  two apart. The composed `host` module is now built from the objects
-  the call resolved — the session's, with the test's substitutions over
-  them — handed to the handler under a name no module can bind.
-- **The `host` module a test composes is read-only, as the real one
-  is.** A handler that assigns to `host.db` gets a 500 from a request —
-  the module is rebuilt per execution, so a write would be a channel
-  between two of them — and the stand-in `call` builds refused
-  nothing, so such a handler passed a test and failed the wire tier.
-  It now raises the same sentence.
-- **`call(db=fake)` substitutes what a handler imports, too.** A
-  handler is meant to reach its dependencies with `from host import
-  db`, and that was the one spelling a test could not fake: the import
-  binds the name, so `call` saw a handler that read nothing outside
-  itself and refused the keyword. The composed copy of a handler now
-  has its `host` imports rewritten — `from host import db` to the
-  substitution already in scope, `import host` to a `Host` built from
-  the same names — so both spellings and `host.db` read the fake,
-  line numbers unchanged. A handler that reads neither is still
-  refused a keyword, because a fake nothing reads proves nothing.
-- **A handler module a test imports runs the way a request runs it.**
-  `import app.api.summary` reached the module through the workspace's
-  import loader, which ran the file on its own source alone: `HttpError`
-  was an undefined name there, so every sad path died of `NameError`
-  inside the handler and a test had to shim the class by hand. Such a
-  module is now composed into the test program, as a handler `call`
-  reaches already is, with the contract and the session's names in
-  scope from its first line — so a constant built at module scope
-  works too. The import statement is what runs it: where it is
-  written, in the file's order, inside the function or branch that
-  holds it, once per module however many times it is imported. Only
-  the modules a URL can reach; a library under `app/api/` is imported
-  the ordinary way, as dispatch leaves it. Two spellings are refused
-  by name rather than silently meaning less than they say: setting an
-  attribute on such a module (the set would reach nothing the module
-  reads) and `from app.api.x import *` (the names are not knowable
-  before it runs).
+- **Frozen records hash despite metadata.** Mapping fields on `TagInfo`, `CommitInfo`, `Job` and other exported records are left out of the hash but still compared.
+- **`host` fixes.** A handler's own global no longer hides the session's object; the test-composed `host` is read-only; `call(db=fake)` substitutes `from host import db` and `import host` too.
+- **A handler module a test imports runs as a request does.** Contract names like `HttpError` are in scope; setting its attributes and `from app.api.x import *` are refused.
 
 ## 0.7.3 - 2026-09-15
 
 ### Fixed
-- **A full-inherit fork carries the conversation as the CHILD's.** The
-  stored session record is rebound to the session the fork makes, with
-  the session the conversation came from kept in
-  `session_data["forked_from_session_id"]`. The copy still named the
-  parent before, and a branch holds one session's conversation: an
-  agno embedder's child read no history for its own id and could
-  persist none of its turns, so every full-inherit delegate —
-  `sessions.ask(inherit="full")`, `ws-git branch`, `ws.fork` — started
-  with the memory it was given invisible to it. `fork_session` did the
-  rewrite itself and behaves as before.
+- **A full-inherit fork carries the conversation as the child's.** The record is rebound to the child, with `session_data["forked_from_session_id"]` naming the source, so delegates see their inherited history.
 
 ## 0.7.2 - 2026-09-15
 
 ### Added
-- **A store tag is a ref.** The verbs that read one take a store tag
-  wherever they take `<session>@<commit>`: `ws-git worktree add <dir>
-  <tag>`, `checkout <tag> -- <paths>`, `diff <tag>`, `log <tag>`,
-  `show <tag>` (which reads the tagged state whole: the ws-git commit
-  it stands on, then anything that landed after it), and on the host `ws.expand_ref`, `ws.files.attach`,
-  `ws.checkout(tag, paths=[...])` and `store.resolve`. Such a ref names
-  a commit and no session — it carries the tag where a session would go
-  and reads frozen — so a tagged state is still mountable, takeable and
-  diffable after the session that reached it is deleted, which is what
-  tagging one is for. A bare name is a session first and a store tag
-  second; the verbs that write to a named branch (`merge`,
-  `cherry-pick`) take none, since a tag has no branch to come from.
-  Such a ref stays exact: `store.resolve` refuses one whose tag has
-  since been deleted and added again, naming both commits, because a
-  repointed name is a different state under the same word. A new
-  store-scoped tag name may hold neither `@` nor `:`, the delimiters
-  the ref grammar owns — slashes stay fine, so a publication's
-  `<name>/<version>` is unaffected — and a store already holding a
-  name with one of those keeps it: it lists and opens by name as
-  before, and only cannot be spelled as a ref.
-- **`inherit="full"` with `fork_from`.** A delegate forked from another
-  fork point can be given the conversation stored there: it is then the
-  agent that was at that commit, and the task is its next turn — how an
-  agent asks the author of a published app for another one like it,
-  with the origin commit held by a store tag long after its session is
-  gone. `resume` still refuses a non-fresh inherit, because a resumed
-  child keeps the conversation it has.
+- **A store tag is a ref.** `ws-git` `worktree add`, `checkout`, `diff`, `log`, `show`, plus `ws.expand_ref`, `ws.files.attach`, `ws.checkout` and `store.resolve` take tags, readable after their session is deleted.
+- **`inherit="full"` with `fork_from`.** A delegate forked from another point gets the conversation stored there; `resume` still refuses a non-fresh inherit.
+
+### Changed
+- **New store tag names may not hold `@` or `:`.** Existing names keep working but cannot be spelled as refs.
 
 ## 0.7.1 - 2026-09-15
 
 ### Fixed
-- **`sessions keep` keeps.** The tool's `keep` action reported the job
-  kept and never called the helper, so the flag the retention sweep
-  honours was never set from the tool; an agent that typed the verb had
-  its branch swept anyway. The action now promotes the job, and a test
-  holds what the tool says to what the table records.
+- **`sessions keep` keeps.** The tool's `keep` action now promotes the job, so the retention sweep honours it.
 
 ## 0.7.0 - 2026-09-14
 
-**The agent's own tools.** ws-git grows the git concepts an agent
-reaches for — worktrees, short commit ids, the view it was given, `log
--S`, `revert`, `cherry-pick`, `stash`, `merge --abort` and `tag` — and
-two verbs join it a tier below `ws-curl` and `test_app`, where a
-question about a function is asked of the function: `ws-pytest` where
-the agent's code runs, `ws-vitest` in a browser page reaching nothing
-but the files under test. Delegation learns where a delegate starts,
-how to give one another task, and what becomes of its branch — an idle
-TTL the embedder sweeps. The seams have public names, one relay carries
-every `ws-*` verb into a guest, a test holds the package's layering, the
-`ui` set closes, and the docs are re-cut by audience.
-
 ### Added
-- **ws-git's new verbs.** Git's spelling on the left, what it does here
-  on the right; `ws-git help` and `docs/ws-git.md` carry the rest.
-
-  | ws-git | what it does here |
-  |---|---|
-  | `worktree add <dir> <session>[@<commit>]`, `worktree list`, `worktree remove <dir>` | another session's tree under a directory, read-only and pinned at a commit — `ws.files.attach` / `attachments` / `detach` in the terminal. Refreshing one is taking it down and putting it up again, which is what adding over a live one says |
-  | `revert <commit>` | a new commit undoing one commit's change |
-  | `cherry-pick <session>@<commit>` | a new commit applying one change from another session, whose history must reach it |
-  | `stash [push [-m MSG]]`, `stash list`, `stash pop`, `stash drop`, `stash show` | fork everything modified to `<session>.stash-N` and restore the tree; a pop is a three-way merge and keeps the stash when it conflicts |
-  | `merge --abort` | restore the tree to the commit a conflicted merge landed on and clear it, the merge itself staying in the history |
-  | `tag [-f] <name> [<commit>]`, `tag`, `tag -d <name>` | the agent's own bookmark: a ref wherever a ref is taken, `<session>@<tag>` from elsewhere, decorating `ws-git log`. It pins nothing, a fork starts with none, a merge brings none over, and a name spelled like a commit id is refused |
-  | `log -S <string>` | git's pickaxe, with `+` or `-` after the id for appeared or vanished |
-  | `log --all` | every commit the session holds, bookkeeping included; `-n 0` is an empty log on every walk |
-  | `sparse-checkout list` | the paths this session was given to see, or `(full)`, also a `view:` header in `ws-git status` |
-
-  A revert and a cherry-pick are one commit's change against the tree as
-  it stands, appended and conflicting as a merge does, so neither has a
-  `--continue`; `ws.revert(commit)` / `ws.cherry_pick(ref)` are the host
-  half over `provider.apply(base, theirs, info=)` and both count as
-  agent commits in `ws.index.log()`. A stash is an ordinary session that
-  `store.sessions()` lists and `Store.delete` drops; the bookmarks' host
-  half is `ws.index.tags`, taking `add` / `list` / `info` / `delete`
-  and `at=` the way `ws.tags` and `store.tags` do — so an embedder
-  learns one vocabulary and the namespace it reaches through is the
-  scope. The older `ws.index.tags()` / `tag()` / `delete_tag()` still
-  answer, the listing because the namespace is callable; `status` ends
-  with a `worktrees:` block; `rebase` still refuses.
-- **A short commit id is a ref everywhere** — a unique prefix of seven
-  hex characters or more, in `store.resolve`, `ws.checkout`,
-  `ws.fork(at=)`, `ws.files.attach` and the ws-git verbs, one that could
-  mean two commits refused naming them.
-- **Two unit-test verbs, a tier below a request.** `ws-pytest` is
-  pytest's shape over the workspace's own executor: `test_*.py` at any
-  depth but under `app/`, which publishes; every top-level `test_*`
-  taking no arguments; plain `assert`; a test wanting a fixture is an
-  error rather than a skip, and a `tests/conftest.py` is reported
-  unread. `ws-vitest` is vitest's shape, which is jest's surface, with
-  no vitest and no `node_modules`: nontainer's own harness on a headless
-  Chromium page, driven beside `test_app`'s and wanting the `[apps]`
-  extra. There `tests/**/*.test.js` leads the run and `*.test.js` beside
-  a module under `app/` follows it, the run saying those ship with a
-  publication and reporting one under `app/api/` as not runnable; `app/`
-  and `tests/` are siblings under one synthetic root, so `import { add }
-  from '../app/util.js'` resolves; `describe`, `it`, `beforeEach`,
-  `expect`, `vi` and `jest` are globals and resolve from `'vitest'` and
-  `'@jest/globals'`; unawaited work fails the test that started it, and
-  every teardown hook runs.
-
-  | | takes | exit codes |
-  |---|---|---|
-  | `ws-pytest` | paths and `path::name`, `-k EXPR`, `-x` / `--maxfail=N`, `-q` / `-v`, `--tb=short\|long\|no` | pytest's own, 4 for a bad argument included |
-  | `ws-vitest` | `run` (ignored), path filters, `-t NAME`, `--reporter=default\|verbose`, `--bail`; refuses `--coverage`, `--ui`, `--config`, `--watch`, `--browser`, `--environment`, `vi.mock`, snapshot matchers, `expect.extend`, `it.only` / `it.skip`, `beforeAll` / `afterAll` | 0 and 1, vitest's own, so the message separates a refused flag from a failing test |
-
-  Each is the tool's shape and not the tool, so what is not there is
-  refused with the idiom that replaces it. Python tests run where the
-  agent's code runs, in the guest on a VM rung; the browser is on the
-  host on every rung, and every report says which. Both read the same on
-  both rungs.
-- **A `ws-vitest` run is hermetic, and mocks at the fetch boundary** —
-  no api routes, no other host, and a page policy stricter than the
-  app's (`connect-src 'self'`, where a served app gets `'self' https:`;
-  `AppsConfig.csp_extend` only ever adds sources), so a forgotten mock
-  fails on the fetch. `vi.stubFetch({"api/scores": {...}})` is the
-  repair, keyed by exact path.
-- **`TestReport` and `render_report`** — the run as a record before it
-  is text: counts, a `TestOutcome` per test, each failure's frames with
-  their source, `notes` for what the run refused to do silently. A
-  caller branches on `run_pytest(ws).ok` rather than parsing a summary
-  line, `str(report)` is the count line alone, and frames name what the
-  agent wrote, never the sandbox's own. `run_vitest` fills the same
-  record, `tool` tells them apart, `TestFrame` has a `column`.
-- **`call(...)` in a test's namespace** — `call("scores",
-  params={"limit": "2"}, db=fake)` builds the request dispatch would,
-  runs the handler and returns the response: liberal returns normalized,
-  `HttpError` as a status, a missing required field as a 400.
-  Dependencies are substituted by keyword, a handler's injected names
-  being no module attribute a patch could reach, and the module name has
-  to be a literal. Which names a handler reads from its namespace is
-  Python's own answer (`symtable`, per scope), so a `db` that only a
-  helper beside the handler reads still takes the fake. It does not
-  reproduce a GET's read-only filesystem — that stays `ws-curl`'s to
-  enforce.
-- **`from host import db`** — the injected host objects arrive as a
-  synthetic `host` module as well as bare names, resolving at the top
-  level, in a handler and in a module alike, where a bare name reached
-  only the first two. It holds what the namespace holds (`cache`
-  included, read-only under a GET), is rebuilt per execution, and takes
-  no writes by any door — `patch.object(host, "db", fake)` is refused.
-  Both rungs answer it: sandtrap's per-exec modules, a dud prelude.
-- **`__future__` and `unittest.mock` in the stdlib preset** — the
-  first so a module carrying the `from __future__ import annotations`
-  line agents write by habit runs (it holds feature flags and nothing
-  else), the second bringing `patch`, `MagicMock` and the rest of its
-  public API, where `unittest` itself exposes nothing else.
-- **`sessions ask(fork_from=, resume=)`** — the two things about an ask
-  that are not its task. `fork_from` starts the delegate from another
-  fork point, a commit named by a store tag or spelled `session@commit`;
-  the branch it came from is only read, and `inherit` must be
-  `"fresh"`. A fork point outside the asker's own history shares none
-  with it, so that child's branch holds the other state's whole tree
-  and the way back is a take rather than a merge; a tag of the asker's
-  own commit is an ordinary ancestor and merges as any fork does.
-  `resume` gives a new task to a delegate you already have, its
-  conversation kept and its branch reused, carrying what belongs to the
-  child (fork point, base, `keep` flag) and replacing only the run. A
-  child does one task at a time, a cancelled run holding it until its
-  runner stops. `Job` gains `origin`; both are on the `sessions` tool.
-- **`sessions.sweep(idle, *, min_age=3600)`, `Job.touched` and the
-  `expired` status** — retention for a delegate's branch, which `keep`
-  had been recording a flag for since it landed. It is idle TTL with
-  touch on read: a job carries when its caller last dealt with it,
-  `result` and `keep` move that forward, and the sweep takes the branch
-  of every finished, unheld, unkept job untouched for longer, returning
-  the names. The embedder schedules it beside `store.clean()`, no verb
-  sweeps on the way past, and it takes only the names in its own job
-  table. The row survives: the status is `expired`, the answer dropped,
-  `base` still answering, `result` / `keep` / a resuming `ask` raising
-  the new `BranchExpired`.
-- **The seams have public names.** `ws.store` is the store a session
-  was opened from (`None` for a workspace built straight from a
-  provider, which is what makes a sweep or a continue unavailable),
-  `ws.provider` the substrate under it, and `ws.expand_ref(ref) -> Ref`
-  a `session@commit` spelled whole from a short id, a whole one or that
-  session's own ws-git tag, `:/path` carried through, for
-  `store.resolve`. `nontainer.executor.flatten_grants(cfg)` is what a
-  `PythonConfig` flattens to, and `ws.runtime.guest_to_host(path)` a
-  guest-absolute path as the host spells it, `None` where nothing maps.
-  And `WorkspaceProvider` declares every member the framework calls:
-  `frozen`, `frozen_at`, `key_at`, `branch_head`, `expand_commit` and
-  `commit_at` were read off the kvgit provider and guessed at with
-  `getattr` elsewhere, so a substrate written against the document
-  alone could satisfy the protocol and still not drive a workspace.
-  `DirProvider` and `AgentFSProvider` answer all six — honestly where
-  they can (a provider with no tags is not frozen; a provider with no
-  commit ids has no prefix to expand) and with `NotSupportedError`
-  where they cannot. `refresh()` is the one optional member, and the
-  contract says so. `Executor` names the guest-verb half too:
-  `supports_ws_verbs` beside `supports_commands`, and a public
-  `guest_to_host(path)`, where an executor had been declaring it ferried
-  verbs by carrying a private `_guest_to_host` and the runtime had been
-  detecting it with `hasattr`. One written before those names still
-  ferries — the private spelling is the fallback probe.
-- **`ws.files.remove(path)`.** The file surface could write, edit and
-  put, and the only way to delete was `ws.files.fs.remove`, which
-  bypasses the lock, the view rule and the commit flow — so a host-side
-  deletion sat in the tree until something else happened to commit, and
-  nothing refused it on a frozen workspace by name. `remove` is
-  `write`'s other half: one file, the lock held, a path the session
-  cannot see refused, and a `RemoveOutcome` naming the commit it made.
-  Its own record rather than a `WriteOutcome`, whose `size` means bytes
-  written. A directory is refused — a directory here is the shape of
-  the files under it, so emptying one is `rm -r` or a checkout that
-  mirrors it — and a path holding nothing raises `FileNotFoundError`,
-  the way `read` does.
-- **`JobStatus` and `AnswerStatus` are exported and annotated.**
-  `Job.status` and `Answer.status` were plain `str` with the vocabulary
-  spelled only in prose, so a caller branching on one got no help and
-  no check. An answer takes fewer words than a job — it exists only
-  once the run is over, so it is never running, cancelled or expired —
-  and the two literals say which is which. `inherit` is
-  `Literal["full", "fresh"]` on `Workspace.fork` and `Sessions.ask`.
+- **New ws-git verbs.** `worktree add/list/remove`, `revert`, `cherry-pick`, `stash`, `merge --abort`, `tag`, `log -S`, `log --all` and `sparse-checkout list`; see `docs/ws-git.md`.
+- **Host half.** `ws.revert(commit)`, `ws.cherry_pick(ref)` (over `provider.apply`) and `ws.index.tags` (`add`/`list`/`info`/`delete`/`at=`).
+- **Short commit ids are refs everywhere.** Any unique prefix of 7+ hex characters, host API and ws-git alike.
+- **`ws-pytest` and `ws-vitest` unit-test verbs.** pytest's shape on the workspace executor; vitest's on headless Chromium (`[apps]` extra).
+- **Hermetic `ws-vitest` runs.** No api routes or other hosts (`connect-src 'self'`); mock with `vi.stubFetch({...})`, keyed by exact path.
+- **`TestReport` and `render_report`.** A test run as a record (`TestOutcome`, `TestFrame`); branch on `run_pytest(ws).ok`.
+- **`call(...)` in a test's namespace.** Runs a handler as dispatch would, dependencies substituted by keyword (`db=fake`).
+- **`from host import db`.** Injected host objects also arrive as a read-only synthetic `host` module, in handlers and imported modules alike.
+- **`__future__` and `unittest.mock` in the stdlib preset.**
+- **`sessions ask(fork_from=, resume=)`.** `fork_from` starts a delegate at a store tag or `session@commit` (`inherit="fresh"`); `resume` re-tasks an existing delegate. `Job` gains `origin`.
+- **`sessions.sweep(idle, *, min_age=3600)`.** Idle-TTL cleanup of delegate branches; adds `Job.touched`, status `expired` and `BranchExpired`.
+- **Public seam names.** `ws.store`, `ws.provider`, `ws.expand_ref(ref) -> Ref`, `nontainer.executor.flatten_grants(cfg)` and `ws.runtime.guest_to_host(path)`.
+- **Full `WorkspaceProvider` and `Executor` contracts.** Providers declare `frozen`, `frozen_at`, `key_at`, `branch_head`, `expand_commit`, `commit_at`; executors gain `supports_ws_verbs` and public `guest_to_host(path)`.
+- **`ws.files.remove(path)`.** Deletes one file under the lock and view rule, returning a `RemoveOutcome`; directories are refused.
+- **`JobStatus` and `AnswerStatus` exported.** Typed status literals; `inherit` is `Literal["full", "fresh"]`.
 
 ### Changed
-- **The docs are re-cut by audience.** Four new pages: `docs/ws-git.md`
-  and `docs/testing.md` for the agent's verbs, twins of `ws-git help`
-  and `--help`; `docs/sessions.md` for delegation; `docs/extending.md`
-  for the three seams (`WorkspaceProvider`, `Executor`, `SessionRunner`)
-  with the conformance suites an implementation should pass.
-  `docs/api.md` is the embedder reference alone, its layer rule and
-  named tests moved to `docs/design.md`; the README keeps identity, and
-  its API tour, substrates, executors and app-handler sections move into
-  `docs/quick-start.md`.
-- **The ui set is closed, and the JSON floor is gone.** A ui value is a
-  plotly figure, a pandas DataFrame, a matplotlib figure, an image, a
-  list of card rows, or a string naming a workspace file. Anything else
-  — scalars and plain dicts included — yields a `ui_problems` note and
-  no file, where the data tier wrote a `.json` or a capped `repr`.
-- **One relay carries every `ws-*` verb into a guest**, where each verb
-  hand-wrote its own guest shell function, host object, argv mapper and
-  tag. A verb declares a `FerrySpec` — which of its flags carry paths,
-  which carry free text, whether its bare arguments are paths — and the
-  reserved host-object name on that rung is `ws_verb`, one for all of
-  them, where it was `ws_git` and `ws_curl`.
-- **`host` is a reserved name.** A host object or a module grant called
-  `host` is refused at construction, and a workspace `host.py` (or
-  `host/`) comes back as an execution error naming the rule: `import
-  host` resolves the injected objects ahead of the workspace tree.
-- **`materialize_ui` lives in core**, at `nontainer.ui`, beside the
-  guest-side half of the same job. Nothing outside the package imported
-  `nontainer.adapters.render`'s copy, so there is no shim; the adapter
-  keeps `PYTHON_UI_NOTE`, how the convention is described to the model.
-- **The layering rule is held by a test.** nontainer is one package in
-  five layers — core, sessions, apps, the testing verbs, the adapters —
-  and core imports nothing from the other four. `tests/test_layering.py`
-  walks every module with `ast`, counts lazy function-local imports as
-  dependencies, and reports any underscore attribute a layer above core
-  reads; the reach-ins it found have public names now.
-- **Shared backend code takes its dependencies as arguments.**
-  `docs/apps.md` and the apps primer now say that injected host objects
-  are bound into the handler's namespace and not into the globals of a
-  module it imports, so a helper reading `db` as a bare name 500s with a
-  `NameError`. The documented shape is `def load(db, limit)`, which a
-  unit test can call with a fake.
-- **The ws-git blob is layout 3**, holding `tags`, `pre_merge` and the
-  stash record; a layout 2 blob is read as it stands, not discarded.
-  **Every fork lands its `ws-git.fork` commit**, one whose parent never
-  used ws-git included: it is the child's fork POINT, and without it
-  every file a delegate inherited read as one it added.
-- **`register_wsgit(ws)` says whether the agent can type `ws-git`.**
-  It returned `None` whether it had installed the verb or quietly
-  declined to, so an embedder building a primer around the verb had to
-  probe `ws.runtime` for the same two flags the function had just read.
-  True when it installed the verb and True when the verb was already
-  there — both answer the question that was asked — and False only
-  where the executor can carry no terminal builtin at all.
+- **Requires sandtrap 0.3.6** (per-exec modules, for `host`).
+- **Docs re-cut by audience.** New `docs/ws-git.md`, `testing.md`, `sessions.md`, `extending.md` and `quick-start.md`.
+- **Breaking: the ui set is closed.** Only plotly, DataFrame, matplotlib, image, card rows or a file name; anything else gets a `ui_problems` note and no file.
+- **One relay carries every `ws-*` verb into a guest.** Via a `FerrySpec`; reserved host-object name `ws_verb` replaces `ws_git` and `ws_curl`.
+- **Breaking: `host` is a reserved name.** A host object or module grant named `host` is refused; a workspace `host.py` or `host/` errors.
+- **`materialize_ui` moved to `nontainer.ui`.** No shim in `nontainer.adapters.render`.
+- **Shared backend code takes dependencies as arguments.** Documented: injected host objects are not globals of imported modules.
+- **Storage: ws-git blob is layout 3.** Adds `tags`, `pre_merge` and the stash record; layout 2 blobs still read.
+- **Every fork lands a `ws-git.fork` commit**, so a delegate's inherited files no longer read as added.
+- **`register_wsgit(ws)` returns a bool.** False only where the executor cannot carry a terminal builtin.
 
 ### Fixed
-- **A delegate name you give is refused when it is taken.**
-  `sessions.ask(name="editor")` on a session that already had an
-  `editor` child quietly forked `editor.2` and handed that back, so a
-  caller that named the child it meant to address sent every later
-  `result` / `merge` / `diff` to a different one. It raises
-  `SessionsError` now, naming the branch and pointing at `resume=` for
-  giving the existing child its next task. A minted pet name carries no
-  such intent and is still suffixed past a collision.
-- **`ws.diff` and `ws.changed_since` need versioning, not tags.** Both
-  were gated on `caps.tags`, so a substrate that keeps history without
-  naming commits was told to "use the kvgit backend for named commits"
-  when all it asked was what changed between two of its own. Comparing
-  two commits is a versioning question — a name is one way to reach a
-  commit, not what makes two of them comparable — and the provider's
-  own diff reads its history and never a tag. `changed_since` still
-  resolves a NAME through tags, where there are tags to resolve it
-  through.
-- **Wiring a workspace twice is a no-op, and a fork counts as wired.**
-  `enable_apps` and `register_wsgit` refused a second call with
-  `Terminal command already registered`, which a fork walked straight
-  into: a child rebuilds the app loop and the ws-git verb bound to
-  itself as part of the fork, so `enable_apps(ws.fork("c"), cfg)` — the
-  obvious way to give a delegate an app — raised. Both are no-ops now
-  where the command is already there, `enable_apps` hands back the
-  runtime the workspace already carries rather than dropping it for a
-  second one, and `nontainer.apps.app_runtime(ws)` answers what a
-  workspace is wired with. The config of the first wiring is the one
-  that stands.
-- **One `except` clause holds the package.** `CacheError` and
-  `HarvestLost` were a bare `ValueError` and a bare `RuntimeError`, so
-  an embedder catching `WorkspaceError` missed a cache write it could
-  not encode and a torn remote call. Both are `WorkspaceError` now and
-  both keep the builtin they were caught as. `HarvestLost` is exported
-  beside `ExecutionContext`, `StagedDiff` and `ViewSpec` — the types
-  `Executor`'s methods speak, which was exported without them.
-- **`ws.log()` is a list**, the shape `ws.index.log()` already had, so
-  `len()` works, an entry can be indexed and the same log reads twice.
-  It was a generator, which meant the two logs on one workspace
-  answered differently and a caller had to remember which. With no
-  `limit` it is the whole branch, read and held.
-- **A plotly spec dict is encoded the way a plotly figure is.** Both
-  spellings go through plotly's own encoder, landing on
-  `ui/<name>.plotly.json`, where one from `fig.to_dict()` holds NumPy
-  arrays and timestamps and fell to the repr floor.
-- **A merged metadata row describes the bytes that landed**, where a
-  one-sided row kept a size the conflicted content beside it never had.
-- **Nothing moves the tree while a merge is outstanding.** `merge` and
-  `checkout` in both its forms refuse until the markers are gone, as
-  `stash`, `revert` and `cherry-pick` do, and every refusal names the
-  two ways out: commit the resolution, or `ws-git merge --abort`. So no
-  second merge, and no checkout of the merge commit itself, can leave a
-  clean `ws-git status` over a tree that still holds markers.
-- **A bad `<session>@<x>` says what was looked up and where**, instead
-  of echoing the word back. One funnel resolves a ref's commit half, and
-  its refusal names the word, the three spellings it was not, the
-  session it was looked for on and the verbs that list what is there; a
-  well-formed id nobody holds names its session too. The session half is
-  checked first, so a typo earns `unknown session 'typo' (ws-git branch
-  lists them)`.
-- **A handler traceback on dud names the handler's own line.** A view
-  exec compiles scaffolding ahead of the handler, and the guest counted
-  from the top of that unit, so `api.log` pointed a repair at a line
-  the agent never wrote; the view path now measures its prefix and
-  hands the result the offset, the way plain python already did.
-- **A frozen workspace refuses writes by every door.** `ws.files.fs` on
-  a frozen open (`store.tags.at`, `store.resolve`, `Publication.open`)
-  or on a session snapshot (`ws.tags.at`) is the same read-only
-  filesystem the executor holds, so `write`, `makedirs`, `remove`,
-  `rename` and the rest raise `PermissionError` naming the tag while
-  every read still works — where the host-side escape hatch had taken
-  them silently into a buffer nothing could commit. The hatch bypasses
-  the workspace's policy gates, never its frozenness.
-
-### Dependencies
-- Floor: `sandtrap>=0.3.6` — per-exec modules (`Sandbox.exec(modules=)`),
-  which the `host` module is built on.
-
+- **Breaking: a taken delegate name is refused.** `sessions.ask(name=)` raises `SessionsError` instead of forking `name.2`; use `resume=`.
+- **Wiring twice is a no-op.** `enable_apps` and `register_wsgit` no longer raise on a fork or second call; new `nontainer.apps.app_runtime(ws)`.
+- **`CacheError` and `HarvestLost` are `WorkspaceError`s.** `HarvestLost`, `ExecutionContext`, `StagedDiff` and `ViewSpec` are exported.
+- **Merges block tree moves.** `merge` and `checkout` refuse until markers are resolved or `ws-git merge --abort`.
+- **A frozen workspace refuses writes by every door.** `ws.files.fs` on a frozen open raises `PermissionError`; reads still work.
+- **Smaller fixes:** `ws.log()` is a list; `ws.diff`/`ws.changed_since` need versioning, not tags; plotly spec dicts encode like figures; merged metadata rows match; clearer bad-ref errors; dud handler tracebacks show the right line.
 
 ## 0.6.5 - 2026-09-10
 
 ### Added
-- **`Publication.meta` and `store.set_meta(name, mapping)`.** A
-  publication's own metadata on the registry row, replaced whole under
-  the registry lock — the mutable overlay for what changes without a
-  release, such as a display title. `Version.info` stays the immutable
-  half, written at publish, so a version keeps the title it shipped
-  under while its publication is renamed. `publish` leaves `meta`
-  alone on an existing publication and starts a new lineage with none;
-  the last `unpublish` takes it with the row. A row written before the
-  field existed reads as an empty mapping.
+- **`Publication.meta` and `store.set_meta(name, mapping)`.** Mutable publication metadata (e.g. a display title); `Version.info` stays immutable.
 
 ### Fixed
-- **A publication record holds its own data.** `set_meta` copied only
-  the outer mapping, so a nested list or dict stayed shared with the
-  caller and editing it afterwards changed what the record read as;
-  the mapping now normalizes through JSON on the way in. And
-  `Publication.meta` and `Version.info` both read as read-only views
-  all the way down — nested mappings read-only too, JSON arrays as
-  tuples — so metadata changes through `set_meta`, where the lock and
-  the validation are. A view read off a record is accepted straight
-  back: `set_meta(name, {**pub.meta, "title": "New"})`.
-- **Reading a publication's ref cannot straddle its `unpublish`.**
-  The registration check and the open that followed it sat either side
-  of the registry lock, so an `unpublish` landing in between left the
-  read to mint the reserved branch again — kvgit creates a branch
-  opened by a name it does not know, and a reserved branch no record
-  names refuses to let that version be published again.
-  `store.tags.add`, `store.resolve` (and `ws.files.attach` through it)
-  and `Publication.open` now check and open under that lock.
-- **A ref nontainer hands out is a ref `store.tags.add` accepts.** A
-  published version's own ref named a reserved branch rather than a
-  session, so tagging it raised `SessionIdError` while
-  `store.resolve` read the same ref fine. `tags.add` now reads a
-  publication's branch the way `resolve` does — the registry says
-  whether the version is still published, and the branch is never
-  minted by being read. `store.open` and `store.delete` stay
-  sessions-only.
+- **Publication records hold their own data.** `set_meta` normalizes through JSON; `meta` and `Version.info` are read-only all the way down.
+- **Publication reads cannot straddle `unpublish`.** Resolve, attach, `tags.add` and `Publication.open` check under the registry lock.
+- **`store.tags.add` accepts a published version's ref.** It raised `SessionIdError`.
 
 ## 0.6.4 - 2026-09-10
 
 ### Added
-- **`store.tags.list_info()`.** Every store-scoped tag described on
-  one backend open, where `info(name)` opens the store per call —
-  reading the metadata of N tags cost N opens. `list()` stays the
-  cheaper answer when only the commit ids are wanted.
-- **`Version.info` and `Version.paths`.** A publish records the
-  caller's `info` keys on the registry row as well as in the commit,
-  so listing publications with their display titles and owners is one
-  registry read and no backend open. The mapping holds the caller's
-  keys only; a row written before the field existed reads as empty.
-  `info` counts for equality and is left out of the hash, so a
-  `Version` stays usable as a set member or a dict key.
-- **`publish(..., create_only=True)`.** Refuses a name that already
-  holds a version instead of extending its lineage, so a caller that
-  means to open one hears about the collision rather than silently
-  publishing a second version of somebody else's app. The check runs
-  inside the lock that decides between creating and extending, and the
-  refusal lands before anything is written.
+- **`store.tags.list_info()`.** Describes every store-scoped tag on one backend open.
+- **`Version.info` and `Version.paths`.** Publish records `info` on the registry row, so listing titles needs no backend open.
+- **`publish(..., create_only=True)`.** Refuses a name that already holds a version.
 
 ### Fixed
-- **A resumed publish is described by the commit it adopted.** A retry
-  that finds the branch and tag of an attempt that died before its
-  record takes that commit, which is immutable — so the record and a
-  late-minted tag now carry the adopted commit's `info` and `paths`
-  rather than the retry's arguments, and `Version.info` cannot
-  disagree with what `Publication.open()` serves. Minting the tag late
-  raised `NotSupportedError`, because it wrote through a checkout at a
-  commit and those are frozen; it goes through the branch now.
+- **A resumed publish uses the adopted commit's `info` and `paths`.** Late tag minting no longer raises `NotSupportedError`.
 
 ## 0.6.3 - 2026-09-09
 
 ### Added
-- **`publish(..., current=False)`.** A version can be recorded without
-  taking the pointer, so a caller can land a tree, check it at
-  `pub.open(version)` and switch with `set_current` after — and can
-  drop it with `unpublish` in between, which the current version
-  refuses while others remain. The version that opens a lineage takes
-  the pointer whatever the flag says, because a publication must point
-  somewhere.
-
-### Fixed
-- **A publish that died mid-way can be resumed or cleared.** `publish`
-  writes the branch and the tag before the registry record, so a crash
-  in between left a reserved branch nothing could use or remove. The
-  retry now adopts a recordless branch whose head names the same
-  source commit and the same `paths` — that attempt and no other — and
-  writes the record over it; a recordless branch of some other attempt
-  is refused by name, and `unpublish` clears a branch and tag with no
-  record behind them — but only what publish itself wrote: a store tag
-  may hold a slash, so `release/prod` answers to `unpublish("release",
-  "prod")` by name alone, and a tag or branch that does not carry
-  publish's own provenance is left where it is. `paths` joins the
-  commit-info keys a caller's `info` may not spell, because it is part
-  of what identifies an attempt.
+- **`publish(..., current=False)`.** Records a version without moving the pointer; switch later with `set_current`.
 
 ### Changed
-- **A caller's mistake on publish is a `ValueError`.** Reusing a
-  version name, publishing `paths` that match no file, and naming a
-  version `set_current`, `unpublish` or `Publication.open` cannot find
-  raise `ValueError` like the name validation already does, so an
-  embedder mapping errors to HTTP answers 400 without matching on
-  message text. `WorkspaceError` stays for the store's own state — a
-  session with staged changes, a leftover tag or branch, a version
-  unpublished since the `Publication` was fetched.
-- **Shared backend code lives under `app/`.** The python tool
-  description and the apps notes sent shared handler code to
-  `/workspace/helpers`, which a publication of `app/` does not carry,
-  so a published app's imports failed while preview worked. Both now
-  point at `app/api/_<name>.py`, imported `from app.api._<name>
-  import fn`: a module the publication carries, never routed as an
-  endpoint and never served as static. The apps notes no longer claim
-  imports between `app/api` files do not work. `python_description`
-  takes `apps=`, so a workspace with no app still hears `helpers/`.
-- **The cache does not travel with a publication**, and `docs/apps.md`
-  and `publish`'s docstring now say so. A publication carries file
-  blobs and the rows describing them; a `cache` entry is neither, so a
-  frozen open starts with an empty cache. Data an app needs
-  precomputed belongs in a file under the published paths.
-- **The default version is the next in the v-series**, stated in
-  `publish`'s docstring and `docs/api.md`. Only `v<N>` names are
-  counted, so a lineage holding `v1`, `v2` and `release-1` gets `v3`:
-  the default is a series of its own and a version the caller named
-  stands outside it. An embedder that wants every version numbered
-  passes `version=` itself.
+- **Breaking: publish caller mistakes raise `ValueError`.** Reused versions, unmatched `paths`, unknown versions; `WorkspaceError` stays for store state.
+- **Shared backend code lives under `app/`.** As `app/api/_<name>.py`, not `/workspace/helpers`; `python_description` takes `apps=`.
+- **The cache does not travel with a publication.** Precomputed data belongs in published files.
+- **The default version is the next `v<N>`.** Other names are not counted.
+
+### Fixed
+- **A crashed publish can be resumed or cleared.** A retry adopts its own recordless branch; `unpublish` clears what publish left. `paths` is a reserved `info` key.
 
 ## 0.6.2 - 2026-09-09
 
 ### Added
-- **A store-scoped read never needs a session.** `store.tags.at` and
-  the frozen opens beside it anchor on a session where there is one, a
-  publication's branch where there is not, and otherwise on the store's
-  own reserved `@store/anchor` — minted on that first read, holding one
-  empty commit. So a store tag opens for as long as it exists, with
-  every session deleted and nothing published. The anchor is not a
-  session (`sessions()` never lists it) and `clean()` keeps it: a branch
-  head is a GC root and its commit owns nothing to sweep.
-- **`Store.delete` deletes sessions only.** Every name is checked as a
-  session id before any of them reaches the backend, so no caller can
-  take out a branch the store keeps for itself by spelling its name —
-  the `@store/` namespace (a publication's branch, the read anchor) is
-  one no session id can reach. A publication is still removed with
-  `unpublish`, which drops its tag, its branch and its registry row
-  together.
-- **The runner is told the fork point.** `SessionRunner.run` takes
-  `forked_at` — the parent's commit the child was forked from, `None`
-  where the provider keeps no commits — so the provenance header a
-  delegate arrives with ("asked by session X at commit Y") can be
-  written before its first turn instead of read off the answer
-  afterwards. The helper reads `run`'s signature once per runner and
-  passes it only where it is accepted, so a runner written without the
-  parameter keeps working. `Sessions.base(name)` returns the same
-  commit for a caller holding only the job name.
+- **Store-scoped reads never need a session.** Frozen opens fall back to a publication branch or the reserved `@store/anchor`.
+- **`Store.delete` deletes sessions only.** `@store/` branches are unreachable; remove publications with `unpublish`.
+- **`SessionRunner.run` gets `forked_at`.** Passed only to runners that accept it; also `Sessions.base(name)`.
 
 ## 0.6.1 - 2026-09-09
 
 ### Added
-- **Delegation is a tool.** `WorkspaceTools(ws, sessions=runner)` and
-  `build_server(ws, sessions=runner)` register one `sessions` tool with
-  an `action` argument (`ask`, `list`, `result`, `cancel`, `keep`) —
-  `test_app`'s shape — gated on the embedder supplying a
-  `SessionRunner`. No runner, no tool. `ask` reads back as the child's
-  name; `result` as its prose, what it changed grouped as sent vs
-  elsewhere, then the next step spelled for the terminal (`ws-git diff`
-  / `merge` / `checkout <name> -- <paths>`). Versioning stays in ws-git.
-- **`nontainer.sessions.Sessions(ws, runner)`**, the host-side helper
-  behind it: `ask` forks under a pet name scoped to the parent
-  (`analyst.sleepy-otter`), hands the child to the runner on a worker
-  thread and returns a `Job`; `list` / `result` / `cancel` / `keep`
-  collect it, and `wait=True` blocks for the `Answer`. It commits
-  nothing on the delegate's behalf: the answer names what the delegate
-  LANDED — its branch head if it never used ws-git, its last ws-git
-  commit if it did — and reports what it changed by diffing the fork
-  point against the child's head. A delegate that committed and then
-  wrote past it is reported, not papered over: `Answer.uncommitted` /
-  `Job.uncommitted` say so, and the tool's text names the take instead
-  of the merge that would be refused.
-- **A fork starts with a fresh ws-git state.** `Workspace.fork`,
-  `Store.fork` and `ws-git branch` give the child no ws-git head,
-  nothing staged and no inherited merge context, for `inherit="full"`
-  as much as `"fresh"`: a branch carries the workspace, never the
-  agent's composition in progress. So a delegate's log is its own
-  (`ws-git log <parent>` reaches the parent's), and a delegate that
-  never used ws-git merges and is taken from at its branch head — the
-  rule the fiction already had for a session with no agent commit. The
-  reset lands as a `ws-git.fork` bookkeeping commit, hidden from
-  `ws.log()` and shown by `kind="all"`. `ws-git status` in a narrowed
-  session no longer names paths its view hides.
-- **`Job` and `Answer` records** in `protocol.py`, pure data:
-  `str(answer)` is the reply, `repr` is one line and never the body,
-  and declining or running out of budget resolve as a status rather
-  than raising. `SessionRunner.run` may return either an `Answer` or a
-  plain string. New errors: `SessionsError`, `JobRunning`.
-- **Frozen opens take execution settings.** `store.tags.at(name, ...)`,
-  `store.resolve(ref, ...)` and `Publication.open(version, ...)` take
-  `Store.open`'s construction keywords — every one but `autocommit`,
-  which a provider that commits nothing has nothing to switch. The rule:
-  a commit holds the tree, and the embedder supplies the live objects
-  its handlers call. `Publication.open` takes no `root`, a version
-  recording the one its files were published under, and a `Mount` with
-  `readonly=False` is refused rather than coerced — a frozen workspace
-  accepts no writes from anyone, and `ws.files.fs` would carry one into
-  the host directory.
+- **Delegation is a tool.** `WorkspaceTools(ws, sessions=runner)` and `build_server(ws, sessions=runner)` add a `sessions` tool when given a `SessionRunner`.
+- **`nontainer.sessions.Sessions(ws, runner)`.** Forks pet-named children on a worker thread, returning a `Job`; `wait=True` blocks for the `Answer`.
+- **A fork starts with fresh ws-git state.** No inherited head, staging or merge context; recorded as a hidden `ws-git.fork` commit.
+- **`Job` and `Answer` records.** `SessionRunner.run` may return either or a string; new `SessionsError`, `JobRunning`.
+- **Frozen opens take execution settings.** `store.tags.at`, `store.resolve`, `Publication.open` take `Store.open`'s keywords except `autocommit`.
 
 ### Fixed
-- **A published app reaches its host objects.** `pub.open(python=
-  PythonConfig(host_objects={"db": db}))` serves a publication whose
-  handlers call an injected store; the `webapp` example publishes the
-  guestbook again instead of serving a session-scoped tag.
+- **Published apps reach their host objects.** Via `pub.open(python=PythonConfig(host_objects=...))`.
 
 ## 0.6.0 - 2026-09-09
 
-**API v2.** A breaking release: the seams become objects, the vocabulary
-settles on git's words, and ws-git becomes a fiction over the store's
-history. No compatibility layer — the table is the migration.
+### Added
+- **`nontainer.Store` / `store(...)`.** `open`, `sessions`, `exists`, `delete`, `fork`, `resolve`, `clean`, `tags`, `close`; plus `nontainer.Ref` and `ws.ref`.
+- **Publications.** `store.publish(ws, name, *, paths=, version=, info=)`, `publications()`, `publication()`, `set_current()`, `unpublish()`; frozen `Publication`/`Version`.
+- **Delegation forks.** `ws.fork(name, *, at=, inherit=, paths=)`; `ws.checkout(ref, paths=)`; `ws.files.attach`/`detach`/`attachments`.
+- **`ws.log(kind=)`.** `"work"`, `"agent"` or `"all"`; `CommitInfo.parents`, `WorkspaceDiff.seed`/`.in_seed`/`.elsewhere`.
+- **More ws-git verbs.** `branch`, `merge <session>`, `checkout <ref>`, `show <ref>`, `log`/`diff <session>`.
+- **`nontainer.BookkeepingLost`** and `examples/tour.py`.
 
 ### Changed
-- **The seams are objects.** `Store` owns what outlives a session,
-  `Workspace` one session's state, `Runtime` (`ws.runtime`) execution;
-  nothing takes an `AppsConfig` — `enable_apps(ws, config)` does.
-- **Namespaces and git's words.** `ws.files`, `ws.index` and `ws.tags`
-  group the file, staging and tag verbs; versioning takes git's names.
-
-  | old | new | note |
-  |---|---|---|
-  | `ws.checkpoint(info)`, `ws.autocheckpoint`, `autocheckpoint=` | `ws.commit(info)`, `ws.autocommit`, `autocommit=` | commits everything uncommitted |
-  | `ws.commit(info)` (the staged set) | `ws.index.commit(message)` | the agent's own commit |
-  | `ws.history()`, `ws.restore(c)`, `ws.rollback(n)`, `ws.dirty` | `ws.log()`, `ws.checkout(ref, paths=None)`, —, `ws.uncommitted` | checkout appends; rollback removed, compensate by id; `uncommitted` is the store's buffer, agent work is `ws.index.status()` |
-  | `ws.write_file/edit_file/put/get/read_artifact/fs`, `ws.mount()` | `ws.files.write/edit/put/get/read_artifact/fs`, `ws.files.export()` | plus `read`, `exists`, `list` |
-  | `ws.stage/unstage/status/discard_staged`, `ws.tag/tags/tag_info/delete_tag/at_tag` | `ws.index.stage/unstage/status/discard`, `ws.tags.add/list/info/delete/at` | index gains `head`, `log`, `checkout`; `scope="store"` → `store.tags.*` |
-  | `ws.exec_python/register_command/python_config/supports_*/cache_enabled` | `ws.runtime.*` | `ws.caps` is the provider's capabilities only |
-  | `ws.set_shell_env(n, v)`, `Runtime.shell_env(...)` | `ws.runtime.env[n] = v` | a `MutableMapping[str, str]` |
-  | `ws.head_tree`, `ws.changed_since(ref, scope=)`, `ws.fork(name, at=)` | `next(iter(ws.log(limit=1))).tree`, `ws.changed_since(ref)`, `ws.fork(name, at=, inherit=, paths=)` | |
-  | `.checkpoint` on results, `CheckpointInfo`, `CheckpointNotFoundError`, `WorkspaceTools(checkpoint=)`, `WorkspaceDiff(added, removed, modified)` | `.commit`, `CommitInfo`, `CommitNotFoundError`, `WorkspaceTools(commit=)`, ...plus `seed`, `paths`, `in_seed`, `elsewhere` | terminal, python, write, edit |
-  | `nontainer.delete_workspace(...)` | `Store.delete(sessions, min_age=)` | |
-  | `provider.checkpoint/commit/restore` | `provider.commit` / `commit_keys(info, keys=)` / `checkout(commit, info=)` | plus `files_at`, `working_files`, `key_at`, `branch_head`, `refresh`, `merge(at=, info=)` |
-
-- **Two commit verbs, for two callers.** `ws.commit()` is everything
-  uncommitted, the framework's durability verb; `ws.index.commit(msg)`
-  is the agent's staged set; `ws-git commit` reads the staging state.
-- **ws-git is a fiction over the store's history.** Index and commit
-  graph are metadata under a reserved key, so nothing suspends
-  autocommit; trees are materialized exactly, and a host `ws.commit()`
-  may not claim a `ws-git*` tool.
-- **`ws.checkout` appends** a commit whose tree equals the target
-  whenever the restore changes anything (a checkout onto state the
-  workspace already holds writes nothing and returns the head), so
-  history is append-only, only `Store.delete` moves a head backward, and
-  a session name is refused — a session is a branch.
-- **A merge takes only committed agent work.** `ws.merge` (new on the
-  facade, gated by `caps.merge`) refuses staged or modified work on
-  either side and merges the source at its last agent commit; a session
-  that never used ws-git has no such baseline, so only an open index
-  refuses it and as a source it merges at its store head. It is
-  filesystem-only: files three-way, while `__cache__/*`, `__agno__/*`,
-  cwd, the ws-git blob and the view record take ours.
-- **Metadata rides beside the bytes.** One monkeyfs row per file, not
-  one table per write, so a commit or merge carries a file's row with
-  its blob.
-- **One key for the working directory.** The filesystem's is the only
-  one (`__cwd__` is dropped on open), and on kvgit — whose filesystem
-  owns that key — `mounts` make cwd transient rather than reopened,
-  while dir and AgentFS persist it as before, mounted or not.
-
-### Added
-- **`nontainer.Store` / `store(...)`** — `open`, `sessions`, `exists`,
-  `delete`, `fork`, `resolve`, `clean`, `tags`, `close`; `shared()`
-  raises for now. `nontainer.Ref` (`session@commit[:/path]`), `ws.ref`
-  and `Store.resolve(ref, root=)` open one exact state, frozen.
-- **Publications** — `store.publish(ws, name, *, paths=("app/",),
-  version=, info=)`, `publications()`, `publication()`, `set_current()`,
-  `unpublish()`, frozen `Publication` / `Version`. A version is the
-  subtree, not the session: a derived commit of `paths` and their
-  metadata rows, `published_from` a soft reference, kept as a store tag.
-- **Delegation** — `ws.fork(name, *, at=, inherit=, paths=)`:
-  `inherit="fresh"` drops the stored conversation, `paths` narrows the
-  child's VIEW rather than its tree (new paths join it; touching one
-  outside raises `PermissionError`), and without `at` the fork point is
-  committed first. `ws.checkout(ref, paths=[...])` takes paths from any
-  ref as writes and removals (a directory mirrors its subtree), and
-  `ws.files.attach(ref, at, ...)` / `detach` / `attachments` mount
-  another session's frozen tree, unversioned and gone at close.
-- **`ws.log(kind=)`** — `"work"` (default) hides bookkeeping commits,
-  `"agent"` is the agent's own, `"all"` the provider's history; plus
-  `CommitInfo.parents`, `WorkspaceDiff.seed`/`.in_seed`/`.elsewhere`.
-- **ws-git verbs that were refusals** — `branch` (list, or a fork with
-  `--at` / `--fresh` / `--paths`), `merge <session>`, `checkout <ref>
-  [-- <paths>]`, `show <ref>`, `log`/`diff <session>`; `stash` and
-  `rebase` still refuse.
-- `nontainer.BookkeepingLost`; `examples/tour.py` walks the surface.
+- **Breaking: API v2, no compatibility layer.** `Store`, `Workspace` and `ws.runtime` split the seams; `enable_apps(ws, config)` takes the `AppsConfig`.
+- **Breaking: git's words.** `checkpoint`->`ws.commit`, `autocheckpoint`->`autocommit`, staged `ws.commit`->`ws.index.commit`, `history`->`log`, `restore`->`checkout`, `dirty`->`uncommitted`.
+- **Breaking: namespaces.** File verbs -> `ws.files.*`, staging -> `ws.index.*`, tags -> `ws.tags.*`/`store.tags.*`, execution -> `ws.runtime.*`.
+- **Breaking: renames.** `CheckpointInfo`->`CommitInfo`, `CheckpointNotFoundError`->`CommitNotFoundError`, `.checkpoint`->`.commit`, `delete_workspace`->`Store.delete`.
+- **Breaking: provider protocol.** `checkpoint/commit/restore` become `commit`/`commit_keys`/`checkout`, plus `files_at`, `working_files`, `key_at`, `branch_head`, `refresh`, `merge`.
+- **ws-git is a fiction over store history.** Its state is metadata, so autocommit is never suspended.
+- **`ws.checkout` appends.** History is append-only; only `Store.delete` moves a head back.
+- **`ws.merge` takes only committed agent work.** Gated by `caps.merge`; files merge three-way.
+- **Storage: one metadata row per file** instead of one table per write.
+- **Storage: one cwd key.** `__cwd__` is dropped on open.
+- **Requires kvgit 0.3.8, monkeyfs 0.1.10, sandtrap 0.3.5** (merge policy, per-file rows, raw default).
 
 ### Removed
-- **`Workspace.rollback(steps)`** — a count into a log that `checkout`
-  now appends to, so `rollback(1)` twice was not `rollback(2)`;
-  compensate by identity with `ws.checkout(commit_id)`.
-- The flat `Workspace` methods the namespaces replace, the execution
-  delegates, `head_tree`, tag `scope=`, `nontainer.delete_workspace`, and
-  the staging suspension machinery (`provider.stage_suspended`,
-  `commit_index`, `discard_staged`, `stage`, `unstage`, `status`,
-  `StageResult`); `caps.index` now means keyed commits.
-
-### Dependencies
-- Floors: `kvgit>=0.3.8` (prefix merge policy, `MergeChoice`, byte-equal
-  merges, the GC lease), `monkeyfs>=0.1.10` (per-file metadata rows, the
-  3.10 accessor rebinds), `sandtrap>=0.3.5` (raw is the default mode).
+- **Breaking: `Workspace.rollback(steps)`.** Use `ws.checkout(commit_id)`.
+- **Breaking: flat `Workspace` methods and staging suspension.** Including `head_tree`, tag `scope=`, `delete_workspace`, `StageResult`.
 
 ## 0.5.2 - 2026-09-04
 
-### Changed
-
-- **`blob:` images and media in the default served CSP**
-  ([#58](https://github.com/ashenfad/nontainer/issues/58)). `img-src`
-  gains `blob:` and a `media-src 'self' https: data: blob:` directive
-  joins the policy, where media previously fell through to `default-src
-  'self'`. This is a loosening, taken deliberately: plotly — the library
-  the default frontend notes recommend — rasterizes a chart by putting
-  its SVG in a Blob and drawing it onto a canvas through an `<img>`, so
-  the modebar's *download as png* and `Plotly.toImage()` were refused
-  under the old policy. An image violation is a warning during
-  verification rather than a failure, so it showed as a line in
-  `[rejected requests]` and the app shipped broken. A blob URL is
-  same-origin and same-document — the page can only display bytes it
-  already holds — which is the risk class `data:` already had on those
-  directives. Code from a blob is a different question and is still
-  refused: `script-src` has no `blob:`, and no `worker-src`/`child-src`
-  is added.
-
 ### Added
+- **`AppsConfig.csp_extend`.** `{directive: sources}` appended onto the derived policy, e.g. an intranet `http://` API in `connect-src`; extend-only, and raises `ValueError` if `csp` is also set.
 
-- **`AppsConfig.csp_extend`** — `{directive: sources}` merged onto the
-  DERIVED policy, so an embedder can widen one directive without
-  restating the whole thing. `csp_extend={"connect-src":
-  ("http://api.internal",)}` is what an air-gapped intranet deployment
-  needs: the browser is the only network path an app has (handlers have
-  no network), and a tile server or API on plain `http://` is refused by
-  `connect-src 'self' https:`. The alternative — copying the derived
-  policy into `csp` — is a snapshot that silently loses its link to
-  `script_hosts` and misses whatever the derived policy gains later.
-  Extend-only by design: sources are appended (de-duplicated, derived
-  sources first) or a missing directive is added, and nothing can be
-  removed — a policy that must be tighter is declared whole in `csp`.
-  Setting both `csp` and a non-empty `csp_extend` raises `ValueError`
-  rather than ignoring the extension, since a verbatim policy has
-  nothing to extend.
+### Changed
+- **`blob:` images and media in the default served CSP** (#58). `img-src` gains `blob:` and `media-src 'self' https: data: blob:` is added, so plotly's PNG export works; `script-src` still refuses `blob:`.
 
 ### Fixed
-
-- **test_app's interception now derives its non-script allowances from
-  the served policy.** Its own rule — data and imagery from any https
-  host — was the whole story, so an origin the policy permits but that
-  rule does not (an intranet `http://` API in `connect-src`, an
-  `http://` tile host in `img-src`, a framed origin in `frame-src`,
-  whose sub-frame request was aborted outright) served fine and was
-  aborted during verification: a false red, and the divergence this
-  harness exists to close pointed the other way. The old rule still
-  stands; the policy is consulted as well as it, so nothing that
-  verified before stops verifying. A refusal now names the directive
-  that would have to allow the request instead of calling the
-  environment https-only.
-
-- **Script origins with an explicit port are honoured.**
-  `https://scripts.internal:8443` in a policy was read as a scheme-only
-  source and dropped, so a script host on a non-default port was served
-  and then aborted by verification.
+- **test_app's interception honours the served policy.** Origins the policy allows (an `http://` API, tile host or framed origin) are no longer aborted during verification; a refusal names the directive.
+- **Script origins with an explicit port are honoured.** `https://scripts.internal:8443` was dropped as a scheme-only source.
 
 ## 0.5.1 - 2026-09-03
 
-### Changed
-
-- **sandtrap floor to 0.3.4.** A frozen workspace under
-  `isolation="process"` now refuses a handler's file write loudly: the
-  worker used to push a written file at close, and a garbage-collected
-  close swallowed the read-only refusal, so a published snapshot's
-  handler that wrote a file returned success with nothing written.
-  sandtrap 0.3.4 refuses at `open()`, and a test here pins the 500.
-
 ### Added
+- **`ws.fork(name, at=<checkpoint>)` and `fork_session(..., at=)`.** Branch from an earlier checkpoint without rewinding the session; the dir backend raises `NotSupportedError` for `at`.
+- **Tags.** `ws.tag("v1")` names a state immutably and anchors GC, session-scoped by default or store-scoped to outlive the session; plus `ws.tags()`, `ws.tag_info()`, `ws.delete_tag()`, gated by `caps.tags`.
+- **Frozen workspaces: `ws.at_tag("v1")`.** Opens the tagged state read-only; write tools, `checkpoint`, `fork` and `tag` refuse, and the executor gets a read-only filesystem.
+- **`ws.changed_since(ref)` and `ws.diff(a, b)`.** Changed file paths between checkpoints or tags; framework keys are excluded and a same-bytes re-save is not a change.
+- **`CheckpointInfo.tree` and `ws.head_tree`.** A checkpoint's content hash; equal trees mean identical content.
+- **`KvgitSessionDb.seed(session)`.** Imports a whole `AgentSession` into a branch with no runs yet, e.g. to migrate a conversation from another agno db.
 
-- **`ws.fork(name, at=<checkpoint>)`** and **`fork_session(..., at=)`** —
-  branch from an earlier checkpoint of a session without rewinding the
-  session to get there. Without `at` a fork still checkpoints staged
-  changes first and branches from the present; with `at` the staged
-  changes are left alone, since they belong to the session's present
-  and not to the past being branched. A `fork_session` with `at`
-  carries the conversation as it stood at that checkpoint, under the
-  child's own id. This is what "branch from where I published" needs:
-  the origin session keeps running while the child opens at the
-  publish. The dir backend raises `NotSupportedError` for `at`, having
-  no history to branch from.
-
-- **Tags** — `ws.tag("v1")` names the current state immutably, and the
-  name anchors garbage collection: the checkpoint and its ancestry stay
-  reachable for as long as the tag does. Two scopes, decided here
-  rather than left to embedders: a **session** tag (the default) is the
-  session's own — two sessions can each hold a `v1`, and
-  `delete_workspace` takes it with the branch — while a **store** tag
-  belongs to no session, is listable from any workspace on the store,
-  and survives the session that made it, which is what a publication
-  needs. `ws.tags()`, `ws.tag_info()`, `ws.delete_tag()` complete the
-  set; `caps.tags` gates them, and unversioned providers raise.
-
-- **Frozen workspaces** — `ws.at_tag("v1")` opens the tagged state as a
-  `Workspace` that reads but never writes: `autocheckpoint` off, the
-  write tools and `checkpoint` / `fork` / `tag` refusing up front, and
-  the executor holding a read-only filesystem and cache so agent code's
-  own writes fail where they happen. An executor that runs against its
-  own substrate writes there first, so the workspace refuses to absorb
-  the harvest and reports the refusal on the call instead. It inherits the parent's settings the
-  way `fork` does, live host objects included — the files are frozen,
-  the host's world is not.
-
-- **`ws.changed_since(ref)` and `ws.diff(a, b)`** — what changed
-  between two checkpoints, as workspace file paths (`ref` may be a tag
-  name or a checkpoint id). Framework keys — cache, cwd, the stored
-  conversation — never appear: an embedder sees files. `modified` is
-  the content question, so a file re-saved with the bytes it already
-  had is not a change, even though kvgit's own key diff counts the
-  write.
-
-- **`CheckpointInfo.tree` and `ws.head_tree`** — the content hash of a
-  checkpoint, where `id` identifies the point in history. Equal trees
-  mean identical content.
-
-- **`KvgitSessionDb.seed(session)`** — import a whole `AgentSession`
-  into a branch that holds no runs yet, committed. The path for moving
-  an existing conversation out of another agno db (a studio migrating
-  its chat store, say). Refuses a branch that already holds runs, so the
-  rewind guard keeps its meaning. It was the private step behind the
-  store's handling of agno's own fork; now it is the documented import.
+### Changed
+- **Requires sandtrap 0.3.4** (frozen workspaces under `isolation="process"` refuse a handler's file write at `open()` instead of silently succeeding).
 
 ## 0.5.0 - 2026-09-02
 
-### Changed
-
-- **`DudExecutor` honours or refuses `PythonConfig`, never narrows it.**
-  VM guests have no network interface, so `network=True` — on the
-  config or a `ModuleGrant` — and `stdlib=False` now raise
-  `NotSupportedError` at open instead of being ignored; any
-  `isolation` is exceeded by the VM. The subprocess rung, the declared
-  no-containment rung, enforces nothing and refuses only an explicit
-  `isolation` above `"none"`. Module grants now become the guest
-  image's package list (each granted module's distribution, pinned to
-  the host's version, merged with an explicit `vm={"packages": [...]}`
-  whose pins win), so what the agent may import is the same set on both
-  rungs. A granted local module with no distribution raises;
-  `vm={"packages_from_grants": False}` opts a custom image out.
-
 ### Added
+- **`nontainer.adapters.agno_db`: the conversation in the branch.** One commit holds a turn's files, `cache`, cwd and memory; `ws.restore()` and `fork_session()` move all four together.
+- **Storage: `KvgitSessionDb`.** An agno `JsonDb` keeping one key per run (`__agno__/runs/<run_id>`) plus `__agno__/session` in the branch; other tables stay at `db_path`, and `upsert_session` fires the turn commit.
+- **`KvgitStoreDb`.** One agno db over a whole kvgit store, a branch per session; `get_sessions` lists every branch and agno's `Agent.fork_session` works.
+- **`WorkspaceTools(..., session_db=db)`.** Names the db (either kind) that owns the turn commit, making `tk.end_turn` a no-op; a db over another workspace is refused.
+- **`fork_session(ws, name, conversation="inherit" | "fresh")`.** Forks the workspace and rewrites the session key; `"fresh"` drops the runs for a clean chat.
+- **Fork lineage in `session_data["forked_from_session_id"]`.** Where agno's readers look for it.
+- **Leave `Agent.cache_session` at its default.** With it on, an upsert whose prior runs are not a tail of the branch's `run_ids` raises and writes nothing.
 
-- **`KvgitStoreDb`** — one agno db over a whole kvgit store, a branch
-  per session: built from the store path and the embedder's
-  `open(session_id) -> Workspace`, routing every session call to a
-  per-branch `KvgitSessionDb` over the live workspace. It is the
-  agno-shaped face over the per-branch view. `get_sessions` lists
-  every branch by reading committed heads without opening them, so
-  `search_past_sessions` and the AgentOS session routers see the
-  store's sessions; agno's own `Agent.fork_session` works, forking the
-  parent's branch and seeding agno's copy of the runs; an unknown id
-  reads as `None` and creates nothing. `WorkspaceTools(session_db=)`
-  accepts either db and checks ownership through `db.owns(workspace)`.
-
-- Fork lineage now lives in `session_data["forked_from_session_id"]`,
-  where agno keeps it, so agno's readers find it and it rides along on
-  every upsert instead of needing to be preserved by hand.
-
-- **`nontainer.adapters.agno_db`** — the agno conversation stored in
-  the workspace branch, so one commit holds the turn's files, `cache`,
-  cwd *and* memory. `ws.restore()` rewinds all four together;
-  `fork_session()` branches all four together. The join an embedder
-  used to hand-maintain (stamp the workspace head onto each turn,
-  truncate agno's run list by hand, hope the two writes never diverge)
-  disappears: one store, one commit, one restore.
-
-  ```python
-  db = KvgitSessionDb(ws, db_path="/var/agno")
-  tk = WorkspaceTools(ws, checkpoint="turn", session_db=db)
-  agent = Agent(model=..., db=db, session_id=ws.session, tools=[tk])
-  ```
-
-  `KvgitSessionDb` is an agno `JsonDb` with the sessions table moved
-  into the branch, one key per run (`__agno__/runs/<run_id>`) plus a
-  small `__agno__/session` holding the ordered `run_ids`. One key per
-  run because kvgit dedups per key: a turn writes one new run key and
-  shares the hundred earlier runs by hash with every prior commit,
-  fork and branch, where a single conversation blob would rewrite
-  everything every turn. Values are the JSON-shaped dicts agno hands
-  over, so a branch never depends on agno's class layout. Every other
-  `BaseDb` table is inherited and stays on disk at `db_path` — user
-  memories and metrics are cross-session and must not version with one
-  branch.
-
-  **The per-turn commit moves to the db.** `upsert_session` fires it
-  once it has written a new or changed run. It cannot be the
-  `end_turn` post hook: agno runs post hooks *before* it persists the
-  session, so a hook-driven commit would capture the turn's files and
-  leave its conversation to ride into the next turn's commit — the
-  exact files-versus-memory divergence this exists to remove.
-
-- **`WorkspaceTools(..., session_db=db)`** — names the db that owns
-  the turn commit, which makes `tk.end_turn` a no-op so wiring the
-  hook stays harmless and existing embedder code keeps working. Wired
-  explicitly rather than sniffed off the workspace, so the call site
-  shows which object commits; a db built over a different workspace is
-  refused.
-
-- **`fork_session(ws, name, conversation="inherit" | "fresh")`** —
-  forking is a workspace verb here. It does `ws.fork(name)`, rewrites
-  the fork's session key with its own `session_id` and
-  `forked_from_session_id`, and checkpoints that rewrite.
-  `"fresh"` drops the run keys for a clean chat over the forked files.
-  agno's own `Agent.fork_session` copies runs into a new session id
-  through the *same* db, which assumes one db holding many sessions;
-  the single-session guard refuses that write (agno logs and swallows
-  the error, so what the caller sees is that nothing was written).
-
-  Leave `Agent.cache_session` at its default: agno then re-reads the
-  session every run, so `ws.restore()` needs no invalidation step.
-  With it on, an upsert whose prior runs are not a tail of the branch's
-  `run_ids` raises and writes nothing, rather than quietly writing the
-  rewound turns back. (A tail, because agno 3.x reads the session with
-  a run limit; the branch keeps its full history on such a write.)
+### Changed
+- **Breaking: `DudExecutor` honours or refuses `PythonConfig`.** On VM guests `network=True` and `stdlib=False` raise `NotSupportedError` instead of being ignored; the subprocess rung refuses `isolation` above `"none"`.
+- **Module grants become the guest image's package list.** Pinned to host versions and merged with `vm={"packages": [...]}`; `vm={"packages_from_grants": False}` opts out, and a local module with no distribution raises.
 
 ## 0.4.1 - 2026-08-30
 
 ### Fixed
-
-- **A lone callout rendered as raw JSON.** `ui = {"caveats": {"type":
-  "callout", ...}}` — a correctly-formed callout, just not inside a
-  list — fell past the cards tier (which requires a list), past the
-  html tiers, and landed on the JSON floor. It also said nothing:
-  `_card_row_near_miss` only diagnoses a *list* with bad items, so a
-  bare dict produced no note and the agent had no way to learn what to
-  change.
-
-  A bare **tagged** callout is now adopted as a one-item row — the same
-  forgiveness already applied to a bare list assigned straight to `ui`,
-  one level in: the item is perfect, only the wrapper is missing.
-
-  A bare **stat** (`{label, value}`) is deliberately *not* adopted —
-  that shape collides with ordinary data an agent may want shown as
-  JSON — but it now gets a note saying to wrap it in a list, because
-  silence is what made this a bug report rather than a typo. The note
-  skips tagged callouts, which satisfy both predicates when they carry
-  `label`/`value` and do render as a row.
+- **A lone callout no longer renders as raw JSON.** A bare tagged callout in `ui` is adopted as a one-item row; a bare stat (`{label, value}`) gets a note to wrap it in a list.
 
 ## 0.4.0 - 2026-08-30
 
-### Breaking
-
-- **A rich `ui` value now reads back as an `ArtifactPath`, not the
-  object.** `result.namespace["ui"]["chart"]` used to be the live
-  DataFrame (in-process) or absent entirely (dud rung); it is now
-  `ArtifactPath('/workspace/ui/chart.table.json')` on both. The
-  namespace is a documented consumer surface — `PythonResult.namespace`
-  points embedders at `result.namespace.get("ui")` — so this is a
-  contract change, and the kind that mis-renders quietly rather than
-  raising.
-
-  `ArtifactPath` is a `str` subclass, so code that treats the value as
-  a path keeps working and code that renders it gets a path rather than
-  a figure. If you consumed the live object, read the artifact instead
-  (`ws.read_artifact(p)`, interpreted per `p.kind`) — but note it is a
-  *rendering*, not a serialization: a table artifact is `head(200)`, so
-  the original object is not recoverable from it.
-
-  Only values that cannot cross as data are replaced; a plain string or
-  dict in `ui` is untouched.
-
-- **`run_python` now writes `/ui/` artifacts itself**, with no adapter
-  involved, and those writes land in the call's own checkpoint. A
-  workspace that previously produced artifacts only under the agno
-  adapter will now produce them always.
-
-- **Requires dud >= 0.4.0** for the `[dud]` extra, which is itself a
-  breaking release (rich value flattening moved out of the guest into a
-  host-named hook).
-
 ### Added
-
-- **`ws.read_artifact(path) -> bytes | None`** — an artifact's bytes,
-  or `None` when unreadable. That is precisely the `read_bytes`
-  contract `turn_to_a2ui` documents, so wiring a surface is one
-  argument instead of a hand-rolled wrapper:
-
-  ```python
-  turn_to_a2ui(prose, artifacts, ws.read_artifact, file_url, surface_id=sid)
-  ```
-
-  The `None` is the point: `ws.fs.read` raises `FileNotFoundError` for
-  a missing artifact, and the obvious lambda over it breaks the
-  envelope's never-raises guarantee mid-stream. Bytes rather than a
-  parsed payload, because every consumer parses for itself and a typed
-  loader would invite reading an artifact as the original object —
-  which a `head(200)` table cannot honour.
-
-- **`ArtifactPath`** — what a `ui` value becomes once it is a file.
-  Rich values (plotly figure, DataFrame, matplotlib figure, PIL image)
-  cannot cross a process or machine boundary, so they are written to
-  `<root>/ui/<name>.<ext>` and the binding is replaced with an
-  `ArtifactPath` naming where it went. Exported from `nontainer`.
-
-  A `str` subclass on purpose, so knowing about it is optional: an
-  embedder that has never heard of it still gets a working absolute
-  path that compares, joins and serializes like one. An embedder that
-  cares asks `isinstance(v, ArtifactPath)` — which a bare path string
-  could not answer, since agents put ordinary strings in `ui` too.
-
-  `.kind` (`"plotly"`, `"table"`, `"image"`, ...) is **derived** from
-  the suffix via the same `artifact_kind` the adapters dispatch on,
-  never stored. A stored copy could disagree with the path — a `.png`
-  labelled `"table"` would be expressible — and one fact belongs in
-  one place.
-
-- **`{"goto": "about.html"}`** — a multi-page app could previously only
-  be verified at its entry point. CSP violations are harvested before the
-  navigation discards them, and an HTTP error fails the action: `goto`
-  *resolves* on 4xx/5xx (it only raises for transport failures), so
-  navigating to a missing page would otherwise be a passing action on a
-  404 document.
+- **`ArtifactPath`.** A `str` subclass naming where a rich `ui` value was written (`<root>/ui/<name>.<ext>`); `.kind` is derived from the suffix. Exported from `nontainer`.
+- **`ws.read_artifact(path) -> bytes | None`.** `None` when unreadable, matching the `read_bytes` contract of `turn_to_a2ui`.
+- **test_app `{"goto": "about.html"}`.** Verifies pages past the entry point; an HTTP error fails the action.
 
 ### Changed
-
-- **An oversized artifact now fails identically on either rung.** The
-  guest wrote `<name>.json` carrying `{"error": ...}` while the host
-  wrote `<name>.txt` carrying the plain message — one condition, two
-  artifact kinds — and the guest's message reached nobody, because only
-  the in-process path fed `ui_problems`. Both now use the same
-  `too_large_note`, write the same `.txt`, and surface the same
-  `ui_problems`. The cap is a *renderer* limit advertised to the agent
-  in the primer, so the note is the feedback half of that contract.
-
-- **`ui` artifacts now happen for every consumer, on every rung.**
-  Materialization moved out of the agno adapter and into
-  `Workspace.run_python`, which is the funnel every caller passes
-  through.
-
-  It was incoherent before, and not by anyone's choice: on the dud
-  rung the file was written *during execution* (the guest has no other
-  way) and the binding was then deleted, losing the name the agent
-  picked; in-process the live object stayed in `ui` and became a file
-  only if the agno adapter happened to run. Whether a chart became a
-  file at all depended on your executor **and** your adapter. Now both
-  rungs yield the same thing (see Breaking, above).
-
-  Only values that genuinely cannot cross are replaced — a plain
-  string or dict in `ui` stays itself. Adapters still render
-  everything for display; that is a separate question from what the
-  binding holds.
-
-  This also fixes a regenerated artifact going unnoticed after its
-  first run (#46): the adapter's fallback claimed only files that
-  *appeared* during a call, so overwriting a chart under a stable name
-  produced no note the second time.
-
-- **dud 0.4.0**, which moves rich `ui` flattening out of the guest and
-  into a hook the host names. `nontainer.dud_outputs:flatten` is that
-  hook, and `DudExecutor` names it on both rungs — so a plotly figure,
-  DataFrame, matplotlib figure or PIL image assigned into `ui` still
-  becomes a `/ui/<name>.<ext>` artifact, written guest-side where the
-  live object is.
-
-  Without it the failure was quiet and larger than a missing artifact:
-  one DataFrame makes the whole `ui` dict unrepresentable, so dud drops
-  the *entire binding* and the plain strings beside it disappear too.
-  `namespace["ui"]` came back `None`, which reads like the agent never
-  set it. Nothing caught that, because nothing covered a rich value
-  crossing a dud boundary — now `tests/test_dud_outputs.py` and one
-  end-to-end case in `tests/test_dud_executor.py` do.
-
-  The guest copy stays deliberately small: only the four types that
-  cannot cross the wire. Everything else still crosses as data and
-  `adapters/render.py` materializes it, so there is one authority for
-  the shape rules rather than two implementations drifting apart. The
-  DataFrame artifact now also carries `columnTypes`, which the host
-  renderer wrote and the old guest copy did not.
-
-  Two notes for VM rungs. The hook is an ordinary import *inside the
-  guest*, so on `backend="vm"` the module has to be layered in with
-  `vm={"packages": [...]}` — alongside whatever provides pandas or
-  plotly, without which nothing in `ui` can be rich enough to need it.
-  And dud 0.4.0 turned same-content park affinity off by default, so
-  the `state=` tag `DudExecutor` passes is a no-op on firecracker
-  unless `$DUD_VM_MAX_AFFINITY` is set; it still applies on
-  macOS/vfkit, which parks every release regardless.
-
-- **agno 3.0 is supported, with no upper bound.** Its breaking changes
-  are all in surfaces this adapter never touches (the runs table, renamed
-  `Agent` params, `Workflow`/HITL, `MultiMCPTools`); nontainer builds a
-  `Toolkit` and returns `ToolResult`, stable across both majors. The full
-  suite passes on 3.0.1.
-
-- **An absolute url now FAILS verification.** `apps.md` has always said
-  relocatability violations "fail during verification, not at delivery";
-  they only warned. Worse, the harness 404s an absolute path with a JSON
-  body, so an app calling `.json()` without checking `.ok` renders as if
-  fine and reports PASS while being broken in production. An absolute url
-  is always an app bug, never a choice — apps are served under an
-  arbitrary `/apps/{token}/` prefix.
-
-  **This can turn a currently-green app red**, which is the point.
-
-- **`eval` settles before observing, as `read` already did.** On a page
-  still fetching, `eval` returned the stale value and reported it as
-  fact — and `eval` is where agents ask what `read` cannot express
-  (counts, attributes, computed styles), so it needed the guarantee more,
-  not less.
-
-- **A failed action captures the page**, and a selector that missed names
-  the ids and `data-key`s actually present. The run stops at a failure,
-  so a trailing `{"screenshot": true}` never runs and the agent re-runs
-  the whole test just to look; and Playwright reports only what it waited
-  for, which leaves an agent re-guessing blind.
-
-- **An early console error is no longer buried** by a chatty tail — the
-  noise a broken page produces is exactly what pushes the explanation off
-  the end.
+- **Breaking: a rich `ui` value reads back as an `ArtifactPath`.** Not the live object, on every rung; read it with `ws.read_artifact(p)`, a rendering (tables are `head(200)`), not a serialization.
+- **Breaking: `run_python` writes `/ui/` artifacts itself.** On every rung, in the call's own checkpoint, with or without the agno adapter; also fixes a regenerated artifact going unnoticed (#46).
+- **Requires dud 0.4.0** for the `[dud]` extra (rich `ui` flattening moved to the host-named hook `nontainer.dud_outputs:flatten`).
+- **dud VM notes.** On `backend="vm"` add the hook module via `vm={"packages": [...]}`; the `state=` tag is a no-op on firecracker unless `$DUD_VM_MAX_AFFINITY` is set.
+- **Oversized artifacts fail the same on either rung.** Both write the same `.txt` note and report the same `ui_problems`.
+- **agno 3.0 is supported, with no upper bound.**
+- **Python 3.14 joins the test matrix.**
+- **Breaking: an absolute url now fails verification.** It only warned before, so a currently-green app can turn red.
+- **test_app diagnostics.** `eval` settles before observing like `read`; a failed action captures the page; a missed selector lists the ids and `data-key`s present; early console errors stay visible.
 
 ### Fixed
-
-- **The `agno` extra claimed a floor it does not have.** `agno>=1.0` was
-  false twice over. The adapter imports `agno.tools.function.ToolResult`,
-  which does not exist in agno 1.x at all — so `pip install
-  'nontainer[agno]'` resolving to 1.0.0 failed at import. And the SHIPPED
-  INTEGRATIONS need `pre_hooks`/`post_hooks` on `Agent`, which landed in
-  2.1.0: `examples/analyst.py` passes `post_hooks`, so a floor the
-  adapter cleared would still have shipped an example that could not run
-  on it. The floor is now `agno>=2.1`, verified on 2.1.0, 2.7.2 and 3.0.1.
-
-  It stayed wrong because CI installs agno unpinned and so only ever
-  tested the newest release. An `agno-versions` job now pins the floor
-  and the current major, a test names the four-import surface the adapter
-  depends on, and a second test constructs the `Agent` shapes the README
-  and examples actually document — which is what caught the `post_hooks`
-  gap that testing the adapter alone missed.
-
-### CI
-
-- **Python 3.14** joins the test matrix.
-
-- **The `dud` extra is now installed in CI.** `tests/test_dud_executor.py`
-  guards itself with `importorskip("dud")`, and CI never installed the
-  extra — so all 56 of those tests skipped silently, which is how a
-  breaking change in a dependency reached us unnoticed. The extra's
-  `python_version >= "3.11"` marker keeps 3.10 skipping them by design.
+- **Requires agno 2.1** for the `agno` extra (the old `agno>=1.0` floor could not import the adapter); verified on 2.1.0, 2.7.2 and 3.0.1.
 
 ## 0.3.7 - 2026-08-28
 
 ### Changed
-
-- **The default frontend CHOICE moved into `frontend_notes`**, alongside
-  the library supply it was already carrying. The template no longer
-  opens with *"for most apps, plain HTML + DOM + fetch is the MOST
-  RELIABLE choice"* — that sentence is now the first line of
-  `DEFAULT_FRONTEND_NOTES`.
-
-  0.3.4 moved *supply* to the embedder on the grounds that only they know
-  whether esm.sh resolves. The default choice is the same kind of claim
-  and was left behind: it was written when the alternative was Preact
-  over a CDN, and it is exactly wrong for an embedder that vendors a
-  component library and wants every app to look like it came from the
-  same place. Such an embedder was being contradicted by the library it
-  embeds — and the built-in sentence was the more emphatic one, so it
-  won.
-
-  **A plain install renders the same guidance**, in the same block as the
-  Preact pattern it belongs with. An embedder that already replaces
-  `frontend_notes` now also replaces the plain-DOM recommendation, which
-  is the point but is a behaviour change for anyone relying on it
-  surviving.
-
-  Unchanged in the template, because they are about the SHAPE of the code
-  rather than which approach to take: relative URLs, and the rule against
-  swapping a named import for a `<script src>` build or a guessed global.
-
-- **Docs realigned with 0.3.3–0.3.6.** An audit after that run found five
-  places still describing superseded behaviour: `apps.md` called
-  HTM+Preact "the default idiom" and recommended `@babel/standalone` with
-  a size claim that is off by 50% and an entry point the served CSP
-  refuses; it said *"test_app is indifferent to all of this"*, which
-  stopped being true when test_app began sending the policy; it described
-  `assert` as using `wait_for_function`, replaced in 0.3.6 for exactly
-  that reason; `TestAppResult.ok` omitted the CSP clause in both the
-  docstring and the doc; and `quick-start` still said serving alone drives
-  the CSP.
+- **The default frontend choice moved into `frontend_notes`.** "Plain HTML + DOM + fetch" is now the first line of `DEFAULT_FRONTEND_NOTES`, so an embedder replacing `frontend_notes` replaces it too.
+- **Docs realigned with 0.3.3-0.3.6.** Stale text on HTM+Preact, `@babel/standalone`, test_app and the CSP, `assert`, and `TestAppResult.ok` corrected.
 
 ## 0.3.6 - 2026-08-28
 
 ### Fixed
-
-- **`assert` retries again under the CSP 0.3.5 started sending.** A
-  regression in that release, and a bad one: `page.wait_for_function`
-  installs its polling helper *into the page*, which needs
-  `'unsafe-eval'` — precisely what the enforced policy withholds. Every
-  retry died, so the assertion only ever saw the page's first frame.
-
-  An app that settles asynchronously — anything that fetches, which is
-  most of them — therefore **failed verification while being correct**,
-  and the failing assert also emitted a CSP rejection blaming the app for
-  the harness's own instrumentation. A false red on top of a misleading
-  diagnostic.
-
-  Asserts are now polled from the harness with `page.evaluate`, which
-  goes over CDP and is not subject to page policy. Retry semantics are
-  unchanged and slightly better: an expression that *raises* is retried
-  too, since a predicate reaching for a node the app hasn't rendered yet
-  throws on the first pass and succeeds on the third.
+- **`assert` retries again under the enforced CSP.** A 0.3.5 regression failed async apps; asserts now poll via `page.evaluate`, and an expression that raises is retried too.
 
 ## 0.3.5 - 2026-08-28
 
-### Changed
-
-- **`test_app` now sends the served Content-Security-Policy**, instead of
-  only mimicking its origin rules by intercepting requests.
-
-  Interception reproduces *where things may load from* faithfully, and
-  that was long treated as equivalent. It isn't. A CSP also governs
-  *behaviour* — `eval`, `new Function`, blob workers, blob module
-  scripts — and none of that involves a request there is anything to
-  intercept. Those passed verification and failed only once published.
-
-  The case that forced it, found while spiking browser-side JSX:
-  `Babel.transformScriptTags()` — the obvious entry point — compiles to a
-  **blob** and loads it as a module script. Measured in Chromium:
-
-  | | no CSP (what test_app did) | with CSP (what publishing does) |
-  |---|---|---|
-  | inline injection | ran | ran |
-  | blob injection | ran | **blocked** |
-
-  And the failure is silent: a refused script does not throw, so a
-  page-level `try`/`catch` sees nothing and `page_errors` stays empty. The
-  app verified green and was quietly broken in production.
-
-  **A violation that stopped code running fails the run**, not just the
-  diagnostics: `TestAppResult.ok` is false and `render_test_app` prints
-  FAIL. Reporting the block while still printing PASS would have made the
-  failure visible and left the false green in place one layer up. A
-  refused *image*, font or stylesheet stays a warning — that is a blemish
-  on a page that otherwise works, and failing for it would train agents to
-  ignore red.
-
-  **This is a behaviour change.** An app that relies on `eval`,
-  `new Function`, or a blob-loaded script will now FAIL verification
-  rather than passing and breaking later — which is the point, but it can
-  turn a green app red without the app having changed.
-
-- **CSP violations are reported as fixes, in `[rejected requests]`.** An
-  external script the allowlist doesn't cover keeps the allowlist wording
-  it always had: the browser now refuses it *before* interception can, so
-  the harness's better-worded message had to move to the violation path
-  too. Enforcing a policy must not downgrade a diagnostic.
-
 ### Added
+- **`AppsConfig.csp`.** The policy served HTML carries and `test_app` enforces: `None` derives it from `script_hosts`, `""` disables, a string is verbatim; `build_router(csp=...)` still wins but is unverified.
+- **Custom `script-src` origins join test_app's allowlist.** Quoted keywords, scheme-only sources and wildcards are skipped; list those in `script_hosts`.
 
-- **`AppsConfig.csp`** — the policy served HTML carries *and* the one
-  `test_app` enforces. `None` derives it from `script_hosts`, `""`
-  disables it, a string is used verbatim.
-
-  It belongs on the config because a policy declared in one place and
-  verified against another is the divergence this config exists to
-  prevent. `build_router(csp=…)` still wins where an embedder passes it,
-  for compatibility — but a policy passed only there is one verification
-  never sees.
-
-  A custom policy's `script-src` origins also join test_app's
-  interception allowlist, so a host the *served* policy permits is not
-  aborted during verification — the same divergence pointed the other
-  way. Quoted keywords, scheme-only sources and wildcards can't be
-  honored by a hostname check and are skipped; list those in
-  `script_hosts`.
+### Changed
+- **Breaking: `test_app` sends the served Content-Security-Policy.** A violation that stops code (`eval`, `new Function`, blob scripts) fails the run; refused images, fonts and stylesheets stay warnings.
+- **CSP violations are reported as fixes in `[rejected requests]`.** A disallowed external script keeps the allowlist wording.
 
 ## 0.3.4 - 2026-08-28
 
 ### Added
-
-- **`AppsConfig.frontend_notes`** — the block of the apps notes that says
-  *which frontend libraries exist and where they come from*, now owned by
-  the embedder.
-
-  0.3.3 made vendored libraries possible (`static_assets`) without moving
-  the guidance that describes them, so the tool description still told the
-  agent — emphatically, and by example — to import Preact from `esm.sh`
-  and plotly from `cdn.jsdelivr.net`. For an air-gapped deployment that is
-  an instruction to fetch from hosts that do not resolve, sitting in the
-  one block introduced with *"copy this known-good pattern exactly"*.
-  `apps_primer` could not fix it: it appends, so the correction landed
-  below the wrong instruction, which was also the more emphatic one.
-
-  `None` (default) keeps the built-in block, so a plain install renders an
-  unchanged prompt; `""` omits it; a string replaces it. Import
-  `nontainer.adapters.render.DEFAULT_FRONTEND_NOTES` to extend rather than
-  discard.
-
-  The split is supply vs. shape: *where the bytes come from* is the
-  embedder's, while relative URLs, "plain DOM is the most reliable
-  choice", and the rule against swapping a named import for a
-  `<script src>` build or a guessed global stay in the template — they
-  are true wherever the bytes come from, and agents get them wrong often
-  enough that no embedder should be able to drop them by accident. The
-  anti-guessing rule matters *more* on the replaced path: a vendored
-  `vendor/mui.js` gives an agent no URL to anchor on, so `window.MUI`
-  from memory gets likelier.
-
-  `frontend_notes` is declared last on `AppsConfig`, so 0.3.3's
-  positional signature still binds `static_assets` sixth.
+- **`AppsConfig.frontend_notes`.** The embedder owns the notes on which frontend libraries exist and where from: `None` keeps the built-in, `""` omits, a string replaces; extend `nontainer.adapters.render.DEFAULT_FRONTEND_NOTES`.
 
 ### Changed
-
-- **An empty `script_hosts` reads as a rule instead of a bug.** `()` is
-  the air-gapped shape, and it used to render "Browser SCRIPTS may only
-  load from these hosts:" followed by nothing — a dangling colon that
-  reads as a broken prompt. It now states the rule positively: scripts may
-  load only from the app itself.
+- **An empty `script_hosts` reads as a rule.** `()` now says scripts may load only from the app itself, not a dangling colon.
 
 ## 0.3.3 - 2026-08-27
 
-### Changed
-
-- **`test_app` page errors name the agent's own code, and quote the line.**
-  A stack is mostly somebody else's: with a component library in play the
-  top frame is deep inside a bundle and the one line the agent can act on
-  is below it — so reporting the *first* frame reported the least useful
-  one, and a bare line number still cost a call to go look it up. Errors
-  now read:
-
-  ```
-  TypeError: svae is not a function (at Dashboard (app.js:42:13), +4 frames above it in library code)
-       42 | <Button onClick={svae}>Save</Button>
-  ```
-
-  Frames are classified against what is being served: the test_app origin
-  and bare `//# sourceURL=` names resolve to workspace files; a declared
-  `static_assets` prefix or a third-party host is library code;
-  `blob:`/`data:`/eval is generated code with no file to open. An inline
-  `<script>` reports the document URL, which now resolves to `index.html`
-  rather than going unattributed — the common case in a first app.
-
-  When nothing in the stack is the agent's, it says so (`no frame in your
-  own files — all 6 frames are in library code`) instead of printing a
-  location from inside a bundle. Same rule as the existing parse-error
-  branch: a misleading diagnostic is worse than an absent one.
-
-  Frame selection and rendering are pure functions (`parse_frames`,
-  `classify_frame`, `describe_page_error`), so the source read is injected
-  and the behavior is testable without a browser.
-
-  The location comes from the *last* parenthesised group in a frame, since
-  a function name can contain parentheses of its own; and the quoted line
-  is clipped to a glanceable size, windowed on the error column so a
-  minified or generated line still shows the fault rather than its first
-  200 characters.
-
 ### Added
-
-- **`AppsConfig.static_assets`** — a URL prefix → host directory mapping of
-  fixed files served *with* an app but absent from the workspace: a vendored
-  component library, fonts, a charting bundle. `{"vendor": "/srv/assets"}`
-  serves `/srv/assets/mui.js` at `vendor/mui.js`, for `curl`, `test_app`,
-  the live preview, and a published snapshot alike — all four go through
-  `dispatch`, so one declaration covers them.
-
-  This is what makes an air-gapped app possible (nothing to fetch from a
-  CDN) and what a house component library rides on. It is deliberately
-  **not** a `Mount`: these bytes are not workspace state but a property of
-  the serving environment, so they are to the browser what `host_objects`
-  are to handlers. The agent's filesystem never sees them — no commit
-  weight, no fork weight, nothing shipped to a remote executor's guest —
-  and the apps notes say so in a sentence derived from the config itself,
-  because an agent that looks with `ls`, finds nothing, and writes its own
-  copy has burned a turn on a file that will not be served. `curl
-  vendor/lib.js` still works for a peek.
-
-  Two deliberate exemptions from handler rules: assets skip
-  `max_response_bytes` (that cap catches runaway handler output; a charting
-  bundle clears the 2MB default on its own), and they take precedence over
-  a workspace file at the same path — noted in `api.log` rather than
-  shadowed silently.
-
-  Assets are same-origin, so `script_hosts` needs no entry. Declare them on
-  the one `AppsConfig` passed to both `enable_apps` and `build_router`:
-  present while authoring and missing while serving is the one failure
-  `test_app` cannot catch.
-
-- **Static serving knows the types a vendored bundle brings** — `.wasm`,
-  `.woff2`, `.woff`, `.ttf`, `.map`. A font survives the octet-stream
-  fallback; `.wasm` does not, since `WebAssembly.instantiateStreaming`
-  refuses anything but `application/wasm` — and it would have failed with
-  nothing in the log to explain it.
+- **`AppsConfig.static_assets`.** Maps a URL prefix to a host directory of vendored files (`{"vendor": "/srv/assets"}`), outside the workspace; pass one config to `enable_apps` and `build_router`.
+- **Static assets skip `max_response_bytes`.** They also win over a workspace file at the same path, noted in `api.log`.
+- **More static types.** `.wasm`, `.woff2`, `.woff`, `.ttf`, `.map`.
 
 ### Changed
-
-- **The served CSP allows WebAssembly compilation** (`'wasm-unsafe-eval'`
-  in `script-src`). Browsers gate wasm on `script-src`, and `test_app`
-  enforces the script allowlist by intercepting requests rather than by
-  sending the header — so a vendored library with a wasm core
-  (duckdb-wasm, sql.js, pyodide) would verify green and then die only once
-  published. It permits wasm compilation only; it does not enable `eval`,
-  and it is far narrower than the `'unsafe-inline'` already on that line.
+- **`test_app` page errors name the agent's own frame and quote the line.** Frames are classed as workspace, library or generated code; an inline `<script>` resolves to `index.html`.
+- **The served CSP allows WebAssembly** (`'wasm-unsafe-eval'` in `script-src`). Compilation only; `eval` stays refused.
+- **`Mount` docs clarified.** A fork inherits the mount point; the data behind it stays a live view of the host directory that neither parent nor fork can roll back.
 
 ### Fixed
-
-- **`fork()` no longer drops the workspace's mounts.** A fork rebuilt its
-  `Workspace` from a hand-listed set of constructor arguments, and `mounts`
-  was added after that list was written — so the fork silently lost every
-  mount point. Because publishing a snapshot *is* a fork, an embedder who
-  mounted a dataset had it work while authoring, verify green under
-  `test_app`, and then 404 the moment the app was published: a
-  verified-green/published-broken split that verification could not catch.
-
-  Worse than absent, in one case: a write the mount should refuse
-  (`echo x > /data/new.txt` under a read-only mount) stopped erroring in
-  the fork and silently landed in its own tree instead, because the path
-  was no longer a mount point at all.
-
-  The fields a fork replays now come from one record rather than a list at
-  the call site, and a test asserts every pass-through parameter of
-  `Workspace.__init__` is in it — so the next argument cannot fall out the
-  same way. `provider`, `executor`, `commands`, and `autocheckpoint` are
-  excluded for stated reasons.
-
-- **Mount sources resolve once, at construction.** A relative `Mount.path`
-  (or a symlink retargeted afterwards) used to re-resolve when a fork was
-  built, so parent and fork could end up on different directories — which
-  the live-view contract says cannot happen. The resolved mapping is what a
-  fork replays.
-
-### Changed
-
-- **`Mount`'s docstring, the README, and `docs/api.md` now say what "not
-  copied by forks" meant.** The sentence was ambiguous between "the fork
-  does not snapshot the mounted data" (true, and intended) and "the fork
-  has no mount" (what the code did). Both halves are now explicit: a fork
-  **inherits the mount point**, and the data behind it stays a live view of
-  the host directory that neither parent nor fork can roll back.
+- **`fork()` keeps the workspace's mounts.** Forks, and so published snapshots, lost every mount, 404ing mounted data and letting writes bypass a read-only mount.
+- **Mount sources resolve once, at construction.** A relative `Mount.path` or retargeted symlink no longer sends parent and fork to different directories.
 
 ## 0.3.2 - 2026-08-24
 
 ### Changed
-
-- **Requires sandtrap >= 0.3.3**, which gates `__import__` against the policy
-  instead of refusing it outright. Agents that reach for
-  `__import__("numpy")` — a predictable habit — now get the module if it is
-  granted, rather than a validation error and a wasted turn.
-
-- **`run_python` no longer reports the namespace.** Every call that bound a
-  variable used to end with `[namespace kept for host: cols, df, n, total]`.
-  It was the most frequent line in the python observation stream and the least
-  useful one: it named bindings the agent had just written, claimed "kept for
-  host" for names no host reads (in practice only `ui`, plus the apps loop's
-  internal `nt__*`), and described a closed file handle as state the host
-  holds. It also went quiet in the one case worth reporting — values dropped
-  in transit under process isolation, where it listed what survived and said
-  nothing about what vanished.
-
-  Silent calls now render `(no output; success)`, which the note had been
-  masking: because parts are appended, a namespace line meant the success
-  signal never showed. Consequences are still reported where they exist —
-  `[ui artifacts: ...]` for `ui = {...}` bindings, unchanged.
+- **Requires sandtrap 0.3.3** (policy-gated `__import__`). `__import__("numpy")` now returns a granted module.
+- **`run_python` no longer reports the namespace.** The `[namespace kept for host: ...]` line is gone; silent calls show `(no output; success)`.
 
 ### Removed
-
-- **The `__import__` intent hint.** It told agents "dynamic `__import__` is
-  blocked, but ordinary import statements work here". Under sandtrap 0.3.3
-  there is nothing to redirect: a *granted* module imports dynamically without
-  complaint, and a *blocked* one raises the same `Import of 'x' is not allowed`
-  the statement form raises — so `blocked_import_hint` labels it already, and
-  `__import__("subprocess")` now inherits the "use the terminal tool" redirect
-  for free. The door the hint pointed at is now the door the agent was already
-  standing in.
+- **The `__import__` intent hint.** A blocked `__import__` now gets the same error and `blocked_import_hint` redirect as an import statement.
 
 ## 0.3.1 - 2026-08-21
 
 ### Added
-
-- **`PythonConfig.preload_grants`** — import granted modules once into
-  sandtrap's forkserver broker so every worker inherits them copy-on-write
-  instead of importing its own copy. Process/kernel isolation only; requires
-  sandtrap >= 0.3.2, where the flag first became reachable through the public
-  factory.
-
-  It is the large lever on worker cost, and moves time and memory together.
-  With the `dataframes()` preset granted, measured here:
-
-  | | worker start | worker RSS |
-  |---|---|---|
-  | default | ~176 ms | ~77 MB |
-  | `preload_grants=True` | ~14 ms | ~33 MB |
-
-  The memory difference is copy-on-write sharing: the stack is paid for once
-  in the broker rather than per worker. It applies to **every** worker,
-  including the session worker each workspace holds for its life — so in a
-  host with many open workspaces it moves more memory than `warm_view_workers`
-  does.
-
-  Off by default because preloading runs your grants' *import-time code in the
-  broker*, and a grant that starts a thread on import leaves the broker
-  multi-threaded — putting every worker forked from it back on the deadlock
-  path the forkserver default exists to avoid. Only you can vouch for your
-  grants. The stdlib and data-stack presets are fine.
-
-  Note it is **process-wide, not per-workspace**: the preload list is read once
-  when the broker starts, so the first workspace to start a worker decides for
-  the process. Later ones still work (their modules import per worker) and
-  sandtrap warns. Set it uniformly.
+- **`PythonConfig.preload_grants`.** Imports grants once in sandtrap's forkserver broker for copy-on-write workers (~176 ms to ~14 ms start with `dataframes()`); process/kernel only, off by default.
+- **`preload_grants` is process-wide.** The first workspace to start a worker decides; unsafe if a grant starts threads on import.
 
 ### Changed
-
-- **`PythonConfig.view_workers` is renamed `warm_view_workers`**, and defaults
-  to 1 rather than 8.
-
-  The old name read as a *limit on workers*. It never was one: it sizes a
-  **warm cache**, and nothing in nontainer bounds how many workers a burst can
-  create (see below). That misreading is not hypothetical — it produced four
-  wrong statements in this project's own docs, written by the author of the
-  pool. Renamed while 0.3.0 is a day old and the field has no known users;
-  a rename after adoption would not be worth it.
-
-  The default drop is not an API break either — nothing raises, nothing
-  changes shape, and a saturated cache falls back to per-call sandboxes
-  exactly as before. But it is a tuning change with teeth for one workload,
-  so read the last paragraph if you serve app traffic.
-
-  The view-worker pool was introduced as a fork-hazard mitigation: a view
-  sandbox was minted per call, so serving an app meant one `fork()` per request
-  from a live ASGI server. sandtrap 0.3 creates workers from a forkserver
-  broker, so **that hazard is gone at its source** — the pool is now purely a
-  cost amortizer, and its documentation said otherwise.
-
-  It still earns its place, because the same change made worker creation *more*
-  expensive: a per-call worker used to be a copy-on-write fork of a host that
-  already had the stack imported (~5ms, near-zero private memory), where a
-  forkserver worker re-imports the granted modules (~18ms stdlib, ~235ms and
-  ~113MB with a heavyweight stack).
-
-  The default moved because **residency only rises**. Concurrency — not the
-  cap — decides how many workers exist *during* a burst; what stays resident
-  afterwards is `min(concurrency, warm_view_workers)`, since calls past the cap run
-  in transient sandboxes that are reaped when they finish while pooled workers
-  are kept, and nothing expires an idle one. So the cap behaves as a floor that
-  fills and stays filled rather than a ceiling you retreat from. At 8, six
-  concurrent view calls left six workers holding ~673MB for the executor's
-  life. At 1, the same burst leaves one — and the app-iteration loop
-  (edit → `test_app` → preview) is sequential enough to stay warm on it.
-
-  **Prefer `preload_grants=True` with `warm_view_workers=0` where your grants
-  allow it.** At ~14ms a worker start is cheap enough to give every request a
-  pristine one, which removes the warm set entirely: nothing to size, no
-  memory floor, and no process state carried between handler calls. The cache
-  exists for when preloading isn't safe (a grant that starts threads on
-  import) or isn't enabled, where a per-call worker costs ~235ms instead.
-
-  **Raise it if you serve concurrent app traffic.** The new default is sized
-  for the build-and-preview loop, not for load, and the trade is not free in
-  that direction: under *sustained* concurrency the peak worker count is
-  unchanged (concurrency sets it either way), while more of those workers are
-  built per call — so a busy app server pays steady-state latency to get the
-  retained memory back. Requests past the cap fall back to a per-call sandbox
-  rather than queueing, so too-low costs latency (visible, recoverable) while
-  too-high costs memory. `0` still gives every call a pristine worker.
-
-- Requires **sandtrap >= 0.3.2**.
+- **Breaking: `PythonConfig.view_workers` is now `warm_view_workers`.** It sizes a warm cache, not a limit; default 1 (was 8), raise it for concurrent app traffic.
+- **Requires sandtrap 0.3.2** (for `preload_grants`).
 
 ## 0.3.0 - 2026-08-20
 
-### Changed
-
-- **Requires sandtrap >= 0.3.0, where process workers no longer fork the
-  embedding process.** Workers are created by a `forkserver` broker instead, so
-  a multi-threaded host — which any uvicorn/FastAPI server is — can no longer
-  hand a worker a lock held by a thread that doesn't exist in it. That failure
-  hung the worker rather than crashing it, and surfaced only as
-  `"Worker process became unresponsive"`.
-
-  Three consequences for embedders:
-
-  - **A `PythonConfig.policy` you supply must now be serializable.** Module
-    grants, module-level functions and classes are fine; lambdas, closures,
-    bound methods, and classes defined inside a function are not.
-    `Workspace(...)` raises `StPolicyNotPortable` at construction, listing
-    every problem at once.
-  - **Granted modules are imported once per worker** rather than inherited, so
-    a heavyweight grant costs real time at worker start (~126ms for `pandas`,
-    against ~18ms for the stdlib preset). Workers are long-lived — one per
-    workspace, plus the app-handler pool — so this is paid at construction, not
-    per call.
-  - **Your program's entry point must be importable.** A worker that doesn't
-    inherit memory re-imports `__main__`, so module-level work in your entry
-    point belongs behind `if __name__ == "__main__":`. Servers are unaffected
-    (an ASGI app is imported, not run as `__main__`) and so is a normal
-    `python myserver.py`; what breaks is constructing a `Workspace` from
-    `python -c`, from `python -` with a heredoc, or from a bare REPL.
-
-    This is about **your** process, not the agent's code. The terminal's
-    `python` builtin runs inside the existing worker rather than starting a
-    process, so `python <<'EOF'`, `python -c`, `python file.py`, and
-    `cat x.py | python` all keep working from agent code exactly as before.
-
-- **Requires dud >= 0.3.0 for the `[dud]` extra, which now demands an explicit
-  allowlist per host object.** Registering one without a grant raises
-  `PolicyError` rather than quietly exposing every public method — dud's one
-  fail-open path, now closed.
-
-  nontainer grants each host object its **public methods**, which is the same
-  surface `LocalExecutor` bridges over RPC (its handler rejects underscored
-  names and non-callables). Both rungs therefore reach the same members, and
-  `PythonConfig` needs no new knob. `dud.public_methods()` resolves to a
-  concrete frozenset rather than a wildcard, so a grant snapshots what exists
-  at construction instead of whatever gets added to the object later.
-
-  Two dud 0.3.0 changes land in nontainer's favour without work here. Guest
-  processes now boot with their image's environment, so a populated `PATH`
-  means agent code can `subprocess` python and anything `packages=[...]`
-  installed. And dud's print guards were loosened from an observation budget
-  (20 KB transcript / 2 KB entry) to resource guards (1 MiB / 16 KiB) — output
-  used to be truncated by dud *before* nontainer could apply its own
-  budget-aware rendering, so `max_observation` was competing with a smaller
-  cap it couldn't see.
-
-- **Host objects are registered by class, and only in-process.** Under
-  process/kernel isolation the agent holds an `RpcProxy`, whose type is not the
-  object's, so a registration keyed on that type never matched it and gated
-  nothing. It was doing no work while making the policy unserializable — which
-  meant a host object whose class is defined inside a function (common in
-  tests, and in code that builds adapters in factories) broke the whole policy.
-  In-process execution is unchanged: there the real object is what lands in the
-  namespace, and the registration carries its member filters.
-
-- **App handler dispatch reuses resident sandbox workers instead of forking
-  one per request.** Under `isolation="process"`/`"kernel"`, every handler
-  call minted and reaped its own worker, so serving an app meant one
-  `fork()` per HTTP request — taken from a live ASGI host, which is
-  multi-threaded (the router dispatches through `anyio.to_thread`). Forking
-  a multi-threaded process can leave the child holding a lock no surviving
-  thread will release, and such a child *hangs* rather than crashing: the
-  request stalls until a timeout fires, with nothing in the error naming
-  the cause (sandtrap#38). Workers are now kept resident per distinct
-  handler view and checked out per call, which turns N forks per N requests
-  into at most `PythonConfig.view_workers` forks for the executor's whole
-  life, and drops per-request worker start from the latency.
-
-  Only view calls change. `run_python` and plain `exec_python` already ran
-  in the session sandbox, forked once at workspace construction and held
-  for its life — they never forked per call and are untouched here.
-
-  Requests beyond the cap fall back to a per-call sandbox rather than
-  queueing. `PythonConfig.view_workers=0` restores the old per-call
-  behavior; the default is 8, and a busy server should raise it toward its
-  own concurrency limit (Starlette's default thread limiter is 40).
-
-  The tradeoff a resident worker makes: process state — `sys.modules`,
-  module globals, anything a handler mutated through a granted module —
-  now outlives the request that created it, where a per-call fork gave
-  every request a pristine copy-on-write view. The blast radius is one
-  workspace: a pool belongs to one executor, and distinct sessions resolve
-  to distinct executors, so this is state shared between handlers of a
-  single app.
-
-### Fixed
-
-- **The A2UI artifact fallback no longer emits an invalid `link` key**
-  ([#31](https://github.com/ashenfad/nontainer/issues/31)). Any artifact that
-  couldn't be mapped to a richer component shipped
-  `Text {text, link}` — but the basic catalog's `Text` takes
-  `component`/`text`/`variant` and is declared `unevaluatedProperties: false`,
-  so a strict consumer rejected the whole fragment:
-
-  ```
-  Validation failed for component 'Text' (segN):
-    root: Unrecognized key(s) in object: 'link'
-  ```
-
-  The link is now markdown inside the text — `[artifact: name](url)` — which
-  needs no prop of its own, since `Text` already carries markdown by contract
-  (`("md", text)` segments ship verbatim). Affected every fallback artifact:
-  html, plain text, non-plotly json, binary, and any bytes-needing kind whose
-  payload failed to parse.
-
 ### Added
-
-- **Bridged host objects declare their surface to the worker.** sandtrap's
-  proxy could not tell a method from a data attribute, so it returned a caller
-  for every name: `db.dsn` read as `None`, `db.dsn = x` was silently lost, and
-  a typo'd method failed at call time saying nothing about what existed.
-  Now:
-
-  ```
-  v = db.dsn      -> AttributeError: 'dsn' is a data attribute of the host
-                     object, and the bridge carries method calls only
-  db.dsn = 'evil' -> AttributeError: cannot set 'dsn' ... would be lost
-  v = db.nope()   -> AttributeError: 'nope' is not part of the host object's
-                     exposed surface (available: query)
-  ```
-
-## [0.2.4] - 2026-08-04
+- **Bridged host objects declare their surface.** Data attributes and unknown methods raise a clear `AttributeError` instead of reading `None` or losing writes.
 
 ### Changed
-- **Requires monkeyfs >= 0.1.6 and sandtrap >= 0.2.14.** The monkeyfs floor
-  matters most: 0.1.5 let sandboxed code bypass filesystem interception
-  entirely through `bytes` or `os.PathLike` paths — `open(b"/etc/passwd").read()`
-  reached the real filesystem — and separately honored `dir_fd` arguments
-  against the host and handed out real host directory descriptors. nontainer
-  depends on monkeyfs directly for its VFS and `IsolatedFS` providers, so the
-  direct pin now states the floor rather than relying on sandtrap to carry it.
-  sandtrap 0.2.14 adds `StForkUnsafe`, which names a fork-hostile host instead
-  of looping on an unexplained respawn failure — relevant to long-lived
-  workspace hosts — and makes worker setup failures report their own traceback.
-
-## [0.2.3] - 2026-07-30
-
-### Added
-- **The default safe stdlib now includes common data/type helpers:**
-  `heapq`, `bisect`, `difflib`, `struct`, and `binascii`. Narrow grants
-  add the capability-neutral core of `functools` (`partial`, `reduce`,
-  `lru_cache`, `cache`), string-only `shlex` rendering (`quote`,
-  `join`), and pprint representation helpers that return strings or
-  booleans. Broader surfaces remain denied and pinned by tests.
+- **Requires sandtrap 0.3.0** (forkserver workers). Fixes "Worker process became unresponsive" hangs in multi-threaded hosts.
+- **Breaking: a supplied `PythonConfig.policy` must be serializable.** No lambdas, closures, bound methods or function-local classes; `Workspace(...)` raises `StPolicyNotPortable`.
+- **Breaking: your entry point must be importable.** Workers re-import `__main__`, so guard module-level work with `if __name__ == "__main__":`; `python -c`, heredoc and bare-REPL hosts break.
+- **Granted modules import once per worker.** Heavy grants slow worker start (~126 ms for `pandas`).
+- **Requires dud 0.3.0 for `[dud]`.** Host objects need an explicit grant (else `PolicyError`); nontainer grants their public methods. Guests get their image's environment.
+- **Host objects are registered by class only in-process.** Under process/kernel isolation the registration never matched the `RpcProxy`.
+- **App handlers reuse resident sandbox workers.** No more `fork()` per request (sandtrap#38); `PythonConfig.view_workers` caps them (default 8, `0` for per-call). Process state persists between handler calls.
 
 ### Fixed
-- **Process workers no longer retain unrelated host descriptors or orphan
-  idle workers after an abrupt host exit.** Nontainer now requires Sandtrap
-  0.2.13 and opts process and kernel sandboxes into ambient descriptor
-  cleanup. Listening sockets, accepted connections, and other host resources
-  therefore stay parent-owned; live `PythonConfig.host_objects` continue to
-  cross as RPC proxies rather than fork-inherited handles.
-- **Fresh versioned workspaces now commit an explicit initialization
-  baseline.** Creating the workspace root and setting its initial cwd
-  previously left kvgit staging dirty, so the first read-only tool call
-  committed those framework writes under the wrong tool label. Root and
-  cwd now land in a one-time `{"tool": "init"}` checkpoint before the
-  executor opens, including when tool autocheckpointing is disabled.
-  Reopening is idempotent. A provider deliberately pre-seeded by an
-  embedder remains staged—initialization joins that pending view without
-  silently committing caller-owned work. The init checkpoint is also the
-  floor for `Workspace.rollback()`, preventing rollback into a provider's
-  pre-workspace seed while leaving explicit `restore()` and legacy
-  histories unchanged.
-- **The MCP extra is capped below 2.0 until the adapter is migrated.**
-  MCP 2 removed `mcp.server.fastmcp`, which made fresh
-  `pip install -e ".[mcp]"` environments fail while importing the
-  adapter. The declared range now matches the API nontainer supports.
+- **A2UI fallback drops the invalid `link` key** (#31). The link is now markdown in the `Text`.
+
+## 0.2.4 - 2026-08-04
+
+### Changed
+- **Requires monkeyfs 0.1.6 and sandtrap 0.2.14.** monkeyfs 0.1.5 let `bytes`/`os.PathLike` paths and `dir_fd` bypass filesystem interception; sandtrap adds `StForkUnsafe`.
+
+## 0.2.3 - 2026-07-30
+
+### Added
+- **More safe stdlib by default.** `heapq`, `bisect`, `difflib`, `struct`, `binascii`, plus narrow `functools`, `shlex` and `pprint` grants.
+
+### Fixed
+- **Process workers drop unrelated host descriptors.** Requires sandtrap 0.2.13; idle workers no longer orphan after an abrupt host exit.
+- **Fresh versioned workspaces commit an init baseline.** A one-time `{"tool": "init"}` checkpoint, also the floor for `Workspace.rollback()`; a pre-seeded provider stays staged.
+- **The MCP extra is capped below 2.0.** MCP 2 removed `mcp.server.fastmcp`.
 
 ### Security
-- **`pickle` is no longer part of the default safe-stdlib grant.**
-  `pickle.loads`/`load`/`Unpickler` execute reducer callables outside
-  sandtrap's normal call gating, allowing a payload to invoke blocked
-  builtins such as `eval` under both in-process and process isolation.
-  Trusted embedders may still opt in explicitly with
-  `PythonConfig(modules=[ModuleGrant(pickle)])`.
-- **Process-global ABC registration remains unavailable by default.**
-  `numbers` and `collections.abc` expose `ABCMeta.register`, which
-  agent code could use to alter `isinstance` results throughout the
-  host interpreter. They remain excluded until grants can constrain
-  attributes reached through returned class objects.
+- **`pickle` left the default safe stdlib.** Its reducers could reach blocked builtins like `eval`; opt in with `ModuleGrant(pickle)`.
+- **`numbers` and `collections.abc` stay excluded.** `ABCMeta.register` could alter host-wide `isinstance`.
 
-## [0.2.2] - 2026-07-27
+## 0.2.2 - 2026-07-27
 
 ### Added
-- **A `Table` a2ui extension component for dataframes** (issue #18).
-  A `.table.json` artifact was flattened into nested `Column`/`Row`/
-  `Text` before it reached the wire, so nothing marked it as tabular
-  and a consumer had no way to bind a real grid — sorting, alignment,
-  virtualized scroll. Under `NONTAINER_CATALOG` a dataframe is now one
-  `Table` node whose data rides in the data model, exactly as `Chart`
-  does with its plotly spec.
-
-  Gated like `Stat`/`Callout`, NOT unconditional like `Chart`. A plotly
-  figure has no basic-catalog approximation worth shipping; a table
-  does, and it is what basic consumers already render — making `Table`
-  unconditional would turn a readable table into a component they must
-  skip.
-
-  The wire shape is normalized to `{columns, rows, total, columnTypes}`
-  rather than passing pandas' split orient through. The artifact keeps
-  that orient, but a catalog is a public contract: publishing `data`
-  next to a row `index` no renderer here uses would freeze a pandas
-  implementation detail and force a polars or SQL producer to imitate
-  it. Ragged rows are padded and trimmed to the header, since a short
-  row shifts a grid's columns silently. No row cap on this path — 50
-  was a budget for `Text` nodes an agent would read, and the artifact
-  is already head-capped at 200 upstream; `total` still reports the
-  true height.
-- **`.table.json` artifacts carry `columnTypes`.** Cells cross as JSON
-  scalars, so an ISO timestamp is indistinguishable from a string that
-  looks like one and a numeric column sorts lexically unless someone
-  says otherwise. pandas knows the dtypes, so the artifact now carries
-  a coarse kind per column (`number`/`string`/`datetime`/`boolean`),
-  read from the dtype `kind` so extension dtypes (`Int64`, tz-aware
-  datetimes) classify like their numpy counterparts. Purely additive —
-  the existing `{columns, data, total}` keys are untouched, so
-  consumers reading the artifact today are unaffected — and omitted
-  rather than raised if a frame's dtypes can't be read.
-
-- **`test_app` gained a `select` action.** `{"select": [selector,
-  value]}` drives a `<select>`; the option matches by value, then by
-  visible label, since agents pass whichever the DOM showed them.
-  Previously the only option was `{"type": ...}`, which maps to
-  Playwright's `fill()` and raises on a `<select>` — 4 of 11 `test_app`
-  failures in an audited session were this one gap, and the agent
-  rediscovered the same `dispatchEvent(new Event('change'))` workaround
-  three separate times. A `type` aimed at a `<select>` now names the
-  `select` action in its error instead of passing Playwright's
-  "Element is not an `<input>`" through unhelped.
+- **A `Table` a2ui extension component** (#18). Under `NONTAINER_CATALOG` a dataframe is one `Table` node: `{columns, rows, total, columnTypes}`.
+- **`.table.json` artifacts carry `columnTypes`.** `number`/`string`/`datetime`/`boolean` per column; additive.
+- **`test_app` `select` action.** `{"select": [selector, value]}` matches option value, then label.
 
 ### Changed
-- **`a2ui.component_for(extension_cards=)` is now `extensions=`.**
-  Breaking, on a public keyword. The flag was named for cards but now
-  gates tables too, and both follow the same rule: emit the nontainer
-  catalog's component where a basic-catalog approximation also exists.
-  `turn_to_a2ui` sets it from `catalog_id` as before, so callers that
-  do not use `component_for` directly are unaffected.
-- **`api.log` now records every `/api` request** (`METHOD path ->
-  status`), and opens with a header explaining the format. Successful
-  requests used to log nothing, so an empty log was ambiguous: it read
-  as *logging is broken* rather than *no handler errored*, and sent the
-  repair loop chasing a phantom instead of the bug. The header proves
-  the mechanism works and the lines prove requests are arriving, so
-  silence below the header is now a fact about the app. The header is
-  written when the log is first created, NOT at `enable_apps` —
-  pre-creating it would materialize `<root>/app` before the agent has
-  built anything, and embedders answer "is there an app yet?" with
-  `isdir(<root>/app)` (studio's preview probe does). Static assets are
-  deliberately not logged — high-volume, low-signal, and they would
-  bury the tracebacks the log exists for.
-
-  Request lines from read-only requests buffer until writing them is
-  free, because per-request atomicity is gated on `not ws.dirty`: a
-  line written during a GET would silently disable handler rollback
-  for the next mutating request, and page-GET-then-POST is the common
-  order, not a corner case. The runtime cannot claim that dirt as its
-  own and roll back regardless — `discard()` is all-or-nothing at the
-  provider level and the protocol exposes only a boolean, so its own
-  log line is indistinguishable from a screenshot written mid-run,
-  which rollback would then destroy. `curl` and `test_app` flush when
-  they finish, and `AppRuntime.flush_log()` is public for embedders
-  driving dispatch themselves (a live preview route).
-- **Repeated `test_app` console lines collapse** to a single entry with
-  an `(xN)` count, and the 100-line cap now counts DISTINCT lines. One
-  audited session spent 39% of all `test_app` result bytes (7,922 of
-  20,279) on 32 copies of the same Tailwind CDN warning, against a
-  model working in ~30k of context — repeats crowded the console tail
-  the agent actually reads. A genuinely repeating log still reads as
-  repeating, via the count.
+- **Breaking: `a2ui.component_for(extension_cards=)` is now `extensions=`.** `turn_to_a2ui` callers are unaffected.
+- **`api.log` records every `/api` request** (`METHOD path -> status`) under a format header; read-only lines buffer until `AppRuntime.flush_log()`.
+- **Repeated `test_app` console lines collapse** to one entry with an `(xN)` count.
+- **Executor syncs are lazy.** Writes and `restore`/`rollback`/`discard` mark the view stale and sync once before the next execution.
 
 ### Fixed
-- **Direct `ws.fs` writes now reach a remote executor.** `ws.fs` writes
-  straight into the provider, so behind a remote executor (dud) the
-  guest kept serving its stale baseline — a host-written file simply
-  was not there. The apps runtime hit this hardest: `AppRuntime._log`
-  writes handler tracebacks through `ws.fs`, so `cat
-  app/logs/api.log` from the terminal reported "No such file or
-  directory" while the traceback sat in the host VFS. It surfaced only
-  when some *other* path happened to sync first, which made it
-  nondeterministic — and it blinded the documented repair loop exactly
-  when an agent was debugging a 500. `ws.fs` now hands back a wrapper
-  that marks the executor stale on the mutating protocol methods; the
-  workspace syncs before the next execution. `skills.install` wrote
-  through the same escape hatch and had the same latent bug.
+- **Direct `ws.fs` writes reach a remote executor.** Under dud, host writes (handler tracebacks, `skills.install`) were invisible to the guest.
 
-### Changed
-- **Executor syncs are lazy, not eager.** `write_file` / `edit_file` /
-  `put` / `restore` / `rollback` / `discard` previously called
-  `executor.sync()` inline. A remote sync re-pushes the whole tree, so
-  seeding N files cost N wholesale pushes; the workspace now marks the
-  view stale and syncs ONCE, before the next execution needs the guest
-  current. `Workspace.close()` settles a pending sync first, so a
-  parked tree is never tagged with a provider head it doesn't hold.
-  No API change — the sync points moved, the guarantees didn't. A sync
-  that raises restores the stale mark (so the caller's retry actually
-  re-syncs rather than running on the old tree), and a dud guest whose
-  push failed parks WITHOUT its affinity tag — an untagged park costs
-  one push on the next resume, where a tagged stale tree would have
-  been trusted and served.
-
-## [0.2.1] - 2026-07-20
+## 0.2.1 - 2026-07-20
 
 ### Added
-- **Session deletion is a first-class API.** `delete_workspace(sessions,
-  *, store=, backend=)` is the teardown counterpart to `workspace(...)`
-  — it dispatches by backend to the same layout the factory built
-  (kvgit branches under `store/kvgit`, `dir` session trees, agentfs
-  `.db` files) and is plural + idempotent (a name that doesn't exist,
-  or a store never created, is a no-op). Each provider gains a matching
-  `delete(path, sessions)` classmethod. Kvgit's routes through
-  `kvgit.delete_branches` (new in kvgit 0.3.2): an anchor-free admin
-  call that opens the raw backend with no current branch, so it can
-  drop any branch — including a store's only one, the sole-branch case
-  a branch-anchored handle can't reach. This replaces the earlier
-  hidden `__void__` anchor branch, which pinned a dead session's entire
-  history and silently defeated orphan GC (a data-retention bug); the
-  delete path now always folds `__void__` into the doomed set, so that
-  stale anchor is purged from legacy stores on their next delete. Dir
-  and agentfs validate session ids before touching disk so a hostile
-  name can't escape the store root.
+- **`delete_workspace(sessions, *, store=, backend=)`.** Idempotent session teardown per backend; providers gain `delete(path, sessions)`, kvgit via `kvgit.delete_branches` (kvgit 0.3.2).
+- **Storage: the hidden `__void__` anchor branch is retired.** It defeated orphan GC; the next delete purges it from legacy stores.
 
-## [0.2.0] - 2026-07-20
+## 0.2.0 - 2026-07-20
 
 ### Added
-- **The workspace root contract.** Agent-visible files now live under
-  one configurable absolute path — `/workspace` by default, set with
-  `workspace(..., root=)` and readable as `ws.root`. One value per
-  session, inherited by forks. The point is cross-executor agreement:
-  a dud VM mounts its guest workspace at the same path, so
-  `/workspace/data/in.csv` names the same file whether agent code runs
-  in the local sandbox or on a real machine. Previously the VM rooted
-  the workspace somewhere else entirely, and agents burned turns
-  discovering the split.
-- **`[dud]` extra documented**, with an Executors section in the README
-  covering the second seam — `WorkspaceProvider` decides where state
-  lives, `Executor` decides where code runs, and the two are
-  independent.
-- **`Executor.supports_commands`** — a capability flag for whether
-  injected terminal commands reach the shell, readable as
-  `ws.supports_commands`. True for `LocalExecutor` (termish takes the
-  mapping), false for `DudExecutor` (real bash has no such hook).
-  Executors predating the flag default to true, keeping their
-  historical behavior.
+- **The workspace root contract.** Agent files live under one path, `/workspace` by default, set with `workspace(..., root=)`, read as `ws.root`; dud VMs match.
+- **`[dud]` extra documented**, with a README Executors section.
+- **`Executor.supports_commands`** (also `ws.supports_commands`). False for `DudExecutor`.
 
 ### Changed
-- **BREAKING — agent-visible paths moved under the root.** Skills are
-  at `<root>/skills` (was `/skills`), app handlers at `<root>/app`
-  (was `/app`), UI artifacts at `<root>/ui` (was `/ui`), and the
-  handler log at `<root>/app/logs/api.log`. Sandbox module imports
-  resolve from the root too (`Policy.module_root`, requires
-  sandtrap >= 0.2.12). Anything holding those paths literally —
-  prompts, seeded files, stored sessions — needs repathing.
-- **BREAKING — `DudExecutor()` now defaults to a real VM**
-  (`backend="vm"`, resolved per platform) instead of the unsandboxed
-  `"subprocess"` rung. The old default gave real bash and real files
-  with *zero* containment, running as the host user with open egress —
-  strictly weaker than the `LocalExecutor` a caller had just left, and
-  it was what you got by reaching for a real machine and passing
-  nothing. A host without a hypervisor now fails closed
-  (`IsolationUnavailable`, missing piece named) rather than silently
-  running unsandboxed. `backend="subprocess"` remains available as an
-  explicit opt-in: it buys fidelity, not isolation, and is the only
-  backend needing no hypervisor.
-- **Dependency floors**: `sandtrap >= 0.2.12` (for `Policy.module_root`)
-  and `dud >= 0.2.1` (for the guest workspace mounting at the
-  configured root).
+- **Breaking: agent-visible paths moved under the root.** Skills, app, ui and `api.log` now live under `<root>/`; repath prompts, seeded files and stored sessions.
+- **Breaking: `DudExecutor()` defaults to a real VM** (`backend="vm"`). No hypervisor raises `IsolationUnavailable`; `backend="subprocess"` is an unsandboxed opt-in.
+- **Requires sandtrap 0.2.12 and dud 0.2.1** (`Policy.module_root`; guest root mount).
 
 ### Fixed
-- **The apps primer no longer teaches `curl` where it doesn't exist.**
-  `curl` is an injected terminal builtin, so under `DudExecutor` the
-  tool description promised a command that answered `command not
-  found` — and the agent then debugged its app instead of its
-  environment. The primer gates on `supports_commands`; where `curl`
-  is absent it points at `test_app` and explicitly warns against
-  importing a handler to call its verb by hand, since that skips
-  routing and runs GET without its read-only filesystem, so it can
-  pass on code the real request path rejects.
-- **`DudExecutor` reaches dud's backends through `dud.session()`**
-  instead of importing `dud.backends.*` directly. It had drifted a
-  release behind: `backend="firecracker"` raised
-  `ValueError("unknown dud backend")`, making dud's Linux/KVM rung
-  unreachable from nontainer at all, and `backend="vm"` was hardcoded
-  to vfkit, so on Linux it would try to boot a macOS hypervisor rather
-  than resolving to firecracker. Routing through the façade fixes both
-  and means a new dud rung needs no change here.
-- **The workspace root normalizes by segment.** `root="//"` used to
-  `rstrip` to `""`, which reads falsy downstream — the local executor
-  then composed `/skills` (the flat layout) while a VM guest fell back
-  to dud's own `/workspace` default, silently splitting the namespace
-  the root exists to unify. Trailing, doubled, and leading-only
-  slashes now all collapse the way a guest kernel would collapse them;
-  `.`/`..` segments are rejected rather than resolved, since a guest
-  would normalize those and the VFS wouldn't.
-- **Absolute writes inside the guest land in the diff.** With the
-  workspace mounted at the root, a write to `/workspace/x` from VM
-  guest code is harvested like any other workspace write; it used to
-  land beside the staging internals, invisible to diffs and lost on
-  reset.
+- **Smaller fixes:** the apps primer drops `curl` where absent; `DudExecutor` goes through `dud.session()`, so firecracker works; `root=` normalizes by segment; absolute guest writes land in the diff.
 
-## [0.1.2] - 2026-07-19
+## 0.1.2 - 2026-07-19
 
 ### Added
-- **Tracebacks in error results and `/app/logs/api.log`.** Runtime
-  errors now render the full traceback — frames, line numbers, the
-  raise site — instead of a bare message (under process isolation the
-  traceback used to be lost crossing the worker pipe; requires
-  sandtrap >= 0.2.10). Sandbox machinery frames (sandtrap/monkeyfs
-  plumbing) are dropped, host install prefixes are stripped from
-  library frames (`pandas/core/generic.py`, not the absolute venv
-  path), and pathological depth is middle-elided.
-- **Request context in api.log tags.** Handler log entries read
-  `[dashboard:get ?source=filtered&makes=Tesla]` — the query string is
-  what lets an agent correlate errors with requests instead of reading
-  identical bare lines as a stale log.
-- **More intent hints** (`error_hint`, superseding `blocked_import_hint`
-  as the entry point, wired into both run_python observations and
-  api.log): `shutil` → terminal cp/mv or open(); `__import__` → plain
-  import statements work here; plotly's kaleido dead end → `ui = {...}`
-  or matplotlib; the tick limit → vectorize, native calls don't tick.
-- **Wider `os.path` grant**: `getsize` + `abspath` (monkeyfs-patched,
-  VFS-routed) and `split`/`normpath`/`relpath` (pure string math).
-  `getmtime`/`getatime`/`getctime` stay out — monkeyfs doesn't patch
-  them; `os.stat(p).st_mtime` is the granted route.
-
-### Added (notebook echo)
-- **Bare final expressions display in `run_python`** (sandtrap's
-  REPL echo, `PythonConfig.echo = "last"` by default): a trailing
-  `df.head()` shows its repr, no `print()` needed — and the tool
-  description teaches it. Echoed values ride the snapshot-prints
-  stream, so a bare expression over a huge object gets reprobate's
-  bounded structural render, not a megabyte of repr. Script surfaces
-  are exempt by per-exec override (sandtrap >= 0.2.11): the terminal
-  `python` builtin keeps `python -c` semantics for pipelines, and app
-  handlers never echo into api.log.
-
-### Fixed
-- **`dataframes()` pins a fork-safe arrow allocator**
-  (`ARROW_DEFAULT_MEMORY_POOL=system`, via `setdefault` before the
-  first pandas import). Arrow's default mimalloc pool keeps per-thread
-  heaps that don't survive `fork()` — a sandbox worker forked from a
-  threaded host segfaulted in `libarrow`'s `mi_thread_init` on its
-  first arrow allocation (parquet reads, pandas-3 arrow-backed
-  strings), and every respawn re-forked the same hostile parent: a
-  permanent "Worker process died during initialisation" loop.
-  Embedders that import pandas before building configs should set the
-  variable themselves, earlier.
+- **Tracebacks in error results and `api.log`.** Also under process isolation, with sandbox frames trimmed.
+- **Request context in api.log tags.** Entries include the query string.
+- **More intent hints via `error_hint`.** Replaces `blocked_import_hint` as entry point; covers `shutil`, `__import__`, kaleido and the tick limit.
+- **Wider `os.path` grant.** `getsize`, `abspath`, `split`, `normpath`, `relpath`.
+- **Bare final expressions display in `run_python`** (`PythonConfig.echo = "last"`).
 
 ### Changed
-- **Tick limits raised**: `PythonConfig.tick_limit` 1M → 50M,
-  `AppsConfig.request_tick_limit` 200k → 10M. The same sandbox
-  checkpoint enforces the timeout, so that's the real runaway guard;
-  the tick limit is a determinism backstop and must never fire on an
-  honest loop over a few-hundred-k-row frame.
-- sandtrap floor raised to 0.2.11 (worker-rendered tracebacks,
-  per-exec echo override).
-
-## [0.1.1] - 2026-07-15
-
-### Added
-- **The nontainer a2ui catalog** (`docs/a2ui/catalog.json`, exported as
-  `nontainer.adapters.a2ui.NONTAINER_CATALOG`): the idiomatic home for
-  extension semantics — re-exports the basic-catalog components the
-  egress adapter emits and declares `Stat {label, value, sublabel?}`,
-  `Callout {title?, body?, tone}`, and `Chart {spec}`. Passing it as
-  `turn_to_a2ui(catalog_id=...)` opts the surface into flat
-  one-component-per-item cards that say what they mean, instead of
-  Card/Column/Text trees with role-suffixed ids; any other catalog id
-  (including a consumer's own) keeps the basic approximation, since we
-  can't know what a foreign catalog declares. `Chart` stays
-  unconditional — a plotly figure has no basic approximation worth
-  shipping.
+- **Tick limits raised.** `PythonConfig.tick_limit` 1M to 50M, `AppsConfig.request_tick_limit` 200k to 10M.
+- **Requires sandtrap 0.2.11** (worker tracebacks, per-exec echo).
 
 ### Fixed
-- **a2ui cards rendered as empty boxes on basic-catalog consumers**
-  (#16). The v0.9 basic-catalog `Card` takes a singular required
-  `child` id (`unevaluatedProperties: false` — a `children` array
-  isn't ignored, it's invalid), so every stat/callout Card shipped
-  content the reference renderer never saw. Card content now rides an
-  intermediate `Column` behind `child`; the callout's `tone` stays a
-  passthrough prop on the basic shape as a documented deviation
-  (strictly validating consumers should use `NONTAINER_CATALOG`, where
-  `tone` is declared).
-- **Card-builder hardening for direct `/ui` writes**, which bypass
-  `materialize_ui`'s normalization: an unknown callout `tone` clamps
-  to `info` (the catalog declares a closed enum), and explicit nulls
-  in stat items read as absent — empty label/value, omitted sublabel —
-  never as the literal text `"None"`.
+- **`dataframes()` pins a fork-safe arrow allocator** (`ARROW_DEFAULT_MEMORY_POOL=system`). Stops `libarrow` segfaults in forked workers; set it yourself if you import pandas earlier.
 
-## [0.1.0] - 2026-07-15
+## 0.1.1 - 2026-07-15
 
 ### Added
-- **`AppsConfig.script_hosts` + `apps_primer`: the script allowlist is
-  one declaration.** The hosts browser scripts may load from used to
-  live in four hand-synced places — test_app's interception, the served
-  CSP, the agent-facing notes, curl's error message — kept honest only
-  by a test. All four now derive from `AppsConfig.script_hosts`
-  (default unchanged: `DEFAULT_SCRIPT_HOSTS`), so an embedder adding a
-  private registry host (e.g. a self-hosted esm.sh over an internal
-  npm registry) changes one tuple and the walls, the verifier, and the
-  agent's instructions stay in agreement. `apps_primer` appends
-  embedder guidance to the apps notes — the place to teach a private
-  component lib's known-good import block. `build_router(csp=...)`
-  now defaults to deriving from the config (`build_csp`); pass a string
-  to override or `""` to disable. Removed: `test_app`'s per-call
-  `cdn_allowlist` parameter (set it on the config instead). Agents predictably
-  write into `/ui` themselves (`fig.write_json('/ui/x.json')`,
-  savefig) instead of assigning objects to `ui = {...}` — and those
-  files displayed nowhere. `run_python` now diffs the `/ui` listing
-  around the call and appends files the code created to the
-  `[ui artifacts: ...]` note (deduped against materialized values),
-  extending the existing path-pointer near-miss forgiveness.
-- **The walls label their doors.** Three predictable agent collisions
-  now redirect instead of dead-ending:
-  a 404 on `/api/<name>.py` says endpoints are module names without
-  the extension (and suggests the real path when it exists) — agents
-  reliably mirror the filename into `fetch()` and then debug the
-  backend; blocked imports of `subprocess`/`requests`/`urllib.request`/
-  `httpx`/`socket` get a `[hint: ...]` in both run_python observations
-  and api.log pointing at the terminal's curl; and `urllib.parse` is
-  granted in the STDLIB preset (pure string functions only — `quote`,
-  `urlencode`, `parse_qs`, `urlparse`, ... — the network side of
-  urllib stays out). The apps primer also states the no-`.py`-in-URL
-  rule explicitly.
-- **The 8MB `ui` artifact cap explains itself.** An oversize value used
-  to silently degrade to a truncated `repr` `.txt` — a 280k-point
-  plotly map showed up as a wall of text with no hint why. Now the
-  tool result carries a `[ui note: ...]` diagnosis (size vs cap, and
-  for plotly the actual usual culprit: per-point customdata/hover
-  strings — coordinates are cheap, WebGL traces render 100k+ points
-  fine) so the agent self-corrects, and the `.txt` artifact shows the
-  same message to the human where the figure would have been.
-  `materialize_ui` now returns `(artifacts, problems)`. The tool
-  description also teaches the cap + lean-spec guidance up front.
-- **`python3` terminal alias.** The reserved `python` bridge now also
-  answers to `python3` — the reflex spelling agents type first. Both
-  names are reserved against user command injection.
-- **`warnings` in the STDLIB preset.** `warn`, `filterwarnings`,
-  `simplefilter`, and `catch_warnings` are granted — agents reach for
-  `warnings.filterwarnings("ignore")` the moment pandas/sklearn start
-  emitting deprecation noise, and the module was imported by the
-  presets but never granted.
-- **Artifact channels: binary in, images and files out.** Three
-  pieces close the "artifacts are stranded in the workspace" gap:
-  a `view_image` tool in both adapters (the agent views a saved
-  plot/chart — returned as real image content for vision models;
-  png/jpeg/gif/webp, 10MB cap); MCP **resources** exposing every
-  workspace file as `workspace://{path}` (text as text, binary as
-  blob) with a `workspace://-/tree` index — the client-side window
-  for extracting what the agent produced; and a `--mount
-  POINT=DIR[:rw]` flag on the MCP CLI (read-only by default) — the
-  inbound channel for seeding real host files without base64 games.
-  `file_write` results additionally carry a ground-truth
-  `ResourceLink` to the written file (the link exists because the
-  write succeeded), and the MCP tool descriptions coach the agent to
-  mention `workspace://` URIs when it produces artifacts.
-- **Safe stdlib by default** — `PythonConfig(stdlib=True)` grants a
-  curated stdlib set (see `nontainer.presets.STDLIB`), so a plain
-  workspace's Python can `import math`/`json`/`csv`/... out of the box.
-- **Module-grant presets** — `nontainer.presets.dataframes()` (numpy +
-  pandas) and `plotting()` (matplotlib Agg-pinned + font cache warmed;
-  plotly optional). `ModuleGrant` gains `include`/`exclude`/`recursive`/
-  `name`; `PythonConfig.modules` flattens preset lists one level.
-- **Results pin their commit** — `TerminalResult`/`PythonResult`/
-  `EditOutcome` carry `checkpoint` (the commit the call produced, or
-  `None`); `write_file`/`put` return a `WriteOutcome`; `ws.head` /
-  `ws.dirty` pin the state a read-only call observed.
-- **Async host facades** — `ws.aterminal` / `ws.arun_python` run the
-  sync execution in a thread so event-loop hosts (FastAPI, etc.) stay
-  responsive; the agent surface is unchanged.
-- **Shared browser for `test_app`** — one Chromium across all calls
-  (async Playwright on a dedicated loop-thread), a context per
-  concurrent test bounded by a semaphore (`configure_browser`), plus
-  `arun_test_app` and `shutdown_browser`. Memory scales with
-  concurrency, not sessions.
-- **`py.typed`** — the package now ships its PEP 561 marker.
-- **Tool primers** — `WorkspaceTools`/`build_server` accept
-  `terminal_primer` / `python_primer`: embedder guidance appended to the
-  respective tool's description (e.g. "`db` is a SQLite store — use it,
-  not `cache`, for shared state"). Strict 1-to-1 with the exposed tools;
-  a `python_primer` in terminal-only mode lands in the terminal tool's
-  `python` section (with a warning).
-
-- **Faithful `sys` in terminal `python`** — piped input reaches the code
-  as `sys.stdin` (`cat data | python script.py`), and `sys.argv` /
-  `input()` work, via sandtrap's synthetic safe `sys`. No `import`
-  quoting workarounds; dangerous `sys` internals stay unreachable.
-
-### Added
-- **Workspace extension surface: `exec_python` / `build_sandbox` /
-  `lock`.** A small, documented contract for embedders composing
-  execution features on top of the workspace: `exec_python(code, *,
-  inputs, sandbox, cache, stdin, argv)` is the raw execution path (no
-  checkpoint, no lock; `cache=` overrides the agent-visible cache —
-  the old private `_UNSET` sentinel is gone); `build_sandbox(*,
-  timeout, tick_limit, extra_classes, filesystem)` mints per-purpose
-  sandboxes sharing the frozen config, memoizing the built `Policy`
-  per parameter set so a fresh sandbox per request is cheap; `lock`
-  exposes the single-writer RLock for host/extension work that must
-  serialize with tool calls. The apps extra now talks exclusively to
-  this surface (no private attribute access — enforced by a test), so
-  it runs unchanged on any `WorkspaceProvider`; frozen serving's
-  per-request policy rebuild (a latency + DoS-amplification papercut
-  on the anonymous path) is fixed by the memo; mutable (authoring)
-  dispatch now serializes under the workspace's own lock, so test_app
-  route callbacks and screenshot writes can't race ordinary tool
-  calls.
-
-### Added
-- **`--apps` flag on the MCP CLI.** `python -m nontainer.adapters.mcp
-  --apps` enables the apps loop without writing an embed script: the
-  `curl` terminal builtin plus a `test_app` tool whose screenshots
-  return as MCP image content. Previously test_app over MCP required
-  calling `build_server(ws, apps=...)` from Python.
-
-### Changed
-- **Workspace enforces its single-writer invariant internally.**
-  Mutating public calls (`terminal`, `run_python`, `write_file`,
-  `edit_file`, `put`, `checkpoint`, `restore`, `rollback`, `discard`,
-  `fork`, `close`) hold an internal `RLock`, so a harness that threads
-  parallel tool calls onto one session serializes safely — each call
-  atomic + checkpointed — instead of corrupting staged state. Custom
-  harnesses no longer need to supply their own lock (the adapters keep
-  theirs as a fence for adapter-level work). Read-only accessors stay
-  lock-free; host-side escape hatches (`ws.fs` writes, `ws.cache`
-  mutation) bypass the lock and remain the caller's concurrency
-  problem. RLock so a `host_object` that calls back into the public
-  API serializes instead of deadlocking.
-- **stderr capture is per-execution, not a process-global redirect.**
-  `run_python` stderr now comes from sandtrap 0.2.4's ContextVar-routed
-  capture (`ExecResult.stderr`): concurrent executions — other sessions
-  in the same process, frozen app serving — no longer cross-contaminate
-  stderr or risk leaving `sys.stderr` pointing at a dead buffer. The
-  internal `capture_stderr` escape hatch is gone; served (frozen) app
-  handlers get stderr capture back. Sandboxed `sys.stderr` writes in
-  the terminal `python` builtin now surface as stderr instead of
-  leaking into pipeline stdout.
-- **Live app serving is now frozen (read-only) snapshots.** `build_router`
-  serves a Workspace pinned to a published commit: handlers read the VFS
-  and call `host_objects` but can't mutate it (write → 500). This makes
-  serving **concurrent** (fresh read-only sandbox per request, no
-  per-session lock, no staged buffer, no checkpointing) and lossless to
-  evict. Mutable app state belongs in an external store via
-  `host_objects`. Removed: per-session serialization, quiesce
-  checkpointing, `queue_depth`/`quiesce_seconds`. Added: `max_snapshots`,
-  `on_log` (handler logs route off the read-only VFS; default: the
-  `nontainer.apps` logger). `AppRuntime(..., frozen=True, log_sink=...)`.
-  The router is **stateless** — `resolve → dispatch`, no snapshot cache,
-  no residency/lifecycle (cache inside `resolve` if it's expensive; the
-  router doesn't close its result). Rate limiting is an edge concern;
-  `rate_limit_per_min`/`max_snapshots`/`queue_depth` are gone.
+- **The nontainer a2ui catalog** (`NONTAINER_CATALOG`). Declares `Stat`, `Callout`, `Chart`; opt in via `turn_to_a2ui(catalog_id=...)`.
 
 ### Fixed
-- **`test_app` accepts a stringified actions list.** Models routinely
-  send the nested list as a JSON string; the pydantic layer agno wraps
-  entrypoints in rejected it on the annotation before the existing
-  `coerce_actions` tolerance could run. The annotation is loosened so
-  coercion gets its chance.
-- **Agent-set response headers are matched case-insensitively.**
-  `normalize()` lowercases `Response.headers` keys on the way to the
-  wire, so the idiomatic `"Content-Type": "text/csv"` overrides the
-  inferred content type instead of being silently ignored, and an
-  agent-set `Content-Security-Policy` makes the served router defer
-  its default instead of emitting a duplicate header (browsers apply
-  the intersection). `WireResponse.headers` keys are now canonical
-  lowercase.
-- **`Request.require()` coerces symmetrically across sources.** JSON
-  has one number type, so `require("x", float)` accepts JSON `5` and
-  `require("n", int)` accepts `2.0` (non-integral floats still 400);
-  bools are never numbers (JSON `true` no longer passes an `int`
-  check); JSON strings coerce like query params; and query-param bools
-  parse `true/1/false/0` instead of Python's `bool("false") is True`.
-- **Screenshot cap no longer aborts the test.** A `test_app` action
-  hitting `max_screenshots` is a noted soft skip (`ok`, with a
-  "skipped: screenshot cap reached" note) instead of a hard failure
-  that discarded every later action — asserts after the cap now run
-  and count.
-- **Handler-log failures warn instead of going silently blind.**
-  `_log` still never breaks dispatch, but a broken/full fs (or a
-  raising `on_log` sink) now emits one `RuntimeWarning` per runtime —
-  previously every handler diagnostic vanished while the agent's
-  documented repair loop ("tail `/app/logs/api.log`") debugged blind.
-- **`test_app` false-PASS window closed (as far as heuristics can).**
-  `read` now settles before observing, so a fetch that *starts* after
-  the previous action's settle returned (debounce, `setTimeout`) is
-  waited for instead of read as stale DOM. And a settle that exits via
-  its cap (`settle_cap`, default 5s — now a `test_app` parameter)
-  attaches a stale-risk note to the action's result instead of
-  silently passing, pointing the agent at `{"assert": ...}` — the
-  retrying form no heuristic can replace, since nothing can wait for a
-  fetch that hasn't started yet.
-- **Browser shutdown no longer stalls interpreter exit.** The shared
-  test_app browser's atexit teardown deadlines dropped from 10s+5s to
-  3s+2s — a healthy Chromium closes in milliseconds, and a wedged one
-  isn't worth holding process exit for. `configure_browser` now
-  documents its process-global, first-caller-wins contract.
-- **App static serving path traversal** — `.`/`..` segments can no
-  longer escape `/app/`, and backend source under `/app/api/` is never
-  served as a static file.
+- **a2ui cards render on basic consumers** (#16). Content rides a `Column` behind `child`.
+- **Card builders harden direct `/ui` writes.** Unknown `tone` clamps to `info`; nulls read as absent.
+
+## 0.1.0 - 2026-07-15
+
+### Added
+- **`AppsConfig.script_hosts` and `apps_primer`.** One script allowlist feeds `test_app`, the CSP (`build_csp`) and agent notes; `apps_primer` adds embedder guidance.
+- **`run_python` reports files written to `/ui`.**
+- **Redirect hints.** A `/api/<name>.py` 404 explains endpoint names; blocked network imports point at terminal `curl`.
+- **Safe stdlib by default.** `PythonConfig(stdlib=True)` grants `nontainer.presets.STDLIB`, including `urllib.parse` and `warnings`.
+- **The `ui` artifact cap explains itself.** `materialize_ui` now returns `(artifacts, problems)`.
+- **Artifact channels.** A `view_image` tool, MCP `workspace://{path}` resources and a `--mount POINT=DIR[:rw]` MCP CLI flag.
+- **Module-grant presets.** `presets.dataframes()`, `plotting()`; `ModuleGrant` gains `include`/`exclude`/`recursive`/`name`.
+- **Results pin their commit.** `checkpoint` on results, `WriteOutcome`, `ws.head`/`ws.dirty`.
+- **Host conveniences.** `ws.aterminal`, `ws.arun_python`, a `python3` alias, `py.typed`.
+- **Shared `test_app` browser.** `configure_browser`, `arun_test_app`, `shutdown_browser`.
+- **Tool primers.** `terminal_primer` and `python_primer` on `WorkspaceTools`/`build_server`.
+- **Faithful `sys` in terminal `python`.** Piped stdin, `sys.argv`, `input()`.
+- **Extension surface: `exec_python`, `build_sandbox`, `lock`.** The apps extra uses only this.
+- **`--apps` flag on the MCP CLI.**
 
 ### Changed
-- Requires **sandtrap ≥ 0.2.4** (per-execution stderr capture;
-  recursive-registration filter propagation, dotted patterns,
-  synthetic `sys`/stdin) and **monkeyfs ≥ 0.1.5**
-  (`VirtualFS.invalidate()`).
+- **Workspace enforces single-writer internally.** Mutating calls hold an `RLock`, so harnesses no longer need their own lock.
+- **stderr capture is per-execution** (`ExecResult.stderr`).
+- **Breaking: live app serving uses frozen snapshots.** Read-only and concurrent; keep mutable state in `host_objects`. Adds `on_log`, `AppRuntime(frozen=, log_sink=)`.
+- **Breaking: removed router and `test_app` knobs.** `queue_depth`, `quiesce_seconds`, `rate_limit_per_min`, `max_snapshots`, `cdn_allowlist`.
+- **Requires sandtrap 0.2.4 and monkeyfs 0.1.5** (per-execution stderr, synthetic `sys`; `VirtualFS.invalidate()`).
+
+### Fixed
+- **`test_app` fixes:** stringified actions accepted; screenshot cap is a soft skip; fewer false PASSes (`settle_cap`).
+- **Response headers match case-insensitively.**
+- **`Request.require()` coerces consistently.**
+- **Handler-log failures warn.**
+- **Faster browser shutdown at exit.**
+- **App static serving path traversal.** `.`/`..` can't escape `/app/`; `/app/api/` is never served.
