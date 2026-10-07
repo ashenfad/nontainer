@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`turn.deliver(result)`.** Appends the notes queued for a tool result and returns them; `adeliver` awaits `on_delivered`, `collect` serves results that are not text, and `sources=` adds notes such as delegate answers.
 - **`nontainer.sessions.answer_notes(helper, inbox)` and `Inbox.announce`.** Delegate answers as delivered notes, and the `on_delivered` call; the agno toolkit's delivery is built on both, unchanged.
 
+### Changed
+- **Breaking: `PythonConfig.host_objects` is read-only.** Each executor takes its host objects when it opens, so one added to the mapping later reached in-process code and nowhere else; a different set is a new config (`dataclasses.replace`).
+
 ## 0.9.1 - 2026-10-06
 
 ### Added
