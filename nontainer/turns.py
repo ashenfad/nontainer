@@ -270,6 +270,7 @@ class Turn:
         """How the turn ended; ``None`` while it is open."""
         self.commit: str | None = None
         """The commit the end landed, if it landed one."""
+        self._ending = False
 
     def __repr__(self) -> str:
         state = self.status or "open"
@@ -330,16 +331,26 @@ class Turn:
         is in the harness's own format, so the harness adds it to the
         body (or its own storage) before ending.
 
-        The workspace's turn slot is released whatever happens here, so
-        an end that raises does not leave the workspace refusing turns.
+        A status that is not a :data:`RunStatus` is refused before
+        anything happens, and the turn stays open for a valid end. A turn
+        ends once: a second end is refused, including one racing the
+        first from another thread. Once the end has begun, the
+        workspace's turn slot is released whatever happens, so an end
+        that raises does not leave the workspace refusing turns. The
+        slot is released before the workspace lock is, so whatever waits
+        on that lock sees the turn gone.
         """
         if status not in RUN_STATUSES:
             raise ValueError(f"not a run status: {status!r}")
-        if self.status is not None:
-            raise RuntimeError(f"this turn already ended {self.status!r}")
+        with self._turns._lock:
+            if self.status is not None:
+                raise RuntimeError(f"this turn already ended {self.status!r}")
+            if self._ending:
+                raise RuntimeError("this turn already ended: another end is landing it")
+            self._ending = True
         ws = self._ws
-        try:
-            with ws.lock:
+        with ws.lock:
+            try:
                 if body is not None or record is not _KEEP:
                     self._store(body, record)
                 if self.inbox is not None:
@@ -351,9 +362,9 @@ class Turn:
                     info["message"] = message
                 if not ws.frozen and ws.caps.versioned and ws.uncommitted:
                     self.commit = ws.commit(info=info)
-        finally:
-            self.status = status
-            self._turns._release(self)
+            finally:
+                self.status = status
+                self._turns._release(self)
         return self.commit
 
     def _store(self, body: Any, record: Any) -> None:
@@ -391,7 +402,7 @@ class Turn:
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        if self.status is not None:
+        if self.status is not None or self._ending:
             return False
         if exc_type is None:
             status: RunStatus = "completed"
@@ -413,7 +424,7 @@ class Turn:
         return self
 
     async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        if self.status is not None:
+        if self.status is not None or self._ending:
             return False
         if exc_type is not None and not issubclass(exc_type, Exception):
             return self.__exit__(exc_type, exc, tb)

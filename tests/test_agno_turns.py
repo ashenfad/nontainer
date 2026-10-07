@@ -1,6 +1,9 @@
 """The agno adapter under a turn: the db and the toolkit stage their
 writes while ``ws.turn`` is open, and the turn's end lands them once."""
 
+import threading
+import time
+
 import pytest
 
 pytest.importorskip("agno")
@@ -18,6 +21,8 @@ from nontainer.adapters.agno import (  # noqa: E402
     status_of_error,
 )
 from nontainer.adapters.agno_db import KvgitSessionDb  # noqa: E402
+from nontainer.inbox import Inbox  # noqa: E402
+from nontainer.turns import Turns  # noqa: E402
 
 
 def _turn_commits(ws):
@@ -46,6 +51,43 @@ def test_a_management_write_under_a_turn_rides_its_commit(tmp_path):
         assert ws.head == head and ws.uncommitted
         turn.end("completed")
     assert ws.log(limit=1)[0].info == {"tool": "turn", "runs": {"r2": "completed"}}
+    ws.close()
+
+
+def test_a_delete_queued_behind_an_ending_turn_commits_itself(tmp_path, monkeypatch):
+    """A management write that waits on the workspace lock while a turn
+    ends gets the lock once the turn is gone: it is not staged under a
+    turn whose commit has already landed."""
+    ws, db, tk, agent = build(tmp_path)
+    first = run_turn(agent, ["one"])
+    inside, go = threading.Event(), threading.Event()
+
+    class Held(Inbox):
+        def settle(self):
+            inside.set()
+            go.wait(5)
+            super().settle()
+
+    turn = ws.turn("r2", inbox=Held())
+    with ws.lock:
+        ws.files.fs.write("/workspace/a.txt", b"a")
+    ender = threading.Thread(target=turn.end, args=("completed",))
+    ender.start()
+    assert inside.wait(5)
+    deleter = threading.Thread(target=db.delete_run, args=(first.run_id,))
+    deleter.start()
+    release = Turns._release
+
+    def slow_release(self, t):
+        time.sleep(0.1)
+        release(self, t)
+
+    monkeypatch.setattr(Turns, "_release", slow_release)
+    go.set()
+    ender.join(5)
+    deleter.join(5)
+    assert not ws.uncommitted
+    assert ws.log(limit=1)[0].info == {"tool": "delete_run"}
     ws.close()
 
 

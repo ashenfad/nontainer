@@ -2,12 +2,15 @@
 beginning to how it ended, landing in one commit."""
 
 import asyncio
+import threading
+import time
 
 import pytest
 
 from nontainer import NotSupportedError, Store, TurnInProgress, conversation
 from nontainer.conversation import Index
 from nontainer.inbox import Inbox
+from nontainer.turns import Turns
 
 
 @pytest.fixture
@@ -56,10 +59,81 @@ def test_a_turn_that_changed_nothing_commits_nothing(ws):
 def test_a_turn_ends_once(ws):
     turn = ws.turns.begin("r1")
     turn.end("completed")
-    with pytest.raises(RuntimeError, match="already ended"):
+    with pytest.raises(RuntimeError, match="already ended 'completed'"):
         turn.end("failed")
+
+
+def test_an_invalid_status_is_refused_and_the_turn_stays_open(ws):
+    turn = ws.turn("r1")
     with pytest.raises(ValueError, match="not a run status"):
-        ws.turns.begin("r2").end("sideways")
+        turn.end("sideways")
+    assert turn.open and ws.turns.current is turn
+    _stage(ws)
+    turn.end("completed")
+    assert ws.turns.current is None
+    assert _stamp(ws)["runs"] == {"r1": "completed"}
+
+
+class HeldInbox(Inbox):
+    """An inbox whose settle holds an ending turn inside the workspace
+    lock until the test lets it go on."""
+
+    def __init__(self):
+        super().__init__()
+        self.inside = threading.Event()
+        self.go = threading.Event()
+
+    def settle(self):
+        self.inside.set()
+        self.go.wait(5)
+        super().settle()
+
+
+def test_a_second_end_racing_the_first_is_refused_at_once(ws):
+    inbox = HeldInbox()
+    turn = ws.turn("r1", inbox=inbox)
+    _stage(ws)
+    first = threading.Thread(target=turn.end, args=("completed",))
+    first.start()
+    assert inbox.inside.wait(5)
+    # refused rather than queued behind the first on the workspace lock
+    with pytest.raises(RuntimeError, match="another end"):
+        turn.end("cancelled")
+    inbox.go.set()
+    first.join(5)
+    assert turn.status == "completed"
+    assert [e.info for e in ws.log() if e.info.get("tool") == "turn"] == [
+        {"tool": "turn", "runs": {"r1": "completed"}}
+    ]
+
+
+def test_whatever_waits_on_the_workspace_lock_sees_the_turn_gone(ws, monkeypatch):
+    inbox = HeldInbox()
+    turn = ws.turn("r1", inbox=inbox)
+    _stage(ws)
+    seen = []
+
+    def waiter():
+        with ws.lock:
+            seen.append(ws.turns.current)
+
+    ender = threading.Thread(target=turn.end, args=("completed",))
+    ender.start()
+    assert inbox.inside.wait(5)
+    other = threading.Thread(target=waiter)
+    other.start()
+    # widen the gap between the lock and the slot, if there is one
+    release = Turns._release
+
+    def slow_release(self, t):
+        time.sleep(0.1)
+        release(self, t)
+
+    monkeypatch.setattr(Turns, "_release", slow_release)
+    inbox.go.set()
+    ender.join(5)
+    other.join(5)
+    assert seen == [None]
 
 
 @pytest.mark.parametrize("status", ["completed", "cancelled", "interrupted", "failed"])
