@@ -81,6 +81,7 @@ from .protocol import (
 # Config/result types (and traceback rendering) stay in workspace.py:
 # they are the public vocabulary both sides of the seam speak. The
 # import is one-way — workspace.py only imports this module lazily.
+from .remote import Host, Local
 from .values import copy as copy_value
 from .workspace import (
     HostObject,
@@ -227,6 +228,24 @@ def _surface_kwargs(obj: Any) -> dict[str, Any]:
     return {"methods": methods, "attributes": attributes}
 
 
+def _stub_for(name: str, entry: HostObject, bridged: bool) -> Any:
+    """What code holds for a stubbed host object: its stub, built here
+    around the object's contract in-process, or, under isolation, a
+    marker the worker builds it from around a proxy to the host half
+    (:class:`nontainer.remote.Host`)."""
+    if not bridged:
+        return entry.stub(Local(name, entry.obj, entry.methods))
+    from sandtrap import RpcProxyMarker
+
+    return RpcProxyMarker(
+        target=f"host:{name}",
+        wrapper="nontainer.remote:proxied",
+        init_args=(name, entry.stub.__module__, entry.stub.__qualname__),
+        methods=("call",),
+        attributes=(),
+    )
+
+
 def _is_plain_data(obj: Any) -> bool:
     """Builtin-typed values need no policy registration."""
     return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
@@ -243,6 +262,8 @@ def _by_value(entry: Any) -> bool:
     its data rather than as a proxy: plain built-in data, or a
     :class:`HostObject` with a type."""
     if isinstance(entry, HostObject):
+        if entry.stub is not None:
+            return False
         return entry.by_value or _is_plain_data(entry.obj)
     return _is_plain_data(entry)
 
@@ -253,14 +274,41 @@ def _typed(entry: Any) -> bool:
     return isinstance(entry, HostObject) and entry.by_value
 
 
+def _stubbed(entry: Any) -> bool:
+    """Whether an entry is a live object called through a stub, which
+    runs in the sandbox."""
+    return isinstance(entry, HostObject) and entry.stub is not None
+
+
 def _named_classes(cfg: PythonConfig) -> list[type]:
     """The classes a run must be able to name: the config's, then those
-    the typed host data holds."""
+    the typed host data holds, then the stubs and the classes their
+    host objects' results name."""
     found = list(cfg.classes)
     for entry in cfg.host_objects.values():
         if _typed(entry):
             found.extend(t for t in entry.spec.types if t not in found)
+    for entry in cfg.host_objects.values():
+        if _stubbed(entry):
+            more = (entry.stub, *entry.methods.result_types())
+            found.extend(t for t in more if t not in found)
     return found
+
+
+def _refuse_live_calls(cfg: PythonConfig, where: str) -> None:
+    """Refuse, at open, a stubbed host object with a type with a live
+    part in a signature: arguments and results cross by value, and
+    only in-process can a live object do that."""
+    for name, entry in cfg.host_objects.items():
+        if not _stubbed(entry):
+            continue
+        live = entry.methods.live_parts()
+        if live:
+            raise ValueError(
+                f"host object {name!r}: {live[0]} has a live part, so code "
+                f"running {where} can't pass it by value; only data, bytes, "
+                "tables and arrays cross"
+            )
 
 
 def _refuse_unnameable_classes(cfg: PythonConfig, where: str) -> None:
@@ -781,6 +829,7 @@ class LocalExecutor:
         _refuse_async_host_methods(cfg)
         if cfg.isolation != "none":
             _refuse_unnameable_classes(cfg, "in a worker process")
+            _refuse_live_calls(cfg, "in a worker process")
         self._sandbox = self._build_sandbox()
         # View calls keep resident workers instead of forking per call.
         # Pooling only means anything where a call would otherwise fork:
@@ -902,7 +951,10 @@ class LocalExecutor:
                 cache_obj = _ReadOnlyCache(Cache(ctx.kv)) if ro_cache else None
                 rpc_handlers["cache"] = self._cache_rpc_handler(cache_obj)
             for name, entry in cfg.host_objects.items():
-                if not _by_value(entry):
+                if _stubbed(entry):
+                    host = Host(name, entry.obj, entry.methods)
+                    rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(host)
+                elif not _by_value(entry):
                     rpc_handlers[f"host:{name}"] = _host_object_rpc_handler(
                         _value(entry)
                     )
@@ -984,10 +1036,14 @@ class LocalExecutor:
         # there. Registering anyway would only impose the policy's portability
         # requirements — a host object whose class is defined inside a
         # function could not be serialized — for no gating in return.
-        if cfg.isolation == "none":
-            for name, entry in cfg.host_objects.items():
-                if not _by_value(entry):
-                    policy.cls(type(_value(entry)), name=name)
+        # A stub is different: code holds the stub itself on every rung,
+        # built in the worker under isolation, and it is importable there
+        # (open refuses one that isn't), so it is registered everywhere.
+        for name, entry in cfg.host_objects.items():
+            if _stubbed(entry):
+                policy.cls(entry.stub, name=name)
+            elif cfg.isolation == "none" and not _by_value(entry):
+                policy.cls(type(_value(entry)), name=name)
 
         # Loud construction-time warning when a kernel sandbox's policy
         # degrades a kernel restriction (seccomp/Landlock are monotonic).
@@ -1096,7 +1152,9 @@ class LocalExecutor:
                     # worker's unpickled one is, so a change lasts the
                     # run and never reaches the host's object
                     obj = copy_value(obj)
-                if bridged and not _by_value(entry):
+                if _stubbed(entry):
+                    namespace[name] = _stub_for(name, entry, bridged)
+                elif bridged and not _by_value(entry):
                     from sandtrap import RpcProxyMarker
 
                     # Methods RPC to the parent's live object; attribute READS

@@ -23,6 +23,7 @@ to import it from:
 | `nontainer.ui.materialize_ui(ws, ui)` | turns an agent's `ui = {...}` values into workspace artifacts |
 | `nontainer.executor.flatten_grants(cfg)` | what a `PythonConfig`'s modules flatten to |
 | `nontainer.values` | typed values: a strict check, and an encoding decoded only into the declared type ([below](#nontainervalues--typed-values-across-a-boundary)) |
+| `nontainer.remote` | typed calls through a `HostObject` stub: the host half, the sandbox half, and the contract read off a host object's annotations ([`PythonConfig`](#pythonconfig)) |
 | `nontainer.apps.contract.filter_headers(raw)` | the allowlisted request headers a handler may see |
 | `nontainer.adapters.render.apps_notes(config)` | the apps section of a terminal tool description |
 | `nontainer.adapters.agno_db` | `KvgitStoreDb`, `fork_session` — agno session storage over a store |
@@ -1847,7 +1848,6 @@ class PythonConfig:
     modules: Sequence[ModuleType | ModuleGrant | Sequence[...]] = ()
     stdlib: bool = True                     # curated safe-stdlib set
     host_objects: Mapping[str, Any | HostObject] = {}
-    classes: Sequence[type] = ()            # bound by name in every run
     network: bool = False
     isolation: "none" | "process" | "kernel" = "none"
     timeout: float = 30.0
@@ -1857,6 +1857,7 @@ class PythonConfig:
     warm_view_workers: int = 1                   # resident app-handler workers
     preload_grants: bool = False            # share granted modules via the broker
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
+    classes: Sequence[type] = ()            # bound by name in every run
 ```
 
 - `stdlib=True` (default) grants the curated safe-stdlib set
@@ -1904,7 +1905,7 @@ class PythonConfig:
   `recursive=True` to submodules, and dotted patterns match qualified
   names (`"DataFrame.eval"`, `"pandas.core*"`) — sandtrap ≥ 0.2.2
   semantics.
-- `HostObject(obj, type=None)` is a `host_objects` entry that says
+- `HostObject(obj, type=None, stub=None)` is a `host_objects` entry that says
   more than the object. With `type`, `obj` is data of that type, sent
   into the sandbox by value on every rung: in-process each run gets its
   own copy (`nontainer.values.copy`), and under process isolation and
@@ -1913,7 +1914,47 @@ class PythonConfig:
   source. Either way a change to it lasts only the run, and never
   reaches the host's object. The value is checked against the type when
   the entry is made (`nontainer.values`, strictly), and a type with a
-  live part is refused. Without `type`, the entry is the object itself.
+  live part is refused. Without `type` or `stub`, the entry is the
+  object itself.
+- With `stub`, `obj` is a live object that code calls through a class
+  of the embedder's that runs in the sandbox, built there on every rung
+  as `stub(remote)`. `remote.<method>(...)` calls `obj`'s method of that
+  name, typed by its annotations (`nontainer.remote`): an argument that
+  doesn't fit raises `TypeError` at the call
+  (`ledger.add(): at row.score: expected int, got str '9'`), and one
+  that does reaches `obj` by value, as does the result coming back.
+  Off in-process the sandbox encodes the arguments
+  (`nontainer.values.encode`) and the host decodes each by its declared
+  type, so it never unpickles what the sandbox sent; a refusal comes
+  back as data and is raised where the call was made. A parameter
+  without an annotation is `Any`, which off in-process means plain data,
+  and one call's arguments are capped at 6 MiB encoded there. The stub's
+  own code runs in the sandbox, so it can end the run by raising a
+  `BaseException` of its own, as a task's `success` does:
+
+  ```python
+  class Ledger:                      # on the host
+      def add(self, row: Row) -> int: ...
+      def report(self, value: Report) -> None: ...
+
+  class LedgerStub:                  # in the sandbox
+      def __init__(self, remote):
+          self._remote = remote
+      def add(self, row):
+          return self._remote.add(row)
+      def finish(self, report):
+          self._remote.report(report)
+          raise Done                 # a BaseException: the run ends here
+
+  PythonConfig(classes=(Row, Report),
+               host_objects={"ledger": HostObject(Ledger(), stub=LedgerStub)})
+  ```
+
+  Under process isolation the worker imports the stub by its qualified
+  name, and on dud the guest imports it or rebuilds its module from
+  source, so a stub defined inside a function or in `__main__` is
+  refused at open there, as is a type with a live part in any of the
+  object's signatures.
 - `classes` are bound by name in every run and importable from `host`:
   the types agent code builds values of. In-process they are registered
   with the policy; under process isolation the worker imports them by

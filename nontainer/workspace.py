@@ -233,7 +233,23 @@ class HostObject:
     a live object needs no type, and reaches the sandbox as a proxy
     under isolation, as a bare entry does.
 
-    An entry without a type is the object itself, exactly as if it had
+    ``stub`` puts a class of the embedder's in front of the live
+    ``obj``: code in the sandbox holds ``stub(remote)``, built there on
+    every rung, and ``remote.<method>(...)`` calls ``obj``'s method of
+    that name, typed by its annotations (:mod:`nontainer.remote`). An
+    argument that doesn't fit its parameter's type raises ``TypeError``
+    at the call; one that does reaches ``obj`` by value, decoded on the
+    host by its declared type off in-process (never unpickled), and the
+    result comes back by value. A parameter without an annotation is
+    ``Any``, which off in-process means plain data. The stub's own code
+    runs in the sandbox, so it can do what no call to the host can: end
+    the run by raising, say. Under process isolation the worker imports
+    the stub by its qualified name, and on dud the guest imports it or
+    rebuilds its module from source, so it is refused there if defined
+    inside a function or in ``__main__``, as is a type with a live part
+    in any of ``obj``'s signatures.
+
+    An entry with neither is the object itself, exactly as if it had
     been put in ``host_objects`` bare.
     """
 
@@ -243,11 +259,21 @@ class HostObject:
     """The type ``obj`` is data of, or ``None`` for an object passed as
     it is."""
 
+    stub: Any = None
+    """The class code in the sandbox holds in front of ``obj``, built as
+    ``stub(remote)``, or ``None`` for none."""
+
     spec: Any = field(default=None, init=False, repr=False, compare=False)
     """The compiled type (:class:`nontainer.values.Spec`), when there is
     one."""
 
+    methods: Any = field(default=None, init=False, repr=False, compare=False)
+    """``obj``'s public methods with their contracts
+    (:class:`nontainer.remote.Methods`), when there is a stub."""
+
     def __post_init__(self) -> None:
+        if self.stub is not None:
+            self._stubbed()
         if self.type is None:
             return
         from .values import Mismatch, Spec, Unsupported, find_live
@@ -276,6 +302,25 @@ class HostObject:
                     "value: give it an entry of its own, without type="
                 )
         object.__setattr__(self, "spec", spec)
+
+    def _stubbed(self) -> None:
+        from .remote import Methods
+        from .values import Unsupported
+
+        if self.type is not None:
+            raise TypeError(
+                "HostObject takes type= for data sent by value or stub= for a "
+                "live object called through a stub, not both"
+            )
+        if not isinstance(self.stub, type):
+            raise TypeError(
+                f"HostObject stub is a class, not {type(self.stub).__name__}"
+            )
+        try:
+            methods = Methods(self.obj)
+        except Unsupported as error:
+            raise TypeError(f"HostObject with a stub: {error}") from None
+        object.__setattr__(self, "methods", methods)
 
     @property
     def by_value(self) -> bool:
@@ -453,18 +498,10 @@ class PythonConfig:
 
     An entry may be a :class:`HostObject`, which can say more about the
     object: ``HostObject(rows, type=list[Row])`` sends data of a declared
-    type into the sandbox by value on every rung."""
-
-    classes: Sequence[type] = field(default=(), hash=False)
-    """Classes bound by name in every run, and importable from ``host``:
-    the types agent code builds values of (a task's result type, say).
-    In-process they are registered with the sandbox policy; under
-    process isolation the worker imports them by their qualified name;
-    on dud the guest imports them, or rebuilds their module from its
-    source where it has no such module. A class defined inside a
-    function, or in a script's ``__main__``, can't be named from
-    another process, and is refused when a workspace opens with
-    isolation or on dud."""
+    type into the sandbox by value on every rung, and
+    ``HostObject(db, stub=DbStub)`` puts a class that runs in the sandbox
+    in front of a live object, whose calls are typed by its
+    annotations."""
 
     network: bool = False
     """Global network toggle for sandboxed code itself (sandtrap
@@ -600,6 +637,17 @@ class PythonConfig:
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above
     except ``host_objects``."""
+
+    classes: Sequence[type] = field(default=(), hash=False)
+    """Classes bound by name in every run, and importable from ``host``:
+    the types agent code builds values of (a task's result type, say).
+    In-process they are registered with the sandbox policy; under
+    process isolation the worker imports them by their qualified name;
+    on dud the guest imports them, or rebuilds their module from its
+    source where it has no such module. A class defined inside a
+    function, or in a script's ``__main__``, can't be named from
+    another process, and is refused when a workspace opens with
+    isolation or on dud."""
 
     def __post_init__(self) -> None:
         object.__setattr__(
