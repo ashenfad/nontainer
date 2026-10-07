@@ -22,6 +22,7 @@ to import it from:
 | `nontainer.executor_dud.DudExecutor` | the executor over a dud backend — a host process or a real microVM ([Executors](#executors)) |
 | `nontainer.ui.materialize_ui(ws, ui)` | turns an agent's `ui = {...}` values into workspace artifacts |
 | `nontainer.executor.flatten_grants(cfg)` | what a `PythonConfig`'s modules flatten to |
+| `nontainer.values` | typed values: a strict check, and an encoding decoded only into the declared type ([below](#nontainervalues--typed-values-across-a-boundary)) |
 | `nontainer.apps.contract.filter_headers(raw)` | the allowlisted request headers a handler may see |
 | `nontainer.adapters.render.apps_notes(config)` | the apps section of a terminal tool description |
 | `nontainer.adapters.agno_db` | `KvgitStoreDb`, `fork_session` — agno session storage over a store |
@@ -1717,6 +1718,53 @@ adapter's `__agno__/` keys. Those read through the same `Index`
 (`legacy=True`), and the next `write` moves them, removing the old keys
 in the same write. History keeps the old plane, so a checkout or fork
 of an older commit reads it again and migrates on its next write.
+
+## `nontainer.values` — typed values across a boundary
+
+```python
+spec = Spec.of(list[Score], names=None)   # compiled once; Unsupported if it can't be
+spec.kinds        # {"data"}: what it needs carried (data, bytes, table, array, live, any)
+spec.travels      # no live part, so it can cross a process boundary
+spec.types        # the record and enum classes it names
+spec.check(value, full=False)   # strict; Mismatch says where (``at scores[3].total``)
+spec.decode(encoded_or_blob)    # builds the declared type, or Mismatch
+
+encoded = encode(value, limit=None)   # Encoded(tree, parts); Unencodable, TooLarge
+encoded.to_bytes()                    # one blob, headed "nt-value/1"
+Encoded.from_bytes(blob)              # Malformed for anything else
+```
+
+A harness handing values between the host and agent code (a task's
+inputs and result, a delegate's answer) checks them against a declared
+type in its own process, and decodes them into that type when they
+arrive from another. The rules, the same for both:
+
+- **Strict.** `"42"` is not an `int` and `True` is not an `int`; an
+  `int` passes for a `float`. A numpy `int64` is not an `int`.
+- **Deep.** A dataclass, NamedTuple or TypedDict is checked field by
+  field, not only by class. A pydantic model is checked by its class
+  (pydantic checked its fields when it was built) and decoded by its
+  own `model_validate`.
+- **Sampled when long.** A container of more than `SAMPLE_ABOVE`
+  (10,000) items is checked on 30 of them: the first ten, the last ten
+  and ten between, the same ones on every run. `full=True` checks every
+  one. Decoding always checks every item, since it builds each.
+- **Tables and arrays by class.** A DataFrame, a pyarrow table or a
+  numpy array is never checked row by row.
+- **What JSON can't tell apart decodes either way.** A tuple or a set
+  arrives as a list where one is declared, and an enum's value decodes
+  as the member. The wire stays plain JSON other languages read.
+
+`encode` needs no type. A value becomes a JSON tree; what JSON lacks
+rides as numbered binary parts its leaves point to, tagged `"$nt"`:
+bytes, tables as Arrow IPC streams, arrays as `.npy` (read back without
+pickle). Decoding only ever builds the declared type: a table where an
+`int` is declared, or a field a record doesn't have, is a `Mismatch`.
+
+The module imports only the standard library at module level, so a
+sandbox without nontainer (a VM guest) can run it from its source;
+numpy, pandas and pyarrow are imported only for values of theirs, and
+pydantic never is.
 
 ## `nontainer.turns` — the turn, and what it streams
 
