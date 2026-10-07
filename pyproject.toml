@@ -22,14 +22,17 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # The sibling libraries' floors are the releases whose features
-    # nontainer uses; the CHANGELOG says which needed what.
+    # The termish, monkeyfs, sandtrap and kvgit floors are the releases
+    # whose features nontainer uses; the CHANGELOG says which needed what.
     "termish>=0.2.2",
     "monkeyfs>=0.2.5",
     "sandtrap>=0.4.1",
     # Capped below 0.5: merges resolve through kvgit.versioned.merge,
     # which is not public API.
     "kvgit[disk]>=0.4.1,<0.5",
+    # 0.1.3: render() no longer raises on an object whose own __eq__
+    # raises, so an agent-written value cannot turn the report of an
+    # error into a crash.
     "reprobate>=0.1.3",
 ]
 
