@@ -81,7 +81,7 @@ from .protocol import (
 # Config/result types (and traceback rendering) stay in workspace.py:
 # they are the public vocabulary both sides of the seam speak. The
 # import is one-way — workspace.py only imports this module lazily.
-from .remote import Host, Local
+from .remote import Host, Local, build
 from .values import copy as copy_value
 from .workspace import (
     HostObject,
@@ -234,7 +234,7 @@ def _stub_for(name: str, entry: HostObject, bridged: bool) -> Any:
     marker the worker builds it from around a proxy to the host half
     (:class:`nontainer.remote.Host`)."""
     if not bridged:
-        return entry.stub(Local(name, entry.obj, entry.methods))
+        return build(name, entry.stub, Local(name, entry.obj, entry.methods))
     from sandtrap import RpcProxyMarker
 
     return RpcProxyMarker(

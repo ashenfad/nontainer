@@ -48,6 +48,7 @@ class Ledger:
     def __init__(self) -> None:
         self.rows: list[Row] = []
         self.reports: list[Report] = []
+        self.kept: list[list[int]] = []
 
     def add(self, row: Row) -> int:
         self.rows.append(row)
@@ -62,6 +63,10 @@ class Ledger:
 
     def tally(self, *names: str, **weights: int) -> dict:
         return {"names": list(names), "weights": weights}
+
+    def keep(self, scores: list[int]) -> str:
+        self.kept.append(scores)
+        return type(scores).__name__
 
     def loose(self, value):
         return value
@@ -90,3 +95,10 @@ class LedgerStub:
         if name.startswith("_"):
             raise AttributeError(name)
         return getattr(self._remote, name)
+
+
+class BrokenStub:
+    """A stub whose construction fails."""
+
+    def __init__(self, remote) -> None:
+        raise ValueError("no remote today")

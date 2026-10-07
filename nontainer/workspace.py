@@ -238,12 +238,14 @@ class HostObject:
     every rung, and ``remote.<method>(...)`` calls ``obj``'s method of
     that name, typed by its annotations (:mod:`nontainer.remote`). An
     argument that doesn't fit its parameter's type raises ``TypeError``
-    at the call; one that does reaches ``obj`` by value, decoded on the
-    host by its declared type off in-process (never unpickled), and the
-    result comes back by value. A parameter without an annotation is
-    ``Any``, which off in-process means plain data. The stub's own code
-    runs in the sandbox, so it can do what no call to the host can: end
-    the run by raising, say. Under process isolation the worker imports
+    at the call; one that does reaches ``obj`` built afresh as its
+    declared type on every rung (encoded and decoded, never unpickled),
+    and the result comes back by value. A parameter without an
+    annotation is ``Any``, which off in-process means plain data. The
+    stub's own code runs in the sandbox, so it can do what no call to
+    the host can: end the run by raising, say. A stub that can't be
+    built is one that says why when code uses it. Under process
+    isolation the worker imports
     the stub by its qualified name, and on dud the guest imports it or
     rebuilds its module from source, so it is refused there if defined
     inside a function or in ``__main__``, as is a type with a live part
