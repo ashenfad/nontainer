@@ -250,7 +250,7 @@ class HostObject:
     def __post_init__(self) -> None:
         if self.type is None:
             return
-        from .values import Mismatch, Spec, Unsupported
+        from .values import Mismatch, Spec, Unsupported, find_live
 
         try:
             spec = Spec.of(self.type)
@@ -266,6 +266,15 @@ class HostObject:
             spec.check(self.obj)
         except Mismatch as error:
             raise TypeError(f"HostObject value doesn't fit its type: {error}") from None
+        if "any" in spec.kinds:
+            # Any accepts a live object too, and one can't be sent by value
+            live = find_live(self.obj)
+            if live is not None:
+                raise TypeError(
+                    f"HostObject value holds a live object where its type "
+                    f"allows anything ({live}); a live object can't be sent by "
+                    "value: give it an entry of its own, without type="
+                )
         object.__setattr__(self, "spec", spec)
 
     @property
