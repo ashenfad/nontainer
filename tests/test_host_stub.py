@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 import pytest
-from host_types import Grade, Ledger, LedgerStub, Report, Row
+from host_types import BrokenStub, Grade, Ledger, LedgerStub, Report, Row
 
 from nontainer import HostObject, Profile, PythonConfig, Store
 from nontainer import values as nt_values
@@ -119,6 +119,30 @@ def test_an_argument_that_does_not_fit_raises_at_the_call(ws, ledger):
     assert ledger.rows == []  # a refused call never reaches the object
 
 
+def test_a_subclass_reaches_the_host_as_the_declared_type(ws, ledger):
+    """Whatever its hooks do: the host gets values built afresh as the
+    types it declared, in-process as elsewhere."""
+    out = run(
+        ws,
+        "class Sneaky(list):\n"
+        "    def __deepcopy__(self, memo):\n"
+        "        return ['not an int']\n"
+        "class Mine(Row):\n"
+        "    pass\n"
+        "print(ledger.keep(Sneaky([1, 2])))\n"
+        "n = ledger.add(Mine('ada', 3, Grade.PASS))",
+    )
+    assert out == "list"
+    assert ledger.kept == [[1, 2]]
+    assert type(ledger.kept[0]) is list
+    assert type(ledger.rows[0]) is Row
+
+
+def test_a_dict_with_a_records_fields_is_the_record_on_every_rung(ws, ledger):
+    run(ws, "ledger.add({'name': 'ada', 'score': 3, 'grade': 'pass'})")
+    assert ledger.rows == [Row("ada", 3, Grade.PASS)]
+
+
 def test_a_call_the_signature_refuses(ws):
     out = run(
         ws,
@@ -201,6 +225,29 @@ def test_an_app_handler_holds_the_stub_too(ws, ledger):
         r.namespace["said"] == "ledger.add(): at row.score: expected int, got str 'x'"
     )
     assert ledger.rows == [Row("ada", 3, Grade.PASS)]
+
+
+def test_a_stub_that_cannot_be_built_says_why_on_use(rung):
+    cfg = PythonConfig(host_objects={"broken": HostObject(Ledger(), stub=BrokenStub)})
+    ws, store = open_ws(rung, cfg)
+    try:
+        out = run(
+            ws,
+            "print('runs')\n"
+            "try:\n"
+            "    broken.add(1)\n"
+            "except RuntimeError as e:\n"
+            "    print(e)",
+        )
+    finally:
+        ws.close()
+        if store is not None:
+            store.close()
+    assert out.splitlines() == [
+        "runs",
+        "host object 'broken' is unavailable: its stub couldn't be built "
+        "(ValueError: no remote today)",
+    ]
 
 
 def test_code_cannot_reach_past_the_stub(rung, ws):

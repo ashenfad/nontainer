@@ -1922,15 +1922,20 @@ class PythonConfig:
   name, typed by its annotations (`nontainer.remote`): an argument that
   doesn't fit raises `TypeError` at the call
   (`ledger.add(): at row.score: expected int, got str '9'`), and one
-  that does reaches `obj` by value, as does the result coming back.
-  Off in-process the sandbox encodes the arguments
-  (`nontainer.values.encode`) and the host decodes each by its declared
-  type, so it never unpickles what the sandbox sent; a refusal comes
-  back as data and is raised where the call was made. A parameter
-  without an annotation is `Any`, which off in-process means plain data,
-  and one call's arguments are capped at 6 MiB encoded there. The stub's
-  own code runs in the sandbox, so it can end the run by raising a
-  `BaseException` of its own, as a task's `success` does:
+  that does reaches `obj` built afresh as its declared type, on every
+  rung: encoded (`nontainer.values.encode`) and decoded by that type,
+  in-process too, so a subclass passed in arrives as the type itself
+  and the host never unpickles what the sandbox sent. Off in-process the
+  sandbox encodes and the host decodes, and a refusal comes back as data,
+  raised where the call was made. An encoding can't tell a list from a
+  tuple, or a dict with a record's fields from the record, so either is
+  accepted for the other, on every rung. The result comes back by
+  value. A parameter without an annotation is `Any`, which off
+  in-process means plain data, and one call's arguments are capped at
+  6 MiB encoded there. The stub's own code runs in the sandbox, so it
+  can end the run by raising a `BaseException` of its own, as a task's
+  `success` does, and a stub that can't be built is one that raises
+  `RuntimeError` saying why when code uses it:
 
   ```python
   class Ledger:                      # on the host

@@ -9,15 +9,19 @@ against the method's annotations and reach the host by value, and its
 result comes back by value; an argument that doesn't fit raises
 ``TypeError`` at the call, on every rung:
 
-- in-process, ``remote`` checks each argument and hands the host a copy
-  of it (:func:`values.copy`), or the object itself where the declared
-  type has a live part;
-- elsewhere, the sandbox half encodes the arguments
-  (:func:`values.encode`, never pickle) and the host half decodes each
-  by its declared type, so whatever the sandbox sends, the host only
-  builds the types it declared. A refusal comes back as data, and the
-  sandbox half raises it where the call was made. The result crosses
-  host to sandbox, the safe direction, pickled.
+- each argument is encoded (:func:`values.encode`, never pickle) and
+  decoded by its declared type, so the host only ever gets values built
+  afresh as the types it declared, whatever the sandbox passed: a
+  subclass's hooks, a ``__deepcopy__`` say, never reach it. In-process
+  that is all; an argument whose declared type has a live part, or a
+  live object under ``Any``, crosses there as itself;
+- elsewhere, the sandbox half encodes and the host half decodes. A
+  refusal comes back as data, and the sandbox half raises it where the
+  call was made. The result crosses host to sandbox, the safe
+  direction, pickled.
+
+A stub that can't be built is one that says why on every use, on every
+rung, rather than a run that fails before its code starts.
 
 Imports nothing from nontainer but :mod:`values`, and that absolutely:
 a dud guest that has neither gets both as source.
@@ -132,15 +136,13 @@ class Method:
     def accept(
         self, where: str, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        """In-process: the arguments checked, and each a copy of what was
-        passed unless its type has a live part."""
+        """In-process: the arguments as they would arrive from elsewhere,
+        each encoded and decoded by its declared type, except one whose
+        type has a live part, or a live object under ``Any``, which is
+        checked and passed as itself."""
         bound = self._bind(where, args, kwargs)
         for path, spec, put, value in self._each(bound):
-            try:
-                spec.check(value)
-            except values.Mismatch as mismatch:
-                raise Refused(TypeError, f"{where}: {mismatch.at(path)}") from None
-            put(_by_value(spec, value))
+            put(_accept(where, path, spec, value))
         return bound.args, bound.kwargs
 
     def decode(self, where: str, blob: bytes) -> tuple[tuple[Any, ...], dict[str, Any]]:
@@ -161,15 +163,7 @@ class Method:
             raise Refused(TypeError, f"{where}: a malformed call")
         bound = self._bind(where, tree[0], tree[1])
         for path, spec, put, item in self._each(bound):
-            try:
-                put(spec.decode(values.Encoded(item, encoded.parts)))
-            except values.Mismatch as mismatch:
-                raise Refused(TypeError, f"{where}: {mismatch.at(path)}") from None
-            except Exception as error:  # noqa: BLE001 - what a sandbox sent, refused
-                raise Refused(
-                    TypeError,
-                    f"{where}: {path} can't be decoded ({type(error).__name__}: {error})",
-                ) from None
+            put(_decode(where, path, spec, values.Encoded(item, encoded.parts)))
         return bound.args, bound.kwargs
 
     def check_result(self, where: str, result: Any, *, sent: bool) -> None:
@@ -199,10 +193,45 @@ def _setter(target: Any, key: Any) -> Callable[[Any], None]:
     return put
 
 
-def _by_value(spec: values.Spec, value: Any) -> Any:
-    """What crosses in-process: a copy, as a value sent elsewhere is,
-    unless the type, or the value under ``Any``, has a live part, which
-    in-process crosses as itself."""
+def _decode(where: str, path: str, spec: values.Spec, encoded: Any) -> Any:
+    """One argument built as its declared type, or refused."""
+    try:
+        return spec.decode(encoded)
+    except values.Mismatch as mismatch:
+        raise Refused(TypeError, f"{where}: {mismatch.at(path)}") from None
+    except Exception as error:  # noqa: BLE001 - what a sandbox sent, refused
+        raise Refused(
+            TypeError,
+            f"{where}: {path} can't be decoded ({type(error).__name__}: {error})",
+        ) from None
+
+
+def _accept(where: str, path: str, spec: values.Spec, value: Any) -> Any:
+    """One argument in-process: through bytes and back, as it would
+    cross elsewhere, so a subclass of the declared type arrives as the
+    type itself; or, where a live object may cross, checked and passed
+    as itself."""
+    if spec.travels:
+        try:
+            blob = values.encode(value).to_bytes()
+        except values.Unencodable as error:
+            unsent = error
+        else:
+            return _decode(where, path, spec, blob)
+    try:
+        spec.check(value)
+    except values.Mismatch as mismatch:
+        raise Refused(TypeError, f"{where}: {mismatch.at(path)}") from None
+    if spec.travels and not (
+        "any" in spec.kinds and values.find_live(value) is not None
+    ):
+        raise Refused(TypeError, f"{where}: {path} can't be sent by value: {unsent}")
+    return value
+
+
+def _result(spec: values.Spec, value: Any) -> Any:
+    """A result in-process: a copy, as a result sent elsewhere is, unless
+    the type, or the value under ``Any``, has a live part."""
     if not spec.travels:
         return value
     if "any" in spec.kinds and values.find_live(value) is not None:
@@ -330,7 +359,7 @@ class Local:
                 contract.check_result(where, result, sent=False)
             except Refused as refused:
                 raise refused.error(refused.message) from None
-            return _by_value(contract.returns, result)
+            return _result(contract.returns, result)
 
         call.__name__ = method
         return call
@@ -397,27 +426,38 @@ def _read_reply(where: str, reply: Any) -> Any:
     raise RuntimeError(f"{where}: the host's reply can't be read")
 
 
+def build(name: str, cls: Any, remote: Any) -> Any:
+    """The stub for host object ``name``, ``cls(remote)``. Never raises:
+    a stub that can't be built is one that says why on every use, the
+    same on every rung."""
+    try:
+        return cls(remote)
+    except Exception as error:  # noqa: BLE001 - said on every use instead
+        return _Unavailable(name, f"{type(error).__name__}: {error}")
+
+
 def stub(
     name: str, module: str, qualname: str, send: Callable[[str, bytes], Any]
 ) -> Any:
     """The stub for host object ``name``, built in the sandbox around a
-    wire to its host half: the class at ``module:qualname``, imported."""
+    wire to its host half: the class at ``module:qualname``, imported.
+    Never raises, as :func:`build` doesn't."""
     import importlib
 
-    found: Any = importlib.import_module(module)
-    for part in qualname.split("."):
-        found = getattr(found, part)
-    return found(Remote(name, send))
+    try:
+        found: Any = importlib.import_module(module)
+        for part in qualname.split("."):
+            found = getattr(found, part)
+    except Exception as error:  # noqa: BLE001 - said on every use instead
+        return _Unavailable(name, f"{type(error).__name__}: {error}")
+    return build(name, found, Remote(name, send))
 
 
 def proxied(proxy: Any, name: str, module: str, qualname: str) -> Any:
     """sandtrap's wrapper for a stubbed host object's proxy, in a worker:
-    the stub, built around it. Never raises, since sandtrap would hand
-    code the bare proxy in its place."""
-    try:
-        return stub(name, module, qualname, proxy.call)
-    except Exception as error:  # noqa: BLE001 - said on every use instead
-        return _Unavailable(name, f"{type(error).__name__}: {error}")
+    the stub, built around it. Never raising matters here, since sandtrap
+    would hand code the bare proxy in its place."""
+    return stub(name, module, qualname, proxy.call)
 
 
 class _Unavailable:
