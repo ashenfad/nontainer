@@ -424,3 +424,53 @@ def test_a_delegates_answer_arrives_as_a_mechanism_note(ws):
     assert note.answer.text == "the totals add up"
     assert "the totals add up" in text and "delegation mechanism" in text
     assert inbox.delivered() == []
+
+
+def test_a_source_that_raises_costs_neither_the_result_nor_the_queue(ws, caplog):
+    inbox = Inbox()
+    queued = inbox.put("from the person")
+
+    def broken(given):
+        given.deliver_now("half made", kind="mechanism")
+        raise RuntimeError("the source broke")
+
+    def fine(given):
+        return [given.deliver_now("from a working source", kind="mechanism")]
+
+    with ws.turn("r1", inbox=inbox, sources=[broken, fine]) as turn:
+        text, notes = turn.deliver("ok")
+        assert [n.text for n in notes] == ["from the person", "from a working source"]
+        assert text.startswith("ok") and "from the person" in text
+        # what the broken source minted waits for the next result
+        assert [n.text for n in inbox.pending()] == ["half made"]
+        assert queued in inbox.delivered()
+    assert "delivery source raised" in caplog.text
+    assert [n.text for n in inbox.pending()] == ["half made"]
+
+
+def test_a_cancel_during_an_async_callback_puts_the_notes_back(ws):
+    """The cancel lands before the result carrying the notes is handed
+    back, so the model never read them: they stay queued, and the turn's
+    end does not settle them."""
+    reached = []
+
+    async def slow(notes):
+        reached.append(notes)
+        await asyncio.sleep(10)
+
+    inbox = Inbox(on_delivered=slow)
+    note = inbox.put("keep me")
+
+    async def go():
+        async with ws.turn("r1", inbox=inbox) as turn:
+            task = asyncio.ensure_future(turn.adeliver("ok"))
+            while not reached:
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        return turn
+
+    turn = asyncio.run(go())
+    assert turn.status == "completed"
+    assert inbox.pending() == [note] and inbox.delivered() == []
