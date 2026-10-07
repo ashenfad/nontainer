@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.9.0 - 2026-10-06
 
 ### Added
 - **`nontainer.adapters.tools`: the workspace tools, defined once.** A `Toolset` holds each tool's name, description, JSON Schema and call, and returns a harness-neutral `ToolOutput` (text, images, the path written, `is_error`). The agno toolkit and the MCP server are now built on it, so their tools can no longer drift apart, and any other loop can use the tools directly through `Tool.parameters` and `Tool.call` / `acall`. Every tool's name, description and schema is unchanged for both adapters; a golden file (`tests/golden/tool_surface.json`) now pins them. `render.toolkit_instructions` is the agno toolkit's instructions, now shared.
