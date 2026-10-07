@@ -18,7 +18,15 @@ from typing import Any, Protocol
 
 from ..inbox import Inbox
 from ..store import Store
-from ..turns import RunEnded, TextDelta, ThinkingDelta, ToolEnded, TurnEvent, Usage
+from ..turns import (
+    RunEnded,
+    RunStarted,
+    TextDelta,
+    ThinkingDelta,
+    ToolEnded,
+    TurnEvent,
+    Usage,
+)
 from ..workspace import Workspace
 from .corpus import (
     CAPABILITIES,
@@ -179,6 +187,9 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             raise ValueError(f"unknown event {step.what!r}")
 
     clock = Clock(fire)
+    # The harness session and the workspace it drives are closed on the
+    # way out however the scenario ended: a failure is what the runner
+    # exists to expose, and a harness may own threads or a loop.
     try:
         for path, text in scenario.world.files.items():
             ws.files.write(path, text)
@@ -199,8 +210,9 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 ws.checkout(ended_at[act.after_turn - 1])
             elif isinstance(act, Fork):
                 child = ws.fork(act.name, inherit=act.inherit)
-                session.close()
-                ws = child
+                holder.pop("session").close()
+                parent, ws = ws, child
+                parent.close()
                 holder["session"] = harness.open(ws, clock)
         session = holder["session"]
         expect = scenario.expect
@@ -215,7 +227,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                     tool=str(info.get("tool", "")), runs=session.run_statuses(info)
                 )
             )
-        observed = Observed(
+        return Observed(
             turns=tuple(turns),
             files={p: _read(ws, p) for p in paths},
             runs=tuple(session.runs()),
@@ -223,11 +235,13 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             inbox=(len(session.inbox.pending()), len(session.inbox.delivered())),
             exhausted=clock.exhausted,
         )
-        session.close()
-        return observed
     finally:
-        ws.close()
-        store.close()
+        try:
+            if "session" in holder:
+                holder.pop("session").close()
+        finally:
+            ws.close()
+            store.close()
 
 
 def event_names(events: Sequence[TurnEvent]) -> tuple[str, ...]:
@@ -252,6 +266,27 @@ def event_names(events: Sequence[TurnEvent]) -> tuple[str, ...]:
     return tuple(names)
 
 
+def _misshapen(events: Sequence[TurnEvent]) -> str | None:
+    """What is wrong with a turn's stream as a whole, or ``None``: every
+    turn opens with one ``RunStarted`` and closes with one ``RunEnded``,
+    whatever else it streams in between."""
+    if not events:
+        return "the turn streamed nothing"
+    starts = sum(isinstance(ev, RunStarted) for ev in events)
+    ends = sum(isinstance(ev, RunEnded) for ev in events)
+    if (
+        starts == 1
+        and ends == 1
+        and isinstance(events[0], RunStarted)
+        and isinstance(events[-1], RunEnded)
+    ):
+        return None
+    return (
+        f"{starts} RunStarted and {ends} RunEnded; it opened with "
+        f"{events[0].kind} and closed with {events[-1].kind}"
+    )
+
+
 def _ending(events: Sequence[TurnEvent]) -> str | None:
     ends = [ev for ev in events if isinstance(ev, RunEnded)]
     return ends[-1].status if ends else None
@@ -259,12 +294,16 @@ def _ending(events: Sequence[TurnEvent]) -> str | None:
 
 def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
     """Every way ``observed`` differs from the scenario's expectations,
-    by check name: ``turn<N>.status`` and ``turn<N>.events`` (N from 1),
-    ``files``, ``runs``, ``commits``, ``inbox`` and ``script``. Empty
-    when everything holds."""
+    by check name: ``turn<N>.stream`` (N from 1; the stream opens with
+    ``RunStarted`` and closes with ``RunEnded``, checked for every turn),
+    ``turn<N>.status``, ``turn<N>.events``, ``files``, ``runs``,
+    ``commits``, ``inbox`` and ``script``. Empty when everything holds."""
     expect = scenario.expect
     failures: dict[str, str] = {}
     for n, (want, got) in enumerate(zip(expect.turns, observed.turns), start=1):
+        shape = _misshapen(got)
+        if shape is not None:
+            failures[f"turn{n}.stream"] = shape
         status = _ending(got)
         if status != want.status:
             failures[f"turn{n}.status"] = f"ended {status!r}, not {want.status!r}"
