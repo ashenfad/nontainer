@@ -74,6 +74,7 @@ from .errors import (
 from .protocol import SESSION_ID_RE, Answer, Job
 
 if TYPE_CHECKING:
+    from .inbox import Inbox, Note
     from .protocol import SessionRunner
     from .workspace import Workspace
 
@@ -1439,6 +1440,35 @@ def render_jobs(jobs: "list[Job]") -> str:
             line += " [kept]"
         lines.append(line)
     return "\n".join(lines)
+
+
+def answer_notes(helper: Any, inbox: Inbox) -> list[Note]:
+    """Every delegate answer that has landed since the last collection,
+    as notes being delivered (``inbox.deliver_now``), in landing order.
+
+    ``helper`` is the session's :class:`Sessions` (anything with its
+    ``take()``). A delegate's answer is framed as the mechanism rather
+    than the principal, because that is what it is: prose another model
+    wrote, evidence rather than instruction. Taking it here, at a tool
+    result, is what makes an answer arrive mid-turn at all; the
+    ``sessions`` tool's ``result`` action still reads answers on demand,
+    and neither hands over the same answer twice. Recorded as delivered,
+    the notes are settled with the turn or put back by a requeue, like
+    any other.
+
+    A turn takes this as a source: ``ws.turn(..., sources=[lambda inbox:
+    answer_notes(helper, inbox)])``.
+    """
+    return [
+        inbox.deliver_now(
+            render_answer(answer),
+            kind="mechanism",
+            label=f"delegate {name}",
+            job=name,
+            answer=answer,
+        )
+        for name, answer in helper.take()
+    ]
 
 
 def render_answer(answer: Answer) -> str:

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`turn.deliver(result)`.** Appends the notes queued for a tool result and returns them; `adeliver` awaits `on_delivered`, `collect` serves results that are not text, and `sources=` adds notes such as delegate answers.
+- **`nontainer.sessions.answer_notes(helper, inbox)` and `Inbox.announce`.** Delegate answers as delivered notes, and the `on_delivered` call; the agno toolkit's delivery is built on both, unchanged.
+
 ## 0.9.1 - 2026-10-06
 
 ### Added

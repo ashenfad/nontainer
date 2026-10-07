@@ -93,7 +93,7 @@ if TYPE_CHECKING:
     from .protocol import Executor
     from .runtime import Runtime
     from .store import Ref, Store
-    from .turns import Turn, Turns
+    from .turns import Source, Turn, Turns
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -2165,14 +2165,18 @@ class Workspace:
         resume: bool = False,
         inbox: Inbox | None = None,
         harness: str | None = None,
+        sources: Iterable[Source] = (),
     ) -> Turn:
         """Open a turn, for ``with`` or ``async with``: the span in which
         one run of a harness's loop drives this session. Ending it stores
         the run, settles ``inbox`` and lands one commit stamped with how
-        the run ended. One at a time: another refuses with
+        the run ended. ``turn.deliver`` hands the model the notes queued
+        in ``inbox`` (and what ``sources`` add) on each tool result. One at a time: another refuses with
         :class:`~nontainer.TurnInProgress`. See :class:`~nontainer.turns.
         Turn`."""
-        return self._turns.begin(run_id, resume=resume, inbox=inbox, harness=harness)
+        return self._turns.begin(
+            run_id, resume=resume, inbox=inbox, harness=harness, sources=sources
+        )
 
     # ------------------------------------------------------------------
     # the two tools
