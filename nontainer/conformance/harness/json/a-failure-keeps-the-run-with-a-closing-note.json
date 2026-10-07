@@ -1,0 +1,83 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "error",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": [
+      {
+        "runs": [],
+        "tool": "file_write"
+      },
+      {
+        "runs": [
+          "failed"
+        ],
+        "tool": "turn"
+      }
+    ],
+    "files": {
+      "/workspace/a.txt": "a"
+    },
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": [
+      {
+        "closing_note": true,
+        "tool_results": 1
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "RunEnded:failed"
+        ],
+        "status": "failed"
+      }
+    ]
+  },
+  "name": "a-failure-keeps-the-run-with-a-closing-note",
+  "needs": [
+    "keeps-aborted-runs"
+  ],
+  "summary": "A run whose model call raises something other than a provider error ends failed. The run is kept with the tool's result and a closing note, in one run commit.",
+  "tiers": [
+    1
+  ],
+  "world": {
+    "files": {}
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "say hello",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "hello",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": [
+      {
+        "runs": [
+          "completed"
+        ],
+        "tool": "turn"
+      }
+    ],
+    "files": {},
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 0
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-reply-alone-completes",
+  "needs": [],
+  "summary": "A turn the model answers with text alone completes, and lands one run commit.",
+  "tiers": [
+    1
+  ],
+  "world": {
+    "files": {}
+  }
+}

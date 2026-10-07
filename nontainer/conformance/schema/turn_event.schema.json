@@ -1,0 +1,277 @@
+{
+  "$defs": {
+    "Compacted": {
+      "additionalProperties": false,
+      "description": "A new fold (:class:`~nontainer.compaction.Fold`): the turns up to message ``through`` are replaced by a summary in what the model is sent from here on.",
+      "properties": {
+        "first": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "const": "Compacted"
+        },
+        "runs": {
+          "type": "integer"
+        },
+        "through": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "through"
+      ],
+      "type": "object"
+    },
+    "Delivered": {
+      "additionalProperties": false,
+      "description": "Notes that rode out on a tool result: queued messages, or delegate answers. Comes before that result's :class:`ToolEnded`.",
+      "properties": {
+        "kind": {
+          "const": "Delivered"
+        },
+        "notes": {
+          "items": {
+            "$ref": "#/$defs/DeliveredNote"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "notes"
+      ],
+      "type": "object"
+    },
+    "DeliveredNote": {
+      "additionalProperties": false,
+      "description": "One note as it reached the model: the fields of :class:`~nontainer.inbox.Note` a reader needs, without the structured answer behind a delegate's note.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "job": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "principal",
+            "mechanism"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "RunEnded": {
+      "additionalProperties": false,
+      "description": "Last, always: how the run ended, and why when it did not complete.",
+      "properties": {
+        "kind": {
+          "const": "RunEnded"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "cancelled",
+            "interrupted",
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "status"
+      ],
+      "type": "object"
+    },
+    "RunStarted": {
+      "additionalProperties": false,
+      "description": "First, always. ``run_id`` is the handle a cancel names.",
+      "properties": {
+        "kind": {
+          "const": "RunStarted"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "TextDelta": {
+      "additionalProperties": false,
+      "description": "A piece of the model's reply, as it streams.",
+      "properties": {
+        "kind": {
+          "const": "TextDelta"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ThinkingDelta": {
+      "additionalProperties": false,
+      "description": "A piece of the model's reasoning, as it streams.",
+      "properties": {
+        "kind": {
+          "const": "ThinkingDelta"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ToolEnded": {
+      "additionalProperties": false,
+      "description": "After a tool returns. ``result`` is the tool's own output, with any delivered notes left out (they are the :class:`Delivered` event before this one). ``is_error`` says the call failed.",
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "kind": {
+          "const": "ToolEnded"
+        },
+        "name": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "call_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "ToolStarted": {
+      "additionalProperties": false,
+      "description": "Before a tool runs. ``call_id`` is the provider's id for the call, and the matching :class:`ToolEnded` carries the same one.",
+      "properties": {
+        "args": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "kind": {
+          "const": "ToolStarted"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "call_id",
+        "name"
+      ],
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "Once per model call, where the harness reports it: the size of the request, and how much of it the provider read from its cache.",
+      "properties": {
+        "cached_tokens": {
+          "type": "integer"
+        },
+        "input_tokens": {
+          "type": "integer"
+        },
+        "kind": {
+          "const": "Usage"
+        }
+      },
+      "required": [
+        "kind",
+        "input_tokens"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$ref": "#/$defs/RunStarted"
+    },
+    {
+      "$ref": "#/$defs/TextDelta"
+    },
+    {
+      "$ref": "#/$defs/ThinkingDelta"
+    },
+    {
+      "$ref": "#/$defs/ToolStarted"
+    },
+    {
+      "$ref": "#/$defs/Delivered"
+    },
+    {
+      "$ref": "#/$defs/ToolEnded"
+    },
+    {
+      "$ref": "#/$defs/Usage"
+    },
+    {
+      "$ref": "#/$defs/Compacted"
+    },
+    {
+      "$ref": "#/$defs/RunEnded"
+    }
+  ],
+  "title": "TurnEvent"
+}

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`nontainer.turns`: what a turn streams, as one vocabulary.** `RunStarted`, `TextDelta`, `ThinkingDelta`, `ToolStarted`, `Delivered`, `ToolEnded`, `Usage`, `Compacted` and `RunEnded` are frozen dataclasses, each with a `kind` naming it, so a UI or a transcript can follow any loop the same way. `RunStatus` is how a run ended: `completed`, `cancelled`, `interrupted` (an error the harness may resume from) or `failed`. `event_from_dict` reads one back from JSON.
+- **`nontainer.conformance`: the harness contract as scenarios.** Each scenario runs a harness on a memory store with a scripted model, then checks how each turn ended, the kinds of event it streamed, the files, the stored runs, the commits and the inbox. The scripted model is the clock: a cancel or a queued note fires when the model is asked for its next reply, so every harness sees the same timing. The first eleven scenarios cover the tool surface, how a turn ends (completed, cancelled, failed, interrupted then resumed), the conversation (checkout, full and fresh forks) and the inbox. A harness declares the capabilities it has and lists its known gaps, and its test expects exactly those checks to fail. Each scenario is also committed as JSON, with JSON Schemas for the format and for the turn events, for harnesses in other languages; `python -m nontainer.conformance.export` regenerates them, and a drift test fails when they differ.
+- **`nontainer.adapters.agno_conformance.AgnoHarness`: the agno adapter under the corpus.** It wires `WorkspaceTools` the documented way and drives a streamed `arun`, ending a cancelled or failed run with `keep_aborted_run` and settling the inbox. It passes every scenario on agno 2.8.5, 3.0.1 and 3.0.11, apart from three known gaps, all in the commit stamps around a run that did not complete. Keeping a cancelled or failed run commits a second time. An errored run is stamped with agno's `error`, whether it was interrupted or failed. On agno 2.1, the corpus found that a streamed run runs no post hook, so `end_turn` never settles the notes a completed turn delivered; two inbox scenarios carry that as a gap there. agno 2.1 also stores a cancelled run without its messages and raises a run error out of `arun`, so the scenarios that need a kept or resumable run do not apply to it.
+
 ## 0.9.0 - 2026-10-06
 
 ### Added

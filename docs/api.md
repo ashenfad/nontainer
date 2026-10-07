@@ -1715,6 +1715,32 @@ adapter's `__agno__/` keys. Those read through the same `Index`
 in the same write. History keeps the old plane, so a checkout or fork
 of an older commit reads it again and migrates on its next write.
 
+## `nontainer.turns` — what a turn streams
+
+```python
+RunStatus = Literal["completed", "cancelled", "interrupted", "failed"]
+
+RunStarted(run_id)                         # first, always
+TextDelta(text), ThinkingDelta(text)       # streamed model output
+ToolStarted(call_id, name, args)
+Delivered(notes: tuple[DeliveredNote, ...])  # before the result it rode on
+ToolEnded(call_id, name, result, is_error)
+Usage(input_tokens, cached_tokens)
+Compacted(through, runs, first)
+RunEnded(status: RunStatus, message)       # last, always
+
+TurnEvent = Union[...]                     # the nine above
+event_from_dict(data) -> TurnEvent         # the reverse of dataclasses.asdict
+```
+
+One vocabulary for what a turn streams, whatever loop produced it.
+Each event is a frozen dataclass whose `kind` is its class name. A
+harness that owns its loop yields them directly; the agno adapter's
+conformance harness maps agno's run events onto them. What each status
+means, and the harness corpus that checks a harness against the
+contract (`nontainer.conformance`), are in
+[extending.md](extending.md#a-harness--the-loop-that-drives-a-session).
+
 ## `PythonConfig`
 
 ```python

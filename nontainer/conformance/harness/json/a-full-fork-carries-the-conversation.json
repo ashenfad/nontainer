@@ -1,0 +1,89 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote a",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "inherit": "full",
+      "kind": "fork",
+      "name": "scenario.full"
+    },
+    {
+      "kind": "turn",
+      "prompt": "still there?",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "yes",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "files": {
+      "/workspace/a.txt": "a"
+    },
+    "inbox": null,
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 1
+      },
+      {
+        "closing_note": false,
+        "tool_results": 0
+      }
+    ],
+    "turns": [
+      {
+        "events": null,
+        "status": "completed"
+      },
+      {
+        "events": null,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-full-fork-carries-the-conversation",
+  "needs": [],
+  "summary": "A fork made with inherit='full' holds the parent's files and conversation, and its next turn adds to that conversation.",
+  "tiers": [
+    2
+  ],
+  "world": {
+    "files": {}
+  }
+}

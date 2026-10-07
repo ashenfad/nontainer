@@ -103,7 +103,7 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https:
 
 **Extending it**
 
-- [Extending](docs/extending.md) -- the three seams: a new substrate, a new place code runs, the agent loop behind a delegation
+- [Extending](docs/extending.md) -- the three seams (a new substrate, a new place code runs, the agent loop behind a delegation), and the harness contract with the scenarios that check it
 
 **Why it's shaped this way**
 

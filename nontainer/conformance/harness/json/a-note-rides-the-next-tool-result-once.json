@@ -1,0 +1,90 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "write a and b",
+      "resume": false,
+      "steps": [
+        {
+          "kind": "event",
+          "text": "also mention the date",
+          "what": "queue_note"
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "b",
+                "path": "/workspace/b.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "kind": "model",
+          "text": "wrote both",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "files": {
+      "/workspace/a.txt": "a",
+      "/workspace/b.txt": "b"
+    },
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": null,
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "Delivered",
+          "ToolEnded",
+          "ToolStarted",
+          "ToolEnded",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-note-rides-the-next-tool-result-once",
+  "needs": [],
+  "summary": "A note queued while the turn runs is delivered on the next tool result, before that result's end event, and not again on the one after. The completed turn settles it.",
+  "tiers": [
+    3
+  ],
+  "world": {
+    "files": {}
+  }
+}
