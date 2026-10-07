@@ -1006,60 +1006,84 @@ _PARSED: dict[type, Callable[[str], Any]] = {
 }
 
 
-def _compile(tp: Any, names: Names, memo: dict[Any, _Node]) -> _Node:
+def _compile(
+    tp: Any,
+    names: Names,
+    memo: dict[Any, _Node],
+    bound: Mapping[Any, Any] | None = None,
+) -> _Node:
+    """``tp``'s node. ``bound`` holds the type arguments of the generic
+    record being compiled, by its type variables: a variable resolves
+    through it wherever it turns up, text evaluated late included."""
     if tp is Any or tp is object or tp is inspect.Parameter.empty:
         return _ANY
     if tp is None or tp is type(None):
         return _None()
     if isinstance(tp, typing.TypeVar):
+        if bound and tp in bound:
+            return _compile(bound[tp], names, memo)
         return _ANY
     if isinstance(tp, (str, typing.ForwardRef)):
-        return _compile(_evaluate(tp, names), names, memo)
+        return _compile(_evaluate(tp, names), names, memo, bound)
     if type(tp).__name__ == "TypeAliasType":  # ``type X = ...``, 3.12+
-        return _compile(tp.__value__, names, memo)
+        return _compile(tp.__value__, names, memo, bound)
     supertype = getattr(tp, "__supertype__", None)  # a NewType
     if supertype is not None:
-        return _compile(supertype, names, memo)
+        return _compile(supertype, names, memo, bound)
     origin = typing.get_origin(tp)
     if origin is not None:
-        return _compile_generic(tp, origin, typing.get_args(tp), names, memo)
+        return _compile_generic(tp, origin, typing.get_args(tp), names, memo, bound)
     if not isinstance(tp, type):
         raise Unsupported(f"no spec can be built for {fmt(tp)}")
     return _compile_class(tp, names, memo)
 
 
 def _compile_generic(
-    tp: Any, origin: Any, args: tuple[Any, ...], names: Names, memo: dict[Any, _Node]
+    tp: Any,
+    origin: Any,
+    args: tuple[Any, ...],
+    names: Names,
+    memo: dict[Any, _Node],
+    bound: Mapping[Any, Any] | None = None,
 ) -> _Node:
     if origin is typing.Annotated:
-        return _compile(args[0], names, memo)
+        return _compile(args[0], names, memo, bound)
     if origin is Literal:
         return _Literal(args)
     if origin is Union or origin is types.UnionType:
-        return _Union([_compile(a, names, memo) for a in args])
+        return _Union([_compile(a, names, memo, bound) for a in args])
     if origin in _SEQUENCES:
-        item = _compile(args[0], names, memo) if args else _ANY
+        item = _compile(args[0], names, memo, bound) if args else _ANY
         return _Seq(_SEQUENCES[origin], item)
     if origin is tuple:
         if len(args) == 2 and args[1] is Ellipsis:
-            return _Tuple(None, _compile(args[0], names, memo))
+            return _Tuple(None, _compile(args[0], names, memo, bound))
         if args == ((),):  # tuple[()], on Pythons that spell it so
             args = ()
-        return _Tuple([_compile(a, names, memo) for a in args], None)
+        return _Tuple([_compile(a, names, memo, bound) for a in args], None)
     if origin in _SETS:
         cls, make = _SETS[origin]
-        return _Set(cls, _compile(args[0], names, memo) if args else _ANY, make)
+        return _Set(cls, _compile(args[0], names, memo, bound) if args else _ANY, make)
     if origin in _MAPS:
-        key = _compile(args[0], names, memo) if args else _ANY
-        value = _compile(args[1], names, memo) if len(args) > 1 else _ANY
+        key = _compile(args[0], names, memo, bound) if args else _ANY
+        value = _compile(args[1], names, memo, bound) if len(args) > 1 else _ANY
         return _Map(_MAPS[origin], key, value)
     if origin is type:
-        bound = args[0] if args and isinstance(args[0], type) else object
-        return _Live(fmt(tp), lambda v: isinstance(v, type) and issubclass(v, bound))
+        upper = args[0] if args and isinstance(args[0], type) else object
+        return _Live(fmt(tp), lambda v: isinstance(v, type) and issubclass(v, upper))
     if origin is abc.Callable:
         return _Live(fmt(tp), callable)
     if _is_record(origin):
-        return _compile_record(origin, names, memo, alias=tp, args=args)
+        # the arguments as this scope binds them: Chain[T] inside
+        # Chain[int] is Chain[int], and compiles (and is cached) as one
+        resolved = tuple(_substitute(a, bound or {}) for a in args)
+        alias = tp
+        if resolved != args:
+            try:
+                alias = origin[resolved]
+            except TypeError:
+                pass
+        return _compile_record(origin, names, memo, alias=alias, args=resolved)
     if isinstance(origin, type):
         return _Live(fmt(tp), lambda v: isinstance(v, origin))
     raise Unsupported(f"no spec can be built for {fmt(tp)}")
@@ -1148,7 +1172,7 @@ def _compile_record(
             node.fields.append(
                 _Field(
                     name,
-                    _compile(_substitute(info.annotation, bound), scope, memo),
+                    _compile(info.annotation, scope, memo, bound),
                     info.is_required(),
                 )
             )
@@ -1164,7 +1188,7 @@ def _compile_record(
             node.fields.append(
                 _Field(
                     f.name,
-                    _compile(_substitute(hints[f.name], bound), scope, memo),
+                    _compile(hints[f.name], scope, memo, bound),
                     required,
                     f.init,
                 )
@@ -1175,7 +1199,7 @@ def _compile_record(
             node.fields.append(
                 _Field(
                     name,
-                    _compile(_substitute(hints.get(name, Any), bound), scope, memo),
+                    _compile(hints.get(name, Any), scope, memo, bound),
                     name not in defaults,
                 )
             )
@@ -1185,7 +1209,7 @@ def _compile_record(
             node.fields.append(
                 _Field(
                     name,
-                    _compile(_substitute(hint, bound), scope, memo),
+                    _compile(hint, scope, memo, bound),
                     name in required,
                 )
             )
