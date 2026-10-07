@@ -62,10 +62,13 @@ def test_each_tool_carries_its_description_and_schema(ws):
         assert set(tool.parameters["required"]) <= set(tool.parameters["properties"])
 
 
-def test_the_schemas_are_the_ones_agno_derives(ws):
+def test_the_schemas_name_the_parameters_agno_derives(ws):
     """The toolset's JSON Schemas are written out by hand, for loops that
     take a schema rather than a signature. agno derives its schemas from
-    the adapter's typed wrappers, so the two must agree, tool for tool."""
+    the adapter's typed wrappers, so the two must agree on every tool's
+    parameters and which of them are required. The rendering of a type
+    is agno's and varies by release (2.1 renders ``dict`` as a closed
+    empty object); the golden surface file pins the locked release's."""
     pytest.importorskip("agno")
     from nontainer.adapters.agno import WorkspaceTools
     from nontainer.apps import enable_apps
@@ -77,8 +80,12 @@ def test_the_schemas_are_the_ones_agno_derives(ws):
     for name, fn in tk.functions.items():
         fn.process_entrypoint()
         derived[name] = fn.to_dict()["parameters"]
-    ours = {t.name: dict(t.parameters) for t in toolset.tools()}
-    assert ours == derived
+
+    def shape(schema):
+        return sorted(schema["properties"]), sorted(schema.get("required", []))
+
+    ours = {t.name: shape(t.parameters) for t in toolset.tools()}
+    assert ours == {name: shape(schema) for name, schema in derived.items()}
     toolset.sessions.close()
 
 
@@ -169,3 +176,23 @@ async def test_mcp_run_python_reports_ui_artifacts(ws):
     blocks = result[0] if isinstance(result, tuple) else result
     text = "".join(getattr(b, "text", "") for b in blocks)
     assert "[ui artifacts: kpis -> /workspace/ui/kpis.cards.json]" in text
+
+
+def test_a_test_app_run_that_did_not_pass_is_an_error(ws, monkeypatch):
+    """A run that could not load the app, or whose check failed, comes
+    back as a result rather than an exception; the flag follows it."""
+    from nontainer.apps import enable_apps
+    from nontainer.apps.testapp import TestAppResult
+
+    apps = enable_apps(ws)
+    toolset = Toolset(ws, apps=apps)
+    monkeypatch.setattr(
+        apps,
+        "test_app",
+        lambda actions, **kwargs: TestAppResult(ok=False, load_error="no browser"),
+    )
+    assert toolset.test_app([{"wait": 1}]).is_error
+    monkeypatch.setattr(
+        apps, "test_app", lambda actions, **kwargs: TestAppResult(ok=True)
+    )
+    assert not toolset.test_app([{"wait": 1}]).is_error
