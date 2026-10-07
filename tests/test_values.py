@@ -783,16 +783,33 @@ def test_a_copy_can_change_without_reaching_the_original():
     assert out["b"][0] is nested["b"][0]  # bytes don't change
 
 
-def test_a_table_copy_is_shallow_and_an_array_copy_read_only():
+def test_a_table_or_array_copy_shares_nothing_with_the_original():
+    """Not a view, not a copy-on-write shallow copy: either leaves a
+    route to the original's buffer that code can take."""
     np = pytest.importorskip("numpy")
     pd = pytest.importorskip("pandas")
-    frame = pd.DataFrame({"x": [1, 2]})
-    copied = values.copy(frame)
-    copied.loc[0, "x"] = 99
-    copied.drop(columns=["x"], inplace=True)
-    assert frame["x"].tolist() == [1, 2]
     array = np.arange(3)
-    view = values.copy(array)
-    with pytest.raises(ValueError, match="read-only"):
-        view[0] = 9
-    assert array.flags.writeable and array.tolist() == [0, 1, 2]
+    copied = values.copy(array)
+    copied[0] = 9
+    if copied.base is not None:
+        copied.base[1] = 9
+    assert array.tolist() == [0, 1, 2]
+    frame = pd.DataFrame({"x": [1, 2]})
+    column = values.copy(frame)["x"].to_numpy()
+    column.flags.writeable = True
+    column[0] = 99
+    assert frame["x"].tolist() == [1, 2]
+    pa = pytest.importorskip("pyarrow")
+    table = pa.table({"x": [1, 2]})
+    assert values.copy(table) is table  # Arrow buffers refuse writes
+
+
+def test_find_live_says_where_a_value_holds_a_live_object():
+    assert values.find_live({"a": [1, b"x", (2.5, None)], "b": Score("a", 1)}) is None
+    assert values.find_live([Point(1, 2), Grade.PASS, {1, 2}]) is None
+    assert values.find_live({"a": [1, Client()]}) == "at ['a'][1]: a live Client"
+    assert values.find_live(Ranking("a", [Client()])) == "at scores[0]: a live Client"
+    assert values.find_live(len) == "a live builtin_function_or_method"
+    long: list[Any] = list(range(SAMPLE_ABOVE * 2))
+    long[-1] = Client()
+    assert values.find_live(long) == f"at [{SAMPLE_ABOVE * 2 - 1}]: a live Client"

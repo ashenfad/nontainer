@@ -84,6 +84,7 @@ __all__ = [
     "copy",
     "decode",
     "encode",
+    "find_live",
     "fmt",
     "kinds_of",
 ]
@@ -1304,10 +1305,14 @@ def decode(encoded: Encoded | bytes, tp: Any, *, names: Names = None) -> Any:
 
 def copy(value: Any) -> Any:
     """A copy of ``value`` that can be changed without reaching the
-    original, made as cheaply as that allows: data deep-copied, a table
-    shallow-copied where its library copies on write (pandas from 3.0;
-    an Arrow table never changes in place), an array as a read-only view,
-    and bytes as they are."""
+    original, by any route: data and pandas tables deep-copied, numpy
+    arrays copied, and what can't change in place (bytes, Arrow and
+    polars tables, whose buffers refuse writes) as it is.
+
+    A view or a copy-on-write shallow copy would be cheaper and is not
+    enough: a read-only numpy view can be made writable again, or
+    reached through its ``base``, and a pandas column's ``to_numpy()``
+    hands back the shared buffer behind a flag that can be flipped."""
     kind = type(value)
     if value is None or kind in (str, int, float, bool, bytes):
         return value
@@ -1319,25 +1324,89 @@ def copy(value: Any) -> Any:
         return {key: copy(item) for key, item in value.items()}
     table = _table_name(kind)
     if table is not None:
-        return _copy_table(value, table)
+        if table.startswith("pandas."):
+            return value.copy(deep=True)
+        if table.startswith(("pyarrow.", "polars.")):
+            return value
+        return copying.deepcopy(value)
     if _is_array(kind):
-        view = value.view()
-        view.flags.writeable = False
-        return view
+        return value.copy()
     return copying.deepcopy(value)
 
 
-def _copy_table(value: Any, name: str) -> Any:
-    if name.startswith("pandas."):
-        import pandas
+def find_live(value: Any, *, full: bool = False) -> str | None:
+    """Where ``value`` holds a live object (``at [0].client: a live
+    Client``), or ``None`` when it holds none: whether it can be sent by
+    value. Data, bytes, tables and arrays are not live; containers and
+    records are looked inside, on a sample past :data:`SAMPLE_ABOVE`
+    items unless ``full``, as :meth:`Spec.check` does. What it finds
+    live is what :func:`encode` refuses."""
+    try:
+        _find_live(value, full)
+    except Mismatch as found:
+        return str(found)
+    except RecursionError:
+        return "a value nested too deeply, or holding itself"
+    return None
 
-        # copy-on-write is how pandas works from 3.0: a shallow copy is
-        # cheap, and a write to either side copies what it touches
-        return value.copy(deep=int(pandas.__version__.split(".")[0]) < 3)
-    if name.startswith("pyarrow."):
-        return value
-    clone = getattr(value, "clone", None)  # polars
-    return clone() if callable(clone) else copying.deepcopy(value)
+
+_NOT_LIVE: tuple[type, ...] = (
+    str,
+    int,
+    float,
+    bytes,
+    bytearray,
+    memoryview,
+    enum.Enum,
+    datetime.date,
+    datetime.time,
+    datetime.timedelta,
+    decimal.Decimal,
+    uuid.UUID,
+    pathlib.PurePath,
+)
+
+
+def _find_live(v: Any, full: bool) -> None:
+    kind = type(v)
+    if v is None or isinstance(v, _NOT_LIVE):
+        return
+    if _table_name(kind) is not None or _root(kind) == "numpy":
+        return  # a table, an array or a numpy scalar
+    if dataclasses.is_dataclass(v) and not isinstance(v, type):
+        names: Sequence[str] = [f.name for f in dataclasses.fields(v)]
+    elif _is_namedtuple(kind):
+        names = list(v._fields)
+    elif _is_model(kind):
+        names = list(kind.model_fields)  # type: ignore[attr-defined]
+    else:
+        names = ()
+    if names:
+        for name in names:
+            try:
+                _find_live(getattr(v, name), full)
+            except Mismatch as m:
+                raise m.at(f".{name}") from None
+        return
+    if isinstance(v, abc.Mapping):
+        items = list(v.items())
+        for i in _indices(len(items), full):
+            key, item = items[i]
+            try:
+                _find_live(key, full)
+                _find_live(item, full)
+            except Mismatch as m:
+                raise m.at(f"[{key!r}]") from None
+        return
+    if isinstance(v, (abc.Sequence, abc.Set)):
+        seq = v if isinstance(v, abc.Sequence) else list(v)
+        for i in _indices(len(seq), full):
+            try:
+                _find_live(seq[i], full)
+            except Mismatch as m:
+                raise m.at(f"[{i}]") from None
+        return
+    raise Mismatch(f"a live {kind.__name__}")
 
 
 # -- encoding ------------------------------------------------------------------------

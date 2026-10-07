@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 import pytest
-from host_types import Grade, Report, Row
+from host_types import Card, Grade, Report, Row
 
 from nontainer import HostObject, Profile, PythonConfig, Store
 from nontainer.adapters.render import python_description
@@ -88,12 +88,72 @@ def test_an_error_line_is_the_code_own(ws):
     assert "line 2" in r.error
 
 
+def test_typed_data_needs_no_classes_listed_to_be_read():
+    """Its fields, methods and properties are open to code whether or not
+    its classes are among ``classes``, which are for building values."""
+
+    def bare(isolation):
+        return PythonConfig(
+            isolation=isolation,
+            host_objects={"cards": HostObject([Card("hi")], type=list[Card])},
+        )
+
+    for rung in ("none", "process", "dud"):
+        try:
+            ws, store = open_ws(rung, bare)
+        except pytest.skip.Exception:
+            continue
+        try:
+            r = ws.run_python("print(cards[0].front, cards[0].shout(), cards[0].size)")
+            assert r.stdout.strip() == "hi HI 2", (rung, r.error)
+        finally:
+            ws.close()
+            if store is not None:
+                store.close()
+
+
+def test_an_array_run_cannot_reach_the_host_array():
+    np = pytest.importorskip("numpy")
+    from nontainer.presets import dataframes
+
+    array = np.arange(3)
+    cfg = PythonConfig(
+        modules=[dataframes()],
+        host_objects={"values": HostObject(array, type=np.ndarray)},
+    )
+    with Store(memory=True) as store:
+        ws = store.open("h", profile=Profile(python=cfg))
+        try:
+            r = ws.run_python(
+                "values.flags.writeable = True\nvalues[0] = 9\n"
+                "if values.base is not None:\n    values.base[1] = 9\n"
+                "print(values.tolist())"
+            )
+            assert r.error is None, r.error
+        finally:
+            ws.close()
+    assert array.tolist() == [0, 1, 2]
+
+
 # -- the entry -------------------------------------------------------------------------
 
 
 def test_the_value_is_checked_against_its_type():
     with pytest.raises(TypeError, match=r"at \[0\].score: expected int, got str"):
         HostObject([Row("ada", "3", Grade.PASS)], type=list[Row])
+
+
+def test_a_live_object_under_any_is_refused():
+    from typing import Any
+
+    class Client:
+        pass
+
+    with pytest.raises(TypeError, match=r"allows anything \(a live Client\)"):
+        HostObject(Client(), type=Any)
+    with pytest.raises(TypeError, match=r"at \['a'\]\[1\]: a live Client"):
+        HostObject({"a": [1, Client()]}, type=dict[str, Any])
+    assert HostObject({"a": [1, "x"]}, type=dict[str, Any]).by_value
 
 
 def test_a_type_with_a_live_part_is_refused():

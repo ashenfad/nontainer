@@ -22,3 +22,15 @@ class Row:
 class Report:
     best: str
     total: int
+
+
+@dataclass
+class Card:
+    front: str
+
+    def shout(self) -> str:
+        return self.front.upper()
+
+    @property
+    def size(self) -> int:
+        return len(self.front)
