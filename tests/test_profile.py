@@ -169,3 +169,22 @@ def test_store_fork_refuses_a_profile_with_its_fields_before_forking(tmp_path):
     child = st.fork("src", "dst", profile=profile)
     assert child.files.read("a.txt") == b"x"
     child.close()
+
+
+def test_host_objects_are_read_only_and_a_new_set_is_a_new_config():
+    """Each executor takes its host objects when it opens, so an object
+    added to a live config's mapping would reach in-process code and
+    nowhere else. The mapping refuses it; a different set is a
+    different config."""
+    db = object()
+    given = {"db": db}
+    python = PythonConfig(host_objects=given)
+    with pytest.raises(TypeError):
+        python.host_objects["other"] = object()  # type: ignore[index]
+    given["late"] = object()  # the caller's dict is theirs, not the config's
+    assert list(python.host_objects) == ["db"]
+
+    more = dataclasses.replace(python, host_objects={**python.host_objects, "task": 1})
+    assert set(more.host_objects) == {"db", "task"} and more.host_objects["db"] is db
+    with pytest.raises(TypeError):
+        more.host_objects["x"] = 2  # type: ignore[index]

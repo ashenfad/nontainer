@@ -377,7 +377,13 @@ class PythonConfig:
     under process/kernel isolation (or a loud construction-time error
     if unbridgeable). Merging the two would make `isolation="none"` →
     `"process"` a silent breaking change; keeping them apart makes the
-    contract checkable at the right moment."""
+    contract checkable at the right moment.
+
+    Read-only, like the config: each executor takes its set when it
+    opens, so an object added to the mapping afterwards would reach
+    in-process code and nowhere else. A different set is a different
+    config, ``dataclasses.replace(python, host_objects={...})``, for a
+    workspace opened (or forked) with it."""
 
     network: bool = False
     """Global network toggle for sandboxed code itself (sandtrap
@@ -513,6 +519,11 @@ class PythonConfig:
     policy: Any | None = None
     """A pre-built ``sandtrap.Policy``; overrides everything above
     except ``host_objects``."""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "host_objects", MappingProxyType(dict(self.host_objects))
+        )
 
 
 @dataclass(frozen=True)
