@@ -1944,6 +1944,67 @@ harvest, so the call is torn rather than absent — also a
 
 ## Adapters
 
+### The shared toolset (`nontainer.adapters.tools`)
+
+```python
+Toolset(
+    workspace: Workspace,
+    *,
+    tools: "auto" | "terminal" | "split" = "auto",
+    apps: AppRuntime | None = None,     # adds test_app
+    sessions: SessionRunner | Sessions | None = None,  # adds sessions
+    terminal_primer: str | None = None,
+    python_primer: str | None = None,
+    vision: bool = True,                # False: no view_image, test_app screenshots as paths
+)
+toolset.tools() -> list[Tool]           # the set, in a stable order
+toolset.description(name) -> str
+toolset.terminal(command) -> ToolOutput # and file_write, file_edit, view_image,
+                                        # run_python, test_app, sessions_action
+toolset.lock                            # the fence every call takes (not sessions)
+toolset.split, toolset.sessions         # run_python on its own? the delegation helper
+
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    parameters: Mapping[str, Any]       # JSON Schema for the arguments
+    call: Callable[..., ToolOutput]
+    async def acall(self, **arguments) -> ToolOutput   # on a worker thread
+
+@dataclass(frozen=True)
+class ToolOutput:
+    text: str                           # what the model reads
+    images: tuple[ToolImage, ...] = ()  # ToolImage(data, format, source)
+    written: str | None = None          # the path file_write wrote
+    is_error: bool = False              # the call did not do what it was asked
+```
+
+The workspace tools, defined once: their names, descriptions, argument
+schemas, and what a call does and returns. The agno and MCP adapters
+are built on it, and so is any other harness: a loop that takes JSON
+Schemas reads `Tool.parameters` and calls `Tool.call` (or `acall` from
+an event loop). agno and FastMCP derive a tool's schema from a Python
+signature, so each of those adapters keeps a thin typed wrapper per
+tool and maps a `ToolOutput` onto its own result shape; a test holds
+the toolset's schemas equal to the ones agno derives.
+
+`is_error` is for a harness that marks failed calls (an event stream, a
+transcript): a failed edit, an unreadable image, a `test_app` that
+could not run, a command that exited non-zero, python that raised. The
+model learns the same from `text`.
+
+`run_python`'s description here does not teach the `ui = {...}`
+convention, because that note promises the artifacts display beside the
+reply, which only a host that renders them can keep. The agno toolkit
+appends `PYTHON_UI_NOTE`; a host that renders artifacts should too. The
+result reports the artifacts a call saved either way.
+
+`render.toolkit_instructions(ws, *, split, turn_commits)` is the
+standing guidance for a harness that keeps one system prompt: the
+one-call-per-turn convention, how the session commits, and the skills
+catalog. The agno toolkit's `instructions` are exactly this.
+
 ### agno (`nontainer.adapters.agno`, `[agno]` extra)
 
 ```python

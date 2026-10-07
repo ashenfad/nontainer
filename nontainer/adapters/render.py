@@ -765,6 +765,45 @@ def _env_notes(ws: Workspace) -> str:
 
 
 # ---------------------------------------------------------------------------
+# toolkit instructions: the standing guidance a harness that keeps one
+# system prompt (agno's toolkit instructions) puts beside the tools
+# ---------------------------------------------------------------------------
+
+_INSTRUCTIONS = """\
+You have a persistent workspace (files, shell{and_python}). Make ONE
+terminal{or_python} call per turn, batching related commands/code within
+it — mutations are then safely sequential. file_write/file_edit are
+different: you MAY issue several in one turn (they execute safely), but
+keep edits to the SAME file to one per turn since parallel-call order
+is not guaranteed. The workspace persists across the whole
+session{versioned_note}."""
+
+
+def toolkit_instructions(ws: Workspace, *, split: bool, turn_commits: bool) -> str:
+    """The one-call-per-turn convention, how the session commits, and the
+    skills catalog (``/skills/*/SKILL.md`` frontmatter: discovery is a
+    primer's job, and reading a skill needs no tool of its own).
+
+    ``split``: whether ``run_python`` is a tool of its own.
+    ``turn_commits``: whether the session commits once per turn rather
+    than after every mutating call."""
+    from ..skills import catalog as skills_catalog
+
+    instructions = _INSTRUCTIONS.format(
+        and_python=", and sandboxed python" if split else "",
+        or_python=" / run_python" if split else "",
+        versioned_note=(
+            ""
+            if not ws.caps.versioned
+            else "; your work is committed at the end of each turn"
+            if turn_commits
+            else "; every mutating call is committed"
+        ),
+    )
+    return instructions + skills_catalog(ws)
+
+
+# ---------------------------------------------------------------------------
 # rich reply artifacts: how the `ui = {...}` convention is described to the
 # agent. The convention itself -- what each value becomes on disk -- is
 # core's (:mod:`nontainer.ui`), because every rung materializes it.
