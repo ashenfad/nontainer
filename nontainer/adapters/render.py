@@ -39,7 +39,7 @@ def resolve_tools_mode(ws: Workspace, mode: ToolsMode = "auto") -> str:
     if mode != "auto":
         return mode
     cfg = ws.runtime.python_config
-    augmented = ws.runtime.cache_enabled or bool(cfg.host_objects)
+    augmented = ws.runtime.cache_enabled or bool(cfg.host_objects or cfg.classes)
     return "split" if augmented else "terminal"
 
 
@@ -713,8 +713,16 @@ def _env_notes(ws: Workspace) -> str:
     if ws.runtime.cache_enabled:
         lines.append(_CACHE_NOTE)
     cfg = ws.runtime.python_config
-    if cfg.host_objects:
-        sorted_names = sorted(cfg.host_objects)
+    from ..workspace import HostObject
+
+    data = sorted(
+        name
+        for name, entry in cfg.host_objects.items()
+        if isinstance(entry, HostObject) and entry.by_value
+    )
+    live = sorted(name for name in cfg.host_objects if name not in data)
+    if live:
+        sorted_names = live
         names = ", ".join(sorted_names)
         one = sorted_names[0]
         lines.append(
@@ -724,6 +732,19 @@ def _env_notes(ws: Workspace) -> str:
             f"handler; in a module you import them — `from host import "
             f"{one}`, which also works at the top level and in a handler, "
             "so it is the spelling that is right everywhere"
+        )
+    if data:
+        lines.append(
+            f"- data available by name: {', '.join(data)}. Each run gets its "
+            "own copy, so a change to it lasts until the run ends; keep "
+            "what you need in a file or the cache"
+        )
+    if cfg.classes:
+        classes = ", ".join(sorted(k.__name__ for k in cfg.classes))
+        lines.append(
+            f"- classes available by name: {classes}; build values of them "
+            "with these, not classes of your own with the same names "
+            "(in a module, `from host import ...` them)"
         )
     from ..executor import flatten_grants
 

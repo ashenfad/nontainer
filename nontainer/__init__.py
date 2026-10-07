@@ -85,6 +85,7 @@ from .protocol import (
 from .runtime import Runtime
 from .store import Publication, Ref, Store, Version, store
 from .workspace import (
+    HostObject,
     ModuleGrant,
     Mount,
     Profile,
@@ -111,6 +112,7 @@ __all__ = [
     "PythonConfig",
     "Profile",
     "Mount",
+    "HostObject",
     "ModuleGrant",
     "TerminalResult",
     "PythonResult",
