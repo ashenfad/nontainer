@@ -885,10 +885,26 @@ class Store:
         recorded against some other root would name paths the child
         cannot see.
         """
-        root = open_kwargs.get("root")
-        if root is None and open_kwargs.get("profile") is not None:
-            root = open_kwargs["profile"].root
-        source = self.open(src, **({"root": root} if root is not None else {}))
+        from .workspace import _profile_fields
+
+        # A profile passed with one of its own fields is refused here,
+        # before the destination branch exists: the final open refuses
+        # it too, but by then the fork would already be on the store.
+        fields = _profile_fields(
+            open_kwargs.get("profile"),
+            **{
+                name: open_kwargs.get(name)
+                for name in (
+                    "python",
+                    "mounts",
+                    "commands",
+                    "executor_factory",
+                    "root",
+                    "ignore",
+                )
+            },
+        )
+        source = self.open(src, root=fields["root"])
         try:
             child = source.fork(dst, at=at, inherit=inherit, paths=paths)
             # Its provider shares the source's store handle, which goes
