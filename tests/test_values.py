@@ -13,7 +13,16 @@ import runpy
 import sys
 import uuid
 from collections.abc import Callable, Iterator, Mapping, MutableMapping, Sequence
-from typing import Any, Literal, NamedTuple, Optional, TypedDict, Union
+from typing import (
+    Any,
+    Generic,
+    Literal,
+    NamedTuple,
+    Optional,
+    TypedDict,
+    TypeVar,
+    Union,
+)
 
 import pytest
 
@@ -662,3 +671,97 @@ def test_the_module_runs_from_its_source():
     blob = namespace["encode"]({"a": [1, b"x"]}).to_bytes()
     spec = namespace["Spec"].of(dict[str, list[Union[int, bytes]]])
     assert spec.decode(blob) == {"a": [1, b"x"]}
+
+
+# -- generic records, literals of bytes, untrusted parts -------------------------------
+
+T = TypeVar("T")
+
+
+@dataclasses.dataclass
+class Box(Generic[T]):
+    item: T
+
+
+@dataclasses.dataclass
+class Chain(Generic[T]):
+    value: T
+    rest: list["Chain[T]"]
+
+
+def test_a_generic_record_checks_its_arguments():
+    spec = Spec.of(Box[int])
+    spec.check(Box(3))
+    with pytest.raises(Mismatch, match=r"at item: expected int, got str"):
+        spec.check(Box("bad"))
+    with pytest.raises(Mismatch, match=r"at item: expected int"):
+        spec.decode(encode(Box("bad")))
+    assert spec.decode(encode(Box(3))) == Box(3)
+    Spec.of(Box[str]).check(Box("ok"))  # each parameterization its own
+    Spec.of(Box).check(Box(object()))  # unbound, the field is Any
+    with pytest.raises(Mismatch, match=r"expected Box\[int\], got Note"):
+        spec.check(Note("x"))
+
+
+def test_a_generic_record_that_holds_itself():
+    spec = Spec.of(Chain[int])
+    spec.check(Chain(1, [Chain(2, [])]))
+    with pytest.raises(Mismatch, match=r"at rest\[0\].value: expected int"):
+        spec.check(Chain(1, [Chain("2", [])]))
+    assert spec.decode(encode(Chain(1, [Chain(2, [])]))) == Chain(1, [Chain(2, [])])
+
+
+def test_literals_of_bytes_and_special_floats_round_trip():
+    assert roundtrip(b"x", Literal[b"x", b"y"]) == b"x"
+    assert roundtrip(Grade.PASS, Literal[Grade.PASS]) is Grade.PASS
+    with pytest.raises(Mismatch, match="expected Literal"):
+        Spec.of(Literal[b"x"]).decode(encode(b"z"))
+
+
+def test_a_series_with_a_bytes_name_round_trips():
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    series = pd.Series([1, 2], name=b"id")
+    pd.testing.assert_series_equal(roundtrip(series, pd.Series), series)
+
+
+def test_broken_parts_are_a_mismatch_and_nothing_else():
+    """Decoding is for values from elsewhere: whatever a corrupt table or
+    array raises inside its library comes out as Mismatch."""
+    np = pytest.importorskip("numpy")
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    samples = [
+        (pd.DataFrame({"x": [1, 2], "y": ["a", "b"]}), pd.DataFrame),
+        (np.arange(12, dtype="int64").reshape(3, 4), np.ndarray),
+    ]
+    for value, tp in samples:
+        encoded = encode(value)
+        (data,) = encoded.parts
+        spec = Spec.of(tp)
+        corrupt = [
+            b"",
+            data[:1],
+            data[: len(data) // 2],
+            data[:-1],
+            b"\xff" * len(data),
+        ]
+        for cut in range(0, len(data), max(1, len(data) // 16)):
+            corrupt.append(data[:cut] + bytes([data[cut] ^ 0xFF]) + data[cut + 1 :])
+        for bad in corrupt:
+            try:
+                spec.decode(Encoded(encoded.tree, (bad,)))
+            except Mismatch:
+                pass  # refused, as it should be; or read, if still valid
+
+
+def test_any_travels_as_plain_data_only():
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    spec = Spec.of(Any)
+    assert spec.travels
+    spec.check(Client())  # in this process, anything
+    with pytest.raises(Unencodable):
+        encode(Client())
+    with pytest.raises(Mismatch, match="declare its type"):
+        spec.decode(encode(pd.DataFrame({"x": [1]})))

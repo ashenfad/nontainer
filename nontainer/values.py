@@ -549,11 +549,16 @@ class _Literal(_Node):
             raise _expected(self.label, value)
 
     def build(self, tree: Any, parts: Sequence[bytes]) -> Any:
+        try:
+            # the encoding's own scalars (bytes, a non-finite float) first
+            value = _ANY.build(tree, parts)
+        except Mismatch:
+            raise _expected(self.label, tree) from None
         for allowed in self.values:
             if isinstance(allowed, enum.Enum):
-                if tree == allowed.value and type(tree) is type(allowed.value):
+                if type(value) is type(allowed.value) and value == allowed.value:
                     return allowed
-            elif type(tree) is type(allowed) and tree == allowed:
+            elif type(value) is type(allowed) and value == allowed:
                 return allowed
         raise _expected(self.label, tree)
 
@@ -780,12 +785,13 @@ class _Record(_Node):
 
     def __init__(self, cls: type) -> None:
         self.cls = cls
+        self.alias: Any = None
         self.fields: list[_Field] = []
         self.typed_dict = typing.is_typeddict(cls)
 
     @property
     def label(self) -> str:
-        return self.cls.__name__
+        return self.cls.__name__ if self.alias is None else fmt(self.alias)
 
     def children(self) -> Iterator[_Node]:
         return (f.node for f in self.fields)
@@ -921,7 +927,7 @@ class _Table(_Node):
             raise _expected(self.label, tree)
         if tree.get("of") != self.name:
             raise Mismatch(f"expected {self.label}, got an encoded {tree.get('of')}")
-        return _read_table(self.name, tree, _part(tree, parts))
+        return _read_table(self.name, tree, _part(tree, parts), parts)
 
 
 class _Array(_Node):
@@ -940,13 +946,14 @@ class _Array(_Node):
     def build(self, tree: Any, parts: Sequence[bytes]) -> Any:
         if type(tree) is not dict or tree.get(TAG) != "array":
             raise _expected(self.label, tree)
-        import numpy
-
+        data = _part(tree, parts)
+        numpy = _library("numpy", "an ndarray")
         try:
-            return numpy.load(io.BytesIO(_part(tree, parts)), allow_pickle=False)
-        except ValueError as error:
+            return numpy.load(io.BytesIO(data), allow_pickle=False)
+        except Exception as error:  # noqa: BLE001 - whatever a bad .npy raises
             raise Mismatch(
-                f"expected ndarray, got an unreadable array ({error})"
+                f"expected ndarray, got an unreadable array "
+                f"({type(error).__name__}: {error})"
             ) from None
 
 
@@ -999,7 +1006,7 @@ _PARSED: dict[type, Callable[[str], Any]] = {
 }
 
 
-def _compile(tp: Any, names: Names, memo: dict[int, _Node]) -> _Node:
+def _compile(tp: Any, names: Names, memo: dict[Any, _Node]) -> _Node:
     if tp is Any or tp is object or tp is inspect.Parameter.empty:
         return _ANY
     if tp is None or tp is type(None):
@@ -1022,7 +1029,7 @@ def _compile(tp: Any, names: Names, memo: dict[int, _Node]) -> _Node:
 
 
 def _compile_generic(
-    tp: Any, origin: Any, args: tuple[Any, ...], names: Names, memo: dict[int, _Node]
+    tp: Any, origin: Any, args: tuple[Any, ...], names: Names, memo: dict[Any, _Node]
 ) -> _Node:
     if origin is typing.Annotated:
         return _compile(args[0], names, memo)
@@ -1052,13 +1059,13 @@ def _compile_generic(
     if origin is abc.Callable:
         return _Live(fmt(tp), callable)
     if _is_record(origin):
-        return _compile(origin, names, memo)
+        return _compile_record(origin, names, memo, alias=tp, args=args)
     if isinstance(origin, type):
         return _Live(fmt(tp), lambda v: isinstance(v, origin))
     raise Unsupported(f"no spec can be built for {fmt(tp)}")
 
 
-def _compile_class(tp: type, names: Names, memo: dict[int, _Node]) -> _Node:
+def _compile_class(tp: type, names: Names, memo: dict[Any, _Node]) -> _Node:
     if issubclass(tp, enum.Enum):
         return _Enum(tp)
     if tp is bool:
@@ -1096,17 +1103,54 @@ def _compile_class(tp: type, names: Names, memo: dict[int, _Node]) -> _Node:
     return _Live(tp.__name__, lambda v: isinstance(v, tp))
 
 
-def _compile_record(tp: type, names: Names, memo: dict[int, _Node]) -> _Node:
-    known = memo.get(id(tp))
+def _substitute(tp: Any, bound: Mapping[Any, Any]) -> Any:
+    """``tp`` with the type variables ``bound`` names replaced, through
+    typing's own substitution (``list[T]`` with ``T`` bound to ``int`` is
+    ``list[int]``)."""
+    if not bound:
+        return tp
+    if isinstance(tp, typing.TypeVar):
+        return bound.get(tp, tp)
+    params = getattr(tp, "__parameters__", None)
+    if params and not isinstance(tp, type):
+        try:
+            return tp[tuple(bound.get(p, p) for p in params)]
+        except TypeError:
+            return tp
+    return tp
+
+
+def _compile_record(
+    tp: type,
+    names: Names,
+    memo: dict[Any, _Node],
+    *,
+    alias: Any = None,
+    args: tuple[Any, ...] = (),
+) -> _Node:
+    """A record's node; for a generic one given its arguments
+    (``Box[int]``), with them bound in its fields' annotations."""
+    key: Any = tp if alias is None else alias
+    try:
+        known = memo.get(key)
+    except TypeError:  # an alias that can't be hashed
+        key = id(key)
+        known = memo.get(key)
     if known is not None:
         return known  # a record that holds itself
     node: _Record = _Model(tp) if _is_model(tp) else _Record(tp)
-    memo[id(tp)] = node
+    node.alias = alias
+    memo[key] = node
+    bound = dict(zip(getattr(tp, "__parameters__", ()), args))
     scope = _scope(tp, names)
     if isinstance(node, _Model):
         for name, info in tp.model_fields.items():  # type: ignore[attr-defined]
             node.fields.append(
-                _Field(name, _compile(info.annotation, scope, memo), info.is_required())
+                _Field(
+                    name,
+                    _compile(_substitute(info.annotation, bound), scope, memo),
+                    info.is_required(),
+                )
             )
         return node
     hints = _hints(tp, names)
@@ -1118,7 +1162,12 @@ def _compile_record(tp: type, names: Names, memo: dict[int, _Node]) -> _Node:
                 and f.default_factory is dataclasses.MISSING
             )
             node.fields.append(
-                _Field(f.name, _compile(hints[f.name], scope, memo), required, f.init)
+                _Field(
+                    f.name,
+                    _compile(_substitute(hints[f.name], bound), scope, memo),
+                    required,
+                    f.init,
+                )
             )
     elif _is_namedtuple(tp):
         defaults = getattr(tp, "_field_defaults", {})
@@ -1126,7 +1175,7 @@ def _compile_record(tp: type, names: Names, memo: dict[int, _Node]) -> _Node:
             node.fields.append(
                 _Field(
                     name,
-                    _compile(hints.get(name, Any), scope, memo),
+                    _compile(_substitute(hints.get(name, Any), bound), scope, memo),
                     name not in defaults,
                 )
             )
@@ -1134,7 +1183,11 @@ def _compile_record(tp: type, names: Names, memo: dict[int, _Node]) -> _Node:
         required = getattr(tp, "__required_keys__", frozenset(hints))
         for name, hint in hints.items():
             node.fields.append(
-                _Field(name, _compile(hint, scope, memo), name in required)
+                _Field(
+                    name,
+                    _compile(_substitute(hint, bound), scope, memo),
+                    name in required,
+                )
             )
     return node
 
@@ -1181,8 +1234,11 @@ class Spec:
 
     @property
     def travels(self) -> bool:
-        """Whether a value of the type can cross a process boundary: it
-        has no live part."""
+        """Whether the type declares no live part, so its values can cross
+        a process boundary. Under ``Any`` only plain data crosses: a value
+        there that isn't data is refused when it is encoded (a live
+        object) or decoded (a table or an array, which need their type
+        declared), never mishandled."""
         return "live" not in self.kinds
 
     def check(self, value: Any, *, full: bool = False) -> None:
@@ -1464,32 +1520,55 @@ def _pairs(
     return out
 
 
-def _read_table(name: str, tree: dict[str, Any], data: bytes) -> Any:
-    import pyarrow
+def _library(module: str, what: str) -> Any:
+    """``module``, which decoding ``what`` needs: :class:`Unsupported`
+    where it isn't installed, since that is this process's lack and not
+    the value's fault."""
+    import importlib
 
     try:
-        table = pyarrow.ipc.open_stream(data).read_all()
-    except (pyarrow.ArrowInvalid, OSError, ValueError) as error:
-        raise Mismatch(f"expected {name}, got an unreadable table ({error})") from None
-    if name == "pandas.DataFrame":
-        return table.to_pandas()
-    if name == "pandas.Series":
-        frame = table.to_pandas()
-        if list(frame.columns) != ["values"]:
-            raise Mismatch("an encoded Series that isn't one column")
-        series = frame["values"]
-        series.name = _ANY.build(tree.get("name"), ())
-        return series
-    if name == "pyarrow.Table":
-        return table
-    if name == "pyarrow.RecordBatch":
-        return (
+        return importlib.import_module(module)
+    except ImportError:
+        raise Unsupported(
+            f"decoding {what} needs {module}, which isn't installed here"
+        ) from None
+
+
+def _read_table(
+    name: str, tree: dict[str, Any], data: bytes, parts: Sequence[bytes]
+) -> Any:
+    pyarrow = _library("pyarrow", f"a {name}")
+    readers: dict[str, Callable[[Any], Any]] = {
+        "pandas.DataFrame": lambda table: table.to_pandas(),
+        "pandas.Series": lambda table: _series(table, tree, parts),
+        "pyarrow.Table": lambda table: table,
+        "pyarrow.RecordBatch": lambda table: (
             table.combine_chunks().to_batches()[0]
             if table.num_rows
-            else (pyarrow.RecordBatch.from_pylist([], schema=table.schema))
-        )
-    if name == "polars.DataFrame":
-        import polars
+            else pyarrow.RecordBatch.from_pylist([], schema=table.schema)
+        ),
+        "polars.DataFrame": lambda table: _library("polars", f"a {name}").from_arrow(
+            table
+        ),
+    }
+    reader = readers.get(name)
+    if reader is None:
+        raise Unsupported(f"no decoder for the table type {name}")
+    try:
+        return reader(pyarrow.ipc.open_stream(data).read_all())
+    except (Mismatch, Unsupported):
+        raise
+    except Exception as error:  # noqa: BLE001 - whatever a bad stream raises
+        raise Mismatch(
+            f"expected {name}, got an unreadable table "
+            f"({type(error).__name__}: {error})"
+        ) from None
 
-        return polars.from_arrow(table)
-    raise Unsupported(f"no decoder for the table type {name}")
+
+def _series(table: Any, tree: dict[str, Any], parts: Sequence[bytes]) -> Any:
+    frame = table.to_pandas()
+    if list(frame.columns) != ["values"]:
+        raise Mismatch("an encoded Series that isn't one column")
+    series = frame["values"]
+    series.name = _ANY.build(tree.get("name"), parts)
+    return series
