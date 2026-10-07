@@ -89,9 +89,11 @@ from .views import (
 if TYPE_CHECKING:
     from .agentgit import AgentGit
     from .editing import EditOutcome
+    from .inbox import Inbox
     from .protocol import Executor
     from .runtime import Runtime
     from .store import Ref, Store
+    from .turns import Turn, Turns
 
 Isolation = Literal["none", "process", "kernel"]
 
@@ -1719,6 +1721,9 @@ class Workspace:
         # host_objects, and a host object that calls back into this
         # workspace's public API must serialize, not deadlock.
         self._lock = threading.RLock()
+        from .turns import Turns
+
+        self._turns = Turns(self)
 
         # A frozen provider is a snapshot at a tag (provider.at_tag):
         # reads work, nothing commits. A workspace over one refuses its
@@ -2145,6 +2150,29 @@ class Workspace:
         an ``RLock``, so taking it around a block that calls locked
         public methods is safe."""
         return self._lock
+
+    @property
+    def turns(self) -> Turns:
+        """The workspace's turns: :meth:`~nontainer.turns.Turns.begin`
+        for a harness whose turn starts and ends in different callbacks,
+        and ``current``, the turn open now. See :mod:`nontainer.turns`."""
+        return self._turns
+
+    def turn(
+        self,
+        run_id: str | None = None,
+        *,
+        resume: bool = False,
+        inbox: Inbox | None = None,
+        harness: str | None = None,
+    ) -> Turn:
+        """Open a turn, for ``with`` or ``async with``: the span in which
+        one run of a harness's loop drives this session. Ending it stores
+        the run, settles ``inbox`` and lands one commit stamped with how
+        the run ended. One at a time: another refuses with
+        :class:`~nontainer.TurnInProgress`. See :class:`~nontainer.turns.
+        Turn`."""
+        return self._turns.begin(run_id, resume=resume, inbox=inbox, harness=harness)
 
     # ------------------------------------------------------------------
     # the two tools

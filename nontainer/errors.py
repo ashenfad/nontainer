@@ -76,6 +76,15 @@ class BranchExpired(SessionsError):
     """
 
 
+class TurnInProgress(WorkspaceError):
+    """A turn is already open on this workspace.
+
+    A workspace has one writer, and a turn is that writer from its
+    beginning to its end: a second turn opened beside it would land its
+    run in the first one's commit. End the open turn first, or run the
+    second on a fork (a delegate is a workspace of its own)."""
+
+
 class LegacyLayoutError(WorkspaceError):
     """A branch head still carries the layout written before monkeyfs 0.1.10.
 

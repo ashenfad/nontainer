@@ -57,6 +57,7 @@ from .errors import (
     NotSupportedError,
     SessionIdError,
     SessionsError,
+    TurnInProgress,
     WorkspaceError,
 )
 from .migrate import LayoutMigration
@@ -146,5 +147,6 @@ __all__ = [
     "BranchExpired",
     "HarvestLost",
     "LegacyLayoutError",
+    "TurnInProgress",
     "LayoutMigration",
 ]

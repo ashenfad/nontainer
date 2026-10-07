@@ -28,7 +28,6 @@ from nontainer.conformance.corpus import (
     writes,
 )
 from nontainer.conformance.harness import SCENARIOS, by_name
-from nontainer.conversation import Index
 from nontainer.inbox import Inbox
 from nontainer.turns import (
     TURN_EVENTS,
@@ -50,11 +49,12 @@ from nontainer.turns import (
 
 
 class ReferenceSession:
-    """The contract, and nothing else: a turn runs the clock's replies,
-    writes files through the workspace (one commit per call), delivers
-    queued notes on tool results, and ends by storing the run (with a
-    closing note when it was cancelled or failed), settling the inbox
-    and committing once, stamped with the run's status."""
+    """The contract, and nothing else, on the turn API: each run is a
+    turn (``ws.turn``) that runs the clock's replies, writes files
+    through the workspace (one commit per call), delivers queued notes
+    on tool results, and ends by handing the turn its body (with a
+    closing note when it was cancelled or failed). The turn stores it,
+    settles the inbox and commits once, stamped with the run's status."""
 
     def __init__(self, ws, clock):
         self.ws = ws
@@ -64,17 +64,20 @@ class ReferenceSession:
         self._interrupted = None
 
     def turn(self, prompt):
-        return self._run(uuid.uuid4().hex, [{"role": "user", "text": prompt}])
+        turn = self.ws.turn(uuid.uuid4().hex, inbox=self.inbox, harness="reference")
+        return self._run(turn, [{"role": "user", "text": prompt}])
 
     def resume(self):
         run_id = self._interrupted
         held = conversation.read_runs(self.ws.provider.kv, [run_id])[run_id]
-        return self._run(run_id, held["messages"])
+        turn = self.ws.turn(run_id, resume=True, inbox=self.inbox)
+        return self._run(turn, held["messages"])
 
     def cancel(self):
         self._cancelled = True
 
-    def _run(self, run_id, messages):
+    def _run(self, turn, messages):
+        run_id = turn.run_id
         events = [RunStarted(run_id=run_id)]
         self._cancelled = False
         status, message = "completed", None
@@ -116,18 +119,7 @@ class ReferenceSession:
                 events.append(ToolEnded(call_id=call_id, name=call.name, result="ok"))
         if status in ("cancelled", "failed"):
             messages.append({"role": "note", "text": f"ended early: {message}"})
-        self.inbox.settle()
-        kv = self.ws.provider.kv
-        index = conversation.read_index(kv)
-        runs = index.runs if index is not None else ()
-        if run_id not in runs:
-            runs = (*runs, run_id)
-        conversation.write(
-            kv,
-            Index(harness="reference", session=self.ws.session, runs=runs),
-            runs={run_id: {"messages": messages}},
-        )
-        self.ws.commit(info={"tool": "turn", "runs": {run_id: status}})
+        turn.end(status, body={"messages": messages}, message=message)
         self._interrupted = run_id if status == "interrupted" else None
         events.append(RunEnded(status=status, message=message))
         return events
