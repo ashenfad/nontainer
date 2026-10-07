@@ -55,6 +55,7 @@ from agno.tools import Toolkit
 from agno.tools.function import ToolResult
 
 from ..inbox import Inbox, Note
+from ..turns import RunStatus, Turn
 from ..workspace import Workspace
 from .render import PYTHON_UI_NOTE, ToolsMode, toolkit_instructions
 from .tools import ToolOutput, Toolset
@@ -165,6 +166,52 @@ def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) ->
         except NotImplementedError:
             pass  # runs are stored inline, and upsert_session wrote this one
     return True
+
+
+#: agno's ``error_type`` on a ``RunError`` for a failed provider call
+#: (an overloaded or rate-limited endpoint): the errors worth resuming.
+PROVIDER_ERRORS = frozenset({"model_provider_error", "model_rate_limit_error"})
+
+
+def status_of_error(error_type: str | None) -> RunStatus:
+    """How a run that ended in agno's ``RunError`` ended, by the event's
+    ``error_type``: ``"interrupted"`` for a provider error, which the run
+    can resume from in place (``acontinue_run``), and ``"failed"`` for
+    anything else."""
+    return "interrupted" if error_type in PROVIDER_ERRORS else "failed"
+
+
+def finish_turn(
+    turn: Turn,
+    db: Any,
+    session_id: str,
+    status: RunStatus,
+    message: str | None = None,
+) -> str | None:
+    """End the turn of an agno run; the commit it landed, or ``None``.
+
+    A cancelled or failed run is kept first (:func:`keep_aborted_run`),
+    with ``message`` as its closing note, so the model remembers the
+    work it did before the cut. Under the open turn that write is
+    staged, so the turn's end lands the run, the files and the settled
+    inbox in one commit, stamped with ``status``. An interrupted run is
+    left as agno stored it, for a resume to continue.
+
+    Keeping the run is best-effort: a failure there is logged and the
+    turn still ends, because losing the note costs the model some
+    memory while leaving the turn open would refuse every turn after.
+    """
+    if status in ("cancelled", "failed"):
+        try:
+            keep_aborted_run(db, session_id, turn.run_id, message or status)
+        except Exception:  # noqa: BLE001 - the turn must still end
+            _logger.warning(
+                "could not keep aborted run %s of session %s",
+                turn.run_id,
+                session_id,
+                exc_info=True,
+            )
+    return turn.end(status, message=message)
 
 
 class WorkspaceTools(Toolkit):
@@ -433,6 +480,9 @@ class WorkspaceTools(Toolkit):
         staged set is still staged and its work in progress still
         uncommitted afterwards.
 
+        A no-op too while a turn is open on the workspace (``ws.turn``):
+        the turn's end commits.
+
         It also settles the inbox — the turn that read this turn's
         notes is over, so nothing will redeliver them. That happens
         first, whether or not this toolkit owns the commit, because
@@ -442,7 +492,7 @@ class WorkspaceTools(Toolkit):
         ``tk.inbox.settle()`` in its cancel path; otherwise the next
         turn re-delivers what the model has already read."""
         self.inbox.settle()
-        if self._session_db is not None:
+        if self._session_db is not None or self._ws.turns.current is not None:
             return None
         with self._lock:
             ws = self._ws

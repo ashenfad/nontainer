@@ -211,6 +211,15 @@ Under `commit="call"` every mutating tool call still commits,
 and the db commits its own trailing write, so the head at the next
 user message includes the conversation.
 
+**Under a turn** (`ws.turn`, see [the turn](api.md#nontainerturns--the-turn-and-what-it-streams)),
+the db commits nothing: its writes stay staged and the turn's end lands
+them in one commit, stamped `{"tool": "turn", "runs": {run_id:
+status}}` with the turn's status (`completed`, `cancelled`,
+`interrupted`, `failed`) rather than agno's. Keeping an aborted run
+with `keep_aborted_run` is then part of that same commit, where on its
+own it lands a second one; `finish_turn` does both. Management writes
+(a delete or a rename) made while a turn is open ride its commit too.
+
 ## Rewind
 
 `ws.checkout(commit)` rewinds the run keys with everything else.

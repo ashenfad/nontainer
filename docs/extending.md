@@ -487,6 +487,15 @@ the same way.
 | `Compacted(through, runs, first)` | a new compaction fold |
 | `RunEnded(status, message)` | last, always |
 
+**A turn** (`ws.turn`, `nontainer.turns.Turn`) is the span in which
+one run drives the session. A harness opens one around each run and
+ends it with how the run ended; the end stores the run's body when the
+harness hands it over, settles the inbox, and lands one commit stamped
+with the run and its status. With the context manager, an exception
+fails the turn and a `CancelledError` cancels it, so those endings hold
+by construction. A hook-based harness, whose run starts and ends in
+different callbacks, uses `ws.turns.begin` and `turn.end`.
+
 A run ends `completed`, `cancelled` (stopped from outside), `interrupted`
 (an error the harness may resume from, such as a provider failure: the
 run is kept as it stood and resuming continues it in place) or `failed`
@@ -520,14 +529,12 @@ apply. It lists its `known_gaps`, the checks it fails today, and a
 test expects exactly those to fail.
 
 The agno adapter's harness is
-`nontainer.adapters.agno_conformance.AgnoHarness`. Its gaps today are
-in the commit stamps around a run that did not complete: keeping a
-cancelled or failed run commits a second time, and an errored run is
-stamped with agno's `error` whether it was interrupted or failed. On
-agno 2.1, a streamed run runs no post hook, so a completed turn leaves
-its delivered notes unsettled. Earlier agno releases also raise a run
-error out of the run and store a cancelled run without its messages,
-so the scenarios that need a kept run do not apply there.
+`nontainer.adapters.agno_conformance.AgnoHarness`. It opens a turn
+around each run and ends it with `nontainer.adapters.agno.finish_turn`,
+and passes every scenario with no known gaps. agno releases before 2.8
+raise a run error out of the run and store a cancelled run without its
+messages, so the scenarios that need a kept or resumable run do not
+apply there.
 
 Scenarios are written in Python with builders (`turn`, `writes`,
 `says`, `cancel`, `queue_note`, `fails`, `resume`, `checkout`,

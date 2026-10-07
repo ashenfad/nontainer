@@ -386,6 +386,13 @@ class KvgitSessionDb(JsonDb):
     Anchoring the commit to the persist makes agno's internal ordering
     irrelevant.
 
+    **Under a turn.** While a turn is open on the workspace
+    (``ws.turn``), nothing here commits: the writes stay staged and the
+    turn's end lands them in one commit, stamped with how the run
+    ended rather than with agno's status. That is how a cancelled or
+    failed run kept with ``keep_aborted_run`` lands once, as what it
+    was (see ``nontainer.adapters.agno.finish_turn``).
+
     An upsert that carries no new or changed run (agno creating the
     record before the first run) does not commit; it is staged and
     rides into the turn's commit. Under ``commit="call"`` the
@@ -713,14 +720,16 @@ class KvgitSessionDb(JsonDb):
                 stored["updated_at"] = now
             _store(kv, stored, runs=changed)
 
-            if written:
+            if written and self._ws.turns.current is None:
                 # The conversation is the framework's own write, and it
                 # has to be durable at the moment agno persists the
                 # run. An agent that left a ws-git composition open
                 # over the turn boundary keeps it: ws-git measures
                 # against the agent's own last commit, so this one
                 # leaves its staged set staged and its work in progress
-                # uncommitted.
+                # uncommitted. Under an open turn (ws.turn) the write
+                # stays staged: the turn's end commits it once, stamped
+                # with how the run ended.
                 _commit_framework(self._ws, {"tool": "turn", "runs": written})
 
         if not deserialize:
@@ -892,7 +901,7 @@ class KvgitSessionDb(JsonDb):
         workspace already held uncommitted work, the write stays with
         it: committing then would close a turn in flight early, with
         the agent's half-finished files in it."""
-        if was_clean:
+        if was_clean and self._ws.turns.current is None:
             _commit_framework(self._ws, {"tool": tool})
 
     def delete_session(self, session_id: str, user_id: str | None = None) -> bool:

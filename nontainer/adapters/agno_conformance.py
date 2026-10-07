@@ -7,13 +7,16 @@ branch through :class:`~nontainer.adapters.agno_db.KvgitSessionDb`,
 ``Agent(retries=0)``, and a streamed ``arun``. The model is
 :class:`ScriptedModel`, which asks the runner's clock for each reply.
 
-agno leaves the ending of a run that did not complete to the embedder,
-so the driver here ends one the way nontainer documents it:
-``keep_aborted_run`` for a cancelled or failed run, then the inbox is
-settled. It classifies a run error by agno's ``error_type``: a provider
-error interrupts the run, which a later turn may resume in place;
-anything else fails it. agno's stream events become
-:data:`~nontainer.turns.TurnEvent`\\ s.
+Each run is a turn on the workspace (``ws.turn``): the db and the
+toolkit's hooks stage their writes under it, and the turn's end lands
+them in one commit. agno leaves the ending of a run that did not
+complete to the embedder, so the driver here classifies it
+(:func:`~nontainer.adapters.agno.status_of_error`: a provider error
+interrupts the run, which a later turn may resume in place; anything
+else fails it) and ends the turn with
+:func:`~nontainer.adapters.agno.finish_turn`, which keeps a cancelled or
+failed run with its closing note first. agno's stream events become
+turn events.
 
     from nontainer.conformance import check, run
     from nontainer.conformance.harness import SCENARIOS
@@ -49,18 +52,15 @@ from ..turns import (
     ThinkingDelta,
     ToolEnded,
     ToolStarted,
+    Turn,
     TurnEvent,
     Usage,
 )
 from ..workspace import Workspace
-from .agno import WorkspaceTools, keep_aborted_run
+from .agno import WorkspaceTools, finish_turn, status_of_error
 from .agno_db import KvgitSessionDb
 
 __all__ = ["AgnoHarness", "AgnoSession", "ScriptedModel"]
-
-#: agno's ``error_type`` on a ``RunError`` for a failed provider call:
-#: the errors a later turn may resume from.
-PROVIDER_ERRORS = frozenset({"model_provider_error", "model_rate_limit_error"})
 
 #: How ``keep_aborted_run``'s closing note begins.
 CLOSING_NOTE = "[turn aborted early:"
@@ -160,7 +160,8 @@ class AgnoSession:
 
     def turn(self, prompt: str) -> list[TurnEvent]:
         return self._drive(
-            lambda: self.agent.arun(prompt, stream=True, stream_events=True)
+            self.ws.turn(inbox=self.inbox),
+            lambda: self.agent.arun(prompt, stream=True, stream_events=True),
         )
 
     def resume(self) -> list[TurnEvent]:
@@ -168,12 +169,13 @@ class AgnoSession:
         if run_id is None:
             raise RuntimeError("no interrupted run to resume")
         return self._drive(
+            self.ws.turn(run_id, resume=True, inbox=self.inbox),
             lambda: self.agent.acontinue_run(
                 run_id=run_id,
                 session_id=self.ws.session,
                 stream=True,
                 stream_events=True,
-            )
+            ),
         )
 
     def cancel(self) -> None:
@@ -226,26 +228,27 @@ class AgnoSession:
             )
         )
 
-    def _drive(self, start: Callable[[], Any]) -> list[TurnEvent]:
+    def _drive(self, turn: Turn, start: Callable[[], Any]) -> list[TurnEvent]:
         self._events = []
         self._run_id = None
         state: dict[str, Any] = {"cancelled": False, "error": None, "raised": None}
 
         async def follow() -> None:
             async for ev in start():
-                self._observe(ev, state)
+                self._observe(ev, state, turn)
 
         try:
             asyncio.run(follow())
         except Exception as e:  # noqa: BLE001 - agno 2.1 raises run errors
             state["raised"] = e
-        self._events.append(self._end(state))
+        self._events.append(self._end(state, turn))
         return list(self._events)
 
-    def _observe(self, ev: Any, state: dict[str, Any]) -> None:
+    def _observe(self, ev: Any, state: dict[str, Any], turn: Turn) -> None:
         run_id = getattr(ev, "run_id", None)
         if run_id and self._run_id is None:
             self._run_id = run_id
+            turn.bind(run_id)
             self._events.append(RunStarted(run_id=run_id))
         kind = getattr(ev, "event", "")
         if kind == "RunContent":
@@ -297,8 +300,8 @@ class AgnoSession:
                 getattr(ev, "error_type", None),
             )
 
-    def _end(self, state: dict[str, Any]) -> RunEnded:
-        """How the run ended, and what that ending leaves behind."""
+    def _end(self, state: dict[str, Any], turn: Turn) -> RunEnded:
+        """How the run ended; ending its turn lands it."""
         status: RunStatus
         message: str | None = None
         raised = state["raised"]
@@ -311,50 +314,12 @@ class AgnoSession:
             status, message = "cancelled", STOPPED
         elif state["error"] is not None:
             text, error_type = state["error"]
-            status = "interrupted" if error_type in PROVIDER_ERRORS else "failed"
-            message = str(text)
+            status, message = status_of_error(error_type), str(text)
         else:
             status = "completed"
-        if status in ("cancelled", "failed"):
-            keep_aborted_run(self.db, self.ws.session, self._run_id, message or "")
-        if status != "completed":
-            # The model read what rode out on the run's tool results, and
-            # the kept (or resumable) run holds those messages.
-            self.inbox.settle()
+        finish_turn(turn, self.db, self.ws.session, status, message)
         self._interrupted = self._run_id if status == "interrupted" else None
         return RunEnded(status=status, message=message)
-
-
-#: Where the adapter falls short of the contract today, by scenario and
-#: check. The run's commit is the db's, stamped with agno's own run
-#: status (an errored run reads ``error``, interrupted or failed alike),
-#: and keeping an aborted run writes the session again, which commits a
-#: second time.
-KNOWN_GAPS: dict[str, dict[str, str]] = {
-    "a-cancel-after-a-tool-keeps-the-run": {
-        "commits": "keeping the cancelled run lands a second run commit",
-    },
-    "a-failure-keeps-the-run-with-a-closing-note": {
-        "commits": (
-            "the run commit is stamped 'error', and keeping the run lands a second one"
-        ),
-    },
-    "a-provider-error-interrupts-and-resume-continues": {
-        "commits": "the interrupted run's commit is stamped 'error'",
-    },
-}
-
-
-#: The gaps on agno 2.1, which has neither capability, so the scenarios
-#: above do not apply to it. It runs no post hook for a streamed run, so
-#: ``end_turn`` never settles the notes a completed turn delivered.
-KNOWN_GAPS_AGNO_2_1: dict[str, dict[str, str]] = {
-    name: {"inbox": "agno 2.1 runs no post hook for a streamed run"}
-    for name in (
-        "a-note-rides-the-next-tool-result-once",
-        "a-note-after-the-last-tool-waits-for-the-next-turn",
-    )
-}
 
 
 class AgnoHarness:
@@ -367,10 +332,7 @@ class AgnoHarness:
         self.capabilities: frozenset[str] = frozenset(
             {"resume", "keeps-aborted-runs"} if modern else ()
         )
-        gaps = KNOWN_GAPS if modern else KNOWN_GAPS_AGNO_2_1
-        self.known_gaps: dict[str, dict[str, str]] = {
-            name: dict(checks) for name, checks in gaps.items()
-        }
+        self.known_gaps: dict[str, dict[str, str]] = {}
 
     def open(self, ws: Workspace, clock: Clock) -> AgnoSession:
         return AgnoSession(ws, clock)

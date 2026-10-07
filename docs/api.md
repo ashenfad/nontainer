@@ -834,6 +834,9 @@ ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
 ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
 ws.discard() -> None                             # drop staged writes
+ws.turn(run_id=None, *, resume=False, inbox=None, harness=None) -> Turn
+                                                 # one run of a harness's loop;
+                                                 # see nontainer.turns
 ws.autocommit: bool                              # settable; see below
 
 ws.index.stage(paths) -> tuple[str, ...]         # needs caps.index
@@ -1715,7 +1718,43 @@ adapter's `__agno__/` keys. Those read through the same `Index`
 in the same write. History keeps the old plane, so a checkout or fork
 of an older commit reads it again and migrates on its next write.
 
-## `nontainer.turns` — what a turn streams
+## `nontainer.turns` — the turn, and what it streams
+
+```python
+ws.turn(run_id=None, *, resume=False, inbox=None, harness=None) -> Turn
+ws.turns.begin(...) -> Turn          # the same, spelled for hook-based loops
+ws.turns.current -> Turn | None      # the turn open now
+
+with ws.turn(run_id, inbox=inbox, harness="mine") as turn:   # or async with
+    ...                                  # the loop: model calls, tool calls
+    turn.complete(body=run)              # or leave the block normally
+turn.bind(run_id)                        # once, for a loop that mints the id
+turn.interrupt(message, *, body=None)    # an error to resume from
+turn.end(status, *, body=None, record=..., message=None) -> str | None
+turn.status, turn.commit                 # how it ended; the commit it landed
+```
+
+A turn is the span in which one run of a harness's loop drives the
+session, and a workspace has one open at a time (another refuses with
+`TurnInProgress`). Ending it does, in order:
+
+1. stores the run's `body` under its id when one is given (and the
+   harness's session `record`), the run joining the conversation's index
+   (`nontainer.conversation`; `harness` names who wrote it);
+2. settles the inbox's delivered notes;
+3. lands **one** commit with everything the turn left staged, stamped
+   `{"tool": "turn", "runs": {run_id: status}}`, plus `"message"` when
+   one is given. Nothing commits when nothing changed.
+
+Leaving the `with` block normally completes the turn; a
+`CancelledError` cancels it and any other exception fails it, and the
+exception goes on. A block that ended the turn itself is left alone.
+`ws.turn(run_id, resume=True)` continues an interrupted run in place,
+which the conversation must hold. A cancelled or failed run should be
+kept with a closing note, in the harness's own format, before the end;
+for agno that is `finish_turn` (see the agno adapter below). Tool calls
+still commit per call under `commit="call"`; while a turn is open, the
+agno db and `tk.end_turn` leave the run's commit to it.
 
 ```python
 RunStatus = Literal["completed", "cancelled", "interrupted", "failed"]
@@ -2205,6 +2244,32 @@ agno 3's runs table alike. agno runs no post hook for a **cancelled**
 run, so an embedder that keeps a cancelled run's messages (the model
 did see the notes) should also call `tk.inbox.settle()` in its cancel
 path; otherwise the next turn re-delivers.
+
+**Under a turn**, all of that is the turn's ending. Open one around
+each run, bind agno's run id when the stream reveals it, and end it
+with `finish_turn`:
+
+```python
+from nontainer.adapters.agno import finish_turn, status_of_error
+
+turn = ws.turn(inbox=tk.inbox)
+async for ev in agent.arun(prompt, stream=True, stream_events=True):
+    turn.bind(ev.run_id)              # once the run has an id
+    ...                               # RunCancelled -> "cancelled"; RunError ->
+                                      # status_of_error(ev.error_type)
+finish_turn(turn, agent.db, session_id, status, message)
+```
+
+`status_of_error` reads agno's `RunError.error_type`: a provider error
+(`model_provider_error`, `model_rate_limit_error`) is `"interrupted"`,
+which `acontinue_run` can resume in place under
+`ws.turn(run_id, resume=True)`; anything else is `"failed"`.
+`finish_turn` keeps a cancelled or failed run (best-effort, logged when
+it cannot) and ends the turn, so the run, the files and the settled
+inbox land in one commit stamped with the status — not two commits
+stamped with agno's own `CANCELLED`/`ERROR`. The settle no longer
+depends on a post hook running, which a streamed run on agno 2.1 never
+does.
 
 With `sessions=` wired, every delegate answer that has landed is taken
 at the same delivery point (`Sessions.take()`) and arrives as a
