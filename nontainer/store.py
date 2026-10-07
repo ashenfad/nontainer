@@ -49,7 +49,7 @@ from .protocol import (
 if TYPE_CHECKING:
     from .migrate import LayoutMigration
     from .protocol import Executor
-    from .workspace import Env, Mount, PythonConfig, Workspace
+    from .workspace import Mount, Profile, PythonConfig, Workspace
 
 Backend = Literal["kvgit", "agentfs"]
 
@@ -794,7 +794,7 @@ class Store:
         executor_factory: "Callable[[], Executor] | None" = None,
         root: str | None = None,
         ignore: "Iterable[str] | None" = None,
-        env: "Env | None" = None,
+        profile: "Profile | None" = None,
     ) -> "Workspace":
         """Open (or create) a session's :class:`Workspace`.
 
@@ -803,11 +803,11 @@ class Store:
         this store was built with a ``provider_factory``, which brings
         its own naming rules.
 
-        ``env`` is the session's environment as one value
-        (:class:`~nontainer.workspace.Env`): it stands in for
+        ``profile`` is the session's profile as one value
+        (:class:`~nontainer.workspace.Profile`): it stands in for
         ``python``, ``mounts``, ``commands``, ``executor_factory``,
         ``root`` and ``ignore``, and passing it with any of them is
-        refused.
+        refused. Its ``variables`` are applied to ``ws.runtime.env``.
 
         ``executor_factory`` selects the execution backend for this
         session and every fork of it (default: the in-process
@@ -828,10 +828,10 @@ class Store:
         names the :meth:`migrate_layout` call that fixes it.
         """
         from .errors import LegacyLayoutError
-        from .workspace import Workspace, _env_fields
+        from .workspace import Workspace, _profile_fields
 
-        fields = _env_fields(
-            env,
+        fields = _profile_fields(
+            profile,
             python=python,
             mounts=mounts,
             commands=commands,
@@ -852,6 +852,8 @@ class Store:
             provider.close()
             raise e.for_store(self) from None
         ws._store = self
+        if profile is not None:
+            ws.runtime.env.update(profile.variables)
         return ws
 
     def fork(
@@ -878,14 +880,14 @@ class Store:
         :meth:`open`'s, applied to the workspace this returns.
 
         A lineage shares one workspace root, so ``root`` (when given,
-        directly or as ``env.root``) opens the SOURCE too: ``paths`` is
+        directly or as ``profile.root``) opens the SOURCE too: ``paths`` is
         normalized against the root the child will use, and a view
         recorded against some other root would name paths the child
         cannot see.
         """
         root = open_kwargs.get("root")
-        if root is None and open_kwargs.get("env") is not None:
-            root = open_kwargs["env"].root
+        if root is None and open_kwargs.get("profile") is not None:
+            root = open_kwargs["profile"].root
         source = self.open(src, **({"root": root} if root is not None else {}))
         try:
             child = source.fork(dst, at=at, inherit=inherit, paths=paths)
