@@ -22,128 +22,14 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    # 0.1.9: a failing command's stdout survives the raise — curl's
-    # error BODY reaches the agent, not just "HTTP 404" (every hint
-    # dispatch writes rides in that body)
-    # 0.2.0: FileSystem.read takes a byte range (offset, size), so a
-    # reader that wants a parquet footer or the tail of a log pulls
-    # that range rather than the whole file; check_filesystem ships in
-    # the package as the conformance kit tests/test_fs_protocol.py
-    # runs. Pipes and redirects carry bytes, so `ws-curl /logo.png >
-    # logo.png` writes the PNG instead of a UTF-8-replaced
-    # transliteration of it, and ctx.stdout.buffer is the binary path
-    # an injected command emits through. Plus a printf builtin, and a
-    # control-flow keyword that raises one ParseError naming it
-    # instead of three unrelated "command not found" lines.
+    # The sibling libraries' floors are the releases whose features
+    # nontainer uses; the CHANGELOG says which needed what.
     "termish>=0.2.2",
-    # 0.1.7: os.lchmod/os.lchflags, extended attributes, and 3.10's
-    # Path.chmod no longer reach the real filesystem; os.utime stops
-    # discarding ns= and retargeting symlinks; scandir stops describing
-    # a symlink as its target. Same interception-bypass class the
-    # earlier floor was set for. Also reference-counts patch()'s
-    # process-global shims, so one workspace leaving does not unpatch
-    # another that is still running.
-    # 0.1.8: the metadata table is keyed resolved-against-CWD in every
-    # consumer, so one file holds one row however callers spell the
-    # path. The ws-git merge verb depends on it: its field-aware table
-    # merge and size correction match rows to blobs, which breaks when
-    # a file holds two rows.
-    # 0.1.9: the 3.10 accessor rebinds — os.path.exists, glob, shutil
-    # and the rest reach the workspace filesystem there as they already
-    # did on 3.11+, including the expanduser leak that sent a "~" path
-    # to the real home; plus realpath resolves strictly inside the
-    # workspace instead of falling through to the host.
-    # 0.1.10: per-file metadata rows — a file's size and timestamps
-    # live in a row beside its blob (``VirtualFS.META_PREFIX``), written
-    # only when that blob is written or its metadata changes, instead of
-    # one JSON table every write rewrites. That is what lets a selective
-    # commit carry a file's metadata with its bytes, and lets a merge
-    # settle metadata key by key with the same policy as the content.
-    # 0.2.0: the backend protocol's read takes the same byte range,
-    # and a binary open() is a lazy block-cached stream over it, so
-    # pd.read_parquet(path, columns=[...]) against a workspace file
-    # reads the footer and the selected column chunks rather than
-    # materializing the blob. open() and readlink() become optional
-    # probed methods, which makes every termish-shaped filesystem a
-    # working Python open() for free; check_filesystem ships as the
-    # conformance kit run against each filesystem a workspace mounts.
-    # 0.2.1: VirtualFS.makedirs(exist_ok=False) raises on a directory
-    # that already exists, as os.makedirs does, and
-    # IsolatedFS.list_detailed() spells FileInfo.path in the
-    # filesystem's own namespace.
-    # 0.2.2: a recursive list_detailed() names every entry by its
-    # basename on every backend, with path saying where it sits. The
-    # three divergences the conformance kits found, settled where the
-    # methods live, so nothing in the drift test is expected to fail;
-    # and the view's reachability filter, which places a nested entry
-    # by path, is right on every backend only from here.
-    # 0.2.3: VirtualFS reads its metadata rows in one get_many when the
-    # state offers one, so rebuilding a listing over a kvgit worktree is
-    # one read rather than one per file.
     "monkeyfs>=0.2.5",
-    # 0.3.0: process workers come from a forkserver broker instead of
-    # forking the embedding process — the arrangement executor.py's
-    # pooling and fork-hazard notes describe
-    # 0.3.2: sandbox() accepts preload_grants, which executor.py passes
-    # directly, so this is the hard floor
-    # 0.3.3: dynamic __import__ is gated by the same policy as the
-    # statement form
-    # 0.3.4: a process worker refuses a write to a read-only filesystem
-    # at open rather than losing it at a garbage-collected close. Frozen
-    # workspaces rely on that under isolation="process": a snapshot's
-    # handler that writes a file must fail loudly, not silently succeed.
-    # 0.3.5: raw is the default sandbox mode and the wrapped mode is
-    # deprecated — the mode nontainer has always asked for is now the
-    # one that gets the attention.
-    # 0.4.0: the process-isolation RPC bridge forwards the byte range
-    # and serves a lazy binary open(), so the ranged read survives the
-    # channel instead of stopping at it — under isolation="process" a
-    # parquet footer costs one 64 KiB round trip rather than the file.
-    # A platform with no worker primitive raises IsolationUnavailable
-    # naming itself, instead of a bare OSError out of multiprocessing.
-    # ExecResult.dropped names the namespace values a worker could not
-    # pickle back. Wrapped sandbox mode is removed; executor.py passes
-    # mode="raw" explicitly, which is still accepted.
     "sandtrap>=0.4.1",
-    # 0.3.2: kvgit.delete_branches — anchor-free admin deletion, so
-    # session teardown no longer needs the __void__ anchor dance
-    # 0.3.3: the incremental orphan sweep no longer deletes chunks that
-    # surviving commits still reference. Chunks are content-addressed
-    # and therefore shared, and delete_branches sweeps orphans on every
-    # session teardown, so under codecs="scientific" dropping one
-    # session could corrupt the numpy/pandas values of another.
-    # 0.3.4: HEAD recovery stops resurrecting a branch whose HEAD is
-    # absent and stops repairing from a read path, and the prev-HEAD
-    # backup is written only after the swap succeeds. Commit-scan
-    # recovery became opt-in here; nontainer does not opt in, so a
-    # corrupt HEAD surfaces instead of being rebuilt from a scan
-    # nothing validated.
-    # 0.3.5: tags — named, immutable commit pointers stored as reserved
-    # ``refs/tags/`` branch heads, so they anchor garbage collection in
-    # every kvgit version; plus checkout(tag=), peek(..., tag=) and the
-    # anchor-free kvgit.delete_tags the tag verbs are built on.
-    # 0.3.6: kvgit.merges — text merge with conflict markers, the merge
-    # function the ws-git provider verb registers for file keys.
-    # 0.3.7: Staged.merge / VersionedKV.merge_heads — public
-    # cross-branch merge, which the provider verb calls WITHOUT a
-    # post_check so conflict markers commit with the merge (flagged in
-    # the outcome, never blocking); only non-file hard conflicts abort.
-    # 0.3.8: prefix merge policy and MergeChoice, byte-equal values
-    # merging without a conflict, and a lease that keeps a concurrent
-    # writer's commits out of the orphan sweep.
-    # 0.4.0: the Repo / Worktree / Snapshot API this provider is written
-    # against (Staged is gone), content-addressed storage (v4), and
-    # merges and commits whose reads follow the size of the change.
-    # 0.4.1: a Snapshot reads only the keys asked of it, so reading one
-    # key at a commit or a branch head no longer loads the whole keyset.
-    # Capped below 0.5: apply() resolves through kvgit's internal
-    # change-based resolver (kvgit.versioned.merge), which is not public.
+    # Capped below 0.5: merges resolve through kvgit.versioned.merge,
+    # which is not public API.
     "kvgit[disk]>=0.4.1,<0.5",
-    # 0.1.3: value-based collapsing is restricted to exact builtin
-    # scalar types, so a rendered object's own __eq__ can no longer
-    # raise out of render(). The values rendered here are agent-authored
-    # and render() is on the path that reports errors, where an
-    # exception would replace the diagnostic with itself.
     "reprobate>=0.1.3",
 ]
 
@@ -163,19 +49,9 @@ apps = [
     "anyio>=4",
 ]
 agno = [
-    # The floor is 2.1, not 1.0. Two things set it, and they are
-    # different: the adapter imports `agno.tools.function.ToolResult`,
-    # which does not exist in agno 1.x at all, and the SHIPPED
-    # INTEGRATIONS need `pre_hooks`/`post_hooks` on Agent, which landed
-    # in 2.1.0 (examples/analyst.py passes post_hooks; studio passes
-    # pre_hooks). A floor that only the adapter clears would still ship
-    # an example that cannot run. Verified on 2.1.0 / 2.7.2 / 3.0.1;
-    # CI pins it in its own job so the claim keeps being true.
-    #
-    # No upper bound: agno 3.0's breaking changes are all in surfaces
-    # this adapter never touches (the runs table, renamed Agent params,
-    # Workflow/HITL, MultiMCPTools). It builds a Toolkit and returns
-    # ToolResult, and that has been stable across both majors.
+    # 2.1 is the first agno with ToolResult and Agent pre/post hooks, and
+    # CI tests it beside 2.8 and 3.0. No upper bound: agno 3's breaking
+    # changes are in surfaces the adapter does not use.
     "agno>=2.1",
 ]
 mcp = [
@@ -184,21 +60,12 @@ mcp = [
     "mcp>=1.0,<2",
 ]
 postgres = [
-    # A Store whose kvgit data lives in PostgreSQL: Store(kv="postgresql://...")
-    # or NONTAINER_KV. kvgit's backend is psycopg 3 with a connection pool,
-    # one per Store.
+    # Store(kv="postgresql://...") or NONTAINER_KV: psycopg 3, one pool per Store.
     "kvgit[postgres]>=0.4.1,<0.5",
 ]
 dud = [
-    # dud itself requires >=3.11; the marker keeps nontainer's 3.10
-    # floor intact for everyone not opting into this executor.
-    # 0.2.1: the guest mounts its workspace AT the configured root
-    # (/workspace), so agent absolute paths match LocalExecutor's.
-    # 0.4.0: rich `ui` flattening moved out of dud into the image, so
-    # it is now named by `outputs_hook=` rather than built in.
-    # 0.4.1: synchronous shell hostcalls (`dud-hostcall` + supervisor
-    # relay, rootfs shim, pipeline v6) — the transport PR4's ws-git
-    # guest functions call home over.
+    # dud needs Python 3.11+; the marker keeps nontainer's 3.10 floor for
+    # everyone else.
     "dud>=0.4.1; python_version >= '3.11'",
 ]
 dev = [
