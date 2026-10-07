@@ -303,7 +303,7 @@ class _Node:
     """One declared type: how to check a value of it, and how to build
     one from an encoded tree."""
 
-    kinds: frozenset[str] = frozenset({"data"})
+    kinds: frozenset[Kind] = frozenset({"data"})
 
     @property
     def label(self) -> str:
@@ -576,7 +576,7 @@ class _Union(_Node):
         self.options = options
 
     @property
-    def kinds(self) -> frozenset[str]:  # type: ignore[override]
+    def kinds(self) -> frozenset[Kind]:  # type: ignore[override]
         return frozenset()
 
     @property
@@ -1233,7 +1233,7 @@ class Spec:
     def __init__(self, annotation: Any, root: _Node) -> None:
         self.annotation = annotation
         self._root = root
-        kinds: set[str] = set()
+        kinds: set[Kind] = set()
         found: list[type] = []
         seen: set[int] = set()
         stack = [root]
@@ -1246,7 +1246,7 @@ class Spec:
             if isinstance(node, (_Record, _Enum)) and node.cls not in found:
                 found.append(node.cls)
             stack.extend(node.children())
-        self.kinds: frozenset[str] = frozenset(kinds)
+        self.kinds: frozenset[Kind] = frozenset(kinds)
         """What values of the type need carried."""
         self.types: tuple[type, ...] = tuple(found)
         """The record and enum classes the type names: what code needs at
@@ -1294,7 +1294,7 @@ class Spec:
         return self._root.build(encoded.tree, encoded.parts)
 
 
-def kinds_of(tp: Any, *, names: Names = None) -> frozenset[str]:
+def kinds_of(tp: Any, *, names: Names = None) -> frozenset[Kind]:
     """What values of ``tp`` need carried: ``list[Score]`` is data,
     ``dict[str, DataFrame]`` data and a table, ``Callable[[int], int]``
     live."""

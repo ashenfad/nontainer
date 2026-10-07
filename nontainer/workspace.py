@@ -869,6 +869,13 @@ def _machinery_dirs() -> tuple[str, ...]:
     )
 
 
+_PLUMBING_FILES = ("nontainer/remote.py", "<contract:nontainer.remote>")
+"""Files whose frames are plumbing wherever they run: a stubbed host
+object's call raises its refusal from ``nontainer.remote``, imported or
+rebuilt from source in a guest, and what the agent needs is its own line
+and the error."""
+
+
 def _trim_rendered_traceback(text: str) -> str:
     """De-noise a rendered traceback for agent-visible surfaces.
 
@@ -886,7 +893,9 @@ def _trim_rendered_traceback(text: str) -> str:
     for line in text.splitlines():
         m = _FRAME_RE.match(line)
         if m:
-            dropping = m.group(1).startswith(machinery)
+            dropping = m.group(1).startswith(machinery) or m.group(1).endswith(
+                _PLUMBING_FILES
+            )
         elif not line.startswith(("    ", "\t")):
             dropping = False  # left column: header / exception line
         if dropping:

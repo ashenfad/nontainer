@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`nontainer.sessions.answer_notes(helper, inbox)` and `Inbox.announce`.** Delegate answers as delivered notes, and the `on_delivered` call; the agno toolkit's delivery is built on both, unchanged.
 
 ### Changed
+- **Tracebacks show the agent's line, not stub plumbing.** A stubbed call's refusal drops `nontainer.remote`'s frames, and a dud run's traceback is trimmed as the other rungs' are, host install paths included.
 - **Breaking: `PythonConfig.host_objects` is read-only.** Each executor takes its host objects when it opens, so one added to the mapping later reached in-process code and nowhere else; a different set is a new config (`dataclasses.replace`).
 
 ## 0.9.1 - 2026-10-06
