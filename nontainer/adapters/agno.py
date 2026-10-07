@@ -17,10 +17,11 @@ Concurrency: agno's ``arun()`` executes sync tools CONCURRENTLY on
 separate threads — including parallel tool calls from a single model
 turn. ``Workspace`` enforces its own single-writer invariant (mutating
 calls hold an internal lock), so parallel calls serialize safely (each
-atomic + committed) even without adapter help. The toolkit keeps a
-per-workspace ``threading.Lock`` anyway: it additionally fences
-adapter-level work around the call (``test_app`` + screenshot reads,
-turn-commit checks) and is uncontended under sync ``run()``. The
+atomic + committed) even without adapter help. The tools come from a
+shared :class:`~nontainer.adapters.tools.Toolset`, whose per-workspace
+``threading.Lock`` additionally fences work around the call
+(``test_app`` + screenshot reads) and, here, the turn-commit checks; it
+is uncontended under sync ``run()``. The
 toolkit ``instructions`` carry the one-call-per-turn convention so
 serialization stays a backstop, not the norm.
 
@@ -47,7 +48,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import threading
 from typing import Any
 
 from agno.media import Image
@@ -56,29 +56,10 @@ from agno.tools.function import ToolResult
 
 from ..inbox import Inbox, Note
 from ..workspace import Workspace
-from .render import (
-    FILE_EDIT_DESCRIPTION,
-    FILE_WRITE_DESCRIPTION,
-    PYTHON_UI_NOTE,
-    VIEW_IMAGE_DESCRIPTION,
-    ToolsMode,
-    python_description,
-    render_python,
-    render_terminal,
-    resolve_tools_mode,
-    terminal_description,
-)
+from .render import PYTHON_UI_NOTE, ToolsMode, toolkit_instructions
+from .tools import ToolOutput, Toolset
 
 _logger = logging.getLogger("nontainer.adapters.agno")
-
-_INSTRUCTIONS = """\
-You have a persistent workspace (files, shell{and_python}). Make ONE
-terminal{or_python} call per turn, batching related commands/code within
-it — mutations are then safely sequential. file_write/file_edit are
-different: you MAY issue several in one turn (they execute safely), but
-keep edits to the SAME file to one per turn since parallel-call order
-is not guaranteed. The workspace persists across the whole
-session{versioned_note}."""
 
 
 def _media_note(count: int) -> str:
@@ -99,6 +80,20 @@ def _media_note(count: int) -> str:
     return (
         f"\n[the {count} images in the next message are this tool "
         "call's results — the human did not send them]"
+    )
+
+
+def _tool_result(out: ToolOutput) -> ToolResult:
+    """A toolset result as agno's ``ToolResult``: its images become agno
+    media, and the text claims them as the tool's (:func:`_media_note`)."""
+    if not out.images:
+        return ToolResult(content=out.text)
+    return ToolResult(
+        content=out.text + _media_note(len(out.images)),
+        images=[
+            Image(content=image.data, format=image.format, id=image.source)
+            for image in out.images
+        ],
     )
 
 
@@ -530,7 +525,6 @@ class WorkspaceTools(Toolkit):
         Without ``tool_hooks`` the queue simply fills and the
         embedder reads it between turns."""
         self._ws = workspace
-        self._lock = threading.Lock()
         self.inbox = inbox if inbox is not None else Inbox()
         self._async_callback_warned = False
         self._run_seen: str | None = None
@@ -548,8 +542,20 @@ class WorkspaceTools(Toolkit):
         self._turn_commits = commit == "turn"
         if self._turn_commits:
             workspace.autocommit = False
-        mode = resolve_tools_mode(workspace, tools)
-        split = mode == "split"
+        toolset = Toolset(
+            workspace,
+            tools=tools,
+            apps=apps,
+            sessions=sessions,
+            terminal_primer=terminal_primer,
+            python_primer=python_primer,
+            vision=vision,
+        )
+        self._toolset = toolset
+        # The toolset's fence is the toolkit's: end_turn commits under
+        # the same lock the tools work under.
+        self._lock = toolset.lock
+        split = toolset.split
         if python_primer and not split:
             import warnings
 
@@ -561,26 +567,19 @@ class WorkspaceTools(Toolkit):
                 stacklevel=2,
             )
 
+        # Thin typed wrappers: agno derives each tool's schema from the
+        # signature, and the toolset does the work.
         def terminal(command: str) -> str:
             """Run a shell script in the persistent workspace."""
-            with self._lock:
-                return render_terminal(self._ws.terminal(command))
+            return toolset.terminal(command).text
 
-        terminal.__doc__ = terminal_description(
-            workspace,
-            split=split,
-            apps=apps.config if apps is not None else None,
-            primer=terminal_primer,
-            python_primer=None if split else python_primer,
-        )
+        terminal.__doc__ = toolset.description("terminal")
 
         def file_write(path: str, content: str) -> str:
             """Write a file in the workspace."""
-            with self._lock:
-                written = self._ws.files.write(path, content)
-                return f"wrote {written.path} ({written.size} bytes)"
+            return toolset.file_write(path, content).text
 
-        file_write.__doc__ = FILE_WRITE_DESCRIPTION
+        file_write.__doc__ = toolset.description("file_write")
 
         def file_edit(
             path: str,
@@ -589,36 +588,17 @@ class WorkspaceTools(Toolkit):
             replace_all: bool = False,
         ) -> str:
             """Exact-string replacement in a workspace file."""
-            from ..errors import WorkspaceError
+            return toolset.file_edit(
+                path, old_string, new_string, replace_all=replace_all
+            ).text
 
-            with self._lock:
-                try:
-                    out = self._ws.files.edit(
-                        path, old_string, new_string, replace_all=replace_all
-                    )
-                except WorkspaceError as e:
-                    return f"edit failed: {e}"
-                if out.mode == "already_applied":
-                    return f"no-op: replacement already present in {path}"
-                note = "" if out.mode == "exact" else f" (matched via {out.mode})"
-                return f"replaced {out.count} occurrence(s) in {path}{note}"
-
-        file_edit.__doc__ = FILE_EDIT_DESCRIPTION
+        file_edit.__doc__ = toolset.description("file_edit")
 
         def view_image(path: str) -> ToolResult:
             """View an image file from the workspace."""
-            from .render import read_workspace_image
+            return _tool_result(toolset.view_image(path))
 
-            try:
-                data, fmt = read_workspace_image(self._ws, path)
-            except ValueError as e:
-                return ToolResult(content=f"view_image failed: {e}")
-            return ToolResult(
-                content=f"{path} ({fmt}, {len(data)} bytes){_media_note(1)}",
-                images=[Image(content=data, format=fmt, id=path)],
-            )
-
-        view_image.__doc__ = VIEW_IMAGE_DESCRIPTION
+        view_image.__doc__ = toolset.description("view_image")
 
         registered = [terminal, file_write, file_edit]
         if vision:
@@ -628,118 +608,36 @@ class WorkspaceTools(Toolkit):
 
             def run_python(code: str) -> str:
                 """Run Python in the sandboxed workspace environment."""
-                from ..ui import materialize_ui, ui_root
-                from .render import artifacts_note
+                return toolset.run_python(code).text
 
-                with self._lock:
-                    ui_dir = ui_root(self._ws)
-                    try:
-                        ui_before = set(self._ws.files.fs.list(ui_dir))
-                    except Exception:
-                        ui_before = set()
-                    result = self._ws.run_python(code)
-                    text = render_python(result)
-                    # the `ui = {...}` convention: namespace values become
-                    # workspace artifacts the model can embed in its reply
-                    artifacts, problems = materialize_ui(
-                        self._ws, result.namespace.get("ui")
-                    )
-                    # near-miss adoption: agents predictably write INTO
-                    # the ui dir themselves (fig.write_json(...),
-                    # savefig) instead of assigning objects to `ui` —
-                    # without a note those files display nowhere. New
-                    # files the call created join the artifacts note.
-                    try:
-                        ui_after = set(self._ws.files.fs.list(ui_dir))
-                    except Exception:
-                        ui_after = set()
-                    claimed = {p for _, p in artifacts}
-                    for fname in sorted(ui_after - ui_before):
-                        path = f"{ui_dir}/{fname}"
-                        if path not in claimed and self._ws.files.fs.isfile(path):
-                            artifacts.append((fname, path))
-                    text += artifacts_note(artifacts)
-                    # Problems from BOTH passes. Materialization now
-                    # happens in run_python, so the value reaching here
-                    # is already an ArtifactPath and this adapter's own
-                    # pass reports nothing for it -- the 8MB cap message
-                    # and its remediation would otherwise vanish from
-                    # the tool result the agent reads.
-                    seen = set()
-                    for problem in (*result.ui_problems, *problems):
-                        if problem not in seen:
-                            seen.add(problem)
-                            text += f"\n[ui note: {problem}]"
-                    return text
-
-            run_python.__doc__ = python_description(
-                workspace,
-                apps=apps.config if apps is not None else None,
-                primer=python_primer,
+            # The ui note promises that artifacts display beside the
+            # reply, which a host rendering this toolkit's conversation
+            # does; it is this adapter's to make, not the toolset's.
+            run_python.__doc__ = toolset.description(
+                "run_python"
             ) + PYTHON_UI_NOTE.replace(
                 "__WS__", "" if workspace.root == "/" else workspace.root
             )
             registered.append(run_python)
 
         if apps is not None:
-            from ..apps import render_test_app
-            from .render import test_app_description
-
             # actions and viewport are annotated loose: models routinely
             # send a list or an object as a JSON STRING, and agno's
             # pydantic layer would reject it on the annotation BEFORE the
-            # coerce_* helpers get their chance
+            # toolset's coercion gets its chance
             def test_app(
                 actions: "list[dict] | str",
                 viewport: "str | dict" = "desktop",
                 bind: "dict | str | None" = None,
             ) -> ToolResult:
                 """Verify the app headlessly."""
-                from ..apps.testapp import (
-                    coerce_actions,
-                    coerce_bind,
-                    coerce_viewport,
-                )
+                return _tool_result(toolset.test_app(actions, viewport, bind))
 
-                try:
-                    actions = coerce_actions(actions)
-                    viewport = coerce_viewport(viewport)
-                    binding = coerce_bind(bind)
-                except ValueError as e:
-                    return ToolResult(content=f"test_app failed: {e}")
-                with self._lock:
-                    try:
-                        result = apps.test_app(actions, viewport=viewport, bind=binding)
-                    except ValueError as e:
-                        return ToolResult(content=f"test_app failed: {e}")
-                    shots = (
-                        [
-                            Image(content=self._ws.files.fs.read(p), format="png", id=p)
-                            for p in result.screenshots
-                        ]
-                        if vision
-                        else []
-                    )
-                content = render_test_app(result)
-                if shots:
-                    content += _media_note(len(shots))
-                return ToolResult(content=content, images=shots or None)
-
-            test_app.__doc__ = test_app_description(self._ws)
+            test_app.__doc__ = toolset.description("test_app")
             registered.append(test_app)
 
-        self.sessions = None
-        if sessions is not None:
-            from ..sessions import Sessions, run_action
-            from .render import SESSIONS_DESCRIPTION
-
-            helper = (
-                sessions
-                if isinstance(sessions, Sessions)
-                else Sessions(workspace, sessions)
-            )
-            self.sessions = helper
-
+        self.sessions = toolset.sessions
+        if toolset.sessions is not None:
             # One tool with an action argument, as test_app has: the
             # model learns one spelling for delegation, and ws-git keeps
             # the versioning verbs. paths is annotated loose for the
@@ -763,13 +661,7 @@ class WorkspaceTools(Toolkit):
                 wait: bool = False,
             ) -> str:
                 """Delegate to a fork of this session, and read it back."""
-                # No toolkit fence here: the helper serializes its own
-                # job table and takes the workspace's lock where it
-                # touches the workspace, and holding the fence across a
-                # wait=true ask would stall every other tool for as long
-                # as the delegate runs.
-                return run_action(
-                    helper,
+                return toolset.sessions_action(
                     action,
                     task=task,
                     name=name,
@@ -778,30 +670,15 @@ class WorkspaceTools(Toolkit):
                     fork_from=fork_from,
                     resume=resume,
                     wait=wait,
-                )
+                ).text
 
             sessions_tool.__name__ = "sessions"
-            sessions_tool.__doc__ = SESSIONS_DESCRIPTION
+            sessions_tool.__doc__ = toolset.description("sessions")
             registered.append(sessions_tool)
 
-        instructions = _INSTRUCTIONS.format(
-            and_python=", and sandboxed python" if split else "",
-            or_python=" / run_python" if split else "",
-            versioned_note=(
-                ""
-                if not workspace.caps.versioned
-                else "; your work is committed at the end of each turn"
-                if self._turn_commits
-                else "; every mutating call is committed"
-            ),
+        instructions = toolkit_instructions(
+            workspace, split=split, turn_commits=self._turn_commits
         )
-
-        # skills discovery: catalog /skills/*/SKILL.md frontmatter —
-        # access needs no tools (the terminal reads them; scripts run
-        # sandboxed through the normal tools)
-        from ..skills import catalog as skills_catalog
-
-        instructions += skills_catalog(workspace)
 
         self.end_turn = self._end_turn  # bindable as an agno post_hook
         self.begin_turn = self._begin_turn  # bindable as an agno pre_hook

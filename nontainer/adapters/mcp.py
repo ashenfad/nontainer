@@ -11,33 +11,24 @@ Or embed: :func:`build_server` returns the ``FastMCP`` instance for a
 Workspace you constructed yourself (custom PythonConfig, mounts,
 host objects — CLI flags only cover the config-file-able subset).
 
-Concurrency: FastMCP may run sync tools on worker threads. ``Workspace``
+Concurrency: every tool body runs on a worker thread. ``Workspace``
 enforces its own single-writer invariant (mutating calls hold an
-internal lock); the adapter's per-workspace ``threading.Lock`` stays as
-a fence for adapter-level work around the call (same rationale as the
-agno adapter — see protocol.py's concurrency note).
+internal lock); the shared :class:`~nontainer.adapters.tools.Toolset`'s
+per-workspace ``threading.Lock`` stays as a fence for work around the
+call, and the resources read under it too (same rationale as the agno
+adapter — see protocol.py's concurrency note).
 """
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Callable
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from ..workspace import Workspace
-from .render import (
-    FILE_EDIT_DESCRIPTION,
-    FILE_WRITE_DESCRIPTION,
-    VIEW_IMAGE_DESCRIPTION,
-    ToolsMode,
-    python_description,
-    render_python,
-    render_terminal,
-    resolve_tools_mode,
-    terminal_description,
-)
+from .render import ToolsMode
+from .tools import ToolOutput, Toolset
 
 
 async def _off_loop(work: "Callable[[], Any]") -> Any:
@@ -53,6 +44,13 @@ async def _off_loop(work: "Callable[[], Any]") -> Any:
     import anyio
 
     return await anyio.to_thread.run_sync(work)
+
+
+def _content(out: ToolOutput) -> list:
+    """A toolset result as MCP content: the text, then its images."""
+    from mcp.server.fastmcp import Image
+
+    return [out.text, *(Image(data=i.data, format=i.format) for i in out.images)]
 
 
 def build_server(
@@ -81,9 +79,16 @@ def build_server(
     ``terminal_primer``/``python_primer`` append host guidance to the
     respective tool descriptions."""
     server = FastMCP(name)
-    lock = threading.Lock()
-    mode = resolve_tools_mode(workspace, tools)
-    split = mode == "split"
+    toolset = Toolset(
+        workspace,
+        tools=tools,
+        apps=apps,
+        sessions=sessions,
+        terminal_primer=terminal_primer,
+        python_primer=python_primer,
+    )
+    lock = toolset.lock
+    split = toolset.split
 
     # MCP-only coaching: workspace files are addressable as resources,
     # so the agent can hand the user real URIs for its artifacts.
@@ -102,80 +107,48 @@ def build_server(
             stacklevel=2,
         )
 
+    # Thin typed wrappers: FastMCP derives each tool's schema from the
+    # signature, and the toolset does the work, off the event loop.
     @server.tool(
-        name="terminal",
-        description=terminal_description(
-            workspace,
-            split=split,
-            apps=apps.config if apps is not None else None,
-            primer=terminal_primer,
-            python_primer=None if split else python_primer,
-        )
-        + resource_note,
+        name="terminal", description=toolset.description("terminal") + resource_note
     )
     async def terminal(command: str) -> str:
-        def work() -> str:
-            with lock:
-                return render_terminal(workspace.terminal(command))
+        return (await _off_loop(lambda: toolset.terminal(command))).text
 
-        return await _off_loop(work)
-
-    @server.tool(name="file_write", description=FILE_WRITE_DESCRIPTION + resource_note)
+    @server.tool(
+        name="file_write",
+        description=toolset.description("file_write") + resource_note,
+    )
     async def file_write(path: str, content: str) -> list:
         import mcp.types as types
 
-        def work() -> Any:
-            with lock:
-                return workspace.files.write(path, content)
-
-        out = await _off_loop(work)
+        out = await _off_loop(lambda: toolset.file_write(path, content))
+        written = out.written or path
         # Ground-truth artifact handle: the link exists because the
         # write succeeded — clients can fetch it without trusting prose.
         return [
-            f"wrote {out.path} ({out.size} bytes)",
+            out.text,
             types.ResourceLink(
                 type="resource_link",
-                uri=f"workspace://{out.path.lstrip('/')}",
-                name=out.path.rsplit("/", 1)[-1],
+                uri=f"workspace://{written.lstrip('/')}",
+                name=written.rsplit("/", 1)[-1],
             ),
         ]
 
-    @server.tool(name="file_edit", description=FILE_EDIT_DESCRIPTION)
+    @server.tool(name="file_edit", description=toolset.description("file_edit"))
     async def file_edit(
         path: str, old_string: str, new_string: str, replace_all: bool = False
     ) -> str:
-        from ..errors import WorkspaceError
+        out = await _off_loop(
+            lambda: toolset.file_edit(
+                path, old_string, new_string, replace_all=replace_all
+            )
+        )
+        return out.text
 
-        def work() -> str:
-            with lock:
-                try:
-                    out = workspace.files.edit(
-                        path, old_string, new_string, replace_all=replace_all
-                    )
-                except WorkspaceError as e:
-                    return f"edit failed: {e}"
-                if out.mode == "already_applied":
-                    return f"no-op: replacement already present in {path}"
-                note = "" if out.mode == "exact" else f" (matched via {out.mode})"
-                return f"replaced {out.count} occurrence(s) in {path}{note}"
-
-        return await _off_loop(work)
-
-    @server.tool(name="view_image", description=VIEW_IMAGE_DESCRIPTION)
+    @server.tool(name="view_image", description=toolset.description("view_image"))
     async def view_image(path: str) -> list:
-        from mcp.server.fastmcp import Image
-
-        from .render import read_workspace_image
-
-        def work() -> list:
-            with lock:
-                try:
-                    data, fmt = read_workspace_image(workspace, path)
-                except ValueError as e:
-                    return [f"view_image failed: {e}"]
-            return [f"{path} ({fmt}, {len(data)} bytes)", Image(data=data, format=fmt)]
-
-        return await _off_loop(work)
+        return _content(await _off_loop(lambda: toolset.view_image(path)))
 
     # -- workspace files as MCP resources -------------------------------
     # The outbound artifact channel: any workspace file is readable as
@@ -263,34 +236,16 @@ def build_server(
 
         @server.tool(
             name="run_python",
-            description=python_description(
-                workspace,
-                apps=apps.config if apps is not None else None,
-                primer=python_primer,
-            )
-            + resource_note,
+            description=toolset.description("run_python") + resource_note,
         )
         async def run_python(code: str) -> str:
-            def work() -> str:
-                with lock:
-                    return render_python(workspace.run_python(code))
+            return (await _off_loop(lambda: toolset.run_python(code))).text
 
-            return await _off_loop(work)
-
-    if sessions is not None:
-        from ..sessions import Sessions, run_action
-        from .render import SESSIONS_DESCRIPTION
-
-        helper = (
-            sessions
-            if isinstance(sessions, Sessions)
-            else Sessions(workspace, sessions)
-        )
-
+    if toolset.sessions is not None:
         # One tool with an action argument, the shape test_app has, and
         # the same dispatch the agno adapter calls — so the two surfaces
         # cannot drift into saying different things about one job.
-        @server.tool(name="sessions", description=SESSIONS_DESCRIPTION)
+        @server.tool(name="sessions", description=toolset.description("sessions"))
         # ``fork_from`` rather than ``from``: a JSON argument's name is
         # the python parameter's name in both adapters, and ``from`` is
         # a python keyword, so it can name neither the parameter here
@@ -306,15 +261,10 @@ def build_server(
             resume: str = "",
             wait: bool = False,
         ) -> str:
-            # No adapter fence: the helper serializes its own job table
-            # and takes the workspace's lock where it touches the
-            # workspace, and holding one across a wait=true ask would
-            # stall every other tool for as long as the delegate runs.
-            # Off the loop for the same reason: a wait=true ask blocks
-            # for the delegate's whole run.
-            return await _off_loop(
-                lambda: run_action(
-                    helper,
+            # Off the loop: a wait=true ask blocks for the delegate's
+            # whole run. The toolset takes no fence for it.
+            out = await _off_loop(
+                lambda: toolset.sessions_action(
                     action,
                     task=task,
                     name=name,
@@ -325,49 +275,22 @@ def build_server(
                     wait=wait,
                 )
             )
+            return out.text
 
     if apps is not None:
-        from mcp.server.fastmcp import Image
 
-        from ..apps import render_test_app
-        from .render import test_app_description
-
-        @server.tool(
-            name="test_app",
-            description=test_app_description(workspace),
-        )
+        @server.tool(name="test_app", description=toolset.description("test_app"))
         async def test_app(
             actions: list[dict],
             viewport: str | dict = "desktop",
             bind: dict | str | None = None,
         ) -> list:
-            from ..apps.testapp import coerce_actions, coerce_bind, coerce_viewport
-
-            try:
-                actions = coerce_actions(actions)
-                viewport = coerce_viewport(viewport)
-                binding = coerce_bind(bind)
-            except ValueError as e:
-                return [f"test_app failed: {e}"]
-            # async + to_thread: Playwright's sync API refuses to run on
-            # a live asyncio loop thread (FastMCP executes sync tools
-            # in-loop), so the browser work must be off-loop.
-            import anyio
-
-            def work() -> tuple[Any, list]:
-                with lock:
-                    result = apps.test_app(actions, viewport=viewport, bind=binding)
-                    shots = [
-                        Image(data=workspace.files.fs.read(p), format="png")
-                        for p in result.screenshots
-                    ]
-                    return result, shots
-
-            try:
-                result, shots = await anyio.to_thread.run_sync(work)
-            except ValueError as e:
-                return [f"test_app failed: {e}"]
-            return [render_test_app(result), *shots]
+            # Off the loop as every tool is, and here it is required:
+            # Playwright's sync API refuses to run on a live asyncio
+            # loop thread.
+            return _content(
+                await _off_loop(lambda: toolset.test_app(actions, viewport, bind))
+            )
 
     return server
 

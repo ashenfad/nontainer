@@ -8,9 +8,12 @@
 - ``nontainer.adapters.mcp`` — FastMCP server; requires the ``[mcp]``
   extra. Run via ``python -m nontainer.adapters.mcp``.
 
-Shared behavior lives in ``nontainer.adapters.render``: observation
-rendering (never inline ``namespace``; surface truncation), dynamic
-tool descriptions, and the exposure-mode heuristic (``"auto"`` →
+Shared behavior lives in ``nontainer.adapters.tools`` and
+``nontainer.adapters.render``. ``tools`` defines the workspace tools
+once (``Toolset``: each tool's name, description, schema and call), and
+every adapter wraps them. ``render`` holds observation rendering (never
+inline ``namespace``; surface truncation), the tool descriptions, the
+toolkit instructions, and the exposure-mode heuristic (``"auto"`` →
 terminal-only when the python environment is plain, split tools when
 it's augmented with cache/host objects).
 """
