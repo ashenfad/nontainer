@@ -1990,9 +1990,10 @@ tool and maps a `ToolOutput` onto its own result shape; a test holds
 the toolset's schemas equal to the ones agno derives.
 
 `is_error` is for a harness that marks failed calls (an event stream, a
-transcript): a failed edit, an unreadable image, a `test_app` that
-could not run, a command that exited non-zero, python that raised. The
-model learns the same from `text`.
+transcript): a failed edit, an unreadable image, a command that exited
+non-zero, python that raised, a `test_app` run that was refused, could
+not load the app, or had a check fail (`not result.ok`). The model
+learns the same from `text`.
 
 `run_python`'s description here does not teach the `ui = {...}`
 convention, because that note promises the artifacts display beside the

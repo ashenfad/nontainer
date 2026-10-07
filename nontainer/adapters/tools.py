@@ -65,11 +65,11 @@ class ToolOutput:
     """What a tool call returns, in no harness's terms.
 
     ``text`` is what the model reads. ``is_error`` says the call did not
-    do what it was asked: a failed edit, an image that could not be
-    read, a ``test_app`` that could not run, a command that exited
-    non-zero, python that raised. The text says so either way; the flag
-    is for a harness that marks failed calls (an event stream, a
-    transcript), not for the model.
+    come out as asked: a failed edit, an image that could not be read, a
+    command that exited non-zero, python that raised, a ``test_app`` run
+    that was refused, could not load the app, or had a check fail. The
+    text says so either way; the flag is for a harness that marks failed
+    calls (an event stream, a transcript), not for the model.
     """
 
     text: str
@@ -378,7 +378,7 @@ class Toolset:
                 if self.vision
                 else ()
             )
-        return ToolOutput(render_test_app(result), images=shots)
+        return ToolOutput(render_test_app(result), images=shots, is_error=not result.ok)
 
     def sessions_action(
         self,
