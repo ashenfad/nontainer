@@ -531,7 +531,7 @@ workspace(
     executor_factory: Callable[[], Executor] | None = None,
     root: str | None = None,               # default "/workspace"
     ignore: Iterable[str] | None = None,   # the embedder's .gitignore
-    env: Env | None = None,                # the six above as one value
+    profile: Profile | None = None,        # the six above, plus variables, as one value
     memory: bool = False,                  # Store(memory=True); refuses store/provider
 ) -> Workspace
 ```
@@ -1634,42 +1634,51 @@ readable on the runtime — `supports_commands`, `supports_ws_verbs` and
 Writing an executor of your own is
 [extending.md](extending.md#executor--where-code-runs).
 
-## `Env` — a session's environment as one value
+## `Profile` — a session's world as one value
 
 ```python
 @dataclass(frozen=True)
-class Env:
+class Profile:
     python: PythonConfig = PythonConfig()
     mounts: Mapping[str, Mount] = {}           # read-only once built
     commands: Mapping[str, CommandFunc] = {}   # read-only once built
+    variables: Mapping[str, str] = {}          # environment variables; read-only
     executor_factory: Callable[[], Executor] | None = None
     root: str = "/workspace"                   # normalized
     ignore: tuple[str, ...] = ()
 
     @classmethod
-    def of(cls, ws: Workspace) -> Env          # read one back
+    def of(cls, ws: Workspace) -> Profile      # read one back
 ```
 
 What the world a session's agent works in holds, and where its code
-runs. `store.open(session, env=env)` and `workspace(session, env=env)`
-take it in place of the six keywords it bundles; passing it with any of
-them is refused, so neither can be silently ignored. A fork inherits it,
-as forks have always inherited these settings, and `Env.of(ws)` reads
-it back, with mounts normalized and commands as the session holds them
-now (the framework's own left out).
+runs. `store.open(session, profile=profile)` and
+`workspace(session, profile=profile)` take it in place of the six
+keywords it bundles; passing it with any of them is refused, so neither
+can be silently ignored. `variables` has no open keyword of its own: a
+profile's variables are applied to `ws.runtime.env` when the session
+opens (names a shell could not expand are refused when the profile is
+built, and values are coerced to `str`). A fork inherits all of it, as
+forks have always inherited these settings, and `Profile.of(ws)` reads
+it back, with mounts normalized and commands and variables as the
+session holds them now (the framework's own commands left out).
 
 ```python
-env = Env(python=PythonConfig(host_objects={"db": db}), ignore=("*.log",))
-ws = store.open("chat-42", env=env)
+profile = Profile(
+    python=PythonConfig(host_objects={"db": db}),
+    variables={"API_BASE": "http://api.internal"},
+    ignore=("*.log",),
+)
+ws = store.open("chat-42", profile=profile)
 child = ws.fork("chat-42.trial")
-assert Env.of(child) == Env.of(ws)
-other = store.open("chat-43", env=dataclasses.replace(env, root="/home/agent"))
+assert Profile.of(child) == Profile.of(ws)
+other = store.open("chat-43", profile=dataclasses.replace(profile, root="/home/agent"))
 ```
 
 `cache`, `autocommit` and `max_observation` are not part of it: they say
 how a session behaves, not what its world holds. Frozen opens
 (`store.resolve`, `tags.at`, a publication's `open`) take the six
-keywords, not `env`.
+keywords, not `profile`.
 
 ## `PythonConfig`
 

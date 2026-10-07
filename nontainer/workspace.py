@@ -514,23 +514,24 @@ class PythonConfig:
 
 
 @dataclass(frozen=True)
-class Env:
-    """A session's environment, as one value: what the world its agent
-    works in holds and where its code runs.
+class Profile:
+    """A session's profile: what the world its agent works in holds and
+    where its code runs, as one value.
 
     :meth:`Store.open <nontainer.store.Store.open>` and
-    :func:`workspace` take it as ``env=`` in place of the six keywords
-    it bundles, :meth:`Env.of` reads it back off a workspace, and a fork
+    :func:`workspace` take it as ``profile=`` in place of the six
+    keywords it bundles (everything here but ``variables``),
+    :meth:`Profile.of` reads it back off a workspace, and a fork
     inherits it, as forks have always inherited these settings. Read
     back, ``mounts`` are normalized (points validated, sources resolved)
-    and ``commands`` are the session's as they stand.
+    and ``commands`` and ``variables`` are the session's as they stand.
 
     Not part of it: ``cache``, ``autocommit`` and ``max_observation``.
     They say how a session behaves, not what its world holds.
 
-    ``mounts`` and ``commands`` are copied into read-only mappings, so
-    an ``Env`` cannot change once built; derive a variant with
-    :func:`dataclasses.replace`.
+    ``mounts``, ``commands`` and ``variables`` are copied into
+    read-only mappings, so a ``Profile`` cannot change once built;
+    derive a variant with :func:`dataclasses.replace`.
     """
 
     python: PythonConfig = field(default_factory=PythonConfig)
@@ -543,6 +544,13 @@ class Env:
     commands: Mapping[str, Callable[..., Any]] = field(default_factory=dict, hash=False)
     """Custom terminal commands."""
 
+    variables: Mapping[str, str] = field(default_factory=dict, hash=False)
+    """Environment variables for script runs: ``$VAR`` expansion in the
+    terminal, exported into the guest on dud rungs. Applied to
+    ``ws.runtime.env`` when the session opens. Names a shell could not
+    expand are refused here, and values are coerced to ``str``, as
+    ``runtime.env`` does."""
+
     executor_factory: Callable[[], Executor] | None = None
     """Where code runs; ``None`` is the in-process ``LocalExecutor``."""
 
@@ -553,36 +561,43 @@ class Env:
     """The embedder's ``.gitignore`` patterns."""
 
     def __post_init__(self) -> None:
+        from .runtime import _ShellEnv
+
         if isinstance(self.ignore, str):
             raise TypeError(
-                "Env.ignore takes a sequence of patterns, not one string: "
+                "Profile.ignore takes a sequence of patterns, not one string: "
                 f"use ({self.ignore!r},)"
             )
+        variables = _ShellEnv()
+        variables.update(self.variables)
         object.__setattr__(self, "mounts", MappingProxyType(dict(self.mounts)))
         object.__setattr__(self, "commands", MappingProxyType(dict(self.commands)))
+        object.__setattr__(self, "variables", MappingProxyType(dict(variables)))
         object.__setattr__(self, "root", normalize_root(self.root))
         object.__setattr__(self, "ignore", tuple(self.ignore))
 
     @classmethod
-    def of(cls, ws: Workspace) -> Env:
-        """``ws``'s environment: what a fork of it inherits, and what
-        ``Store.open(..., env=)`` takes to open another session in the
-        same world. Commands are the session's as they stand, without
-        the framework's own, which a session opened with this env
-        rebuilds bound to itself."""
+    def of(cls, ws: Workspace) -> Profile:
+        """``ws``'s profile: what a fork of it inherits, and what
+        ``Store.open(..., profile=)`` takes to open another session in
+        the same world. Commands are the session's as they stand,
+        without the framework's own, which a session opened with this
+        profile rebuilds bound to itself; variables are copied as a fork
+        copies them."""
         settings = ws._settings
         return cls(
             python=settings.python,
             mounts=settings.mounts,
             commands=ws.runtime.forkable_commands(),
+            variables=dict(ws.runtime.env),
             executor_factory=settings.executor_factory,
             root=settings.root,
             ignore=settings.ignore,
         )
 
 
-def _env_fields(
-    env: Env | None,
+def _profile_fields(
+    profile: Profile | None,
     *,
     python: PythonConfig | None,
     mounts: Mapping[str, Mount] | None,
@@ -591,10 +606,10 @@ def _env_fields(
     root: str | None,
     ignore: Iterable[str] | None,
 ) -> dict[str, Any]:
-    """The six environment keywords for ``Workspace(...)``: from ``env``,
-    or as given, never both. A keyword passed alongside ``env`` would
+    """The six profile keywords for ``Workspace(...)``: from ``profile``,
+    or as given, never both. A keyword passed alongside ``profile`` would
     leave one of the two silently ignored, so it is refused."""
-    if env is None:
+    if profile is None:
         return {
             "python": python,
             "mounts": mounts,
@@ -617,16 +632,16 @@ def _env_fields(
     ]
     if given:
         raise TypeError(
-            "pass the environment as env= or as its fields, not both: "
-            f"{', '.join(given)} given with env"
+            "pass the profile as profile= or as its fields, not both: "
+            f"{', '.join(given)} given with profile"
         )
     return {
-        "python": env.python,
-        "mounts": dict(env.mounts),
-        "commands": dict(env.commands),
-        "executor_factory": env.executor_factory,
-        "root": env.root,
-        "ignore": env.ignore,
+        "python": profile.python,
+        "mounts": dict(profile.mounts),
+        "commands": dict(profile.commands),
+        "executor_factory": profile.executor_factory,
+        "root": profile.root,
+        "ignore": profile.ignore,
     }
 
 
@@ -4195,7 +4210,7 @@ def workspace(
     executor_factory: "Callable[[], Executor] | None" = None,
     root: str | None = None,
     ignore: "Iterable[str] | None" = None,
-    env: Env | None = None,
+    profile: Profile | None = None,
     memory: bool = False,
 ) -> Workspace:
     """Build a session's :class:`Workspace` (the one-liner entry point).
@@ -4231,9 +4246,10 @@ def workspace(
     never work, besides everything outside the root (see
     :mod:`nontainer.ignore`). Inherited by forks.
 
-    ``env`` bundles ``python``, ``mounts``, ``commands``,
-    ``executor_factory``, ``root`` and ``ignore`` as one value
-    (:class:`Env`); passing it with any of them is refused.
+    ``profile`` bundles ``python``, ``mounts``, ``commands``,
+    ``executor_factory``, ``root`` and ``ignore``, plus environment
+    variables, as one value (:class:`Profile`); passing it with any of
+    those six is refused.
 
     ``memory=True`` builds the store in memory
     (``Store(memory=True)``): nothing touches disk, and closing the
@@ -4264,7 +4280,7 @@ def workspace(
             executor_factory=executor_factory,
             root=root,
             ignore=ignore,
-            env=env,
+            profile=profile,
         )
         # The store was built for this one workspace and nothing else
         # holds it, so the workspace owns it: closing the workspace
@@ -4287,5 +4303,5 @@ def workspace(
         executor_factory=executor_factory,
         root=root,
         ignore=ignore,
-        env=env,
+        profile=profile,
     )
