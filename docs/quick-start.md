@@ -102,6 +102,18 @@ A tag is session-scoped by default and dies with the session;
 `store.tags` is the store-scoped half — a publication that outlives it,
 readable from any session on the store.
 
+For scratch work and tests, keep the whole store in memory, so nothing
+lands in `~/.nontainer`:
+
+```python
+store = nontainer.store(memory=True)   # sessions, history, publications
+ws = nontainer.workspace("scratch", memory=True)   # the same, for one session
+```
+
+Nothing is written to disk, and the data lasts as long as the store
+object does. A `workspace(..., memory=True)` owns its store, so closing
+the workspace discards it.
+
 ## Fork, edit, merge
 
 Delegation is a branch operation, not a VM operation. A fork is O(1), a
