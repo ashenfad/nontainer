@@ -313,6 +313,10 @@ class Turn:
         inbox's queue, then what each source adds. They are delivered
         from here, not settled. Empty without an inbox.
 
+        A source that raises is logged and skipped, so it costs neither
+        the tool result nor the other notes; any notes it had minted
+        before it raised go back to the queue for the next result.
+
         For a result that is not text (one carrying images, say), call
         this, attach the notes yourself (``inbox.render(notes)``), and
         ``inbox.restore(notes)`` if they cannot be attached; otherwise
@@ -323,7 +327,17 @@ class Turn:
             return []
         notes = inbox.drain()
         for source in self.sources:
-            notes.extend(source(inbox))
+            before = {note.id for note in inbox.delivered()}
+            try:
+                notes.extend(source(inbox))
+            except Exception:  # noqa: BLE001 - the tool result wins
+                _logger.warning(
+                    "a delivery source raised; its notes wait for the next tool result",
+                    exc_info=True,
+                )
+                stray = [n for n in inbox.delivered() if n.id not in before]
+                if stray:
+                    inbox.restore(stray)
         return notes
 
     def deliver(self, result: str) -> tuple[str, list[Note]]:
@@ -348,7 +362,13 @@ class Turn:
         return text, notes
 
     async def adeliver(self, result: str) -> tuple[str, list[Note]]:
-        """:meth:`deliver`, awaiting what ``on_delivered`` returns."""
+        """:meth:`deliver`, awaiting what ``on_delivered`` returns.
+
+        A cancel that lands while it waits on the callback puts the notes
+        back in the queue before it goes on: the result carrying them was
+        never handed back, so the model has not read them, and the turn's
+        end must not settle them.
+        """
         text, notes = self._attach(result)
         if notes and self.inbox is not None:
             outcome = self.inbox.announce(notes, allow_async=True)
@@ -357,6 +377,9 @@ class Turn:
                     await outcome
                 except Exception:  # noqa: BLE001 - the tool result wins
                     _logger.warning("inbox on_delivered raised", exc_info=True)
+                except BaseException:
+                    self.inbox.restore(notes)
+                    raise
         return text, notes
 
     def _attach(self, result: str) -> tuple[str, list[Note]]:
