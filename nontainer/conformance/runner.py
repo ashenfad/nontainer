@@ -12,11 +12,14 @@ neutral model steps onto a scripted model of its own.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from ..compaction import Fold, folds
 from ..inbox import Inbox
+from ..planes import CONVERSATION_PREFIXES
 from ..store import Store
 from ..turns import (
     RunEnded,
@@ -72,11 +75,18 @@ class Clock:
         self._fire = fire
         self._steps: list[Step] = []
         self.exhausted = False
+        self.sent: tuple[str, ...] | None = None
 
     def load(self, steps: Sequence[Step]) -> None:
         self._steps = list(steps)
+        self.sent = None
 
-    def next(self) -> ModelStep:
+    def next(self, sent: Sequence[str] | None = None) -> ModelStep:
+        """The next reply. ``sent`` is the text of each message the
+        request carried, when the harness passes it: what a scenario
+        checks to see whether a fold is in force (``TurnExp.folded``)."""
+        if sent is not None:
+            self.sent = tuple(sent)
         while self._steps and isinstance(self._steps[0], EventStep):
             self._fire(self._steps.pop(0))  # type: ignore[arg-type]
         if not self._steps:
@@ -141,7 +151,10 @@ class Harness(Protocol):
     capabilities: frozenset[str]
     known_gaps: Mapping[str, Mapping[str, str]]
 
-    def open(self, ws: Workspace, clock: Clock) -> HarnessSession: ...
+    def open(self, ws: Workspace, clock: Clock) -> HarnessSession:
+        """A session on ``ws``. A harness with ``compaction`` also takes
+        ``budget=`` (tokens), passed for a scenario that sets one."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -154,6 +167,16 @@ class Observed:
     commits: tuple[CommitView, ...]
     inbox: tuple[int, int]
     exhausted: bool = False
+    sent: tuple[tuple[str, ...] | None, ...] = ()
+    """Per turn, what its last model request carried, as the harness
+    passed it to the clock (``None``: it passed nothing)."""
+    folds: tuple[Fold, ...] = ()
+    """The folds the final workspace records, oldest first."""
+    stored_summary: str | None = None
+    """A fold's summary found in the stored conversation, which must
+    never hold one; ``None`` when none was."""
+    summaries: tuple[str, ...] = ()
+    """Every fold summary recorded along the way, a rewind's included."""
 
 
 def applies(scenario: Scenario, harness: Harness) -> bool:
@@ -187,6 +210,12 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             raise ValueError(f"unknown event {step.what!r}")
 
     clock = Clock(fire)
+
+    def open_session(ws: Workspace) -> HarnessSession:
+        if scenario.budget is None:
+            return harness.open(ws, clock)
+        return harness.open(ws, clock, budget=scenario.budget)  # type: ignore[call-arg]
+
     # The harness session and the workspace it drives are closed on the
     # way out however the scenario ended: a failure is what the runner
     # exists to expose, and a harness may own threads or a loop.
@@ -196,16 +225,24 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
         if ws.uncommitted:
             ws.commit(info={"tool": "world"})
         start = ws.head
-        holder["session"] = harness.open(ws, clock)
+        holder["session"] = open_session(ws)
         turns: list[tuple[TurnEvent, ...]] = []
+        sent: list[tuple[str, ...] | None] = []
         ended_at: list[str] = []
+        stored_summary: str | None = None
+        summaries: list[str] = []
         for act in scenario.acts:
             session = holder["session"]
             if isinstance(act, Turn):
                 clock.load(act.steps)
                 events = session.resume() if act.resume else session.turn(act.prompt)
                 turns.append(tuple(events))
+                sent.append(clock.sent)
                 ended_at.append(ws.head)
+                stored_summary = stored_summary or _stored_summary(ws)
+                summaries.extend(
+                    f.summary for f in folds(ws) if f.summary not in summaries
+                )
             elif isinstance(act, Checkout):
                 ws.checkout(ended_at[act.after_turn - 1])
             elif isinstance(act, Fork):
@@ -213,7 +250,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 holder.pop("session").close()
                 parent, ws = ws, child
                 parent.close()
-                holder["session"] = harness.open(ws, clock)
+                holder["session"] = open_session(ws)
         session = holder["session"]
         expect = scenario.expect
         paths = list(expect.files) + [p for p in expect.absent if p not in expect.files]
@@ -234,6 +271,10 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             commits=tuple(reversed(commits)),
             inbox=(len(session.inbox.pending()), len(session.inbox.delivered())),
             exhausted=clock.exhausted,
+            sent=tuple(sent),
+            folds=tuple(folds(ws)),
+            stored_summary=stored_summary,
+            summaries=tuple(summaries),
         )
     finally:
         try:
@@ -242,6 +283,40 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
         finally:
             ws.close()
             store.close()
+
+
+def _folded(
+    want: bool, sent: tuple[str, ...] | None, summaries: Sequence[str], first: str
+) -> str | None:
+    """What is wrong with whether a turn's last request was folded."""
+    if sent is None:
+        return "the harness didn't pass the clock what it sent"
+    text = "\n".join(sent)
+    summarized = any(s and s in text for s in summaries)
+    if want and not summarized:
+        return "its last request carried no fold's summary"
+    if want and first and first in text:
+        return f"its last request still carried the first turn ({first!r})"
+    if not want and summarized:
+        return "its last request carried a fold's summary"
+    return None
+
+
+def _stored_summary(ws: Workspace) -> str | None:
+    """A summary of one of ``ws``'s folds that its stored conversation
+    holds, whatever format the harness stores runs in; ``None`` when it
+    holds none, as it never should."""
+    summaries = [f.summary for f in folds(ws) if f.summary]
+    if not summaries:
+        return None
+    kv = ws.provider.kv
+    for key in list(kv.keys()):
+        if isinstance(key, str) and key.startswith(CONVERSATION_PREFIXES):
+            stored = json.dumps(kv.get(key), default=str)
+            for summary in summaries:
+                if json.dumps(summary)[1:-1] in stored:
+                    return summary
+    return None
 
 
 def event_names(events: Sequence[TurnEvent]) -> tuple[str, ...]:
@@ -296,11 +371,21 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
     """Every way ``observed`` differs from the scenario's expectations,
     by check name: ``turn<N>.stream`` (N from 1; the stream opens with
     ``RunStarted`` and closes with ``RunEnded``, checked for every turn),
-    ``turn<N>.status``, ``turn<N>.events``, ``files``, ``runs``,
-    ``commits``, ``inbox`` and ``script``. Empty when everything holds."""
+    ``turn<N>.status``, ``turn<N>.events``, ``turn<N>.folded``,
+    ``files``, ``runs``, ``commits``, ``inbox``, ``folds``, ``summary``
+    (a fold's summary in the stored conversation, checked always) and
+    ``script``. Empty when everything holds."""
     expect = scenario.expect
     failures: dict[str, str] = {}
-    for n, (want, got) in enumerate(zip(expect.turns, observed.turns), start=1):
+    first = next((a.prompt for a in scenario.acts if isinstance(a, Turn)), "")
+    sent = list(observed.sent) + [None] * (len(observed.turns) - len(observed.sent))
+    for n, (want, got, request) in enumerate(
+        zip(expect.turns, observed.turns, sent), start=1
+    ):
+        if want.folded is not None:
+            problem = _folded(want.folded, request, observed.summaries, first)
+            if problem:
+                failures[f"turn{n}.folded"] = problem
         shape = _misshapen(got)
         if shape is not None:
             failures[f"turn{n}.stream"] = shape
@@ -341,6 +426,16 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
         want_inbox = (expect.inbox.pending, expect.inbox.delivered)
         if observed.inbox != want_inbox:
             failures["inbox"] = f"(pending, delivered) {observed.inbox} != {want_inbox}"
+    if expect.folds is not None:
+        got_folds = [(f.runs, f.first is not None) for f in observed.folds]
+        want_folds = [(f.runs, f.ranged) for f in expect.folds]
+        if got_folds != want_folds:
+            failures["folds"] = f"(runs, ranged) {got_folds} != {want_folds}"
+    if observed.stored_summary is not None:
+        failures["summary"] = (
+            f"the stored conversation holds a fold's summary: "
+            f"{observed.stored_summary[:80]!r}"
+        )
     if observed.exhausted:
         failures["script"] = (
             "the harness asked the model for more than the script holds"

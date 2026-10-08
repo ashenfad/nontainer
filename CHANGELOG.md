@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Compaction in the harness corpus (tier 4).** Scenarios pin a fold's record and its rules (in force, rewind and fork, never stored), not how a harness folds; scripted steps report `input_tokens`, a scenario sets `budget`, and `clock.next(sent)` sees what a request carried.
 - **A compiled `Spec` stands for its type.** Wherever nontainer takes a type (a `HostObject`'s `type`, a stubbed object's annotations, inside another annotation), a `values.Spec` serves, carrying the names it was compiled with.
 - **Typed calls through a stub: `HostObject(obj, stub=...)`.** Code in the sandbox holds a class of the embedder's that calls the live object, typed by its annotations; an argument that doesn't fit raises `TypeError` at the call, and every argument reaches the host built afresh as its declared type, never unpickled.
 - **Typed host data and classes: `HostObject(obj, type=...)`, `PythonConfig.classes`.** Data of a declared type reaches the sandbox by value on every rung, a fresh copy each run, and classes are bound by name; on dud both cross by pickle and by module source.

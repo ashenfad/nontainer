@@ -9,7 +9,7 @@ modules here by ``python -m nontainer.conformance.export``.
 from __future__ import annotations
 
 from ..corpus import Scenario
-from . import conversation, endings, inbox
+from . import compaction, conversation, endings, inbox
 
 __all__ = ["SCENARIOS", "by_name"]
 
@@ -17,6 +17,7 @@ SCENARIOS: tuple[Scenario, ...] = (
     *endings.SCENARIOS,
     *conversation.SCENARIOS,
     *inbox.SCENARIOS,
+    *compaction.SCENARIOS,
 )
 
 

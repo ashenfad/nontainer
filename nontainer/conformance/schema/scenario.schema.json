@@ -66,7 +66,7 @@
     },
     "Expect": {
       "additionalProperties": false,
-      "description": "What must come of a scenario. ``turns`` has one entry per :class:`Turn` act, in order. ``files`` maps a path to its content at the end, and ``absent`` names paths that must not exist. ``runs`` is the stored conversation of the session the scenario ends in, oldest first; ``commits`` the commits it made on that session's branch, oldest first. ``None`` leaves a part unchecked.",
+      "description": "What must come of a scenario. ``turns`` has one entry per :class:`Turn` act, in order. ``files`` maps a path to its content at the end, and ``absent`` names paths that must not exist. ``runs`` is the stored conversation of the session the scenario ends in, oldest first; ``commits`` the commits it made on that session's branch, oldest first; ``folds`` the folds its workspace records, oldest first. ``None`` leaves a part unchecked.",
       "properties": {
         "absent": {
           "items": {
@@ -92,6 +92,19 @@
             "type": "string"
           },
           "type": "object"
+        },
+        "folds": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/FoldExp"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "inbox": {
           "anyOf": [
@@ -125,6 +138,22 @@
       },
       "required": [
         "turns"
+      ],
+      "type": "object"
+    },
+    "FoldExp": {
+      "additionalProperties": false,
+      "description": "One fold recorded in the workspace's ``__compaction__/`` plane: how many turns it covers, and whether it is over a range in the middle (``first`` set) rather than from the start.",
+      "properties": {
+        "ranged": {
+          "type": "boolean"
+        },
+        "runs": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "runs"
       ],
       "type": "object"
     },
@@ -167,7 +196,7 @@
     },
     "ModelStep": {
       "additionalProperties": false,
-      "description": "One model reply: text, reasoning, tool calls, or a failure. ``fail`` makes the call raise instead of replying: ``\"provider\"`` with a provider error (an overloaded endpoint, say), which a harness may resume from; ``\"error\"`` with any other exception.",
+      "description": "One model reply: text, reasoning, tool calls, or a failure. ``fail`` makes the call raise instead of replying: ``\"provider\"`` with a provider error (an overloaded endpoint, say), which a harness may resume from; ``\"error\"`` with any other exception. ``input_tokens`` is the size of the request this reply answers, as a provider reports it (0 reports nothing): how a scenario puts a conversation over a compaction budget.",
       "properties": {
         "fail": {
           "enum": [
@@ -175,6 +204,9 @@
             "provider",
             "error"
           ]
+        },
+        "input_tokens": {
+          "type": "integer"
         },
         "kind": {
           "const": "model"
@@ -220,7 +252,7 @@
     },
     "Scenario": {
       "additionalProperties": false,
-      "description": "One scenario: a world, the acts run in it, and what must come of them. ``tiers`` are the contract tiers it pins; ``needs`` are the :data:`CAPABILITIES` a harness must have for it to apply.",
+      "description": "One scenario: a world, the acts run in it, and what must come of them. ``tiers`` are the contract tiers it pins; ``needs`` are the :data:`CAPABILITIES` a harness must have for it to apply. ``budget`` is the compaction budget, in tokens, a harness opens the session with; it needs ``compaction``.",
       "properties": {
         "acts": {
           "items": {
@@ -237,6 +269,16 @@
             ]
           },
           "type": "array"
+        },
+        "budget": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "expect": {
           "$ref": "#/$defs/Expect"
@@ -332,6 +374,16 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "folded": {
+          "anyOf": [
+            {
+              "type": "boolean"
             },
             {
               "type": "null"

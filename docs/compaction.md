@@ -1,13 +1,14 @@
 # Compaction
 
-> **Status, 2026-10-03: released in 0.8.8** (`nontainer.compaction`,
-> `nontainer.adapters.agno_compaction`). How a long
-> conversation stays inside the model's context window. Past a token
-> budget, the older turns are replaced, in what the model is sent, by
-> one summary. The person still sees the whole transcript, and the
-> stored conversation is never rewritten. The mechanism is
-> harness-neutral and lives in nontainer. A thin adapter wires it into a
-> harness; agno's comes first. The embedder sets the policy.
+> **Status, 2026-10-08: released in 0.8.8** (`nontainer.compaction`,
+> `nontainer.adapters.agno_compaction`), with the contract pinned by the
+> harness corpus since. How a long conversation stays inside the
+> model's context window. Past a token budget, older turns are
+> replaced, in what the model is sent, by one summary. The person still
+> sees the whole transcript, and the stored conversation is never
+> rewritten. **nontainer owns the record of a fold and its rules**, the
+> contract every harness and the studio read; **each loop folds in its
+> own way**, and agno's adapter is nontainer's own.
 > [Where this stands](#where-this-stands) is the ledger.
 
 ## Why now
@@ -27,7 +28,41 @@ large `file_write` is all argument), and it has a cost of its own (see
 [Tool-result compression](#tool-result-compression)). Compaction is the
 bound, and it doesn't use tool-result compression.
 
-## The short version
+## The contract and the folding
+
+Every harness that compacts shares these, and the studio reads them
+whichever loop wrote them:
+
+- **The record:** each fold is a `Fold` in the workspace's
+  `__compaction__/` plane ([below](#where-the-records-live)), written
+  during the turn that made it and landing with that turn's commit.
+- **The anchor:** a fold names the last message it covers by that
+  message's id in the harness. It is in force only while that message
+  is in the history; otherwise an earlier fold whose anchor is, or none.
+- **Rewind and fork:** a checkout takes back the folds made after it, a
+  full fork carries them, and a fresh fork starts without them.
+- **The stored conversation never holds a summary.** Folding changes
+  what the model is sent, never what is stored.
+- **The event:** a new fold is streamed as `Compacted` (the turn
+  events in `nontainer.turns`), which is the embedder's moment to show
+  it.
+
+What a loop decides for itself: when to fold, what a fold covers, what
+it splices into a request, how the summary is written, and whether it
+folds within a run. agno's adapter is one way, described below; agex
+folds its own conversations, within a task's run as well. A loop may
+use the core's helpers for the texts and the hard cases, or not.
+
+The harness corpus pins the contract (tier 4,
+`nontainer/conformance/harness/compaction.py`): a request over budget
+folds and is streamed as `Compacted`; the fold stays in force without
+another summary; a second fold takes in the first; a rewind takes folds
+back; a full fork carries them and a fresh fork drops them; and no
+scenario may leave a summary in the stored conversation. A scenario
+crosses the budget with a scripted reply's `input_tokens`, and the
+reply to the harness's summary request is a step of its script.
+
+## The short version: agno's folding
 
 - **Trigger:** the request about to be sent is over a token budget.
 - **Fold:** every earlier run is summarised into one summary. Only the
@@ -132,30 +167,30 @@ hand the model a summary of turns that, as far as the person can see,
 never happened. An over-long request is visible and corrects itself on
 the next fold.
 
-## The neutral core: `nontainer.compaction`
+## The core: `nontainer.compaction`
 
-The core knows run ids, token counts and text, and nothing about any
-harness:
+The core is the contract's record plus helpers a loop may use. It
+knows ids, token counts and text, and nothing about any harness or
+model:
 
-- **Records:** read, write and list them in the workspace.
-- **Policy:** given the ordered run ids and the request's token count,
-  is it time? A fold covers every earlier run, so a cut always falls at
-  a run boundary and a tool call is never separated from its result.
-  There are no knobs beyond the budget: no tail of recent runs kept
-  verbatim, and no minimum, since right after a fold the context is
-  small and the next fold waits for the budget to be crossed again. A
-  kept tail can come back as an option if summaries lose the exchange
-  just before the fold.
-- **View:** given the ordered run ids and the record in force, return
-  the summary (or none) and the run ids to send verbatim.
-- **Summary prompt:** what to keep (decisions, file paths, names, open
-  threads, what was delegated and what came back), what to drop
-  (routine tool output), and how to fold a prior summary in rather than
-  stacking summaries.
+- **Records:** `Fold`, `record(ws, fold)`, `folds(ws)` and
+  `in_force(ws, ids)`, the fold a history with those message ids gets.
+- **Policy:** `Policy(budget, window=None)`: `due(tokens)` and
+  `fits(tokens)`. There are no knobs beyond the budget and the window.
+- **Texts:** `summary_request()` (what to keep: decisions, file paths,
+  names, open threads, what was delegated and what came back; what to
+  drop; and how to fold a prior summary in rather than stacking them),
+  `summary_message(summary)` and `ACK`, the pair spliced in its place.
+- **The hard cases:** `reduce` and `transcript` for a history too
+  large for one summary request, and `chunks` for one too large even
+  then; `estimate_tokens` at four characters a token.
+- **`MARK` and `is_ours`:** the id prefix on messages compaction
+  inserts, which a session db uses to keep them out of a stored run.
 
-The model call itself is not the core's: nontainer does not own models.
-The adapter passes a `summarize` callable, and that is where the
-cache-friendly choice lives (below).
+The algorithm, deciding and splicing, is not the core's. It belongs to
+each loop, since it depends on how the loop holds its messages and
+builds its requests (decided 2026-10-08, in place of a core
+`turn.context` over neutral messages).
 
 ## The agno adapter
 
@@ -176,9 +211,11 @@ its name.
   is stored. Each message keeps the `id` it has in its stored run, and
   that is how the adapter maps a fold's run ids to messages.
 - **Deciding to fold** happens when the request is still over budget
-  after that. The adapter asks the core for the cut, calls `summarize`,
-  writes the record and applies it, all before the model call goes out.
-  The turn waits for the summary, as it does in Claude Code.
+  after that. The adapter folds every earlier run, so a cut falls at a
+  run boundary and never between a tool call and its result; it writes
+  the summary, records the fold and applies it, all before the model
+  call goes out. The turn waits for the summary, as it does in Claude
+  Code.
 - **Measuring the request** uses what the provider reported rather than
   a tokenizer. Every assistant message carries the input tokens of the
   call that produced it, and keeps them in the copies a later run is
@@ -243,8 +280,11 @@ lets a session recover after a single run outgrew the window.
 
 ## Other harnesses
 
-The adapter is the only harness-specific piece, and the harnesses worth
-supporting each have a seam in the same place:
+Each harness folds in its own way and writes the same records. agex
+owns its loop, so it builds every request itself and can fold within a
+run too (the agex plan, step B4). A harness built on another framework
+needs a seam where the request is assembled, and the ones worth
+supporting each have one:
 
 - **pydantic-ai:** `history_processors` hand you the message list before
   each request.
@@ -253,8 +293,9 @@ supporting each have a seam in the same place:
 - **LangGraph:** `pre_model_hook` sees the messages before the model
   node.
 
-Each would be an adapter of the same size as agno's: map its messages
-to run ids, splice in the summary, and pass a `summarize`.
+Each would map its messages to ids, decide and splice in its own way,
+and write `Fold` records; the tier 4 scenarios say whether it keeps the
+contract.
 
 ## The embedder's side (the studio)
 
@@ -396,6 +437,7 @@ in_force(ws, message_ids)  # -> Fold | None, the one a history with these ids ge
 | agno adapter (`CompactingCompression`), with the db backstop | released in 0.8.8 (`nontainer/adapters/agno_compaction.py`) |
 | Studio: budget, marker event (nontainer-studio #80) | merged |
 | Checked against a real model (`openrouter:meta/muse-spark-1.3-contributor`) | done; see below |
+| The contract in the harness corpus (tier 4), passed by agno and the reference harness | this release |
 | Chaptering | later; see above |
 
 ## Checked live

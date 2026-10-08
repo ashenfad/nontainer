@@ -36,6 +36,7 @@ __all__ = [
     "CommitExp",
     "EventStep",
     "Expect",
+    "FoldExp",
     "Fork",
     "InboxExp",
     "ModelStep",
@@ -53,6 +54,7 @@ __all__ = [
     "queue_note",
     "resume",
     "says",
+    "summarizes",
     "thinks",
     "turn",
     "writes",
@@ -63,6 +65,10 @@ CAPABILITIES: dict[str, str] = {
     "keeps-aborted-runs": (
         "stores a cancelled or failed run with the messages it had, so it "
         "can be kept with a closing note"
+    ),
+    "compaction": (
+        "past a token budget, folds earlier turns into a summary in what the "
+        "model is sent, recording each fold in __compaction__/"
     ),
 }
 """What a scenario may need beyond the base contract, by name. A
@@ -88,6 +94,10 @@ class ModelStep:
     ``fail`` makes the call raise instead of replying: ``"provider"``
     with a provider error (an overloaded endpoint, say), which a
     harness may resume from; ``"error"`` with any other exception.
+
+    ``input_tokens`` is the size of the request this reply answers, as
+    a provider reports it (0 reports nothing): how a scenario puts a
+    conversation over a compaction budget.
     """
 
     kind: Literal["model"] = "model"
@@ -95,6 +105,7 @@ class ModelStep:
     thinking: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
     fail: Literal["", "provider", "error"] = ""
+    input_tokens: int = 0
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -179,6 +190,10 @@ class TurnExp:
 
     status: RunStatus
     events: tuple[str, ...] | None = None
+    folded: bool | None = None
+    """Whether the turn's last model request was sent a fold's summary in
+    place of the turns it covers (the first turn's prompt among them),
+    or neither; ``None`` leaves it unchecked."""
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -210,13 +225,24 @@ class InboxExp:
 
 
 @dataclass(frozen=True, kw_only=True)
+class FoldExp:
+    """One fold recorded in the workspace's ``__compaction__/`` plane:
+    how many turns it covers, and whether it is over a range in the
+    middle (``first`` set) rather than from the start."""
+
+    runs: int
+    ranged: bool = False
+
+
+@dataclass(frozen=True, kw_only=True)
 class Expect:
     """What must come of a scenario. ``turns`` has one entry per
     :class:`Turn` act, in order. ``files`` maps a path to its content at
     the end, and ``absent`` names paths that must not exist. ``runs``
     is the stored conversation of the session the scenario ends in,
     oldest first; ``commits`` the commits it made on that session's
-    branch, oldest first. ``None`` leaves a part unchecked."""
+    branch, oldest first; ``folds`` the folds its workspace records,
+    oldest first. ``None`` leaves a part unchecked."""
 
     turns: tuple[TurnExp, ...]
     files: dict[str, str] = field(default_factory=dict)
@@ -224,19 +250,23 @@ class Expect:
     runs: tuple[RunExp, ...] | None = None
     commits: tuple[CommitExp, ...] | None = None
     inbox: InboxExp | None = None
+    folds: tuple[FoldExp, ...] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
 class Scenario:
     """One scenario: a world, the acts run in it, and what must come of
     them. ``tiers`` are the contract tiers it pins; ``needs`` are the
-    :data:`CAPABILITIES` a harness must have for it to apply."""
+    :data:`CAPABILITIES` a harness must have for it to apply.
+    ``budget`` is the compaction budget, in tokens, a harness opens the
+    session with; it needs ``compaction``."""
 
     name: str
     summary: str
     tiers: tuple[int, ...]
     needs: tuple[str, ...] = ()
     world: World = field(default_factory=World)
+    budget: int | None = None
     acts: tuple[Act, ...]
     expect: Expect
 
@@ -244,6 +274,8 @@ class Scenario:
         unknown = set(self.needs) - set(CAPABILITIES)
         if unknown:
             raise ValueError(f"{self.name}: unknown capabilities {sorted(unknown)}")
+        if self.budget is not None and "compaction" not in self.needs:
+            raise ValueError(f"{self.name}: a budget needs 'compaction'")
         turns = sum(1 for a in self.acts if isinstance(a, Turn))
         if len(self.expect.turns) != turns:
             raise ValueError(
@@ -255,9 +287,16 @@ class Scenario:
 # -- builders --------------------------------------------------------------------
 
 
-def says(text: str) -> ModelStep:
-    """A reply of text alone, which ends the turn."""
-    return ModelStep(text=text)
+def says(text: str, *, input_tokens: int = 0) -> ModelStep:
+    """A reply of text alone, which ends the turn; ``input_tokens`` is
+    the size the provider reports for the request it answers."""
+    return ModelStep(text=text, input_tokens=input_tokens)
+
+
+def summarizes(summary: str) -> ModelStep:
+    """The reply to a harness's request for a summary, when it folds:
+    the model asked for one is the scripted model like any other."""
+    return ModelStep(text=summary)
 
 
 def thinks(thinking: str, text: str = "") -> ModelStep:
