@@ -314,7 +314,10 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 parent.close()
                 holder["session"] = open_session(ws)
         session = holder["session"]
-        delegated = delegates.finish() if delegates is not None else {}
+        delegated: dict[str, DelegateView] = {}
+        if delegates is not None:
+            delegated = delegates.finish()
+            delegates = None  # finished: the way out has nothing left to do
         expect = scenario.expect
         paths = list(expect.files) + [p for p in expect.absent if p not in expect.files]
         commits = []
@@ -345,7 +348,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
     finally:
         try:
             if delegates is not None:
-                delegates.finish()  # releases and joins whatever is left
+                delegates.finish()  # a scenario that failed: release and join
             if "session" in holder:
                 holder.pop("session").close()
         finally:

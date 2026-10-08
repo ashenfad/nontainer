@@ -9,12 +9,13 @@ apart from any one harness.
 """
 
 import json
+import time
 import uuid
 from dataclasses import replace
 
 import pytest
 
-from nontainer import compaction, conversation
+from nontainer import Store, compaction, conversation
 from nontainer.adapters.corpus_delegates import CorpusDelegates
 from nontainer.conformance import Clock, RunView, check, event_names, run
 from nontainer.conformance.codec import dump, dumps, json_schema, load
@@ -368,6 +369,42 @@ def test_a_harness_whose_woken_turn_delivers_nothing_is_caught():
     scenario = by_name("a-note-left-for-a-delegate-is-read-before-it-answers")
     problems = check(scenario, run(scenario, DeafHarness()))
     assert "delegate.scout.wakes" in problems and "script" in problems
+
+
+def test_the_runner_finishes_the_delegation_once():
+    finished = []
+
+    class Counted(CorpusDelegates):
+        def finish(self):
+            finished.append(True)
+            return super().finish()
+
+    class CountedHarness(ReferenceHarness):
+        def delegation(self, store, scenario):
+            return Counted(self, store, scenario)
+
+    scenario = by_name("a-delegates-answer-is-delivered-once-on-the-next-tool-result")
+    assert check(scenario, run(scenario, CountedHarness())) == {}
+    assert finished == [True]
+
+
+def test_a_delegate_that_starts_as_the_scenario_finishes_is_not_held():
+    """A run that begins after finish() has released the gates finds its
+    own gate open, rather than waiting out the patience for a release
+    nothing will send."""
+    scenario = by_name("a-delegates-answer-is-delivered-once-on-the-next-tool-result")
+    store = Store(memory=True)
+    ws = store.open("scenario")
+    try:
+        ws.fork("scenario.late").close()
+        delegates = CorpusDelegates(ReferenceHarness(), store, scenario)
+        delegates.finish()
+        started = time.monotonic()
+        delegates.run("scenario.late", "a late task")
+        assert time.monotonic() - started < 5
+    finally:
+        ws.close()
+        store.close()
 
 
 def test_delegates_need_delegation():
