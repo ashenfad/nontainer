@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **`until_settled` / `auntil_settled`.** A delegate's turns run until neither its own delegates nor a note in its inbox is outstanding, woken to read them, within `max_wakes`; `Turn.opening()` is a woken turn's first message.
 - **Async delegate runners.** A `SessionRunner` whose `run` is `async def` runs on the embedder's loop (`Sessions(..., loop=)`), `max_workers` at a time, and `cancel` stops it; `aask`, `await_ready`, `answers()` and `aclose` serve coroutines.
 - **Compaction in the harness corpus (tier 4).** Scenarios pin a fold's record and its rules (in force, rewind and fork, never stored), not how a harness folds; scripted steps report `input_tokens`, a scenario sets `budget`, and `clock.next(sent)` sees what a request carried.
 - **A compiled `Spec` stands for its type.** Wherever nontainer takes a type (a `HostObject`'s `type`, a stubbed object's annotations, inside another annotation), a `values.Spec` serves, carrying the names it was compiled with.

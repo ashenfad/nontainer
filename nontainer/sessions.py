@@ -61,9 +61,9 @@ import logging
 import random
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from .errors import (
@@ -1603,6 +1603,129 @@ class Sessions:
                 changed=dict(answer.changed),
                 uncommitted=answer.uncommitted,
             )
+
+
+# ======================================================================
+# Settling: a delegate answers once nothing it waits on is outstanding
+# ======================================================================
+
+
+#: How often a settling loop looks at the inbox while it waits for an
+#: answer: notes have no wait of their own.
+POLL = 0.5
+
+
+@dataclass(frozen=True)
+class Settled:
+    """How a delegate's turns ended: its last ``reply``, the woken turns
+    it took (``wakes``), and what was still outstanding when it ran out
+    of them: the delegates it had not heard back from (``unread``) and
+    the notes left undelivered (``notes``)."""
+
+    reply: str
+    wakes: int = 0
+    unread: tuple[str, ...] = ()
+    notes: int = 0
+
+    @property
+    def text(self) -> str:
+        """The reply as an answer: as it is, or saying which delegates
+        it was given before hearing from."""
+        if not self.unread:
+            return self.reply
+        names = ", ".join(self.unread)
+        return (
+            f"{self.reply}\n\n[answered before hearing back from {names}: "
+            "their work is on their branches, and `sessions result` reads "
+            "an answer once it lands]"
+        )
+
+
+def until_settled(
+    run_turn: "Callable[[str | None], str]",
+    sessions: "Sessions | None" = None,
+    inbox: "Inbox | None" = None,
+    *,
+    prompt: str,
+    max_wakes: int = 10,
+    poll: float = POLL,
+) -> Settled:
+    """Run a delegate's turns until nothing it waits on is outstanding.
+
+    ``run_turn(prompt)`` runs one turn and returns its reply;
+    ``run_turn(None)`` is a WOKEN turn, which opens with what is waiting
+    to be delivered (see :meth:`~nontainer.turns.Turn.opening`). The
+    first turn is the task's. After each reply the delegate is settled
+    when its own delegates (``sessions``) have nothing outstanding and
+    its ``inbox`` holds no note: a reply given while either is pending is
+    the delegate waiting, not its answer. While delegates are still
+    running it waits for one to answer, looking at the inbox every
+    ``poll`` seconds, since a note from the delegate's caller counts too;
+    then it wakes the delegate to read what came.
+
+    ``max_wakes`` bounds the woken turns. Once they are spent it stops
+    waiting and returns the last reply, with what was left outstanding:
+    :attr:`Settled.text` names the unread delegates.
+
+    What else a turn is (nudges, what counts as a reply, budgets) is the
+    runner's: this is only the waiting every runner needs, done once.
+    """
+    reply = run_turn(prompt)
+    wakes = 0
+    while True:
+        pending = bool(inbox is not None and inbox.pending())
+        outstanding = sessions.outstanding() if sessions is not None else []
+        if not pending and not outstanding:
+            return Settled(reply, wakes)
+        if wakes >= max_wakes:
+            return _spent(reply, wakes, outstanding, inbox)
+        ready = sessions.wait(timeout=0) if sessions is not None else []
+        if not pending and not ready:
+            assert sessions is not None
+            sessions.wait(timeout=poll)
+            continue
+        reply = run_turn(None)
+        wakes += 1
+
+
+async def auntil_settled(
+    run_turn: "Callable[[str | None], Awaitable[str]]",
+    sessions: "Sessions | None" = None,
+    inbox: "Inbox | None" = None,
+    *,
+    prompt: str,
+    max_wakes: int = 10,
+    poll: float = POLL,
+) -> Settled:
+    """:func:`until_settled`, from a coroutine: ``run_turn`` is awaited,
+    and so is the wait for an answer."""
+    reply = await run_turn(prompt)
+    wakes = 0
+    while True:
+        pending = bool(inbox is not None and inbox.pending())
+        outstanding = sessions.outstanding() if sessions is not None else []
+        if not pending and not outstanding:
+            return Settled(reply, wakes)
+        if wakes >= max_wakes:
+            return _spent(reply, wakes, outstanding, inbox)
+        ready = sessions.wait(timeout=0) if sessions is not None else []
+        if not pending and not ready:
+            assert sessions is not None
+            await sessions.await_ready(timeout=poll)
+            continue
+        reply = await run_turn(None)
+        wakes += 1
+
+
+def _spent(
+    reply: str, wakes: int, outstanding: "list[str]", inbox: "Inbox | None"
+) -> Settled:
+    return Settled(
+        reply,
+        wakes,
+        unread=tuple(outstanding),
+        notes=len(inbox.pending()) if inbox is not None else 0,
+    )
 
 
 # ======================================================================

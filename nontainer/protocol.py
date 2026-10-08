@@ -1313,12 +1313,12 @@ class SessionRunner(Protocol):
 
     A reply is the answer only when the child has nothing outstanding.
     A delegate may delegate, and one that ends its turn to wait for its
-    own delegates replies with that waiting. A runner checks the
-    child's helper (``Sessions.outstanding``) after each reply; while
-    it is not empty, it waits (``Sessions.wait``), runs a turn that
-    delivers the answers, and returns the reply given once nothing is
-    outstanding. Returning the waiting reply strands the deeper
-    answers.
+    own delegates replies with that waiting; a note from its caller that
+    came after its last tool call waits the same way. Returning such a
+    reply strands what it waited for, so a runner runs the child's turns
+    through :func:`nontainer.sessions.until_settled` (or
+    ``auntil_settled``), which wakes the child until nothing is
+    outstanding and returns the reply given then.
     """
 
     def run(

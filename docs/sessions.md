@@ -317,13 +317,34 @@ agent told to end its turn while its own delegates work (rather than
 poll for them) replies "waiting on them" with its delegates still
 running. Returned as the answer, that strands their results: the parent
 gets the waiting message, and the delegate's delegates answer to a
-session nobody runs again. So a runner checks the child's own helper
-after each reply. While `outstanding()` is not empty, the reply is the
-child waiting: the runner blocks in `wait()`, runs another turn that
-delivers what `take()` hands over, and returns the reply the child
-gives once nothing is outstanding. A runner bounds those extra turns by
-its own measure, and when it stops early it should say in the answer
-which delegates went unread.
+session nobody runs again. A note from the delegate's caller that
+arrived after its last tool call is stranded the same way.
+`until_settled` is the loop that prevents both, written once:
+
+```python
+from nontainer.sessions import until_settled   # auntil_settled from a coroutine
+
+settled = until_settled(
+    run_turn,            # run_turn(prompt) -> reply; run_turn(None) is a woken turn
+    child_sessions,      # the delegate's own helper, if it may delegate
+    inbox,               # the delegate's inbox, if it has one
+    prompt=task,
+    max_wakes=10,
+)
+return settled.text      # the reply, naming any delegates still unread
+```
+
+After each reply it checks the delegate's own delegates
+(`outstanding()`) and its inbox. While either holds something, the
+reply is the delegate waiting: it waits for an answer (looking at the
+inbox every half second, since a note counts too) and runs a woken
+turn, `run_turn(None)`, which opens with what is waiting to be
+delivered (`Turn.opening()`: the inbox's notes and the answers its
+sources hand over, rendered). Once nothing is pending, the last reply
+is the answer. `max_wakes` bounds the woken turns, and when they run
+out it answers with what it has: `Settled.unread` names the delegates
+not yet heard from, and `Settled.text` says so in the answer. Nudges,
+what counts as a reply and how a turn is run stay the runner's.
 
 `forked_at` is the parent's commit the child was forked from (`None`
 when the parent's provider keeps no commits). It is a parameter rather
