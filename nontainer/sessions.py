@@ -71,6 +71,7 @@ from .errors import (
     SessionsError,
     WorkspaceError,
 )
+from .ignore import Patterns, drop_ignored
 from .protocol import SESSION_ID_RE, Answer, Job
 
 if TYPE_CHECKING:
@@ -938,7 +939,9 @@ class Sessions:
         a job holds no store open between turns — so continuing a child
         opens the branch again. Reads only: the runner drives the child
         through a handle of its own, and this one reports what the
-        branch holds afterwards.
+        branch holds afterwards. It carries the parent's ignore rules, as
+        a fork does: what a delegate's answer counts as work (its
+        changed paths, its remainder commit) is judged by them.
         """
         store = self._ws.store
         if store is None:
@@ -946,7 +949,7 @@ class Sessions:
                 f"cannot continue {name!r}: session {self._ws.session!r} was not "
                 "opened from a store, so its branches cannot be opened again"
             )
-        return store.open(name, root=self._ws.root)
+        return store.open(name, root=self._ws.root, ignore=self._ws.ignore)
 
     def _origin(self, fork_from: "str | Any") -> "tuple[str, str, str]":
         """``(the fork point as the caller spelled it, its commit, the
@@ -1263,9 +1266,12 @@ class Sessions:
             if met and met != base and find(base, met) == base:
                 start = met
         diff = child.diff(start, head)
+        # the parent's rules, whatever handle the child was read through
+        rules = Patterns(self._ws.ignore)
+        kept = drop_ignored(diff.paths, self._ws.root, rules)
         return {
-            "seed": tuple(sorted(diff.in_seed)),
-            "elsewhere": tuple(sorted(diff.elsewhere)),
+            "seed": tuple(sorted(diff.in_seed & kept)),
+            "elsewhere": tuple(sorted(diff.elsewhere & kept)),
         }
 
     def _parent_head(self, reader: "Workspace") -> str | None:
