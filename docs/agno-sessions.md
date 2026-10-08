@@ -237,6 +237,12 @@ in `ws.log()` and checking out the commit it stepped off puts the
 conversation back. What the reader sees is rewound; what the store
 holds is everything that ever happened.
 
+A fork can rewind past the point it was forked: its history begins
+with its parent's commits, so restoring one restores a conversation
+that names the parent. The checkout rebinds it to the fork in the same
+commit, keeping the fork's lineage, so the session stays the fork's
+and its next turn writes as it would anywhere else.
+
 `cache_session=True` would break this: agno keeps the loaded session
 object in memory across runs, so after a restore it would append to
 the stale, pre-rewind run list and write the rewound turns back.

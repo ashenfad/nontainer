@@ -106,7 +106,9 @@ class PlainProvider:
     def commit(self, info: dict[str, Any] | None = None) -> str:
         raise self._unsupported("commit")
 
-    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+    def checkout(
+        self, commit_id: str, *, info: dict[str, Any] | None = None, adjust: Any = None
+    ) -> str:
         raise self._unsupported("checkout")
 
     def history(self, *, limit: int | None = None) -> Iterable[CommitInfo]:
