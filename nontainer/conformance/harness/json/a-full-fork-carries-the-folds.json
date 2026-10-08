@@ -60,9 +60,11 @@
     }
   ],
   "budget": 1000,
+  "delegates": {},
   "expect": {
     "absent": [],
     "commits": null,
+    "delegates": null,
     "files": {},
     "folds": [
       {

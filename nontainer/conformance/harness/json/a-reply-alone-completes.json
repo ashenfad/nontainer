@@ -17,6 +17,7 @@
     }
   ],
   "budget": null,
+  "delegates": {},
   "expect": {
     "absent": [],
     "commits": [
@@ -27,6 +28,7 @@
         "tool": "turn"
       }
     ],
+    "delegates": null,
     "files": {},
     "folds": null,
     "inbox": {

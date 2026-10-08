@@ -34,6 +34,8 @@ __all__ = [
     "CAPABILITIES",
     "Checkout",
     "CommitExp",
+    "Delegate",
+    "DelegateExp",
     "EventStep",
     "Expect",
     "FoldExp",
@@ -46,9 +48,12 @@ __all__ = [
     "Turn",
     "TurnExp",
     "World",
+    "asks",
     "calls",
     "cancel",
     "checkout",
+    "delegate",
+    "delegate_answers",
     "fails",
     "fork",
     "queue_note",
@@ -69,6 +74,11 @@ CAPABILITIES: dict[str, str] = {
     "compaction": (
         "past a token budget, folds earlier turns into a summary in what the "
         "model is sent, recording each fold in __compaction__/"
+    ),
+    "delegation": (
+        "exposes the sessions tool over a helper the runner builds, delivers "
+        "a delegate's answer on the next tool result, and runs a woken turn "
+        "that opens with what is waiting"
     ),
 }
 """What a scenario may need beyond the base contract, by name. A
@@ -115,14 +125,30 @@ class EventStep:
 
     ``cancel`` stops the run in flight. ``queue_note`` queues ``text``
     in the session's inbox, as a person typing mid-turn does.
+    ``delegate_answers`` releases the delegate named ``text`` and waits
+    until its answer lands, so the next tool result is where it arrives.
     """
 
     kind: Literal["event"] = "event"
-    what: Literal["cancel", "queue_note"]
+    what: Literal["cancel", "queue_note", "delegate_answers"]
     text: str = ""
 
 
 Step = ModelStep | EventStep
+
+
+@dataclass(frozen=True, kw_only=True)
+class Delegate:
+    """A delegate's script: its model's replies in order, across the
+    task's turn and every woken turn after it, and how many woken turns
+    it may take (``wakes``) before it answers with what it has.
+
+    A delegate starts held: it runs once a ``delegate_answers`` event
+    releases it (or when the scenario ends), so where its answer lands
+    in its asker's turn is fixed by the script, not by timing."""
+
+    steps: tuple[Step, ...] = ()
+    wakes: int = 3
 
 
 # -- acts -----------------------------------------------------------------------
@@ -226,6 +252,19 @@ class InboxExp:
 
 
 @dataclass(frozen=True, kw_only=True)
+class DelegateExp:
+    """One delegate, by the name it was asked under: how its answer
+    came back (its ``status``, and words its text must hold), and how
+    its turns ended: the woken turns it took (``None``: unchecked) and
+    the delegates of its own it answered without hearing from."""
+
+    status: Literal["answered", "declined", "capped", "failed"] = "answered"
+    mentions: tuple[str, ...] = ()
+    wakes: int | None = None
+    unread: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class FoldExp:
     """One fold recorded in the workspace's ``__compaction__/`` plane:
     how many turns it covers, and whether it is over a range in the
@@ -243,7 +282,8 @@ class Expect:
     is the stored conversation of the session the scenario ends in,
     oldest first; ``commits`` the commits it made on that session's
     branch, oldest first; ``folds`` the folds its workspace records,
-    oldest first. ``None`` leaves a part unchecked."""
+    oldest first; ``delegates`` the delegates asked anywhere in the
+    scenario, by name. ``None`` leaves a part unchecked."""
 
     turns: tuple[TurnExp, ...]
     files: dict[str, str] = field(default_factory=dict)
@@ -252,6 +292,7 @@ class Expect:
     commits: tuple[CommitExp, ...] | None = None
     inbox: InboxExp | None = None
     folds: tuple[FoldExp, ...] | None = None
+    delegates: dict[str, DelegateExp] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -260,7 +301,9 @@ class Scenario:
     them. ``tiers`` are the contract tiers it pins; ``needs`` are the
     :data:`CAPABILITIES` a harness must have for it to apply.
     ``budget`` is the compaction budget, in tokens, a harness opens the
-    session with; it needs ``compaction``."""
+    session with; it needs ``compaction``. ``delegates`` are the scripts
+    of the delegates its sessions ask for, by the name each is asked
+    under (``asks``); they need ``delegation``."""
 
     name: str
     summary: str
@@ -268,6 +311,7 @@ class Scenario:
     needs: tuple[str, ...] = ()
     world: World = field(default_factory=World)
     budget: int | None = None
+    delegates: dict[str, Delegate] = field(default_factory=dict)
     acts: tuple[Act, ...]
     expect: Expect
 
@@ -277,6 +321,8 @@ class Scenario:
             raise ValueError(f"{self.name}: unknown capabilities {sorted(unknown)}")
         if self.budget is not None and "compaction" not in self.needs:
             raise ValueError(f"{self.name}: a budget needs 'compaction'")
+        if self.delegates and "delegation" not in self.needs:
+            raise ValueError(f"{self.name}: delegates need 'delegation'")
         turns = sum(1 for a in self.acts if isinstance(a, Turn))
         if len(self.expect.turns) != turns:
             raise ValueError(
@@ -328,6 +374,22 @@ def cancel() -> EventStep:
 def queue_note(text: str) -> EventStep:
     """Queue a note in the session's inbox."""
     return EventStep(what="queue_note", text=text)
+
+
+def asks(name: str, task: str) -> ModelStep:
+    """A reply that asks the delegate ``name`` to do ``task``."""
+    args = {"action": "ask", "task": task, "name": name}
+    return ModelStep(tool_calls=(ToolCall(name="sessions", args=args),))
+
+
+def delegate_answers(name: str) -> EventStep:
+    """Release the delegate ``name`` and wait for its answer to land."""
+    return EventStep(what="delegate_answers", text=name)
+
+
+def delegate(*steps: Step, wakes: int = 3) -> Delegate:
+    """A delegate's script: its replies, across all of its turns."""
+    return Delegate(steps=steps, wakes=wakes)
 
 
 def turn(prompt: str, *steps: Step) -> Turn:

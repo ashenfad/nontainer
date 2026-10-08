@@ -2,9 +2,31 @@
   "acts": [
     {
       "kind": "turn",
-      "prompt": "write a",
+      "prompt": "Find the rates.",
       "resume": false,
       "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "action": "ask",
+                "name": "scout",
+                "task": "find the rates"
+              },
+              "name": "sessions"
+            }
+          ]
+        },
+        {
+          "kind": "event",
+          "text": "scout",
+          "what": "delegate_answers"
+        },
         {
           "fail": "",
           "input_tokens": 0,
@@ -22,15 +44,10 @@
           ]
         },
         {
-          "kind": "event",
-          "text": "and b",
-          "what": "queue_note"
-        },
-        {
           "fail": "",
           "input_tokens": 0,
           "kind": "model",
-          "text": "wrote a",
+          "text": "done",
           "thinking": "",
           "tool_calls": []
         }
@@ -38,7 +55,7 @@
     },
     {
       "kind": "turn",
-      "prompt": "go on",
+      "prompt": "And then?",
       "resume": false,
       "steps": [
         {
@@ -61,7 +78,7 @@
           "fail": "",
           "input_tokens": 0,
           "kind": "model",
-          "text": "wrote b",
+          "text": "ok",
           "thinking": "",
           "tool_calls": []
         }
@@ -69,11 +86,34 @@
     }
   ],
   "budget": null,
-  "delegates": {},
+  "delegates": {
+    "scout": {
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "the rates are 4 and 7",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ],
+      "wakes": 3
+    }
+  },
   "expect": {
     "absent": [],
     "commits": null,
-    "delegates": null,
+    "delegates": {
+      "scout": {
+        "mentions": [
+          "4 and 7"
+        ],
+        "status": "answered",
+        "unread": [],
+        "wakes": 0
+      }
+    },
     "files": {
       "/workspace/a.txt": "a",
       "/workspace/b.txt": "b"
@@ -83,12 +123,24 @@
       "delivered": 0,
       "pending": 0
     },
-    "runs": null,
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 2
+      },
+      {
+        "closing_note": false,
+        "tool_results": 1
+      }
+    ],
     "turns": [
       {
         "events": [
           "RunStarted",
           "ToolStarted",
+          "ToolEnded",
+          "ToolStarted",
+          "Delivered",
           "ToolEnded",
           "TextDelta",
           "RunEnded:completed"
@@ -100,7 +152,6 @@
         "events": [
           "RunStarted",
           "ToolStarted",
-          "Delivered",
           "ToolEnded",
           "TextDelta",
           "RunEnded:completed"
@@ -110,11 +161,13 @@
       }
     ]
   },
-  "name": "a-note-after-the-last-tool-waits-for-the-next-turn",
-  "needs": [],
-  "summary": "A note queued after the turn's last tool call has no result to ride: it stays queued, and the next turn's first tool result delivers it.",
+  "name": "a-delegates-answer-is-delivered-once-on-the-next-tool-result",
+  "needs": [
+    "delegation"
+  ],
+  "summary": "A delegate's answer lands on its asker's next tool result, mid-turn, and is delivered there only: the next turn's tool results carry nothing, and nothing is left in the inbox.",
   "tiers": [
-    3
+    5
   ],
   "world": {
     "files": {}

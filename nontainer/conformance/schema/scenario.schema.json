@@ -41,9 +41,71 @@
       ],
       "type": "object"
     },
+    "Delegate": {
+      "additionalProperties": false,
+      "description": "A delegate's script: its model's replies in order, across the task's turn and every woken turn after it, and how many woken turns it may take (``wakes``) before it answers with what it has. A delegate starts held: it runs once a ``delegate_answers`` event releases it (or when the scenario ends), so where its answer lands in its asker's turn is fixed by the script, not by timing.",
+      "properties": {
+        "steps": {
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ModelStep"
+              },
+              {
+                "$ref": "#/$defs/EventStep"
+              }
+            ]
+          },
+          "type": "array"
+        },
+        "wakes": {
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "DelegateExp": {
+      "additionalProperties": false,
+      "description": "One delegate, by the name it was asked under: how its answer came back (its ``status``, and words its text must hold), and how its turns ended: the woken turns it took (``None``: unchecked) and the delegates of its own it answered without hearing from.",
+      "properties": {
+        "mentions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "declined",
+            "capped",
+            "failed"
+          ]
+        },
+        "unread": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "wakes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
     "EventStep": {
       "additionalProperties": false,
-      "description": "Something from outside the loop, fired when the model is asked for the next reply. ``cancel`` stops the run in flight. ``queue_note`` queues ``text`` in the session's inbox, as a person typing mid-turn does.",
+      "description": "Something from outside the loop, fired when the model is asked for the next reply. ``cancel`` stops the run in flight. ``queue_note`` queues ``text`` in the session's inbox, as a person typing mid-turn does. ``delegate_answers`` releases the delegate named ``text`` and waits until its answer lands, so the next tool result is where it arrives.",
       "properties": {
         "kind": {
           "const": "event"
@@ -54,7 +116,8 @@
         "what": {
           "enum": [
             "cancel",
-            "queue_note"
+            "queue_note",
+            "delegate_answers"
           ]
         }
       },
@@ -66,7 +129,7 @@
     },
     "Expect": {
       "additionalProperties": false,
-      "description": "What must come of a scenario. ``turns`` has one entry per :class:`Turn` act, in order. ``files`` maps a path to its content at the end, and ``absent`` names paths that must not exist. ``runs`` is the stored conversation of the session the scenario ends in, oldest first; ``commits`` the commits it made on that session's branch, oldest first; ``folds`` the folds its workspace records, oldest first. ``None`` leaves a part unchecked.",
+      "description": "What must come of a scenario. ``turns`` has one entry per :class:`Turn` act, in order. ``files`` maps a path to its content at the end, and ``absent`` names paths that must not exist. ``runs`` is the stored conversation of the session the scenario ends in, oldest first; ``commits`` the commits it made on that session's branch, oldest first; ``folds`` the folds its workspace records, oldest first; ``delegates`` the delegates asked anywhere in the scenario, by name. ``None`` leaves a part unchecked.",
       "properties": {
         "absent": {
           "items": {
@@ -81,6 +144,19 @@
                 "$ref": "#/$defs/CommitExp"
               },
               "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "delegates": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/DelegateExp"
+              },
+              "type": "object"
             },
             {
               "type": "null"
@@ -252,7 +328,7 @@
     },
     "Scenario": {
       "additionalProperties": false,
-      "description": "One scenario: a world, the acts run in it, and what must come of them. ``tiers`` are the contract tiers it pins; ``needs`` are the :data:`CAPABILITIES` a harness must have for it to apply. ``budget`` is the compaction budget, in tokens, a harness opens the session with; it needs ``compaction``.",
+      "description": "One scenario: a world, the acts run in it, and what must come of them. ``tiers`` are the contract tiers it pins; ``needs`` are the :data:`CAPABILITIES` a harness must have for it to apply. ``budget`` is the compaction budget, in tokens, a harness opens the session with; it needs ``compaction``. ``delegates`` are the scripts of the delegates its sessions ask for, by the name each is asked under (``asks``); they need ``delegation``.",
       "properties": {
         "acts": {
           "items": {
@@ -279,6 +355,12 @@
               "type": "null"
             }
           ]
+        },
+        "delegates": {
+          "additionalProperties": {
+            "$ref": "#/$defs/Delegate"
+          },
+          "type": "object"
         },
         "expect": {
           "$ref": "#/$defs/Expect"

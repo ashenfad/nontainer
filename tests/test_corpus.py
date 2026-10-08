@@ -15,6 +15,7 @@ from dataclasses import replace
 import pytest
 
 from nontainer import compaction, conversation
+from nontainer.adapters.corpus_delegates import CorpusDelegates
 from nontainer.conformance import Clock, RunView, check, event_names, run
 from nontainer.conformance.codec import dump, dumps, json_schema, load
 from nontainer.conformance.corpus import (
@@ -29,6 +30,7 @@ from nontainer.conformance.corpus import (
 )
 from nontainer.conformance.harness import SCENARIOS, by_name
 from nontainer.inbox import Inbox
+from nontainer.sessions import answer_notes, run_action
 from nontainer.turns import (
     TURN_EVENTS,
     Compacted,
@@ -57,18 +59,32 @@ class ReferenceSession:
     stores it, settles the inbox and commits once, stamped with the
     run's status."""
 
-    def __init__(self, ws, clock, budget=None):
+    def __init__(self, ws, clock, budget=None, sessions=None):
         self.ws = ws
         self.clock = clock
         self.budget = budget
+        self.sessions = sessions
         self.inbox = Inbox()
         self._cancelled = False
         self._interrupted = None
         self._run_id = None
 
     def turn(self, prompt):
-        turn = self.ws.turn(uuid.uuid4().hex, inbox=self.inbox, harness="reference")
+        turn = self._begin()
         return self._run(turn, [{"role": "user", "text": prompt}])
+
+    def wake(self):
+        """A woken turn: it opens with what is waiting to be delivered."""
+        turn = self._begin()
+        return self._run(turn, [{"role": "user", "text": turn.opening() or ""}])
+
+    def _begin(self):
+        sources = []
+        if self.sessions is not None:
+            sources.append(lambda inbox: answer_notes(self.sessions, inbox))
+        return self.ws.turn(
+            uuid.uuid4().hex, inbox=self.inbox, harness="reference", sources=sources
+        )
 
     def resume(self):
         run_id = self._interrupted
@@ -114,9 +130,13 @@ class ReferenceSession:
                 events.append(
                     ToolStarted(call_id=call_id, name=call.name, args=call.args)
                 )
-                self.ws.files.write(call.args["path"], call.args["content"])
-                self.ws.commit(info={"tool": call.name})
-                text, notes = turn.deliver("ok")
+                if call.name == "sessions":
+                    output = run_action(self.sessions, **call.args)
+                else:
+                    self.ws.files.write(call.args["path"], call.args["content"])
+                    self.ws.commit(info={"tool": call.name})
+                    output = "ok"
+                text, notes = turn.deliver(output)
                 if notes:
                     events.append(
                         Delivered(
@@ -126,7 +146,7 @@ class ReferenceSession:
                         )
                     )
                 messages.append({"role": "tool", "text": text})
-                events.append(ToolEnded(call_id=call_id, name=call.name, result="ok"))
+                events.append(ToolEnded(call_id=call_id, name=call.name, result=output))
         if status in ("cancelled", "failed"):
             messages.append({"role": "note", "text": f"ended early: {message}"})
         turn.end(status, body={"messages": messages}, message=message)
@@ -209,11 +229,16 @@ class ReferenceSession:
 
 class ReferenceHarness:
     name = "reference"
-    capabilities = frozenset({"resume", "keeps-aborted-runs", "compaction"})
+    capabilities = frozenset(
+        {"resume", "keeps-aborted-runs", "compaction", "delegation"}
+    )
     known_gaps = {}
 
-    def open(self, ws, clock, *, budget=None):
-        return ReferenceSession(ws, clock, budget)
+    def open(self, ws, clock, *, budget=None, sessions=None):
+        return ReferenceSession(ws, clock, budget, sessions)
+
+    def delegation(self, store, scenario):
+        return CorpusDelegates(self, store, scenario)
 
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda s: s.name)
@@ -325,6 +350,32 @@ def test_a_harness_that_sends_a_stale_summary_is_caught():
     problems = check(scenario, run(scenario, StaleHarness()))
     assert set(problems) == {"turn3.folded"}
     assert "fold in force" in problems["turn3.folded"]
+
+
+def test_a_harness_whose_woken_turn_delivers_nothing_is_caught():
+    """A woken turn must open with what is waiting: one that does not
+    leaves the delegate waking for the same note until its wakes run
+    out, and the answer is not the one the script ends on."""
+
+    class Deaf(ReferenceSession):
+        def wake(self):
+            return self._run(self._begin(), [{"role": "user", "text": ""}])
+
+    class DeafHarness(ReferenceHarness):
+        def open(self, ws, clock, *, budget=None, sessions=None):
+            return Deaf(ws, clock, budget, sessions)
+
+    scenario = by_name("a-note-left-for-a-delegate-is-read-before-it-answers")
+    problems = check(scenario, run(scenario, DeafHarness()))
+    assert "delegate.scout.wakes" in problems and "script" in problems
+
+
+def test_delegates_need_delegation():
+    with pytest.raises(ValueError, match="delegates need 'delegation'"):
+        replace(
+            by_name("a-delegates-answer-is-delivered-once-on-the-next-tool-result"),
+            needs=(),
+        )
 
 
 def test_a_budget_needs_compaction():
