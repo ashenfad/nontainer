@@ -277,3 +277,68 @@ def test_a_loop_in_another_thread_takes_asks_from_this_one(parent, store):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(5)
         loop.close()
+
+
+def test_a_cancel_stops_the_run_a_resume_just_started(parent, store):
+    """The branch is free as soon as an answer is recorded, before the
+    run that recorded it has finished ending: a resume can start the
+    next run in that gap (here from ``on_answer``), and a cancel then
+    stops that new run, never the old one."""
+
+    async def main():
+        runner = Writing(store)
+        stopped = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        sessions = Sessions(parent, runner)
+        state = {}
+
+        def resume_and_cancel(name, answer):
+            if state:
+                return
+            runner.gate = asyncio.Event()  # the next run never finishes
+            state["job"] = sessions.ask("export.py", resume=name)
+            sessions.cancel(name)
+            loop.call_soon_threadsafe(stopped.set)
+
+        sessions.on_answer = resume_and_cancel
+        try:
+            first = await sessions.aask("api.py")
+            await asyncio.wait_for(stopped.wait(), 5)
+            runner.gate = None
+            answer = await resume_when_free(sessions, first.name, "notes.md")
+            assert answer.text == "did notes.md"
+        finally:
+            # bounded: a run the cancel missed would hold aclose forever
+            await asyncio.wait_for(sessions.aclose(), 5)
+
+    asyncio.run(main())
+
+
+def test_an_ask_still_forking_when_aclose_runs_is_refused(parent, store):
+    """A fork runs on a thread; a close that begins meanwhile must not be
+    outlived by the run that fork would start."""
+
+    async def main():
+        runner = Writing(store)
+        sessions = Sessions(parent, runner)
+        forking = threading.Event()
+        proceed = threading.Event()
+        fork = sessions._fork
+
+        def slow_fork(*args, **kwargs):
+            forking.set()
+            proceed.wait(5)
+            return fork(*args, **kwargs)
+
+        sessions._fork = slow_fork  # type: ignore[method-assign]
+        asking = asyncio.create_task(sessions.aask("api.py"))
+        await asyncio.to_thread(forking.wait, 5)
+        closing = asyncio.create_task(sessions.aclose())
+        await asyncio.sleep(0.05)
+        proceed.set()
+        await closing
+        with pytest.raises(SessionsError, match="closed"):
+            await asking
+        assert runner.loops == set()  # the runner never ran
+
+    asyncio.run(main())

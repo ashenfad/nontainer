@@ -278,9 +278,10 @@ class Sessions:
         #: ``on_answer`` has been told. Kept apart from ``_answers``,
         #: which a resume may already have emptied by then.
         self._recorded: set[int] = set()
-        #: An async runner's runs in flight, by job, so a cancel can stop
-        #: one.
-        self._tasks: dict[str, asyncio.Task] = {}
+        #: An async runner's runs in flight, by run token, so a cancel
+        #: stops the run that holds the branch now and never one a
+        #: resume has superseded.
+        self._tasks: dict[int, asyncio.Task] = {}
         #: The coroutines waiting for news (:meth:`await_ready`,
         #: :meth:`answers`): each one's loop and the event to set, under
         #: the lock, when :attr:`_settled` is notified.
@@ -422,13 +423,13 @@ class Sessions:
             )
         except BaseException:
             # The branch was taken by another run between the check and
-            # the reservation, or the pool is gone: the handle opened
-            # for a run that will not happen is closed here.
-            if resuming:
-                try:
-                    child.close()
-                except Exception:  # noqa: BLE001 - the refusal wins
-                    pass
+            # the reservation, the helper closed, or the pool is gone:
+            # the handle opened for a run that will not happen is closed
+            # here. The branch stays, as every branch does.
+            try:
+                child.close()
+            except Exception:  # noqa: BLE001 - the refusal wins
+                pass
             raise
         if wait:
             future.result()  # _work resolves every failure into an Answer
@@ -696,7 +697,7 @@ class Sessions:
             self._notify_locked()
             future = self._futures.get(name)
             token = self._busy.get(name)
-            task = self._tasks.get(name)
+            task = None if token is None else self._tasks.get(token)
         if task is not None and self._loop is not None:
             # An async run is stopped, not just disowned: it ends through
             # its own path, which discards the answer and frees the
@@ -999,6 +1000,10 @@ class Sessions:
         """
         name = job.name
         with self._lock:
+            # Open is checked again here, in the section that installs
+            # the run: an ask that passed the first check while a close
+            # began must not start a run the close will not wait for.
+            self._check_open()
             if name in self._busy:
                 raise SessionsError(self._still_running(name))
             if resuming:
@@ -1017,17 +1022,22 @@ class Sessions:
             self._uncollected.discard(name)
             self._children[name] = child
             self._base[name] = base
-        try:
-            if self._loop is not None:
-                future = asyncio.run_coroutine_threadsafe(
-                    self._awork(name, job.task, budget, token), self._loop
-                )
-            else:
-                future = self._pool.submit(self._work, name, job.task, budget, token)
-        except BaseException:
-            self._release(name, token)
-            raise
-        with self._lock:
+            # Scheduled in the same section, so a cancel never finds the
+            # branch reserved without the run's future: both only
+            # schedule, and the run itself starts by waiting on this lock.
+            try:
+                if self._loop is not None:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._awork(name, job.task, budget, token), self._loop
+                    )
+                else:
+                    future = self._pool.submit(
+                        self._work, name, job.task, budget, token
+                    )
+            except BaseException:
+                self._children.pop(name, None)
+                self._release_locked(name, token)
+                raise
             self._futures[name] = future
         return job, future
 
@@ -1249,7 +1259,7 @@ class Sessions:
         with self._lock:
             current = asyncio.current_task()
             if current is not None:
-                self._tasks[name] = current
+                self._tasks[token] = current
         try:
             try:
                 assert self._slots is not None
@@ -1265,8 +1275,7 @@ class Sessions:
             return await asyncio.to_thread(self._settle, name, task, answer, token)
         finally:
             with self._lock:
-                if self._tasks.get(name) is current:
-                    self._tasks.pop(name, None)
+                self._tasks.pop(token, None)
             self._release(name, token)
 
     def _extra(self, name: str) -> dict[str, Any]:
