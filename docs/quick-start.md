@@ -316,8 +316,10 @@ python -m nontainer.adapters.mcp --session webdev --apps  # + ws-curl & test_app
 the same tools, defined once: each `Tool` has a `name`, a `description`,
 a JSON Schema for its `parameters`, and a `call` (or `acall`) that
 returns a `ToolOutput`. Wrap each run in `with ws.turn(run_id) as
-turn:` and pass every tool result through `turn.deliver(...)`; ending
-the turn lands one commit stamped with how the run ended. See the
+turn:` and pass each result's text through `turn.deliver(output.text)`,
+which appends any notes waiting for the model; the loop keeps
+`images`, `written` and `is_error` itself. Ending the turn lands one
+commit stamped with how the run ended. See the
 [API reference](api.md#nontainerturns--the-turn-and-what-it-streams).
 
 Agents also get `file_write` / `file_edit` tools in every mode — the
