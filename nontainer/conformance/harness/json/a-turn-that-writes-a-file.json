@@ -33,6 +33,7 @@
     }
   ],
   "budget": null,
+  "delegates": {},
   "expect": {
     "absent": [],
     "commits": [
@@ -47,6 +48,7 @@
         "tool": "turn"
       }
     ],
+    "delegates": null,
     "files": {
       "/workspace/a.txt": "a"
     },

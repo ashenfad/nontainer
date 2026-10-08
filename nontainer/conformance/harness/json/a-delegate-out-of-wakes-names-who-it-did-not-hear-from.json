@@ -1,0 +1,151 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "Find the rates.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "action": "ask",
+                "name": "scout",
+                "task": "find the rates"
+              },
+              "name": "sessions"
+            }
+          ]
+        },
+        {
+          "kind": "event",
+          "text": "scout",
+          "what": "delegate_answers"
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "done",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "budget": null,
+  "delegates": {
+    "helper": {
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "north is 4",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ],
+      "wakes": 3
+    },
+    "scout": {
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "action": "ask",
+                "name": "helper",
+                "task": "check north"
+              },
+              "name": "sessions"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "waiting on the helper",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ],
+      "wakes": 0
+    }
+  },
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "delegates": {
+      "scout": {
+        "mentions": [
+          "waiting on the helper",
+          "helper"
+        ],
+        "status": "answered",
+        "unread": [
+          "helper"
+        ],
+        "wakes": 0
+      }
+    },
+    "files": {},
+    "folds": null,
+    "inbox": null,
+    "runs": null,
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "ToolStarted",
+          "Delivered",
+          "ToolEnded",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-delegate-out-of-wakes-names-who-it-did-not-hear-from",
+  "needs": [
+    "delegation"
+  ],
+  "summary": "A delegate whose woken turns are spent answers with what it has rather than wait on, and its answer names the delegate it did not hear from.",
+  "tiers": [
+    5
+  ],
+  "world": {
+    "files": {}
+  }
+}

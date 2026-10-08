@@ -83,11 +83,13 @@
     }
   ],
   "budget": null,
+  "delegates": {},
   "expect": {
     "absent": [
       "/workspace/b.txt"
     ],
     "commits": null,
+    "delegates": null,
     "files": {
       "/workspace/a.txt": "a"
     },

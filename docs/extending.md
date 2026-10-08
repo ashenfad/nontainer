@@ -531,8 +531,20 @@ for each reply, passing the text of each message the request carried
 (how a scenario sees whether a fold is in force), and reports a step's
 `input_tokens` as the request's usage. It declares the capabilities it
 has (`resume`, `keeps-aborted-runs`, `compaction`, for which `open`
-also takes `budget=`); a scenario that needs one it lacks does not
-apply. It lists its `known_gaps`, the checks it fails today, and a
+also takes `budget=`, and `delegation`); a scenario that needs one it
+lacks does not apply.
+
+**Delegation (tier 5).** A harness with `delegation` takes
+`sessions=` in `open` (the helper its `sessions` tool asks through, and
+whose answers it delivers on tool results), runs a woken turn with
+`session.wake()` (opening with `Turn.opening()`), and returns the
+delegates' runner from `delegation(store, scenario)`, which is
+`nontainer.adapters.corpus_delegates.CorpusDelegates(self, store,
+scenario)` for most. Each delegate then runs as a session of the same
+harness, on its own branch, with its own script (`Scenario.delegates`),
+through `until_settled`. A delegate is held until a `delegate_answers`
+event releases it and waits for its answer, so where the answer lands
+is fixed by the script. It lists its `known_gaps`, the checks it fails today, and a
 test expects exactly those to fail.
 
 The agno adapter's harness is
@@ -545,7 +557,7 @@ apply there.
 
 Scenarios are written in Python with builders (`turn`, `writes`,
 `says`, `summarizes`, `cancel`, `queue_note`, `fails`, `resume`,
-`checkout`, `fork`). For harnesses in other languages, each is also committed as
+`checkout`, `fork`, `asks`, `delegate_answers`, `delegate`). For harnesses in other languages, each is also committed as
 JSON under `nontainer/conformance/harness/json/`, with JSON Schemas for
 the format and for `TurnEvent` under `nontainer/conformance/schema/`.
 `python -m nontainer.conformance.export` regenerates them, and

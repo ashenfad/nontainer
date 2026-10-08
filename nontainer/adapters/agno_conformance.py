@@ -159,11 +159,20 @@ class ScriptedModel(Model):
 class AgnoSession:
     """One session's workspace, driven by agno."""
 
-    def __init__(self, ws: Workspace, clock: Clock, budget: int | None = None) -> None:
+    def __init__(
+        self,
+        ws: Workspace,
+        clock: Clock,
+        budget: int | None = None,
+        sessions: Any = None,
+    ) -> None:
         self.ws = ws
+        self.sessions = sessions
         self.inbox = Inbox(on_delivered=self._delivered)
         self.db = KvgitSessionDb(ws)
-        self.tk = WorkspaceTools(ws, session_db=self.db, inbox=self.inbox)
+        self.tk = WorkspaceTools(
+            ws, session_db=self.db, inbox=self.inbox, sessions=sessions
+        )
         compaction: dict[str, Any] = {}
         if budget is not None:
             from ..compaction import Policy
@@ -198,6 +207,25 @@ class AgnoSession:
         return self._drive(
             self.ws.turn(inbox=self.inbox),
             lambda: self.agent.arun(prompt, stream=True, stream_events=True),
+        )
+
+    def wake(self) -> list[TurnEvent]:
+        """A woken turn: it opens with what is waiting, the answers the
+        helper has landed among it."""
+        sources = []
+        if self.sessions is not None:
+            from ..sessions import answer_notes
+
+            sources.append(lambda inbox: answer_notes(self.sessions, inbox))
+        turn = self.ws.turn(inbox=self.inbox, sources=sources)
+        opening = turn.opening() or ""
+        # The opening is the run's own user message, which an agno retry
+        # keeps, so its notes are settled now: left delivered, the
+        # toolkit's begin_turn would take them for an abandoned
+        # attempt's and queue them again.
+        self.inbox.settle()
+        return self._drive(
+            turn, lambda: self.agent.arun(opening, stream=True, stream_events=True)
         )
 
     def resume(self) -> list[TurnEvent]:
@@ -375,10 +403,22 @@ class AgnoHarness:
             has |= {"resume", "keeps-aborted-runs"}
         if _compacts():
             has.add("compaction")
+        has.add("delegation")
         self.capabilities: frozenset[str] = frozenset(has)
         self.known_gaps: dict[str, dict[str, str]] = {}
 
     def open(
-        self, ws: Workspace, clock: Clock, *, budget: int | None = None
+        self,
+        ws: Workspace,
+        clock: Clock,
+        *,
+        budget: int | None = None,
+        sessions: Any = None,
     ) -> AgnoSession:
-        return AgnoSession(ws, clock, budget)
+        return AgnoSession(ws, clock, budget, sessions)
+
+    def delegation(self, store: Any, scenario: Any) -> Any:
+        """What runs a scenario's delegates: agno sessions too."""
+        from .corpus_delegates import CorpusDelegates
+
+        return CorpusDelegates(self, store, scenario)

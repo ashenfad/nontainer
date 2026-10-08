@@ -2,13 +2,30 @@
   "acts": [
     {
       "kind": "turn",
-      "prompt": "write a",
+      "prompt": "Find the rates.",
       "resume": false,
       "steps": [
         {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "action": "ask",
+                "name": "scout",
+                "task": "find the rates"
+              },
+              "name": "sessions"
+            }
+          ]
+        },
+        {
           "kind": "event",
-          "text": "and b",
-          "what": "queue_note"
+          "text": "scout",
+          "what": "delegate_answers"
         },
         {
           "fail": "",
@@ -27,24 +44,19 @@
           ]
         },
         {
-          "kind": "event",
-          "text": "",
-          "what": "cancel"
-        },
-        {
           "fail": "",
           "input_tokens": 0,
           "kind": "model",
-          "text": "never reached",
+          "text": "done",
           "thinking": "",
           "tool_calls": []
         }
       ]
-    },
-    {
-      "kind": "turn",
-      "prompt": "go on",
-      "resume": false,
+    }
+  ],
+  "budget": null,
+  "delegates": {
+    "scout": {
       "steps": [
         {
           "fail": "",
@@ -55,7 +67,7 @@
           "tool_calls": [
             {
               "args": {
-                "content": "b",
+                "content": "draft",
                 "path": "/workspace/b.txt"
               },
               "name": "file_write"
@@ -63,48 +75,55 @@
           ]
         },
         {
+          "kind": "event",
+          "text": "also give the date",
+          "what": "queue_note"
+        },
+        {
           "fail": "",
           "input_tokens": 0,
           "kind": "model",
-          "text": "wrote b",
+          "text": "draft written",
+          "thinking": "",
+          "tool_calls": []
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "written, and dated today",
           "thinking": "",
           "tool_calls": []
         }
-      ]
+      ],
+      "wakes": 3
     }
-  ],
-  "budget": null,
-  "delegates": {},
+  },
   "expect": {
     "absent": [],
     "commits": null,
-    "delegates": null,
-    "files": {
-      "/workspace/a.txt": "a",
-      "/workspace/b.txt": "b"
+    "delegates": {
+      "scout": {
+        "mentions": [
+          "dated today"
+        ],
+        "status": "answered",
+        "unread": [],
+        "wakes": 1
+      }
     },
+    "files": {},
     "folds": null,
-    "inbox": {
-      "delivered": 0,
-      "pending": 0
-    },
+    "inbox": null,
     "runs": null,
     "turns": [
       {
         "events": [
           "RunStarted",
           "ToolStarted",
-          "Delivered",
           "ToolEnded",
-          "RunEnded:cancelled"
-        ],
-        "folded": null,
-        "status": "cancelled"
-      },
-      {
-        "events": [
-          "RunStarted",
           "ToolStarted",
+          "Delivered",
           "ToolEnded",
           "TextDelta",
           "RunEnded:completed"
@@ -114,13 +133,13 @@
       }
     ]
   },
-  "name": "a-cancel-settles-what-was-delivered",
+  "name": "a-note-left-for-a-delegate-is-read-before-it-answers",
   "needs": [
-    "keeps-aborted-runs"
+    "delegation"
   ],
-  "summary": "A cancelled run keeps its messages, so the model read the notes on its tool results. The cancel settles them, and the next turn does not deliver them again.",
+  "summary": "A note that reaches a delegate's inbox after its last tool call is not stranded: the delegate is woken to read it, and its answer is the reply it gives then.",
   "tiers": [
-    3
+    5
   ],
   "world": {
     "files": {}

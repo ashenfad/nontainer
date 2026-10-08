@@ -1,0 +1,169 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "Find the rates.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "action": "ask",
+                "name": "scout",
+                "task": "find the rates"
+              },
+              "name": "sessions"
+            }
+          ]
+        },
+        {
+          "kind": "event",
+          "text": "scout",
+          "what": "delegate_answers"
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "content": "a",
+                "path": "/workspace/a.txt"
+              },
+              "name": "file_write"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "done",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "budget": null,
+  "delegates": {
+    "helper": {
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "north is 4",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ],
+      "wakes": 3
+    },
+    "scout": {
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "action": "ask",
+                "name": "helper",
+                "task": "check north"
+              },
+              "name": "sessions"
+            }
+          ]
+        },
+        {
+          "kind": "event",
+          "text": "helper",
+          "what": "delegate_answers"
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "waiting on the helper",
+          "thinking": "",
+          "tool_calls": []
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "north is 4, from the helper",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ],
+      "wakes": 3
+    }
+  },
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "delegates": {
+      "helper": {
+        "mentions": [
+          "north is 4"
+        ],
+        "status": "answered",
+        "unread": [],
+        "wakes": 0
+      },
+      "scout": {
+        "mentions": [
+          "north is 4, from the helper"
+        ],
+        "status": "answered",
+        "unread": [],
+        "wakes": 1
+      }
+    },
+    "files": {},
+    "folds": null,
+    "inbox": null,
+    "runs": null,
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded",
+          "ToolStarted",
+          "Delivered",
+          "ToolEnded",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-delegate-hears-from-its-own-delegate-before-answering",
+  "needs": [
+    "delegation"
+  ],
+  "summary": "A delegate that asks a delegate of its own and ends its turn waiting is woken when that answer lands, reads it in a turn that opens with it, and answers only then.",
+  "tiers": [
+    5
+  ],
+  "world": {
+    "files": {}
+  }
+}

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ..compaction import Fold, folds
@@ -123,6 +123,12 @@ class HarnessSession(Protocol):
     def resume(self) -> list[TurnEvent]:
         """Continue the last turn's interrupted run in place."""
 
+    def wake(self) -> list[TurnEvent]:
+        """Run a WOKEN turn: one with no prompt, which opens with what is
+        waiting to be delivered (:meth:`~nontainer.turns.Turn.opening`),
+        the answers its ``sessions`` helper has landed among it. Needed
+        with ``delegation``."""
+
     def cancel(self) -> None:
         """Stop the run in flight. Called from inside a model call."""
 
@@ -153,7 +159,12 @@ class Harness(Protocol):
 
     def open(self, ws: Workspace, clock: Clock) -> HarnessSession:
         """A session on ``ws``. A harness with ``compaction`` also takes
-        ``budget=`` (tokens), passed for a scenario that sets one."""
+        ``budget=`` (tokens), passed for a scenario that sets one; one
+        with ``delegation`` takes ``sessions=``, the helper its
+        ``sessions`` tool asks through and whose answers it delivers,
+        passed for a scenario with delegates. That harness also has
+        ``delegation(store, scenario)``, which returns the
+        :class:`Delegation` running the scenario's delegates."""
         ...
 
 
@@ -177,10 +188,45 @@ class Observed:
     never hold one; ``None`` when none was."""
     summaries: tuple[str, ...] = ()
     """Every fold summary recorded along the way, a rewind's included."""
+    delegates: dict[str, DelegateView] = field(default_factory=dict)
+    """Every delegate asked in the scenario, at any depth, by the name
+    it was asked under."""
     in_force: tuple[str | None, ...] = ()
     """Per turn, the summary of the fold in force as it ended: the
     latest the workspace records then (a rewind takes later ones away),
     or ``None`` when it records none."""
+
+
+@dataclass(frozen=True)
+class DelegateView:
+    """One delegate as the scenario saw it: the answer its asker got
+    (``status`` empty when none came), how many woken turns it took, the
+    delegates of its own it answered without hearing from (by the names
+    they were asked under), and whether it left writes uncommitted when
+    its runner returned."""
+
+    status: str = ""
+    text: str = ""
+    wakes: int = 0
+    unread: tuple[str, ...] = ()
+    uncommitted: bool = False
+
+
+class Delegation(Protocol):
+    """What runs a scenario's delegates, from the harness that has
+    ``delegation`` (``Harness.delegation``): it builds the ``sessions``
+    helper each session asks through, fires the events a script holds,
+    and at the end says how each delegate came back. Core cannot build
+    a helper itself; ``nontainer.adapters.corpus_delegates`` is the
+    implementation a harness hands over."""
+
+    exhausted: bool
+
+    def helper(self, ws: Workspace) -> Any: ...
+
+    def fire(self, step: EventStep, session: HarnessSession, helper: Any) -> None: ...
+
+    def finish(self) -> dict[str, DelegateView]: ...
 
 
 def applies(scenario: Scenario, harness: Harness) -> bool:
@@ -202,23 +248,32 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
         raise ValueError(f"{harness.name}: unknown capabilities {sorted(unknown)}")
     store = Store(memory=True)
     ws = store.open("scenario")
-    holder: dict[str, HarnessSession] = {}
+    holder: dict[str, Any] = {}
+    delegates: Delegation | None = (
+        harness.delegation(store, scenario)  # type: ignore[attr-defined]
+        if "delegation" in scenario.needs
+        else None
+    )
 
     def fire(step: EventStep) -> None:
-        session = holder["session"]
-        if step.what == "cancel":
-            session.cancel()
+        if delegates is not None:
+            delegates.fire(step, holder["session"], holder.get("helper"))
+        elif step.what == "cancel":
+            holder["session"].cancel()
         elif step.what == "queue_note":
-            session.inbox.put(step.text)
+            holder["session"].inbox.put(step.text)
         else:  # pragma: no cover - the format refuses others
             raise ValueError(f"unknown event {step.what!r}")
 
     clock = Clock(fire)
 
     def open_session(ws: Workspace) -> HarnessSession:
-        if scenario.budget is None:
-            return harness.open(ws, clock)
-        return harness.open(ws, clock, budget=scenario.budget)  # type: ignore[call-arg]
+        options: dict[str, Any] = {}
+        if scenario.budget is not None:
+            options["budget"] = scenario.budget
+        if delegates is not None:
+            options["sessions"] = holder["helper"] = delegates.helper(ws)
+        return harness.open(ws, clock, **options)
 
     # The harness session and the workspace it drives are closed on the
     # way out however the scenario ended: a failure is what the runner
@@ -259,6 +314,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 parent.close()
                 holder["session"] = open_session(ws)
         session = holder["session"]
+        delegated = delegates.finish() if delegates is not None else {}
         expect = scenario.expect
         paths = list(expect.files) + [p for p in expect.absent if p not in expect.files]
         commits = []
@@ -277,15 +333,19 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             runs=tuple(session.runs()),
             commits=tuple(reversed(commits)),
             inbox=(len(session.inbox.pending()), len(session.inbox.delivered())),
-            exhausted=clock.exhausted,
+            exhausted=clock.exhausted
+            or (delegates is not None and delegates.exhausted),
             sent=tuple(sent),
             folds=tuple(folds(ws)),
             stored_summary=stored_summary,
             summaries=tuple(summaries),
             in_force=tuple(in_force),
+            delegates=delegated,
         )
     finally:
         try:
+            if delegates is not None:
+                delegates.finish()  # releases and joins whatever is left
             if "session" in holder:
                 holder.pop("session").close()
         finally:
@@ -391,7 +451,9 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
     by check name: ``turn<N>.stream`` (N from 1; the stream opens with
     ``RunStarted`` and closes with ``RunEnded``, checked for every turn),
     ``turn<N>.status``, ``turn<N>.events``, ``turn<N>.folded``,
-    ``files``, ``runs``, ``commits``, ``inbox``, ``folds``, ``summary``
+    ``files``, ``runs``, ``commits``, ``inbox``, ``folds``,
+    ``delegate.<name>.<part>`` (and ``.uncommitted``, checked always),
+    ``summary``
     (a fold's summary in the stored conversation, checked always) and
     ``script``. Empty when everything holds."""
     expect = scenario.expect
@@ -452,6 +514,34 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
         want_folds = [(f.runs, f.ranged) for f in expect.folds]
         if got_folds != want_folds:
             failures["folds"] = f"(runs, ranged) {got_folds} != {want_folds}"
+    if expect.delegates is not None:
+        for name, want in expect.delegates.items():
+            seen = observed.delegates.get(name)
+            if seen is None:
+                failures[f"delegate.{name}"] = "it was never asked"
+                continue
+            if seen.status != want.status:
+                failures[f"delegate.{name}.status"] = (
+                    f"{seen.status or 'no answer'!r}, not {want.status!r}"
+                )
+            missing = [w for w in want.mentions if w not in seen.text]
+            if missing:
+                failures[f"delegate.{name}.mentions"] = (
+                    f"its answer doesn't say {missing}: {seen.text[:120]!r}"
+                )
+            if want.wakes is not None and seen.wakes != want.wakes:
+                failures[f"delegate.{name}.wakes"] = (
+                    f"{seen.wakes} woken turn(s), not {want.wakes}"
+                )
+            if tuple(sorted(seen.unread)) != tuple(sorted(want.unread)):
+                failures[f"delegate.{name}.unread"] = (
+                    f"answered without {list(seen.unread)}, not {list(want.unread)}"
+                )
+    for name, seen in observed.delegates.items():
+        if seen.uncommitted:
+            failures[f"delegate.{name}.uncommitted"] = (
+                "its runner returned with writes uncommitted"
+            )
     if observed.stored_summary is not None:
         failures["summary"] = (
             f"the stored conversation holds a fold's summary: "
