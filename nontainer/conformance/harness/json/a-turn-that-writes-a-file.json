@@ -7,6 +7,7 @@
       "steps": [
         {
           "fail": "",
+          "input_tokens": 0,
           "kind": "model",
           "text": "",
           "thinking": "",
@@ -22,6 +23,7 @@
         },
         {
           "fail": "",
+          "input_tokens": 0,
           "kind": "model",
           "text": "wrote a",
           "thinking": "",
@@ -30,6 +32,7 @@
       ]
     }
   ],
+  "budget": null,
   "expect": {
     "absent": [],
     "commits": [
@@ -47,6 +50,7 @@
     "files": {
       "/workspace/a.txt": "a"
     },
+    "folds": null,
     "inbox": {
       "delivered": 0,
       "pending": 0
@@ -66,6 +70,7 @@
           "TextDelta",
           "RunEnded:completed"
         ],
+        "folded": null,
         "status": "completed"
       }
     ]

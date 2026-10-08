@@ -1,0 +1,138 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "Plan the garden beds.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 5000,
+          "kind": "model",
+          "text": "Along the north wall.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "Now the watering.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "SUMMARY: the person is planning a garden; the beds go along the north wall.",
+          "thinking": "",
+          "tool_calls": []
+        },
+        {
+          "fail": "",
+          "input_tokens": 5000,
+          "kind": "model",
+          "text": "Drip lines.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "And the shed?",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "SUMMARY: the garden's beds go along the north wall, watered by drip lines.",
+          "thinking": "",
+          "tool_calls": []
+        },
+        {
+          "fail": "",
+          "input_tokens": 250,
+          "kind": "model",
+          "text": "By the gate.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "budget": 1000,
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "files": {},
+    "folds": [
+      {
+        "ranged": false,
+        "runs": 1
+      },
+      {
+        "ranged": false,
+        "runs": 2
+      }
+    ],
+    "inbox": null,
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": null
+      },
+      {
+        "closing_note": false,
+        "tool_results": null
+      },
+      {
+        "closing_note": false,
+        "tool_results": null
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      },
+      {
+        "events": [
+          "RunStarted",
+          "Compacted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      },
+      {
+        "events": [
+          "RunStarted",
+          "Compacted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": true,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-second-fold-takes-in-the-first",
+  "needs": [
+    "compaction"
+  ],
+  "summary": "Crossing the budget again folds the summary so far and the turns since into one new summary: there is only ever one in force, and it covers every turn folded.",
+  "tiers": [
+    4
+  ],
+  "world": {
+    "files": {}
+  }
+}

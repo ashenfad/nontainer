@@ -509,8 +509,9 @@ note, so the model remembers the work it did before the cut.
 scenarios. Each runs a harness on a memory store with a scripted model,
 and checks how each turn ended, the kinds of event it streamed (every
 stream opening with `RunStarted` and closing with `RunEnded`), the
-files, the stored runs, the commits and the inbox. Exact text, token
-counts and timing are not checked. The scripted model is the clock: an
+files, the stored runs, the commits, the inbox and the compaction
+folds. Exact text, token counts and timing are not checked, and neither
+is how a harness decides to fold: only the record and its rules. The scripted model is the clock: an
 outside event (a cancel, a queued note) fires when the model is asked
 for the reply after it, so every harness sees the same timing.
 
@@ -525,9 +526,12 @@ for scenario in SCENARIOS:
 
 A harness implements `Harness.open(ws, clock)`, returning a session
 that runs a turn, resumes, cancels, reads its stored runs and the run
-statuses a commit records. Its scripted model asks `clock.next()` for
-each reply. It declares the capabilities it has (`resume`,
-`keeps-aborted-runs`); a scenario that needs one it lacks does not
+statuses a commit records. Its scripted model asks `clock.next(sent)`
+for each reply, passing the text of each message the request carried
+(how a scenario sees whether a fold is in force), and reports a step's
+`input_tokens` as the request's usage. It declares the capabilities it
+has (`resume`, `keeps-aborted-runs`, `compaction`, for which `open`
+also takes `budget=`); a scenario that needs one it lacks does not
 apply. It lists its `known_gaps`, the checks it fails today, and a
 test expects exactly those to fail.
 
@@ -540,8 +544,8 @@ messages, so the scenarios that need a kept or resumable run do not
 apply there.
 
 Scenarios are written in Python with builders (`turn`, `writes`,
-`says`, `cancel`, `queue_note`, `fails`, `resume`, `checkout`,
-`fork`). For harnesses in other languages, each is also committed as
+`says`, `summarizes`, `cancel`, `queue_note`, `fails`, `resume`,
+`checkout`, `fork`). For harnesses in other languages, each is also committed as
 JSON under `nontainer/conformance/harness/json/`, with JSON Schemas for
 the format and for `TurnEvent` under `nontainer/conformance/schema/`.
 `python -m nontainer.conformance.export` regenerates them, and

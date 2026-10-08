@@ -7,6 +7,7 @@
       "steps": [
         {
           "fail": "",
+          "input_tokens": 0,
           "kind": "model",
           "text": "",
           "thinking": "",
@@ -27,6 +28,7 @@
         },
         {
           "fail": "",
+          "input_tokens": 0,
           "kind": "model",
           "text": "wrote a",
           "thinking": "",
@@ -41,6 +43,7 @@
       "steps": [
         {
           "fail": "",
+          "input_tokens": 0,
           "kind": "model",
           "text": "",
           "thinking": "",
@@ -56,6 +59,7 @@
         },
         {
           "fail": "",
+          "input_tokens": 0,
           "kind": "model",
           "text": "wrote b",
           "thinking": "",
@@ -64,6 +68,7 @@
       ]
     }
   ],
+  "budget": null,
   "expect": {
     "absent": [],
     "commits": null,
@@ -71,6 +76,7 @@
       "/workspace/a.txt": "a",
       "/workspace/b.txt": "b"
     },
+    "folds": null,
     "inbox": {
       "delivered": 0,
       "pending": 0
@@ -85,6 +91,7 @@
           "TextDelta",
           "RunEnded:completed"
         ],
+        "folded": null,
         "status": "completed"
       },
       {
@@ -96,6 +103,7 @@
           "TextDelta",
           "RunEnded:completed"
         ],
+        "folded": null,
         "status": "completed"
       }
     ]

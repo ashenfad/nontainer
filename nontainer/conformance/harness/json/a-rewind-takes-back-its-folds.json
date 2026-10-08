@@ -1,0 +1,93 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "Plan the garden beds.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 5000,
+          "kind": "model",
+          "text": "Along the north wall.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "Now the watering.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "SUMMARY: the person is planning a garden; the beds go along the north wall.",
+          "thinking": "",
+          "tool_calls": []
+        },
+        {
+          "fail": "",
+          "input_tokens": 250,
+          "kind": "model",
+          "text": "Drip lines.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "after_turn": 1,
+      "kind": "checkout"
+    }
+  ],
+  "budget": 1000,
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "files": {},
+    "folds": [],
+    "inbox": null,
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": null
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      },
+      {
+        "events": [
+          "RunStarted",
+          "Compacted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-rewind-takes-back-its-folds",
+  "needs": [
+    "compaction"
+  ],
+  "summary": "A fold lands with the turn that made it, so checking out a commit from before that turn takes the fold back with it.",
+  "tiers": [
+    2,
+    4
+  ],
+  "world": {
+    "files": {}
+  }
+}

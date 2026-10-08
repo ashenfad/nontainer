@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import sys
 from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from typing import Any
 
@@ -40,9 +41,16 @@ from agno.exceptions import ModelProviderError
 from agno.models.base import Model
 from agno.models.response import ModelResponse
 
+try:
+    from agno.metrics import MessageMetrics as Metrics
+except ImportError:  # agno before 2.6
+    from agno.models.metrics import Metrics  # type: ignore[no-redef]
+
+from ..compaction import Fold
 from ..conformance.runner import Clock, RunView
 from ..inbox import Inbox, Note, split
 from ..turns import (
+    Compacted,
     Delivered,
     DeliveredNote,
     RunEnded,
@@ -77,17 +85,29 @@ def _modern_agno() -> bool:
     return "continue_from" in inspect.signature(Agent.acontinue_run).parameters
 
 
+def _compacts() -> bool:
+    """Whether this agno takes the compaction adapter (2.5 or later)."""
+    try:
+        from . import agno_compaction  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 class ScriptedModel(Model):
     """An agno ``Model`` whose replies come from a conformance
-    :class:`~nontainer.conformance.runner.Clock`, one per call."""
+    :class:`~nontainer.conformance.runner.Clock`, one per call. It tells
+    the clock what each request carried, and reports a step's
+    ``input_tokens`` as the request's usage."""
 
     def __init__(self, clock: Clock) -> None:
         super().__init__(id="scripted", name="Scripted", provider="scripted")
         self.clock = clock
         self.calls = 0
 
-    def _reply(self) -> ModelResponse:
-        step = self.clock.next()
+    def _reply(self, messages: Any = ()) -> ModelResponse:
+        sent = [str(m.content) for m in messages or () if getattr(m, "content", None)]
+        step = self.clock.next(sent)
         self.calls += 1
         if step.fail == "provider":
             raise ModelProviderError(
@@ -96,6 +116,10 @@ class ScriptedModel(Model):
         if step.fail == "error":
             raise RuntimeError("the scripted model failed")
         response = ModelResponse(role="assistant")
+        if step.input_tokens:
+            response.response_usage = Metrics(
+                input_tokens=step.input_tokens, output_tokens=1
+            )
         if step.text:
             response.content = step.text
         if step.thinking:
@@ -112,18 +136,18 @@ class ScriptedModel(Model):
         return response
 
     def invoke(self, messages: Any, **kwargs: Any) -> ModelResponse:
-        return self._reply()
+        return self._reply(messages)
 
     async def ainvoke(self, messages: Any, **kwargs: Any) -> ModelResponse:
-        return self._reply()
+        return self._reply(messages)
 
     def invoke_stream(self, messages: Any, **kwargs: Any) -> Iterator[ModelResponse]:
-        yield self._reply()
+        yield self._reply(messages)
 
     async def ainvoke_stream(
         self, messages: Any, **kwargs: Any
     ) -> AsyncIterator[ModelResponse]:
-        yield self._reply()
+        yield self._reply(messages)
 
     def _parse_provider_response(self, response: Any, **kwargs: Any) -> ModelResponse:
         return response
@@ -135,11 +159,22 @@ class ScriptedModel(Model):
 class AgnoSession:
     """One session's workspace, driven by agno."""
 
-    def __init__(self, ws: Workspace, clock: Clock) -> None:
+    def __init__(self, ws: Workspace, clock: Clock, budget: int | None = None) -> None:
         self.ws = ws
         self.inbox = Inbox(on_delivered=self._delivered)
         self.db = KvgitSessionDb(ws)
         self.tk = WorkspaceTools(ws, session_db=self.db, inbox=self.inbox)
+        compaction: dict[str, Any] = {}
+        if budget is not None:
+            from ..compaction import Policy
+            from .agno_compaction import CompactingCompression
+
+            compaction = {
+                "compression_manager": CompactingCompression(
+                    ws, Policy(budget=budget), on_fold=self._folded
+                ),
+                "num_history_runs": sys.maxsize,
+            }
         self.agent = Agent(
             model=ScriptedModel(clock),
             db=self.db,
@@ -151,6 +186,7 @@ class AgnoSession:
             add_history_to_context=True,
             telemetry=False,
             retries=0,
+            **compaction,
         )
         self._events: list[TurnEvent] = []
         self._run_id: str | None = None
@@ -213,6 +249,12 @@ class AgnoSession:
         pass
 
     # -- the driver ---------------------------------------------------------
+
+    def _folded(self, fold: Fold) -> None:
+        # Called inside the run, before the model call the fold is for.
+        self._events.append(
+            Compacted(through=fold.through, runs=fold.runs, first=fold.first)
+        )
 
     def _delivered(self, notes: list[Note]) -> None:
         # Called on the tool's thread while the run loop waits for the
@@ -328,11 +370,15 @@ class AgnoHarness:
     name = "agno"
 
     def __init__(self) -> None:
-        modern = _modern_agno()
-        self.capabilities: frozenset[str] = frozenset(
-            {"resume", "keeps-aborted-runs"} if modern else ()
-        )
+        has = set()
+        if _modern_agno():
+            has |= {"resume", "keeps-aborted-runs"}
+        if _compacts():
+            has.add("compaction")
+        self.capabilities: frozenset[str] = frozenset(has)
         self.known_gaps: dict[str, dict[str, str]] = {}
 
-    def open(self, ws: Workspace, clock: Clock) -> AgnoSession:
-        return AgnoSession(ws, clock)
+    def open(
+        self, ws: Workspace, clock: Clock, *, budget: int | None = None
+    ) -> AgnoSession:
+        return AgnoSession(ws, clock, budget)

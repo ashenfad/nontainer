@@ -1,0 +1,97 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "Plan the garden beds.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 5000,
+          "kind": "model",
+          "text": "Along the north wall.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    },
+    {
+      "kind": "turn",
+      "prompt": "Now the watering.",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "SUMMARY: the person is planning a garden; the beds go along the north wall.",
+          "thinking": "",
+          "tool_calls": []
+        },
+        {
+          "fail": "",
+          "input_tokens": 250,
+          "kind": "model",
+          "text": "Drip lines.",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "budget": 1000,
+  "expect": {
+    "absent": [],
+    "commits": null,
+    "files": {},
+    "folds": [
+      {
+        "ranged": false,
+        "runs": 1
+      }
+    ],
+    "inbox": null,
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": null
+      },
+      {
+        "closing_note": false,
+        "tool_results": null
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": false,
+        "status": "completed"
+      },
+      {
+        "events": [
+          "RunStarted",
+          "Compacted",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": true,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-request-over-budget-folds-the-earlier-turns",
+  "needs": [
+    "compaction"
+  ],
+  "summary": "A request that would go over the budget is sent with the earlier turns folded into a summary: the fold is recorded in the workspace and streamed as Compacted, and the stored conversation keeps both turns whole.",
+  "tiers": [
+    4
+  ],
+  "world": {
+    "files": {}
+  }
+}
