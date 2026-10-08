@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **`static_assets` serves files from memory.** A source may be a mapping of relative path to bytes as well as a host directory, for an asset built at startup; the config keeps a checked copy.
 - **Delegation in the harness corpus (tier 5).** Scenarios script delegates (`Scenario.delegates`, `asks`, `delegate_answers`) and check answers delivered once, a delegate waiting on its own, spent wakes naming the unread, and a late note read first; harnesses add `sessions=`, `wake()` and `delegation()` (`nontainer.adapters.corpus_delegates`).
 - **`until_settled` / `auntil_settled`.** A delegate's turns run until neither its own delegates nor a note in its inbox is outstanding, woken to read them, within `max_wakes` or until the helper closes (`Sessions.closed`); `Turn.opening()` / `aopening()` is a woken turn's first message, delivered as a tool result's notes are.
 - **Async delegate runners.** A `SessionRunner` whose `run` is `async def` runs on the embedder's loop (`Sessions(..., loop=)`), `max_workers` at a time, and `cancel` stops it; `aask`, `await_ready`, `answers()` and `aclose` serve coroutines.

@@ -2778,7 +2778,9 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   they add nothing to commits, forks, or a guest tree.
            #   Same-origin, so script_hosts needs no entry. Assets skip
            #   the response-size caps and win over a workspace file at
-           #   the same path (noted in api.log). See apps.md.
+           #   the same path (noted in api.log). A source may also be
+           #   files in memory, {relative_path: bytes}, for an asset
+           #   built at startup; the config keeps a copy. See apps.md.
            origin="http://localhost",  # the app's canonical base URL.
            #   enable_apps exports it as $APP_ORIGIN — in the termish
            #   shell and in a dud guest's real bash — which is how the
