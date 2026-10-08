@@ -10,6 +10,8 @@ pip install nontainer[agno]     # + agno Toolkit adapter
 pip install nontainer[mcp]      # + MCP server
 pip install nontainer[apps]     # + app handlers, ws-curl, test_app, serving
 pip install nontainer[agentfs]  # + AgentFS backend
+pip install nontainer[dud]      # + real-machine / microVM execution (3.11+)
+pip install nontainer[postgres] # + Postgres for the store (Store(kv="postgresql://..."))
 ```
 
 ## Your first workspace
@@ -93,9 +95,10 @@ store = nontainer.store()            # default ~/.nontainer
 ws = store.open("user-42")           # what workspace("user-42") does
 
 store.sessions()                     # every session on the store
-store.delete("user-42")              # drop one, storage and all
 store.tags.add(ws, "v1")             # a name that outlives the session
 snap = store.tags.at("v1")           # a frozen workspace at that name
+ws.close()
+store.delete("user-42")              # drop one, storage and all (close it first)
 ```
 
 A tag is session-scoped by default and dies with the session;
@@ -203,12 +206,25 @@ r = ws.run_python("import pandas as pd; df = pd.read_csv('/data/big.csv')")
 r = ws.run_python("rows = db.query('select 1')")   # your REAL pool
 ```
 
+The same settings travel as one value, a `Profile(python=..., mounts=...)`:
+pass it as `workspace(..., profile=)` or `store.open(..., profile=)`,
+and read it back off a session with `Profile.of(ws)` to open another in
+the same world.
+
 Notes:
 
 - `stdlib=False` gives a truly bare cell (no imports at all).
 - Bare modules get no passthroughs; `ModuleGrant(..., network=True)`
   or `host_fs=True` grants per module. `host_objects` are live host
   resources — a superpower no cloud sandbox has.
+- `host_objects` is fixed when the config is built: each executor takes
+  its set when it opens, so a different set is a new config
+  (`dataclasses.replace(python, host_objects={...})`). An entry may be a
+  `HostObject`: `HostObject(rows, type=list[Row])` sends data of a
+  declared type in by value on every rung, and `HostObject(db,
+  stub=DbStub)` puts a typed class of yours in front of a live object.
+  `PythonConfig(classes=[Row])` binds the classes agent code builds
+  values of.
 - Mounts are visible to BOTH tools and are not versioned; prefer
   `readonly=True` (the default) and copy inputs in when the agent
   should own them.
@@ -296,6 +312,14 @@ python -m nontainer.adapters.mcp --session my-project --module math
 python -m nontainer.adapters.mcp --session webdev --apps  # + ws-curl & test_app
 ```
 
+**Any other loop:** `nontainer.adapters.tools.Toolset(ws).tools()` is
+the same tools, defined once: each `Tool` has a `name`, a `description`,
+a JSON Schema for its `parameters`, and a `call` (or `acall`) that
+returns a `ToolOutput`. Wrap each run in `with ws.turn(run_id) as
+turn:` and pass every tool result through `turn.deliver(...)`; ending
+the turn lands one commit stamped with how the run ended. See the
+[API reference](api.md#nontainerturns--the-turn-and-what-it-streams).
+
 Agents also get `file_write` / `file_edit` tools in every mode — the
 quoting-free path for multiline files and surgical exact-string edits
 (the Claude-Code Write/Edit contract models already know).
@@ -339,8 +363,8 @@ so the agent can embed it in its reply. The full contract —
 [api.md](api.md).
 
 Tool exposure is automatic: a plain python environment gets ONE
-`terminal` tool (with a `python` builtin); an augmented one (cache or
-host objects) gets a separate `run_python` tool whose description
+`terminal` tool (with a `python` builtin); an augmented one (cache,
+host objects or `classes`) gets a separate `run_python` tool whose description
 explains the magic. Override with `tools="terminal"` / `"split"`.
 
 ## Apps: the agent builds and verifies a web app
@@ -358,7 +382,7 @@ from nontainer.apps import AppsConfig, enable_apps
 APPS = AppsConfig()                       # build ONE; see serving below
 st = store()
 ws = st.open(session_id)
-runtime = enable_apps(ws, APPS)           # registers the `ws-curl` builtin
+runtime = enable_apps(ws, APPS)           # registers ws-curl, ws-pytest, ws-vitest
 agent = Agent(model=..., tools=[WorkspaceTools(ws, apps=runtime)])
 ```
 

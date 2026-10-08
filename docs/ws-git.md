@@ -57,7 +57,7 @@ Git's spelling is on the left, what it does here on the right.
 | `stash drop [stash@{N}]` | delete one without bringing it back |
 | `stash show [stash@{N}]` | what one holds, as a diff against your last commit |
 | `branch` | the sessions on this store, yours marked `*` |
-| `branch <name> [--at <ref>] [--fresh] [--paths <paths>]` | fork a session. It does not switch, as `git branch` does not |
+| `branch <name> [--at <ref>] [--fresh] [--paths <paths>]` | fork a session. It does not switch, as `git branch` does not. `--fresh` starts it with no conversation; `--paths` narrows what it can see |
 | `merge <session>` | merge that session's last commit into yours |
 | `merge --abort` | restore the tree to the commit an outstanding merge landed on, and clear it |
 | `revert <commit>` | a new commit undoing one commit's change |
@@ -733,11 +733,12 @@ forward, and nothing but store-level administration takes a commit away.
 That has three consequences worth knowing at the terminal.
 
 **The workspace commits on its own.** Every tool call that changes
-something lands in the store, for durability, at moments you did not
-choose. Those commits are plumbing: `ws-git log` never shows them, and
-showing them would bury your history in your own tool calls. `--all`
-shows every commit the session holds, the framework's and the fiction's
-bookkeeping included:
+something lands in the store (or, when the harness commits per turn,
+the turn does), for durability, at moments you did not choose. Those
+commits are plumbing: `ws-git log` never shows them, and showing them
+would bury your history in your own tool calls. `--all` shows every
+commit the session holds, the framework's (`terminal`, `run_python`,
+`turn`) and the fiction's bookkeeping included:
 
 ```
 $ ws-git log
@@ -754,9 +755,10 @@ cefe3a1 terminal
 e0ec0be strip the user
 ```
 
-**Your work is durable before you commit it.** Nothing is withheld from
-the store while you compose, and nothing suspends the workspace's own
-committing. A commit of yours is a point in *your* graph, not the
+**Your work is durable before you commit it.** ws-git withholds nothing
+from the store while you compose and never suspends the workspace's own
+committing, so your work lands with the next framework commit, after
+the tool call or at the end of the turn. A commit of yours is a point in *your* graph, not the
 difference between saved and lost.
 
 **`ws-git checkout` rewinds you, and the store appends.** The tree is

@@ -23,7 +23,7 @@ Nontainer keeps three concerns separate:
 |---|---|
 | **`WorkspaceProvider`** | Where files and cache live, and which history operations are real. The default [kvgit](https://github.com/ashenfad/kvgit) provider supplies cheap commits, forks, checkout, and history; other providers declare narrower capabilities rather than pretending equivalence. |
 | **`Executor`** | Where terminal and Python code run and how they reach workspace state: locally through [sandtrap](https://github.com/ashenfad/sandtrap) and [monkeyfs](https://github.com/ashenfad/monkeyfs), or on a real machine through [dud](https://github.com/ashenfad/dud). |
-| **Adapters** | How the two tools enter an existing agent loop: the core Python API, an [agno](https://github.com/agno-agi/agno) toolkit, or an MCP server. |
+| **Adapters** | How the two tools enter an existing agent loop: the core Python API, the shared `Toolset` any loop can call, an [agno](https://github.com/agno-agi/agno) toolkit built on it, or an MCP server. A loop wraps each run in a turn (`ws.turn(run_id)`), which lands one commit stamped with how the run ended. |
 
 The model-facing surface stays small: a `terminal` and a `run_python` tool.
 Unlike stateless sandbox calls, both are **stateful and bound to a session** —
@@ -84,7 +84,7 @@ The sandbox config, the backends, the executor rungs, the adapters and the apps 
 
 ## Part of the agex stack
 
-nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https://github.com/ashenfad/monkeyfs), [termish](https://github.com/ashenfad/termish), and [sandtrap](https://github.com/ashenfad/sandtrap) -- each independently useful, each zero/minimal-dep -- and optionally [dud](https://github.com/ashenfad/dud) when the little computer should be a real one. [agex](https://github.com/ashenfad/agex) is the full agent framework over the same substrate; nontainer is the environment layer alone, offered to someone else's loop.
+nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https://github.com/ashenfad/monkeyfs), [termish](https://github.com/ashenfad/termish), [sandtrap](https://github.com/ashenfad/sandtrap), and [reprobate](https://github.com/ashenfad/reprobate) -- each independently useful, each zero/minimal-dep -- and optionally [dud](https://github.com/ashenfad/dud) when the little computer should be a real one. [agex](https://github.com/ashenfad/agex) is the full agent framework over the same substrate; nontainer is the environment layer alone, offered to someone else's loop.
 
 ## Documentation
 
@@ -110,7 +110,7 @@ nontainer composes [kvgit](https://github.com/ashenfad/kvgit), [monkeyfs](https:
 - [Design notes](docs/design.md) -- execution model, commit granularity, tool exposure, and what's still ahead
 - [Browser roadmap](docs/browser-roadmap.md) -- where browser-side serving and compute stand: what shipped, what is next, and the design behind both
 - [Curation](docs/curation.md) -- agents learning from each other's sessions: traces as files, a wiki, skills that ship code, and a gate with no answer key
-- [Compaction](docs/compaction.md) -- keeping a long conversation inside the context window: older turns folded into one summary for the model, the full transcript kept, any harness through a thin adapter
+- [Compaction](docs/compaction.md) -- keeping a long conversation inside the context window: older turns folded into one summary for the model, the full transcript kept; nontainer keeps the record of each fold, and each loop folds its own way
 
 **Seeing it run**
 
@@ -126,6 +126,7 @@ pip install nontainer[mcp]      # + MCP server (python -m nontainer.adapters.mcp
 pip install nontainer[apps]     # + handlers/curl, Playwright test_app, serving router
 pip install nontainer[agentfs]  # + AgentFS substrate (agentfs-sdk)
 pip install nontainer[dud]      # + real-machine / microVM execution (needs 3.11+)
+pip install nontainer[postgres] # + Postgres for the store (Store(kv="postgresql://..."))
 ```
 
 ## Development

@@ -521,7 +521,9 @@ config = AppsConfig(static_assets={
 
 The paths follow a directory's rules (relative, no `.` or `..`, no
 path that is also another's directory), the bytes must be `bytes`, and
-the config keeps its own copy: different bytes are a new config. No
+the config keeps its own copy: different bytes are a new config. An
+empty mapping is refused: it would claim its whole prefix and serve
+nothing. No
 file is written, so there is nothing for a temporary directory's
 cleanup to take or for processes with different settings to overwrite.
 
@@ -547,8 +549,7 @@ What follows from that:
   a host for them would loosen the supply-chain pin for nothing.
 - **`api/`, `logs/` and `screenshots/` cannot be claimed.** Static
   serving refuses those directories before it looks for an asset, so a
-  prefix there could never serve and is refused when the config is
-  built.
+  prefix there could never serve, and `enable_apps` refuses it.
 - **Prefixes may nest, and the most specific wins.** With `vendor` and
   `vendor/charts` both declared, `vendor/charts/plot.js` comes from the
   `vendor/charts` directory whatever order the mapping lists them in, as
@@ -1076,7 +1077,8 @@ precisely why it is injected rather than committed. So the frozen
 opens take the execution settings at the call:
 `pub.open(python=PythonConfig(host_objects={"db": db}))`, and the same
 keywords (`mounts`, `commands`, `executor_factory`, `cache`,
-`max_observation`) on `store.tags.at(name, ...)` and
+`max_observation`, `ignore`, and `root` where the state is not a
+publication) on `store.tags.at(name, ...)` and
 `store.resolve(ref, ...)`. Serve a version twice with two databases and
 they are two deployments of one app.
 

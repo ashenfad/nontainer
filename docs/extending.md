@@ -427,7 +427,9 @@ opposite things. Only commands tagged as framework verbs are fronted,
 so a custom command under a framework name stays a local-rung creature.
 
 **The host prelude.** `PythonConfig.host_objects` arrive in a guest as
-plain data inside the execution's payload, so the dud executor prepends
+plain data inside the execution's payload (typed host data and
+`PythonConfig.classes` as pickled values with their classes' module
+source), so the dud executor prepends
 a prelude that synthesizes the `host` module around them: `from host
 import db` resolves in a guest exactly as it does in-process, and the
 module refuses attribute sets there for the same reason it does here.
@@ -465,6 +467,13 @@ host knows — the child's ref, its branch, the paths it changed — so a
 runner that returns them is not required to get them right. How the
 helper calls it, what an answer names, what retention does and what
 refuses are all in [sessions.md](sessions.md).
+
+`run` may be `async def`: the helper then schedules it on the
+embedder's loop (`Sessions(..., loop=)`, or the one it is built in),
+and `cancel` stops it. A reply is the answer only once the child has
+nothing outstanding, so a runner drives the child's turns through
+`nontainer.sessions.until_settled` (or `auntil_settled`), which wakes it
+until its own delegates and its inbox are settled.
 
 ## A harness — the loop that drives a session
 
@@ -506,11 +515,15 @@ run is kept as it stood and resuming continues it in place) or `failed`
 note, so the model remembers the work it did before the cut.
 
 **The harness corpus** (`nontainer.conformance`) is the contract as
-scenarios. Each runs a harness on a memory store with a scripted model,
-and checks how each turn ended, the kinds of event it streamed (every
-stream opening with `RunStarted` and closing with `RunEnded`), the
-files, the stored runs, the commits, the inbox and the compaction
-folds. Exact text, token counts and timing are not checked, and neither
+scenarios, grouped in tiers: 0–1 how a turn ends and what each ending
+leaves, 2 the conversation in the branch, 3 notes delivered on tool
+results, 4 compaction, 5 delegation. Each runs a harness on a memory
+store with a scripted model, and checks how each turn ended, the kinds
+of event it streamed (every stream opening with `RunStarted` and
+closing with `RunEnded`), the files, the stored runs, the commits, the
+inbox, the compaction folds, and how each delegate came back
+(`Expect.delegates`, a `DelegateExp` per delegate: its status, what its
+answer mentions, its wakes and the delegates it never heard from). Exact text, token counts and timing are not checked, and neither
 is how a harness decides to fold: only the record and its rules. The scripted model is the clock: an
 outside event (a cancel, a queued note) fires when the model is asked
 for the reply after it, so every harness sees the same timing.
@@ -532,7 +545,8 @@ for each reply, passing the text of each message the request carried
 `input_tokens` as the request's usage. It declares the capabilities it
 has (`resume`, `keeps-aborted-runs`, `compaction`, for which `open`
 also takes `budget=`, and `delegation`); a scenario that needs one it
-lacks does not apply.
+lacks does not apply. A harness also lists its `known_gaps`, the checks
+it fails today, and a test expects exactly those to fail.
 
 **Delegation (tier 5).** A harness with `delegation` takes
 `sessions=` in `open` (the helper its `sessions` tool asks through, and
@@ -544,8 +558,7 @@ scenario)` for most. Each delegate then runs as a session of the same
 harness, on its own branch, with its own script (`Scenario.delegates`),
 through `until_settled`. A delegate is held until a `delegate_answers`
 event releases it and waits for its answer, so where the answer lands
-is fixed by the script. It lists its `known_gaps`, the checks it fails today, and a
-test expects exactly those to fail.
+is fixed by the script.
 
 The agno adapter's harness is
 `nontainer.adapters.agno_conformance.AgnoHarness`. It opens a turn
@@ -553,11 +566,12 @@ around each run and ends it with `nontainer.adapters.agno.finish_turn`,
 and passes every scenario with no known gaps. agno releases before 2.8
 raise a run error out of the run and store a cancelled run without its
 messages, so the scenarios that need a kept or resumable run do not
-apply there.
+apply there; before 2.5 the compaction scenarios do not apply either.
 
 Scenarios are written in Python with builders (`turn`, `writes`,
-`says`, `summarizes`, `cancel`, `queue_note`, `fails`, `resume`,
-`checkout`, `fork`, `asks`, `delegate_answers`, `delegate`). For harnesses in other languages, each is also committed as
+`says`, `thinks`, `calls`, `summarizes`, `cancel`, `queue_note`,
+`fails`, `resume`, `checkout`, `fork`, `asks`, `delegate_answers`,
+`delegate`). For harnesses in other languages, each is also committed as
 JSON under `nontainer/conformance/harness/json/`, with JSON Schemas for
 the format and for `TurnEvent` under `nontainer/conformance/schema/`.
 `python -m nontainer.conformance.export` regenerates them, and
@@ -570,7 +584,7 @@ expected to pass:
 
 | suite | what it holds |
 |---|---|
-| `tests/test_kvgit_provider.py`, `tests/test_dir_provider.py`, `tests/test_agentfs_provider.py` | each bundled provider against the protocol, capability flags included |
+| `tests/test_kvgit_provider.py`, `tests/test_agentfs_provider.py` | each bundled provider against the protocol, capability flags included |
 | `tests/test_protocol.py` | the shapes the seams speak |
 | `tests/test_wsgit_conformance.py` | the same ws-git scripts read identically on the local and dud rungs |
 | `tests/test_wscurl_conformance.py` | the same for `ws-curl` |

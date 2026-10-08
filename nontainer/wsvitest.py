@@ -17,8 +17,7 @@ siblings under one synthetic root so the import an agent writes
 code through the executor, so on a VM rung it runs in the guest; this
 verb reads the workspace's files on the host and drives Chromium there.
 That is the asymmetry ``test_app`` already has, and it is said out loud
-in the help, in the report's own notes and in the docs rather than left
-to be discovered.
+in the help and in the docs rather than left to be discovered.
 
 The run is hermetic: no api routes come up, nothing off the synthetic
 origin is reachable, and the policy on the wire is stricter than the
