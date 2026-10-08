@@ -191,9 +191,10 @@ class TurnExp:
     status: RunStatus
     events: tuple[str, ...] | None = None
     folded: bool | None = None
-    """Whether the turn's last model request was sent a fold's summary in
-    place of the turns it covers (the first turn's prompt among them),
-    or neither; ``None`` leaves it unchecked."""
+    """Whether the turn's last model request was sent the summary of the
+    fold in force (and no other) in place of the turns it covers, the
+    first turn's prompt among them, or no summary at all; ``None``
+    leaves it unchecked."""
 
 
 @dataclass(frozen=True, kw_only=True)
