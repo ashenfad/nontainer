@@ -1348,8 +1348,9 @@ class SessionRunner(Protocol):
         child's ref, its branch, and the paths it changed — so a runner
         that returns them is not required to get them right.
 
-        Synchronous: the helper calls this on a worker thread of its
-        own, and a runner with an async loop blocks on its own future
-        inside it.
+        Synchronous or async. A synchronous ``run`` is called on a
+        worker thread of the helper's own. An ``async def run`` is
+        scheduled on the helper's event loop (the embedder's), up to
+        ``max_workers`` at once, and a cancel stops it.
         """
         ...

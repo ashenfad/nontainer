@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **Async delegate runners.** A `SessionRunner` whose `run` is `async def` runs on the embedder's loop (`Sessions(..., loop=)`), `max_workers` at a time, and `cancel` stops it; `aask`, `await_ready`, `answers()` and `aclose` serve coroutines.
 - **Compaction in the harness corpus (tier 4).** Scenarios pin a fold's record and its rules (in force, rewind and fork, never stored), not how a harness folds; scripted steps report `input_tokens`, a scenario sets `budget`, and `clock.next(sent)` sees what a request carried.
 - **A compiled `Spec` stands for its type.** Wherever nontainer takes a type (a `HostObject`'s `type`, a stubbed object's annotations, inside another annotation), a `values.Spec` serves, carrying the names it was compiled with.
 - **Typed calls through a stub: `HostObject(obj, stub=...)`.** Code in the sandbox holds a class of the embedder's that calls the live object, typed by its annotations; an argument that doesn't fit raises `TypeError` at the call, and every argument reaches the host built afresh as its declared type, never unpickled.

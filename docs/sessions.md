@@ -23,7 +23,7 @@ primitives.
 ```python
 from nontainer.sessions import Sessions
 
-sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=(), on_answer=None)
+sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=(), on_answer=None, loop=None)
 sessions.ask(task, *, name=None, paths=None, inherit=None,
              fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
@@ -32,11 +32,17 @@ sessions.take() -> list[tuple[str, Answer]]   # every answer not yet collected
 sessions.outstanding() -> list[str]  # running, or answered and not yet collected
 sessions.wait(timeout=None) -> list[str]   # blocks until an answer is waiting or none runs
 sessions.on_answer = fn              # fn(name, answer), once per recorded answer
-sessions.cancel(name) -> Job
+sessions.cancel(name) -> Job        # the answer is discarded; an async run is stopped
 sessions.keep(name) -> Job           # out of the retention sweep, for good
 sessions.base(name) -> str | None    # the commit it was forked from
 sessions.sweep(idle, *, min_age=3600) -> list[str]   # the branches it took
 sessions.close()                     # joins the workers; the branches stay
+
+# from a coroutine
+await sessions.aask(task, *, wait=False, ...) -> Job | Answer
+await sessions.await_ready(timeout=None) -> list[str]    # wait(), awaited
+async for name, answer in sessions.answers(): ...        # each answer as it lands, once
+await sessions.aclose()
 ```
 
 `ask` forks under a pet name scoped to the parent
@@ -286,13 +292,25 @@ class MyRunner:                       # the embedder's
         ...
 ```
 
-One method, synchronous: run this session with this task and answer.
-nontainer cannot own it because nontainer has no loop. A plain `str`
-means an `answered` answer with that text; an `Answer` says more. The
-helper calls it on a worker thread of its own, so a runner with an
-async loop blocks on its own future inside it. A runner that raises
-does not lose the job — it resolves as `failed` with the exception's
-text as the answer.
+One method: run this session with this task and answer. nontainer
+cannot own it because nontainer has no model. A plain `str` means an
+`answered` answer with that text; an `Answer` says more. A runner that
+raises does not lose the job — it resolves as `failed` with the
+exception's text as the answer.
+
+**Synchronous or async.** A synchronous `run` is called on a worker
+thread of the helper's own, up to `max_workers` at once. An
+`async def run` is scheduled on an event loop instead: the one the
+helper was built in, or `Sessions(..., loop=)`. Then:
+
+- `max_workers` bounds the runs in flight;
+- landing an answer, which does store work, runs on a thread, so the
+  loop never waits on it;
+- `cancel` stops the run, where a synchronous runner's answer can only
+  be discarded, and the branch is free once the run has ended;
+- on that loop's own thread, `ask(wait=True)` and `close()` would block
+  the loop they wait on, so they are refused: `aask` and `aclose` await
+  instead.
 
 **A reply is not always the answer.** A delegate may delegate, and an
 agent told to end its turn while its own delegates work (rather than
