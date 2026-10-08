@@ -177,6 +177,10 @@ class Observed:
     never hold one; ``None`` when none was."""
     summaries: tuple[str, ...] = ()
     """Every fold summary recorded along the way, a rewind's included."""
+    in_force: tuple[str | None, ...] = ()
+    """Per turn, the summary of the fold in force as it ended: the
+    latest the workspace records then (a rewind takes later ones away),
+    or ``None`` when it records none."""
 
 
 def applies(scenario: Scenario, harness: Harness) -> bool:
@@ -231,6 +235,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
         ended_at: list[str] = []
         stored_summary: str | None = None
         summaries: list[str] = []
+        in_force: list[str | None] = []
         for act in scenario.acts:
             session = holder["session"]
             if isinstance(act, Turn):
@@ -240,9 +245,11 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 sent.append(clock.sent)
                 ended_at.append(ws.head)
                 stored_summary = stored_summary or _stored_summary(ws)
+                recorded = folds(ws)
                 summaries.extend(
-                    f.summary for f in folds(ws) if f.summary not in summaries
+                    f.summary for f in recorded if f.summary not in summaries
                 )
+                in_force.append(recorded[-1].summary if recorded else None)
             elif isinstance(act, Checkout):
                 ws.checkout(ended_at[act.after_turn - 1])
             elif isinstance(act, Fork):
@@ -275,6 +282,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             folds=tuple(folds(ws)),
             stored_summary=stored_summary,
             summaries=tuple(summaries),
+            in_force=tuple(in_force),
         )
     finally:
         try:
@@ -286,19 +294,30 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
 
 
 def _folded(
-    want: bool, sent: tuple[str, ...] | None, summaries: Sequence[str], first: str
+    want: bool,
+    sent: tuple[str, ...] | None,
+    summaries: Sequence[str],
+    current: str | None,
+    first: str,
 ) -> str | None:
-    """What is wrong with whether a turn's last request was folded."""
+    """What is wrong with whether a turn's last request was folded: a
+    folded one carries the summary of the fold in force (``current``)
+    and no other, in place of the first turn; one that isn't carries no
+    summary."""
     if sent is None:
         return "the harness didn't pass the clock what it sent"
     text = "\n".join(sent)
-    summarized = any(s and s in text for s in summaries)
-    if want and not summarized:
-        return "its last request carried no fold's summary"
-    if want and first and first in text:
+    carried = [s for s in summaries if s and s in text]
+    if not want:
+        return "its last request carried a fold's summary" if carried else None
+    if current is None:
+        return "no fold is recorded to be in force"
+    if current not in carried:
+        return "its last request didn't carry the summary of the fold in force"
+    if len(carried) > 1:
+        return "its last request carried another fold's summary too"
+    if first and first in text:
         return f"its last request still carried the first turn ({first!r})"
-    if not want and summarized:
-        return "its last request carried a fold's summary"
     return None
 
 
@@ -378,12 +397,14 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
     expect = scenario.expect
     failures: dict[str, str] = {}
     first = next((a.prompt for a in scenario.acts if isinstance(a, Turn)), "")
-    sent = list(observed.sent) + [None] * (len(observed.turns) - len(observed.sent))
-    for n, (want, got, request) in enumerate(
-        zip(expect.turns, observed.turns, sent), start=1
+    pad = len(observed.turns)
+    sent = list(observed.sent) + [None] * (pad - len(observed.sent))
+    current = list(observed.in_force) + [None] * (pad - len(observed.in_force))
+    for n, (want, got, request, summary) in enumerate(
+        zip(expect.turns, observed.turns, sent, current), start=1
     ):
         if want.folded is not None:
-            problem = _folded(want.folded, request, observed.summaries, first)
+            problem = _folded(want.folded, request, observed.summaries, summary, first)
             if problem:
                 failures[f"turn{n}.folded"] = problem
         shape = _misshapen(got)

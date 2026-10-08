@@ -302,6 +302,31 @@ def test_a_fold_unchecked_when_the_harness_passes_nothing_it_sent():
     assert "didn't pass" in problems["turn2.folded"]
 
 
+def test_a_harness_that_sends_a_stale_summary_is_caught():
+    """After a second fold, the request must carry its summary, not the
+    first fold's: that would drop the turns folded in between."""
+
+    class Stale(ReferenceSession):
+        def _spliced(self, earlier):
+            recorded = compaction.folds(self.ws)
+            if len(recorded) < 2:
+                return super()._spliced(earlier)
+            first = recorded[0]
+            end = next(i for i, m in enumerate(earlier) if m["id"] == first.through)
+            text = compaction.summary_message(first.summary)
+            stale = {"role": "user", "text": text, "summary": True}
+            return [stale, *earlier[end + 1 :]]
+
+    class StaleHarness(ReferenceHarness):
+        def open(self, ws, clock, *, budget=None):
+            return Stale(ws, clock, budget)
+
+    scenario = by_name("a-second-fold-takes-in-the-first")
+    problems = check(scenario, run(scenario, StaleHarness()))
+    assert set(problems) == {"turn3.folded"}
+    assert "fold in force" in problems["turn3.folded"]
+
+
 def test_a_budget_needs_compaction():
     with pytest.raises(ValueError, match="a budget needs 'compaction'"):
         replace(by_name("a-request-over-budget-folds-the-earlier-turns"), needs=())
