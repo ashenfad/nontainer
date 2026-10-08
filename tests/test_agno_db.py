@@ -589,6 +589,39 @@ def test_rewind_then_fork_branches_from_the_commit(tmp_path):
     ws.close()
 
 
+def test_a_fork_rewinds_into_a_turn_it_inherited(tmp_path):
+    """Truncating a fork's conversation to before it was forked: the
+    checkout restores the parent's turn, and the session stays the
+    fork's, so the db finds it and its next turn writes."""
+    ws, db, tk, agent = build(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    before = ws.head
+    run_turn(agent, write_turn("b.txt", "B"))
+    child = fork_session(ws, "branch-b")
+
+    child.checkout(before)
+    child_db = KvgitSessionDb(child, db_path=str(tmp_path / "agno"))
+    assert len(child_db.get_session("branch-b").runs) == 1
+    child_tk = WorkspaceTools(child, commit="turn", session_db=child_db)
+    child_agent = Agent(
+        model=ScriptedModel(),
+        db=child_db,
+        session_id="branch-b",
+        tools=[child_tk],
+        post_hooks=[child_tk.end_turn],
+        add_history_to_context=True,
+        telemetry=False,
+    )
+    run_turn(child_agent, write_turn("c.txt", "C"))
+
+    record = index_of(child)
+    assert record.session == "branch-b"
+    assert record.forked_from == ws.session
+    assert len(child_db.get_session("branch-b").runs) == 2
+    child.close()
+    ws.close()
+
+
 def test_fork_session_rejects_an_unknown_conversation_mode(tmp_path):
     ws = make_ws()
     with pytest.raises(ValueError, match="inherit"):

@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **A fork can check out a commit from before it was forked.** The restored conversation named the parent, so the store lost the fork and refused its writes; the checkout now rebinds it to the fork in the same commit, and checking out again repairs a fork already in that state.
+
 ## 0.10.0 - 2026-10-08
 
 ### Added

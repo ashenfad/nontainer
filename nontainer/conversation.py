@@ -278,6 +278,24 @@ def rebind(kv: Any, child: str, *, parent: str) -> bool:
     return True
 
 
+def reclaim(kv: Any, session: str, *, lineage: str | None = None) -> bool:
+    """Make a restored conversation that names another session this
+    SESSION's own; whether anything was written.
+
+    A fork's history begins with its parent's commits, so restoring one
+    of them restores an index naming the parent, and a branch holds one
+    session's conversation. The index is rebound as :func:`rebind`
+    rebinds a fork's: ``forked_from`` is ``lineage``, the session this
+    one records being forked from, or else the session the restored
+    index names.
+    """
+    index = read_index(kv)
+    if index is None or index.session in (None, session):
+        return False
+    write(kv, replace(index, session=session, forked_from=lineage or index.session))
+    return True
+
+
 def wipe(kv: Any) -> bool:
     """Remove the conversation and compaction's folds over it, from both
     planes, for a fork that starts fresh; whether anything was there."""

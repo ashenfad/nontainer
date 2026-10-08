@@ -200,6 +200,133 @@ def test_a_fresh_fork_wipes_both_planes_and_compaction(store):
     ws.close()
 
 
+def _turn(ws, run):
+    """One more run on the conversation, committed as a turn would be."""
+    index = conversation.index_of(ws) or Index(harness="agex", session=ws.session)
+    conversation.write(
+        ws.provider.kv,
+        Index(
+            harness=index.harness,
+            session=ws.session,
+            runs=(*index.runs, run),
+            forked_from=index.forked_from,
+        ),
+        runs={run: {"run": run}},
+    )
+    return ws.commit(info={"tool": "turn"})
+
+
+def test_a_fork_that_checks_out_a_pre_fork_commit_stays_itself(store):
+    """The fork's history begins with its parent's commits, whose index
+    names the parent. Restoring one rebinds it in the restore's own
+    commit, so the branch never claims to hold the parent."""
+    ws = store.open("chat")
+    before = _turn(ws, "a")
+    _turn(ws, "b")
+    child = ws.fork("chat.child")
+    try:
+        stepped_off = child.head
+        landed = child.checkout(before)
+        assert conversation.index_of(child) == Index(
+            harness="agex", session="chat.child", runs=("a",), forked_from="chat"
+        )
+        assert not child.uncommitted
+        log = [c.id for c in child.provider.history(limit=2)]
+        assert log == [landed, stepped_off]
+        assert conversation.index_at(child.provider, landed).session == "chat.child"
+        # the commit itself is untouched, and a turn on top is the fork's
+        assert conversation.index_at(child.provider, before).session == "chat"
+        _turn(child, "c")
+        assert conversation.index_of(child).runs == ("a", "c")
+        # and so is the redo, back to where the checkout stepped off
+        child.checkout(stepped_off)
+        assert conversation.index_of(child).runs == ("a", "b")
+        assert conversation.index_of(child).session == "chat.child"
+    finally:
+        child.close()
+    assert conversation.index_of(ws).runs == ("a", "b")
+    ws.close()
+
+
+def test_a_fork_of_a_fork_keeps_its_own_lineage_on_a_rewind(store):
+    """Rewinding past both forks restores an index naming the
+    grandparent; the lineage stays the one this session records."""
+    ws = store.open("chat")
+    before = _turn(ws, "a")
+    _turn(ws, "b")
+    child = ws.fork("chat.child")
+    grand = child.fork("chat.grand")
+    try:
+        grand.checkout(before)
+        index = conversation.index_of(grand)
+        assert index.session == "chat.grand"
+        assert index.forked_from == "chat.child"
+        assert index.runs == ("a",)
+    finally:
+        grand.close()
+        child.close()
+    ws.close()
+
+
+def test_a_fork_checking_out_a_legacy_pre_fork_commit_migrates_it_as_its_own(
+    store,
+):
+    ws = store.open("chat")
+    legacy_head = _seed_legacy(ws)
+    child = ws.fork("chat.child")
+    try:
+        landed = child.checkout(legacy_head)
+        index = conversation.index_of(child)
+        assert index == Index(
+            harness="agno", session="chat.child", runs=("r1", "r2"), forked_from="chat"
+        )
+        assert not index.legacy
+        assert _plane(child, LEGACY_CONVERSATION_PREFIX) == []
+        assert child.provider.key_at(landed, LEGACY_SESSION_KEY) is None
+        assert conversation.read_runs(child.provider.kv, index.runs) == {
+            "r1": {"run_id": "r1", "said": "one"},
+            "r2": {"run_id": "r2", "said": "two"},
+        }
+    finally:
+        child.close()
+    assert conversation.index_of(ws).legacy
+    ws.close()
+
+
+def test_checking_out_where_a_stuck_fork_stands_rebinds_it(store):
+    """A branch a checkout already handed to its parent (before this was
+    fixed) comes back by checking out any of its commits, the head
+    included."""
+    ws = store.open("chat")
+    _turn(ws, "a")
+    child = ws.fork("chat.child")
+    try:
+        conversation.write(
+            child.provider.kv, Index(harness="agex", session="chat", runs=("a",))
+        )
+        stuck = child.commit(info={"tool": "test"})
+        landed = child.checkout(stuck)
+        assert landed != stuck
+        index = conversation.index_of(child)
+        assert index.session == "chat.child" and index.forked_from == "chat"
+        # and once it is the fork's own, the same checkout writes nothing
+        assert child.checkout(landed) == landed
+    finally:
+        child.close()
+    ws.close()
+
+
+def test_a_checkout_within_one_session_leaves_the_index_as_it_was(store):
+    ws = store.open("chat")
+    before = _turn(ws, "a")
+    _turn(ws, "b")
+    ws.checkout(before)
+    assert conversation.index_of(ws) == Index(
+        harness="agex", session="chat", runs=("a",)
+    )
+    ws.close()
+
+
 # -- merges --------------------------------------------------------------------
 
 

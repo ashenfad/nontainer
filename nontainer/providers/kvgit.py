@@ -250,6 +250,9 @@ class _Overlay(MutableMapping):
     and code run against a snapshot may write files it never keeps.
     Those writes land here and read back, as they would in a worktree,
     and go nowhere — there is no commit to take them.
+
+    A checkout's ``adjust`` writes here too, over the target it is to
+    restore, and the restore reads the target through it.
     """
 
     def __init__(self, snapshot: Any) -> None:
@@ -288,7 +291,14 @@ class _Overlay(MutableMapping):
         found = {k: self._updates[k] for k in keys if k in self._updates}
         rest = [k for k in keys if k not in self._updates and k not in self._removed]
         if rest:
-            found.update(self.snapshot.get_many(*rest))
+            batch = getattr(self.snapshot, "get_many", None)
+            if batch is not None:
+                found.update(batch(*rest))
+            else:
+                for key in rest:
+                    value = self.snapshot.get(key)
+                    if value is not None:
+                        found[key] = value
         return found
 
     def __contains__(self, key: object) -> bool:
@@ -606,7 +616,13 @@ class KvgitProvider:
             )
         return self._wt.head
 
-    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+    def checkout(
+        self,
+        commit_id: str,
+        *,
+        info: dict[str, Any] | None = None,
+        adjust: Callable[[MutableMapping[str, Any]], Any] | None = None,
+    ) -> str:
         """Append a commit whose keyset equals that commit's; return it.
 
         A restore, not a rewind: the target's state is WRITTEN into the
@@ -651,9 +667,20 @@ class KvgitProvider:
         Uncommitted writes are replaced by the restored state (see the
         protocol; ``discard()`` is the explicit spelling for a caller
         who wants only that).
+
+        ``adjust`` edits the target's state before it lands, through an
+        overlay that leaves the commit itself alone: the restore then
+        converges on the target as adjusted, in the same commit.
         """
+        from ..migrate import converted_keys, current_layout
+
         self._refuse_frozen("checkout")
-        target = self._snapshot(commit_id)
+        target = current_layout(self._snapshot(commit_id))
+        extra = converted_keys(target)
+        if adjust is not None:
+            target = _Overlay(target)
+            adjust(target)
+            extra |= target.pending
         # The diff below is between two COMMITS: a buffer left in place
         # would ride into the restore commit as though it were part of
         # the target's state.
@@ -662,7 +689,7 @@ class KvgitProvider:
         landed = 0
         while True:
             head = self._wt.head
-            self._stage_restore(target, head, commit_id)
+            self._stage_restore(target, head, commit_id, extra)
             # HEAD moved (or the buffer did) under the VirtualFS
             # object: drop its caches the way discard() does.
             self._invalidate_fs()
@@ -684,28 +711,24 @@ class KvgitProvider:
             self.commit(info={"tool": "checkout", "target": commit_id, **(info or {})})
             landed += 1
 
-    def _stage_restore(self, target: Any, head: str, commit_id: str) -> None:
+    def _stage_restore(
+        self, target: Any, head: str, commit_id: str, extra: set[str]
+    ) -> None:
         """Stage the difference between ``head`` and the target commit.
 
         Leaves the buffer holding exactly what the head has to change
         to become the target's state — nothing when it already is, so
         an empty buffer afterwards is what says the restore is done.
 
-        The target is read in the current layout. Its converted keys are
-        not in kvgit's diff (the target commit does not hold them), so
-        they are compared as well; a legacy key the diff names is absent
-        from the converted target and is therefore never written.
+        ``target`` is the commit's state as it is to land: read in the
+        current layout, and adjusted when the caller asked. The keys
+        that reading changed (``extra``) are not in kvgit's diff, since
+        the commit does not hold them as they land, so they are compared
+        as well; a legacy key the diff names is absent from the
+        converted target and is therefore never written.
         """
-        from ..migrate import converted_keys, current_layout
-
-        target = current_layout(target)
         changed = self._repo.diff(head, commit_id)
-        keys = (
-            set(changed.added)
-            | set(changed.modified)
-            | set(changed.removed)
-            | converted_keys(target)
-        )
+        keys = set(changed.added) | set(changed.modified) | set(changed.removed) | extra
         for key in keys:
             if key in target:
                 value = target.get(key)

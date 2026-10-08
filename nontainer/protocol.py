@@ -438,7 +438,13 @@ class WorkspaceProvider(Protocol):
         """
         ...
 
-    def checkout(self, commit_id: str, *, info: dict[str, Any] | None = None) -> str:
+    def checkout(
+        self,
+        commit_id: str,
+        *,
+        info: dict[str, Any] | None = None,
+        adjust: Callable[[MutableMapping[str, Any]], Any] | None = None,
+    ) -> str:
         """Make fs + kv what they were at a commit; return the new id.
 
         APPENDS: the state is restored by writing it, so the result is
@@ -459,6 +465,13 @@ class WorkspaceProvider(Protocol):
         nothing is committed and the current head comes back.
 
         ``info`` is merged into the commit's own metadata.
+
+        ``adjust``, when given, is called once with a mutable view of
+        the target's state, and what it writes or deletes there lands
+        as part of the restore — in the same commit, and converged on
+        like the rest of the target. The commit itself is not changed.
+        The workspace uses it to keep a restored conversation naming
+        this session.
         """
         ...
 

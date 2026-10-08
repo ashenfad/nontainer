@@ -2646,7 +2646,11 @@ class Workspace:
         who wants only that). Within this session only — a session IS
         a branch, so switching to another one is ``ws.fork(name)`` or
         ``store.open(name)``, never a checkout, and a name that is not
-        a commit here is refused rather than guessed at.
+        a commit here is refused rather than guessed at. The restored
+        conversation stays this session's: a fork's history begins with
+        its parent's commits, and restoring one rebinds the
+        conversation to this session in the same commit, as the fork
+        did.
 
         It APPENDS. The restored state is written and committed, so
         the returned id is a NEW commit and everything committed since
@@ -2667,7 +2671,7 @@ class Workspace:
                 return self._take(ref, paths)
             commit = self._expand_commit(str(ref))
             try:
-                landed = self._provider.checkout(commit)
+                landed = self._provider.checkout(commit, **self._reclaiming(commit))
             except CommitNotFoundError as e:
                 raise CommitNotFoundError(
                     f"{commit!r} is not a commit on session "
@@ -2682,6 +2686,32 @@ class Workspace:
             # LocalExecutor, which holds no copy)
             self._mark_executor_stale()
             return landed
+
+    def _reclaiming(self, commit: str) -> dict[str, Any]:
+        """What a whole-session checkout of ``commit`` passes the
+        provider so the conversation it restores is this session's.
+
+        A fork's history holds its parent's commits, whose conversation
+        names the parent; restored as it stood, the branch would claim
+        to hold another session. When it would, the restore rebinds the
+        index in its own commit, so no head names the wrong session.
+        The lineage is the one this session's head records, so a fork
+        of a fork that rewinds past both forks still names its parent.
+        """
+        provider = self._provider
+        if not provider.caps.index:
+            return {}
+        there = conversation.index_at(provider, commit)
+        if there is None or there.session in (None, self.session):
+            return {}
+        here = conversation.index_at(provider, provider.head)
+        lineage = (
+            here.forked_from
+            if here is not None and here.session == self.session
+            else None
+        )
+        session = self.session
+        return {"adjust": lambda kv: conversation.reclaim(kv, session, lineage=lineage)}
 
     def _take(self, ref: "str | Ref", paths: "Iterable[str] | str") -> str:
         """``ws.checkout(ref, paths=[...])``: make these paths match

@@ -336,6 +336,34 @@ def test_a_checkout_is_undone_by_checking_out_what_it_stepped_off(kv_ws):
     assert kv_ws.terminal("cat f.txt").stdout.strip() == "two"
 
 
+def test_checkout_adjust_lands_in_the_restore_commit(kv_ws):
+    """``adjust`` edits the target as it lands: written, deleted and
+    added keys arrive in the one restore commit, the target commit is
+    untouched, and checking out the same adjusted target again is the
+    usual no-op."""
+    provider = kv_ws.provider
+    provider.kv["note"] = {"v": "first"}
+    provider.kv["gone"] = {"v": "x"}
+    target = provider.commit()
+    provider.kv["note"] = {"v": "second"}
+    provider.commit()
+    before = len(list(provider.history()))
+
+    def adjust(kv):
+        kv["note"] = {"v": kv["note"]["v"] + "+"}
+        del kv["gone"]
+        kv["added"] = {"v": "y"}
+
+    landed = provider.checkout(target, adjust=adjust)
+    state = _keyset(provider, landed)
+    assert state["note"] == {"v": "first+"}
+    assert "gone" not in state
+    assert state["added"] == {"v": "y"}
+    assert len(list(provider.history())) == before + 1
+    assert _keyset(provider, target)["gone"] == {"v": "x"}
+    assert provider.checkout(target, adjust=adjust) == landed
+
+
 def _keyset(provider, commit):
     """Every key a commit holds, with its value — the whole session."""
     handle = provider.repo.snapshot(commit=commit)

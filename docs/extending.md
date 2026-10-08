@@ -89,7 +89,10 @@ commit made since the target is still in `history()`. It converges on
 the target — a write another handle lands while it is in flight is
 superseded rather than carried into the result — and when the working
 state already equals the target, nothing is committed and the current
-head comes back.
+head comes back. An optional `adjust` callable edits the target's state
+through a mutable view before it lands, and its writes land in the same
+commit; the workspace uses it to keep a restored conversation naming the
+session that restored it.
 
 `apply(base, theirs, info=)` is the three-way of a merge with the base
 NAMED rather than found, which is why one primitive spells two verbs: a
