@@ -12,7 +12,7 @@ Think of it as a fake little computer with branchable history, packaged as a
 library. No Docker, cloud sandbox, or service required for the local default:
 `pip install nontainer`.
 
-> **Status: pre-alpha.** Usable and tested end to end; the API will still
+> **Status: alpha.** Usable and tested end to end; the API will still
 > move before 1.0.
 
 ## The core

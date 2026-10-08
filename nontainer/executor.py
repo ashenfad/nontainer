@@ -547,12 +547,12 @@ class _ViewWorkerPool:
 
     What kept it worth having is the other half, which got *worse* in
     the same change. A per-call worker used to be a copy-on-write fork
-    of a host that already had the stack imported: ~5ms, near-zero
-    private memory. A forkserver worker re-imports the granted modules
-    instead — ~18ms for a stdlib policy, but ~235ms and ~113MB resident
-    once pandas/numpy/plotly are granted. Forkserver made worker
-    creation safe and roughly 45x more expensive, and the pool was
-    already here when the bill arrived.
+    of a host that already had the stack imported: nearly free, with
+    near-zero private memory. A forkserver worker re-imports the granted
+    modules instead — cheap for a stdlib policy, but slow and heavy once
+    pandas/numpy/plotly are granted. Forkserver made worker creation
+    safe and far more expensive, and the pool was already here when the
+    bill arrived.
 
     Checkout is exclusive. One exec at a time per sandbox is sandtrap's
     contract (undocumented, but structural: ``exec`` writes and reads

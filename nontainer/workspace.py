@@ -572,8 +572,8 @@ class PythonConfig:
 
     So size it against latency, and know what a resident worker holds.
     With a heavyweight policy (pandas, numpy, plotly) a worker is
-    ~235ms to start and ~113MB resident; with a stdlib policy, ~18ms
-    and ~23MB. The default of **1** keeps the app-iteration loop warm —
+    many times slower to start and larger resident than with a stdlib
+    policy. The default of **1** keeps the app-iteration loop warm —
     edit, ``test_app``, preview, repeat is essentially sequential —
     while holding a single worker.
 
@@ -604,9 +604,10 @@ class PythonConfig:
     own copy. ``isolation="process"``/``"kernel"`` only.
 
     This is the big lever on worker cost, and it moves both numbers at
-    once. With ``modules=[dataframes(), plotting()]`` a worker costs
-    ~235ms and ~113MB by default; preloaded, ~14ms and ~29MB — the
-    stack is paid for once in the broker rather than per worker. It
+    once. With a heavy stack such as ``modules=[dataframes(), plotting()]``,
+    a preloaded worker starts many times faster and holds a fraction of
+    the memory — the stack is paid for once in the broker rather than
+    per worker. It
     applies to **every** worker, including the session worker each
     workspace holds for its life, so in a host with many open
     workspaces it moves more memory than ``warm_view_workers`` does.
