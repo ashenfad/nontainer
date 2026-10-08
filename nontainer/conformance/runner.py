@@ -315,8 +315,10 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 holder["session"] = open_session(ws)
         session = holder["session"]
         delegated: dict[str, DelegateView] = {}
+        delegates_ran_out = False
         if delegates is not None:
             delegated = delegates.finish()
+            delegates_ran_out = delegates.exhausted
             delegates = None  # finished: the way out has nothing left to do
         expect = scenario.expect
         paths = list(expect.files) + [p for p in expect.absent if p not in expect.files]
@@ -336,8 +338,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             runs=tuple(session.runs()),
             commits=tuple(reversed(commits)),
             inbox=(len(session.inbox.pending()), len(session.inbox.delivered())),
-            exhausted=clock.exhausted
-            or (delegates is not None and delegates.exhausted),
+            exhausted=clock.exhausted or delegates_ran_out,
             sent=tuple(sent),
             folds=tuple(folds(ws)),
             stored_summary=stored_summary,
