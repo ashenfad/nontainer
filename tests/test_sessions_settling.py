@@ -9,6 +9,7 @@ turn (``Turn.opening``).
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -267,3 +268,64 @@ def test_notes_an_opening_cannot_render_wait_for_the_next_turn(store):
         assert [n.text for n in inbox.pending()] == ["the date, please"]
     finally:
         ws.close()
+
+
+def test_a_helper_closed_while_its_delegate_runs_ends_the_wait(delegate):
+    """Closing ends every wait at once, so a loop that kept waiting on
+    a closed helper would spin until the run finished."""
+    runner = Gated()
+    sessions = Sessions(delegate, runner)
+    job = None
+
+    def asking(prompt):
+        nonlocal job
+        if prompt is not None:
+            job = sessions.ask("north")
+            threading.Timer(0.1, sessions.close).start()
+        return "waiting on the helper"
+
+    try:
+        began = time.monotonic()
+        settled = until_settled(asking, sessions, prompt="find north", poll=5)
+        assert time.monotonic() - began < 5  # it ended before the run did
+    finally:
+        runner.gate.set()
+        sessions.close()
+    assert settled.unread == (job.name,)
+
+
+def test_auntil_settled_on_a_closed_helper_lets_the_loop_run(delegate):
+    """An async wait on a closed helper returns without suspending, so a
+    loop that kept waiting would hold the event loop its own delegates
+    need to finish on. Run on a thread of its own, so a regression is a
+    failure rather than a hung suite."""
+
+    class Async:
+        def __init__(self):
+            self.gate = asyncio.Event()
+
+        async def run(self, session, task, *, budget=None):
+            await self.gate.wait()
+            return f"found {task}"
+
+    out: dict = {}
+
+    async def main():
+        runner = Async()
+        sessions = Sessions(delegate, runner)
+
+        async def asking(prompt):
+            out["job"] = await sessions.aask("north")
+            closing = asyncio.ensure_future(sessions.aclose())
+            out["closing"] = closing
+            return "waiting on the helper"
+
+        out["settled"] = await auntil_settled(asking, sessions, prompt="find north")
+        runner.gate.set()
+        await out["closing"]
+
+    thread = threading.Thread(target=asyncio.run, args=(main(),), daemon=True)
+    thread.start()
+    thread.join(10)
+    assert not thread.is_alive(), "the loop never came back"
+    assert out["settled"].unread == (out["job"].name,)

@@ -626,6 +626,13 @@ class Sessions:
                 with self._lock:
                     self._watchers.discard(watcher)
 
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`close` has begun. A closed helper asks nothing
+        more, and a wait on it ends at once."""
+        with self._lock:
+            return self._closed
+
     def _ready_locked(self) -> list[str]:
         """The jobs with an answer waiting, in landing order. Under the
         lock."""
@@ -1665,7 +1672,8 @@ def until_settled(
 
     ``max_wakes`` bounds the woken turns. Once they are spent it stops
     waiting and returns the last reply, with what was left outstanding:
-    :attr:`Settled.text` names the unread delegates.
+    :attr:`Settled.text` names the unread delegates. A ``sessions`` that
+    closes while its delegates still run ends the wait the same way.
 
     What else a turn is (nudges, what counts as a reply, budgets) is the
     runner's: this is only the waiting every runner needs, done once.
@@ -1682,6 +1690,9 @@ def until_settled(
         ready = sessions.wait(timeout=0) if sessions is not None else []
         if not pending and not ready:
             assert sessions is not None
+            if sessions.closed:
+                # Nothing will come: a closed helper's waits end at once.
+                return _spent(reply, wakes, outstanding, inbox)
             sessions.wait(timeout=poll)
             continue
         reply = run_turn(None)
@@ -1711,6 +1722,8 @@ async def auntil_settled(
         ready = sessions.wait(timeout=0) if sessions is not None else []
         if not pending and not ready:
             assert sessions is not None
+            if sessions.closed:
+                return _spent(reply, wakes, outstanding, inbox)
             await sessions.await_ready(timeout=poll)
             continue
         reply = await run_turn(None)
