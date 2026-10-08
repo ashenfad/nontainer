@@ -220,6 +220,11 @@ is the embedder's. Two ways to hear it, both without polling:
   collected, or until no job is running, and returns the names with an
   answer waiting. It collects nothing. An empty list means there was
   nothing to wait for, the timeout passed, or the helper closed.
+- **Waiting from agent code is safe.** A `run_python` call holds the
+  parent's workspace lock while it runs. Landing an answer reads only
+  committed history, through the child's handle, and never takes that
+  lock, so code that asks a delegate and waits for it (`wait=True`, or
+  `wait()` then `result()`) gets the answer, on every rung.
 
 `outstanding()` lists the jobs not yet heard the end of: still running,
 or answered and not collected.

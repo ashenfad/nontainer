@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tracebacks show the agent's line, not stub plumbing.** A stubbed call's refusal drops `nontainer.remote`'s frames, and a dud run's traceback is trimmed as the other rungs' are, host install paths included.
 - **Breaking: `PythonConfig.host_objects` is read-only.** Each executor takes its host objects when it opens, so one added to the mapping later reached in-process code and nowhere else; a different set is a new config (`dataclasses.replace`).
 
+### Fixed
+- **Code waiting for a delegate no longer hangs.** Landing an answer read the parent through its workspace lock, which a `run_python` call waiting for that answer holds; it now reads committed history through the child's handle.
+
 ## 0.9.1 - 2026-10-06
 
 ### Added

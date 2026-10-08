@@ -1214,52 +1214,70 @@ class Sessions:
         """Whether the delegate wrote past its own last ws-git commit.
         Only when :meth:`_commit_remainder` could not commit the rest.
 
-        Asked in the merge's own terms, from the parent's side, so the
-        answer cannot say one thing and ``ws-git merge <name>`` another:
-        it is the same check that refuses a source with work its agent
-        has not committed. False for a delegate that never used ws-git,
-        which has no commit of its own to differ from.
+        Asked in the merge's own terms, so the answer cannot say one
+        thing and ``ws-git merge <name>`` another: it is the same check
+        that refuses a source with work its agent has not committed.
+        False for a delegate that never used ws-git, which has no commit
+        of its own to differ from.
+
+        Read through the child's handle (which carries the parent's
+        ignore rules), never the parent's. Landing reads committed
+        history only, so it takes no lock of the parent's: agent code
+        waiting for this answer inside a ``run_python`` call holds it.
         """
         if not self._ws.caps.index:
             return False
         from .agentgit import AgentGit
 
-        with self._ws.lock:
-            return bool(AgentGit(self._ws).source_uncommitted(child.session))
+        return bool(AgentGit(child).source_uncommitted(child.session))
 
     def _changed(self, base: str | None, child: "Workspace") -> dict:
         """The child's changed paths, grouped seed vs elsewhere.
 
         Where the parent and child last met (the fork point, until the
-        parent merges the child) against the child's head, read through the
-        PARENT — one store, so a commit on either branch is legible
-        from both — and grouped the way ``WorkspaceDiff`` groups:
-        under what the child was seeded with, and everywhere else. A
-        delegate that touched a caller in ``main.py`` is the common
-        case, and the grouping is what keeps that from going unnoticed.
+        parent merges the child) against the child's head — one store,
+        so a commit on either branch is legible from both — and grouped
+        the way ``WorkspaceDiff`` groups: under what the child was
+        seeded with, and everywhere else. A delegate that touched a
+        caller in ``main.py`` is the common case, and the grouping is
+        what keeps that from going unnoticed.
+
+        Read through the child's handle, the parent's head included:
+        see :meth:`_uncommitted`.
         """
         head = child.head
         if base is None or head is None:
             return {"seed": (), "elsewhere": ()}
-        with self._ws.lock:
-            # From where the two last met, when that is since the fork:
-            # a resumed delegate whose earlier answer was merged would
-            # otherwise list that work again as what this task changed
-            # (the base `ws-git diff <name>` and a merge use). A meeting
-            # point that is not past the fork — a child forked from
-            # another session's state shares little or nothing with
-            # this one — leaves the fork point, which is ITS start.
-            start = base
-            find = getattr(self._ws.provider, "merge_base", None)
-            if find is not None:
-                met = find(self._ws.head, head)
-                if met and met != base and find(base, met) == base:
-                    start = met
-            diff = self._ws.diff(start, head)
+        # From where the two last met, when that is since the fork: a
+        # resumed delegate whose earlier answer was merged would
+        # otherwise list that work again as what this task changed (the
+        # base `ws-git diff <name>` and a merge use). A meeting point
+        # that is not past the fork — a child forked from another
+        # session's state shares little or nothing with this one —
+        # leaves the fork point, which is ITS start.
+        start = base
+        find = getattr(child.provider, "merge_base", None)
+        ours = self._parent_head(child)
+        if find is not None and ours is not None:
+            met = find(ours, head)
+            if met and met != base and find(base, met) == base:
+                start = met
+        diff = child.diff(start, head)
         return {
             "seed": tuple(sorted(diff.in_seed)),
             "elsewhere": tuple(sorted(diff.elsewhere)),
         }
+
+    def _parent_head(self, reader: "Workspace") -> str | None:
+        """This session's commit as the store has it, read through
+        ``reader`` (a child's handle) rather than the parent's own."""
+        branch_head = getattr(reader.provider, "branch_head", None)
+        if branch_head is None:
+            return None
+        try:
+            return branch_head(self._ws.session)
+        except ValueError:
+            return None
 
     def _provenance(
         self,
@@ -1295,7 +1313,7 @@ class Sessions:
         extra: dict[str, Any] = {}
         if job.origin:
             extra["from"] = job.origin[0]
-            if not self._holds(job.origin[1]):
+            if not self._holds(job.origin[1], child):
                 extra["outside"] = True
         return {
             **answer.provenance,
@@ -1307,16 +1325,16 @@ class Sessions:
             **extra,
         }
 
-    def _holds(self, commit: str) -> bool:
+    def _holds(self, commit: str, reader: "Workspace") -> bool:
         """Whether ``commit`` is in this session's history, so that a
         child forked there merges back as any fork does. ``True`` where
-        the provider cannot say: the ordinary guidance is the default."""
-        find = getattr(self._ws.provider, "merge_base", None)
+        the provider cannot say: the ordinary guidance is the default.
+        Read through ``reader``, as :meth:`_changed` reads."""
+        find = getattr(reader.provider, "merge_base", None)
         if find is None:
             return True
-        with self._ws.lock:
-            head = self._ws.head
-            return head is not None and find(commit, head) == commit
+        head = self._parent_head(reader)
+        return head is not None and find(commit, head) == commit
 
     def _descends_from(self, job: Job, base: str | None) -> str | None:
         """The ref a job's answer descends FROM."""
