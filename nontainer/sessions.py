@@ -54,12 +54,14 @@ own step, and nothing here takes it.
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import inspect
 import logging
 import random
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
@@ -133,6 +135,14 @@ def _error_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
+def _running_loop() -> "asyncio.AbstractEventLoop | None":
+    """The event loop running in this thread, if one is."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def _accepts_forked_at(runner: "SessionRunner") -> bool:
     """Whether ``runner.run`` takes the fork point.
 
@@ -184,6 +194,16 @@ class Sessions:
     the job is unaffected. :meth:`wait` is the same news for a caller
     that would rather block for it.
 
+    **An async runner** (``run`` is ``async def``) runs on an event loop
+    rather than a worker thread: ``loop``, or the loop the helper is
+    built in. ``max_workers`` then bounds how many of its runs are in
+    flight at once, and landing an answer, which does store work, runs
+    on a thread so the loop never waits on it. :meth:`cancel` stops such
+    a run, where a synchronous runner can only have its answer
+    discarded. From a coroutine, :meth:`aask` asks, :meth:`await_ready`
+    is :meth:`wait`, and :meth:`answers` yields every answer as it
+    lands.
+
     Not a context the parent workspace owns: build it, and
     :meth:`close` it (or use it as a context manager) when the session
     ends. Closing joins the workers; the branches stay.
@@ -198,6 +218,7 @@ class Sessions:
         max_workers: int = 4,
         chain: Iterable[str] = (),
         on_answer: "Callable[[str, Answer], None] | None" = None,
+        loop: "asyncio.AbstractEventLoop | None" = None,
     ) -> None:
         self.on_answer = on_answer
         self._ws = workspace
@@ -208,6 +229,18 @@ class Sessions:
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="nontainer-sessions"
         )
+        #: The loop an async runner's runs are scheduled on, and how many
+        #: of them may be in flight; ``None`` for a synchronous runner.
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._slots: asyncio.Semaphore | None = None
+        if inspect.iscoroutinefunction(getattr(runner, "run", None)):
+            self._loop = loop or _running_loop()
+            if self._loop is None:
+                raise SessionsError(
+                    "an async runner needs an event loop to run on: build the "
+                    "helper inside one, or pass loop="
+                )
+            self._slots = asyncio.Semaphore(max_workers)
         self._lock = threading.Lock()
         #: Notified, under the lock, whenever an answer becomes
         #: collectable or a job stops running without one (a cancel, a
@@ -245,6 +278,13 @@ class Sessions:
         #: ``on_answer`` has been told. Kept apart from ``_answers``,
         #: which a resume may already have emptied by then.
         self._recorded: set[int] = set()
+        #: An async runner's runs in flight, by job, so a cancel can stop
+        #: one.
+        self._tasks: dict[str, asyncio.Task] = {}
+        #: The coroutines waiting for news (:meth:`await_ready`,
+        #: :meth:`answers`): each one's loop and the event to set, under
+        #: the lock, when :attr:`_settled` is notified.
+        self._watchers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
         self._closed = False
 
     def __repr__(self) -> str:
@@ -323,6 +363,11 @@ class Sessions:
         caller's own step.
         """
         self._check_open()
+        if wait and self._loop is not None and _running_loop() is self._loop:
+            raise SessionsError(
+                "ask(wait=True) would block the loop its runner runs on: "
+                "await sessions.aask(..., wait=True) instead"
+            )
         started = time.time()
         if inherit is None:
             inherit = "full" if fork_from is not None and resume is None else "fresh"
@@ -389,6 +434,21 @@ class Sessions:
             future.result()  # _work resolves every failure into an Answer
             return self.result(child_name)
         return job
+
+    async def aask(
+        self, task: str, *, wait: bool = False, **options: Any
+    ) -> "Job | Answer":
+        """:meth:`ask`, from a coroutine: the fork, which takes the
+        parent's lock and writes, runs on a thread, and ``wait=True``
+        awaits the answer rather than blocking the loop."""
+        job = await asyncio.to_thread(self.ask, task, wait=False, **options)
+        assert isinstance(job, Job)
+        if not wait:
+            return job
+        with self._lock:
+            future = self._futures[job.name]
+        await asyncio.wrap_future(future)
+        return self.result(job.name)
 
     def list(self) -> list[Job]:
         """Every job this session has asked for, oldest first."""
@@ -511,22 +571,85 @@ class Sessions:
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._settled:
             while True:
-                ready = [
-                    name
-                    for name in self._uncollected
-                    if self._jobs[name].status != "expired" and name in self._answers
-                ]
-                if ready:
-                    return sorted(
-                        ready, key=lambda n: (self._jobs[n].finished or 0.0, n)
-                    )
-                running = any(job.status == "running" for job in self._jobs.values())
-                if not running or self._closed:
-                    return []
+                ready = self._ready_locked()
+                if ready or not self._waiting_locked():
+                    return ready
                 left = None if deadline is None else deadline - time.monotonic()
                 if left is not None and left <= 0:
                     return []
                 self._settled.wait(left)
+
+    async def await_ready(self, timeout: float | None = None) -> list[str]:
+        """:meth:`wait`, from a coroutine: it awaits, and blocks nothing."""
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            event = asyncio.Event()
+            watcher = (loop, event)
+            with self._lock:
+                ready = self._ready_locked()
+                if ready or not self._waiting_locked():
+                    return ready
+                self._watchers.add(watcher)
+            try:
+                left = None if deadline is None else deadline - loop.time()
+                if left is not None and left <= 0:
+                    return []
+                try:
+                    await asyncio.wait_for(event.wait(), left)
+                except asyncio.TimeoutError:
+                    return []
+            finally:
+                with self._lock:
+                    self._watchers.discard(watcher)
+
+    async def answers(self) -> "AsyncIterator[tuple[str, Answer]]":
+        """Every answer as it lands, as ``(job name, answer)`` pairs,
+        for as long as the helper is open: the push half of delivery,
+        from a coroutine. Each is collected as :meth:`take` collects it,
+        so an answer is handed over once however it is read."""
+        loop = asyncio.get_running_loop()
+        while True:
+            event = asyncio.Event()
+            watcher = (loop, event)
+            with self._lock:
+                closed = self._closed
+                self._watchers.add(watcher)
+            try:
+                for pair in self.take():
+                    yield pair
+                if closed:
+                    return
+                await event.wait()
+            finally:
+                with self._lock:
+                    self._watchers.discard(watcher)
+
+    def _ready_locked(self) -> list[str]:
+        """The jobs with an answer waiting, in landing order. Under the
+        lock."""
+        ready = [
+            name
+            for name in self._uncollected
+            if self._jobs[name].status != "expired" and name in self._answers
+        ]
+        return sorted(ready, key=lambda n: (self._jobs[n].finished or 0.0, n))
+
+    def _waiting_locked(self) -> bool:
+        """Whether there is anything to wait for: a job running, on a
+        helper still open. Under the lock."""
+        running = any(job.status == "running" for job in self._jobs.values())
+        return running and not self._closed
+
+    def _notify_locked(self) -> None:
+        """Wake everything waiting for news, threads and coroutines.
+        Under the lock."""
+        self._settled.notify_all()
+        for loop, event in self._watchers:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:  # its loop has closed: nothing to wake
+                pass
 
     def base(self, name: str) -> str | None:
         """The commit job ``name`` was forked from.
@@ -545,12 +668,15 @@ class Sessions:
     def cancel(self, name: str) -> Job:
         """Stop caring about job ``name``; returns the job.
 
-                A runner that is already working cannot be interrupted — it is
-                the embedder's loop, and nontainer has no handle on it — so
-                cancel means exactly this: the answer will be DISCARDED when it
-                arrives, and the child's branch is left as it is. Nothing is
-                committed for it and nothing is deleted; ``ws-git diff <name>``
-                still shows whatever it managed to do.
+                A synchronous runner that is already working cannot be
+                interrupted — it is the embedder's loop, and nontainer has no
+                handle on it — so cancel means this: the answer will be
+                DISCARDED when it arrives, and the child's branch is left as it
+                is. An async runner's run is a task on the helper's loop, and
+                cancel also stops it; its branch is free once the run has ended,
+                a moment later. Either way nothing is committed for it and
+                nothing is deleted; ``ws-git diff <name>`` still shows whatever
+                it managed to do.
 
         Cancelling and recording an answer are one state transition, taken
                 under one lock, so a cancel either wins outright — the answer is
@@ -567,9 +693,16 @@ class Sessions:
                 return job
             job = replace(job, status="cancelled", finished=time.time())
             self._jobs[name] = job
-            self._settled.notify_all()
+            self._notify_locked()
             future = self._futures.get(name)
             token = self._busy.get(name)
+            task = self._tasks.get(name)
+        if task is not None and self._loop is not None:
+            # An async run is stopped, not just disowned: it ends through
+            # its own path, which discards the answer and frees the
+            # branch.
+            self._loop.call_soon_threadsafe(task.cancel)
+            return job
         if future is not None and future.cancel():
             # It bit: the worker never started, so no run will land for
             # this job and none will release what it reserved. The
@@ -688,12 +821,45 @@ class Sessions:
         The branches stay: a delegate's work is in the store, and
         closing the helper that asked for it must not throw it away.
         """
+        if self._loop is not None and _running_loop() is self._loop:
+            if self._pending_runs():
+                raise SessionsError(
+                    "an async runner's runs are still in flight on this loop, "
+                    "and closing joins them: await sessions.aclose() instead"
+                )
         with self._lock:
             if self._closed:
                 return
             self._closed = True
-            self._settled.notify_all()
+            self._notify_locked()
+        concurrent.futures.wait(self._pending_runs())
         self._pool.shutdown(wait=True)
+        self._close_children()
+
+    async def aclose(self) -> None:
+        """:meth:`close`, from a coroutine: it awaits the runs in flight
+        rather than blocking the loop they run on."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._notify_locked()
+        for future in self._pending_runs():
+            try:
+                await asyncio.wrap_future(future)
+            except BaseException:  # noqa: BLE001 - closing waits, it does not judge
+                pass
+        await asyncio.to_thread(self._pool.shutdown, wait=True)
+        self._close_children()
+
+    def _pending_runs(self) -> list[Future]:
+        """An async runner's runs not yet done."""
+        if self._loop is None:
+            return []
+        with self._lock:
+            return [f for f in self._futures.values() if not f.done()]
+
+    def _close_children(self) -> None:
         with self._lock:
             children = list(self._children.values())
             self._children.clear()
@@ -852,7 +1018,12 @@ class Sessions:
             self._children[name] = child
             self._base[name] = base
         try:
-            future = self._pool.submit(self._work, name, job.task, budget, token)
+            if self._loop is not None:
+                future = asyncio.run_coroutine_threadsafe(
+                    self._awork(name, job.task, budget, token), self._loop
+                )
+            else:
+                future = self._pool.submit(self._work, name, job.task, budget, token)
         except BaseException:
             self._release(name, token)
             raise
@@ -1048,11 +1219,7 @@ class Sessions:
         runner's failure as ``failed`` with the exception's text, and a
         failure to land the answer as the answer plus what went wrong.
         """
-        # The fork point goes only to a runner whose signature accepts
-        # it — an embedder's runner written without the parameter gets
-        # the call it was written for.
-        with self._lock:
-            extra = {"forked_at": self._base.get(name)} if self._forked_at_ok else {}
+        extra = self._extra(name)
         try:
             try:
                 out = self._runner.run(
@@ -1061,21 +1228,7 @@ class Sessions:
                 answer = out if isinstance(out, Answer) else Answer(text=str(out))
             except BaseException as exc:  # noqa: BLE001 - the job must resolve
                 answer = Answer(text=_error_text(exc), status="failed")
-            try:
-                settled = self._land(name, task, answer, token)
-            except BaseException as exc:  # noqa: BLE001 - as must the landing
-                settled = replace(
-                    answer,
-                    status="failed",
-                    text=(
-                        f"{answer.text}\n\n[the delegate answered, and its work "
-                        f"could not be landed: {_error_text(exc)}]"
-                    ),
-                    branch=name,
-                )
-                self._record(name, settled, token)
-            self._announce(name, settled, token)
-            return settled
+            return self._settle(name, task, answer, token)
         finally:
             # The branch is free again however this went, including the
             # ways that record no answer: a job the caller cancelled
@@ -1085,6 +1238,62 @@ class Sessions:
             # so this frees the branch only while it is still this
             # run's to free.
             self._release(name, token)
+
+    async def _awork(self, name: str, task: str, budget: Any, token: int) -> Answer:
+        """:meth:`_work` for an async runner, on the helper's loop: the
+        run awaits a slot (``max_workers``), and the landing, which does
+        store work, runs on a thread. A cancel stops the run (see
+        :meth:`cancel`); its answer is then discarded as any cancelled
+        job's is. Never raises."""
+        extra = self._extra(name)
+        with self._lock:
+            current = asyncio.current_task()
+            if current is not None:
+                self._tasks[name] = current
+        try:
+            try:
+                assert self._slots is not None
+                async with self._slots:
+                    out = await self._runner.run(
+                        self._session_of(name), task, budget=budget, **extra
+                    )
+                answer = out if isinstance(out, Answer) else Answer(text=str(out))
+            except asyncio.CancelledError:
+                answer = Answer(text="the run was stopped", status="failed")
+            except BaseException as exc:  # noqa: BLE001 - the job must resolve
+                answer = Answer(text=_error_text(exc), status="failed")
+            return await asyncio.to_thread(self._settle, name, task, answer, token)
+        finally:
+            with self._lock:
+                if self._tasks.get(name) is current:
+                    self._tasks.pop(name, None)
+            self._release(name, token)
+
+    def _extra(self, name: str) -> dict[str, Any]:
+        """The fork point, for a runner whose signature accepts it: an
+        embedder's runner written without the parameter gets the call it
+        was written for."""
+        with self._lock:
+            return {"forked_at": self._base.get(name)} if self._forked_at_ok else {}
+
+    def _settle(self, name: str, task: str, answer: Answer, token: int) -> Answer:
+        """Land the run's answer and announce it. Never raises: a failure
+        to land is the answer plus what went wrong."""
+        try:
+            settled = self._land(name, task, answer, token)
+        except BaseException as exc:  # noqa: BLE001 - the landing must resolve
+            settled = replace(
+                answer,
+                status="failed",
+                text=(
+                    f"{answer.text}\n\n[the delegate answered, and its work "
+                    f"could not be landed: {_error_text(exc)}]"
+                ),
+                branch=name,
+            )
+            self._record(name, settled, token)
+        self._announce(name, settled, token)
+        return settled
 
     def _announce(self, name: str, answer: Answer, token: int) -> None:
         """Call ``on_answer`` for an answer this run recorded. Not for a
@@ -1123,9 +1332,13 @@ class Sessions:
         job keeps a store open for nothing.
         """
         with self._lock:
-            child = self._children.pop(name)
+            child = self._children.pop(name, None)
             base = self._base.get(name)
             cancelled = self._jobs[name].status == "cancelled"
+        if child is None:
+            # a cancel freed the run before it began, and its handle with
+            # it: the answer is discarded, as any cancelled job's is
+            return answer
         try:
             if cancelled:
                 # Discarded, and the branch left exactly as the
@@ -1372,7 +1585,7 @@ class Sessions:
             self._answers[name] = answer
             self._uncollected.add(name)
             self._recorded.add(token)
-            self._settled.notify_all()
+            self._notify_locked()
             self._jobs[name] = replace(
                 job,
                 status=answer.status,
