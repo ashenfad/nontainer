@@ -329,3 +329,20 @@ def test_auntil_settled_on_a_closed_helper_lets_the_loop_run(delegate):
     thread.join(10)
     assert not thread.is_alive(), "the loop never came back"
     assert out["settled"].unread == (out["job"].name,)
+
+
+def test_the_unread_note_offers_the_asker_no_verb_it_cannot_use(delegate):
+    """The unread delegates are the delegate's own jobs, which its
+    asker's helper does not hold: a ``sessions result`` there finds
+    nothing."""
+    runner = Gated()
+    with Sessions(delegate, runner) as sessions:
+
+        def asking(prompt):
+            sessions.ask("north")
+            return "waiting on the helper"
+
+        settled = until_settled(asking, sessions, prompt="find north", max_wakes=0)
+        runner.gate.set()
+    assert "sessions result" not in settled.text
+    assert "own branches" in settled.text

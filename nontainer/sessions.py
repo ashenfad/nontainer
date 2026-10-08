@@ -1637,14 +1637,15 @@ class Settled:
     @property
     def text(self) -> str:
         """The reply as an answer: as it is, or saying which delegates
-        it was given before hearing from."""
+        it was given before hearing from. Their jobs are the delegate's
+        own, so the asker's ``sessions`` verbs cannot reach them, and
+        none is offered."""
         if not self.unread:
             return self.reply
         names = ", ".join(self.unread)
         return (
-            f"{self.reply}\n\n[answered before hearing back from {names}: "
-            "their work is on their branches, and `sessions result` reads "
-            "an answer once it lands]"
+            f"{self.reply}\n\n[answered before hearing back from {names}, "
+            "whose work is on their own branches]"
         )
 
 
