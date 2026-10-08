@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking: `PythonConfig.host_objects` is read-only.** Each executor takes its host objects when it opens, so one added to the mapping later reached in-process code and nowhere else; a different set is a new config (`dataclasses.replace`).
 
 ### Fixed
+- **Nested `static_assets` prefixes serve from the most specific one.** A path went to the first declared prefix covering it, so `vendor` listed before `vendor/charts` hid the nested directory; order no longer matters, and two spellings of one prefix (`vendor`, `vendor/`) are refused.
 - **Code waiting for a delegate no longer hangs.** Landing an answer read the parent through its workspace lock, which a `run_python` call waiting for that answer holds; it now reads committed history through the child's handle.
 
 ## 0.9.1 - 2026-10-06

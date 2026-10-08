@@ -173,10 +173,19 @@ def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
     from monkeyfs import IsolatedFS, ReadOnlyFS
 
     out: dict[str, Any] = {}
+    spelled: dict[str, Any] = {}
     for raw, source in static_assets.items():
         prefix = str(raw).strip("/")
         if not prefix or any(p in (".", "..", "") for p in prefix.split("/")):
             raise ValueError(f"static_assets prefix must be a relative path: {raw!r}")
+        if prefix in spelled:
+            # `vendor` and `vendor/` are one prefix, and the later
+            # source would silently replace the earlier.
+            raise ValueError(
+                f"static_assets prefixes {spelled[prefix]!r} and {raw!r} are the "
+                f"same prefix, {prefix!r}"
+            )
+        spelled[prefix] = raw
         top = _unserved_top(prefix)
         if top == API_DIR:
             # /api/ routes to handlers before static ever runs, so an
@@ -494,6 +503,11 @@ class AppsConfig:
     (the embedder chose these bytes; the caps exist to catch runaway
     handler output), and precedence over a workspace file at the same
     path, which is noted in ``api.log`` rather than shadowed silently.
+
+    Prefixes may nest (``vendor`` and ``vendor/charts``): a path is
+    served from the most specific prefix that covers it, whatever order
+    they are declared in, as mount points nest. Two spellings of one
+    prefix (``vendor`` and ``vendor/``) are refused.
 
     Declare it on the ONE config an embedder passes to both
     ``enable_apps`` and ``build_router``: assets missing from the
@@ -1042,21 +1056,30 @@ class AppRuntime:
         no prefix claims it. Assets take precedence over a workspace file
         at the same path — predictable, and it stops an agent shadowing
         the design system by accident — but silent shadowing is its own
-        failure mode, so the collision is noted in api.log."""
-        for prefix, fs in self._assets.items():
-            if rel != prefix and not rel.startswith(prefix + "/"):
-                continue
-            # `rel` is already canonical (see _dispatch_static), so this
-            # cannot contain dot segments — but the guard is cheap and
-            # this method must not depend on its caller for confinement.
-            inner = posixpath.normpath(rel[len(prefix) :].lstrip("/") or ".")
-            if inner in (".", "") or inner.startswith(".."):
-                raise HttpError(404, f"not found: {request.path}")
-            if not fs.exists(inner) or not fs.isfile(inner):
-                raise HttpError(404, f"not found: {request.path}")
-            self._note_shadowed_asset(rel)
-            return _static_file(fs, inner, request)
-        return None
+        failure mode, so the collision is noted in api.log.
+
+        Prefixes nest, and the most specific one that covers ``rel``
+        claims it, whatever order they were declared in: the rule mounts
+        follow. The claim is whole, so a file missing there is a 404,
+        not a look in a shorter prefix's directory."""
+        prefix = None
+        for candidate in self._assets:
+            if rel == candidate or rel.startswith(candidate + "/"):
+                if prefix is None or len(candidate) > len(prefix):
+                    prefix = candidate
+        if prefix is None:
+            return None
+        fs = self._assets[prefix]
+        # `rel` is already canonical (see _dispatch_static), so this
+        # cannot contain dot segments — but the guard is cheap and
+        # this method must not depend on its caller for confinement.
+        inner = posixpath.normpath(rel[len(prefix) :].lstrip("/") or ".")
+        if inner in (".", "") or inner.startswith(".."):
+            raise HttpError(404, f"not found: {request.path}")
+        if not fs.exists(inner) or not fs.isfile(inner):
+            raise HttpError(404, f"not found: {request.path}")
+        self._note_shadowed_asset(rel)
+        return _static_file(fs, inner, request)
 
     def _note_shadowed_asset(self, rel: str) -> None:
         """An agent that writes app/vendor/x.js and then cannot see its

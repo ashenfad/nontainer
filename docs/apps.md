@@ -532,6 +532,13 @@ What follows from that:
   serving refuses those directories before it looks for an asset, so a
   prefix there could never serve and is refused when the config is
   built.
+- **Prefixes may nest, and the most specific wins.** With `vendor` and
+  `vendor/charts` both declared, `vendor/charts/plot.js` comes from the
+  `vendor/charts` directory whatever order the mapping lists them in, as
+  a path lands on its deepest mount point. That directory claims the
+  whole of its prefix: a file missing there is a 404, not a look in
+  `vendor`'s. Two spellings of one prefix (`vendor` and `vendor/`) are
+  refused.
 - **Assets win over a workspace file at the same path**, and the
   collision is noted in `api.log` rather than shadowed silently — an
   agent that writes `app/vendor/lib.js` and sees no change would

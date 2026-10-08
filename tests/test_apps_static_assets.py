@@ -205,6 +205,51 @@ def test_prefix_slashes_are_tolerated(assets):
         ws.close()
 
 
+@pytest.fixture
+def charts(tmp_path):
+    """A second bundle, mounted under the first's prefix."""
+    d = tmp_path / "charts"
+    d.mkdir()
+    (d / "plot.js").write_text("export const plot = 1;\n")
+    return d
+
+
+@pytest.mark.parametrize("nested_first", [True, False])
+def test_a_nested_prefix_serves_whatever_the_declared_order(
+    assets, charts, nested_first
+):
+    """The most specific prefix claims a path, as the deepest mount
+    point does, so an embedder composing bundles need not order them."""
+    entries = [("vendor", assets), ("vendor/charts", charts)]
+    if nested_first:
+        entries.reverse()
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    try:
+        rt = AppRuntime(ws, AppsConfig(static_assets=dict(entries)))
+        assert get(rt, "/vendor/charts/plot.js").text == "export const plot = 1;\n"
+        assert get(rt, "/vendor/lib.js").status == 200
+        # the claim is whole: a file the nested bundle lacks is not
+        # looked for in the outer one
+        (assets / "charts").mkdir()
+        (assets / "charts" / "old.js").write_text("stale\n")
+        assert get(rt, "/vendor/charts/old.js").status == 404
+    finally:
+        ws.close()
+
+
+def test_two_spellings_of_one_prefix_are_refused(assets, charts):
+    """`vendor` and `vendor/` normalize to one prefix, and the later
+    source would replace the earlier without a word."""
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    try:
+        with pytest.raises(ValueError, match="same prefix"):
+            AppRuntime(
+                ws, AppsConfig(static_assets={"vendor": assets, "vendor/": charts})
+            )
+    finally:
+        ws.close()
+
+
 def test_frozen_serving_sees_assets(assets):
     """Same config, both runtimes: an asset missing from the serving side
     is an app that verifies green and 404s published."""
