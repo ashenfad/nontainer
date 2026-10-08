@@ -508,6 +508,23 @@ snapshot — all four go through `dispatch`, so one declaration covers
 them. This is the air-gap answer, and the way to put a house component
 library in front of an agent.
 
+A source may also be files in memory rather than a directory, for an
+asset the embedder builds instead of ships, such as a manifest composed
+from its own settings at startup:
+
+```python
+config = AppsConfig(static_assets={
+    "vendor": "/srv/appassets",
+    "vendor/_generated": {"manifest.json": manifest_bytes},
+})
+```
+
+The paths follow a directory's rules (relative, no `.` or `..`, no
+path that is also another's directory), the bytes must be `bytes`, and
+the config keeps its own copy: different bytes are a new config. No
+file is written, so there is nothing for a temporary directory's
+cleanup to take or for processes with different settings to overwrite.
+
 **It is deliberately not a `Mount`.** A mount puts files in the
 workspace, where the agent can read them and a remote executor ships
 them to its guest. These bytes are not workspace state: they are fixed,

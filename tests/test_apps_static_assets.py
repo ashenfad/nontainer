@@ -250,6 +250,92 @@ def test_two_spellings_of_one_prefix_are_refused(assets, charts):
         ws.close()
 
 
+# -- files in memory ---------------------------------------------------------
+
+MANIFEST = b'{"theme": "dark"}'
+
+
+def test_files_in_memory_serve_on_both_runtimes():
+    """A file the embedder built at startup serves with no file on disk,
+    while authoring and from a published snapshot alike."""
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    try:
+        config = AppsConfig(
+            static_assets={"vendor/_generated": {"manifest.json": MANIFEST}}
+        )
+        live = AppRuntime(ws, config)
+        frozen = AppRuntime(ws, config, frozen=True, log_sink=lambda m: None)
+        for rt in (live, frozen):
+            r = get(rt, "/vendor/_generated/manifest.json")
+            assert r.status == 200 and r.content == MANIFEST
+            assert r.content_type.startswith("application/json")
+            assert get(rt, "/vendor/_generated/other.json").status == 404
+    finally:
+        ws.close()
+
+
+@pytest.mark.parametrize("generated_first", [True, False])
+def test_files_in_memory_nest_under_a_directory(assets, generated_first):
+    entries = [("vendor", assets), ("vendor/_generated", {"manifest.json": MANIFEST})]
+    if generated_first:
+        entries.reverse()
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    try:
+        rt = AppRuntime(ws, AppsConfig(static_assets=dict(entries)))
+        assert get(rt, "/vendor/_generated/manifest.json").content == MANIFEST
+        assert get(rt, "/vendor/lib.js").status == 200
+        assert get(rt, "/vendor/nested/deep.css").status == 200
+    finally:
+        ws.close()
+
+
+def test_files_in_memory_are_a_copy():
+    """Bytes the caller changes after building the config are not what
+    a later runtime serves: different bytes are a new config."""
+    files = {"manifest.json": MANIFEST}
+    config = AppsConfig(static_assets={"gen": files})
+    files["manifest.json"] = b"changed"
+    files["extra.json"] = b"{}"
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    try:
+        rt = AppRuntime(ws, config)
+        assert get(rt, "/gen/manifest.json").content == MANIFEST
+        assert get(rt, "/gen/extra.json").status == 404
+    finally:
+        ws.close()
+    with pytest.raises(TypeError):
+        config.static_assets["gen"]["manifest.json"] = b"x"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "files, says",
+    [
+        ({}, "has no files"),
+        ({"/abs.json": b"{}"}, "relative path"),
+        ({"a/../b.json": b"{}"}, "relative path"),
+        ({"./a.json": b"{}"}, "relative path"),
+        ({"a//b.json": b"{}"}, "relative path"),
+        ({"dir/": b"{}"}, "relative path"),
+        ({"a.json": "{}"}, "must be bytes"),
+        ({"a": b"x", "a/b.json": b"{}"}, "also the directory"),
+    ],
+)
+def test_bad_files_in_memory_are_refused_when_the_config_is_built(files, says):
+    with pytest.raises(ValueError, match=says):
+        AppsConfig(static_assets={"gen": files})
+
+
+def test_files_in_memory_follow_the_prefix_rules(assets):
+    """The prefix is checked as a directory source's is."""
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    try:
+        for prefix in ("api", "../x"):
+            with pytest.raises(ValueError):
+                AppRuntime(ws, AppsConfig(static_assets={prefix: {"a.js": b""}}))
+    finally:
+        ws.close()
+
+
 def test_frozen_serving_sees_assets(assets):
     """Same config, both runtimes: an asset missing from the serving side
     is an app that verifies green and 404s published."""

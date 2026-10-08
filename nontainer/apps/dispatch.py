@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from ..executor import ViewSpec
@@ -163,14 +164,70 @@ def _unserved_top(rel: str) -> str | None:
     return None
 
 
-def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
+#: A ``static_assets`` source: a host directory, or files in memory.
+AssetSource = str | Path | Mapping[str, bytes]
+
+
+def _frozen_assets(
+    static_assets: Mapping[str, AssetSource],
+) -> Mapping[str, AssetSource]:
+    """``static_assets`` as a config keeps it: a read-only copy, with
+    each in-memory source checked and copied too, so bytes the caller
+    changes afterwards are not what a later runtime serves."""
+    return MappingProxyType(
+        {
+            prefix: (
+                _frozen_files(prefix, source) if isinstance(source, Mapping) else source
+            )
+            for prefix, source in static_assets.items()
+        }
+    )
+
+
+def _frozen_files(prefix: Any, files: Mapping[Any, Any]) -> Mapping[str, bytes]:
+    """An in-memory source, checked and copied. Its paths follow the
+    rules a directory's files do: relative, with no ``.``, ``..`` or
+    empty segments, and no path that is also another's directory,
+    since directories are implied by the paths."""
+    if not files:
+        # It would claim the whole prefix and 404 every request.
+        raise ValueError(f"static_assets prefix {prefix!r} has no files")
+    out: dict[str, bytes] = {}
+    for path, body in files.items():
+        if not isinstance(path, str) or any(
+            part in (".", "..", "") for part in path.split("/")
+        ):
+            raise ValueError(
+                f"static_assets file under {prefix!r} must be a relative path: {path!r}"
+            )
+        if not isinstance(body, bytes):
+            raise ValueError(
+                f"static_assets file {path!r} under {prefix!r} must be bytes, "
+                f"not {type(body).__name__} (encode text first)"
+            )
+        out[path] = body
+    for path in out:
+        parts = path.split("/")
+        for depth in range(1, len(parts)):
+            parent = "/".join(parts[:depth])
+            if parent in out:
+                raise ValueError(
+                    f"static_assets file {parent!r} under {prefix!r} is also the "
+                    f"directory of {path!r}"
+                )
+    return MappingProxyType(out)
+
+
+def _build_assets(static_assets: Mapping[str, AssetSource]) -> dict[str, Any]:
     """URL prefix -> read-only, confined filesystem over a host
-    directory. Reuses the composition a read-only ``Mount`` gets
-    (``ReadOnlyFS(IsolatedFS(dir))``) — same confinement primitive, a
-    different plane: this one never touches the workspace."""
+    directory, or over files held in memory. A directory reuses the
+    composition a read-only ``Mount`` gets (``ReadOnlyFS(IsolatedFS(dir))``)
+    — same confinement primitive, a different plane: this one never
+    touches the workspace. Files in memory are a ``VirtualFS`` holding
+    the config's own bytes, so a runtime copies none of them."""
     if not static_assets:
         return {}
-    from monkeyfs import IsolatedFS, ReadOnlyFS
+    from monkeyfs import IsolatedFS, ReadOnlyFS, VirtualFS
 
     out: dict[str, Any] = {}
     spelled: dict[str, Any] = {}
@@ -200,6 +257,13 @@ def _build_assets(static_assets: Mapping[str, str | Path]) -> dict[str, Any]:
                 f"static_assets prefix {raw!r} is unreachable: {top}/ holds the "
                 "app's authoring artifacts, which are never served"
             )
+        if isinstance(source, Mapping):
+            files = VirtualFS({})
+            # checked when the config was built (`_frozen_files`)
+            for path, body in source.items():
+                files.write(path, body)
+            out[prefix] = ReadOnlyFS(files)
+            continue
         real = Path(source).expanduser().resolve()
         if not real.is_dir():
             raise ValueError(f"static_assets source is not a directory: {real}")
@@ -483,11 +547,18 @@ class AppsConfig:
     libraries, use ``frontend_notes``: that replaces, and appending a
     correction underneath the built-in block leaves the wrong
     instruction both first and more emphatic."""
-    static_assets: Mapping[str, str | Path] = field(default_factory=dict)
+    static_assets: Mapping[str, AssetSource] = field(default_factory=dict)
     """URL prefix -> host directory of fixed files served WITH the app
     but absent from the workspace: a vendored component library, fonts,
     a charting bundle. ``{"vendor": "/srv/appassets"}`` serves
     ``/srv/appassets/mui.js`` at ``vendor/mui.js``.
+
+    A source may instead be files in memory, relative path -> bytes, for
+    an asset the embedder builds rather than ships:
+    ``{"vendor/_generated": {"manifest.json": body}}`` serves ``body`` at
+    ``vendor/_generated/manifest.json`` with no file on disk. The paths
+    follow a directory's rules (relative, no ``.`` or ``..``), and the
+    config keeps a copy: different bytes are a new config.
 
     This is to the browser what ``host_objects`` is to handlers — an
     embedder-supplied capability reached at request time, not workspace
@@ -676,10 +747,16 @@ class AppsConfig:
     Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
-        """Validate ``csp_extend`` at construction, where the traceback
-        still points at the embedder's own call, rather than shipping a
-        malformed directive into a served header (a stray ``;`` or
-        space would splice a new directive into the policy)."""
+        """Copy ``static_assets`` and check its in-memory files, and
+        validate ``csp_extend``, at construction: the traceback then
+        points at the embedder's own call."""
+        object.__setattr__(self, "static_assets", _frozen_assets(self.static_assets))
+        self._check_csp_extend()
+
+    def _check_csp_extend(self) -> None:
+        """A malformed directive must not ship into a served header: a
+        stray ``;`` or space would splice a new directive into the
+        policy."""
         if not self.csp_extend:
             return
         if self.csp is not None:
