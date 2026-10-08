@@ -340,6 +340,18 @@ class Turn:
                     inbox.restore(stray)
         return notes
 
+    def opening(self) -> str | None:
+        """The message a WOKEN turn opens with: what is waiting to be
+        delivered now (:meth:`collect`), rendered by the inbox; ``None``
+        when nothing is. A turn started for its delegates' answers or a
+        queued note, rather than by a prompt, sends this as its first
+        message. The notes are delivered from here, and settle with the
+        turn like any other."""
+        notes = self.collect()
+        if not notes or self.inbox is None:
+            return None
+        return self.inbox.render(notes)
+
     def deliver(self, result: str) -> tuple[str, list[Note]]:
         """``result`` with the notes queued for it appended, and those
         notes; ``(result, [])`` when there are none.
