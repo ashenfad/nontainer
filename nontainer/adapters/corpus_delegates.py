@@ -58,6 +58,7 @@ class CorpusDelegates:
         self.views: dict[str, DelegateView] = {}
         self.exhausted = False
         self._gates: dict[str, threading.Event] = {}
+        self._finishing = False
         self._lock = threading.Lock()
 
     def helper(self, ws: Workspace) -> Any:
@@ -68,8 +69,14 @@ class CorpusDelegates:
         return helper
 
     def _gate(self, name: str) -> threading.Event:
+        """The gate a delegate waits at. Once :meth:`finish` has begun, a
+        new one starts open: a run that begins as the scenario ends must
+        not wait for a release nothing will send."""
         with self._lock:
-            return self._gates.setdefault(name, threading.Event())
+            gate = self._gates.setdefault(name, threading.Event())
+            if self._finishing:
+                gate.set()
+            return gate
 
     def run(self, session: str, task: str, *, budget: Any = None) -> str:
         name = _short(session)
@@ -137,6 +144,7 @@ class CorpusDelegates:
         waits for their runs), and say how each delegate's answer came
         back to its asker."""
         with self._lock:
+            self._finishing = True
             for gate in self._gates.values():
                 gate.set()
             helpers = list(self.helpers)
