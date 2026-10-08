@@ -47,7 +47,8 @@ refused with a message naming what to do instead.
 sandbox on a local rung, in the guest on a VM rung, under the session's
 own python config. JavaScript tests run in a browser **on the host on
 every rung**, against the files this workspace holds — the same
-asymmetry `test_app` has. The report says so on every run.
+asymmetry `test_app` has. `ws-vitest --help` says so; the report does
+not.
 
 ---
 

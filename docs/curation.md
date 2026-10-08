@@ -20,7 +20,7 @@
 ## The idea
 
 A session is a branch that holds what an agent did: the files it
-wrote and, with the agno session db, the conversation that wrote them,
+wrote and the conversation that wrote them (`nontainer.conversation`),
 in the same commit. Every session on a store is readable from every
 other one — `ws-git worktree add` mounts a tree, and `diff` and `log`
 read across. So a store full of finished work is already a corpus, and
@@ -122,7 +122,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | piece | status |
 |---|---|
 | mounting another session's tree, pinned and read-only (`worktree add`, `files.attach`) | exists |
-| the conversation stored per run, in the same commit as the turn's files | exists (`KvgitSessionDb` with `commit="turn"`) |
+| the conversation stored per run, in the same commit as the turn's files | exists (`KvgitSessionDb` with `commit="turn"`, or `ws.turn` with any harness) |
 | delegation with a fresh conversation over a forked tree (`Sessions.ask(inherit="fresh")`) | exists |
 | a fork of a real moment with its files and no conversation (`fork_from="s@c", inherit="fresh"`) | exists |
 | each run's tokens and duration, stored with the run | exists (agno's `RunMetrics`) |
@@ -176,7 +176,9 @@ were run, not just read.
   its own name and the run lands in a trailing commit, so the commits
   between two run landings are one run's work either way. agno can
   also persist a run before it ends (`checkpoint="tool-batch"`), with
-  its status `running`.
+  its status `running`. Under `ws.turn` the db leaves the commit to the
+  turn, whose end lands it stamped with how the run ended (`completed`,
+  `cancelled`, `interrupted` or `failed`).
 - **Going back appends.** A checkout writes the target's state as a
   new commit, so the runs it stepped off are still in history — not in
   the head's run list, but reachable.
@@ -394,9 +396,11 @@ s/analyst-42/.trace/runs/014-77b0e2d1/changed.md
 Finding the landings means walking the branch's history once. The
 answer belongs to an immutable commit, so it is computed on first read
 and kept. The commit that lands a run names it — `{"tool": "turn",
-"runs": {"<id>": "COMPLETED"}}`, or `"RUNNING"` for a checkpoint agno
-wrote mid-run — so the walk reads commit info instead of a session
-record per commit.
+"runs": {"<id>": "<status>"}}`, agno's status (`COMPLETED`, or
+`RUNNING` for a checkpoint) when the db commits, or the turn's
+`completed` / `cancelled` / `interrupted` / `failed` when `ws.turn`
+does — so the walk reads commit info instead of a session record per
+commit.
 
 ### `ws-git show <ref>:<path>`
 

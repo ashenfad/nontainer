@@ -23,7 +23,7 @@ primitives.
 ```python
 from nontainer.sessions import Sessions
 
-sessions = Sessions(ws, runner, budget=None, max_workers=4, chain=(), on_answer=None, loop=None)
+sessions = Sessions(ws, runner, *, budget=None, max_workers=4, chain=(), on_answer=None, loop=None)
 sessions.ask(task, *, name=None, paths=None, inherit=None,
              fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
 sessions.list() -> list[Job]
@@ -37,6 +37,7 @@ sessions.keep(name) -> Job           # out of the retention sweep, for good
 sessions.base(name) -> str | None    # the commit it was forked from
 sessions.sweep(idle, *, min_age=3600) -> list[str]   # the branches it took
 sessions.close()                     # joins the workers; the branches stay
+sessions.closed -> bool              # close() has begun; a wait on it ends at once
 
 # from a coroutine
 await sessions.aask(task, *, wait=False, ...) -> Job | Answer
@@ -47,8 +48,8 @@ await sessions.aclose()
 
 `ask` forks under a pet name scoped to the parent
 (`analyst.sleepy-otter` — a session id becomes a branch name and holds
-no separator, so the scope is a dot), hands the child to the runner on
-a worker thread and returns at once. `paths` narrows what the child
+no separator, so the scope is a dot), hands the child to the runner (on
+a worker thread, or on the loop for an async runner) and returns at once. `paths` narrows what the child
 SEES without narrowing its branch; `inherit` decides only whether the
 conversation comes along — a brief or a summary is content the task
 carries. Unset, it follows where the child is forked from: a child of
@@ -150,9 +151,11 @@ there: a resumed child keeps the conversation it has, and there is no
 second fork to seed.
 
 A child does **one task at a time**. A run still in flight refuses the
-next one, and it is in flight until its runner stops — `cancel`
-discards an answer, it cannot interrupt the embedder's loop, so a
-cancelled run holds its child until the runner is done with it. The
+next one, and it is in flight until its runner stops. `cancel`
+discards a synchronous runner's answer but cannot interrupt the
+embedder's loop, so that cancelled run holds its child until the runner
+is done with it; an async run is stopped, and the branch is free once
+it has ended. The
 check that a branch is free and the reservation of it are one critical
 section, so two callers resuming one child cannot both pass.
 
@@ -196,8 +199,9 @@ only what it changed.
 Delivery is **pull**: `ask` on one turn, `result` on a later one. How a
 parent learns a delegate finished — a dot in a rail, a message injected
 into the next turn — is the embedder's. `cancel` means the answer will
-be discarded and the branch left as it is: a runner already working is
-the embedder's loop and cannot be interrupted, and nothing the helper
+be discarded and the branch left as it is: a synchronous runner already
+working is the embedder's loop and cannot be interrupted (an async run
+is stopped), and nothing the helper
 does writes to the child's branch, so there is nothing to undo either.
 A job that has already answered comes back unchanged.
 
@@ -211,10 +215,11 @@ and an expired one drops out with its branch; a delegate asked again
 (`resume`) lands a new answer and appears again.
 
 The helper says when an answer lands; what the parent does about it
-is the embedder's. Two ways to hear it, both without polling:
+is the embedder's. Ways to hear it, none of them polling:
 
 - **`on_answer(name, answer)`** is called once for every answer that is
-  recorded, on the worker thread that ran the job, after the job has
+  recorded, on the thread that landed it (the worker that ran a
+  synchronous job, a landing thread for an async one), after the job has
   settled: the answer is collectable, the branch is free for a
   `resume`, and the child handle is closed. An answer a `resume` has
   replaced by then is still reported, since it was recorded. A
@@ -226,11 +231,16 @@ is the embedder's. Two ways to hear it, both without polling:
   collected, or until no job is running, and returns the names with an
   answer waiting. It collects nothing. An empty list means there was
   nothing to wait for, the timeout passed, or the helper closed.
-- **Waiting from agent code is safe.** A `run_python` call holds the
-  parent's workspace lock while it runs. Landing an answer reads only
-  committed history, through the child's handle, and never takes that
-  lock, so code that asks a delegate and waits for it (`wait=True`, or
-  `wait()` then `result()`) gets the answer, on every rung.
+- **From a coroutine**, `await sessions.await_ready()` is `wait()`
+  awaited, and `async for name, answer in sessions.answers()` yields
+  each answer as it lands, collecting it as `take()` does, until the
+  helper closes.
+
+**Waiting from agent code is safe.** A `run_python` call holds the
+parent's workspace lock while it runs. Landing an answer reads only
+committed history, through the child's handle, and never takes that
+lock, so code that asks a delegate and waits for it (`wait=True`, or
+`wait()` then `result()`) gets the answer, on every rung.
 
 `outstanding()` lists the jobs not yet heard the end of: still running,
 or answered and not collected.
@@ -241,7 +251,11 @@ inbox (the [API reference](api.md) has the wiring) is one way: with
 the answers there — mid-turn rather than on the next one — framed as
 the delegation mechanism speaking rather than as the person the agent
 works for. `inbox.on_delivered` is where an embedder records that
-delivery.
+delivery. A harness on the turn API does the same with a source:
+`ws.turn(run_id, inbox=inbox, sources=[lambda inbox:
+answer_notes(sessions, inbox)])` hands each landed answer over on the
+next `turn.deliver(...)` as a mechanism note, and the agno toolkit's
+delivery is built on it.
 
 ### Retention: an idle TTL the embedder sweeps
 
@@ -308,9 +322,9 @@ helper was built in, or `Sessions(..., loop=)`. Then:
   loop never waits on it;
 - `cancel` stops the run, where a synchronous runner's answer can only
   be discarded, and the branch is free once the run has ended;
-- on that loop's own thread, `ask(wait=True)` and `close()` would block
-  the loop they wait on, so they are refused: `aask` and `aclose` await
-  instead.
+- on that loop's own thread, `ask(wait=True)` would block the loop it
+  waits on, so it is refused, and so is `close()` while runs are in
+  flight: `aask` and `aclose` await instead.
 
 **A reply is not always the answer.** A delegate may delegate, and an
 agent told to end its turn while its own delegates work (rather than
@@ -338,12 +352,16 @@ After each reply it checks the delegate's own delegates
 (`outstanding()`) and its inbox. While either holds something, the
 reply is the delegate waiting: it waits for an answer (looking at the
 inbox every half second, since a note counts too) and runs a woken
-turn, `run_turn(None)`, which opens with what is waiting to be
-delivered (`Turn.opening()`: the inbox's notes and the answers its
-sources hand over, rendered). Once nothing is pending, the last reply
-is the answer. `max_wakes` bounds the woken turns, and when they run
-out it answers with what it has: `Settled.unread` names the delegates
-not yet heard from, and `Settled.text` says so in the answer. Nudges,
+turn, `run_turn(None)`, which the runner opens with `turn.opening()`
+(`await turn.aopening()` from a coroutine): the inbox's notes and the
+answers its sources hand over, rendered. Once nothing is pending, the
+last reply is the answer. `max_wakes` bounds the woken turns, and when
+they run out it answers with what it has: `Settled.unread` names the
+delegates not yet heard from, and `Settled.text` says so in the answer.
+A helper that closes while its delegates still run ends the wait the
+same way. `Settled` holds the last `reply`, the `wakes` taken, the
+`unread` delegates and the number of `notes` left undelivered; `poll=`
+sets how often the inbox is looked at (half a second by default). Nudges,
 what counts as a reply and how a turn is run stay the runner's.
 
 `forked_at` is the parent's commit the child was forked from (`None`
@@ -408,8 +426,8 @@ records to outlive its process writes them where its own state lives.
 
 Declining and running out of budget **resolve**: the caller reads a
 status, never catches an exception. `JobRunning`, `BranchExpired` and
-`SessionsError` are the three that do raise (not yet, swept, and no
-such job).
+`SessionsError` are the three that do raise (not yet; swept; and no
+such job, or an ask the helper refuses).
 
 ### The `sessions` tool
 

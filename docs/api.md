@@ -26,7 +26,13 @@ to import it from:
 | `nontainer.remote` | typed calls through a `HostObject` stub: the host half, the sandbox half, and the contract read off a host object's annotations ([`PythonConfig`](#pythonconfig)) |
 | `nontainer.apps.contract.filter_headers(raw)` | the allowlisted request headers a handler may see |
 | `nontainer.adapters.render.apps_notes(config)` | the apps section of a terminal tool description |
-| `nontainer.adapters.agno_db` | `KvgitStoreDb`, `fork_session` — agno session storage over a store |
+| `nontainer.turns` | `Turn`, `RunStatus`, the `TurnEvent` classes ([below](#nontainerturns--the-turn-and-what-it-streams)) |
+| `nontainer.conversation` | the stored conversation's index ([below](#nontainerconversation--the-stored-conversation)) |
+| `nontainer.sessions` | `Sessions`, `until_settled`, `auntil_settled`, `Settled`, `answer_notes` ([Delegation](#delegation-nontainersessions)) |
+| `nontainer.inbox` | `Inbox`, `Note`, `render`, `split` |
+| `nontainer.compaction` | the `Fold` record, `record`, `folds`, `in_force`, and the helpers a loop may fold with |
+| `nontainer.conformance` | the harness corpus: `run`, `check`, `applies`, `Harness`; scenarios in `.corpus` and `.harness` ([extending.md](extending.md#a-harness--the-loop-that-drives-a-session)) |
+| `nontainer.adapters.agno_db` | `KvgitSessionDb`, `KvgitStoreDb`, `fork_session` — agno session storage over a store |
 
 ## `nontainer.Store` — where sessions live
 
@@ -44,9 +50,11 @@ Store(
 )
 nontainer.store(...)                      # the same, as sugar
 
-store.open(session, **workspace kwargs) -> Workspace
+store.open(session, *, python=, mounts=, commands=, cache=, autocommit=,
+           max_observation=, executor_factory=, root=, ignore=, profile=) -> Workspace
 store.sessions() -> list[str]             # session ids on the store
 store.exists(session) -> bool
+store.fork(src, dst, *, at=None, inherit="full", paths=None, **open_kwargs) -> Workspace
 store.delete(sessions, *, min_age=3600) -> None
 store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at
                                           # session@commit; close it
@@ -55,6 +63,8 @@ store.migrate_layout(sessions=None, *, dry_run=False)
     -> dict[str, LayoutMigration]         # pre-monkeyfs-0.1.10 heads
 store.tags -> StoreTags                   # store-scoped tags (below)
 store.repo -> kvgit.Repo                  # kvgit: the repository (power tool)
+store.path -> Path | None                 # None for a memory store
+store.memory -> bool
 store.close() -> None                     # also a context manager
 ```
 
@@ -251,8 +261,9 @@ nothing to sweep.
 **settings)`, `store.resolve(ref, *, root=None, **settings)` and
 `Publication.open(version=None, **settings)` accept `Store.open`'s
 construction keywords — `python`, `mounts`, `commands`, `cache`,
-`max_observation`, `executor_factory`, `root` — applied to the frozen
-workspace they return. `autocommit` is not among them: a frozen
+`max_observation`, `executor_factory`, `root`, `ignore` (a publication
+takes no `root`) — applied to the frozen workspace they return, but not
+`profile`: pass its fields. `autocommit` is not among them: a frozen
 provider commits nothing, so the flag has nothing to switch. Nor are
 `provider` and `executor`, for the reason `Store.open` refuses them —
 the store builds the provider, and an executor instance is bound to
@@ -417,7 +428,7 @@ One publish writes three things:
 - a store-scoped tag `<name>/<version>` naming that commit.
 - a record in the **publication registry**, `publications.json` under
   the store path, written atomically (write-then-rename). A store with
-  no directory of its own (`provider_factory`) keeps it in memory for
+  no directory of its own (`provider_factory`, or `memory=True`) keeps it in memory for
   the life of the `Store`. Its shape:
 
   ```json
@@ -760,7 +771,7 @@ stays byte-exact; non-print writes fall back to a head-cut.
 ### Files (`ws.files`)
 
 ```python
-ws.files.read(path) -> bytes                 # raises if absent
+ws.files.read(path, offset=0, size=-1) -> bytes   # raises if absent
 ws.files.exists(path) -> bool
 ws.files.list(path=".", recursive=False) -> list[str]
     # files and directories, sorted, spelled the way `path` was —
@@ -836,7 +847,7 @@ ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
 ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
 ws.discard() -> None                             # drop staged writes
-ws.turn(run_id=None, *, resume=False, inbox=None, harness=None) -> Turn
+ws.turn(run_id=None, *, resume=False, inbox=None, harness=None, sources=()) -> Turn
                                                  # one run of a harness's loop;
                                                  # see nontainer.turns
 ws.autocommit: bool                              # settable; see below
@@ -1633,8 +1644,9 @@ whole of it on a guest.
 
 `host_objects` survive either rung: a live object becomes a hostcall
 proxy behind dud's allowlist, granted its public methods so the
-reachable surface matches what `LocalExecutor` bridges, and plain data
-rides into each call as inputs. What a workspace's executor can do is
+reachable surface matches what `LocalExecutor` bridges, plain data
+rides into each call as inputs, and a `HostObject` with `type=` or
+`stub=` crosses as [`PythonConfig`](#pythonconfig) describes. What a workspace's executor can do is
 readable on the runtime — `supports_commands`, `supports_ws_verbs` and
 `guest_to_host(path)` are under [Introspection](#introspection).
 Writing an executor of your own is
@@ -1683,8 +1695,8 @@ other = store.open("chat-43", profile=dataclasses.replace(profile, root="/home/a
 
 `cache`, `autocommit` and `max_observation` are not part of it: they say
 how a session behaves, not what its world holds. Frozen opens
-(`store.resolve`, `tags.at`, a publication's `open`) take the six
-keywords, not `profile`.
+(`store.resolve`, `store.tags.at`, a publication's `open`, which takes
+no `root`) take the keywords, not `profile`.
 
 ## `nontainer.conversation` — the stored conversation
 
@@ -1727,13 +1739,23 @@ spec = Spec.of(list[Score], names=None)   # compiled once; Unsupported if it can
 spec.kinds        # {"data"}: what it needs carried (data, bytes, table, array, live, any)
 spec.travels      # no live part, so it can cross a process boundary
 spec.types        # the record and enum classes it names
-spec.check(value, full=False)   # strict; Mismatch says where (``at scores[3].total``)
+spec.check(value, *, full=False)   # strict; Mismatch says where (at scores[3].total)
 spec.decode(encoded_or_blob)    # builds the declared type, or Mismatch
 
-encoded = encode(value, limit=None)   # Encoded(tree, parts); Unencodable, TooLarge
+encoded = encode(value, *, limit=None)   # Encoded(tree, parts); Unencodable, TooLarge
 encoded.to_bytes()                    # one blob, headed "nt-value/1"
 Encoded.from_bytes(blob)              # Malformed for anything else
+
+check(value, tp, *, names=None, full=False)   # Spec.of(tp).check, in one call
+decode(encoded_or_blob, tp, *, names=None)    # Spec.of(tp).decode, in one call
+copy(value)                     # a copy no route reaches the original through
+find_live(value) -> str | None  # where a value holds a live object
 ```
+
+These errors are the standard library's kinds, so the module runs in a
+guest with no nontainer import: `Mismatch`, `Unsupported` and
+`Unencodable` are `TypeError`s, `TooLarge` and `Malformed` are
+`ValueError`s.
 
 A harness handing values between the host and agent code (a task's
 inputs and result, a delegate's answer) checks them against a declared
@@ -1788,7 +1810,10 @@ turn.bind(run_id)                        # once, for a loop that mints the id
 turn.deliver(result) -> (text, notes)    # a tool result with its queued notes
 await turn.adeliver(result)              # the same, awaiting on_delivered
 turn.collect() -> list[Note]             # the notes alone, for a non-text result
-turn.interrupt(message, *, body=None)    # an error to resume from
+turn.opening() -> str | None             # a WOKEN turn's first message: what is
+                                         # waiting, rendered; None when nothing is
+await turn.aopening()                    # the same, awaiting on_delivered
+turn.interrupt(message, *, body=None, record=...)   # an error to resume from
 turn.end(status, *, body=None, record=..., message=None) -> str | None
 turn.status, turn.commit                 # how it ended; the commit it landed
 ```
@@ -1812,6 +1837,11 @@ inbox, then whatever each of `sources` adds (pass
 session's delegate answers). The notes are delivered, not settled,
 until the turn ends; notes that cannot be appended stay queued for the
 next result. The inbox's `on_delivered` hears of each delivery.
+
+A turn started for its delegates' answers or a queued note, rather than
+by a prompt, opens with `turn.opening()`: the notes are delivered from
+there as `deliver` delivers them, settle with the turn, and go back to
+the queue if they cannot be rendered.
 
 Leaving the `with` block normally completes the turn; a
 `CancelledError` cancels it and any other exception fails it, and the
@@ -1840,11 +1870,13 @@ event_from_dict(data) -> TurnEvent         # the reverse of dataclasses.asdict
 ```
 
 One vocabulary for what a turn streams, whatever loop produced it.
-Each event is a frozen dataclass whose `kind` is its class name. A
+Each event is a frozen, keyword-only dataclass whose `kind` is its
+class name (`RunStarted(run_id="r1")`). A
 harness that owns its loop yields them directly; the agno adapter's
 conformance harness maps agno's run events onto them. What each status
 means, and the harness corpus that checks a harness against the
-contract (`nontainer.conformance`), are in
+contract (`nontainer.conformance`: tiers 0–5, `AgnoHarness`, and
+delegation through `nontainer.adapters.corpus_delegates`), are in
 [extending.md](extending.md#a-harness--the-loop-that-drives-a-session).
 
 ## `PythonConfig`
@@ -1854,7 +1886,7 @@ contract (`nontainer.conformance`), are in
 class PythonConfig:
     modules: Sequence[ModuleType | ModuleGrant | Sequence[...]] = ()
     stdlib: bool = True                     # curated safe-stdlib set
-    host_objects: Mapping[str, Any | HostObject] = {}
+    host_objects: Mapping[str, Any | HostObject] = {}   # read-only once built
     network: bool = False
     isolation: "none" | "process" | "kernel" = "none"
     timeout: float = 30.0
@@ -1922,7 +1954,8 @@ class PythonConfig:
   reaches the host's object. The value is checked against the type when
   the entry is made (`nontainer.values`, strictly), and a type with a
   live part is refused. Without `type` or `stub`, the entry is the
-  object itself.
+  object itself. Passing both is refused (`TypeError`), and `stub` must
+  be a class.
 - With `stub`, `obj` is a live object that code calls through a class
   of the embedder's that runs in the sandbox, built there on every rung
   as `stub(remote)`. `remote.<method>(...)` calls `obj`'s method of that
@@ -1974,6 +2007,14 @@ class PythonConfig:
   from its source, so that module should need nothing the guest lacks.
   A class defined inside a function or in `__main__` can't be named from
   another process, and is refused at open under isolation and on dud.
+  Every entry must be a class, and the names must be unique and must
+  not be a host object's, `host` or `cache` (`ValueError` at
+  construction), since code names them.
+- `host_objects` is read-only once the config is built: each executor
+  takes its set when it opens, so an object added later would reach
+  in-process code and nowhere else. A different set is a different
+  config, `dataclasses.replace(python, host_objects={...})`, for a
+  workspace opened (or forked) with it.
 - `host_objects` are bound into the program the executor runs — the
   top-level `run_python` code, and an app handler — and also arrive as a
   synthetic `host` module: `from host import db` resolves at the top
@@ -2005,8 +2046,8 @@ class PythonConfig:
   for `exec_python(view=...)` calls — in practice, apps' handler
   dispatch (the live preview, `test_app`, published-app requests).
   `run_python` and plain `exec_python` are unaffected: they run in the
-  session sandbox, whose worker is created once at workspace
-  construction and held for its life — already warm.
+  session sandbox, whose worker starts with the first execution (or
+  `ws.runtime.warm()`) and is held for the workspace's life.
 
   It is a **latency optimization, not a safety mechanism**. What it
   buys is worker start, which a worker pays by re-importing the granted
@@ -2154,16 +2195,54 @@ primitives, the read views, each bundled provider's constructor and
 
 Delegating to a subagent is a fork, and the helper, the `Job` /
 `Answer` records, the `SessionRunner` seam and the `sessions` tool are
-in [sessions.md](sessions.md).
+in [sessions.md](sessions.md). The surface:
+
+```python
+Sessions(ws, runner, *, budget=None, max_workers=4, chain=(),
+         on_answer=None,            # (name, answer) once each lands; settable
+         loop=None)                 # an async runner's loop; default: the one
+                                    # the helper is built in
+helper.ask(task, *, name=None, paths=None, inherit=None, fork_from=None,
+           resume=None, wait=False, budget=None) -> Job | Answer
+await helper.aask(task, ...) -> Job | Answer
+helper.list() -> list[Job]; helper.result(name) -> Answer   # JobRunning while it runs
+helper.take() -> list[tuple[str, Answer]]   # landed and uncollected, once each
+helper.outstanding() -> list[str]           # running, or answered and uncollected
+helper.wait(timeout=None) -> list[str]      # names with an answer waiting
+await helper.await_ready(timeout=None) -> list[str]
+async for name, answer in helper.answers(): ...   # each as it lands, until closed
+helper.cancel(name) -> Job   # answer discarded; an async run is stopped too
+helper.keep(name); helper.base(name); helper.sweep(idle, *, min_age=3600)
+helper.closed -> bool        # close() has begun; waits on it end at once
+helper.close(); await helper.aclose()
+
+until_settled(run_turn, sessions=None, inbox=None, *, prompt,
+              max_wakes=10, poll=0.5) -> Settled
+await auntil_settled(...)                   # run_turn awaited
+Settled(reply, wakes=0, unread=(), notes=0) # .text names the unread delegates
+answer_notes(helper, inbox) -> list[Note]   # landed answers as delivered notes
+```
+
+An async runner (`run` is `async def`) runs on `loop`, `max_workers`
+at a time, and landing its answer runs on a thread; `close()` on that
+loop with runs in flight is refused (`aclose` awaits them).
+`until_settled` runs a delegate's turns (`run_turn(None)` is a woken
+turn, opened with `turn.opening()`) until neither its own delegates nor
+a note in its inbox is outstanding, within `max_wakes` or until the
+helper closes.
 
 ## Errors (`nontainer`)
 
-Everything nontainer raises is a `WorkspaceError`, so one `except`
-clause holds the package:
+Every error class nontainer defines is a `WorkspaceError`, so one
+`except` clause holds the package, with one exception: `nontainer.values`'
+own are the standard library's kinds (see [above](#nontainervalues--typed-values-across-a-boundary)),
+and arguments that don't fit a constructor (`HostObject`,
+`PythonConfig`, `Profile`) raise `TypeError` / `ValueError`.
 
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
 `SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
-`SessionsError` (no such job) · `JobRunning` (not yet) ·
+`SessionsError` (no such job, or an ask refused) · `JobRunning` (not yet) ·
+`TurnInProgress` (a turn is already open on this workspace) ·
 `BranchExpired` (the job's branch was swept) · `LegacyLayoutError` (a
 head written before monkeyfs 0.1.10, which `store.migrate_layout`
 converts) · `CacheError` (a cache
@@ -2250,6 +2329,8 @@ WorkspaceTools(
     inbox: Inbox | None = None,         # mid-run notes; tk.inbox otherwise
     terminal_primer: str | None = None, # host guidance → terminal tool
     python_primer: str | None = None,   # host guidance → run_python tool
+    vision: bool = True,                # False: no view_image; test_app
+                                        # screenshots come back as paths
     **toolkit_kwargs,
 )
 # commit="turn": one commit per agent turn (the agex model) — wire
@@ -2257,11 +2338,12 @@ WorkspaceTools(
 # the turn's staged work; "call" trades chattier history for max
 # durability. Workspace.autocommit is also publicly settable.
 # session_db: the db over this same workspace (see below). Naming it
-# makes end_turn a no-op — the db commits the turn instead.
+# makes end_turn a no-op — the db commits the turn instead; so does an
+# open ws.turn, whose end commits.
 ```
 
-`"auto"`: plain python env → one `terminal` tool; cache or host
-objects → split `terminal` + `run_python`. Parallel tool calls
+`"auto"`: plain python env → one `terminal` tool; cache, host objects
+or `classes` → split `terminal` + `run_python`. Parallel tool calls
 serialize safely (agno `arun()` runs sync tools concurrently on
 threads; the workspace's internal lock enforces single-writer, and
 the adapter's own lock fences its surrounding work). With `apps=`, `test_app`
@@ -2298,10 +2380,16 @@ pending, for the embedder to start the next turn with. `tk.inbox` is an
 `Inbox` (`nontainer.inbox`, no agno import) unless one is passed in:
 
 ```python
-note = inbox.put(text, kind="principal", label="", job=None, answer=None)
+inbox = Inbox(*, frame=None, on_delivered=None)
+note = inbox.put(text, *, kind="principal", label="", job=None, answer=None)
+inbox.deliver_now(text, *, kind=..., label=..., job=None, answer=None) -> Note
+                                           # minted delivered: what a turn source adds
 inbox.pending() / inbox.withdraw(note.id) / inbox.drain()
 inbox.delivered() / inbox.settle() / inbox.requeue()
-inbox.on_delivered = lambda notes: ...     # awaited by adeliver if awaitable
+inbox.restore(notes)                       # just-drained notes back to the queue head
+inbox.render(notes) -> str                 # with this inbox's frame
+inbox.announce(notes, *, allow_async)      # tells on_delivered
+inbox.on_delivered = lambda notes: ...     # awaited by adeliver / aopening if awaitable
                                            # (a sync hook discards an awaitable)
 ```
 
@@ -2313,7 +2401,7 @@ evidence rather than instruction. Text inside a tool result reads as
 the tool's output unless something says otherwise, and the two carry
 different authority.
 
-`split(text) -> (bare result, rendered notes)` is how an embedder
+`nontainer.inbox.split(text) -> (bare result, rendered notes)` is how an embedder
 strips the block from a transcript or exempts it from tool-result
 compression; the two halves concatenate back. It recognises a block by
 the trailer `render` closes it with — the block's own length — not by
@@ -2543,7 +2631,9 @@ commit that landed a run is a walk for the first one that names it. This is
 why `session_db=` exists: agno runs post hooks *before* it persists the
 session, so `tk.end_turn` would commit the files without the
 conversation. With a session db wired, `end_turn` is a no-op and stays
-harmless to leave in `post_hooks`.
+harmless to leave in `post_hooks`. While a turn is open on the
+workspace (`ws.turn`), the write is left staged and the turn's end lands
+it, stamped with the turn's status rather than agno's.
 
 **One session per workspace.** `get_session` answers only for the
 branch's session id, `get_sessions` returns at most one, and an upsert
@@ -2572,18 +2662,19 @@ not the whole list, because agno 3.x reads with a run limit and writes
 back only the most recent runs; the branch keeps its full list.
 
 ```python
-child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"
+child = fork_session(ws, "what-if", conversation="inherit")  # or "fresh"; at= a commit
 ```
 
-Returns the forked `Workspace`. The fork's session key carries
+Returns the forked `Workspace`. The fork's record carries
 `session_id = name` and `session_data["forked_from_session_id"]
 = <parent>` (where agno keeps fork lineage), written in a commit of
 the fork's own, so its head is consistent — `ws.fork` rebinds a
 conversation it carries. Drive it with an agent whose `session_id` is
 the fork name. `"fresh"` drops the run keys (and compaction's folds
 over them) and empties `run_ids`, leaving the record: a clean chat over the forked files, under a
-session the db can write to. Rewind first to
-branch from any commit with the conversation as it was there.
+session the db can write to. `at=` branches from an earlier commit of
+this session, files and conversation as they stood there, without
+rewinding this session to get there.
 
 Driving the fork is the same three constructions over the child:
 
@@ -2637,7 +2728,7 @@ session already open — a second `Workspace` over the same branch would
 split the turn across two staging buffers — and only the embedder
 knows which ones it is holding.
 
-### agno compaction (`nontainer.adapters.agno_compaction`, `[agno]` extra, agno 3.0+)
+### agno compaction (`nontainer.adapters.agno_compaction`, `[agno]` extra, agno 2.5+)
 
 `CompactingCompression(ws, policy, *, on_fold=None, summary_model=None)`
 is an agno `CompressionManager` that keeps a long conversation inside
@@ -2651,8 +2742,10 @@ tool result, and a failure inside it is logged, never raised into the
 agent's call.
 
 The harness-neutral half is `nontainer.compaction`:
-`Policy(budget, window=None)`, the `Fold` record, `folds(ws)` (oldest
-first) and `in_force(ws, message_ids)`. The design, what agno behaviour
+`Policy(budget, window=None)`, the `Fold` record, `record(ws, fold)`
+(staged for the turn's commit), `folds(ws)` (oldest first) and
+`in_force(ws_or_folds, message_ids)`. nontainer keeps the record and
+its rules; how and when to fold is each loop's. The design, what agno behaviour
 it rides on, and its limits (one run longer than the window still
 fails) are in [compaction.md](compaction.md).
 
@@ -2680,7 +2773,8 @@ network/host-fs, host objects, primers).
 
 **Artifact channels.** Every server also registers:
 
-- a `view_image` tool (both adapters): the agent views a workspace
+- a `view_image` tool (both adapters; not on an agno toolkit built with
+  `vision=False`): the agent views a workspace
   image — a saved plot, a chart — returned as real image content for
   vision models (png/jpeg/gif/webp, 10MB cap).
 - MCP **resources** (MCP adapter): any workspace file is readable as
@@ -2732,6 +2826,26 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   and the agent-facing allowlist sentence (one declaration)
            apps_primer=None,  # embedder guidance APPENDED to the apps
            #   notes (available endpoints, house conventions)
+           static_assets={},  # {url_prefix: AssetSource} — fixed files
+           #   served WITH the app but absent from the workspace: a
+           #   vendored component library, fonts, a charting bundle.
+           #   {"vendor": "/srv/assets"} serves /srv/assets/mui.js at
+           #   vendor/mui.js. To the browser what host_objects are to
+           #   handlers: embedder-supplied, reached at request time,
+           #   outside the versioning plane — so the agent cannot ls,
+           #   read, or edit them (it is told so, in a sentence derived
+           #   from this mapping; `ws-curl $APP_ORIGIN/vendor/mui.js` still works), and
+           #   they add nothing to commits, forks, or a guest tree.
+           #   Same-origin, so script_hosts needs no entry. Assets skip
+           #   the response-size caps and win over a workspace file at
+           #   the same path (noted in api.log). Prefixes may nest
+           #   (vendor, vendor/charts): a path serves from the most
+           #   specific prefix covering it, whatever the declared order;
+           #   two spellings of one prefix (vendor, vendor/) are refused,
+           #   as is a prefix under api/ or the authoring dirs. A source
+           #   is a host dir or files in memory, {relative_path: bytes},
+           #   for an asset built at startup (relative paths, no . or ..,
+           #   bytes only); the config keeps a read-only copy. See apps.md.
            frontend_notes=None,  # which frontend approach to reach for,
            #   which libraries exist, and where they come from — the
            #   part of the notes only the embedder can know. None = the
@@ -2766,21 +2880,6 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   script HOSTS still belong in script_hosts, which also
            #   drives ws-curl's message and the agent-facing allowlist
            #   sentence.
-           static_assets={},  # {url_prefix: host_dir} — fixed files
-           #   served WITH the app but absent from the workspace: a
-           #   vendored component library, fonts, a charting bundle.
-           #   {"vendor": "/srv/assets"} serves /srv/assets/mui.js at
-           #   vendor/mui.js. To the browser what host_objects are to
-           #   handlers: embedder-supplied, reached at request time,
-           #   outside the versioning plane — so the agent cannot ls,
-           #   read, or edit them (it is told so, in a sentence derived
-           #   from this mapping; `ws-curl $APP_ORIGIN/vendor/mui.js` still works), and
-           #   they add nothing to commits, forks, or a guest tree.
-           #   Same-origin, so script_hosts needs no entry. Assets skip
-           #   the response-size caps and win over a workspace file at
-           #   the same path (noted in api.log). A source may also be
-           #   files in memory, {relative_path: bytes}, for an asset
-           #   built at startup; the config keeps a copy. See apps.md.
            origin="http://localhost",  # the app's canonical base URL.
            #   enable_apps exports it as $APP_ORIGIN — in the termish
            #   shell and in a dud guest's real bash — which is how the

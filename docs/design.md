@@ -52,6 +52,13 @@ hooks run *before* that, and a hook-driven commit would hold the turn's
 files but leave its conversation for the next commit. See
 [agno-sessions.md](agno-sessions.md).
 
+Under a turn (`ws.turn(run_id)`), neither the hook nor the db commits:
+ending the turn stores the run, settles the inbox and lands the one
+commit, stamped with the run and how it ended (`completed`,
+`cancelled`, `interrupted`, `failed`). That is the per-turn unit for
+any loop, not only agno's, and a workspace takes one turn at a time
+(`TurnInProgress`).
+
 Both of those are the *framework* committing — everything uncommitted,
 at a moment the agent did not choose. That is safe to do at any moment
 because the agent's own git is measured against the agent's own last
@@ -473,13 +480,14 @@ verbs, so there is one definition of "the current layout".
 
 ## Tool exposure adapts to the environment
 
-`WorkspaceTools(tools="auto")` picks the surface from the config:
+`tools="auto"`, on the shared `Toolset` under both the agno toolkit
+and the MCP server, picks the surface from the config:
 
-- **Plain workspace** (no host objects, cache off) → one `terminal`
+- **Plain workspace** (no host objects or `classes`, cache off) → one `terminal`
   tool, with `python` as a shell builtin bridging `run_python`. The
   shell frame tells no lies: `python` genuinely has script semantics
   and composes in pipelines.
-- **Augmented workspace** (live host objects, `cache`, namespace-out
+- **Augmented workspace** (host objects, `classes`, `cache`, namespace-out
   conventions) → `terminal` **and** a separate `run_python` with its
   own framing, because script semantics would mislead about the
   namespace magic.
@@ -542,11 +550,11 @@ layers:
 
 | layer | modules | what it is |
 |---|---|---|
-| core | `store`, `workspace`, `runtime`, `protocol`, `executor*`, `providers/`, `agentgit`/`wsgit`, `wsverb`/`wscurl`, `artifacts`/`ui`/`dud_outputs`, ... | the fake little computer, and the seams above |
+| core | `store`, `workspace`, `runtime`, `protocol`, `executor*`, `providers/`, `turns`, `conversation`, `values`, `conformance/`, `agentgit`/`wsgit`, `wsverb`/`wscurl`, `artifacts`/`ui`/`dud_outputs`, ... | the fake little computer, and the seams above |
 | sessions | `sessions` | delegation: a child session, a job, an answer |
 | apps | `apps/` | the request loop over a workspace tree |
 | testing verbs | `wspytest`, `wsvitest` | `ws-pytest` and `ws-vitest` |
-| adapters | `adapters/` | agno, MCP, a2ui, observation rendering |
+| adapters | `adapters/` | the shared toolset, agno (tools, session db, compaction, conformance harness), MCP, a2ui, observation rendering |
 
 The rule is that **core imports nothing from the other four, and the
 other four run on core's public API**. One direction, no exceptions,
@@ -630,10 +638,12 @@ pitch; the pitch is the *workspace*.
 - **Compaction** — past a token budget, the older turns of a
   conversation are replaced in what the model is sent by one summary,
   recorded in the workspace so rewind and fork carry it; the stored
-  conversation and the person's transcript keep everything. A neutral
-  core with a thin adapter per harness, agno's first. Basic
-  compaction and the agno adapter shipped in 0.8.8; chaptering
-  is the later part. Written up in [compaction.md](compaction.md),
+  conversation and the person's transcript keep everything. nontainer
+  keeps the record of a fold and its rules, which every harness and
+  reader share; each loop folds in its own way, and agno's adapter is
+  nontainer's own. Basic compaction and the agno adapter shipped in
+  0.8.8, and the harness corpus pins the contract; chaptering is the
+  later part. Written up in [compaction.md](compaction.md),
   with a ledger.
 - **run-ts** — a Node sidecar wrapping
   [agex-ts](https://github.com/ashenfad/agex-ts)'s runtime worker,

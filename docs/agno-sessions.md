@@ -6,7 +6,8 @@ shapes are in the [API reference](api.md); the commit model they ride
 on is in the [design notes](design.md).
 
 Status: implemented. Ships under the `[agno]` extra as
-`nontainer.adapters.agno_db` (`KvgitSessionDb`, `fork_session`); the
+`nontainer.adapters.agno_db` (`KvgitSessionDb`, `KvgitStoreDb`,
+`fork_session`); the
 API reference has the usage shape.
 
 ## Goal
@@ -106,7 +107,8 @@ each branch's committed session record, one key read per branch, as
 `get_sessions` reads. `get_runs` without a `session_id` gathers every
 session's runs the same way.
 
-agno 2 has no runs table, so none of this applies there.
+agno 2 has no runs table and never calls these, but they answer there
+too, in agno 3's shape, for a caller that looks for them.
 
 ## One session per workspace
 
@@ -122,15 +124,16 @@ through it lands in that branch.
   the branch's (once one is recorded) raises `NotSupportedError`.
   This is the guard that keeps agno's own `Agent.fork_session` from
   writing a second session into the branch (see Fork below).
-- `delete_session` clears the keys; `rename_session` rewrites the
-  session key.
+- `delete_session` clears the conversation's keys; `rename_session`
+  rewrites the record.
 
 Every refusal here lands softly: agno's run loop wraps its storage calls
 in a catch-all that logs a warning and carries on. Calling the db
 directly raises; driving it through an `Agent` shows a warning and the
-observable effect is that nothing was written. In per-turn mode a
-refused or failed upsert also means no commit fired, so the turn's
-staged files ride into the next turn's commit. That is agno's behaviour,
+observable effect is that nothing was written. In per-turn mode without
+a turn, a refused or failed upsert also means no commit fired, so the
+turn's staged files ride into the next turn's commit; under a turn
+(`ws.turn`), the turn's end commits whatever was staged. That is agno's behaviour,
 not a choice here, and it is why the guards refuse *before* writing
 anything.
 
@@ -349,8 +352,8 @@ The store path is the same `store=` the embedder passes to
 
 ## agno assumptions this rides on
 
-Checked on agno 2.6.22 and 3.0.1; CI's `agno-versions` matrix should
-add the session-db tests so a bump re-checks them.
+CI's `agno-versions` matrix runs the session-db tests on agno 2.1.0,
+2.8.5 and 3.0.1, beside the latest release, so a bump re-checks them.
 
 - `BaseDb` session methods and signatures: `get_session`,
   `get_sessions`, `upsert_session`, `upsert_sessions`,
@@ -379,8 +382,8 @@ add the session-db tests so a bump re-checks them.
 
 ## Costs and non-goals
 
-- The session key is rewritten every turn. It is small (metadata
-  plus the run id list).
+- The index and the record are rewritten every turn. Both are small:
+  the run id list, and agno's session metadata.
 - Each run is one immutable blob. A run with large tool outputs is a
   large blob, once.
 - Concurrency: one agent per workspace, which the workspace's

@@ -45,7 +45,7 @@ whichever loop wrote them:
   what the model is sent, never what is stored.
 - **The event:** a new fold is streamed as `Compacted` (the turn
   events in `nontainer.turns`), which is the embedder's moment to show
-  it.
+  it (with agno's adapter, `on_fold` is that moment).
 
 What a loop decides for itself: when to fold, what a fold covers, what
 it splices into a request, how the summary is written, and whether it
@@ -362,7 +362,7 @@ can hold a range is enough.
   (`test_the_splice_never_reaches_the_stored_conversation` fails on
   2.4.0 and 2.4.8). The adapter's floor is agno 2.5: the seam and
   adapter tests pass on 2.5.0, 2.5.17, 2.6.0, 2.7.0, 2.8.0, 2.8.5 and
-  3.x, and CI runs them on 2.5.0. Imported on anything older, or on an
+  3.x, and CI runs them on 2.5.0, 2.8.5 and 3.0.1. Imported on anything older, or on an
   agno missing a hook, the adapter says what it needs rather than
   failing somewhere inside.
 - **`compress_tool_results` must stay `True`,** or agno never calls the
@@ -431,13 +431,13 @@ in_force(ws, message_ids)  # -> Fold | None, the one a history with these ids ge
 |---|---|
 | The studio sends every earlier run (nontainer-studio #78) | merged |
 | The studio drops tool-result compression (nontainer-studio #79) | merged |
-| Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 2.5 and later (2.5.0 in CI) and on 3.0.1 and 3.0.11, sync and streaming |
+| Spike: the agno seam against agno's real run loop (`tests/test_agno_compaction_seam.py`) | done: holds on agno 2.5 and later (2.5.0, 2.8.5 and 3.0.1 in CI) and on 3.0.1 and 3.0.11, sync and streaming |
 | `__compaction__/` plane and the `Fold` record | released in 0.8.8 (`nontainer/compaction.py`, `planes.py`) |
 | Core: policy, texts, reduce and chunks | released in 0.8.8 |
 | agno adapter (`CompactingCompression`), with the db backstop | released in 0.8.8 (`nontainer/adapters/agno_compaction.py`) |
 | Studio: budget, marker event (nontainer-studio #80) | merged |
 | Checked against a real model (`openrouter:meta/muse-spark-1.3-contributor`) | done; see below |
-| The contract in the harness corpus (tier 4), passed by agno and the reference harness | this release |
+| The contract in the harness corpus (tier 4), passed by agno and the reference harness | released in 0.10.0 |
 | Chaptering | later; see above |
 
 ## Checked live

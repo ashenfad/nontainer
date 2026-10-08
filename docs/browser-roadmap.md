@@ -127,8 +127,9 @@ is the serving-substrate dispatcher behind `test_app`, the half of the
 driver invariant the seam did not close;
 [#110](https://github.com/ashenfad/nontainer/issues/110) is the typed
 return codec, now scoped to server-side serving of publications with
-handlers; and [#113](https://github.com/ashenfad/nontainer/issues/113)
-is idle view-worker reaping, untouched by any of this.
+handlers; and [#113](https://github.com/ashenfad/nontainer/issues/113),
+idle view-worker reaping, shipped in 0.7.11 as
+`ws.runtime.reap_idle(max_age)`.
 
 ## What is already true
 
