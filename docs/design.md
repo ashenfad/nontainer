@@ -585,7 +585,7 @@ a redesign.
 Under process/kernel isolation, a view's resident workers rise toward
 `PythonConfig.warm_view_workers` and, left alone, never decay: the cap
 is a floor you fill and then keep paying for — per distinct view, per
-workspace, and ~113MB apiece on a pandas/plotly policy. At the default
+workspace, and each one heavy on a pandas/plotly policy. At the default
 of 1 that is a small bill. It matters for exactly the embedders told to
 raise it (anyone serving concurrent app traffic), and in a multi-user
 host with many open workspaces it multiplies.

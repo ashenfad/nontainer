@@ -1255,7 +1255,7 @@ app.mount("/apps", router)      # serves /apps/{token}/...
 
   **Prefer `preload_grants=True` with `warm_view_workers=0` where your
   grants allow it.** Preloading puts the granted stack in the forkserver
-  broker, which drops a worker start to ~14ms — cheap enough to give
+  broker, which makes a worker start cheap — cheap enough to give
   *every* request a pristine worker. That is the simpler system and the
   better-behaved one: nothing stays resident, so there is no warm set to
   size and no memory floor to reason about, and each handler call gets a
@@ -1266,7 +1266,7 @@ app.mount("/apps", router)      # serves /apps/{token}/...
   The cache exists for when that isn't available: `preload_grants` runs
   your grants' import-time code in the broker, so it is unsafe for a
   grant that starts threads on import, and without it a per-call worker
-  costs ~235ms with a heavyweight stack. In that case keep a warm set
+  is slow to start with a heavyweight stack. In that case keep a warm set
   and size it to your concurrency.
 - **`{token}` is a capability** — long, unguessable, minted with
   `mint_token()`, mapped to snapshots in the embedder's storage.

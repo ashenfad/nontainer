@@ -1517,8 +1517,8 @@ async def reap_forever(open_workspaces, *, every=60.0, max_age=600.0):
 ```
 
 Reaping is semantically free: each view call is a fresh execution, so
-a rebuilt worker costs its start (~235ms with a pandas/plotly policy)
-and nothing else.
+a rebuilt worker costs its start (noticeable with a heavy stack such
+as pandas or plotly) and nothing else.
 
 ## Executors
 
@@ -2051,8 +2051,8 @@ class PythonConfig:
 
   It is a **latency optimization, not a safety mechanism**. What it
   buys is worker start, which a worker pays by re-importing the granted
-  stack rather than inheriting it: ~18ms and ~23MB on a stdlib policy,
-  ~235ms and ~113MB with pandas/numpy/plotly granted.
+  stack rather than inheriting it: little on a stdlib policy, many times
+  that in time and memory with pandas/numpy/plotly granted.
 
   The default of `1` keeps the app-iteration loop warm (edit,
   `test_app`, preview — essentially sequential) while holding one
@@ -2078,8 +2078,8 @@ class PythonConfig:
 - `preload_grants` (process/kernel only) imports your granted modules once
   into sandtrap's forkserver broker, so every worker inherits them
   copy-on-write instead of importing its own copy. It is the big lever on
-  worker cost and moves both numbers at once — with `dataframes()` granted,
-  a worker goes from ~176ms and ~77MB to ~14ms and ~33MB here. It applies to
+  worker cost and moves both numbers at once — with a heavy stack granted,
+  a worker starts many times faster and holds a fraction of the memory. It applies to
   **every** worker including the session worker each workspace holds from its
   first execution on, so across many open workspaces it moves more memory than
   `warm_view_workers` does.
