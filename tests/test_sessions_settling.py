@@ -214,3 +214,56 @@ def test_a_woken_turn_opens_with_what_is_waiting(store):
         quiet.end("completed")
     finally:
         ws.close()
+
+
+def test_the_opening_tells_on_delivered_as_a_tool_result_would(store):
+    seen = []
+    inbox = Inbox(on_delivered=lambda notes: seen.append([n.text for n in notes]))
+    ws = store.open("main")
+    try:
+        inbox.put("the date, please")
+        turn = ws.turn("run-1", inbox=inbox)
+        assert "the date, please" in (turn.opening() or "")
+        assert seen == [["the date, please"]]
+        turn.end("completed")
+    finally:
+        ws.close()
+
+
+def test_aopening_awaits_an_async_on_delivered(store):
+    seen = []
+
+    async def record(notes):
+        await asyncio.sleep(0)
+        seen.append([n.text for n in notes])
+
+    async def main():
+        inbox = Inbox(on_delivered=record)
+        ws = store.open("main")
+        try:
+            inbox.put("the date, please")
+            turn = ws.turn("run-1", inbox=inbox)
+            assert "the date, please" in (await turn.aopening() or "")
+            turn.end("completed")
+        finally:
+            ws.close()
+
+    asyncio.run(main())
+    assert seen == [["the date, please"]]
+
+
+def test_notes_an_opening_cannot_render_wait_for_the_next_turn(store):
+    def broken(note):
+        raise RuntimeError("the frame broke")
+
+    inbox = Inbox(frame=broken)
+    ws = store.open("main")
+    try:
+        inbox.put("the date, please")
+        turn = ws.turn("run-1", inbox=inbox)
+        assert turn.opening() is None
+        assert [n.text for n in inbox.pending()] == ["the date, please"]
+        turn.end("completed")
+        assert [n.text for n in inbox.pending()] == ["the date, please"]
+    finally:
+        ws.close()

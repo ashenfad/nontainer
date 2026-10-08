@@ -345,12 +345,49 @@ class Turn:
         delivered now (:meth:`collect`), rendered by the inbox; ``None``
         when nothing is. A turn started for its delegates' answers or a
         queued note, rather than by a prompt, sends this as its first
-        message. The notes are delivered from here, and settle with the
-        turn like any other."""
+        message.
+
+        The notes are delivered from here, as :meth:`deliver` delivers
+        them: ``on_delivered`` is told, and they settle with the turn.
+        Notes that cannot be rendered (a frame that raises) go back to
+        the queue for the next turn, and this returns ``None``."""
+        text, notes = self._open()
+        if notes and self.inbox is not None:
+            self.inbox.announce(notes, allow_async=False)
+        return text
+
+    async def aopening(self) -> str | None:
+        """:meth:`opening`, awaiting what ``on_delivered`` returns. A
+        cancel that lands while it waits puts the notes back, as
+        :meth:`adeliver` does."""
+        text, notes = self._open()
+        if notes and self.inbox is not None:
+            outcome = self.inbox.announce(notes, allow_async=True)
+            if outcome is not None:
+                try:
+                    await outcome
+                except Exception:  # noqa: BLE001 - the opening wins
+                    _logger.warning("inbox on_delivered raised", exc_info=True)
+                except BaseException:
+                    self.inbox.restore(notes)
+                    raise
+        return text
+
+    def _open(self) -> tuple[str | None, list[Note]]:
         notes = self.collect()
         if not notes or self.inbox is None:
-            return None
-        return self.inbox.render(notes)
+            return None, []
+        try:
+            return self.inbox.render(notes), notes
+        except Exception:  # noqa: BLE001 - the notes wait for the next turn
+            _logger.warning(
+                "%d note(s) could not be rendered for a woken turn; they stay "
+                "queued for the next one",
+                len(notes),
+                exc_info=True,
+            )
+            self.inbox.restore(notes)
+            return None, []
 
     def deliver(self, result: str) -> tuple[str, list[Note]]:
         """``result`` with the notes queued for it appended, and those
