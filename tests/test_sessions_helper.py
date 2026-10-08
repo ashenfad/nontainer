@@ -311,6 +311,48 @@ def test_a_resumed_answer_lists_only_what_is_new_since_the_merge(parent, store):
     assert second.changed == {"seed": ("/workspace/export.py",), "elsewhere": ()}
 
 
+def test_a_resumed_delegate_is_judged_by_the_parents_ignore_rules(store):
+    """A resumed child is read through a handle opened again, which must
+    carry the parent's ignore rules as a fork does: an ignored path is
+    neither in the answer's changes nor in the commit made for the
+    delegate's remainder."""
+    parent = store.open("analyst", ignore=("scratch/**",))
+    register_wsgit(parent)
+    parent.files.write("/workspace/report.md", "# Rates\n")
+    parent.index.commit("seed")
+
+    class Resumed(Scripted):
+        def run(self, session, task, *, budget=None):
+            child = self.store.open(session)
+            try:
+                child.files.write(f"/workspace/{task}", task)
+                if task == "export.py":
+                    child.index.commit("the delegate's own commit")
+                    child.files.write("/workspace/notes.md", "notes")
+                    child.files.write("/workspace/scratch/log", "noise")
+            finally:
+                child.close()
+            return "done"
+
+    try:
+        with Sessions(parent, Resumed(store, {})) as sessions:
+            first = sessions.ask("api.py", wait=True)
+            second = sessions.ask("export.py", resume=first.branch, wait=True)
+        changed = set(second.changed["seed"]) | set(second.changed["elsewhere"])
+        assert "/workspace/scratch/log" not in changed
+        assert {"/workspace/export.py", "/workspace/notes.md"} <= changed
+        assert not second.uncommitted
+        child = store.open(first.branch)
+        try:
+            remainder = next(iter(child.log()))
+            assert remainder.info.get("committed_for") == first.branch
+            assert remainder.info["files"] == ["/workspace/notes.md"]
+        finally:
+            child.close()
+    finally:
+        parent.close()
+
+
 def test_an_unmerged_resume_still_lists_everything_since_the_fork(parent, store):
     """Nothing merged, nothing met since the fork: all of it is new to
     the parent, and all of it is listed."""
