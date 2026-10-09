@@ -103,11 +103,13 @@ def _paths(value: Any) -> tuple[str, ...]:
 
 
 def parse_view(raw: Any) -> tuple[str, ...] | None:
-    """What this session can see now, or ``None`` for the full tree."""
+    """What this session can see now, or ``None`` for the full tree. An
+    empty view is ``()``: a session given no files, which sees what it
+    makes."""
     parsed = _record(raw)
-    if parsed is None:
+    if parsed is None or not isinstance(parsed.get("paths"), list):
         return None
-    return _paths(parsed.get("paths")) or None
+    return _paths(parsed["paths"])
 
 
 def parse_seed(raw: Any) -> tuple[str, ...]:
@@ -140,10 +142,10 @@ def normalize_view(paths: "Any", root: str) -> tuple[str, ...]:
 
     A seed is a directory or a file, spelled the way the caller thinks
     of it: absolute (``/workspace/auth``) or relative to the workspace
-    root (``auth``), with or without a trailing slash. Empty is
-    rejected rather than read as "see nothing": a session that can see
-    nothing cannot even list its own root, and a caller who means the
-    whole tree passes ``None``.
+    root (``auth``), with or without a trailing slash. Empty is an
+    empty view: a session given no files, which still lists its own
+    root and sees what it makes there. A caller who means the whole
+    tree passes ``None``.
 
     The filesystem root ``/`` is rejected for the same reason from the
     other end: a view of everything is not a view, and the spelling
@@ -167,10 +169,6 @@ def normalize_view(paths: "Any", root: str) -> tuple[str, ...]:
                 f"root ({root!r}) to see all of it as a seed"
             )
         out.add(text)
-    if not out:
-        raise ValueError(
-            "paths= must name at least one path; pass paths=None for the whole tree"
-        )
     return tuple(sorted(out))
 
 
@@ -185,10 +183,12 @@ class ViewFS:
     deletion of what the view hides.
 
     Ancestors of a view entry stay visible as directories, or the
-    session could not list its own root to reach its seed.
+    session could not list its own root to reach its seed. So do the
+    workspace ``root`` and its ancestors, so that a session with an
+    empty view can still list its root and write there.
     """
 
-    __slots__ = ("_fs", "_paths", "_extend")
+    __slots__ = ("_fs", "_paths", "_extend", "_root")
 
     def __init__(
         self,
@@ -196,9 +196,11 @@ class ViewFS:
         paths: "tuple[str, ...]",
         *,
         extend: "Any" = None,
+        root: str | None = None,
     ) -> None:
         self._fs = fs
         self._paths = tuple(sorted(set(paths)))
+        self._root = None if root is None else posixpath.normpath(root)
         # Called with the new full view whenever a created path widens
         # it, so the record on the branch keeps up with what the
         # session can see. ``None`` in tests and other read-only uses.
@@ -219,6 +221,11 @@ class ViewFS:
         return posixpath.normpath(posixpath.join(self._fs.getcwd(), path))
 
     def _visible_abs(self, target: str) -> bool:
+        if target == "/" or (
+            self._root is not None
+            and (target == self._root or self._root.startswith(target + "/"))
+        ):
+            return True  # the root, and the way to it
         for entry in self._paths:
             if target == entry or target.startswith(entry + "/"):
                 return True  # in the view

@@ -2019,7 +2019,9 @@ class Workspace:
         viewed = provider.fs
         self._view_fs: ViewFS | None = None
         if self._view is not None:
-            self._view_fs = ViewFS(provider.fs, self._view, extend=self._record_view)
+            self._view_fs = ViewFS(
+                provider.fs, self._view, extend=self._record_view, root=self._root
+            )
             viewed = self._view_fs
         # The attachment layer is always in the chain: the executor is
         # handed ONE filesystem object when it opens, so a tree
@@ -3221,7 +3223,11 @@ class Workspace:
         ``checkout(ref, paths=)``, ``files.attach``. The child may
         CREATE new paths anywhere; changing or deleting one it cannot
         see is refused (see ``nontainer/views.py``). ``None`` is the
-        whole tree.
+        whole tree, and an empty ``paths`` an empty view: a child given
+        no files, which sees what it makes. A child that sees none of
+        this session's files doesn't need its uncommitted writes, so an
+        empty view forks from the last commit, landing nothing, as
+        ``at`` does.
         """
         if inherit not in ("full", "fresh"):
             raise ValueError(
@@ -3234,6 +3240,8 @@ class Workspace:
         # the child is seeded before its workspace is built.
         with self._lock:
             self._check_open()
+            if at is None and seed == () and self._provider.caps.versioned:
+                at = self.head  # nothing here to land: the child sees none of it
             if at is None and self._provider.caps.versioned and self._provider.dirty:
                 self._check_writable("fork")
                 self._provider.commit(

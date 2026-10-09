@@ -967,7 +967,11 @@ one of the agent's own `ws.index` tags.
 first, under `{"tool": "fork", "child": name}`, and that commit is the
 child's base and the merge base for the way back. With `at`
 nothing is committed: the buffer belongs to this session's present, not
-to the past the fork branches from.
+to the past the fork branches from. Nor with `paths=[]`, an **empty
+view**: a child given none of this session's files, which lists its
+root and sees what it makes there. It doesn't need the uncommitted
+writes, so it is forked from the last commit, landing nothing; a fork
+taken mid-call would otherwise split that call's commit.
 
 `inherit` decides whether the stored conversation comes along, and
 nothing else. `"full"` (default) keeps it — the continue-where-I-am
@@ -2258,7 +2262,8 @@ Sessions(ws, runner, *, budget=None, max_workers=4, chain=(),
          loop=None)                 # an async runner's loop; default: the one
                                     # the helper is built in
 helper.ask(task, *, name=None, paths=None, inherit=None, fork_from=None,
-           resume=None, wait=False, budget=None) -> Job | Answer
+           resume=None, wait=False, budget=None,
+           runner=None) -> Job | Answer   # runner: this job's, not the helper's
 await helper.aask(task, ...) -> Job | Answer
 helper.list() -> list[Job]; helper.result(name) -> Answer   # JobRunning while it runs
 helper.take() -> list[tuple[str, Answer]]   # landed and uncollected, once each
@@ -2278,9 +2283,14 @@ Settled(reply, wakes=0, unread=(), notes=0) # .text names the unread delegates
 answer_notes(helper, inbox) -> list[Note]   # landed answers as delivered notes
 ```
 
-An async runner (`run` is `async def`) runs on `loop`, `max_workers`
-at a time, and landing its answer runs on a thread; `close()` on that
-loop with runs in flight is refused (`aclose` awaits them).
+An async runner (`run` is `async def`, typed `AsyncSessionRunner`) runs
+on `loop`, `max_workers` at a time, and landing its answer runs on a
+thread; `close()` on that loop with runs in flight is refused (`aclose`
+awaits them). `ask(runner=)` runs one job on a runner of its own, sync
+or async, on a helper whose runner is another: a task's typed call on
+a helper driving another harness's delegates, say. An async one runs on
+the helper's loop, the `loop=` it was built with, or the loop the ask
+is made from.
 `until_settled` runs a delegate's turns (`run_turn(None)` is a woken
 turn, opened with `turn.opening()`) until neither its own delegates nor
 a note in its inbox is outstanding, within `max_wakes` or until the

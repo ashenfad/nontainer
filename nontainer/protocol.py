@@ -1364,6 +1364,24 @@ class SessionRunner(Protocol):
         Synchronous or async. A synchronous ``run`` is called on a
         worker thread of the helper's own. An ``async def run`` is
         scheduled on the helper's event loop (the embedder's), up to
-        ``max_workers`` at once, and a cancel stops it.
+        ``max_workers`` at once, and a cancel stops it; such a runner
+        is an :class:`AsyncSessionRunner`.
         """
         ...
+
+
+@runtime_checkable
+class AsyncSessionRunner(Protocol):
+    """A :class:`SessionRunner` whose ``run`` is ``async def``: scheduled
+    on the helper's event loop rather than a worker thread. The same
+    contract, typed as what it is, so an embedder's async runner needs
+    no cast."""
+
+    async def run(
+        self,
+        session: str,
+        task: str,
+        *,
+        budget: Any = None,
+        forked_at: str | None = None,
+    ) -> "Answer | str": ...
