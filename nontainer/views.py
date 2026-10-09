@@ -120,7 +120,11 @@ def parse_seed(raw: Any) -> tuple[str, ...]:
     parsed = _record(raw)
     if parsed is None:
         return ()
-    return _paths(parsed.get("seed")) or _paths(parsed.get("paths"))
+    if isinstance(parsed.get("seed"), list):
+        # Empty is a seed too: an empty view was given nothing, and what
+        # it has made since is its own.
+        return _paths(parsed["seed"])
+    return _paths(parsed.get("paths"))
 
 
 def encode_view(

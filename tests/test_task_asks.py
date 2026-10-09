@@ -2,12 +2,20 @@
 the last commit, and a runner of its own for one ask."""
 
 import asyncio
+import json
 
 import pytest
 
 from nontainer import Answer, SessionsError, Store
 from nontainer.sessions import Sessions
-from nontainer.views import ViewFS, encode_view, normalize_view, parse_view
+from nontainer.views import (
+    VIEW_KEY,
+    ViewFS,
+    encode_view,
+    normalize_view,
+    parse_seed,
+    parse_view,
+)
 
 
 @pytest.fixture
@@ -56,6 +64,29 @@ def test_an_empty_view_is_kept_on_reopen(store, parent):
         assert again.files.list("/workspace") == []
     finally:
         again.close()
+
+
+def test_an_empty_view_was_given_nothing_whatever_it_makes(store, parent):
+    child = parent.fork("lead.helper", paths=[])
+    child.files.write("/workspace/mine.md", "m")
+    child.files.write("/workspace/two.md", "t")
+    assert parse_seed(child._provider.kv.get(VIEW_KEY)) == ()
+    child.index.commit("made")
+    child.close()
+    again = store.open("lead.helper")
+    try:
+        assert parse_seed(again._provider.kv.get(VIEW_KEY)) == ()
+        assert again.files.list("/workspace") == [
+            "/workspace/mine.md",
+            "/workspace/two.md",
+        ]
+    finally:
+        again.close()
+
+
+def test_a_view_record_without_a_seed_reads_its_paths():
+    raw = json.dumps({"version": 1, "paths": ["/workspace/a"]}).encode()
+    assert parse_seed(raw) == ("/workspace/a",)
 
 
 def test_an_empty_view_forks_from_the_last_commit_landing_nothing(parent):
