@@ -2039,6 +2039,22 @@ class PythonConfig:
   is called directly by code in-process and runs in the sandbox's
   context: its network is refused and its files are the sandbox's.
   Give it a stub to have it run as host code.
+- `HostObject(factory=..., type=None, stub=None)` takes the place of
+  `obj` for an object each world needs its own of: the host half of
+  something that has to know which session called it. `factory(ws)` is
+  called as each world opens, forks included, and what it returns is
+  that world's object, under the same `type` or `stub` and checked as
+  any entry is. The world is still opening when it's called (its
+  runtime isn't built yet), so the object keeps it and uses it from its
+  own calls. A factory that raises fails the open. `Profile.of(ws)` and
+  a fork carry the factory, not the object, so each world makes its
+  own; `ws.runtime.python_config` holds what this world made.
+
+  ```python
+  PythonConfig(host_objects={
+      "agex": HostObject(factory=lambda ws: Tasks(agent, ws), stub=TasksStub),
+  })
+  ```
 - `classes` are bound by name in every run and importable from `host`:
   the types agent code builds values of. In-process they are registered
   with the policy; under process isolation the worker imports them by

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Specs as data.** `values.export_specs` writes specs out as plain JSON, records and enums by name, fields and docstring, and `load_specs` reads them back over dataclasses and enums it builds, evaluating nothing.
+- **Host objects per world.** `HostObject(factory=...)` is called with each world as it opens, forks included, for that world's own object; a profile and a fork carry the factory.
 
 ### Changed
 - **Host calls don't count against the timeout.** On every rung, time inside a host object's call is off the run's clock; needs sandtrap 0.4.2, and dud 0.4.2 for the dud extra.

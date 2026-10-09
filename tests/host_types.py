@@ -149,3 +149,23 @@ class ProbeStub:
 
         time.sleep(seconds)
         return self._remote.mark()
+
+
+class World:
+    """A host object made for one world: it says which."""
+
+    def __init__(self, ws) -> None:
+        self._ws = ws
+
+    def name(self) -> str:
+        return self._ws.session
+
+
+class WorldStub:
+    """What code holds for a :class:`World`."""
+
+    def __init__(self, remote) -> None:
+        self._remote = remote
+
+    def name(self) -> str:
+        return self._remote.name()
