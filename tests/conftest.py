@@ -46,7 +46,7 @@ if os.environ.get("NONTAINER_TEST_KV") == "postgres":
     from kvgit.kv.postgres import Postgres
     from psycopg_pool import ConnectionPool
 
-    import nontainer.store  # noqa: F401 - loads the module patched below
+    import nontainer.store.core  # noqa: F401 - loads the module patched below
 
     _base = os.environ.get("NONTAINER_TEST_PG_DSN", "dbname=nontainer_test")
     _basename = psycopg.conninfo.conninfo_to_dict(_base)["dbname"]
@@ -81,9 +81,10 @@ if os.environ.get("NONTAINER_TEST_KV") == "postgres":
         table = "t_" + hashlib.sha1(str(path).encode()).hexdigest()[:24]
         return Postgres(pool=_pool, table=table)
 
-    # ``nontainer.store`` names the store() sugar, which shadows its
-    # module, so the module is patched through sys.modules.
-    sys.modules["nontainer.store"]._disk_backend = _postgres_backend
+    # Patched where Store looks it up. ``nontainer.store`` names the
+    # store() sugar, which shadows the package, so the module is reached
+    # through sys.modules.
+    sys.modules["nontainer.store.core"]._disk_backend = _postgres_backend
 
     def pytest_unconfigure(config):
         _pool.close()

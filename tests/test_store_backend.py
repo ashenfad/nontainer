@@ -116,6 +116,20 @@ def test_the_workspace_helper_hands_its_store_backend_to_the_workspace(
     assert len(closes) == 1
 
 
+@pytest.mark.skipif(
+    os.environ.get("NONTAINER_TEST_KV") != "postgres",
+    reason="checks the NONTAINER_TEST_KV=postgres run itself",
+)
+def test_the_postgres_run_keeps_stores_out_of_their_directory(tmp_path):
+    """Under NONTAINER_TEST_KV=postgres every store is meant to keep its
+    data in PostgreSQL. One that quietly fell back to disk would pass
+    the suite while testing nothing new."""
+    with Store(tmp_path).open("a") as ws:
+        ws.files.write("x.txt", "1")
+        ws.commit()
+    assert not (tmp_path / "kvgit").exists()
+
+
 def test_kv_takes_only_what_it_can_open(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="PostgreSQL URL"):
         Store(tmp_path, kv="sqlite:///store.db").sessions()

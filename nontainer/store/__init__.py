@@ -6,6 +6,7 @@ naming a frozen state, and :mod:`.layout` where a store keeps things.
 Everything is importable from here.
 """
 
+from . import publications, refs
 from .core import Store, store
 from .layout import _FROZEN_SETTINGS, KV_ENV, KV_TABLE_ENV, Backend
 from .publications import (
@@ -17,6 +18,12 @@ from .publications import (
     _under,
 )
 from .refs import Ref, StoreTags
+
+# Annotations in publications and refs name Store, which those modules
+# import only for type checking: core imports them, so a runtime import
+# would cycle. Bound here, once everything is loaded, so that
+# typing.get_type_hints resolves them.
+publications.Store = refs.Store = Store
 
 __all__ = [
     "KV_ENV",
