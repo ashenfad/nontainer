@@ -40,43 +40,33 @@ Design notes (see ``docs/design.md``):
 from __future__ import annotations
 
 import posixpath
-import re
 import threading
-import traceback
-from collections.abc import (
-    Callable,
-    Iterable,
-    Iterator,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
-from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePosixPath
-from types import MappingProxyType, ModuleType
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
+from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
-from . import conversation
-from .cache import Cache
-from .errors import (
+from .. import conversation
+from ..cache import Cache
+from ..errors import (
     CommitNotFoundError,
     LegacyLayoutError,
     NotSupportedError,
     WorkspaceError,
 )
-from .migrate import legacy_keys
-from .protocol import (
+from ..host_objects import _made_for
+from ..migrate import legacy_keys
+from ..protocol import (
     Capabilities,
     CommitInfo,
     MergeOutcome,
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
-    WorkspaceStatus,
     read_files,
 )
-from .views import (
+from ..views import (
     VIEW_KEY,
     AttachFS,
     ViewFS,
@@ -85,800 +75,27 @@ from .views import (
     parse_seed,
     parse_view,
 )
+from .config import Mount, Profile, PythonConfig, _Settings, normalize_root
+from .facades import WorkspaceFiles, WorkspaceIndex, WorkspaceTags
+from .fs import (
+    _cwd_key,
+    _frozen_fs,
+    _frozen_message,
+    _FrozenKV,
+    _owns_cwd,
+    _point_over,
+    _quiet_isdir,
+    _SyncingFS,
+)
+from .results import PythonResult, TerminalResult
 
 if TYPE_CHECKING:
-    from .agentgit import AgentGit
-    from .editing import EditOutcome
-    from .inbox import Inbox
-    from .protocol import Executor
-    from .runtime import Runtime
-    from .store import Ref, Store
-    from .turns import Source, Turn, Turns
-
-Isolation = Literal["none", "process", "kernel"]
-
-
-def _cwd_key() -> str:
-    """The one key the agent's working directory persists under.
-
-    monkeyfs's ``VirtualFS`` resolves every relative path against this
-    key, and writes it on ``chdir`` — so on the versioned backend the
-    filesystem already owns cwd, and a commit captures it because the
-    key is in the same mapping as the files. nontainer used to keep a
-    second key of its own beside it: two keys for one fact, two merge
-    functions, and nothing to say which won a disagreement.
-    """
-    from monkeyfs import VirtualFS
-
-    return VirtualFS.CWD_KEY
-
-
-def _quiet_isdir(fs: Any, path: str) -> bool:
-    try:
-        return bool(fs.isdir(path))
-    except Exception:
-        return False
-
-
-def _owns_cwd(provider_fs: Any) -> bool:
-    """Whether the provider's filesystem owns the cwd key itself.
-
-    True for monkeyfs ``VirtualFS`` (the kvgit backend): cwd is a key
-    in the provider's kv, written on ``chdir``, so it commits, forks
-    and checks out with the files — and nontainer must not write it a
-    second time. It must not write it at all there, in fact: with
-    mounts the workspace's cwd is the composed ``MountFS``'s, and that
-    composition REQUIRES the filesystem underneath to stay at the root
-    (it hands that one paths it has already resolved), so a composed
-    cwd stored under this key would break every relative path. Mounted
-    trees are unversioned live views by contract, and on that backend
-    their cwd is now equally transient: it starts at the workspace root
-    each time the session is opened.
-
-    False for the filesystems that hold cwd in memory (a plain
-    ``IsolatedFS``, the AgentFS adapter). There the workspace
-    writes the key itself — inert to the filesystem, read back when the
-    session is reopened, which is the persistence those backends would
-    otherwise have no way to get.
-    """
-    from monkeyfs import VirtualFS
-
-    return isinstance(provider_fs, VirtualFS)
-
-
-@dataclass(frozen=True)
-class Mount:
-    """A real directory exposed inside the workspace tree (a "volume").
-
-    Mounts are a *workspace* concern, not a python-sandbox concern:
-    both tools see them — ``terminal("ls /data")`` and sandboxed
-    ``open("/data/x.csv")`` agree. Composed via monkeyfs ``MountFS``
-    (+ ``IsolatedFS``, + ``ReadOnlyFS`` when ``readonly``).
-
-    Mounted paths are live views of the real directory: they are NOT
-    versioned and NOT captured by commits, so a checkout leaves them
-    exactly as they are.
-
-    A fork **inherits the mount point** and does NOT copy the data
-    behind it: parent and fork observe the same live directory, and
-    neither can roll it back.
-
-    Write-enabled mounts therefore punch through the time-travel
-    story — prefer ``readonly=True`` (the default) and have the agent
-    copy inputs into the workspace when it needs to own them.
-    """
-
-    path: str | Path
-    """Real directory on the host filesystem."""
-
-    readonly: bool = True
-
-
-@dataclass(frozen=True)
-class ModuleGrant:
-    """A whitelisted module plus its passthrough grants.
-
-    Plain ``ModuleType`` entries in ``PythonConfig.modules`` are sugar
-    for ``ModuleGrant(module)`` — no network, no host fs.
-    """
-
-    module: ModuleType
-
-    network: bool = False
-    """Callables in this module may perform socket operations
-    (sandtrap's per-registration network grant). Grant to the HTTP
-    client you registered, not to the world."""
-
-    host_fs: bool = False
-    """This module's own code sees the real filesystem while it runs
-    (sandtrap ``host_fs_access``). For libraries that manage internal
-    state on disk — download caches (``~/.cache/...``), temp files,
-    lock files — which a workspace ``Mount`` can't address (the
-    library's paths are absolute host paths that don't belong in the
-    agent's tree). The grant is scoped to the module's calls: agent
-    code still resolves against the workspace VFS, and the agent only
-    reaches the real fs indirectly through this module's (policy-
-    controlled) API. Distinct from ``Mount``, which deliberately
-    shares host data *with* the agent."""
-
-    include: str | Sequence[str] = "*"
-    """Member whitelist patterns (sandtrap ``include``)."""
-
-    exclude: str | Sequence[str] = ("_*", "*._*")
-    """Member blacklist patterns (sandtrap ``exclude``). Replaces the
-    default, so custom lists should usually re-include ``_*`` /
-    ``*._*``."""
-
-    recursive: bool = False
-    """Register submodules recursively (sandtrap ``recursive``) — for
-    big libraries agents already know (pandas, matplotlib)."""
-
-    name: str | None = None
-    """Registration name override. Needed for submodules reached as
-    attributes (``ModuleGrant(os.path, name="os.path")``)."""
-
-
-@dataclass(frozen=True)
-class HostObject:
-    """A ``PythonConfig.host_objects`` entry with more said about it than
-    the object alone.
-
-    ``type`` declares ``obj`` data of that type, sent into the sandbox
-    by value on every rung: in-process the object itself; under process
-    isolation and on dud a copy, pickled in (the safe direction: the
-    sandbox only unpickles what the host wrote), with the record and
-    enum classes it holds imported there or rebuilt from their module's
-    source. It is checked against the type here, strictly
-    (:mod:`nontainer.values`), and a type with a live part is refused:
-    a live object needs no type, and reaches the sandbox as a proxy
-    under isolation, as a bare entry does.
-
-    ``stub`` puts a class of the embedder's in front of the live
-    ``obj``: code in the sandbox holds ``stub(remote)``, built there on
-    every rung, and ``remote.<method>(...)`` calls ``obj``'s method of
-    that name, typed by its annotations (:mod:`nontainer.remote`), each
-    a type or a compiled :class:`~nontainer.values.Spec`. An
-    argument that doesn't fit its parameter's type raises ``TypeError``
-    at the call; one that does reaches ``obj`` built afresh as its
-    declared type on every rung (encoded and decoded, never unpickled),
-    and the result comes back by value. A parameter without an
-    annotation is ``Any``, which off in-process means plain data. The
-    stub's own code runs in the sandbox, so it can do what no call to
-    the host can: end the run by raising, say. A stub that can't be
-    built is one that says why when code uses it. Under process
-    isolation the worker imports
-    the stub by its qualified name, and on dud the guest imports it or
-    rebuilds its module from source, so it is refused there if defined
-    inside a function or in ``__main__``, as is a type with a live part
-    in any of ``obj``'s signatures.
-
-    An entry with neither is the object itself, exactly as if it had
-    been put in ``host_objects`` bare.
-
-    ``factory`` takes the place of ``obj`` for an object each world
-    needs its own of: it is called with each :class:`Workspace` as it
-    opens, forks included, and what it returns is that world's object,
-    under the same ``type`` or ``stub``. The world is still opening when
-    it's called, so the object should keep it and use it from its own
-    calls. A fork, and :meth:`Profile.of`, carry the factory, not the
-    object it made.
-    """
-
-    obj: Any = field(default_factory=lambda: _NO_OBJECT)
-
-    type: Any = None
-    """The type ``obj`` is data of, or ``None`` for an object passed as
-    it is. A compiled :class:`nontainer.values.Spec` serves too, for a
-    type whose annotations name what its own module can't resolve (the
-    locals of the function that defined it)."""
-
-    stub: Any = None
-    """The class code in the sandbox holds in front of ``obj``, built as
-    ``stub(remote)``, or ``None`` for none."""
-
-    factory: Callable[[Workspace], Any] | None = None
-    """Called with each world as it opens, for that world's object, in
-    place of ``obj``."""
-
-    spec: Any = field(default=None, init=False, repr=False, compare=False)
-    """The compiled type (:class:`nontainer.values.Spec`), when there is
-    one."""
-
-    methods: Any = field(default=None, init=False, repr=False, compare=False)
-    """``obj``'s public methods with their contracts
-    (:class:`nontainer.remote.Methods`), when there is a stub."""
-
-    def __post_init__(self) -> None:
-        if self.factory is not None:
-            if self.obj is not _NO_OBJECT:
-                raise TypeError("HostObject takes obj or factory=, not both")
-            if not callable(self.factory):
-                raise TypeError(
-                    f"HostObject factory is a callable, not {type(self.factory).__name__}"
-                )
-        elif self.obj is _NO_OBJECT:
-            raise TypeError("HostObject needs an obj, or a factory= to make one")
-        if self.stub is not None:
-            self._stubbed()
-        if self.type is None:
-            return
-        from .values import Mismatch, Spec, Unsupported, find_live
-
-        try:
-            spec = Spec.of(self.type)
-        except Unsupported as error:
-            raise TypeError(f"HostObject type: {error}") from None
-        if not spec.travels:
-            raise TypeError(
-                f"HostObject type {spec!r} has a live part, so its values can't "
-                "be sent by value; pass a live object without type= and it "
-                "reaches the sandbox as a proxy"
-            )
-        object.__setattr__(self, "spec", spec)
-        if self.factory is not None:
-            return  # checked against the type when made
-        try:
-            spec.check(self.obj)
-        except Mismatch as error:
-            raise TypeError(f"HostObject value doesn't fit its type: {error}") from None
-        if "any" in spec.kinds:
-            # Any accepts a live object too, and one can't be sent by value
-            live = find_live(self.obj)
-            if live is not None:
-                raise TypeError(
-                    f"HostObject value holds a live object where its type "
-                    f"allows anything ({live}); a live object can't be sent by "
-                    "value: give it an entry of its own, without type="
-                )
-        object.__setattr__(self, "spec", spec)
-
-    def _stubbed(self) -> None:
-        from .remote import Methods
-        from .values import Unsupported
-
-        if self.type is not None:
-            raise TypeError(
-                "HostObject takes type= for data sent by value or stub= for a "
-                "live object called through a stub, not both"
-            )
-        if not isinstance(self.stub, type):
-            raise TypeError(
-                f"HostObject stub is a class, not {type(self.stub).__name__}"
-            )
-        if self.factory is not None:
-            return  # the contract is read off each object made
-        try:
-            methods = Methods(self.obj)
-        except Unsupported as error:
-            raise TypeError(f"HostObject with a stub: {error}") from None
-        object.__setattr__(self, "methods", methods)
-
-    @property
-    def by_value(self) -> bool:
-        """Whether the entry is sent into the sandbox as a copy of its
-        data, rather than as a proxy to a live object."""
-        return self.type is not None
-
-    def made_for(self, ws: Workspace) -> HostObject:
-        """This entry for world ``ws``: itself, or, with a factory, the
-        object it makes for ``ws`` under the same ``type`` or ``stub``,
-        checked as any entry is."""
-        if self.factory is None:
-            return self
-        obj = self.factory(ws)
-        try:
-            return HostObject(obj, type=self.type, stub=self.stub)
-        except TypeError as error:
-            raise TypeError(f"what HostObject's factory made: {error}") from None
-
-
-class _NoObject:
-    """``HostObject.obj`` when a factory makes it."""
-
-    def __repr__(self) -> str:
-        return "<made by factory>"
-
-
-_NO_OBJECT = _NoObject()
-
-
-def _made_for(python: PythonConfig, ws: Workspace) -> PythonConfig:
-    """``python`` with each host object a factory makes made for ``ws``:
-    the config its executor opens with."""
-    entries = python.host_objects
-    if not any(
-        isinstance(e, HostObject) and e.factory is not None for e in entries.values()
-    ):
-        return python
-    made = {
-        name: entry.made_for(ws) if isinstance(entry, HostObject) else entry
-        for name, entry in entries.items()
-    }
-    return replace(python, host_objects=made)
-
-
-@dataclass(frozen=True)
-class TerminalResult:
-    """Outcome of one ``terminal()`` call (a full pipeline/script)."""
-
-    stdout: str
-    """Stdout of the final pipeline stage (termish semantics)."""
-
-    exit_code: int
-    stderr: str = ""
-    truncated: bool = False
-
-    commit: str | None = None
-    """Id of the commit this call's autocommit created — pins the
-    workspace state after the call (``ws.checkout(result.commit)``).
-    ``None`` when nothing was committed: read-only call, autocommit
-    off (turn mode), or an unversioned provider. HOST-facing, like
-    ``PythonResult.namespace`` — adapters must not render it into the
-    model's observation."""
-
-    def __bool__(self) -> bool:
-        return self.exit_code == 0
-
-
-@dataclass(frozen=True)
-class PythonResult:
-    """Outcome of one ``run_python()`` call."""
-
-    stdout: str
-    stderr: str = ""
-    """``sys.stderr`` writes from sandboxed code and libraries —
-    warnings land here. Distinct from ``error``: stderr chatter does
-    not imply failure."""
-
-    error: str | None = None
-    """Rendered traceback on failure, ``None`` on success. Sandboxed
-    code that raises is a *result*, not a host exception — hosts only
-    see exceptions for nontainer's own failures (bad config, provider
-    errors)."""
-
-    ticks: int = 0
-    duration: float = 0.0
-    truncated: bool = False
-
-    namespace: Mapping[str, Any] = field(default_factory=dict, hash=False)
-    """Top-level bindings after execution (sandtrap's result namespace)
-    — for the HOST, not the model. Modules and ``_``-prefixed names
-    are excluded; under process/kernel isolation, unpicklable values
-    are dropped in transit (sandtrap ``filter_namespace``). Adapters
-    must NOT render this into the text observation — not the values,
-    and not a list of the names either: the agent wrote those bindings,
-    so naming them back is inventory rather than information.
-    Structured payloads reach the
-    embedder as plain variables by convention — e.g. an A2UI adapter
-    reads ``result.namespace.get("ui")`` — no bespoke emission channel,
-    no schema imposed by core."""
-
-    commit: str | None = None
-    """Id of the commit this call's autocommit created (``None``
-    when nothing was committed) — see ``TerminalResult.commit``."""
-
-    ui_problems: tuple[str, ...] = ()
-    """Why a ``ui`` value did not render as intended — today the 8 MB
-    artifact cap, with the remediation. Actionable text meant to reach
-    the agent: it reads this in the tool result and self-corrects, and
-    the human sees it where the figure would have been. Carried on the
-    result because materialization happens in ``run_python`` now, so an
-    adapter rendering afterwards has no other way to learn of it."""
-
-    def __bool__(self) -> bool:
-        return self.error is None
-
-
-@dataclass(frozen=True)
-class WriteOutcome:
-    """Outcome of ``files.write`` / ``files.put``."""
-
-    path: str
-    """Workspace path written."""
-
-    size: int
-    """Bytes written."""
-
-    created: bool
-    """True for a new file, False for an overwrite."""
-
-    commit: str | None = None
-    """Commit created by this call's autocommit (``None`` when
-    nothing was committed) — see ``TerminalResult.commit``."""
-
-    def __str__(self) -> str:  # f"wrote {outcome}" reads as the path
-        return self.path
-
-
-@dataclass(frozen=True)
-class RemoveOutcome:
-    """Outcome of ``files.remove``.
-
-    Its own record rather than a ``WriteOutcome`` with the fields
-    inverted: a removal writes no bytes and creates nothing, and a
-    ``size`` documented as "bytes written" would be describing the
-    opposite of what happened.
-    """
-
-    path: str
-    """Workspace path removed."""
-
-    size: int
-    """Bytes the file held."""
-
-    commit: str | None = None
-    """Commit created by this call's autocommit (``None`` when
-    nothing was committed) — see ``TerminalResult.commit``."""
-
-    def __str__(self) -> str:  # f"removed {outcome}" reads as the path
-        return self.path
-
-
-@dataclass(frozen=True)
-class PythonConfig:
-    """What sandboxed code may touch. Frozen at workspace construction.
-
-    Thin sugar over a sandtrap ``Policy``; pass ``policy=`` to bypass
-    the sugar entirely.
-    """
-
-    modules: Sequence[
-        ModuleType | ModuleGrant | Sequence[ModuleType | ModuleGrant]
-    ] = ()
-    """Whitelisted importable modules (``import pandas`` works iff
-    pandas is listed — or covered by ``stdlib``). Bare modules get no
-    passthroughs; wrap in :class:`ModuleGrant` to grant network /
-    host-fs / member patterns per module. Nested sequences flatten one
-    level, so preset grant lists splice in directly::
-
-        PythonConfig(modules=[dataframes(), plotting(), my_module])
-
-    Entries registered after the stdlib set — an explicit grant for a
-    stdlib module overrides its stdlib-set registration. Note:
-    monkeyfs's safe-path passthrough is always on — stdlib and
-    site-packages stay readable so registered libraries can load their
-    own resources."""
-
-    stdlib: bool = True
-    """Grant the curated safe-stdlib set (math, json, csv, datetime,
-    re, os-over-VFS, pathlib, gzip/zipfile/tarfile, ...) — see
-    ``nontainer.presets.STDLIB``. A plain computer's python can do
-    arithmetic and read files; disable for a truly bare cell (minimal
-    surface, policy audits)."""
-
-    host_objects: Mapping[str, Any] = field(default_factory=dict, hash=False)
-    """Live host resources injected into the namespace by name — the
-    in-process superpower (your model, your db pool). Distinct from
-    ``run_python(inputs=...)`` on purpose: inputs are per-call
-    *picklable data* (they cross isolation boundaries by value);
-    host_objects are session-lifetime *live objects* that get
-    attribute-level policy at construction and RPC-proxy bridging
-    under process/kernel isolation (or a loud construction-time error
-    if unbridgeable). Merging the two would make `isolation="none"` →
-    `"process"` a silent breaking change; keeping them apart makes the
-    contract checkable at the right moment.
-
-    Read-only, like the config: each executor takes its set when it
-    opens, so an object added to the mapping afterwards would reach
-    in-process code and nowhere else. A different set is a different
-    config, ``dataclasses.replace(python, host_objects={...})``, for a
-    workspace opened (or forked) with it.
-
-    An entry may be a :class:`HostObject`, which can say more about the
-    object: ``HostObject(rows, type=list[Row])`` sends data of a declared
-    type into the sandbox by value on every rung, and
-    ``HostObject(db, stub=DbStub)`` puts a class that runs in the sandbox
-    in front of a live object, whose calls are typed by its
-    annotations."""
-
-    network: bool = False
-    """Global network toggle for sandboxed code itself (sandtrap
-    ``allow_network``). Coarse; prefer per-module ``ModuleGrant``
-    grants. Note the kernel-isolation interaction below."""
-
-    isolation: Isolation = "none"
-    """Escalation ladder, with one loud caveat inherited from
-    sandtrap: kernel restrictions (seccomp / Landlock / Seatbelt) are
-    applied once at worker start and are strictly monotonic. If ANY
-    grant enables network or host-fs — ``network=True`` here or on any
-    ``ModuleGrant`` — the corresponding kernel restriction is OFF for
-    the entire worker; only Python-level gating remains for everything
-    else. nontainer emits a ``RuntimeWarning`` when building a
-    ``"kernel"`` sandbox whose policy degrades a kernel restriction,
-    so the weakening is visible at construction, not discovered in an
-    audit."""
-
-    timeout: float = 30.0
-    # The same sandbox commit enforces timeout, cancel, and ticks,
-    # so `timeout` is the real runaway guard; the tick limit is a
-    # determinism backstop and must be sized to never fire on honest
-    # work — a legitimate cleaning loop over a few-hundred-k-row CSV
-    # is tens of millions of ticks, not a runaway.
-    tick_limit: int = 50_000_000
-    memory_limit_mb: int | None = None
-
-    echo: Literal["none", "last", "all"] = "last"
-    """Notebook-style display of bare top-level expressions in
-    ``run_python`` (sandtrap's ``sys.displayhook`` semantics: repr
-    rendering, ``None`` suppressed, ``"last"`` = Jupyter's last-expr).
-    Agents carry the notebook prior — a trailing ``df.head()`` that
-    prints nothing costs a wasted retry-with-print. Script surfaces
-    (the terminal ``python`` builtin, app handlers) always run
-    ``echo="none"`` regardless: their stdout feeds pipelines and
-    api.log, not a conversation."""
-
-    warm_view_workers: int = 1
-    """How many ``exec_python(view=...)`` workers to keep **warm**, per
-    distinct view, under ``isolation="process"``/``"kernel"`` only.
-
-    A cache size, not a limit. It does **not** cap how many workers can
-    exist at once — nothing here does; see the peak/resident note
-    below. It was called ``view_workers`` in 0.3.0, which read as a
-    bound and misled accordingly.
-
-    Only view calls are cached. ``run_python`` and a plain
-    ``exec_python`` run in the session sandbox, whose worker is created
-    once at construction and held for the workspace's life — already
-    warm, and untouched by this setting. The view surface is apps'
-    handler dispatch: the live preview, ``test_app``, and published-app
-    requests.
-
-    **This is a latency optimization, not a safety mechanism.** It was
-    once both: a view sandbox was minted per call, so serving an app
-    meant one ``fork()`` per request from a live ASGI server, and a fork
-    from a multi-threaded process can inherit a lock held by a thread
-    the child doesn't have and hang. sandtrap >= 0.3 creates workers
-    from a forkserver broker instead, which removes that hazard at its
-    source. What pooling buys now is the worker start — and forkserver
-    made that *more* expensive, not less, because a worker re-imports
-    the granted stack rather than inheriting it copy-on-write.
-
-    So size it against latency, and know what a resident worker holds.
-    With a heavyweight policy (pandas, numpy, plotly) a worker is
-    many times slower to start and larger resident than with a stdlib
-    policy. The default of **1** keeps the app-iteration loop warm —
-    edit, ``test_app``, preview, repeat is essentially sequential —
-    while holding a single worker.
-
-    Raise it for **concurrent** serving: a preview page issuing parallel
-    API calls, or a published app with real traffic. Past the cap,
-    concurrency falls back to a per-call sandbox rather than queueing,
-    so the failure mode of too-low is latency, not errors.
-
-    Too-high is memory, because **residency only rises unless you reap
-    it**. A burst of N concurrent calls leaves ``min(N, warm_view_workers)``
-    workers resident — the ones past the cap are transient and reaped
-    when their call ends, but those within it are kept. Left alone, the
-    cap is therefore a floor you fill and keep paying for, per distinct
-    view, per workspace, for the executor's life.
-    ``ws.runtime.reap_idle(max_age)`` closes the ones idle for
-    ``max_age`` seconds, and an embedder holding workspaces open calls
-    it on a timer; nothing calls it on the embedder's behalf.
-
-    ``0`` gives every call a pristine worker. That is the only setting
-    with clean process-state semantics: any pool >0 means ``sys.modules``,
-    module globals, and anything a handler mutated through a granted
-    module outlive the request that did it, shared between handlers of
-    one app. The blast radius is one workspace."""
-
-    preload_grants: bool = False
-    """Import granted modules once into sandtrap's forkserver broker, so
-    every worker inherits them copy-on-write instead of importing its
-    own copy. ``isolation="process"``/``"kernel"`` only.
-
-    This is the big lever on worker cost, and it moves both numbers at
-    once. With a heavy stack such as ``modules=[dataframes(), plotting()]``,
-    a preloaded worker starts many times faster and holds a fraction of
-    the memory — the stack is paid for once in the broker rather than
-    per worker. It
-    applies to **every** worker, including the session worker each
-    workspace holds for its life, so in a host with many open
-    workspaces it moves more memory than ``warm_view_workers`` does.
-
-    Off by default because preloading runs your grants' **import-time
-    code in the broker**. A module that starts a background thread on
-    import leaves the broker multi-threaded, and a worker forked from
-    it can inherit a lock held by that thread — the exact hang the
-    forkserver default exists to prevent. Your grants are yours: turn
-    this on when you know they start no threads on import.
-
-    **pyarrow, specifically.** ``dataframes()`` grants pyarrow, and
-    pandas 3 imports it regardless — so preloading puts arrow's
-    allocator in the broker. Arrow's default mimalloc pool keeps
-    per-thread heaps that historically don't survive fork. The preset
-    already pins ``ARROW_DEFAULT_MEMORY_POOL=system`` before pandas
-    can import pyarrow, and the broker inherits that environment, so
-    the preset path is covered — see
-    ``test_dataframes_preset_pins_a_fork_safe_arrow_allocator``, which
-    exists to stop that pin being deleted as obsolete. If you grant
-    pandas or pyarrow **without** the preset and enable this, set that
-    variable yourself, before the first pandas import anywhere in your
-    process.
-
-    **It is process-wide, not per-workspace.** multiprocessing reads
-    the preload list once, when the broker starts, so only the first
-    workspace to start a worker in your process decides. Later
-    workspaces asking for a preload the running broker lacks still
-    work — their modules are imported per worker — and sandtrap emits
-    a ``RuntimeWarning`` saying so. Set it uniformly across the
-    workspaces you build, or accept that the first one wins."""
-
-    policy: Any | None = None
-    """A pre-built ``sandtrap.Policy``; overrides everything above
-    except ``host_objects``."""
-
-    classes: Sequence[type] = field(default=(), hash=False)
-    """Classes bound by name in every run, and importable from ``host``:
-    the types agent code builds values of (a task's result type, say).
-    In-process they are registered with the sandbox policy; under
-    process isolation the worker imports them by their qualified name;
-    on dud the guest imports them, or rebuilds their module from its
-    source where it has no such module. A class defined inside a
-    function, or in a script's ``__main__``, can't be named from
-    another process, and is refused when a workspace opens with
-    isolation or on dud."""
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "host_objects", MappingProxyType(dict(self.host_objects))
-        )
-        classes = tuple(self.classes)
-        for klass in classes:
-            if not isinstance(klass, type):
-                raise TypeError(
-                    f"PythonConfig.classes holds classes, not {type(klass).__name__}"
-                )
-        names = [klass.__name__ for klass in classes]
-        twice = sorted({n for n in names if names.count(n) > 1})
-        if twice:
-            raise ValueError(
-                f"PythonConfig.classes has two classes named {twice[0]!r}: "
-                "code names them, so the names must differ"
-            )
-        clash = sorted(set(names) & {*self.host_objects, "host", "cache"})
-        if clash:
-            raise ValueError(
-                f"PythonConfig.classes has a class named {clash[0]!r}, which is "
-                "already a name in the sandbox (a host object, the host module "
-                "or the cache)"
-            )
-        object.__setattr__(self, "classes", classes)
-
-
-@dataclass(frozen=True)
-class Profile:
-    """A session's profile: what the world its agent works in holds and
-    where its code runs, as one value.
-
-    :meth:`Store.open <nontainer.store.Store.open>` and
-    :func:`workspace` take it as ``profile=`` in place of the six
-    keywords it bundles (everything here but ``variables``),
-    :meth:`Profile.of` reads it back off a workspace, and a fork
-    inherits it, as forks have always inherited these settings. Read
-    back, ``mounts`` are normalized (points validated, sources resolved)
-    and ``commands`` and ``variables`` are the session's as they stand.
-
-    Not part of it: ``cache``, ``autocommit`` and ``max_observation``.
-    They say how a session behaves, not what its world holds.
-
-    ``mounts``, ``commands`` and ``variables`` are copied into
-    read-only mappings, so a ``Profile`` cannot change once built;
-    derive a variant with :func:`dataclasses.replace`.
-    """
-
-    python: PythonConfig = field(default_factory=PythonConfig)
-    """What sandboxed code may touch, host objects included."""
-
-    mounts: Mapping[str, Mount] = field(default_factory=dict, hash=False)
-    """Real directories exposed inside the tree (skills mounted with
-    :func:`nontainer.skills.mounts` among them)."""
-
-    commands: Mapping[str, Callable[..., Any]] = field(default_factory=dict, hash=False)
-    """Custom terminal commands."""
-
-    variables: Mapping[str, str] = field(default_factory=dict, hash=False)
-    """Environment variables for script runs: ``$VAR`` expansion in the
-    terminal, exported into the guest on dud rungs. Applied to
-    ``ws.runtime.env`` when the session opens. Names a shell could not
-    expand are refused here, and values are coerced to ``str``, as
-    ``runtime.env`` does."""
-
-    executor_factory: Callable[[], Executor] | None = None
-    """Where code runs; ``None`` is the in-process ``LocalExecutor``."""
-
-    root: str = "/workspace"
-    """The workspace root agent code sees its files under."""
-
-    ignore: tuple[str, ...] = ()
-    """The embedder's ``.gitignore`` patterns."""
-
-    def __post_init__(self) -> None:
-        from .runtime import _ShellEnv
-
-        if isinstance(self.ignore, str):
-            raise TypeError(
-                "Profile.ignore takes a sequence of patterns, not one string: "
-                f"use ({self.ignore!r},)"
-            )
-        variables = _ShellEnv()
-        variables.update(self.variables)
-        object.__setattr__(self, "mounts", MappingProxyType(dict(self.mounts)))
-        object.__setattr__(self, "commands", MappingProxyType(dict(self.commands)))
-        object.__setattr__(self, "variables", MappingProxyType(dict(variables)))
-        object.__setattr__(self, "root", normalize_root(self.root))
-        object.__setattr__(self, "ignore", tuple(self.ignore))
-
-    @classmethod
-    def of(cls, ws: Workspace) -> Profile:
-        """``ws``'s profile: what a fork of it inherits, and what
-        ``Store.open(..., profile=)`` takes to open another session in
-        the same world. Commands are the session's as they stand,
-        without the framework's own, which a session opened with this
-        profile rebuilds bound to itself; variables are copied as a fork
-        copies them."""
-        settings = ws._settings
-        return cls(
-            python=settings.python,
-            mounts=settings.mounts,
-            commands=ws.runtime.forkable_commands(),
-            variables=dict(ws.runtime.env),
-            executor_factory=settings.executor_factory,
-            root=settings.root,
-            ignore=settings.ignore,
-        )
-
-
-def _profile_fields(
-    profile: Profile | None,
-    *,
-    python: PythonConfig | None,
-    mounts: Mapping[str, Mount] | None,
-    commands: Mapping[str, Callable[..., Any]] | None,
-    executor_factory: Callable[[], Executor] | None,
-    root: str | None,
-    ignore: Iterable[str] | None,
-) -> dict[str, Any]:
-    """The six profile keywords for ``Workspace(...)``: from ``profile``,
-    or as given, never both. A keyword passed alongside ``profile`` would
-    leave one of the two silently ignored, so it is refused."""
-    if profile is None:
-        return {
-            "python": python,
-            "mounts": mounts,
-            "commands": commands,
-            "executor_factory": executor_factory,
-            "root": "/workspace" if root is None else root,
-            "ignore": ignore,
-        }
-    given = [
-        name
-        for name, value in (
-            ("python", python),
-            ("mounts", mounts),
-            ("commands", commands),
-            ("executor_factory", executor_factory),
-            ("root", root),
-            ("ignore", ignore),
-        )
-        if value is not None
-    ]
-    if given:
-        raise TypeError(
-            "pass the profile as profile= or as its fields, not both: "
-            f"{', '.join(given)} given with profile"
-        )
-    return {
-        "python": profile.python,
-        "mounts": dict(profile.mounts),
-        "commands": dict(profile.commands),
-        "executor_factory": profile.executor_factory,
-        "root": profile.root,
-        "ignore": profile.ignore,
-    }
-
-
-_HOST_PREFIX_RE = re.compile(r'(File ")/[^"]*/(?:site-packages|python\d+\.\d+)/')
-_FRAME_RE = re.compile(r'\s+File "([^"]*)"')
+    from ..agentgit import AgentGit
+    from ..inbox import Inbox
+    from ..protocol import Executor
+    from ..runtime import Runtime
+    from ..store import Ref, Store
+    from ..turns import Source, Turn, Turns
 
 
 def _refuse_agent_tool(info: Mapping[str, Any] | None) -> None:
@@ -892,7 +109,7 @@ def _refuse_agent_tool(info: Mapping[str, Any] | None) -> None:
     bookkeeping and skipped. Both are forgeries, so the name is
     reserved rather than merely discouraged.
     """
-    from .agentgit import TOOL
+    from ..agentgit import TOOL
 
     tool = (info or {}).get("tool")
     if not isinstance(tool, str):
@@ -904,71 +121,6 @@ def _refuse_agent_tool(info: Mapping[str, Any] | None) -> None:
             "made here is the host's. The agent's commit verb is "
             "ws.index.commit(message)."
         )
-
-
-def _render_error(exc: BaseException) -> str:
-    """The full traceback, not just the message — line numbers are what
-    an agent's repair loop aims at.
-
-    Under process isolation the traceback object doesn't survive the
-    pickle home, so sandtrap's worker renders it in situ and attaches
-    the text (``_st_traceback_text``, sandtrap >= 0.2.10); prefer that,
-    fall back to formatting whatever frames we hold (in-process runs,
-    older sandtraps, host-made errors like StTimeout)."""
-    text = getattr(exc, "_st_traceback_text", None)
-    if not isinstance(text, str) or not text:
-        text = "".join(
-            traceback.format_exception(type(exc), exc, exc.__traceback__)
-        ).rstrip()
-    return _trim_rendered_traceback(text)
-
-
-def _machinery_dirs() -> tuple[str, ...]:
-    """Package dirs whose frames are sandbox plumbing, not signal."""
-    import monkeyfs
-    import sandtrap
-
-    return tuple(
-        str(Path(m.__file__).parent) for m in (sandtrap, monkeyfs) if m.__file__
-    )
-
-
-_PLUMBING_FILES = ("nontainer/remote.py", "<contract:nontainer.remote>")
-"""Files whose frames are plumbing wherever they run: a stubbed host
-object's call raises its refusal from ``nontainer.remote``, imported or
-rebuilt from source in a guest, and what the agent needs is its own line
-and the error."""
-
-
-def _trim_rendered_traceback(text: str) -> str:
-    """De-noise a rendered traceback for agent-visible surfaces.
-
-    Sandtrap/monkeyfs machinery frames go entirely — a gate raising
-    through ``__st_import__`` is OUR plumbing, not the agent's bug
-    (``strip_internal_frames`` can only strip LEADING frames; text is
-    where trailing ones can go). Host install prefixes carry zero
-    signal and leak paths, so surviving library frames read
-    ``pandas/core/generic.py``, not the absolute venv path. And
-    pathological depth gets middle-elided — the entry frames and the
-    raise site are the ends worth keeping."""
-    machinery = _machinery_dirs()
-    lines: list[str] = []
-    dropping = False
-    for line in text.splitlines():
-        m = _FRAME_RE.match(line)
-        if m:
-            dropping = m.group(1).startswith(machinery) or m.group(1).endswith(
-                _PLUMBING_FILES
-            )
-        elif not line.startswith(("    ", "\t")):
-            dropping = False  # left column: header / exception line
-        if dropping:
-            continue
-        lines.append(_HOST_PREFIX_RE.sub(r"\1", line))
-    if len(lines) > 60:
-        elided = len(lines) - 48
-        lines = lines[:8] + [f"[... {elided} traceback lines elided ...]"] + lines[-40:]
-    return "\n".join(lines)
 
 
 def _state_identity(provider: Any) -> "Callable[[], str | None] | None":
@@ -995,151 +147,6 @@ def _state_identity(provider: Any) -> "Callable[[], str | None] | None":
             return None
 
     return _current
-
-
-_MUTATING_FS_METHODS = frozenset(
-    {"write", "mkdir", "makedirs", "remove", "rmdir", "rename", "chdir"}
-)
-
-
-class _SyncingFS:
-    """``ws.files.fs`` wrapper: host-side writes mark the executor stale.
-
-    ``ws.files.fs`` is the documented host-side escape hatch (seeding
-    inputs, harvesting artifacts) and it writes straight into the
-    provider — behind a remote executor's back. Without this, the guest tree never
-    learned: a host write landed in the provider and the guest kept
-    serving its stale baseline until some *other* path happened to call
-    ``sync()``. That made the failure nondeterministic, which is the
-    worst way for it to present — the apps runtime's ``api.log`` was
-    invisible to ``cat`` from the terminal unless an unrelated write
-    intervened, so the agent's documented repair loop read as broken.
-
-    Marking is LAZY on purpose. ``DudExecutor.sync()`` re-pushes the
-    whole tree (tar + ``push_tree``), so syncing per write would turn
-    an N-file seeding loop into N wholesale pushes; the workspace
-    instead syncs once, before the next execution needs the guest to be
-    current. The executor itself gets the RAW fs via
-    ``ExecutionContext`` — its own writes are already guest-side and
-    must not mark anything.
-
-    Reads delegate untouched, so this stays a pure write-side concern.
-    """
-
-    __slots__ = ("_fs", "_mark")
-
-    def __init__(self, fs: Any, mark: Callable[[], None]) -> None:
-        self._fs = fs
-        self._mark = mark
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._fs, name)
-        if name not in _MUTATING_FS_METHODS or not callable(attr):
-            return attr
-
-        def _marking(*args: Any, **kwargs: Any) -> Any:
-            result = attr(*args, **kwargs)
-            self._mark()
-            return result
-
-        return _marking
-
-    def __repr__(self) -> str:
-        return f"<syncing {self._fs!r}>"
-
-
-def _point_over(path: str, points: Mapping[str, Any]) -> str | None:
-    """The MOST SPECIFIC mount point ``path`` lies at or under, or None.
-
-    Mount points nest — a writable directory inside a read-only one,
-    an attachment inside either — and the composition routes a path to
-    the deepest point that covers it. Anything that reasons about
-    where a path lands has to pick the same one.
-    """
-    best: str | None = None
-    for point in points:
-        if path == point or path.startswith(point + "/"):
-            if best is None or len(point) > len(best):
-                best = point
-    return best
-
-
-def _frozen_message(tag: str | None) -> str:
-    """What a frozen workspace tells whoever tried to write to it."""
-    where = f" at tag {tag!r}" if tag else ""
-    return f"this workspace is a frozen snapshot{where}; it accepts no writes"
-
-
-class _FrozenKV(MutableMapping):
-    """Read-only view of the provider's kv for a frozen workspace.
-
-    The executor builds the agent-facing ``cache`` on whatever kv the
-    context carries, so a snapshot has to hand it a mapping that refuses
-    writes — otherwise ``cache['x'] = 1`` succeeds against a checkout
-    that can never commit it, in-process and in a guest's cache service
-    alike. A ``MutableMapping`` so the derived mutators (``pop``,
-    ``clear``, ``update``, ``setdefault``) route through the two that
-    raise rather than reaching the underlying store.
-    """
-
-    def __init__(self, kv: MutableMapping[str, Any], tag: str | None) -> None:
-        self._kv = kv
-        self._message = _frozen_message(tag)
-
-    def __getitem__(self, key: str) -> Any:
-        return self._kv[key]
-
-    def __iter__(self) -> Any:
-        return iter(self._kv)
-
-    def __len__(self) -> int:
-        return len(self._kv)
-
-    def __contains__(self, key: object) -> bool:
-        return key in self._kv
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self._kv.get(key, default)
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        raise PermissionError(self._message)
-
-    def __delitem__(self, key: str) -> None:
-        raise PermissionError(self._message)
-
-
-def _frozen_fs(fs: Any, tag: str | None) -> Any:
-    """A read-only view over a frozen workspace's filesystem.
-
-    The executor gets this instead of the live fs, so a write attempted
-    by agent code — a shell redirect, ``open(..., "w")``, a python
-    ``os.remove`` — is refused where it happens, with a message the
-    agent can act on rather than a silent write that could never be
-    committed. Reads pass straight through.
-    """
-    from monkeyfs import ReadOnlyFS
-
-    message = _frozen_message(tag)
-
-    class FrozenFS(ReadOnlyFS):
-        # Two refusal paths to override, because the wrapper has two:
-        # mode-sensitive operations call ``_deny`` directly, and a
-        # mutating method is served by a stand-in built by
-        # ``_refuse_write``. Both say the same thing here.
-        def _deny(self) -> None:  # type: ignore[override]
-            raise PermissionError(message)
-
-        def _refuse_write(self, name: str) -> Callable[..., Any]:  # type: ignore[override]
-            def denied(*args: Any, **kwargs: Any) -> Any:
-                raise PermissionError(f"{message} ({name}() would change them)")
-
-            denied.__name__ = name
-            return denied
-
-        def touch(self, path: str) -> None:
-            self._deny()
-
-    return FrozenFS(fs)
 
 
 class _Attachment(NamedTuple):
@@ -1172,725 +179,10 @@ class _Absorbed(NamedTuple):
     landed: bool = False
 
 
-def normalize_root(root: str) -> str:
-    """A workspace root as every executor reads it: absolute, normalized
-    by segment, with no ``.`` or ``..`` in it.
-
-    Anything a guest kernel would collapse (trailing, doubled, or
-    leading-only slashes) has to collapse here too, or the executors
-    silently disagree about the root: "//" left as-is rstrips to "",
-    which reads falsy downstream — the local side then composes
-    "/skills" (flat layout) while a guest falls back to dud's own
-    /workspace default. That split is the exact bug this root exists
-    to prevent. ``.`` and ``..`` are rejected rather than resolved: a
-    guest would normalize them and the VFS wouldn't, reopening the same
-    split. Anything that builds paths under a root an embedder passed
-    (``skills.mounts``) normalizes it here, to land where the workspace
-    looks.
-    """
-    if not root.startswith("/"):
-        raise ValueError(f"root must be an absolute path, got {root!r}")
-    parts = [p for p in root.split("/") if p]
-    if any(p in (".", "..") for p in parts):
-        raise ValueError(f"root must not contain . or .. segments, got {root!r}")
-    return "/" + "/".join(parts) if parts else "/"
-
-
-@dataclass(frozen=True)
-class _Settings:
-    """The construction arguments a fork replays onto its own provider —
-    the ones that cannot change after ``__init__``.
-
-    ``fork()`` used to re-list these by hand, which is how ``mounts``
-    came to be silently dropped: it was added after the list was
-    written, so a forked (or published) workspace lost every mount.
-    Capturing them once means the next argument cannot fall out the
-    same way — ``tests/test_mounts_and_cache.py`` asserts every
-    pass-through parameter of ``Workspace.__init__`` lands here.
-
-    Two constructor arguments are deliberately absent:
-
-    - ``provider`` — the fork gets its own; that IS the fork.
-    - ``executor`` — a ready instance is bound to one session and
-      cannot be shared (see the executor block in ``__init__``); forks
-      fall back to ``executor_factory``.
-
-    Two more are absent because they are MUTABLE after construction, so
-    a value captured here would go stale. ``fork()`` replays both from
-    the live attribute instead:
-
-    - ``commands`` — ``register_command`` mutates the built set
-      (``enable_apps`` injects ``ws-curl``/``curl`` that way).
-    - ``autocommit`` — has a public setter, and the documented
-      turn-granularity path uses it (``WorkspaceTools(ws,
-      commit="turn")`` sets ``ws.autocommit = False``). Replaying
-      the construction-time value would silently put a forked session
-      back on per-call commits.
-
-    That distinction is load-bearing, so a test asserts no field here
-    has a setter on ``Workspace``.
-
-    ``mounts`` is stored NORMALIZED (points validated, sources resolved
-    to absolute paths), not as the caller passed it. Re-resolving at
-    fork time would let a relative source or a retargeted symlink give
-    the fork a different directory than the parent — breaking the
-    live-view contract in :class:`Mount`, which promises both observe
-    the same one.
-    """
-
-    python: "PythonConfig"
-    mounts: Mapping[str, Mount]
-    cache: bool
-    max_observation: int
-    executor_factory: "Callable[[], Executor] | None"
-    root: str
-    ignore: tuple[str, ...]
-
-    def as_kwargs(self) -> dict[str, Any]:
-        """Shallow field mapping for ``Workspace(**...)``. Deliberately
-        not ``dataclasses.asdict``, which recurses — it would flatten
-        ``PythonConfig`` and each ``Mount`` into plain dicts."""
-        return dict(vars(self))
-
-
 def _show_root(git: Any, path: str) -> str:
     """A workspace path as the agent types it: relative to the root."""
     root = git._ws.root.rstrip("/")
     return path[len(root) + 1 :] if root and path.startswith(root + "/") else path
-
-
-class WorkspaceFiles:
-    """``ws.files``: the file surface of one session.
-
-    Writes here are the same operation the file tools perform: the
-    workspace's single-writer lock is held for the call, and the commit
-    flow runs when it lands — one commit per call under autocommit,
-    whatever the agent has staged. Reads take no lock and never
-    commit.
-
-    One instance per workspace, reached as ``ws.files``; it holds the
-    workspace and no state of its own.
-    """
-
-    __slots__ = ("_ws",)
-
-    def __init__(self, ws: "Workspace") -> None:
-        self._ws = ws
-
-    def __repr__(self) -> str:
-        return f"<files of session {self._ws.session!r}>"
-
-    # -- reads ---------------------------------------------------------
-
-    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
-        """The file's bytes, or the ``size`` of them starting at
-        ``offset``. Raises for a missing path — use
-        :meth:`read_artifact` where absence is an answer rather than an
-        error.
-
-        The range is the filesystem's, forwarded: ``offset`` counts
-        from the start and must not be negative, a negative ``size``
-        reads to the end, a read starting at or past the end returns
-        ``b""``, and one running past the end is truncated to what is
-        there. With both defaults this is the whole file, byte for
-        byte. On a backend that can serve a range without fetching the
-        rest — a directory on disk, a file behind an isolation
-        boundary — asking for a parquet footer costs the footer.
-        """
-        self._ws._check_open()
-        return self._ws._fs.read(path, offset, size)
-
-    def exists(self, path: str) -> bool:
-        """Whether anything (file or directory) is at ``path``."""
-        self._ws._check_open()
-        return self._ws._fs.exists(path)
-
-    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
-        """Files and directories under ``path``, sorted.
-
-        Entries come back spelled the way ``path`` was — absolute for
-        an absolute directory, relative to the cwd otherwise — so a
-        result can be handed straight back to :meth:`read`. One level
-        down by default; ``recursive`` takes everything beneath.
-
-        The walk is the filesystem's own (``fs.list(recursive=True)``),
-        not one composed here out of ``isdir``: on a real directory a
-        symlink to an ancestor is an ordinary thing to find, and a
-        hand-rolled descent follows it forever. monkeyfs walks with
-        ``rglob``, which does not descend into symlinked directories.
-        """
-        ws = self._ws
-        ws._check_open()
-        base = posixpath.normpath(path)
-        return sorted(
-            posixpath.normpath(posixpath.join(base, entry))
-            for entry in ws._fs.list(base, recursive=recursive)
-        )
-
-    def get(self, src: str, dest: str | Path | None = None) -> bytes:
-        """Copy a workspace file OUT ("download"). Returns the bytes;
-        also writes them to ``dest`` on the host when given.
-
-        Read-only against the workspace — never commits.
-        """
-        ws = self._ws
-        ws._check_open()
-        data = ws._fs.read(src)
-        if dest is not None:
-            out = Path(dest).expanduser()
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_bytes(data)
-        return data
-
-    def read_artifact(self, path: str) -> bytes | None:
-        """An artifact's bytes, or ``None`` if it cannot be read.
-
-        Shaped to be handed straight to the a2ui envelope, whose
-        ``read_bytes`` parameter is exactly this signature::
-
-            turn_to_a2ui(prose, artifacts, ws.files.read_artifact, file_url, ...)
-
-        The ``None`` is the whole point. ``turn_to_a2ui`` owns no I/O
-        policy on purpose and documents ``None`` as "unreadable, degrade
-        gracefully" — but the obvious ``lambda p: ws.files.read(p)``
-        raises ``FileNotFoundError`` for a missing artifact and breaks
-        that never-raises guarantee mid-stream, in an egress path.
-        Holding that contract here means each consumer does not have to
-        restate it correctly.
-
-        Returns bytes rather than a parsed payload deliberately. Every
-        consumer in this stack parses for itself (a2ui degrades on
-        malformed JSON rather than raising), and a typed loader would
-        invite reading it as "give me my DataFrame back" — which a
-        ``head(200)`` artifact cannot honour. ``ArtifactPath.kind``
-        says how to interpret the bytes when you want to.
-
-        Read-only; never commits. Any path works, not only ``/ui`` —
-        artifact notes are the usual source, but nothing here needs to
-        police that.
-        """
-        try:
-            self._ws._check_open()
-            return self._ws._fs.read(path)
-        except Exception:  # noqa: BLE001 - unreadable IS the answer here
-            return None
-
-    # -- writes --------------------------------------------------------
-
-    def write(self, path: str, content: str | bytes) -> WriteOutcome:
-        """Write a file (parents created, overwrites). The quoting-free
-        alternative to shell redirects for multiline content; exposed
-        by adapters as the ``file_write`` tool. Committed."""
-        ws = self._ws
-        data = content.encode() if isinstance(content, str) else content
-        with ws._lock:
-            ws._check_open()
-            ws._check_writable("file_write")
-            created = not ws._fs.exists(path)
-            # PurePosixPath: workspace paths are POSIX regardless of host OS
-            parent = str(PurePosixPath(path).parent)
-            if parent not in (".", "/", ""):
-                ws._fs.makedirs(parent, exist_ok=True)
-            ws._fs.write(path, data)
-            # host-side write behind the executor's back: flag it, and
-            # the next execution syncs (no-op for LocalExecutor)
-            ws._mark_executor_stale()
-            return WriteOutcome(
-                path=path,
-                size=len(data),
-                created=created,
-                commit=ws._maybe_commit("file_write"),
-            )
-
-    def edit(
-        self,
-        path: str,
-        old_string: str,
-        new_string: str,
-        *,
-        replace_all: bool = False,
-    ) -> "EditOutcome":
-        """Exact-string replacement with agent-tolerant fallbacks (the
-        agex strategy set — see ``nontainer.editing``): exact match,
-        then trailing-whitespace-flexible, then indent-flexible with a
-        re-indented replacement; a search that fails but whose
-        replacement is already present is an idempotent no-op
-        (``count == 0``). Raises ``WorkspaceError`` with an
-        agent-actionable message (including a "did you mean these
-        lines?" snippet) otherwise. Committed when it changes the
-        file."""
-        from .editing import EditError, apply_edit
-
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            ws._check_writable("file_edit")
-            try:
-                text = ws._fs.read(path).decode("utf-8")
-            except Exception as e:
-                raise WorkspaceError(f"cannot read {path!r}: {e}") from e
-            try:
-                outcome = apply_edit(
-                    text, old_string, new_string, replace_all=replace_all, path=path
-                )
-            except EditError as e:
-                raise WorkspaceError(str(e)) from e
-            if outcome.count:
-                ws._fs.write(path, outcome.content.encode())
-                ws._mark_executor_stale()  # see write()
-                cp = ws._maybe_commit("file_edit")
-                if cp:
-                    outcome = replace(outcome, commit=cp)
-            return outcome
-
-    def remove(self, path: str) -> RemoveOutcome:
-        """Delete a file. Committed, like a write.
-
-        The same operation ``write`` is, spelled the other way: the
-        workspace's single-writer lock is held for the call, the view
-        rule refuses a path this session cannot see, and the commit
-        flow runs when it lands — so a deletion is a commit of its own
-        and the outcome names it, rather than sitting in the tree until
-        something else commits.
-
-        One FILE. A path naming a directory is refused with
-        ``IsADirectoryError``: a directory here is the shape of the
-        files under it, so removing one means removing them, which is
-        the shell's ``rm -r`` or a ``ws.checkout(ref, paths=)`` that
-        mirrors the directory as the ref has it. A path holding
-        nothing raises ``FileNotFoundError``, the way ``read`` does —
-        absence is the caller's to check with ``exists``.
-        """
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            ws._check_writable("file_remove")
-            if ws._fs.isdir(path):
-                raise IsADirectoryError(
-                    f"{path!r} is a directory: files.remove takes one file. "
-                    "A directory is the shape of the files under it, so "
-                    "emptying one is 'rm -r' in the terminal, or "
-                    "ws.checkout(ref, paths=[...]) to make it match a ref."
-                )
-            if not ws._fs.exists(path):
-                raise FileNotFoundError(path)
-            ws._refuse_hidden([path])
-            size = len(ws._fs.read(path))
-            ws._fs.remove(path)
-            # host-side write behind the executor's back: flag it, and
-            # the next execution syncs (no-op for LocalExecutor)
-            ws._mark_executor_stale()
-            return RemoveOutcome(
-                path=path,
-                size=size,
-                commit=ws._maybe_commit("file_remove"),
-            )
-
-    def put(self, src: str | Path, dest: str | None = None) -> WriteOutcome:
-        """Copy a host file INTO the workspace ("upload").
-
-        Sugar over ``ws.files.fs.write`` — whole-bytes, so sized for
-        documents/datasets, not multi-GB blobs (use a :class:`Mount`
-        for those). ``dest`` defaults to the source's basename at the
-        workspace root; parent directories are created. Overwrites.
-        """
-        ws = self._ws
-        src_path = Path(src).expanduser()
-        data = src_path.read_bytes()
-        ws_path = dest or src_path.name
-        with ws._lock:
-            ws._check_open()
-            ws._check_writable("put")
-            created = not ws._fs.exists(ws_path)
-            parent = str(PurePosixPath(ws_path).parent)
-            if parent not in (".", "/", ""):
-                ws._fs.makedirs(parent, exist_ok=True)
-            ws._fs.write(ws_path, data)
-            ws._mark_executor_stale()  # see write()
-            return WriteOutcome(
-                path=ws_path,
-                size=len(data),
-                created=created,
-                commit=ws._maybe_commit("put"),
-            )
-
-    # -- the tree as a whole -------------------------------------------
-
-    def attach(
-        self,
-        ref: "str | Ref",
-        at: str,
-        *,
-        readonly: bool = True,
-        root: str | None = None,
-    ) -> str:
-        """Mount another session's tree, frozen at a commit, inside
-        this one at ``at``; returns the ref it was attached from.
-
-        For reading someone else's work in place — a delegate's branch
-        while deciding whether to merge it, an expert's files while
-        answering a question — without copying it in. Explicit and
-        never automatic: nothing appears in a session's tree that the
-        host did not put there.
-
-        Like a :class:`Mount`, and for the same reasons: NOT versioned,
-        not captured by commits, not carried by a fork, and gone when
-        the session closes. Unlike a mount it is a state in the store
-        rather than a directory on the host, and it is frozen, so
-        ``readonly=False`` has nothing to offer and is refused.
-
-        ``ref`` is ``session@commit`` (see :class:`~nontainer.Ref`), a
-        session name, which means that session's current commit, or a
-        store tag, which means the commit it names — and a tag holds
-        its commit, so one mounts for as long as the tag exists,
-        whatever became of the session that reached it.
-        What lands at ``at`` is the source's workspace ROOT, so a file
-        the delegate calls ``auth.py`` reads as ``<at>/auth.py``.
-        A lineage shares one root, so that root is THIS session's;
-        ``root`` names a different one for a session from elsewhere.
-
-        What lands is the source's whole branch, not what its own
-        session can see: a delegate given a narrow view is exactly the
-        one a caller attaches in order to look at everything it did.
-
-        ``at`` is workspace-absolute or relative to the root. INSIDE
-        the root it reaches every rung, a guest included; outside it,
-        an executor that runs somewhere else never sees it — the same
-        contract a :class:`Mount` outside the root has, and for the
-        same reason (a guest is given the root's subtree and nothing
-        else).
-
-        One more thing it shares with a mount: while anything is
-        attached the working directory belongs to the composition, so
-        a session committed in that state reopens at its root rather
-        than where its agent was standing.
-        """
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            return ws._attach(ref, at, readonly=readonly, root=root)
-
-    def detach(self, at: str) -> None:
-        """Remove an attachment and release the state behind it."""
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            ws._detach(at)
-
-    def attachments(self) -> dict[str, str]:
-        """What is attached, as ``{mount point: ref}``."""
-        return {at: held.ref for at, held in self._ws._attached.items()}
-
-    def export(self) -> AbstractContextManager[Path]:
-        """Expose the workspace at a real path for the duration of the
-        block (FUSE providers only; others raise
-        ``NotSupportedError``). For the tools that must see real files
-        — a subprocess, a C extension — rather than the VFS."""
-        return self._ws._provider.mount()
-
-    @property
-    def fs(self) -> Any:
-        """EXTENSION SURFACE: the termish-protocol filesystem, for
-        host-side reads/writes (seeding inputs, harvesting artifacts)
-        without the sandbox and without the commit flow. Bypasses the
-        workspace's single-writer lock — a host thread writing here
-        while agent calls run holds ``ws.lock``.
-
-        Writes through this handle mark a remote executor's view stale;
-        the next execution re-syncs it, so a host-written file is
-        visible to the guest's very next ``cat`` (see
-        :class:`_SyncingFS`). Reads pass through untouched."""
-        return self._ws._public_fs
-
-
-class WorkspaceIndex:
-    """``ws.index``: the agent's own git over this session.
-
-    An index the agent fills across several edits, commits it names,
-    and a log of just those commits (requires ``caps.index``; other
-    providers raise ``NotSupportedError`` naming the verb). It is a
-    fiction over the store's history — see ``nontainer/agentgit.py``
-    for the model — and the terminal's ``ws-git`` verbs are the same
-    implementation, so an agent and its host see one index and one
-    graph, not two.
-
-    The framework's own commits (``ws.commit()``, a turn hook, a
-    session db, a skill install) never disturb it: everything here is
-    measured against the agent's last commit, not the store's head.
-    """
-
-    __slots__ = ("_ws",)
-
-    def __init__(self, ws: "Workspace") -> None:
-        self._ws = ws
-
-    def __repr__(self) -> str:
-        return f"<index of session {self._ws.session!r}>"
-
-    @property
-    def _git(self) -> "AgentGit":
-        from .agentgit import AgentGit
-
-        return AgentGit(self._ws)
-
-    @property
-    def head(self) -> str | None:
-        """The commit the agent's last :meth:`commit` made, or ``None``
-        before the first one."""
-        return self._git.head
-
-    def stage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Add workspace file paths to the index; returns what was new.
-
-        Bookkeeping only: nothing commits, and nothing changes about
-        what autocommit does. Staging is optional — :meth:`commit`
-        with an empty index takes everything modified, the way
-        ``git commit -a`` does.
-        """
-        ws = self._ws
-        with ws._lock:
-            return self._git.stage(paths)
-
-    def unstage(self, paths: Iterable[str]) -> tuple[str, ...]:
-        """Remove paths from the index; returns what was removed."""
-        ws = self._ws
-        with ws._lock:
-            return self._git.unstage(paths)
-
-    def commit(self, message: str | None = None, *, info: dict | None = None) -> str:
-        """Record an agent commit; returns its id.
-
-        Takes the staged paths that differ from the agent's last
-        commit, or everything modified when nothing is staged. The
-        commit's tree is exactly that: work in progress the agent left
-        out stays in the working tree and out of the commit, rather
-        than being absorbed into its baseline.
-        """
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            return self._git.commit(message, info)[0]
-
-    def discard(self) -> None:
-        """Abandon the composition; the working tree keeps its writes."""
-        ws = self._ws
-        with ws._lock:
-            self._git.discard()
-
-    def status(self) -> WorkspaceStatus:
-        """Staged vs unstaged paths plus live merge context. Pure read —
-        ungated like ``diff``/``log``: reads are the point of snapshots."""
-        return self._git.status()
-
-    def log(self, limit: int | None = None) -> list[CommitInfo]:
-        """The agent's own commits, newest first — the framework's are
-        not in it."""
-        return self._git.log(limit)
-
-    def checkout(self, commit: str) -> str:
-        """Restore the working tree to one of the agent's commits and
-        move its head there; returns the commit id.
-
-        The fiction rewinds; the store appends. The restore lands as a
-        new commit, so nothing already committed leaves the session's
-        history. Only the AGENT's commits are reachable here;
-        ``ws.checkout`` is the host's verb, which takes any commit of
-        the session — and appends in the same way.
-
-        Refused while a merge of this session's is outstanding: the
-        restore would write a different tree and clear the context
-        that records where the markers are, so a tree still holding
-        them would read clean. Resolve them and commit, or
-        ``ws-git merge --abort``.
-        """
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            ws._require_unmerged(self._git, "checkout")
-            return self._git.checkout(commit)
-
-    @property
-    def tags(self) -> "WorkspaceIndexTags":
-        """``ws.index.tags``: the agent's own bookmarks.
-
-        The namespace, which is also callable: ``ws.index.tags()``
-        answers with the mapping, the older spelling of
-        ``ws.index.tags.list()``.
-        """
-        return WorkspaceIndexTags(self._ws)
-
-    def tag(self, name: str, ref: str | None = None, *, force: bool = False) -> str:
-        """The older spelling of ``ws.index.tags.add(name, at=ref)``.
-
-        ``ref`` defaults to the agent's head and may be any ref the
-        agent can type. A name already taken is refused unless
-        ``force`` moves it, and a name that could be read as a commit
-        id is refused outright.
-        """
-        return self.tags.add(name, at=ref, force=force)
-
-    def delete_tag(self, name: str) -> str:
-        """The older spelling of ``ws.index.tags.delete(name)``:
-        returns the commit the bookmark named, which stays where it
-        is."""
-        return self.tags.delete(name)
-
-
-class WorkspaceIndexTags:
-    """``ws.index.tags``: the names the agent gives its own commits.
-
-    Not ``ws.tags``, which are the store's. A ws-git tag is a name in
-    the agent's own blob: it pins nothing against collection (the
-    session's history is append-only and reaches every commit the agent
-    made), it belongs to this session and dies with it, a fork starts
-    with none, and a merge brings none over.
-
-    The four verbs and the ``at=`` keyword are ``ws.tags``' and
-    ``store.tags``', so the vocabulary is learned once and the object
-    reached through says which scope it is about. There is no ``at()``
-    here: a bookmark names a commit this session's own history already
-    holds, and standing on one is ``ws.index.checkout(commit)`` rather
-    than a frozen workspace over somebody's snapshot.
-
-    Calling the namespace — ``ws.index.tags()`` — is the older spelling
-    of :meth:`list`.
-    """
-
-    __slots__ = ("_ws",)
-
-    def __init__(self, ws: "Workspace") -> None:
-        self._ws = ws
-
-    def __repr__(self) -> str:
-        return f"<index tags of session {self._ws.session!r}>"
-
-    def __call__(self) -> dict[str, str]:
-        """The older spelling of :meth:`list`."""
-        return self.list()
-
-    @property
-    def _git(self) -> "AgentGit":
-        from .agentgit import AgentGit
-
-        return AgentGit(self._ws)
-
-    def add(self, name: str, *, at: str | None = None, force: bool = False) -> str:
-        """Bookmark one of the agent's commits by name; returns the id.
-
-        ``at`` defaults to the agent's head and may be any ref the
-        agent can type — a commit of its own, a short id, another
-        bookmark. A name already taken is refused unless ``force``
-        moves it, and a name that could be read as a commit id is
-        refused outright.
-        """
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            return self._git.tag(name, at, force=force)
-
-    def list(self) -> dict[str, str]:
-        """Tag name → commit id, for the agent's own bookmarks.
-
-        A record of what the tags are, not a live view — changing the
-        mapping changes no tag.
-        """
-        return self._git.tags()
-
-    def info(self, name: str) -> TagInfo | None:
-        """Describe one bookmark, or ``None`` if there is no such name.
-
-        The scope reads ``"index"``, since the name lives in the
-        agent's blob rather than in the store, and ``time``, ``tree``
-        and ``info`` are the named COMMIT's: a bookmark carries no
-        metadata of its own and no record of when it was made.
-        ``dangling`` says the commit it names is no longer one the
-        agent's own history reaches.
-        """
-        commit = self._git.tags().get(name)
-        if commit is None:
-            return None
-        entry = self._git.entry(commit)
-        return TagInfo(
-            name=name,
-            scope="index",
-            id=commit,
-            tree=entry.tree if entry else None,
-            time=entry.time if entry else None,
-            info=dict(entry.info) if entry else None,
-            dangling=entry is None,
-        )
-
-    def delete(self, name: str) -> str:
-        """Drop one bookmark; returns the commit it named. The commit
-        stays exactly where it is — the session's own history already
-        holds it, so removing the name takes nothing with it."""
-        ws = self._ws
-        with ws._lock:
-            ws._check_open()
-            return self._git.delete_tag(name)
-
-
-class WorkspaceTags:
-    """``ws.tags``: names this session gives its own commits.
-
-    Session-scoped, always. The name belongs to this session — another
-    session's ``v1`` is a different tag, and deleting the session
-    (``Store.delete``) deletes it — which is what makes it the right
-    place for "before the refactor". A name that must outlive the
-    session, or be read from another one, is store-scoped and lives on
-    ``store.tags``.
-
-    Tags never move: an existing name raises rather than being
-    repointed. A tag also anchors garbage collection — the named commit
-    and its ancestry stay reachable for as long as the name exists.
-    Requires ``caps.tags``.
-    """
-
-    __slots__ = ("_ws",)
-
-    def __init__(self, ws: "Workspace") -> None:
-        self._ws = ws
-
-    def __repr__(self) -> str:
-        return f"<tags of session {self._ws.session!r}>"
-
-    def add(
-        self,
-        name: str,
-        *,
-        at: str | None = None,
-        info: dict[str, Any] | None = None,
-    ) -> str:
-        """Name a commit, immutably; returns the commit id.
-
-        Names the current state by default, committing staged changes
-        first so the name means what the caller saw; ``at`` names an
-        earlier commit of this session instead. ``info`` is caller
-        metadata and must be JSON-serializable.
-        """
-        return self._ws._tag(name, at=at, info=info, scope="session")
-
-    def list(self) -> dict[str, str]:
-        """Tag name → commit id, for this session's tags."""
-        return self._ws._tags(scope="session")
-
-    def info(self, name: str) -> TagInfo | None:
-        """Describe one tag, or ``None`` if this session has no such tag."""
-        return self._ws._tag_info(name, scope="session")
-
-    def delete(self, name: str) -> None:
-        """Drop a tag. What it named survives only while something else
-        still reaches it — a branch, or another tag."""
-        self._ws._delete_tag(name, scope="session")
-
-    def at(self, name: str) -> "Workspace":
-        """A frozen workspace over the tagged state.
-
-        Reads see the tagged files, cache and cwd; nothing can be
-        written or committed (see :attr:`Workspace.frozen`). Close it
-        when done — it holds an executor of its own.
-        """
-        return self._ws._at_tag(name, scope="session")
 
 
 class Workspace:
@@ -1943,7 +235,7 @@ class Workspace:
         # What is never work besides the built-ins (outside the root,
         # authoring output): the embedder's .gitignore. Compiled once,
         # so a bad pattern fails construction rather than a later status.
-        from .ignore import Patterns
+        from ..ignore import Patterns
 
         self._ignore = Patterns(ignore or ())
 
@@ -1960,7 +252,7 @@ class Workspace:
         # host_objects, and a host object that calls back into this
         # workspace's public API must serialize, not deadlock.
         self._lock = threading.RLock()
-        from .turns import Turns
+        from ..turns import Turns
 
         self._turns = Turns(self)
 
@@ -2172,7 +464,7 @@ class Workspace:
         # failure can orphan one (PR #10 review). If the open itself
         # fails, the valid init baseline stays committed: root/cwd are
         # provider state, independent of executor health.
-        from .runtime import Runtime
+        from ..runtime import Runtime
 
         # Host objects a factory makes are made here, for this world:
         # last but the runtime, which opens the executor that takes
@@ -2334,7 +626,7 @@ class Workspace:
         pair, and it is what a snapshot, a publication or a
         cross-session read quotes. Exact iff clean — staged changes are
         in no commit, so check :attr:`uncommitted` first."""
-        from .store import Ref
+        from ..store import Ref
 
         head = self.head
         if head is None:
@@ -2574,12 +866,12 @@ class Workspace:
         # live object nobody could have used anyway. Adapters still
         # render everything for display; that is a different question
         # from what the binding holds.
-        from .artifacts import is_rich
+        from ..artifacts import is_rich
 
         rich = {k: v for k, v in ui.items() if is_rich(v)}
         if not rich:
             return result
-        from .ui import materialize_ui
+        from ..ui import materialize_ui
 
         claims: dict[Any, Any] = {}
         problems: list[str] = []
@@ -2936,7 +1228,7 @@ class Workspace:
 
     def _read_ref(self, ref: "str | Ref") -> "Ref":
         """:meth:`expand_ref`, under the lock. See it for the contract."""
-        from .store import Ref
+        from ..store import Ref
 
         if not isinstance(ref, Ref) and "@" not in str(ref):
             tagged = self._store_tag_ref(str(ref).strip())
@@ -2964,7 +1256,7 @@ class Workspace:
         workspace built straight from a provider has no store to ask,
         and a substrate that keeps no tags has none to find.
         """
-        from .store import Ref
+        from ..store import Ref
 
         if self._store is None:
             return None
@@ -2991,7 +1283,7 @@ class Workspace:
         report about the commit half of a session that is not there
         sends a reader to list what nothing holds.
         """
-        from .agentgit import HASH_RE, AgentGit, tags_at
+        from ..agentgit import HASH_RE, AgentGit, tags_at
 
         self._require_session(session)
         if self._provider.caps.index:
@@ -3075,8 +1367,8 @@ class Workspace:
         collection, so taking from one works with the session that
         reached it deleted.
         """
-        from .agentgit import BLOB_KEY, parse_blob
-        from .store import Ref
+        from ..agentgit import BLOB_KEY, parse_blob
+        from ..store import Ref
 
         text = str(ref)
         if isinstance(ref, Ref) or "@" in text:
@@ -3154,7 +1446,7 @@ class Workspace:
         entry goes out, so a limit of nothing yields nothing — the
         answer the provider gives for the same limit.
         """
-        from .agentgit import is_agent_commit, is_bookkeeping_commit
+        from ..agentgit import is_agent_commit, is_bookkeeping_commit
 
         if limit is not None and limit <= 0:
             return
@@ -3301,7 +1593,7 @@ class Workspace:
         consistent from the start and a reopen finds it; the reset
         lands as the fiction's own bookkeeping commit after them.
         """
-        from .agentgit import reset_for_fork
+        from ..agentgit import reset_for_fork
 
         kv = forked.kv
         changed = False
@@ -3349,7 +1641,7 @@ class Workspace:
         """``ws.files.attach``, under the lock. See it for the contract."""
         from monkeyfs import ReadOnlyFS
 
-        from .views import SubtreeFS
+        from ..views import SubtreeFS
 
         if not readonly:
             raise NotSupportedError(
@@ -3405,7 +1697,7 @@ class Workspace:
         first, so a session and a store tag that share a name cannot
         take a reader somewhere other than the session it can list.
         """
-        from .store import Ref
+        from ..store import Ref
 
         if self._store is None:
             raise WorkspaceError(
@@ -3508,7 +1800,7 @@ class Workspace:
             at = None
             parents: list[str] = []
             if self._provider.caps.index:
-                from .agentgit import AgentGit
+                from ..agentgit import AgentGit
 
                 git = AgentGit(self)
                 self._require_agent_clean(git)
@@ -3535,7 +1827,7 @@ class Workspace:
                     raise
                 raise e.for_store(self._store) from None
             if outcome.merged and self._provider.caps.index:
-                from .agentgit import AgentGit
+                from ..agentgit import AgentGit
 
                 AgentGit(self).record_merge(source, outcome.commit, outcome.conflicts)
             # provider state moved under the executor: flag its view.
@@ -3631,7 +1923,7 @@ class Workspace:
         Refuses work the agent has not committed and a merge still
         outstanding. Requires ``caps.merge``.
         """
-        from .agentgit import REVERT_TOOL
+        from ..agentgit import REVERT_TOOL
 
         self._require_apply("revert")
         target = self._change_commit(self._expand_commit(str(commit)))
@@ -3672,8 +1964,8 @@ class Workspace:
         Refuses work the agent has not committed and a merge still
         outstanding. Requires ``caps.merge``.
         """
-        from .agentgit import PICK_TOOL
-        from .store import Ref
+        from ..agentgit import PICK_TOOL
+        from ..store import Ref
 
         self._require_apply("cherry-pick")
         text = str(ref)
@@ -3760,7 +2052,7 @@ class Workspace:
         Anything else is a framework commit, and the store's own first
         parent is the state it changed.
         """
-        from .agentgit import FORK_TOOL, is_agent_commit, virtual_parents
+        from ..agentgit import FORK_TOOL, is_agent_commit, virtual_parents
 
         if not is_agent_commit(entry.info):
             return entry.parents[0] if entry.parents else None
@@ -3803,7 +2095,7 @@ class Workspace:
                 )
             indexed = self._provider.caps.index
             if indexed:
-                from .agentgit import AgentGit
+                from ..agentgit import AgentGit
 
                 git = AgentGit(self)
                 self._require_agent_clean(git, verb)
@@ -3817,7 +2109,7 @@ class Workspace:
             )
             if outcome.merged:
                 if indexed:
-                    from .agentgit import AgentGit
+                    from ..agentgit import AgentGit
 
                     AgentGit(self).record_merge(
                         source, outcome.commit, outcome.conflicts
@@ -4018,13 +2310,13 @@ class Workspace:
         """Whether ``path`` is never work: outside the root, authoring
         output, or matched by the embedder's patterns (see
         :mod:`nontainer.ignore`)."""
-        from .ignore import is_ignored
+        from ..ignore import is_ignored
 
         return is_ignored(path, self._root, self._ignore)
 
     def _drop_ignored(self, paths: Iterable[str]) -> set[str]:
         """``paths`` less those :meth:`_ignores` names, as a set."""
-        from .ignore import drop_ignored
+        from ..ignore import drop_ignored
 
         return drop_ignored(paths, self._root, self._ignore)
 
@@ -4171,8 +2463,8 @@ class Workspace:
         agent's own data: ``ui = {"cfg": {"__nt_artifact__": "nope"}}``
         stays a dict, on every rung.
         """
-        from .artifacts import ArtifactPath
-        from .dud_outputs import _CLAIM
+        from ..artifacts import ArtifactPath
+        from ..dud_outputs import _CLAIM
 
         if not (isinstance(value, dict) and set(value) == {_CLAIM}):
             return None
@@ -4263,7 +2555,7 @@ class Workspace:
             self._mark_executor_stale()
             return _Absorbed(refused)
         writes, deletes, refusal = self._readonly_refusal(d.writes, d.deletes)
-        from .executor import _apply_diff
+        from ..executor import _apply_diff
 
         _apply_diff(self._fs, writes, deletes)
         return _Absorbed(refusal, bool(writes or deletes))
@@ -4414,7 +2706,7 @@ class Workspace:
         state (the call observably happened zero times). Dirty-at-entry
         staging (autocommit off, prior host writes) holds earlier
         work that is not ours to drop — leave it, and say so."""
-        from .executor import HarvestLost
+        from ..executor import HarvestLost
 
         try:
             return self._absorb_executor_diff()
@@ -4533,8 +2825,8 @@ def workspace(
     on both paths, so a setting is never reachable only by switching
     construction APIs; a test holds the two signatures together.
     """
-    from .protocol import validate_session_id
-    from .store import Store
+    from ..protocol import validate_session_id
+    from ..store import Store
 
     if memory and provider is not None:
         raise ValueError(

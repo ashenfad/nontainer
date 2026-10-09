@@ -778,9 +778,10 @@ class WorkspaceProvider(Protocol):
 # names, so existing imports keep working.
 #
 # The result and config types the contract speaks (``PythonResult``,
-# ``TerminalResult``, ``PythonConfig``) stay in workspace.py: they are
-# the public vocabulary, and importing them here at runtime would cycle
-# (workspace.py imports this module for the provider protocol). Under
+# ``TerminalResult``, ``PythonConfig``) stay in the workspace package:
+# they are the public vocabulary, and importing them here at runtime
+# would cycle (the workspace imports this module for the provider
+# protocol). Under
 # ``from __future__ import annotations`` every annotation below is a
 # string, so the TYPE_CHECKING import is enough.
 

@@ -64,6 +64,7 @@ from typing import Any, Literal
 
 from .cache import Cache
 from .errors import WorkspaceError
+from .host_objects import HostObject, _by_value, _stubbed, _typed, _value
 
 # The contract itself lives in protocol.py, next to WorkspaceProvider,
 # so an implementer reads one file and nothing has to import this
@@ -77,14 +78,13 @@ from .protocol import (
     StagedDiff,
     ViewSpec,
 )
-
-# Config/result types (and traceback rendering) stay in workspace.py:
-# they are the public vocabulary both sides of the seam speak. The
-# import is one-way — workspace.py only imports this module lazily.
 from .remote import Host, Local, build
 from .values import copy as copy_value
+
+# Config/result types (and traceback rendering) stay in the workspace
+# package: they are the public vocabulary both sides of the seam speak.
+# The import is one-way — the workspace only imports this module lazily.
 from .workspace import (
-    HostObject,
     ModuleGrant,
     PythonConfig,
     PythonResult,
@@ -161,7 +161,7 @@ class _ReadOnlyCache(MutableMapping):
 
 
 # ----------------------------------------------------------------------
-# rendering / policy helpers (moved verbatim from workspace.py)
+# rendering / policy helpers
 # ----------------------------------------------------------------------
 
 
@@ -244,40 +244,6 @@ def _stub_for(name: str, entry: HostObject, bridged: bool) -> Any:
         methods=("call",),
         attributes=(),
     )
-
-
-def _is_plain_data(obj: Any) -> bool:
-    """Builtin-typed values need no policy registration."""
-    return type(obj).__module__ == "builtins" and not isinstance(obj, ModuleType)
-
-
-def _value(entry: Any) -> Any:
-    """A host object entry's object: a :class:`HostObject`'s, or the
-    entry itself."""
-    return entry.obj if isinstance(entry, HostObject) else entry
-
-
-def _by_value(entry: Any) -> bool:
-    """Whether a host object entry is sent into the sandbox as a copy of
-    its data rather than as a proxy: plain built-in data, or a
-    :class:`HostObject` with a type."""
-    if isinstance(entry, HostObject):
-        if entry.stub is not None:
-            return False
-        return entry.by_value or _is_plain_data(entry.obj)
-    return _is_plain_data(entry)
-
-
-def _typed(entry: Any) -> bool:
-    """Whether an entry is data of a declared type: sent by value, with
-    the classes it holds made available wherever it lands."""
-    return isinstance(entry, HostObject) and entry.by_value
-
-
-def _stubbed(entry: Any) -> bool:
-    """Whether an entry is a live object called through a stub, which
-    runs in the sandbox."""
-    return isinstance(entry, HostObject) and entry.stub is not None
 
 
 def _named_classes(cfg: PythonConfig) -> list[type]:
