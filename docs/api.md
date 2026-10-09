@@ -1757,6 +1757,7 @@ find_live(value) -> str | None  # where a value holds a live object
 
 export_specs({"shape": spec, "result": spec}) -> dict   # specs as JSON data, "nt-spec/1"
 load_specs(data, *, module=None) -> dict[str, Spec]     # read back over classes built here
+is_shape(cls) -> bool                                   # a class load_specs built
 ```
 
 These errors are the standard library's kinds, so the module runs in a
@@ -1807,6 +1808,12 @@ shared across the specs, so values
 made there encode and decode into the writer's own classes. What a shape
 leaves behind is behaviour: methods, validators, and fields the class
 sets itself (`init=False`), which run when the writer decodes a value.
+The classes `load_specs` builds are shapes (`values.is_shape(cls)`):
+loading the same types into the same `module` again gives the same
+classes, and they pickle as the data they were built from, since no
+module holds them. So they work as `PythonConfig.classes` and as the
+types of `HostObject(type=)` data on every rung: a worker process or a
+dud machine builds them again from that data.
 A live type, two different types under one name, or a name the reader
 would refuse (a keyword, say), is `Unsupported` when written. Reading back evaluates nothing: every name must be an
 identifier, every node a kind a spec has, nesting is bounded, and
