@@ -74,11 +74,10 @@ from .errors import (
     WorkspaceError,
 )
 from .ignore import Patterns, drop_ignored
-from .protocol import SESSION_ID_RE, Answer, Job
+from .protocol import SESSION_ID_RE, Answer, AsyncSessionRunner, Job, SessionRunner
 
 if TYPE_CHECKING:
     from .inbox import Inbox, Note
-    from .protocol import SessionRunner
     from .workspace import Workspace
 
 _logger = logging.getLogger("nontainer.sessions")
@@ -141,6 +140,11 @@ def _running_loop() -> "asyncio.AbstractEventLoop | None":
         return asyncio.get_running_loop()
     except RuntimeError:
         return None
+
+
+def _is_async(runner: Any) -> bool:
+    """Whether ``runner.run`` is ``async def``."""
+    return inspect.iscoroutinefunction(getattr(runner, "run", None))
 
 
 def _accepts_forked_at(runner: "SessionRunner") -> bool:
@@ -212,7 +216,7 @@ class Sessions:
     def __init__(
         self,
         workspace: "Workspace",
-        runner: "SessionRunner",
+        runner: "SessionRunner | AsyncSessionRunner",
         *,
         budget: Any = None,
         max_workers: int = 4,
@@ -223,25 +227,22 @@ class Sessions:
         self.on_answer = on_answer
         self._ws = workspace
         self._runner = runner
-        self._forked_at_ok = _accepts_forked_at(runner)
         self._budget = budget
+        self._max_workers = max_workers
+        self._given_loop = loop
         self._chain = tuple(chain)
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="nontainer-sessions"
         )
-        #: The loop an async runner's runs are scheduled on, and how many
-        #: of them may be in flight; ``None`` for a synchronous runner.
+        #: The loop async runs are scheduled on, and how many of them may
+        #: be in flight; ``None`` until an async runner needs one. An
+        #: async helper runner takes it here; an ask that brings an
+        #: async runner of its own takes it then (see :meth:`_adopt`).
         self._loop: asyncio.AbstractEventLoop | None = None
         self._slots: asyncio.Semaphore | None = None
-        if inspect.iscoroutinefunction(getattr(runner, "run", None)):
-            self._loop = loop or _running_loop()
-            if self._loop is None:
-                raise SessionsError(
-                    "an async runner needs an event loop to run on: build the "
-                    "helper inside one, or pass loop="
-                )
-            self._slots = asyncio.Semaphore(max_workers)
         self._lock = threading.Lock()
+        if _is_async(runner):
+            self._adopt(loop or _running_loop())
         #: Notified, under the lock, whenever an answer becomes
         #: collectable or a job stops running without one (a cancel, a
         #: close), which is everything :meth:`wait` waits for.
@@ -307,6 +308,7 @@ class Sessions:
         resume: str | None = None,
         wait: bool = False,
         budget: Any = None,
+        runner: "SessionRunner | AsyncSessionRunner | None" = None,
     ) -> "Job | Answer":
         """Delegate ``task`` to a fork of this session.
 
@@ -316,7 +318,12 @@ class Sessions:
 
         The child is a fork under a pet name scoped to this session
         (``parent.sleepy-otter``), taken at a real commit: uncommitted
-        writes here land first and THAT commit is the merge base.
+        writes here land first and THAT commit is the merge base. An
+        empty ``paths`` gives the child an empty view (no files of this
+        session's, its own as it makes them) and forks it from the last
+        commit, landing nothing: a child that sees none of the writes
+        doesn't need them, and a fork taken mid-call would otherwise
+        split that call's commit.
         ``name`` asks for a particular name, and one whose branch is
         already taken is REFUSED — a caller naming the child it means
         to address would otherwise be handed a different branch and
@@ -356,6 +363,12 @@ class Sessions:
         since cancel discards an answer without interrupting the
         embedder's loop.
 
+        ``runner`` runs this job in place of the helper's own, here and
+        for this run only: a job of a different kind (a task's typed
+        call, say) on a helper whose runner is another harness's. An
+        async one runs on the helper's loop, the ``loop=`` it was built
+        with, or the loop the ask is made from.
+
         The runner drives the child on a worker thread and its answer
         is collected with :meth:`result`. A runner that raises does not
         lose the job: it resolves as ``failed`` with the exception's
@@ -364,7 +377,10 @@ class Sessions:
         caller's own step.
         """
         self._check_open()
-        if wait and self._loop is not None and _running_loop() is self._loop:
+        runner = self._runner if runner is None else runner
+        if _is_async(runner):
+            self._adopt(self._given_loop or _running_loop())
+        if wait and _is_async(runner) and _running_loop() is self._loop:
             raise SessionsError(
                 "ask(wait=True) would block the loop its runner runs on: "
                 "await sessions.aask(..., wait=True) instead"
@@ -420,6 +436,7 @@ class Sessions:
                 base,
                 self._budget if budget is None else budget,
                 resuming=resuming,
+                runner=runner,
             )
         except BaseException:
             # The branch was taken by another run between the check and
@@ -442,6 +459,9 @@ class Sessions:
         """:meth:`ask`, from a coroutine: the fork, which takes the
         parent's lock and writes, runs on a thread, and ``wait=True``
         awaits the answer rather than blocking the loop."""
+        if _is_async(options.get("runner") or self._runner):
+            # The ask itself runs on a thread, where no loop is running.
+            self._adopt(self._given_loop or _running_loop())
         job = await asyncio.to_thread(self.ask, task, wait=False, **options)
         assert isinstance(job, Job)
         if not wait:
@@ -978,6 +998,21 @@ class Sessions:
             )
         return candidate
 
+    def _adopt(self, loop: "asyncio.AbstractEventLoop | None") -> None:
+        """Take ``loop`` for async runs, unless one is taken already: all
+        of a helper's async runs share one loop and one bound on how many
+        are in flight."""
+        with self._lock:
+            if self._loop is not None:
+                return
+            if loop is None:
+                raise SessionsError(
+                    "an async runner needs an event loop to run on: build the "
+                    "helper (or ask) inside one, or pass loop="
+                )
+            self._loop = loop
+            self._slots = asyncio.Semaphore(self._max_workers)
+
     def _submit(
         self,
         job: Job,
@@ -986,6 +1021,7 @@ class Sessions:
         budget: Any,
         *,
         resuming: bool = False,
+        runner: "SessionRunner | AsyncSessionRunner | None" = None,
     ) -> "tuple[Job, Future]":
         """Reserve the job's branch, install the job, put it on a
         worker; returns the job as installed and its future.
@@ -1032,14 +1068,16 @@ class Sessions:
             # Scheduled in the same section, so a cancel never finds the
             # branch reserved without the run's future: both only
             # schedule, and the run itself starts by waiting on this lock.
+            runner = self._runner if runner is None else runner
             try:
-                if self._loop is not None:
+                if _is_async(runner):
+                    assert self._loop is not None
                     future = asyncio.run_coroutine_threadsafe(
-                        self._awork(name, job.task, budget, token), self._loop
+                        self._awork(name, job.task, budget, token, runner), self._loop
                     )
                 else:
                     future = self._pool.submit(
-                        self._work, name, job.task, budget, token
+                        self._work, name, job.task, budget, token, runner
                     )
             except BaseException:
                 self._children.pop(name, None)
@@ -1228,7 +1266,9 @@ class Sessions:
         except (ValueError, NotSupportedError):
             return None
 
-    def _work(self, name: str, task: str, budget: Any, token: int) -> Answer:
+    def _work(
+        self, name: str, task: str, budget: Any, token: int, runner: Any
+    ) -> Answer:
         """The worker body: run, then land. Never raises.
 
         A job that dies with its thread is a job the caller waits on
@@ -1236,12 +1276,10 @@ class Sessions:
         runner's failure as ``failed`` with the exception's text, and a
         failure to land the answer as the answer plus what went wrong.
         """
-        extra = self._extra(name)
+        extra = self._extra(name, runner)
         try:
             try:
-                out = self._runner.run(
-                    self._session_of(name), task, budget=budget, **extra
-                )
+                out = runner.run(self._session_of(name), task, budget=budget, **extra)
                 answer = out if isinstance(out, Answer) else Answer(text=str(out))
             except BaseException as exc:  # noqa: BLE001 - the job must resolve
                 answer = Answer(text=_error_text(exc), status="failed")
@@ -1256,13 +1294,15 @@ class Sessions:
             # run's to free.
             self._release(name, token)
 
-    async def _awork(self, name: str, task: str, budget: Any, token: int) -> Answer:
+    async def _awork(
+        self, name: str, task: str, budget: Any, token: int, runner: Any
+    ) -> Answer:
         """:meth:`_work` for an async runner, on the helper's loop: the
         run awaits a slot (``max_workers``), and the landing, which does
         store work, runs on a thread. A cancel stops the run (see
         :meth:`cancel`); its answer is then discarded as any cancelled
         job's is. Never raises."""
-        extra = self._extra(name)
+        extra = self._extra(name, runner)
         with self._lock:
             current = asyncio.current_task()
             if current is not None:
@@ -1271,7 +1311,7 @@ class Sessions:
             try:
                 assert self._slots is not None
                 async with self._slots:
-                    out = await self._runner.run(
+                    out = await runner.run(  # type: ignore[misc]
                         self._session_of(name), task, budget=budget, **extra
                     )
                 answer = out if isinstance(out, Answer) else Answer(text=str(out))
@@ -1285,12 +1325,14 @@ class Sessions:
                 self._tasks.pop(token, None)
             self._release(name, token)
 
-    def _extra(self, name: str) -> dict[str, Any]:
+    def _extra(self, name: str, runner: Any) -> dict[str, Any]:
         """The fork point, for a runner whose signature accepts it: an
         embedder's runner written without the parameter gets the call it
         was written for."""
+        if not _accepts_forked_at(runner):
+            return {}
         with self._lock:
-            return {"forked_at": self._base.get(name)} if self._forked_at_ok else {}
+            return {"forked_at": self._base.get(name)}
 
     def _settle(self, name: str, task: str, answer: Answer, token: int) -> Answer:
         """Land the run's answer and announce it. Never raises: a failure

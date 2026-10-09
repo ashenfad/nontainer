@@ -25,7 +25,8 @@ from nontainer.sessions import Sessions
 
 sessions = Sessions(ws, runner, *, budget=None, max_workers=4, chain=(), on_answer=None, loop=None)
 sessions.ask(task, *, name=None, paths=None, inherit=None,
-             fork_from=None, resume=None, wait=False, budget=None) -> Job | Answer
+             fork_from=None, resume=None, wait=False, budget=None,
+             runner=None) -> Job | Answer
 sessions.list() -> list[Job]
 sessions.result(name) -> Answer      # JobRunning while it runs
 sessions.take() -> list[tuple[str, Answer]]   # every answer not yet collected
@@ -50,7 +51,12 @@ await sessions.aclose()
 (`analyst.sleepy-otter` — a session id becomes a branch name and holds
 no separator, so the scope is a dot), hands the child to the runner (on
 a worker thread, or on the loop for an async runner) and returns at once. `paths` narrows what the child
-SEES without narrowing its branch; `inherit` decides only whether the
+SEES without narrowing its branch, and `paths=[]` is an empty view: a
+child given none of the parent's files, forked from the parent's last
+commit so nothing uncommitted lands for it. `runner` runs this one job
+on a runner of its own (a task's typed call on a helper whose runner
+drives another harness's delegates); an async one runs on the helper's
+loop, its `loop=`, or the loop the ask is made from. `inherit` decides only whether the
 conversation comes along — a brief or a summary is content the task
 carries. Unset, it follows where the child is forked from: a child of
 this session starts `"fresh"` (against `fork`'s own `"full"`), and one

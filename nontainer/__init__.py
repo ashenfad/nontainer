@@ -17,7 +17,7 @@ Public surface:
     WorkspaceProvider   -- the substrate protocol (bring your own)
     Executor            -- the execution protocol (bring your own)
     ExecutionContext, StagedDiff, ViewSpec -- what its methods speak
-    SessionRunner       -- the loop seam
+    SessionRunner       -- the loop seam (AsyncSessionRunner: async def run)
     Job, Answer         -- what a delegation is, and what it says back
     JobStatus, AnswerStatus -- the words their ``status`` can hold
     Capabilities, CommitInfo, TagInfo, WorkspaceDiff,
@@ -65,6 +65,7 @@ from .protocol import (
     SESSION_ID_RE,
     Answer,
     AnswerStatus,
+    AsyncSessionRunner,
     Capabilities,
     CommitInfo,
     ExecutionContext,
@@ -124,6 +125,7 @@ __all__ = [
     "ExecutionContext",
     "StagedDiff",
     "ViewSpec",
+    "AsyncSessionRunner",
     "SessionRunner",
     "Job",
     "Answer",
