@@ -39,6 +39,7 @@ sessions.base(name) -> str | None    # the commit it was forked from
 sessions.sweep(idle, *, min_age=3600) -> list[str]   # the branches it took
 sessions.close()                     # joins the workers; the branches stay
 sessions.closed -> bool              # close() has begun; a wait on it ends at once
+Sessions.of(ws) -> Sessions | None   # the helper open over ws, the latest built
 
 # from a coroutine
 await sessions.aask(task, *, wait=False, ...) -> Job | Answer
@@ -46,6 +47,12 @@ await sessions.await_ready(timeout=None) -> list[str]    # wait(), awaited
 async for name, answer in sessions.answers(): ...        # each answer as it lands, once
 await sessions.aclose()
 ```
+
+While a helper is open it is its workspace's: `Sessions.of(ws)` finds
+it, the latest built over `ws` that isn't closed. A host object is
+built as its world opens, before the harness builds the helper, so one
+that delegates (an agent-defined task's helper, say) finds it at the
+call, and its jobs are the world's delegates like any other.
 
 `ask` forks under a pet name scoped to the parent
 (`analyst.sleepy-otter` — a session id becomes a branch name and holds
