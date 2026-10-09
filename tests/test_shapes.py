@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 import pytest
-from host_types import Row
+from host_types import Row, Unhashable
 
 from nontainer import HostObject, Profile, PythonConfig, Store, values
 
@@ -42,6 +42,24 @@ def test_the_same_data_loads_the_same_classes():
     assert values.is_shape(P) and values.is_shape(T)
     assert not values.is_shape(Point2D)
     assert loaded(module="elsewhere")[1] is not P
+
+
+def test_shapes_no_one_uses_are_let_go():
+    import gc
+
+    from nontainer.values import _SHAPES
+
+    spec, P, T = loaded(module="let_go")
+    key = next(k for k in list(_SHAPES.keys()) if k[1] == "let_go")
+    assert loaded(module="let_go")[1] is P  # the same, while in use
+    del spec, P, T
+    gc.collect()
+    assert key not in _SHAPES
+
+
+def test_a_class_with_an_unhashable_metaclass_isnt_a_shape():
+    assert not values.is_shape(Unhashable)
+    assert not values.is_shape(values._ShapeRecord)  # a base, built from nothing
 
 
 def test_a_shape_pickles_as_its_data():
@@ -116,6 +134,17 @@ def test_shapes_reach_code_on_every_rung(rung):
         "the",
         "plane.",
     ]
+
+
+def test_a_class_with_an_unhashable_metaclass_still_runs(rung):
+    ws, store = open_ws(rung, PythonConfig(classes=(Unhashable,)))
+    try:
+        r = ws.run_python("print(Unhashable.__name__)")
+    finally:
+        ws.close()
+        store.close()
+    assert r.error is None, r.error
+    assert r.stdout.strip() == "Unhashable"
 
 
 def test_a_shape_comes_back_as_itself_where_a_class_would(rung):

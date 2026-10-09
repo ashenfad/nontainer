@@ -1810,7 +1810,8 @@ leaves behind is behaviour: methods, validators, and fields the class
 sets itself (`init=False`), which run when the writer decodes a value.
 The classes `load_specs` builds are shapes (`values.is_shape(cls)`):
 loading the same types into the same `module` again gives the same
-classes, and they pickle as the data they were built from, since no
+classes while any of them is in use (and they are let go with the
+last), and they pickle as the data they were built from, since no
 module holds them. So they work as `PythonConfig.classes` and as the
 types of `HostObject(type=)` data on every rung: a worker process or a
 dud machine builds them again from that data.
