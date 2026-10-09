@@ -72,6 +72,7 @@ __all__ = [
     "FORMAT",
     "SAMPLE",
     "SAMPLE_ABOVE",
+    "SPEC_FORMAT",
     "Encoded",
     "Kind",
     "Malformed",
@@ -84,9 +85,11 @@ __all__ = [
     "copy",
     "decode",
     "encode",
+    "export_specs",
     "find_live",
     "fmt",
     "kinds_of",
+    "load_specs",
 ]
 
 FORMAT = "nt-value/1"
@@ -1338,6 +1341,485 @@ def check(value: Any, tp: Any, *, names: Names = None, full: bool = False) -> No
 def decode(encoded: Encoded | bytes, tp: Any, *, names: Names = None) -> Any:
     """:meth:`Spec.decode` into ``tp``, compiled for the one call."""
     return Spec.of(tp, names=names).decode(encoded)
+
+
+# -- specs as data -------------------------------------------------------------------
+
+SPEC_FORMAT = "nt-spec/1"
+"""What :func:`export_specs` writes and :func:`load_specs` reads."""
+
+_SPEC_DEPTH = 64
+"""How deeply a type written as data may nest."""
+
+_SCALARS: dict[type, str] = {
+    bool: "bool",
+    int: "int",
+    float: "float",
+    str: "str",
+    bytes: "bytes",
+    datetime.timedelta: "timedelta",
+    datetime.datetime: "datetime",
+    datetime.date: "date",
+    datetime.time: "time",
+    decimal.Decimal: "decimal",
+    uuid.UUID: "uuid",
+    pathlib.Path: "path",
+}
+_SCALAR_NAMES = {name: tp for tp, name in _SCALARS.items()}
+
+_TABLES = {
+    "pandas.DataFrame": ("pandas", "DataFrame"),
+    "pandas.Series": ("pandas", "Series"),
+    "pyarrow.Table": ("pyarrow", "Table"),
+    "pyarrow.RecordBatch": ("pyarrow", "RecordBatch"),
+    "polars.DataFrame": ("polars", "DataFrame"),
+}
+
+
+def export_specs(specs: Mapping[str, Spec]) -> dict[str, Any]:
+    """``specs`` written as plain JSON data, for :func:`load_specs` to read
+    back somewhere none of their classes exist: a signature's parameters
+    and result, say.
+
+    Each type is a tree of kinds. Each record (a dataclass, a NamedTuple,
+    a TypedDict or a pydantic model) and each enum appears once, by name,
+    in a table shared by all of ``specs``: a record with its docstring and
+    its fields (each one's type, whether it is required, its default where
+    that encodes as plain data, and whether it is keyword-only), and an
+    enum with its docstring and members. A field set by the class itself
+    (``init=False``) isn't written: the class that decodes the value
+    computes it. Methods and validators aren't written either; they run
+    where the value is decoded into the real class.
+
+    Refuses with :class:`Unsupported` a type with a live part, and two
+    different types under one name."""
+    types: dict[str, dict[str, Any]] = {}
+    owners: dict[str, Any] = {}
+    out = {
+        name: _export_node(spec._root, types, owners, f"{name!r}")
+        for name, spec in specs.items()
+    }
+    return {"format": SPEC_FORMAT, "specs": out, "types": types}
+
+
+def _claim(name: str, owner: Any, owners: dict[str, Any]) -> bool:
+    """Whether ``name`` is new; refused if another type holds it."""
+    held = owners.get(name, _NO)
+    if held is _NO:
+        owners[name] = owner
+        return True
+    if held != owner:
+        raise Unsupported(
+            f"two different types are named {name}; rename one so each "
+            "can be written by its name"
+        )
+    return False
+
+
+def _plain(value: Any, what: str) -> Any:
+    """``value`` as a plain JSON tree, or :class:`Unsupported`."""
+    try:
+        encoded = encode(value)
+    except Unencodable as error:
+        raise Unsupported(f"{what} can't be written as data ({error})") from None
+    if encoded.parts:
+        raise Unsupported(f"{what} can't be written as plain data")
+    return encoded.tree
+
+
+def _export_node(
+    node: _Node, types: dict[str, dict[str, Any]], owners: dict[str, Any], at: str
+) -> dict[str, Any]:
+    if isinstance(node, _Any):
+        return {"t": "any"}
+    if isinstance(node, _None):
+        return {"t": "none"}
+    if isinstance(node, (_Bool, _Int, _Float, _Str, _Bytes, _Timedelta)):
+        name = {_Bool: "bool", _Int: "int", _Float: "float", _Str: "str"}.get(
+            type(node), "bytes" if isinstance(node, _Bytes) else "timedelta"
+        )
+        return {"t": name}
+    if isinstance(node, _Parsed):
+        if issubclass(node.cls, pathlib.PurePath):
+            return {"t": "path"}
+        return {"t": _SCALARS[node.cls]}
+    if isinstance(node, _Enum):
+        _export_enum(node.cls, types, owners)
+        return {"t": "ref", "name": node.cls.__name__}
+    if isinstance(node, _Literal):
+        values: list[Any] = []
+        for value in node.values:
+            if isinstance(value, enum.Enum):
+                _export_enum(type(value), types, owners)
+                values.append({"enum": type(value).__name__, "member": value.name})
+            elif (
+                value is None
+                or type(value) in (bool, int, str)
+                or (type(value) is float and math.isfinite(value))
+            ):
+                values.append(value)
+            else:
+                raise Unsupported(f"{at}: Literal value {value!r} can't be written")
+        return {"t": "literal", "values": values}
+    if isinstance(node, _Union):
+        return {
+            "t": "union",
+            "of": [_export_node(o, types, owners, at) for o in node.options],
+        }
+    if isinstance(node, _Seq):
+        return {"t": "list", "item": _export_node(node.item, types, owners, at)}
+    if isinstance(node, _Tuple):
+        if node.items is None:
+            assert node.rest is not None
+            return {"t": "tuple", "rest": _export_node(node.rest, types, owners, at)}
+        return {
+            "t": "tuple",
+            "items": [_export_node(i, types, owners, at) for i in node.items],
+        }
+    if isinstance(node, _Set):
+        return {
+            "t": "set",
+            "item": _export_node(node.item, types, owners, at),
+            "frozen": node.cls is frozenset,
+        }
+    if isinstance(node, _Map):
+        return {
+            "t": "dict",
+            "key": _export_node(node.key, types, owners, at),
+            "value": _export_node(node.value, types, owners, at),
+        }
+    if isinstance(node, _Record):
+        _export_record(node, types, owners)
+        return {"t": "ref", "name": node.cls.__name__}
+    if isinstance(node, _Table):
+        if node.name not in _TABLES:
+            raise Unsupported(f"{at}: a {node.label} table can't be written as data")
+        return {"t": "table", "of": node.name}
+    if isinstance(node, _Array):
+        return {"t": "array"}
+    raise Unsupported(
+        f"{at}: {node.label} is a live object, and only values can be written as data"
+    )
+
+
+def _own_doc(cls: type) -> str | None:
+    """The docstring ``cls`` was written with: not one it inherited, and
+    not the one ``dataclass``, ``NamedTuple`` or ``Enum`` makes up for a
+    class without, which names its annotations' modules."""
+    doc = cls.__dict__.get("__doc__")
+    if not isinstance(doc, str):
+        return None
+    made: list[str] = ["An enumeration."]
+    if dataclasses.is_dataclass(cls):
+        try:
+            made.append(
+                cls.__name__ + str(inspect.signature(cls)).replace(" -> None", "")
+            )
+        except (TypeError, ValueError):
+            pass
+    if _is_namedtuple(cls):
+        made.append(f"{cls.__name__}({', '.join(cls._fields)})")  # type: ignore[attr-defined]
+    return None if doc in made else inspect.cleandoc(doc)
+
+
+def _export_enum(
+    cls: type[enum.Enum], types: dict[str, dict[str, Any]], owners: dict[str, Any]
+) -> None:
+    if not _claim(cls.__name__, cls, owners):
+        return
+    types[cls.__name__] = {
+        "kind": "enum",
+        "doc": _own_doc(cls),
+        "members": [
+            [m.name, _plain(m.value, f"{cls.__name__}.{m.name}'s value")] for m in cls
+        ],
+    }
+
+
+def _defaults(cls: type) -> dict[str, tuple[bool, Any]]:
+    """Each field's ``(keyword-only, default)``, the default ``_NO`` where
+    there is none."""
+    found: dict[str, tuple[bool, Any]] = {}
+    if dataclasses.is_dataclass(cls):
+        for f in dataclasses.fields(cls):
+            default: Any = _NO
+            if f.default is not dataclasses.MISSING:
+                default = f.default
+            elif f.default_factory is not dataclasses.MISSING:
+                default = f.default_factory()
+            found[f.name] = (bool(getattr(f, "kw_only", False)), default)
+    elif _is_model(cls):
+        for name, info in cls.model_fields.items():  # type: ignore[attr-defined]
+            default = _NO
+            if not info.is_required():
+                default = info.get_default(call_default_factory=True)
+            found[name] = (False, default)
+    elif _is_namedtuple(cls):
+        defaults = getattr(cls, "_field_defaults", {})
+        for name in cls._fields:  # type: ignore[attr-defined]
+            found[name] = (False, defaults.get(name, _NO))
+    return found
+
+
+def _export_record(
+    node: _Record, types: dict[str, dict[str, Any]], owners: dict[str, Any]
+) -> None:
+    cls = node.cls
+    owner = (cls, None if node.alias is None else fmt(node.alias))
+    if not _claim(cls.__name__, owner, owners):
+        return
+    entry: dict[str, Any] = {"kind": "record", "doc": _own_doc(cls), "fields": []}
+    types[cls.__name__] = entry  # before the fields: a record may hold itself
+    defaults = _defaults(cls)
+    for f in node.fields:
+        if not f.init:
+            continue
+        field: dict[str, Any] = {
+            "name": f.name,
+            "type": _export_node(f.node, types, owners, f"{cls.__name__}.{f.name}"),
+            "required": f.required,
+        }
+        kw_only, default = defaults.get(f.name, (False, _NO))
+        if kw_only:
+            field["kw_only"] = True
+        if not f.required and default is not _NO:
+            try:
+                field["default"] = _plain(default, "a default")
+            except Unsupported:
+                pass  # not required, with no default the helper can rebuild
+        entry["fields"].append(field)
+
+
+def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
+    """Read back what :func:`export_specs` wrote: each spec compiled
+    against classes built here, a dataclass per record and an ``Enum`` per
+    enum, with the names, fields, docstrings and members written. They
+    are shared, so a record two specs name is one class. ``module`` is the
+    module the classes say they belong to.
+
+    Nothing written is evaluated: every name is checked as an identifier,
+    every node against the kinds a spec has, and anything else is refused
+    with :class:`Malformed`. A field that isn't required and has no
+    default written defaults to ``None``."""
+    if not isinstance(data, dict) or set(data) != {"format", "specs", "types"}:
+        raise Malformed("not exported specs")
+    if data["format"] != SPEC_FORMAT:
+        raise Malformed(f"exported specs in {data['format']!r}, not {SPEC_FORMAT}")
+    specs, types = data["specs"], data["types"]
+    if not isinstance(specs, dict) or not isinstance(types, dict):
+        raise Malformed("not exported specs")
+    where = module or __name__
+    classes: dict[str, Any] = {}
+    records: list[tuple[type, list[dict[str, Any]]]] = []
+    for name, entry in types.items():
+        _identifier(name, "a type")
+        if not isinstance(entry, dict) or entry.get("kind") not in ("record", "enum"):
+            raise Malformed(f"type {name!r} is neither a record nor an enum")
+        doc = entry.get("doc")
+        if doc is not None and not isinstance(doc, str):
+            raise Malformed(f"type {name!r} has a docstring that isn't text")
+        if entry["kind"] == "enum":
+            classes[name] = _load_enum(name, entry, doc, where)
+        else:
+            fields = entry.get("fields")
+            if set(entry) != {"kind", "doc", "fields"} or not isinstance(fields, list):
+                raise Malformed(f"record {name!r} is malformed")
+            cls = _load_record(name, fields, doc, where)
+            classes[name] = cls
+            records.append((cls, fields))
+    if not all(isinstance(n, str) for n in specs):
+        raise Malformed("a spec's name isn't text")
+    try:
+        for cls, fields in records:
+            for field in fields:
+                hint = _load_type(field["type"], classes, 0)
+                cls.__annotations__[field["name"]] = hint
+                cls.__dataclass_fields__[field["name"]].type = hint  # type: ignore[attr-defined]
+        return {n: Spec.of(_load_type(t, classes, 0)) for n, t in specs.items()}
+    except Unsupported as error:
+        raise Malformed(f"exported specs that can't be compiled: {error}") from None
+
+
+def _identifier(name: Any, what: str, *, private: bool = False) -> None:
+    import keyword
+
+    if not (
+        isinstance(name, str)
+        and name.isidentifier()
+        and not keyword.iskeyword(name)
+        and not name.startswith("__" if private else "_")
+    ):
+        raise Malformed(f"{what} named {name!r}: not a usable identifier")
+
+
+def _load_enum(name: str, entry: dict[str, Any], doc: str | None, where: str) -> Any:
+    members = entry.get("members")
+    if set(entry) != {"kind", "doc", "members"} or not isinstance(members, list):
+        raise Malformed(f"enum {name!r} is malformed")
+    pairs = []
+    for member in members:
+        if not (isinstance(member, list) and len(member) == 2):
+            raise Malformed(f"enum {name!r} has a malformed member")
+        _identifier(member[0], f"a member of {name}")
+        try:
+            pairs.append((member[0], _ANY.build(member[1], ())))
+        except Mismatch as error:
+            raise Malformed(f"enum {name!r}: {error}") from None
+    try:
+        cls = enum.Enum(name, pairs, module=where)  # type: ignore[misc]
+    except (TypeError, ValueError) as error:
+        raise Malformed(f"enum {name!r} can't be built: {error}") from None
+    cls.__doc__ = doc
+    return cls
+
+
+def _load_record(name: str, fields: list[Any], doc: str | None, where: str) -> type:
+    made: list[tuple[str, Any, Any]] = []
+    seen_default = False
+    holder: list[Any] = []  # the class, once built: what a default decodes by
+    for field in fields:
+        if not isinstance(field, dict) or not {"name", "type", "required"} <= set(
+            field
+        ) <= {"name", "type", "required", "default", "kw_only"}:
+            raise Malformed(f"record {name!r} has a malformed field")
+        fname = field["name"]
+        _identifier(fname, f"a field of {name}", private=True)
+        if (
+            type(field["required"]) is not bool
+            or type(field.get("kw_only", False)) is not bool
+        ):
+            raise Malformed(f"record {name!r}: field {fname!r} is malformed")
+        kw_only = field.get("kw_only", False)
+        if field["required"]:
+            # a required field after a defaulted one can only be keyword-only
+            kw_only = kw_only or seen_default
+            spec = dataclasses.field(kw_only=kw_only)
+        else:
+            seen_default = seen_default or not kw_only
+            spec = dataclasses.field(
+                default_factory=_default_factory(holder, fname, field.get("default")),
+                kw_only=kw_only,
+            )
+        made.append((fname, Any, spec))
+    try:
+        cls = dataclasses.make_dataclass(name, made, namespace={"__doc__": doc})
+    except (TypeError, ValueError) as error:
+        raise Malformed(f"record {name!r} can't be built: {error}") from None
+    cls.__module__ = where
+    holder.append(cls)
+    return cls
+
+
+def _default_factory(holder: list[Any], name: str, tree: Any) -> Callable[[], Any]:
+    """A field's default, decoded afresh by the field's own type each time
+    a value is made without it: a list default is never shared."""
+
+    def make() -> Any:
+        if tree is None:
+            return None
+        hint = holder[0].__annotations__[name]
+        return Spec.of(hint).decode(Encoded(tree, ()))
+
+    return make
+
+
+def _load_type(tree: Any, classes: Mapping[str, Any], depth: int) -> Any:
+    if depth > _SPEC_DEPTH:
+        raise Malformed("an exported type nested too deeply")
+    if not isinstance(tree, dict) or not isinstance(tree.get("t"), str):
+        raise Malformed(f"an exported type that isn't one: {_got(tree)}")
+    kind = tree["t"]
+
+    def keys(*allowed: str) -> None:
+        if set(tree) != {"t", *allowed}:
+            raise Malformed(f"an exported {kind} type is malformed")
+
+    def inner(sub: Any) -> Any:
+        return _load_type(sub, classes, depth + 1)
+
+    if kind == "any":
+        keys()
+        return Any
+    if kind == "none":
+        keys()
+        return type(None)
+    if kind in _SCALAR_NAMES:
+        keys()
+        return _SCALAR_NAMES[kind]
+    if kind == "ref":
+        keys("name")
+        found = classes.get(tree["name"]) if isinstance(tree["name"], str) else None
+        if found is None:
+            raise Malformed(
+                f"an exported type names {tree['name']!r}, which isn't written"
+            )
+        return found
+    if kind == "literal":
+        keys("values")
+        if not isinstance(tree["values"], list) or not tree["values"]:
+            raise Malformed("an exported Literal is malformed")
+        values = []
+        for value in tree["values"]:
+            if isinstance(value, dict):
+                if set(value) != {"enum", "member"}:
+                    raise Malformed("an exported Literal is malformed")
+                owner = (
+                    classes.get(value["enum"])
+                    if isinstance(value["enum"], str)
+                    else None
+                )
+                if not (isinstance(owner, type) and issubclass(owner, enum.Enum)):
+                    raise Malformed(
+                        f"a Literal names {value['enum']!r}, not a written enum"
+                    )
+                try:
+                    values.append(owner[value["member"]])
+                except (KeyError, TypeError):
+                    raise Malformed(
+                        f"a Literal names {value['member']!r}, not a member of {value['enum']}"
+                    ) from None
+            elif value is None or type(value) in (bool, int, str, float):
+                values.append(value)
+            else:
+                raise Malformed(f"a Literal value that can't be one: {_got(value)}")
+        return Literal[tuple(values)]  # type: ignore[valid-type]
+    if kind == "union":
+        keys("of")
+        if not isinstance(tree["of"], list) or not tree["of"]:
+            raise Malformed("an exported union is malformed")
+        return Union[tuple(inner(o) for o in tree["of"])]  # type: ignore[return-value]
+    if kind == "list":
+        keys("item")
+        return list[inner(tree["item"])]  # type: ignore[misc]
+    if kind == "tuple":
+        if "rest" in tree:
+            keys("rest")
+            return tuple[inner(tree["rest"]), ...]  # type: ignore[misc]
+        keys("items")
+        if not isinstance(tree["items"], list):
+            raise Malformed("an exported tuple is malformed")
+        if not tree["items"]:
+            return tuple[()]
+        return tuple[tuple(inner(i) for i in tree["items"])]  # type: ignore[misc]
+    if kind == "set":
+        keys("item", "frozen")
+        if type(tree["frozen"]) is not bool:
+            raise Malformed("an exported set is malformed")
+        cls = frozenset if tree["frozen"] else set
+        return cls[inner(tree["item"])]  # type: ignore[index]
+    if kind == "dict":
+        keys("key", "value")
+        return dict[inner(tree["key"]), inner(tree["value"])]  # type: ignore[misc]
+    if kind == "table":
+        keys("of")
+        found = _TABLES.get(tree["of"]) if isinstance(tree["of"], str) else None
+        if found is None:
+            raise Malformed(f"an exported table of {tree['of']!r}, which isn't one")
+        return getattr(_library(found[0], tree["of"]), found[1])
+    if kind == "array":
+        keys()
+        return _library("numpy", "an ndarray").ndarray
+    raise Malformed(f"an exported type of kind {kind!r}, which there isn't")
 
 
 # -- copying -------------------------------------------------------------------------
