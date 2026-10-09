@@ -1043,10 +1043,12 @@ class LocalExecutor:
         # host_time: the timeout bounds the code, not the host it calls,
         # so time inside a host object's calls doesn't count against it.
         # A proxy's calls under isolation are the worker's RPCs, which
-        # sandtrap already counts as host time.
+        # sandtrap already counts as host time. A stub's methods are the
+        # sandbox's code and stay on the clock: only its calls through
+        # ``remote`` are the host's, and ``remote`` counts those itself.
         for name, entry in cfg.host_objects.items():
             if _stubbed(entry):
-                policy.cls(entry.stub, name=name, host_time=True)
+                policy.cls(entry.stub, name=name)
             elif cfg.isolation == "none" and not _by_value(entry):
                 policy.cls(type(_value(entry)), name=name, host_time=True)
 

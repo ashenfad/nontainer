@@ -142,3 +142,10 @@ class ProbeStub:
         if name.startswith("_"):
             raise AttributeError(name)
         return getattr(self._remote, name)
+
+    def dawdle(self, seconds: float) -> str:
+        """Work of the stub's own, before it calls anything."""
+        import time
+
+        time.sleep(seconds)
+        return self._remote.mark()

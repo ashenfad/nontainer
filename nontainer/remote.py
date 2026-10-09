@@ -346,6 +346,10 @@ class Local:
     argument crossed as itself: code of the sandbox's it holds (a
     generator, whose body runs where it is iterated) would run unconfined
     there, so that call stays in the sandbox's context.
+
+    The call is host time too, off the run's clock, as a call through
+    the host half is elsewhere; but not one an argument crossed as
+    itself into, where the sandbox's own code may be what runs.
     """
 
     def __init__(self, name: str, obj: Any, methods: Methods) -> None:
@@ -372,9 +376,12 @@ class Local:
             if live:
                 result = target(*args, **kwargs)
             else:
+                from sandtrap import host_time
+
                 # A copy per call: a context can't be entered twice at
                 # once, and calls nest and run from threads.
-                result = self._context.copy().run(target, *args, **kwargs)
+                with host_time():
+                    result = self._context.copy().run(target, *args, **kwargs)
             try:
                 contract.check_result(where, result, sent=False)
             except Refused as refused:

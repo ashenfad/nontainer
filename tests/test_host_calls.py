@@ -122,3 +122,19 @@ def test_a_live_argument_keeps_the_call_in_the_sandbox(tmp_path):
         store.close()
     assert r.error is None, r.error
     assert r.stdout.strip() == "refused FileNotFoundError"
+
+
+def test_a_stubs_own_work_is_the_codes_time(rung):
+    """Only a stub's calls through ``remote`` are the host's: what its
+    methods do themselves is the sandbox's, and the timeout bounds it."""
+    ws, store = open_ws(
+        rung, {"p": HostObject(Probe(), stub=ProbeStub)}, timeout=TIMEOUT
+    )
+    try:
+        r = ws.run_python(f"p.dawdle({2 * WAIT})\nfor i in range(100):\n    pass")
+    finally:
+        ws.close()
+        if store is not None:
+            store.close()
+    assert r.error is not None
+    assert "timeout" in str(r.error).lower() or "timed out" in str(r.error).lower()

@@ -2001,9 +2001,11 @@ class PythonConfig:
   refused at open there, as is a type with a live part in any of the
   object's signatures.
 - A host object's calls don't count against `timeout`, on every rung:
-  the timeout bounds the code, not the host it calls. The tick limit
-  still counts the code, and cancelling the turn still stops a script
-  that waits.
+  the timeout bounds the code, not the host it calls. A stub's own
+  methods are the code's and stay on the clock; only its calls through
+  `remote` are the host's (in-process, not one handed a live argument).
+  The tick limit still counts the code, and cancelling the turn still
+  stops a script that waits.
 - A stub's host half runs as host code on every rung. In-process that
   means the context the run was started from, the embedder's, so the
   host object's own network calls, files and scheduled work are the
