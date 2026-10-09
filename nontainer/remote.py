@@ -29,6 +29,7 @@ a dud guest that has neither gets both as source.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import json
 import pickle
@@ -135,15 +136,18 @@ class Method:
 
     def accept(
         self, where: str, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    ) -> tuple[tuple[Any, ...], dict[str, Any], bool]:
         """In-process: the arguments as they would arrive from elsewhere,
         each encoded and decoded by its declared type, except one whose
         type has a live part, or a live object under ``Any``, which is
-        checked and passed as itself."""
+        checked and passed as itself. The flag says whether any was."""
         bound = self._bind(where, args, kwargs)
+        live = False
         for path, spec, put, value in self._each(bound):
-            put(_accept(where, path, spec, value))
-        return bound.args, bound.kwargs
+            accepted, as_itself = _accept(where, path, spec, value)
+            put(accepted)
+            live = live or as_itself
+        return bound.args, bound.kwargs, live
 
     def decode(self, where: str, blob: bytes) -> tuple[tuple[Any, ...], dict[str, Any]]:
         """On the host: the arguments a sandbox half encoded, each built
@@ -206,18 +210,18 @@ def _decode(where: str, path: str, spec: values.Spec, encoded: Any) -> Any:
         ) from None
 
 
-def _accept(where: str, path: str, spec: values.Spec, value: Any) -> Any:
+def _accept(where: str, path: str, spec: values.Spec, value: Any) -> tuple[Any, bool]:
     """One argument in-process: through bytes and back, as it would
     cross elsewhere, so a subclass of the declared type arrives as the
     type itself; or, where a live object may cross, checked and passed
-    as itself."""
+    as itself. The flag says which."""
     if spec.travels:
         try:
             blob = values.encode(value).to_bytes()
         except values.Unencodable as error:
             unsent = error
         else:
-            return _decode(where, path, spec, blob)
+            return _decode(where, path, spec, blob), False
     try:
         spec.check(value)
     except values.Mismatch as mismatch:
@@ -226,7 +230,7 @@ def _accept(where: str, path: str, spec: values.Spec, value: Any) -> Any:
         "any" in spec.kinds and values.find_live(value) is not None
     ):
         raise Refused(TypeError, f"{where}: {path} can't be sent by value: {unsent}")
-    return value
+    return value, True
 
 
 def _result(spec: values.Spec, value: Any) -> Any:
@@ -332,12 +336,23 @@ class Host:
 
 class Local:
     """``remote`` in-process: each call checked against the host object's
-    contract, then made on the object itself."""
+    contract, then made on the object itself.
+
+    The call runs as host code, as it does in the host half elsewhere: in
+    the context this was built in, which is the embedder's, not the
+    sandbox's. In the sandbox's, the host object's own network calls are
+    refused, its files are the sandbox's, and work it schedules (a task
+    on the embedder's loop, say) inherits all of that. Except when an
+    argument crossed as itself: code of the sandbox's it holds (a
+    generator, whose body runs where it is iterated) would run unconfined
+    there, so that call stays in the sandbox's context.
+    """
 
     def __init__(self, name: str, obj: Any, methods: Methods) -> None:
         self._name = name
         self._obj = obj
         self._methods = methods
+        self._context = contextvars.copy_context()
 
     def __getattr__(self, method: str) -> Callable[..., Any]:
         if method.startswith("_"):
@@ -351,10 +366,15 @@ class Local:
 
         def call(*args: Any, **kwargs: Any) -> Any:
             try:
-                args, kwargs = contract.accept(where, args, kwargs)
+                args, kwargs, live = contract.accept(where, args, kwargs)
             except Refused as refused:
                 raise refused.error(refused.message) from None
-            result = target(*args, **kwargs)
+            if live:
+                result = target(*args, **kwargs)
+            else:
+                # A copy per call: a context can't be entered twice at
+                # once, and calls nest and run from threads.
+                result = self._context.copy().run(target, *args, **kwargs)
             try:
                 contract.check_result(where, result, sent=False)
             except Refused as refused:

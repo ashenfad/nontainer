@@ -2000,6 +2000,20 @@ class PythonConfig:
   source, so a stub defined inside a function or in `__main__` is
   refused at open there, as is a type with a live part in any of the
   object's signatures.
+- A host object's calls don't count against `timeout`, on every rung:
+  the timeout bounds the code, not the host it calls. The tick limit
+  still counts the code, and cancelling the turn still stops a script
+  that waits.
+- A stub's host half runs as host code on every rung. In-process that
+  means the context the run was started from, the embedder's, so the
+  host object's own network calls, files and scheduled work are the
+  host's, as they are in the host half elsewhere. A call that hands
+  over a live argument (possible only in-process) stays in the
+  sandbox's context, since sandbox code it holds, a generator say,
+  would otherwise run unconfined. A plain host object, without `stub`,
+  is called directly by code in-process and runs in the sandbox's
+  context: its network is refused and its files are the sandbox's.
+  Give it a stub to have it run as host code.
 - `classes` are bound by name in every run and importable from `host`:
   the types agent code builds values of. In-process they are registered
   with the policy; under process isolation the worker imports them by
