@@ -1386,13 +1386,14 @@ def export_specs(specs: Mapping[str, Spec]) -> dict[str, Any]:
     in a table shared by all of ``specs``: a record with its docstring and
     its fields (each one's type, whether it is required, its default where
     that encodes as plain data, and whether it is keyword-only), and an
-    enum with its docstring and members. A field set by the class itself
-    (``init=False``) isn't written: the class that decodes the value
-    computes it. Methods and validators aren't written either; they run
+    enum with its kind, its docstring and its members, aliases included.
+    A field set by the class itself (``init=False``) isn't written: the
+    class that decodes the value computes it. Methods and validators aren't written either; they run
     where the value is decoded into the real class.
 
-    Refuses with :class:`Unsupported` a type with a live part, and two
-    different types under one name."""
+    Refuses with :class:`Unsupported` a type with a live part, two
+    different types under one name, and a name :func:`load_specs` won't
+    read: a keyword, a dunder, or a member with a leading underscore."""
     types: dict[str, dict[str, Any]] = {}
     owners: dict[str, Any] = {}
     out = {
@@ -1522,17 +1523,36 @@ def _own_doc(cls: type) -> str | None:
     return None if doc in made else inspect.cleandoc(doc)
 
 
+def _flavor(cls: type[enum.Enum]) -> str:
+    """Which kind of enum ``cls`` is, for :func:`load_specs` to rebuild
+    the same kind: a flag's values combine, and an int's or a str's
+    members are equal to their values."""
+    if issubclass(cls, enum.IntFlag):
+        return "int_flag"
+    if issubclass(cls, enum.Flag):
+        return "flag"
+    if issubclass(cls, int):
+        return "int"
+    if issubclass(cls, str):
+        return "str"
+    return "enum"
+
+
 def _export_enum(
     cls: type[enum.Enum], types: dict[str, dict[str, Any]], owners: dict[str, Any]
 ) -> None:
     if not _claim(cls.__name__, cls, owners):
         return
+    _nameable(cls.__name__, "an enum", private=True)
+    members = []
+    for name, member in cls.__members__.items():  # aliases included
+        _nameable(name, f"a member of {cls.__name__}")
+        members.append([name, _plain(member.value, f"{cls.__name__}.{name}'s value")])
     types[cls.__name__] = {
         "kind": "enum",
         "doc": _own_doc(cls),
-        "members": [
-            [m.name, _plain(m.value, f"{cls.__name__}.{m.name}'s value")] for m in cls
-        ],
+        "flavor": _flavor(cls),
+        "members": members,
     }
 
 
@@ -1568,12 +1588,14 @@ def _export_record(
     owner = (cls, None if node.alias is None else fmt(node.alias))
     if not _claim(cls.__name__, owner, owners):
         return
+    _nameable(cls.__name__, "a record", private=True)
     entry: dict[str, Any] = {"kind": "record", "doc": _own_doc(cls), "fields": []}
     types[cls.__name__] = entry  # before the fields: a record may hold itself
     defaults = _defaults(cls)
     for f in node.fields:
         if not f.init:
             continue
+        _nameable(f.name, f"a field of {cls.__name__}", private=True)
         field: dict[str, Any] = {
             "name": f.name,
             "type": _export_node(f.node, types, owners, f"{cls.__name__}.{f.name}"),
@@ -1592,8 +1614,8 @@ def _export_record(
 
 def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
     """Read back what :func:`export_specs` wrote: each spec compiled
-    against classes built here, a dataclass per record and an ``Enum`` per
-    enum, with the names, fields, docstrings and members written. They
+    against classes built here, a dataclass per record and an enum of the
+    same kind (a ``Flag`` stays a flag) per enum, with the names, fields, docstrings and members written. They
     are shared, so a record two specs name is one class. ``module`` is the
     module the classes say they belong to.
 
@@ -1612,7 +1634,7 @@ def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
     classes: dict[str, Any] = {}
     records: list[tuple[type, list[dict[str, Any]]]] = []
     for name, entry in types.items():
-        _identifier(name, "a type")
+        _identifier(name, "a type", private=True)
         if not isinstance(entry, dict) or entry.get("kind") not in ("record", "enum"):
             raise Malformed(f"type {name!r} is neither a record nor an enum")
         doc = entry.get("doc")
@@ -1640,33 +1662,66 @@ def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
         raise Malformed(f"exported specs that can't be compiled: {error}") from None
 
 
-def _identifier(name: Any, what: str, *, private: bool = False) -> None:
+def _usable(name: Any, private: bool) -> bool:
+    """Whether ``name`` is one a loaded class may have: an identifier,
+    not a keyword, and not a dunder (``private``) or not underscored at
+    all."""
     import keyword
 
-    if not (
+    return (
         isinstance(name, str)
         and name.isidentifier()
         and not keyword.iskeyword(name)
         and not name.startswith("__" if private else "_")
-    ):
+    )
+
+
+def _identifier(name: Any, what: str, *, private: bool = False) -> None:
+    if not _usable(name, private):
         raise Malformed(f"{what} named {name!r}: not a usable identifier")
+
+
+def _nameable(name: str, what: str, *, private: bool = False) -> None:
+    """Refuse at export what :func:`_identifier` would refuse at load."""
+    if not _usable(name, private):
+        raise Unsupported(f"{what} named {name!r} can't be written by its name")
+
+
+_FLAVORS: dict[str, tuple[Any, type | None]] = {
+    "enum": (enum.Enum, None),
+    "int": (enum.IntEnum, int),
+    "str": (enum.Enum, str),  # StrEnum is 3.11+; a str mixin is the same
+    "flag": (enum.Flag, int),
+    "int_flag": (enum.IntFlag, int),
+}
 
 
 def _load_enum(name: str, entry: dict[str, Any], doc: str | None, where: str) -> Any:
     members = entry.get("members")
-    if set(entry) != {"kind", "doc", "members"} or not isinstance(members, list):
+    if (
+        set(entry) != {"kind", "doc", "flavor", "members"}
+        or not isinstance(members, list)
+        or entry["flavor"] not in _FLAVORS
+    ):
         raise Malformed(f"enum {name!r} is malformed")
+    base, of = _FLAVORS[entry["flavor"]]
     pairs = []
     for member in members:
         if not (isinstance(member, list) and len(member) == 2):
             raise Malformed(f"enum {name!r} has a malformed member")
         _identifier(member[0], f"a member of {name}")
         try:
-            pairs.append((member[0], _ANY.build(member[1], ())))
+            value = _ANY.build(member[1], ())
         except Mismatch as error:
             raise Malformed(f"enum {name!r}: {error}") from None
+        if of is not None and type(value) is not of:
+            raise Malformed(f"enum {name!r}: {member[0]} isn't {of.__name__}")
+        pairs.append((member[0], value))
     try:
-        cls = enum.Enum(name, pairs, module=where)  # type: ignore[misc]
+        if base is enum.Enum and of is str:
+            cls = enum.Enum(name, pairs, module=where, type=str)  # type: ignore[misc]
+        else:
+            cls = base(name, pairs, module=where)  # type: ignore[misc]
     except (TypeError, ValueError) as error:
         raise Malformed(f"enum {name!r} can't be built: {error}") from None
     cls.__doc__ = doc

@@ -1794,15 +1794,17 @@ result, say. Each type is a tree of kinds, and each record and enum
 appears once, by name, in a table the specs share. A record is written
 with its docstring and fields (each one's type, whether it's required,
 its default where that's plain data, and whether it's keyword-only).
-An enum is written with its docstring and members. `load_specs` reads it
-back over classes it builds: a dataclass per record (a NamedTuple,
-TypedDict or pydantic model included) and an `Enum` per enum, with the
-same names, fields and docstrings, shared across the specs, so values
+An enum is written with its kind, docstring and members, aliases
+included. `load_specs` reads it back over classes it builds: a dataclass
+per record (a NamedTuple, TypedDict or pydantic model included) and an
+enum of the same kind per enum (a `Flag` stays a flag, so its
+combinations still decode), with the same names, fields and docstrings,
+shared across the specs, so values
 made there encode and decode into the writer's own classes. What a shape
 leaves behind is behaviour: methods, validators, and fields the class
 sets itself (`init=False`), which run when the writer decodes a value.
-A live type, or two different types under one name, is `Unsupported`
-when written. Reading back evaluates nothing: every name must be an
+A live type, two different types under one name, or a name the reader
+would refuse (a keyword, say), is `Unsupported` when written. Reading back evaluates nothing: every name must be an
 identifier, every node a kind a spec has, nesting is bounded, and
 anything else is `Malformed`.
 
