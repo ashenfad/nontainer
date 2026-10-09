@@ -169,3 +169,16 @@ class WorldStub:
 
     def name(self) -> str:
         return self._remote.name()
+
+
+class _NoHash(type):
+    """A metaclass whose classes can't be hashed."""
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __eq__(cls, other):
+        return cls is other
+
+
+class Unhashable(metaclass=_NoHash):
+    """A class that can't be a dictionary key."""

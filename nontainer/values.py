@@ -67,6 +67,7 @@ import threading
 import types
 import typing
 import uuid
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any, Literal, Union
 
@@ -1624,9 +1625,9 @@ def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
     they belong to.
 
     The classes are **shapes** (:func:`is_shape`): built once for the
-    same types and ``module``, so loading them again gives the same
-    classes, and pickled as what they were built from rather than by
-    name, since no module holds them. That is how they reach code that
+    same types and ``module``, so loading them again while any of them
+    is in use gives the same classes, and pickled as what they were
+    built from rather than by name, since no module holds them. That is how they reach code that
     runs in another process or on a dud machine, where they are built
     again from the same data.
 
@@ -1653,7 +1654,7 @@ def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
 def is_shape(tp: Any) -> bool:
     """Whether ``tp`` is a class :func:`load_specs` built: one that
     crosses to another process as the data it was built from."""
-    return isinstance(tp, type) and tp in _SHAPE_OF
+    return isinstance(tp, (_ShapeMeta, _ShapeEnumMeta)) and _GROUP in vars(tp)
 
 
 class _ShapeMeta(type):
@@ -1677,13 +1678,29 @@ _ShapeStrEnum = _enum_base("_ShapeStrEnum", (str, enum.Enum))
 _ShapeFlag = _enum_base("_ShapeFlag", (enum.Flag,))
 _ShapeIntFlag = _enum_base("_ShapeIntFlag", (enum.IntFlag,))
 
-_SHAPES: dict[tuple[str, str], dict[str, Any]] = {}
-"""The classes built for each ``(types, module)``, the types written as
-canonical JSON: a load of the same data gives the same classes, here
-and in a process they were pickled into."""
 
-_SHAPE_OF: dict[type, tuple[str, str]] = {}
-"""Each class built, and the ``(types, module)`` it was built from."""
+class _Group:
+    """The classes built together from one ``(types, module)``, the types
+    written as canonical JSON (``key``). Each class holds its group, and
+    the group holds them, so the group lives as long as any of them is
+    in use and goes with the last."""
+
+    __slots__ = ("key", "classes", "__weakref__")
+
+    def __init__(self, key: tuple[str, str], classes: dict[str, Any]) -> None:
+        self.key = key
+        self.classes = classes
+
+
+_GROUP = "__nt_shape__"
+"""The attribute a class built from a spec holds its group under."""
+
+_SHAPES: weakref.WeakValueDictionary[tuple[str, str], _Group] = (
+    weakref.WeakValueDictionary()
+)
+"""The groups in use, by ``(types, module)``: a load of the same data
+gives the same classes while any of them is in use, here and in a
+process they were pickled into, and a group no one uses is let go."""
 
 _SHAPES_LOCK = threading.Lock()
 
@@ -1700,13 +1717,13 @@ def _shapes(text: str, where: str) -> dict[str, Any]:
     built on first use, then the same ones."""
     key = (text, where)
     with _SHAPES_LOCK:
-        made = _SHAPES.get(key)
-        if made is None:
-            made = _build_shapes(json.loads(text), where)
-            for cls in made.values():
-                _SHAPE_OF[cls] = key
-            _SHAPES[key] = made
-        return made
+        group = _SHAPES.get(key)
+        if group is None:
+            group = _Group(key, _build_shapes(json.loads(text), where))
+            for cls in group.classes.values():
+                setattr(cls, _GROUP, group)
+            _SHAPES[key] = group
+        return group.classes
 
 
 def _shape(text: str, where: str, name: str) -> Any:
@@ -1716,10 +1733,10 @@ def _shape(text: str, where: str, name: str) -> Any:
 
 
 def _reduce_shape(cls: Any) -> Any:
-    key = _SHAPE_OF.get(cls)
-    if key is None:
+    group = vars(cls).get(_GROUP)
+    if group is None:
         return cls.__qualname__  # one of the bases above, by name
-    return (_shape, (*key, cls.__name__))
+    return (_shape, (*group.key, cls.__name__))
 
 
 copyreg.pickle(_ShapeMeta, _reduce_shape)
