@@ -1750,6 +1750,9 @@ check(value, tp, *, names=None, full=False)   # Spec.of(tp).check, in one call
 decode(encoded_or_blob, tp, *, names=None)    # Spec.of(tp).decode, in one call
 copy(value)                     # a copy no route reaches the original through
 find_live(value) -> str | None  # where a value holds a live object
+
+export_specs({"shape": spec, "result": spec}) -> dict   # specs as JSON data, "nt-spec/1"
+load_specs(data, *, module=None) -> dict[str, Spec]     # read back over classes built here
 ```
 
 These errors are the standard library's kinds, so the module runs in a
@@ -1784,6 +1787,24 @@ stubbed host object's annotation may be one. A type whose annotations
 name the locals of the function that defined it compiles only with
 those names, so compiling it once with them and handing the spec on is
 how it reaches code that doesn't have them.
+
+**Specs as data.** `export_specs` writes specs out as plain JSON, for a
+process none of their classes exist in: a signature's parameters and
+result, say. Each type is a tree of kinds, and each record and enum
+appears once, by name, in a table the specs share. A record is written
+with its docstring and fields (each one's type, whether it's required,
+its default where that's plain data, and whether it's keyword-only).
+An enum is written with its docstring and members. `load_specs` reads it
+back over classes it builds: a dataclass per record (a NamedTuple,
+TypedDict or pydantic model included) and an `Enum` per enum, with the
+same names, fields and docstrings, shared across the specs, so values
+made there encode and decode into the writer's own classes. What a shape
+leaves behind is behaviour: methods, validators, and fields the class
+sets itself (`init=False`), which run when the writer decodes a value.
+A live type, or two different types under one name, is `Unsupported`
+when written. Reading back evaluates nothing: every name must be an
+identifier, every node a kind a spec has, nesting is bounded, and
+anything else is `Malformed`.
 
 `encode` needs no type. A value becomes a JSON tree; what JSON lacks
 rides as numbered binary parts its leaves point to, tagged `"$nt"`:
