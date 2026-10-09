@@ -713,7 +713,7 @@ def _env_notes(ws: Workspace) -> str:
     if ws.runtime.cache_enabled:
         lines.append(_CACHE_NOTE)
     cfg = ws.runtime.python_config
-    from ..workspace import HostObject
+    from ..host_objects import HostObject
 
     data = sorted(
         name

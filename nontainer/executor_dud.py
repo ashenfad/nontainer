@@ -78,7 +78,6 @@ from .executor import (
     StagedDiff,
     ViewSpec,
     _apply_diff,
-    _by_value,
     _host_module_names,
     _named_classes,
     _refuse_async_host_methods,
@@ -86,12 +85,10 @@ from .executor import (
     _refuse_reserved_host_name,
     _refuse_shadowed_host_module,
     _refuse_unnameable_classes,
-    _stubbed,
     _truncate,
-    _typed,
-    _value,
     flatten_grants,
 )
+from .host_objects import _by_value, _stubbed, _typed, _value
 from .remote import Host
 from .views import read_many
 from .workspace import PythonResult, TerminalResult, _trim_rendered_traceback
