@@ -303,6 +303,12 @@ def tamper(path: list[Any], value: Any) -> dict[str, Any]:
         tamper(["types", "Tree", "fields", 0, "required"], "yes"),
         tamper(["types", "Tree", "kind"], "module"),
         tamper(["types", "Shape", "members", 0, 0], "_sunder_"),
+        tamper(["types", "Shape", "flavor"], "metaclass"),
+        tamper(["types", "Shape", "flavor"], "int"),
+        tamper(
+            ["types", "__Mangled"],
+            {"kind": "enum", "doc": None, "flavor": "enum", "members": []},
+        ),
         tamper(["types", "Tree", "doc"], 3),
         tamper(["specs", "it"], {"t": "literal", "values": [{"a": 1}]}),
     ],
@@ -310,6 +316,77 @@ def tamper(path: list[Any], value: Any) -> dict[str, Any]:
 def test_what_is_not_an_export_is_refused(data):
     with pytest.raises(v.Malformed):
         v.load_specs(data)
+
+
+class Perm(enum.Flag):
+    READ = 1
+    WRITE = 2
+    ALL = 3
+
+
+class Level(enum.IntEnum):
+    LOW = 1
+    HIGH = 2
+
+
+class Tone(str, enum.Enum):
+    SOFT = "soft"
+    LOUD = "loud"
+
+
+class Status(enum.Enum):
+    OK = 1
+    SUCCESS = 1
+
+
+@pytest.mark.parametrize("cls", [Perm, enum.IntFlag("Bits", ["A", "B"]), Level, Tone])
+def test_an_enum_comes_back_as_its_own_kind(cls):
+    back = round_trip(it=cls)
+    (made,) = back["it"].types
+    kind = cls.__mro__[1]
+    assert issubclass(made, kind if kind is not str else str)
+    for member in cls:
+        assert made[member.name].value == member.value
+        if isinstance(member, (int, str)):
+            assert made[member.name] == member.value
+
+
+def test_a_flag_keeps_the_combinations_it_had():
+    back = round_trip(it=Perm)
+    (P,) = back["it"].types
+    back["it"].check(P.READ | P.WRITE)
+    assert back["it"].decode(v.encode(Perm.READ | Perm.WRITE)) == P.READ | P.WRITE
+    no_name = enum.Flag("Sparse", [("A", 1), ("B", 2)])
+    back = round_trip(it=no_name)
+    (S,) = back["it"].types
+    assert back["it"].decode(v.encode(no_name.A | no_name.B)) == S.A | S.B
+
+
+def test_an_enums_aliases_are_kept():
+    back = round_trip(it=Status)
+    (S,) = back["it"].types
+    assert list(S.__members__) == ["OK", "SUCCESS"]
+    assert S.SUCCESS is S.OK
+
+
+def test_a_private_type_name_round_trips():
+    @dataclasses.dataclass
+    class _Private:
+        x: int
+
+    back = round_trip(it=_Private)
+    (P,) = back["it"].types
+    assert P.__name__ == "_Private"
+    back["it"].check(P(1))
+
+
+def test_a_name_the_loader_would_refuse_is_refused_when_written():
+    Odd = TypedDict("Odd", {"class": int})
+    with pytest.raises(v.Unsupported, match="'class'"):
+        v.export_specs({"it": v.Spec.of(Odd)})
+    Hidden = enum.Enum("Hidden", [("_x", 1)])
+    with pytest.raises(v.Unsupported, match="'_x'"):
+        v.export_specs({"it": v.Spec.of(Hidden)})
 
 
 def test_a_type_nested_too_deeply_is_refused():
