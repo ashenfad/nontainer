@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import collections.abc as abc
 import copy as copying
+import copyreg
 import dataclasses
 import datetime
 import decimal
@@ -62,6 +63,7 @@ import pathlib
 import random
 import struct
 import sys
+import threading
 import types
 import typing
 import uuid
@@ -88,6 +90,7 @@ __all__ = [
     "export_specs",
     "find_live",
     "fmt",
+    "is_shape",
     "kinds_of",
     "load_specs",
 ]
@@ -1615,9 +1618,17 @@ def _export_record(
 def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
     """Read back what :func:`export_specs` wrote: each spec compiled
     against classes built here, a dataclass per record and an enum of the
-    same kind (a ``Flag`` stays a flag) per enum, with the names, fields, docstrings and members written. They
-    are shared, so a record two specs name is one class. ``module`` is the
-    module the classes say they belong to.
+    same kind (a ``Flag`` stays a flag) per enum, with the names, fields,
+    docstrings and members written. They are shared, so a record two
+    specs name is one class. ``module`` is the module the classes say
+    they belong to.
+
+    The classes are **shapes** (:func:`is_shape`): built once for the
+    same types and ``module``, so loading them again gives the same
+    classes, and pickled as what they were built from rather than by
+    name, since no module holds them. That is how they reach code that
+    runs in another process or on a dud machine, where they are built
+    again from the same data.
 
     Nothing written is evaluated: every name is checked as an identifier,
     every node against the kinds a spec has, and anything else is refused
@@ -1630,7 +1641,92 @@ def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
     specs, types = data["specs"], data["types"]
     if not isinstance(specs, dict) or not isinstance(types, dict):
         raise Malformed("not exported specs")
-    where = module or __name__
+    if not all(isinstance(n, str) for n in specs):
+        raise Malformed("a spec's name isn't text")
+    classes = _shapes(_canonical(types), module or __name__)
+    try:
+        return {n: Spec.of(_load_type(t, classes, 0)) for n, t in specs.items()}
+    except Unsupported as error:
+        raise Malformed(f"exported specs that can't be compiled: {error}") from None
+
+
+def is_shape(tp: Any) -> bool:
+    """Whether ``tp`` is a class :func:`load_specs` built: one that
+    crosses to another process as the data it was built from."""
+    return isinstance(tp, type) and tp in _SHAPE_OF
+
+
+class _ShapeMeta(type):
+    """The metaclass of a record :func:`load_specs` builds, so the class
+    pickles as what it was built from (:func:`_reduce_shape`)."""
+
+
+class _ShapeEnumMeta(enum.EnumMeta):
+    """The metaclass of an enum :func:`load_specs` builds, for the same
+    reason as :class:`_ShapeMeta`."""
+
+
+def _enum_base(name: str, bases: tuple[type, ...]) -> Any:
+    return _ShapeEnumMeta(name, bases, _ShapeEnumMeta.__prepare__(name, bases))
+
+
+_ShapeRecord = _ShapeMeta("_ShapeRecord", (), {"__slots__": ()})
+_ShapeEnum = _enum_base("_ShapeEnum", (enum.Enum,))
+_ShapeIntEnum = _enum_base("_ShapeIntEnum", (enum.IntEnum,))
+_ShapeStrEnum = _enum_base("_ShapeStrEnum", (str, enum.Enum))
+_ShapeFlag = _enum_base("_ShapeFlag", (enum.Flag,))
+_ShapeIntFlag = _enum_base("_ShapeIntFlag", (enum.IntFlag,))
+
+_SHAPES: dict[tuple[str, str], dict[str, Any]] = {}
+"""The classes built for each ``(types, module)``, the types written as
+canonical JSON: a load of the same data gives the same classes, here
+and in a process they were pickled into."""
+
+_SHAPE_OF: dict[type, tuple[str, str]] = {}
+"""Each class built, and the ``(types, module)`` it was built from."""
+
+_SHAPES_LOCK = threading.Lock()
+
+
+def _canonical(types: dict[str, Any]) -> str:
+    try:
+        return json.dumps(types, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError):
+        raise Malformed("exported types that aren't plain JSON") from None
+
+
+def _shapes(text: str, where: str) -> dict[str, Any]:
+    """The classes for the types written as ``text``, in ``where``:
+    built on first use, then the same ones."""
+    key = (text, where)
+    with _SHAPES_LOCK:
+        made = _SHAPES.get(key)
+        if made is None:
+            made = _build_shapes(json.loads(text), where)
+            for cls in made.values():
+                _SHAPE_OF[cls] = key
+            _SHAPES[key] = made
+        return made
+
+
+def _shape(text: str, where: str, name: str) -> Any:
+    """The class ``name`` of the types written as ``text``: how a shape
+    unpickles."""
+    return _shapes(text, where)[name]
+
+
+def _reduce_shape(cls: Any) -> Any:
+    key = _SHAPE_OF.get(cls)
+    if key is None:
+        return cls.__qualname__  # one of the bases above, by name
+    return (_shape, (*key, cls.__name__))
+
+
+copyreg.pickle(_ShapeMeta, _reduce_shape)
+copyreg.pickle(_ShapeEnumMeta, _reduce_shape)
+
+
+def _build_shapes(types: dict[str, Any], where: str) -> dict[str, Any]:
     classes: dict[str, Any] = {}
     records: list[tuple[type, list[dict[str, Any]]]] = []
     for name, entry in types.items():
@@ -1649,17 +1745,15 @@ def load_specs(data: Any, *, module: str | None = None) -> dict[str, Spec]:
             cls = _load_record(name, fields, doc, where)
             classes[name] = cls
             records.append((cls, fields))
-    if not all(isinstance(n, str) for n in specs):
-        raise Malformed("a spec's name isn't text")
     try:
         for cls, fields in records:
             for field in fields:
                 hint = _load_type(field["type"], classes, 0)
                 cls.__annotations__[field["name"]] = hint
                 cls.__dataclass_fields__[field["name"]].type = hint  # type: ignore[attr-defined]
-        return {n: Spec.of(_load_type(t, classes, 0)) for n, t in specs.items()}
     except Unsupported as error:
         raise Malformed(f"exported specs that can't be compiled: {error}") from None
+    return classes
 
 
 def _usable(name: Any, private: bool) -> bool:
@@ -1688,11 +1782,11 @@ def _nameable(name: str, what: str, *, private: bool = False) -> None:
 
 
 _FLAVORS: dict[str, tuple[Any, type | None]] = {
-    "enum": (enum.Enum, None),
-    "int": (enum.IntEnum, int),
-    "str": (enum.Enum, str),  # StrEnum is 3.11+; a str mixin is the same
-    "flag": (enum.Flag, int),
-    "int_flag": (enum.IntFlag, int),
+    "enum": (_ShapeEnum, None),
+    "int": (_ShapeIntEnum, int),
+    "str": (_ShapeStrEnum, str),  # StrEnum is 3.11+; a str mixin is the same
+    "flag": (_ShapeFlag, int),
+    "int_flag": (_ShapeIntFlag, int),
 }
 
 
@@ -1718,10 +1812,7 @@ def _load_enum(name: str, entry: dict[str, Any], doc: str | None, where: str) ->
             raise Malformed(f"enum {name!r}: {member[0]} isn't {of.__name__}")
         pairs.append((member[0], value))
     try:
-        if base is enum.Enum and of is str:
-            cls = enum.Enum(name, pairs, module=where, type=str)  # type: ignore[misc]
-        else:
-            cls = base(name, pairs, module=where)  # type: ignore[misc]
+        cls = base(name, pairs, module=where)
     except (TypeError, ValueError) as error:
         raise Malformed(f"enum {name!r} can't be built: {error}") from None
     cls.__doc__ = doc
@@ -1757,7 +1848,9 @@ def _load_record(name: str, fields: list[Any], doc: str | None, where: str) -> t
             )
         made.append((fname, Any, spec))
     try:
-        cls = dataclasses.make_dataclass(name, made, namespace={"__doc__": doc})
+        cls = dataclasses.make_dataclass(
+            name, made, bases=(_ShapeRecord,), namespace={"__doc__": doc}
+        )
     except (TypeError, ValueError) as error:
         raise Malformed(f"record {name!r} can't be built: {error}") from None
     cls.__module__ = where

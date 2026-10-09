@@ -421,19 +421,33 @@ def _rebuild_dataclass(value: Any, contract: tuple[type, ...]) -> Any:
 
 def _class_boot(
     bind: Sequence[type], need: Sequence[type]
-) -> tuple[str, dict[str, dict[str, Any]]]:
-    """How a guest gets the classes a run needs: ``(import lines, boot)``
-    for ``_VIEW_BOOTSTRAP``. Those in ``bind`` are also bound by name.
+) -> tuple[str, dict[str, dict[str, Any]], dict[str, type]]:
+    """How a guest gets the classes a run needs: ``(import lines, boot,
+    shapes)`` for ``_VIEW_BOOTSTRAP``. Those in ``bind`` are also bound
+    by name.
 
     Classes cross by SOURCE, not by install: grouped by defining module,
     each module's source ships so the guest can synthesize it when the
     import fails (VM rungs have no nontainer, nor the embedder's
     modules). A module whose source can't be read falls back to a plain
-    import line, correct wherever the guest shares the host venv."""
+    import line, correct wherever the guest shares the host venv.
+
+    A shape (:func:`nontainer.values.is_shape`) has no module to ship:
+    it crosses inside the pickle, as the data it was built from, which
+    ``nontainer.values`` builds it again from, so that module ships
+    instead. ``shapes`` are the ones in ``bind``, for the pickle to bind
+    by name."""
     import inspect
 
+    from . import values
+
+    shapes = {c.__name__: c for c in bind if values.is_shape(c)}
+    if any(values.is_shape(c) for c in need):
+        need = [values.Encoded, *need]
     boot: dict[str, dict[str, Any]] = {}
     for c in need:
+        if values.is_shape(c):
+            continue
         mod, name = getattr(c, "__module__", None), getattr(c, "__name__", None)
         if not mod or not name:
             continue
@@ -452,7 +466,7 @@ def _class_boot(
                 else f"import {mod}\n"
             )
             del boot[mod]
-    return imports, boot
+    return imports, boot, shapes
 
 
 def _stubs(cfg: Any) -> dict[str, list[str]]:
@@ -484,8 +498,8 @@ def _typed_program(values: Mapping[str, Any], cfg: Any) -> tuple[str, dict[str, 
     built around their proxies last."""
     import base64
 
-    imports, boot = _class_boot(tuple(cfg.classes), _guest_classes(cfg))
-    blob = base64.b64encode(pickle.dumps(dict(values))).decode()
+    imports, boot, shapes = _class_boot(tuple(cfg.classes), _guest_classes(cfg))
+    blob = base64.b64encode(pickle.dumps({**shapes, **values})).decode()
     stubs = _stubs(cfg)
     source = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE
     if stubs:
@@ -515,10 +529,10 @@ def _view_program(
     ``need`` brings the modules of."""
     import base64
 
-    blob = base64.b64encode(pickle.dumps(dict(inputs))).decode()
-    imports, boot = _class_boot(
+    imports, boot, shapes = _class_boot(
         (*view.extra_classes, *bind), (*view.extra_classes, *bind, *need)
     )
+    blob = base64.b64encode(pickle.dumps({**shapes, **inputs})).decode()
     # The host prelude runs AFTER the view prelude: plain-data host
     # objects reach the guest inside the pickle blob, so they are
     # globals only once it has been unpickled.
