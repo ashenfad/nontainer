@@ -386,7 +386,9 @@ def _made_for(python: PythonConfig, ws: Workspace) -> PythonConfig:
     """``python`` with each host object a factory makes made for ``ws``:
     the config its executor opens with."""
     entries = python.host_objects
-    if not any(isinstance(e, HostObject) and e.factory for e in entries.values()):
+    if not any(
+        isinstance(e, HostObject) and e.factory is not None for e in entries.values()
+    ):
         return python
     made = {
         name: entry.made_for(ws) if isinstance(entry, HostObject) else entry

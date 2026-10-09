@@ -123,3 +123,19 @@ def test_a_factory_that_fails_fails_the_open():
 def test_what_is_not_an_entry_is_refused(make, message):
     with pytest.raises(TypeError, match=message):
         make()
+
+
+def test_a_falsy_factory_is_still_called():
+    class Maker:
+        def __bool__(self):
+            return False
+
+        def __call__(self, ws):
+            return World(ws)
+
+    ws, store = open_ws("none", HostObject(factory=Maker()))
+    try:
+        assert name_in(ws) == "lead"
+    finally:
+        ws.close()
+        store.close()
