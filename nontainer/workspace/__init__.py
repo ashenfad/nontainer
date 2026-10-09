@@ -7,7 +7,9 @@ return, :mod:`.facades` ``ws.files``, ``ws.index`` and ``ws.tags``,
 error reads to the agent. Everything is importable from here.
 """
 
+from .. import host_objects
 from ..host_objects import HostObject
+from . import config, facades
 from .config import (
     Isolation,
     ModuleGrant,
@@ -23,6 +25,13 @@ from .facades import WorkspaceFiles, WorkspaceIndex, WorkspaceIndexTags, Workspa
 from .fs import _frozen_fs
 from .results import PythonResult, RemoveOutcome, TerminalResult, WriteOutcome
 from .tracebacks import _render_error, _trim_rendered_traceback
+
+# Annotations in these modules name Workspace and PythonConfig, which
+# they import only for type checking: core imports them, so a runtime
+# import would cycle. Bound here, once everything is loaded, so that
+# typing.get_type_hints resolves them.
+config.Workspace = facades.Workspace = host_objects.Workspace = Workspace
+host_objects.PythonConfig = PythonConfig
 
 __all__ = [
     "HostObject",
