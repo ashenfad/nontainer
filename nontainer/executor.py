@@ -1039,11 +1039,16 @@ class LocalExecutor:
         # A stub is different: code holds the stub itself on every rung,
         # built in the worker under isolation, and it is importable there
         # (open refuses one that isn't), so it is registered everywhere.
+        #
+        # host_time: the timeout bounds the code, not the host it calls,
+        # so time inside a host object's calls doesn't count against it.
+        # A proxy's calls under isolation are the worker's RPCs, which
+        # sandtrap already counts as host time.
         for name, entry in cfg.host_objects.items():
             if _stubbed(entry):
-                policy.cls(entry.stub, name=name)
+                policy.cls(entry.stub, name=name, host_time=True)
             elif cfg.isolation == "none" and not _by_value(entry):
-                policy.cls(type(_value(entry)), name=name)
+                policy.cls(type(_value(entry)), name=name, host_time=True)
 
         # Loud construction-time warning when a kernel sandbox's policy
         # degrades a kernel restriction (seccomp/Landlock are monotonic).

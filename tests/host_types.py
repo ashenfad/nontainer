@@ -2,6 +2,7 @@
 process imports them by name, and a guest without this module rebuilds
 it from its source, which needs nothing past the standard library."""
 
+import contextvars
 import enum
 from dataclasses import dataclass
 
@@ -102,3 +103,42 @@ class BrokenStub:
 
     def __init__(self, remote) -> None:
         raise ValueError("no remote today")
+
+
+MARK: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "host_types_mark", default="unset"
+)
+"""A context variable the embedder sets before a run, which a host
+call should see as the embedder left it."""
+
+
+class Probe:
+    """A host object that reports where its calls run."""
+
+    def read(self, path: str) -> str:
+        with open(path) as f:
+            return f.read()
+
+    def mark(self) -> str:
+        return MARK.get()
+
+    def drain(self, items) -> list:
+        return list(items)
+
+    def wait(self, seconds: float) -> str:
+        import time
+
+        time.sleep(seconds)
+        return "waited"
+
+
+class ProbeStub:
+    """What code holds for a :class:`Probe`: every call passed through."""
+
+    def __init__(self, remote) -> None:
+        self._remote = remote
+
+    def __getattr__(self, name):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._remote, name)

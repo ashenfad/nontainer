@@ -26,7 +26,7 @@ dependencies = [
     # whose features nontainer uses; the CHANGELOG says which needed what.
     "termish>=0.2.2",
     "monkeyfs>=0.2.5",
-    "sandtrap>=0.4.1",
+    "sandtrap>=0.4.2",
     # Capped below 0.5: merges resolve through kvgit.versioned.merge,
     # which is not public API.
     "kvgit[disk]>=0.4.1,<0.5",
@@ -69,7 +69,7 @@ postgres = [
 dud = [
     # dud needs Python 3.11+; the marker keeps nontainer's 3.10 floor for
     # everyone else.
-    "dud>=0.4.1; python_version >= '3.11'",
+    "dud>=0.4.2; python_version >= '3.11'",
 ]
 dev = [
     "ruff",

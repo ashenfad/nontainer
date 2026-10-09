@@ -471,11 +471,11 @@ wheels = [
 
 [[package]]
 name = "dud"
-version = "0.4.1"
+version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/66/57/16900b324548e5c7688c3c170cc5685e5f3c0809cc11327db6af4bfa10f6/dud-0.4.1.tar.gz", hash = "sha256:5733daa97e488c334243fab44e6f7d9598dfd4366e9d9a83668795140382098c", size = 283416, upload-time = "2026-09-05T18:41:03.57Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/1a/21905cf591e9fb1db27d483c3b2ab81c7cdb5e31d87b0ad4007cb5982c72/dud-0.4.2.tar.gz", hash = "sha256:e19b69adbd5a82a115215b712efb6f858a44c535d39c95526574af94ca617445", size = 284981, upload-time = "2026-10-09T16:11:25.984Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/23/327d610514f5982dc0d646d95d001d70db04f124ea965a6933607df21029/dud-0.4.1-py3-none-any.whl", hash = "sha256:391c7605a8625f5ace3ef14c160f9dd4a2651c8275755333e2315e34428175ae", size = 164746, upload-time = "2026-09-05T18:41:02.393Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/ce/ead15480354478fb977dff703aeba9183cfa0821961503a78da8e9a44564/dud-0.4.2-py3-none-any.whl", hash = "sha256:36b213907570efe63d3b975c59f23fc9197fbcd3bec6e75b0f8b5117a0b9a6a0", size = 165494, upload-time = "2026-10-09T16:11:24.595Z" },
 ]
 
 [[package]]
@@ -1201,7 +1201,7 @@ requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=2.1" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
-    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.1" },
+    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.2" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.4.1,<0.5" },
     { name = "kvgit", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=0.4.1,<0.5" },
@@ -1217,7 +1217,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'" },
     { name = "reprobate", specifier = ">=0.1.3" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sandtrap", specifier = ">=0.4.1" },
+    { name = "sandtrap", specifier = ">=0.4.2" },
     { name = "sqlalchemy", marker = "extra == 'dev'" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
     { name = "termish", specifier = ">=0.2.2" },
@@ -2589,14 +2589,14 @@ wheels = [
 
 [[package]]
 name = "sandtrap"
-version = "0.4.1"
+version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "monkeyfs" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7b/44/59e93dce2a9c65b7b27d97d197cd975fb07df91985064102ccea13d9b34c/sandtrap-0.4.1.tar.gz", hash = "sha256:fc9e0a8ba2aa7eb349c3f7af25c3fbc3674f0478eebb6c4f2002033a6d0c9759", size = 181391, upload-time = "2026-10-06T22:22:19.57Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/01/91/0e74e7c7c95ce68d48260bc2c024ba58dd8d98ac954f40e45f53160ca73a/sandtrap-0.4.2.tar.gz", hash = "sha256:e73902f87c817f87c513f0f8b23cd0cc06b65c050ef72df1fdb7f53fe15ebf49", size = 184960, upload-time = "2026-10-09T16:17:22.355Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/61/738f6655b52eaf0901fa4b3806a750b3d718975ceeb3d03b9a08a360496d/sandtrap-0.4.1-py3-none-any.whl", hash = "sha256:6c96a435ef4bd4384692c560256279f2a65335cb8d6f65094e94c74e4823202d", size = 100905, upload-time = "2026-10-06T22:22:18.113Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/f5/475895813d42d0e098395998f46d030a002c9fbd1ff9848c791d6cd54e8e/sandtrap-0.4.2-py3-none-any.whl", hash = "sha256:7aaa1870cb3e6f590894bc50440a5dad5b10f104cb557ef374f06bd452171f7e", size = 103318, upload-time = "2026-10-09T16:17:21.093Z" },
 ]
 
 [[package]]
