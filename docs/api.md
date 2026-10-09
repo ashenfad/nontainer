@@ -2275,6 +2275,7 @@ helper.cancel(name) -> Job   # answer discarded; an async run is stopped too
 helper.keep(name); helper.base(name); helper.sweep(idle, *, min_age=3600)
 helper.closed -> bool        # close() has begun; waits on it end at once
 helper.close(); await helper.aclose()
+Sessions.of(ws) -> Sessions | None    # the helper open over ws, the latest built
 
 until_settled(run_turn, sessions=None, inbox=None, *, prompt,
               max_wakes=10, poll=0.5) -> Settled

@@ -61,6 +61,7 @@ import logging
 import random
 import threading
 import time
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -92,6 +93,15 @@ SEPARATOR = "."
 #: How many names to try before giving up. Each miss appends a numeric
 #: suffix, so this bounds the suffix too.
 _MINT_TRIES = 8
+
+#: The helpers open over each workspace, oldest first, so a host
+#: object built for a world can find the one it delegates through
+#: (:meth:`Sessions.of`). Weak both ways: a workspace or a helper
+#: nobody holds any more is not kept alive by being listed.
+_OPEN: "weakref.WeakKeyDictionary[Workspace, list[weakref.ref[Sessions]]]" = (
+    weakref.WeakKeyDictionary()
+)
+_OPEN_LOCK = threading.Lock()
 
 #: The pet-name vocabulary, kept in the module so delegation costs no
 #: dependency. Two words is enough to be typable and quotable across a
@@ -210,7 +220,8 @@ class Sessions:
 
     Not a context the parent workspace owns: build it, and
     :meth:`close` it (or use it as a context manager) when the session
-    ends. Closing joins the workers; the branches stay.
+    ends. Closing joins the workers; the branches stay. While it is
+    open it is the workspace's helper, which :meth:`of` finds.
     """
 
     def __init__(
@@ -288,6 +299,32 @@ class Sessions:
         #: the lock, when :attr:`_settled` is notified.
         self._watchers: set[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = set()
         self._closed = False
+        with _OPEN_LOCK:
+            _OPEN.setdefault(workspace, []).append(weakref.ref(self))
+
+    @classmethod
+    def of(cls, workspace: "Workspace") -> "Sessions | None":
+        """The helper delegating for ``workspace``: the one built last
+        over it that isn't closed, or ``None`` when there is none.
+
+        A host object is built as its world opens (``HostObject(
+        factory=)``), and the harness builds the world's helper after
+        that, so a host object that delegates (a task's helper, say)
+        finds the helper here, at the call: its jobs are then the
+        world's delegates, listed and kept with the rest."""
+        with _OPEN_LOCK:
+            refs = _OPEN.get(workspace, ())
+            for ref in reversed(refs):
+                helper = ref()
+                if helper is not None and not helper.closed:
+                    return helper
+        return None
+
+    def _unlist(self) -> None:
+        with _OPEN_LOCK:
+            refs = _OPEN.get(self._ws)
+            if refs is not None:
+                refs[:] = [r for r in refs if r() not in (None, self)]
 
     def __repr__(self) -> str:
         with self._lock:
@@ -860,6 +897,7 @@ class Sessions:
                 return
             self._closed = True
             self._notify_locked()
+        self._unlist()
         concurrent.futures.wait(self._pending_runs())
         self._pool.shutdown(wait=True)
         self._close_children()
@@ -872,6 +910,7 @@ class Sessions:
                 return
             self._closed = True
             self._notify_locked()
+        self._unlist()
         for future in self._pending_runs():
             try:
                 await asyncio.wrap_future(future)
