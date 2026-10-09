@@ -254,9 +254,17 @@ class HostObject:
 
     An entry with neither is the object itself, exactly as if it had
     been put in ``host_objects`` bare.
+
+    ``factory`` takes the place of ``obj`` for an object each world
+    needs its own of: it is called with each :class:`Workspace` as it
+    opens, forks included, and what it returns is that world's object,
+    under the same ``type`` or ``stub``. The world is still opening when
+    it's called, so the object should keep it and use it from its own
+    calls. A fork, and :meth:`Profile.of`, carry the factory, not the
+    object it made.
     """
 
-    obj: Any
+    obj: Any = field(default_factory=lambda: _NO_OBJECT)
 
     type: Any = None
     """The type ``obj`` is data of, or ``None`` for an object passed as
@@ -268,6 +276,10 @@ class HostObject:
     """The class code in the sandbox holds in front of ``obj``, built as
     ``stub(remote)``, or ``None`` for none."""
 
+    factory: Callable[[Workspace], Any] | None = None
+    """Called with each world as it opens, for that world's object, in
+    place of ``obj``."""
+
     spec: Any = field(default=None, init=False, repr=False, compare=False)
     """The compiled type (:class:`nontainer.values.Spec`), when there is
     one."""
@@ -277,6 +289,15 @@ class HostObject:
     (:class:`nontainer.remote.Methods`), when there is a stub."""
 
     def __post_init__(self) -> None:
+        if self.factory is not None:
+            if self.obj is not _NO_OBJECT:
+                raise TypeError("HostObject takes obj or factory=, not both")
+            if not callable(self.factory):
+                raise TypeError(
+                    f"HostObject factory is a callable, not {type(self.factory).__name__}"
+                )
+        elif self.obj is _NO_OBJECT:
+            raise TypeError("HostObject needs an obj, or a factory= to make one")
         if self.stub is not None:
             self._stubbed()
         if self.type is None:
@@ -293,6 +314,9 @@ class HostObject:
                 "be sent by value; pass a live object without type= and it "
                 "reaches the sandbox as a proxy"
             )
+        object.__setattr__(self, "spec", spec)
+        if self.factory is not None:
+            return  # checked against the type when made
         try:
             spec.check(self.obj)
         except Mismatch as error:
@@ -321,6 +345,8 @@ class HostObject:
             raise TypeError(
                 f"HostObject stub is a class, not {type(self.stub).__name__}"
             )
+        if self.factory is not None:
+            return  # the contract is read off each object made
         try:
             methods = Methods(self.obj)
         except Unsupported as error:
@@ -332,6 +358,41 @@ class HostObject:
         """Whether the entry is sent into the sandbox as a copy of its
         data, rather than as a proxy to a live object."""
         return self.type is not None
+
+    def made_for(self, ws: Workspace) -> HostObject:
+        """This entry for world ``ws``: itself, or, with a factory, the
+        object it makes for ``ws`` under the same ``type`` or ``stub``,
+        checked as any entry is."""
+        if self.factory is None:
+            return self
+        obj = self.factory(ws)
+        try:
+            return HostObject(obj, type=self.type, stub=self.stub)
+        except TypeError as error:
+            raise TypeError(f"what HostObject's factory made: {error}") from None
+
+
+class _NoObject:
+    """``HostObject.obj`` when a factory makes it."""
+
+    def __repr__(self) -> str:
+        return "<made by factory>"
+
+
+_NO_OBJECT = _NoObject()
+
+
+def _made_for(python: PythonConfig, ws: Workspace) -> PythonConfig:
+    """``python`` with each host object a factory makes made for ``ws``:
+    the config its executor opens with."""
+    entries = python.host_objects
+    if not any(isinstance(e, HostObject) and e.factory for e in entries.values()):
+        return python
+    made = {
+        name: entry.made_for(ws) if isinstance(entry, HostObject) else entry
+        for name, entry in entries.items()
+    }
+    return replace(python, host_objects=made)
 
 
 @dataclass(frozen=True)
@@ -2109,10 +2170,13 @@ class Workspace:
         # provider state, independent of executor health.
         from .runtime import Runtime
 
+        # Host objects a factory makes are made here, for this world:
+        # last but the runtime, which opens the executor that takes
+        # them. _settings keeps the factories, which a fork calls again.
         self._runtime = Runtime(
             self,
             executor=executor,
-            python=python_config,
+            python=_made_for(python_config, self),
             commands=commands,
             max_observation=max_observation,
         )
