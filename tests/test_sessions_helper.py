@@ -388,6 +388,32 @@ def test_provenance_names_the_chain_not_the_last_hop(parent, store):
     assert answer.provenance["finished"] >= answer.provenance["started"]
 
 
+def test_a_delivered_answer_reads_back_from_json_as_it_was(parent, store):
+    """A real answer, provenance and all, rides a turn event that reads
+    back from JSON equal to itself: provenance holds JSON values."""
+    import json
+
+    from nontainer.conformance.codec import dump
+    from nontainer.turns import Delivered, DeliveredNote, event_from_dict
+
+    runner = Scripted(store, {"/workspace/notes.md": "n\n"})
+    with Sessions(parent, runner, chain=("boss@aaaaaa",)) as sessions:
+        answer = sessions.ask("go", wait=True)
+
+    event = Delivered(
+        notes=(
+            DeliveredNote(
+                id="n1",
+                text=answer.text,
+                kind="mechanism",
+                job=answer.branch,
+                answer=answer,
+            ),
+        )
+    )
+    assert event_from_dict(json.loads(json.dumps(dump(event)))) == event
+
+
 def test_the_runner_is_told_the_fork_point(parent, store):
     """A provenance header ("asked by session X at commit Y") is written
     before the child's first turn, so the fork point is a parameter of
