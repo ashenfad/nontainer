@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Loaded specs cross every rung.** The classes `values.load_specs` builds pickle as the data they were built from, so they serve as a world's classes and typed data's types under process isolation and on dud too; `values.is_shape` tells them apart.
 - **Host objects per world.** `HostObject(factory=...)` is called with each world as it opens, forks included, for that world's own object; a profile and a fork carry the factory.
 - **An ask can bring its own runner.** `Sessions.ask(..., runner=)` runs that job on a runner of its own, sync or async, on any helper; an async runner is typed `AsyncSessionRunner`.
+- **Turn events carry what a transcript shows.** A delivered delegate note carries its `Answer`, and `Compacted` its fold's `summary`, `tokens_before` and `tokens_after`; `DeliveredNote.of(note)` and `Compacted.of(fold)` build them.
 - **An empty view.** `fork(paths=[])` gives a child none of the caller's files and forks it from the last commit, landing nothing, so a fork taken mid-call doesn't split that call's commit.
 
 ### Changed

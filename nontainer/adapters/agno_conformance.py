@@ -280,23 +280,12 @@ class AgnoSession:
 
     def _folded(self, fold: Fold) -> None:
         # Called inside the run, before the model call the fold is for.
-        self._events.append(
-            Compacted(through=fold.through, runs=fold.runs, first=fold.first)
-        )
+        self._events.append(Compacted.of(fold))
 
     def _delivered(self, notes: list[Note]) -> None:
         # Called on the tool's thread while the run loop waits for the
         # tool, so it lands after the tool's start and before its end.
-        self._events.append(
-            Delivered(
-                notes=tuple(
-                    DeliveredNote(
-                        id=n.id, text=n.text, kind=n.kind, label=n.label, job=n.job
-                    )
-                    for n in notes
-                )
-            )
-        )
+        self._events.append(Delivered(notes=tuple(DeliveredNote.of(n) for n in notes)))
 
     def _drive(self, turn: Turn, start: Callable[[], Any]) -> list[TurnEvent]:
         self._events = []

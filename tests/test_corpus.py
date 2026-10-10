@@ -30,7 +30,8 @@ from nontainer.conformance.corpus import (
     writes,
 )
 from nontainer.conformance.harness import SCENARIOS, by_name
-from nontainer.inbox import Inbox
+from nontainer.inbox import Inbox, Note
+from nontainer.protocol import Answer
 from nontainer.sessions import answer_notes, run_action
 from nontainer.turns import (
     TURN_EVENTS,
@@ -541,9 +542,35 @@ EVENTS = (
     ThinkingDelta(text="hmm"),
     ToolStarted(call_id="c1", name="file_write", args={"path": "a"}),
     Delivered(notes=(DeliveredNote(id="n1", text="also b", kind="principal"),)),
+    Delivered(
+        notes=(
+            DeliveredNote(
+                id="n2",
+                text="[delegate quiet-otter answered]",
+                kind="mechanism",
+                label="delegate quiet-otter",
+                job="quiet-otter",
+                answer=Answer(
+                    text="done",
+                    ref="quiet-otter@abc",
+                    branch="quiet-otter",
+                    changed={"seed": ("a.py",)},
+                    artifacts=(("chart", "/workspace/ui/c.png"),),
+                    provenance={"started": 1.5, "finished": 9.0, "chain": ["x@1"]},
+                ),
+            ),
+        )
+    ),
     ToolEnded(call_id="c1", name="file_write", result="ok", is_error=False),
     Usage(input_tokens=10, cached_tokens=4),
     Compacted(through="m9", runs=3),
+    Compacted(
+        through="m12",
+        runs=4,
+        summary="Built the app.",
+        tokens_before=9000,
+        tokens_after=2100,
+    ),
     RunEnded(status="cancelled", message="stopped"),
 )
 
@@ -565,6 +592,35 @@ def test_turn_events_fit_their_schema():
         jsonschema.validate(dump(event), schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({"kind": "RunEnded", "status": "sideways"}, schema)
+
+
+def test_a_delivered_note_and_a_fold_carry_what_a_transcript_shows():
+    """A delegate's answer rides its delivered note, and a fold's summary
+    and sizes ride its event, so a reader needs no lookup."""
+    answer = Answer(text="done", status="declined", branch="otter")
+    note = Note(
+        id="n1",
+        text="answered",
+        kind="mechanism",
+        label="delegate otter",
+        job="otter",
+        answer=answer,
+    )
+    assert DeliveredNote.of(note) == DeliveredNote(
+        id="n1",
+        text="answered",
+        kind="mechanism",
+        label="delegate otter",
+        job="otter",
+        answer=answer,
+    )
+    assert DeliveredNote.of(Note(id="n2", text="hi")).answer is None
+    fold = compaction.Fold(
+        through="m9", summary="s", runs=2, tokens_before=10, tokens_after=3
+    )
+    assert Compacted.of(fold) == Compacted(
+        through="m9", runs=2, summary="s", tokens_before=10, tokens_after=3
+    )
 
 
 def test_an_unknown_event_kind_is_refused():

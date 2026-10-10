@@ -1897,8 +1897,11 @@ ToolStarted(call_id, name, args)
 Delivered(notes: tuple[DeliveredNote, ...])  # before the result it rode on
 ToolEnded(call_id, name, result, is_error)
 Usage(input_tokens, cached_tokens)
-Compacted(through, runs, first)
+Compacted(through, runs, first, summary, tokens_before, tokens_after)
 RunEnded(status: RunStatus, message)       # last, always
+
+DeliveredNote(id, text, kind, label, job, answer)  # answer: a delegate's Answer
+DeliveredNote.of(note), Compacted.of(fold)  # from an inbox Note, a compaction Fold
 
 TurnEvent = Union[...]                     # the nine above
 event_from_dict(data) -> TurnEvent         # the reverse of dataclasses.asdict
