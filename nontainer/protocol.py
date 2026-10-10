@@ -1281,7 +1281,8 @@ class Answer:
     """Where the answer came from: the child session and commit, when
     the work started and finished, and ``chain`` — the FULL path of
     refs behind it, not the last hop, so an answer cannot launder its
-    sources through an intermediate delegate."""
+    sources through an intermediate delegate. JSON values (lists, not
+    tuples), so an answer read back from JSON is the answer written."""
 
     uncommitted: bool = False
     """The delegate left work its last ws-git commit does not hold, so

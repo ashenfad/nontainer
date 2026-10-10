@@ -1637,7 +1637,8 @@ class Sessions:
             "commit": commit,
             "started": job.started,
             "finished": time.time(),
-            "chain": (*self._chain, *hop),
+            # a list: provenance is JSON data, read back the same
+            "chain": [*self._chain, *hop],
             **extra,
         }
 
