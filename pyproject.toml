@@ -26,7 +26,7 @@ dependencies = [
     # whose features nontainer uses; the CHANGELOG says which needed what.
     "termish>=0.2.2",
     "monkeyfs>=0.2.5",
-    "sandtrap>=0.4.2",
+    "sandtrap>=0.4.3",
     # Capped below 0.5: merges resolve through kvgit.versioned.merge,
     # which is not public API.
     "kvgit[disk]>=0.4.1,<0.5",
