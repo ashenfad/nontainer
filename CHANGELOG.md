@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An empty view.** `fork(paths=[])` gives a child none of the caller's files and forks it from the last commit, landing nothing, so a fork taken mid-call doesn't split that call's commit.
 
 ### Changed
+- **Agent code runs in a module of its own on every rung.** A dataclass with a quoted or postponed annotation works, and a leading `from __future__` import takes effect, on dud too (it goes above the guest's prelude); needs sandtrap 0.4.3.
+- **The cache refuses what the code defined, in-process too.** A value holding a class or function of the agent's own is a `CacheError` at the write, as it is under isolation and on dud.
 - **Host calls don't count against the timeout.** On every rung, time inside a host object's call is off the run's clock; needs sandtrap 0.4.2, and dud 0.4.2 for the dud extra.
 - **A stub's host half runs as host code in-process.** It ran in the sandbox's context, which refused its own network calls and the work it scheduled; it now runs in the embedder's, as it does elsewhere, unless handed a live argument.
 
