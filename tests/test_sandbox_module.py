@@ -77,6 +77,17 @@ def test_a_late_line_keeps_its_number_after_a_future_import(ws):
     assert "line 3" in r.error, r.error
 
 
+def test_a_statement_sharing_the_future_imports_line_still_runs(ws):
+    r = ws.run_python(
+        "from __future__ import annotations; from host import cache\n"
+        "cache['n'] = 1\n"
+        "def f(x: Missing) -> None: ...\n"  # postponed, so never looked up
+        "print(cache['n'])\n"
+    )
+    assert r.error is None, r.error
+    assert r.stdout.strip() == "1"
+
+
 def test_the_cache_holds_data_not_a_class_the_code_defined(ws):
     r = ws.run_python(
         "class C:\n"
@@ -135,3 +146,38 @@ def test_hoisting_takes_only_the_leading_future_imports(code, hoisted):
     assert rest.count("\n") == code.count("\n")  # line numbers kept
     if hoisted:
         assert "__future__" not in rest
+
+
+@pytest.mark.parametrize(
+    "code, hoisted, rest",
+    [
+        (
+            "from __future__ import annotations; import os\nx = 1\n",
+            "from __future__ import annotations\n",
+            "import os\nx = 1\n",
+        ),
+        (
+            "from __future__ import annotations ;  import os  # why\n",
+            "from __future__ import annotations\n",
+            "import os  # why\n",
+        ),
+        (
+            '"""doc"""; from __future__ import annotations; x = "é"\n',
+            "from __future__ import annotations\n",
+            '"""doc"""; x = "é"\n',
+        ),
+        (
+            "from __future__ import annotations; from __future__ import division\n",
+            "from __future__ import annotations\nfrom __future__ import division\n",
+            "\n",
+        ),
+        (
+            "from __future__ import (\n    annotations,\n); x = 1\ny = 2\n",
+            "from __future__ import (\n    annotations,\n)\n",
+            "\n\nx = 1\ny = 2\n",
+        ),
+    ],
+    ids=["shared", "spaced", "after-docstring", "two", "parenthesized"],
+)
+def test_hoisting_moves_only_the_import_not_its_line(code, hoisted, rest):
+    assert _hoist_future(code) == (hoisted, rest)

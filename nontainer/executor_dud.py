@@ -509,10 +509,12 @@ def _typed_program(values: Mapping[str, Any], cfg: Any) -> tuple[str, dict[str, 
 
 def _hoist_future(code: str) -> tuple[str, str]:
     """``code``'s leading ``from __future__`` imports, and ``code`` with
-    their lines left blank: ``(imports, rest)``.
+    them taken out: ``(imports, rest)``.
 
     A future import must open the module it is in, and the guest program
     is a prelude followed by the code, so the imports go above the
+    prelude. Only the import itself moves: a statement sharing its line
+    (``from __future__ import annotations; import x``) stays below the
     prelude, and the code keeps its line numbers. Code that doesn't
     parse is left as it is, for the guest to say so."""
     import ast
@@ -530,8 +532,7 @@ def _hoist_future(code: str) -> tuple[str, str]:
         and isinstance(body[0].value.value, str)
         else 0
     )
-    lines = code.splitlines(keepends=True)
-    hoisted: list[str] = []
+    futures = []
     for node in body[start:]:
         if not (
             isinstance(node, ast.ImportFrom)
@@ -539,13 +540,27 @@ def _hoist_future(code: str) -> tuple[str, str]:
             and not node.level
         ):
             break
-        end = node.end_lineno or node.lineno
-        hoisted.append("".join(lines[node.lineno - 1 : end]).strip() + "\n")
-        for i in range(node.lineno - 1, end):
-            lines[i] = "\n"
-    if not hoisted:
+        futures.append(node)
+    if not futures:
         return "", code
-    return "".join(hoisted), "".join(lines)
+    hoisted = "".join(f"{ast.get_source_segment(code, n)}\n" for n in futures)
+    # column offsets count UTF-8 bytes, and bytes split lines where the
+    # parser does; taken out last first, so an earlier import's columns
+    # on a shared line still hold
+    lines = code.encode().splitlines(keepends=True)
+    for node in reversed(futures):
+        first, last = node.lineno - 1, (node.end_lineno or node.lineno) - 1
+        before = lines[first][: node.col_offset]
+        after = lines[last][node.end_col_offset or 0 :].lstrip(b" \t")
+        if after.startswith(b";"):
+            after = after[1:].lstrip(b" \t")
+        if first == last:
+            lines[first] = before + after
+        else:
+            lines[first] = before.rstrip() + b"\n"
+            lines[first + 1 : last] = [b"\n"] * (last - first - 1)
+            lines[last] = after
+    return hoisted, b"".join(lines).decode()
 
 
 def _view_program(
