@@ -507,6 +507,47 @@ def _typed_program(values: Mapping[str, Any], cfg: Any) -> tuple[str, dict[str, 
     return source, {"__nt_blob": blob, "__nt_boot": boot, "__nt_stubs": stubs}
 
 
+def _hoist_future(code: str) -> tuple[str, str]:
+    """``code``'s leading ``from __future__`` imports, and ``code`` with
+    their lines left blank: ``(imports, rest)``.
+
+    A future import must open the module it is in, and the guest program
+    is a prelude followed by the code, so the imports go above the
+    prelude, and the code keeps its line numbers. Code that doesn't
+    parse is left as it is, for the guest to say so."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return "", code
+    body = tree.body
+    start = (
+        1
+        if body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+        else 0
+    )
+    lines = code.splitlines(keepends=True)
+    hoisted: list[str] = []
+    for node in body[start:]:
+        if not (
+            isinstance(node, ast.ImportFrom)
+            and node.module == "__future__"
+            and not node.level
+        ):
+            break
+        end = node.end_lineno or node.lineno
+        hoisted.append("".join(lines[node.lineno - 1 : end]).strip() + "\n")
+        for i in range(node.lineno - 1, end):
+            lines[i] = "\n"
+    if not hoisted:
+        return "", code
+    return "".join(hoisted), "".join(lines)
+
+
 def _view_program(
     code: str,
     inputs: Mapping[str, Any],
@@ -557,6 +598,8 @@ def _view_program(
         rebind = f"{targets}= {sources}\n"
     stub = _STUB_PRELUDE if stubs else ""
     prefix = imports + _VIEW_BOOTSTRAP + _VIEW_PRELUDE + stub + rebind + _HOST_PRELUDE
+    future, code = _hoist_future(code)
+    prefix = future + prefix
     full = prefix + code + _VIEW_EPILOGUE
     guest = {"__nt_blob": blob, "__nt_boot": boot, "__nt_stubs": dict(stubs or {})}
     return full, guest, prefix.count("\n")
@@ -1145,6 +1188,8 @@ class DudExecutor:
             prefix, guest = _typed_program(self._typed, cfg)
             merged.update(guest)
             bound = {*self._typed, *(k.__name__ for k in cfg.classes)}
+        future, code = _hoist_future(code)
+        prefix = future + prefix
         program = prefix + _HOST_PRELUDE + code
         start = time.monotonic()
         try:

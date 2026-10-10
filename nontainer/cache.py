@@ -15,7 +15,6 @@ agex conventions so agent mental models transfer verbatim:
 
 from __future__ import annotations
 
-import pickle
 from collections.abc import Iterator, MutableMapping
 from typing import Any
 
@@ -61,8 +60,19 @@ class Cache(MutableMapping[str, Any]):
 
     def __setitem__(self, key: str, value: Any) -> None:
         qualified = self._check_writable_key(key)
+        from sandtrap.home import SandboxObjectError, check_sendable
+
         try:
-            pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            # pickled as the store will, and a class or function the
+            # sandboxed code defined refused: it pickles by reference to
+            # the sandbox's module, which a later run doesn't have, and
+            # reading it back would run the code's class outside it
+            check_sendable(value)
+        except SandboxObjectError as exc:
+            raise CacheError(
+                f"Cannot cache key {key!r}: {exc}. The cache holds data; a later "
+                "run can't rebuild what this one's code defined."
+            ) from exc
         except Exception as exc:
             raise CacheError(
                 f"Cannot cache key {key!r}: value is not picklable ({exc}). "
