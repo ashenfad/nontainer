@@ -1,8 +1,81 @@
 {
   "$defs": {
+    "Answer": {
+      "additionalProperties": false,
+      "description": "What a delegate says back, and where to find what it did. ``str(answer)`` is the reply text, so printing an answer or interpolating it into a prompt yields prose and never a repr. The repr is one line and never carries the body: an answer is often thousands of words, and a REPL echo or a log line that dumps them buries everything around it. Pure data, like :class:`Job`, and evidence rather than instruction: provenance lets a human audit where a claim came from; it does not stop a delegate that read a poisoned file from writing prose that instructs its caller.",
+      "properties": {
+        "artifacts": {
+          "items": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "branch": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "changed": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "object"
+        },
+        "provenance": {
+          "additionalProperties": {},
+          "type": "object"
+        },
+        "ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "answered",
+            "declined",
+            "capped",
+            "failed"
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "uncommitted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
     "Compacted": {
       "additionalProperties": false,
-      "description": "A new fold (:class:`~nontainer.compaction.Fold`): the turns up to message ``through`` are replaced by a summary in what the model is sent from here on.",
+      "description": "A new fold (:class:`~nontainer.compaction.Fold`): the turns up to message ``through`` are replaced by ``summary`` in what the model is sent from here on. ``tokens_before`` is the request that crossed the budget, ``tokens_after`` the same request folded (estimated).",
       "properties": {
         "first": {
           "anyOf": [
@@ -20,8 +93,17 @@
         "runs": {
           "type": "integer"
         },
+        "summary": {
+          "type": "string"
+        },
         "through": {
           "type": "string"
+        },
+        "tokens_after": {
+          "type": "integer"
+        },
+        "tokens_before": {
+          "type": "integer"
         }
       },
       "required": [
@@ -52,8 +134,18 @@
     },
     "DeliveredNote": {
       "additionalProperties": false,
-      "description": "One note as it reached the model: the fields of :class:`~nontainer.inbox.Note` a reader needs, without the structured answer behind a delegate's note.",
+      "description": "One note as it reached the model: the fields of :class:`~nontainer.inbox.Note` a reader needs. ``answer`` is the structured answer behind a delegate's note, so a transcript can show what the delegate said and did without asking its job table; ``None`` for any other note.",
       "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Answer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "id": {
           "type": "string"
         },

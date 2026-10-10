@@ -47,8 +47,10 @@ from . import conversation
 from .conversation import Index
 from .errors import NotSupportedError, TurnInProgress
 from .inbox import Inbox, Note, NoteKind
+from .protocol import Answer
 
 if TYPE_CHECKING:
+    from .compaction import Fold
     from .workspace import Workspace
 
 _logger = logging.getLogger(__name__)
@@ -130,14 +132,29 @@ class ToolStarted:
 @dataclass(frozen=True, kw_only=True)
 class DeliveredNote:
     """One note as it reached the model: the fields of
-    :class:`~nontainer.inbox.Note` a reader needs, without the
-    structured answer behind a delegate's note."""
+    :class:`~nontainer.inbox.Note` a reader needs. ``answer`` is the
+    structured answer behind a delegate's note, so a transcript can
+    show what the delegate said and did without asking its job table;
+    ``None`` for any other note."""
 
     id: str
     text: str
     kind: NoteKind = "principal"
     label: str = ""
     job: str | None = None
+    answer: Answer | None = None
+
+    @classmethod
+    def of(cls, note: Note) -> DeliveredNote:
+        """``note`` as it reached the model."""
+        return cls(
+            id=note.id,
+            text=note.text,
+            kind=note.kind,
+            label=note.label,
+            job=note.job,
+            answer=note.answer,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -175,13 +192,29 @@ class Usage:
 @dataclass(frozen=True, kw_only=True)
 class Compacted:
     """A new fold (:class:`~nontainer.compaction.Fold`): the turns up to
-    message ``through`` are replaced by a summary in what the model is
-    sent from here on."""
+    message ``through`` are replaced by ``summary`` in what the model is
+    sent from here on. ``tokens_before`` is the request that crossed the
+    budget, ``tokens_after`` the same request folded (estimated)."""
 
     kind: Literal["Compacted"] = "Compacted"
     through: str
     runs: int = 0
     first: str | None = None
+    summary: str = ""
+    tokens_before: int = 0
+    tokens_after: int = 0
+
+    @classmethod
+    def of(cls, fold: Fold) -> Compacted:
+        """The event for ``fold``."""
+        return cls(
+            through=fold.through,
+            runs=fold.runs,
+            first=fold.first,
+            summary=fold.summary,
+            tokens_before=fold.tokens_before,
+            tokens_after=fold.tokens_after,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

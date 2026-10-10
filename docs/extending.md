@@ -493,10 +493,10 @@ the same way.
 | `RunStarted(run_id)` | first, always; the run id is what a cancel names |
 | `TextDelta(text)`, `ThinkingDelta(text)` | streamed model output |
 | `ToolStarted(call_id, name, args)` | before a tool runs |
-| `Delivered(notes)` | notes that rode out on a tool result, before that result's `ToolEnded` |
+| `Delivered(notes)` | notes that rode out on a tool result, before that result's `ToolEnded`; a delegate's note carries its `Answer` |
 | `ToolEnded(call_id, name, result, is_error)` | after a tool returns |
 | `Usage(input_tokens, cached_tokens)` | once per model call, where the harness reports it |
-| `Compacted(through, runs, first)` | a new compaction fold |
+| `Compacted(through, runs, first, summary, tokens_before, tokens_after)` | a new compaction fold, with its summary |
 | `RunEnded(status, message)` | last, always |
 
 **A turn** (`ws.turn`, `nontainer.turns.Turn`) is the span in which
