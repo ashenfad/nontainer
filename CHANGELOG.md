@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Host calls don't count against the timeout.** On every rung, time inside a host object's call is off the run's clock; needs sandtrap 0.4.2, and dud 0.4.2 for the dud extra.
 - **A stub's host half runs as host code in-process.** It ran in the sandbox's context, which refused its own network calls and the work it scheduled; it now runs in the embedder's, as it does elsewhere, unless handed a live argument.
 
+### Fixed
+- **A kept agno run answers the tool call a stop cut off.** A provider refuses a call with no result, so every later request in the session failed.
+
 ## 0.10.1 - 2026-10-08
 
 ### Fixed
