@@ -162,3 +162,39 @@ def test_a_dud_interrupt_cancels_an_exec_and_not_a_guests_setup():
     assert executor._exec(executor.interrupt) is True  # an exec in flight
     assert session.cancels == 1
     assert executor.interrupt() is False  # and done
+
+
+@pytest.mark.skipif(not _has_dud(), reason="needs the dud extra")
+def test_a_dud_interrupt_cannot_cross_the_end_of_its_exec():
+    """An exec that returns while a cancel of it is going out stays
+    marked until the cancel has gone, so the cancel cannot land on
+    whatever the session sends next (a harvest, a recovery's setup)."""
+    from nontainer.executor_dud import DudExecutor
+
+    cancelling, release = threading.Event(), threading.Event()
+    order = []
+
+    class Session:
+        def cancel(self):
+            cancelling.set()
+            release.wait(5)
+            order.append("cancel sent")
+            return True
+
+    executor = DudExecutor(backend="subprocess")
+    executor._session = Session()
+
+    def exec_():
+        executor._exec(lambda: (cancelling.wait(5), order.append("exec returned")))
+        order.append("unmarked")
+
+    running = threading.Thread(target=exec_)
+    running.start()
+    interrupting = threading.Thread(target=executor.interrupt)
+    interrupting.start()
+    assert cancelling.wait(5)
+    time.sleep(0.2)  # the exec has returned and wants to unmark
+    release.set()
+    running.join(5)
+    interrupting.join(5)
+    assert order == ["exec returned", "cancel sent", "unmarked"]

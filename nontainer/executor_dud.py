@@ -810,7 +810,10 @@ class DudExecutor:
         self._session: Any | None = None
         # Whether the session's request in flight is an exec, which is
         # all interrupt() may cancel (_exec sets it, under self._lock).
+        # Its own lock spans each change and interrupt()'s check and
+        # cancel, so a cancel can't cross the end of the exec it checked.
         self._executing = False
+        self._executing_lock = threading.Lock()
         self._work: str | None = None  # guest workspace dir (from ping)
         # The workspace root inside the provider fs (ExecutionContext
         # .root), normalized to "" for "/" so f"{root}/{rel}" composes.
@@ -1446,16 +1449,24 @@ class DudExecutor:
         restores its cwd) would undo them, and none is the call being
         stopped. Takes no lock: the running call holds the executor's.
         See ``Runtime.interrupt``."""
-        session = self._session
-        return self._executing and session is not None and bool(session.cancel())
+        with self._executing_lock:
+            session = self._session
+            return self._executing and session is not None and bool(session.cancel())
 
     def _exec(self, call: Any) -> Any:
-        """``call``, a guest exec, marked as the one interrupt() stops."""
-        self._executing = True
+        """``call``, a guest exec, marked as the one interrupt() stops.
+
+        Unmarked under the lock interrupt() cancels under: a cancel that
+        found it marked has gone out by then, while the exec's request
+        was still the one in flight (dud cancels only that one), so
+        nothing the session sends next can be what it stops."""
+        with self._executing_lock:
+            self._executing = True
         try:
             return call()
         finally:
-            self._executing = False
+            with self._executing_lock:
+                self._executing = False
 
     def exec_shell(self, script: str) -> TerminalResult:
         """Real bash against the guest tree. Failure contract matches
