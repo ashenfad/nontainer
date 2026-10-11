@@ -1028,6 +1028,35 @@ def test_a_kept_run_answers_the_call_a_stop_cut_off(stored_agent):
     assert "[turn aborted early: stopped by the user" in shown(agent)
 
 
+def test_a_cut_call_is_answered_though_an_earlier_call_had_its_id():
+    """A model that numbers each reply's calls from zero reuses ids, so
+    an earlier reply's result for `call_0` doesn't answer this one's."""
+    from agno.models.message import Message
+
+    from nontainer.adapters.agno import CUT_OFF, _answer_cut_calls
+
+    def call(name):
+        return {"id": "call_0", "type": "function", "function": {"name": name}}
+
+    messages = [
+        Message(role="user", content="go"),
+        Message(role="assistant", tool_calls=[call("file_write")]),
+        Message(role="tool", tool_call_id="call_0", content="wrote it"),
+        Message(
+            role="assistant",
+            tool_calls=[call("terminal"), {**call("x"), "id": "call_1"}],
+        ),
+        Message(role="tool", tool_call_id="call_1", content="ran x"),
+    ]
+    kept = _answer_cut_calls(messages)
+    assert [(m.role, m.tool_call_id, m.content) for m in kept[3:]] == [
+        ("assistant", None, None),
+        ("tool", "call_1", "ran x"),
+        ("tool", "call_0", CUT_OFF),
+    ]
+    assert kept[:3] == messages[:3]
+
+
 def test_keep_aborted_run_leaves_every_other_run_alone(stored_agent):
     from nontainer.adapters.agno import keep_aborted_run
 

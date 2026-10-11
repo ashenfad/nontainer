@@ -112,33 +112,41 @@ def _answer_cut_calls(messages: list[Any]) -> list[Any]:
 
     A provider refuses a conversation with a tool call and no result
     ("No tool output found for function call"), so a run kept without
-    one would fail every request after it.
+    one would fail every request after it. A call's results are the tool
+    messages right after its assistant message: ids repeat across a
+    conversation (a model that numbers each reply's calls from zero), so
+    a result elsewhere answers some other call.
     """
     from agno.models.message import Message
 
-    answered = {m.tool_call_id for m in messages if m.role == "tool"}
     out: list[Any] = []
-    owed: list[Any] = []
-    for message in messages:
-        if owed and message.role != "tool":
-            out.extend(owed)
-            owed = []
-        out.append(message)
-        if message.role != "assistant":
-            continue
-        for call in message.tool_calls or []:
-            if call.get("id") in answered:
-                continue
-            owed.append(
-                Message(
-                    role="tool",
-                    tool_call_id=call.get("id"),
-                    tool_name=(call.get("function") or {}).get("name"),
-                    content=CUT_OFF,
-                    tool_call_error=True,
-                )
+    calls: list[dict] = []  # the open assistant message's tool calls
+    answered: set[Any] = set()
+
+    def close() -> None:
+        out.extend(
+            Message(
+                role="tool",
+                tool_call_id=call.get("id"),
+                tool_name=(call.get("function") or {}).get("name"),
+                content=CUT_OFF,
+                tool_call_error=True,
             )
-    return out + owed
+            for call in calls
+            if call.get("id") not in answered
+        )
+
+    for message in messages:
+        if message.role == "tool":
+            answered.add(message.tool_call_id)
+        else:
+            close()
+            calls, answered = [], set()
+            if message.role == "assistant":
+                calls = list(message.tool_calls or [])
+        out.append(message)
+    close()
+    return out
 
 
 def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) -> bool:
