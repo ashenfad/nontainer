@@ -684,6 +684,30 @@ class Runtime:
         reap = getattr(self._executor, "reap_idle", None)
         return int(reap(max_age)) if reap is not None else 0
 
+    def interrupt(self) -> bool:
+        """Stop the code running now, and return whether there was any.
+
+        For a host whose user has stopped the turn while a tool call
+        runs: the call ends early instead of being waited out. It ends
+        the way a timeout ends it, as an errored result with the
+        output it had, and the writes it made commit with it as any
+        failed call's do. ``LocalExecutor`` cancels the sandbox, which
+        stops at the code's next loop iteration or function call, so a
+        single blocking call (a long ``time.sleep``, a slow request)
+        still runs out first; ``DudExecutor`` kills the guest's process
+        group at once, on a dud with ``Session.cancel``.
+
+        Safe from any thread, and it takes no lock: the workspace's is
+        the one the running call holds. A call that has not reached its
+        sandbox yet is not touched, so a host stopping a turn calls this
+        again while the call is still running. False on a closed
+        runtime and on an executor that does not declare ``interrupt``.
+        """
+        if self._closed:
+            return False
+        interrupt = getattr(self._executor, "interrupt", None)
+        return bool(interrupt()) if interrupt is not None else False
+
     def close(self) -> None:
         """Release execution resources. Idempotent. Settles a pending
         sync first: a closing executor may park its tree tagged with

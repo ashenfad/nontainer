@@ -1431,6 +1431,15 @@ class DudExecutor:
 
     # -- shell -----------------------------------------------------------
 
+    def interrupt(self) -> bool:
+        """Cancel the guest's exec in flight: dud kills its process group
+        and the call returns as at a timeout. Returns whether an exec
+        was in flight; False on a dud without ``Session.cancel``.
+        Takes no lock, since the running call holds it. See
+        ``Runtime.interrupt``."""
+        cancel = getattr(self._session, "cancel", None)
+        return bool(cancel()) if cancel is not None else False
+
     def exec_shell(self, script: str) -> TerminalResult:
         """Real bash against the guest tree. Failure contract matches
         LocalExecutor's: never raises for command failure — where
@@ -1467,6 +1476,8 @@ class DudExecutor:
         stderr = ""
         if result.timed_out:
             stderr = f"timeout: script exceeded {ctx.python_config.timeout}s"
+        elif getattr(result, "cancelled", False):
+            stderr = "interrupted: the script was stopped before it finished"
         stdout, trunc_out = _truncate(result.transcript, ctx.max_observation)
         stderr, trunc_err = _truncate(stderr, ctx.max_observation)
         return TerminalResult(
