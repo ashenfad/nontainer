@@ -1006,7 +1006,7 @@ def test_a_kept_run_answers_the_call_a_stop_cut_off(stored_agent):
     it, so the next request is one a provider takes."""
     from agno.run.base import RunStatus
 
-    from nontainer.adapters.agno import CUT_OFF, keep_aborted_run
+    from nontainer.adapters.agno import cut_off, keep_aborted_run
 
     def stop_here() -> str:
         """Runs until it is stopped."""
@@ -1024,7 +1024,11 @@ def test_a_kept_run_answers_the_call_a_stop_cut_off(stored_agent):
     calls = [c["id"] for m in sent if m.role == "assistant" for c in m.tool_calls or []]
     results = {m.tool_call_id: m.content for m in sent if m.role == "tool"}
     assert calls
-    assert [results.get(call) for call in calls] == [CUT_OFF] * len(calls)
+    # and says why, as the closing note does
+    assert [results.get(call) for call in calls] == [
+        cut_off("stopped by the user")
+    ] * len(calls)
+    assert "(stopped by the user)" in results[calls[0]]
     assert "[turn aborted early: stopped by the user" in shown(agent)
 
 
@@ -1033,7 +1037,7 @@ def test_a_cut_call_is_answered_though_an_earlier_call_had_its_id():
     an earlier reply's result for `call_0` doesn't answer this one's."""
     from agno.models.message import Message
 
-    from nontainer.adapters.agno import CUT_OFF, _answer_cut_calls
+    from nontainer.adapters.agno import _answer_cut_calls, cut_off
 
     def call(name):
         return {"id": "call_0", "type": "function", "function": {"name": name}}
@@ -1048,11 +1052,11 @@ def test_a_cut_call_is_answered_though_an_earlier_call_had_its_id():
         ),
         Message(role="tool", tool_call_id="call_1", content="ran x"),
     ]
-    kept = _answer_cut_calls(messages)
+    kept = _answer_cut_calls(messages, "stopped by the user")
     assert [(m.role, m.tool_call_id, m.content) for m in kept[3:]] == [
         ("assistant", None, None),
         ("tool", "call_1", "ran x"),
-        ("tool", "call_0", CUT_OFF),
+        ("tool", "call_0", cut_off("stopped by the user")),
     ]
     assert kept[:3] == messages[:3]
 

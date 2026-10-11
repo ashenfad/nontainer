@@ -139,3 +139,26 @@ def test_an_interrupt_never_cancels_a_sandbox_handed_on_meanwhile():
     executor._running.update({first_call: first, second_call: second})
     assert executor.interrupt() is True
     assert second.cancelled_during in ([], ["the call running"])
+
+
+@pytest.mark.skipif(not _has_dud(), reason="needs the dud extra")
+def test_a_dud_interrupt_cancels_an_exec_and_not_a_guests_setup():
+    """A guest is bound with requests of its own (a ping, the tree's
+    push, a `cd` restoring its cwd); a cancel landing on one undoes it,
+    and none is the call being stopped."""
+    from nontainer.executor_dud import DudExecutor
+
+    class Session:
+        cancels = 0
+
+        def cancel(self):
+            self.cancels += 1
+            return True
+
+    executor = DudExecutor(backend="subprocess")
+    executor._session = session = Session()
+    assert executor.interrupt() is False  # binding, or nothing running
+    assert session.cancels == 0
+    assert executor._exec(executor.interrupt) is True  # an exec in flight
+    assert session.cancels == 1
+    assert executor.interrupt() is False  # and done

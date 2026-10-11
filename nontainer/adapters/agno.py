@@ -97,17 +97,20 @@ def _tool_result(out: ToolOutput) -> ToolResult:
     )
 
 
-CUT_OFF = (
-    "no result: the turn ended before this call returned, and it may have "
-    "finished anyway; check the workspace before repeating it"
-)
-"""The result a kept run gives a tool call that never got one: a stop
-pressed while the call ran ends the run with the call recorded and its
-result never written."""
+def cut_off(note: str) -> str:
+    """The result a kept run gives a tool call that never got one: a stop
+    pressed while the call ran ends the run with the call recorded and
+    its result never written. It says why the turn ended (``note``), as
+    the run's closing note does: told only that the turn ended, a model
+    guesses at why, and takes a stop for a time limit."""
+    return (
+        f"no result: the turn ended before this call returned ({note}); it "
+        "may have finished anyway, so check the workspace before repeating it"
+    )
 
 
-def _answer_cut_calls(messages: list[Any]) -> list[Any]:
-    """``messages`` with a :data:`CUT_OFF` result after each tool call
+def _answer_cut_calls(messages: list[Any], note: str) -> list[Any]:
+    """``messages`` with a :func:`cut_off` result after each tool call
     that has none, among its call's other results.
 
     A provider refuses a conversation with a tool call and no result
@@ -129,7 +132,7 @@ def _answer_cut_calls(messages: list[Any]) -> list[Any]:
                 role="tool",
                 tool_call_id=call.get("id"),
                 tool_name=(call.get("function") or {}).get("name"),
-                content=CUT_OFF,
+                content=cut_off(note),
                 tool_call_error=True,
             )
             for call in calls
@@ -163,7 +166,7 @@ def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) ->
     assistant message, ``[turn aborted early: {note} — the work above
     this point is real and completed]``, so the model keeps what it did
     AND knows the turn ended early. A tool call the cut left without a
-    result gets one saying so (:data:`CUT_OFF`), since a provider
+    result gets one saying so, and why (:func:`cut_off`), since a provider
     refuses a call with no result. Nothing in the workspace changes.
 
     Call it after an errored or cancelled run, once the embedder has
@@ -200,7 +203,7 @@ def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) ->
     if run is None or run.status not in (RunStatus.error, RunStatus.cancelled):
         return False
     run.status = RunStatus.completed
-    run.messages = _answer_cut_calls(list(run.messages or [])) + [
+    run.messages = _answer_cut_calls(list(run.messages or []), note) + [
         Message(
             role="assistant",
             content=f"[turn aborted early: {note} — the work above this point "

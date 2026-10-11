@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A stub's host half runs as host code in-process.** It ran in the sandbox's context, which refused its own network calls and the work it scheduled; it now runs in the embedder's, as it does elsewhere, unless handed a live argument.
 
 ### Fixed
-- **A kept agno run answers the tool call a stop cut off.** A provider refuses a call with no result, so every later request in the session failed.
+- **A kept agno run answers the tool call a stop cut off, and says why.** A provider refuses a call with no result, so every later request in the session failed; the result names the run's note, so a stop doesn't read as a time limit.
 
 ## 0.10.1 - 2026-10-08
 
