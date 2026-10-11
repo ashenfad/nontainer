@@ -97,6 +97,50 @@ def _tool_result(out: ToolOutput) -> ToolResult:
     )
 
 
+CUT_OFF = (
+    "no result: the turn ended before this call returned, and it may have "
+    "finished anyway; check the workspace before repeating it"
+)
+"""The result a kept run gives a tool call that never got one: a stop
+pressed while the call ran ends the run with the call recorded and its
+result never written."""
+
+
+def _answer_cut_calls(messages: list[Any]) -> list[Any]:
+    """``messages`` with a :data:`CUT_OFF` result after each tool call
+    that has none, among its call's other results.
+
+    A provider refuses a conversation with a tool call and no result
+    ("No tool output found for function call"), so a run kept without
+    one would fail every request after it.
+    """
+    from agno.models.message import Message
+
+    answered = {m.tool_call_id for m in messages if m.role == "tool"}
+    out: list[Any] = []
+    owed: list[Any] = []
+    for message in messages:
+        if owed and message.role != "tool":
+            out.extend(owed)
+            owed = []
+        out.append(message)
+        if message.role != "assistant":
+            continue
+        for call in message.tool_calls or []:
+            if call.get("id") in answered:
+                continue
+            owed.append(
+                Message(
+                    role="tool",
+                    tool_call_id=call.get("id"),
+                    tool_name=(call.get("function") or {}).get("name"),
+                    content=CUT_OFF,
+                    tool_call_error=True,
+                )
+            )
+    return out + owed
+
+
 def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) -> bool:
     """Keep a run that errored or was cancelled in the agent's memory.
 
@@ -110,7 +154,9 @@ def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) ->
     an interrupt: the run is marked completed and closed with an
     assistant message, ``[turn aborted early: {note} — the work above
     this point is real and completed]``, so the model keeps what it did
-    AND knows the turn ended early. Nothing in the workspace changes.
+    AND knows the turn ended early. A tool call the cut left without a
+    result gets one saying so (:data:`CUT_OFF`), since a provider
+    refuses a call with no result. Nothing in the workspace changes.
 
     Call it after an errored or cancelled run, once the embedder has
     stopped trying to finish that run. Ordering matters: an embedder
@@ -146,7 +192,7 @@ def keep_aborted_run(db: Any, session_id: str, run_id: str | None, note: str) ->
     if run is None or run.status not in (RunStatus.error, RunStatus.cancelled):
         return False
     run.status = RunStatus.completed
-    run.messages = list(run.messages or []) + [
+    run.messages = _answer_cut_calls(list(run.messages or [])) + [
         Message(
             role="assistant",
             content=f"[turn aborted early: {note} — the work above this point "

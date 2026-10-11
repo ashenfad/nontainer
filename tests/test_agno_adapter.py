@@ -1000,6 +1000,34 @@ def test_an_aborted_run_is_forgotten_until_it_is_kept(stored_agent, abort):
     assert not ws.uncommitted
 
 
+def test_a_kept_run_answers_the_call_a_stop_cut_off(stored_agent):
+    """A stop while a tool runs records the call and never its result,
+    and a provider refuses a call with no result. The kept run answers
+    it, so the next request is one a provider takes."""
+    from agno.run.base import RunStatus
+
+    from nontainer.adapters.agno import CUT_OFF, keep_aborted_run
+
+    def stop_here() -> str:
+        """Runs until it is stopped."""
+        raise KeyboardInterrupt
+
+    agent, ws = stored_agent
+    agent.tools = [*agent.tools, stop_here]
+    out = run_script(agent, [("stop_here", {})])
+    assert out.status == RunStatus.cancelled
+    if not keep_aborted_run(agent.db, "chat", out.run_id, "stopped by the user"):
+        pytest.skip("this agno stores no aborted run")
+
+    run_script(agent, ["ok"])
+    sent = agent.model.seen[-1]
+    calls = [c["id"] for m in sent if m.role == "assistant" for c in m.tool_calls or []]
+    results = {m.tool_call_id: m.content for m in sent if m.role == "tool"}
+    assert calls
+    assert [results.get(call) for call in calls] == [CUT_OFF] * len(calls)
+    assert "[turn aborted early: stopped by the user" in shown(agent)
+
+
 def test_keep_aborted_run_leaves_every_other_run_alone(stored_agent):
     from nontainer.adapters.agno import keep_aborted_run
 
