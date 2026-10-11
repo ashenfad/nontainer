@@ -808,6 +808,9 @@ class DudExecutor:
         self._vm = dict(vm or {})
         self._ctx: ExecutionContext | None = None
         self._session: Any | None = None
+        # Whether the session's request in flight is an exec, which is
+        # all interrupt() may cancel (_exec sets it, under self._lock).
+        self._executing = False
         self._work: str | None = None  # guest workspace dir (from ping)
         # The workspace root inside the provider fs (ExecutionContext
         # .root), normalized to "" for "/" so f"{root}/{rel}" composes.
@@ -1211,10 +1214,12 @@ class DudExecutor:
             with self._lock:
                 self._ensure_session()
                 result = self._with_recovery(
-                    lambda: self._session.python(
-                        program,
-                        inputs=merged,
-                        timeout=cfg.timeout,
+                    lambda: self._exec(
+                        lambda: self._session.python(
+                            program,
+                            inputs=merged,
+                            timeout=cfg.timeout,
+                        )
                     )
                 )
         except NotRepresentable as exc:
@@ -1283,12 +1288,14 @@ class DudExecutor:
         )
         start = time.monotonic()
         result = self._with_recovery(
-            lambda: self._session.python(
-                full,
-                inputs=guest_inputs,
-                timeout=timeout,
-                caps=_view_caps(view.result_bytes),
-                cache_readonly=view.readonly_cache,
+            lambda: self._exec(
+                lambda: self._session.python(
+                    full,
+                    inputs=guest_inputs,
+                    timeout=timeout,
+                    caps=_view_caps(view.result_bytes),
+                    cache_readonly=view.readonly_cache,
+                )
             )
         )
         duration = time.monotonic() - start
@@ -1434,10 +1441,21 @@ class DudExecutor:
     def interrupt(self) -> bool:
         """Cancel the guest's exec in flight: dud kills its process group
         and the call returns as at a timeout. Returns whether an exec
-        was in flight. Takes no lock: the running call holds the
-        executor's. See ``Runtime.interrupt``."""
+        was in flight. Only an exec: a cancel landing on the requests
+        that bind a guest (its ping, the tree's push, the ``cd`` that
+        restores its cwd) would undo them, and none is the call being
+        stopped. Takes no lock: the running call holds the executor's.
+        See ``Runtime.interrupt``."""
         session = self._session
-        return session is not None and bool(session.cancel())
+        return self._executing and session is not None and bool(session.cancel())
+
+    def _exec(self, call: Any) -> Any:
+        """``call``, a guest exec, marked as the one interrupt() stops."""
+        self._executing = True
+        try:
+            return call()
+        finally:
+            self._executing = False
 
     def exec_shell(self, script: str) -> TerminalResult:
         """Real bash against the guest tree. Failure contract matches
@@ -1469,7 +1487,11 @@ class DudExecutor:
         with self._lock:
             self._ensure_session()
             result = self._with_recovery(
-                lambda: self._session.shell(script, timeout=ctx.python_config.timeout)
+                lambda: self._exec(
+                    lambda: self._session.shell(
+                        script, timeout=ctx.python_config.timeout
+                    )
+                )
             )
         self._mirror_cwd(result.cwd)
         stderr = ""
