@@ -785,6 +785,9 @@ class LocalExecutor:
         # never opened is a pool that is never used, so an inert one is
         # the right default — close() must work regardless.
         self._pool = _ViewWorkerPool(0, enabled=False)
+        # The sandboxes executing now, per call, for interrupt().
+        self._running: dict[object, Any] = {}
+        self._running_lock = threading.Lock()
 
     # -- lifecycle -------------------------------------------------------
 
@@ -862,6 +865,16 @@ class LocalExecutor:
         there is nothing to reap.
         """
         return self._pool.reap_idle(max_age)
+
+    def interrupt(self) -> bool:
+        """Cancel every sandbox executing now: each stops with
+        ``StCancelled`` at its next checkpoint. Returns whether any was
+        executing. See ``Runtime.interrupt``."""
+        with self._running_lock:
+            running = list(self._running.values())
+        for sb in running:
+            sb.cancel()
+        return bool(running)
 
     def guest_to_host(self, guest_path: str) -> str | None:
         """Always ``None``: execution is in-process, so a path has one
@@ -1182,14 +1195,21 @@ class LocalExecutor:
                 if name in namespace
             }
             start = time.monotonic()
-            exec_result = sb.exec(
-                code,
-                namespace=namespace,
-                modules={HOST_MODULE: host_module},
-                stdin=stdin,
-                argv=argv,
-                echo=echo,
-            )
+            call = object()
+            with self._running_lock:
+                self._running[call] = sb
+            try:
+                exec_result = sb.exec(
+                    code,
+                    namespace=namespace,
+                    modules={HOST_MODULE: host_module},
+                    stdin=stdin,
+                    argv=argv,
+                    echo=echo,
+                )
+            finally:
+                with self._running_lock:
+                    del self._running[call]
             duration = time.monotonic() - start
 
         error = (

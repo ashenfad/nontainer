@@ -1034,6 +1034,10 @@ class Executor(Protocol):
         optional ``warm()`` member starts either early (``Runtime.warm``
         calls it where it exists). An executor may instead
         start eagerly here when it has nothing to gain by waiting.
+        Another optional member, ``interrupt()``, stops the executions
+        running now and returns whether there were any
+        (``Runtime.interrupt``); it is called from another thread, and
+        must not wait on the call it stops.
 
         Called once, by ``Runtime.__init__``, as its LAST step — so no
         construction failure after this point can orphan whatever it

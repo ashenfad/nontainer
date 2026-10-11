@@ -1454,6 +1454,8 @@ rt.diff() -> StagedDiff | None
 rt.warm() -> None                     # start the session worker now
 rt.reap_idle(max_age: float) -> int   # close workers idle >= max_age
                                       # seconds; how many it closed
+rt.interrupt() -> bool                # stop the code running now;
+                                      # whether any was running
 rt.close() -> None
 ```
 
@@ -1523,6 +1525,19 @@ async def reap_forever(open_workspaces, *, every=60.0, max_age=600.0):
 Reaping is semantically free: each view call is a fresh execution, so
 a rebuilt worker costs its start (noticeable with a heavy stack such
 as pandas or plotly) and nothing else.
+
+**`rt.interrupt()`** stops the code running now, for a host whose user
+stops a turn mid-call: the call ends early rather than being waited
+out. It ends as a timeout ends it, an errored result with the output
+it had, and its writes commit with it as any failed call's do. It
+returns whether anything was running. `LocalExecutor` cancels the
+sandbox, which stops at the code's next loop iteration or function
+call, so one long blocking call (a `time.sleep`, a slow request) still
+runs out; `DudExecutor` has the guest kill the process at once, on a
+dud with `Session.cancel`. It takes no lock, since the running call
+holds the workspace's, and is safe from any thread. A call that has not
+reached its sandbox yet is not touched, so a host stopping a turn calls
+it again until the call returns.
 
 ## Executors
 

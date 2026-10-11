@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **An ask can bring its own runner.** `Sessions.ask(..., runner=)` runs that job on a runner of its own, sync or async, on any helper; an async runner is typed `AsyncSessionRunner`.
 - **Turn events carry what a transcript shows.** A delivered delegate note carries its `Answer`, and `Compacted` its fold's `summary`, `tokens_before` and `tokens_after`; `DeliveredNote.of(note)` and `Compacted.of(fold)` build them.
 - **An empty view.** `fork(paths=[])` gives a child none of the caller's files and forks it from the last commit, landing nothing, so a fork taken mid-call doesn't split that call's commit.
+- **`ws.runtime.interrupt()` stops the running call.** It ends as at a timeout, from any thread; `LocalExecutor` cancels the sandbox and `DudExecutor` the guest's exec, on a dud with `Session.cancel`.
 
 ### Changed
 - **Agent code runs in a module of its own on every rung.** A dataclass with a quoted or postponed annotation works, and a leading `from __future__` import takes effect, on dud too (it goes above the guest's prelude); needs sandtrap 0.4.3.
