@@ -695,10 +695,10 @@ class Runtime:
         stops at the code's next loop iteration or function call, so a
         single blocking call (a long ``time.sleep``, a slow request)
         still runs out first; ``DudExecutor`` kills the guest's process
-        group at once, on a dud with ``Session.cancel``.
+        group at once.
 
-        Safe from any thread, and it takes no lock: the workspace's is
-        the one the running call holds. A call that has not reached its
+        Safe from any thread, and it does not take the workspace's lock,
+        which the running call holds. A call that has not reached its
         sandbox yet is not touched, so a host stopping a turn calls this
         again while the call is still running. False on a closed
         runtime and on an executor that does not declare ``interrupt``.

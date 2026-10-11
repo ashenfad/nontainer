@@ -1434,11 +1434,10 @@ class DudExecutor:
     def interrupt(self) -> bool:
         """Cancel the guest's exec in flight: dud kills its process group
         and the call returns as at a timeout. Returns whether an exec
-        was in flight; False on a dud without ``Session.cancel``.
-        Takes no lock, since the running call holds it. See
-        ``Runtime.interrupt``."""
-        cancel = getattr(self._session, "cancel", None)
-        return bool(cancel()) if cancel is not None else False
+        was in flight. Takes no lock: the running call holds the
+        executor's. See ``Runtime.interrupt``."""
+        session = self._session
+        return session is not None and bool(session.cancel())
 
     def exec_shell(self, script: str) -> TerminalResult:
         """Real bash against the guest tree. Failure contract matches
