@@ -471,11 +471,11 @@ wheels = [
 
 [[package]]
 name = "dud"
-version = "0.4.2"
+version = "0.4.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f5/1a/21905cf591e9fb1db27d483c3b2ab81c7cdb5e31d87b0ad4007cb5982c72/dud-0.4.2.tar.gz", hash = "sha256:e19b69adbd5a82a115215b712efb6f858a44c535d39c95526574af94ca617445", size = 284981, upload-time = "2026-10-09T16:11:25.984Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/a9/db279c8eba2b0c184860bfcae65ae4301bb7dbee10dc77a0d0ed556ff008/dud-0.4.4.tar.gz", hash = "sha256:16b97fa088a7eebdadb9d978b66fbe07b748896e269b2ccb028010ff7b322a2a", size = 289464, upload-time = "2026-10-11T21:30:57.113Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d5/ce/ead15480354478fb977dff703aeba9183cfa0821961503a78da8e9a44564/dud-0.4.2-py3-none-any.whl", hash = "sha256:36b213907570efe63d3b975c59f23fc9197fbcd3bec6e75b0f8b5117a0b9a6a0", size = 165494, upload-time = "2026-10-09T16:11:24.595Z" },
+    { url = "https://files.pythonhosted.org/packages/63/97/3a35265992c20ce8ed0d96ce868c8ed57dd9f16fd20a7a78c7f48354c479/dud-0.4.4-py3-none-any.whl", hash = "sha256:f28cb38794230c4ec25a017269b4493eed13c4f99adfacf48d36bbce21b8adc4", size = 167665, upload-time = "2026-10-11T21:30:55.813Z" },
 ]
 
 [[package]]
@@ -1201,7 +1201,7 @@ requires-dist = [
     { name = "agentfs-sdk", marker = "extra == 'agentfs'", specifier = ">=0.6" },
     { name = "agno", marker = "extra == 'agno'", specifier = ">=2.1" },
     { name = "anyio", marker = "extra == 'apps'", specifier = ">=4" },
-    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.2" },
+    { name = "dud", marker = "python_full_version >= '3.11' and extra == 'dud'", specifier = ">=0.4.4" },
     { name = "httpx2", marker = "extra == 'dev'" },
     { name = "kvgit", extras = ["disk"], specifier = ">=0.4.1,<0.5" },
     { name = "kvgit", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=0.4.1,<0.5" },

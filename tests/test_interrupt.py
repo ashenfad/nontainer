@@ -65,15 +65,13 @@ def test_nothing_running_is_nothing_to_interrupt(ws):
     assert ws.runtime.interrupt() is False
 
 
-def _dud_cancels():
-    try:
-        from dud.backends.base import HostSession
-    except ImportError:
-        return False
-    return hasattr(HostSession, "cancel")
+def _has_dud():
+    import importlib.util
+
+    return importlib.util.find_spec("dud") is not None
 
 
-@pytest.mark.skipif(not _dud_cancels(), reason="needs a dud with Session.cancel")
+@pytest.mark.skipif(not _has_dud(), reason="needs the dud extra")
 class TestOnDud:
     @pytest.fixture
     def ws(self):
@@ -103,3 +101,41 @@ class TestOnDud:
         result, found = _interrupted(ws, lambda: ws.terminal("sleep 30"))
         assert found and result.exit_code == 130
         assert "interrupted" in result.stderr
+
+
+class _Sandbox:
+    """A sandbox that records whose call it served when cancelled."""
+
+    def __init__(self):
+        self.call = "the call running"
+        self.cancelled_during: list[str] = []
+
+    def cancel(self):
+        self.cancelled_during.append(self.call)
+
+
+def test_an_interrupt_never_cancels_a_sandbox_handed_on_meanwhile():
+    """A call can end while an interrupt is cancelling, and its sandbox
+    go back to the pool for another call: that call is not the one
+    stopped, so the sandbox is cancelled for its own call or not at all."""
+    from nontainer.executor import LocalExecutor
+
+    executor = LocalExecutor()
+    first, second = _Sandbox(), _Sandbox()
+    first_call, second_call = object(), object()
+
+    def second_call_ends_and_its_sandbox_is_reused():
+        with executor._running_lock:  # as exec_python's own ending does
+            del executor._running[second_call]
+        second.call = "a call that picked it up since"
+
+    def cancel_first():
+        first.cancelled_during.append(first.call)
+        ending = threading.Thread(target=second_call_ends_and_its_sandbox_is_reused)
+        ending.start()
+        ending.join(timeout=0.5)  # it may end now, if nothing holds it off
+
+    first.cancel = cancel_first
+    executor._running.update({first_call: first, second_call: second})
+    assert executor.interrupt() is True
+    assert second.cancelled_during in ([], ["the call running"])

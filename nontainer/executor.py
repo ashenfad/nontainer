@@ -870,11 +870,13 @@ class LocalExecutor:
         """Cancel every sandbox executing now: each stops with
         ``StCancelled`` at its next checkpoint. Returns whether any was
         executing. See ``Runtime.interrupt``."""
+        # Under the lock: a call leaves `_running` before its sandbox goes
+        # back to the pool, so every one cancelled here still belongs to
+        # the call it was running, not to one that picked it up since.
         with self._running_lock:
-            running = list(self._running.values())
-        for sb in running:
-            sb.cancel()
-        return bool(running)
+            for sb in self._running.values():
+                sb.cancel()
+            return bool(self._running)
 
     def guest_to_host(self, guest_path: str) -> str | None:
         """Always ``None``: execution is in-process, so a path has one

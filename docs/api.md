@@ -1533,11 +1533,11 @@ it had, and its writes commit with it as any failed call's do. It
 returns whether anything was running. `LocalExecutor` cancels the
 sandbox, which stops at the code's next loop iteration or function
 call, so one long blocking call (a `time.sleep`, a slow request) still
-runs out; `DudExecutor` has the guest kill the process at once, on a
-dud with `Session.cancel`. It takes no lock, since the running call
-holds the workspace's, and is safe from any thread. A call that has not
-reached its sandbox yet is not touched, so a host stopping a turn calls
-it again until the call returns.
+runs out; `DudExecutor` has the guest kill the process at once. It
+doesn't take the workspace's lock, which the running call holds, and is
+safe from any thread. A call that has not reached its sandbox yet is
+not touched, so a host stopping a turn calls it again until the call
+returns.
 
 ## Executors
 

@@ -69,7 +69,7 @@ postgres = [
 dud = [
     # dud needs Python 3.11+; the marker keeps nontainer's 3.10 floor for
     # everyone else.
-    "dud>=0.4.2; python_version >= '3.11'",
+    "dud>=0.4.4; python_version >= '3.11'",
 ]
 dev = [
     "ruff",
