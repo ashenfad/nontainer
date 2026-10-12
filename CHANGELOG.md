@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **A read-only mount under the workspace root no longer blocks creating files there** (#236). In a fresh session with a mount at, say, `/workspace/docs`, `run_python` couldn't create `/workspace/a.txt` or anything else in a directory leading to the mount: in-process it raised `FileNotFoundError`, under `isolation="process"` `PermissionError`. The mount showed those directories, but nothing had made them in the store. Needs monkeyfs 0.2.6.
+
 ## 0.11.0 - 2026-10-12
 
 ### Added

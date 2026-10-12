@@ -3,7 +3,7 @@
 import pytest
 from plain_provider import PlainProvider
 
-from nontainer import Cache, CacheError, Mount, Workspace
+from nontainer import Cache, CacheError, Mount, PythonConfig, Workspace
 
 
 def test_readonly_mount_visible_to_both_tools(tmp_path):
@@ -44,6 +44,37 @@ def test_writable_mount(tmp_path):
     assert r, r.stderr
     assert (src / "out.txt").read_text().strip() == "hi"
     ws.close()
+
+
+@pytest.mark.parametrize("isolation", ["none", "process"])
+def test_a_mount_under_the_root_leaves_the_root_writable(tmp_path, isolation):
+    """A fresh session with a read-only mount beneath the workspace root
+    can create files in the root and in every directory leading to the
+    mount (#236). The composition showed those directories, but nothing
+    had made them in the store, so a create there was refused."""
+    from nontainer.providers import KvgitProvider
+
+    src = tmp_path / "docs"
+    src.mkdir()
+    (src / "README.md").write_text("reference\n")
+    ws = Workspace(
+        KvgitProvider.open(None, session="s1"),
+        mounts={"/workspace/inputs/docs": Mount(src)},
+        python=PythonConfig(isolation=isolation),
+    )
+    try:
+        r = ws.run_python(
+            "open('/workspace/a.txt', 'w').write('a')\n"
+            "open('/workspace/inputs/b.txt', 'w').write('b')\n"
+            "readme = open('/workspace/inputs/docs/README.md').read()"
+        )
+        assert r.error is None, r.error
+        assert r.namespace["readme"] == "reference\n"
+        assert ws.files.fs.read("/workspace/a.txt") == b"a"
+        assert ws.files.fs.read("/workspace/inputs/b.txt") == b"b"
+        assert sorted(p.name for p in src.iterdir()) == ["README.md"]
+    finally:
+        ws.close()
 
 
 def test_bad_mount_points_rejected(tmp_path):
