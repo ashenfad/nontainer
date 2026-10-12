@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.0 - 2026-10-12
 
 ### Added
 - **Specs as data.** `values.export_specs` writes specs out as plain JSON, records and enums by name, fields and docstring, and `load_specs` reads them back over dataclasses and enums it builds, evaluating nothing.
