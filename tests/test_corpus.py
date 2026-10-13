@@ -479,13 +479,18 @@ def test_a_budget_needs_compaction():
 def test_a_script_ends_on_a_reply():
     """An event after the last reply would never fire, and the runner
     could not tell a harness that used every reply from one that
-    stopped short."""
+    stopped short; an empty script would pass one that never asked."""
     short = by_name("a-reply-alone-completes")
-    with pytest.raises(ValueError, match="turn 1's script ends on an event"):
+    with pytest.raises(ValueError, match="turn 1's script doesn't end on a reply"):
         replace(short, acts=(turn("go", says("done"), cancel()),))
+    with pytest.raises(ValueError, match="turn 1's script doesn't end on a reply"):
+        replace(short, acts=(turn("go"),))
     delegating = by_name("a-delegates-answer-is-delivered-once-on-the-next-tool-result")
-    with pytest.raises(ValueError, match="delegate 'scout''s script ends on an event"):
+    refused = "delegate 'scout''s script doesn't end on a reply"
+    with pytest.raises(ValueError, match=refused):
         replace(delegating, delegates={"scout": delegate(says("hi"), cancel())})
+    with pytest.raises(ValueError, match=refused):
+        replace(delegating, delegates={"scout": delegate()})
 
 
 def test_a_stream_must_open_with_run_started_and_close_with_run_ended():
