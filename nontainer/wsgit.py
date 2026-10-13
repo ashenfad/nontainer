@@ -682,9 +682,14 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         return _usage_error("checkout takes one ref (a commit from ws-git log).")
     commit = git.resolve(rest[0])
     ws._require_unmerged(git, "checkout")
-    git.checkout(commit)
+    removed: list[str] = []
+    git.checkout(commit, removed=removed)
     st = git.status()
     ctx.stdout.write(f"[{st.branch}] restored to {commit[:7]}\n")
+    for path in removed:
+        ctx.stdout.write(
+            f"Removed ignored {_show(ws, path)}: a tracked file needed its place\n"
+        )
     return None
 
 

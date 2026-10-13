@@ -378,3 +378,115 @@ def test_a_fork_puts_an_inherited_file_back_before_its_first_commit(fork_of):
     assert r.exit_code == 0, r.stdout + r.stderr
     assert kid.files.read("/workspace/a.txt") == b"a\n"
     assert kid.terminal("ws-git status --porcelain").stdout == ""
+
+
+# -- a checkout leaves them as they are (#250) ---------------------------------
+
+KEPT = ("/workspace/run.log", "/tmp/scratch.txt", LOG)
+
+
+def _restore(w, commit, how):
+    if how == "index":
+        w.index.checkout(commit)
+        return ""
+    r = w.terminal(f"ws-git checkout {commit[:7]}")
+    assert r.exit_code == 0, r.stdout + r.stderr
+    return r.stdout
+
+
+@pytest.mark.parametrize("how", ["index", "ws-git"])
+def test_a_checkout_leaves_them_as_they_are(ignoring, how):
+    """Matched by a pattern, outside the root, or authoring output: the
+    agent's checkout neither rolls them back nor removes the ones made
+    since, as git's checkout leaves ignored files."""
+    for path in KEPT:
+        ignoring.files.write(path, "first\n")
+    ignoring.files.write("/workspace/app.py", "x = 2\n")
+    first = ignoring.index.commit("first")
+    ignoring.files.write("/workspace/app.py", "x = 3\n")
+    ignoring.index.commit("second")
+    for path in KEPT:
+        ignoring.files.write(path, "newer\n")
+    ignoring.files.write("/workspace/later.log", "later\n")
+    ignoring.files.write("/tmp/later.txt", "later\n")
+
+    _restore(ignoring, first, how)
+
+    assert ignoring.files.read("/workspace/app.py") == b"x = 2\n"
+    for path in KEPT:
+        assert ignoring.files.read(path) == b"newer\n", path
+    assert ignoring.files.read("/workspace/later.log") == b"later\n"
+    assert ignoring.files.read("/tmp/later.txt") == b"later\n"
+    assert ignoring.terminal("ws-git status --porcelain").stdout == ""
+
+
+def _swapped(w):
+    """``x`` committed as a file, then a directory holding a tracked
+    file and an ignored one; returns the commit with the file."""
+    w.files.write("/workspace/x", "file\n")
+    first = w.index.commit("x is a file")
+    w.files.remove("/workspace/x")
+    w.files.write("/workspace/x/tracked.py", "t = 1\n")
+    w.files.write("/workspace/x/run.log", "log\n")
+    w.index.commit("x is a directory")
+    return first
+
+
+@pytest.mark.parametrize("how", ["index", "ws-git"])
+def test_an_ignored_file_where_a_tracked_file_goes_is_removed_and_named(ignoring, how):
+    """Git's one exception: a tracked path wins its place over an
+    ignored file. The verb says which it removed."""
+    first = _swapped(ignoring)
+
+    out = _restore(ignoring, first, how)
+
+    assert ignoring.files.read("/workspace/x") == b"file\n"
+    assert not ignoring.files.exists("/workspace/x/run.log")
+    if how == "ws-git":
+        assert "Removed ignored x/run.log: a tracked file needed its place" in out
+    assert ignoring.terminal("ws-git status --porcelain").stdout == ""
+
+
+def test_a_failed_checkout_puts_the_ignored_file_back(ignoring, monkeypatch):
+    from nontainer.agentgit import AgentGit
+
+    first = _swapped(ignoring)
+
+    def refuse(self, *args, **kwargs):
+        raise RuntimeError("the store refused")
+
+    monkeypatch.setattr(AgentGit, "_record", refuse)
+    with pytest.raises(RuntimeError, match="the store refused"):
+        ignoring.index.checkout(first)
+
+    assert ignoring.files.read("/workspace/x/run.log") == b"log\n"
+    assert ignoring.files.read("/workspace/x/tracked.py") == b"t = 1\n"
+
+
+def test_a_stash_leaves_them_as_they_are(ignoring):
+    ignoring.files.write("/workspace/run.log", "first\n")
+    ignoring.files.write("/workspace/app.py", "x = 2\n")
+    ignoring.index.commit("first")
+    ignoring.files.write("/workspace/app.py", "x = 3\n")
+    ignoring.files.write("/workspace/run.log", "newer\n")
+
+    r = ignoring.terminal("ws-git stash")
+
+    assert r.exit_code == 0, r.stdout + r.stderr
+    assert ignoring.files.read("/workspace/app.py") == b"x = 2\n"
+    assert ignoring.files.read("/workspace/run.log") == b"newer\n"
+
+
+def test_the_hosts_checkout_still_restores_the_whole_session(ignoring):
+    """``ws.checkout`` is the host's time travel, not the agent's git:
+    the session comes back as the commit holds it, ignored paths too."""
+    ignoring.files.write("/workspace/run.log", "first\n")
+    ignoring.files.write("/workspace/app.py", "x = 2\n")
+    first = ignoring.index.commit("first")
+    ignoring.files.write("/workspace/run.log", "newer\n")
+    ignoring.files.write("/workspace/app.py", "x = 3\n")
+    ignoring.index.commit("second")
+
+    ignoring.checkout(first)
+
+    assert ignoring.files.read("/workspace/run.log") == b"first\n"
