@@ -281,6 +281,18 @@ def test_a_selector_picks_one_test(ws):
     assert report.ok
 
 
+@pytest.mark.parametrize("selector", [".", "/workspace", "/workspace/"])
+def test_naming_the_root_collects_the_whole_tree(ws, selector):
+    """The root is a directory like any other: naming it, as ``.`` from
+    it or spelled out, collects every test file under it. It read as a
+    directory named ``workspace`` under the root, which wasn't there."""
+    write(ws, "tests/test_a.py", "def test_a():\n    assert True\n")
+    write(ws, "test_root.py", "def test_r():\n    assert True\n")
+    report = run_pytest(ws, [selector], cwd="/workspace")
+    assert report.exit_code == 0, report.collection_error
+    assert report.collected == 2
+
+
 def test_a_missing_selector_is_a_usage_error(ws):
     report = run_pytest(ws, ["tests/nope.py"])
     assert report.exit_code == 4

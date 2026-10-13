@@ -70,6 +70,8 @@ _SKIP_DIRS = {"__pycache__", ".git", "node_modules", "dist", "build"}
 def _rel(ws: Any, path: str) -> str:
     """A workspace-absolute path as the agent spells it."""
     root = "" if ws.root == "/" else ws.root.rstrip("/")
+    if root and path == root:
+        return ""  # the root itself: `.` from it, or the root typed out
     if root and path.startswith(root + "/"):
         return path[len(root) + 1 :]
     return path.lstrip("/")
@@ -77,7 +79,8 @@ def _rel(ws: Any, path: str) -> str:
 
 def _abs(ws: Any, rel: str) -> str:
     root = "" if ws.root == "/" else ws.root.rstrip("/")
-    return f"{root}/{rel.lstrip('/')}"
+    rel = rel.lstrip("/")
+    return f"{root}/{rel}" if rel else root or "/"
 
 
 def _walk(fs: Any, base: str) -> list[str]:
