@@ -2185,8 +2185,9 @@ class PythonConfig:
 - `Mount(fs=obj)` — a filesystem object in place of the directory:
   content that isn't on local disk, such as a document store fetched
   as the agent reads it. It needs the monkeyfs reads `exists`, `isdir`,
-  `isfile`, `islink`, `list`, `read`, `stat` and `getsize`
-  (`MOUNT_FS_METHODS`), and is handed paths under its own root (at
+  `isfile`, `list`, `read` and `stat` (`MOUNT_FS_METHODS`); `getsize`,
+  `islink` and `glob` are derived from those when it has none of its
+  own, and are used when it does. It is handed paths under its own root (at
   `/workspace/docs`, `/workspace/docs/a.md` reaches it as `/a.md`).
   Always read-only. Nothing but the agent's own reads reach it:
   commits, ws-git and forks read none of it. The workspace borrows the
