@@ -1,0 +1,78 @@
+{
+  "name": "commit-refusals-and-a-message-less-commit",
+  "steps": [
+    {
+      "command": "ws-git commit",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: nothing to commit",
+      "stdout": ""
+    },
+    {
+      "command": "echo one > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -a",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: commit stages nothing itself (no -a) — stage first, then commit.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit a.txt",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: commit takes the staged set only (no pathspec; try: -m MSG).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] ws-git (1 file)\n"
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c1> ws-git\n"
+    },
+    {
+      "command": "echo two > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stage a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: nothing to commit (the staged paths match the last commit)",
+      "stdout": ""
+    }
+  ],
+  "summary": "Nothing to commit says so; -a and a pathspec are usage errors; a commit without -m is in the log under the verb's name."
+}

@@ -1,0 +1,134 @@
+{
+  "name": "add-takes-directories-and-all",
+  "steps": [
+    {
+      "command": "mkdir -p src docs && echo a > src/a.py && echo b > src/b.py && echo d > docs/d.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add src",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " A docs/d.md\nA  src/a.py\nA  src/b.py\n"
+    },
+    {
+      "command": "ws-git reset",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add -A",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "A  docs/d.md\nA  src/a.py\nA  src/b.py\n"
+    },
+    {
+      "command": "ws-git commit -m all",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] all (3 files)\n"
+    },
+    {
+      "command": "ws-git add",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: add needs at least one path, or -A.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add --patch",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: add takes paths, or -A for everything modified (it is ws-git stage under git's name).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "echo a2 > src/a.py && echo d2 > docs/d.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add -A src/a.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M docs/d.md\nM  src/a.py\n"
+    },
+    {
+      "command": "ws-git reset",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "rm -r docs",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add docs",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "D  docs/d.md\n M src/a.py\n"
+    }
+  ],
+  "summary": "add stages what is modified under a directory, -A everything, and refuses what it doesn't mean; a removed directory stages its removal."
+}

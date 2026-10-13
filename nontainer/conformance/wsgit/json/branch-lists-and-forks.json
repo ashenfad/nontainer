@@ -1,0 +1,126 @@
+{
+  "name": "branch-lists-and-forks",
+  "steps": [
+    {
+      "command": "ws-git branch",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "* main\n"
+    },
+    {
+      "command": "echo one > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m first",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] first (1 file)\n"
+    },
+    {
+      "command": "ws-git tag v1",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo two > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m second",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c2>] second (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch old --at v1",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch older --at <c1>",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "* main\n  old\n  older\n  worker\n"
+    },
+    {
+      "command": "cat a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "old",
+      "stderr": "",
+      "stdout": "one\n"
+    },
+    {
+      "command": "ws-git branch",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "old",
+      "stderr": "",
+      "stdout": "  main\n* old\n  older\n  worker\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: Branch already exists: 'worker'",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch --fresh",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: branch takes a name first.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch x --sideways",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: branch takes no '--sideways' (try: --at <ref>, --fresh, --paths <paths>).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    }
+  ],
+  "summary": "branch lists the sessions with yours marked; branch <name> forks one without switching; --at forks from a commit or a tag."
+}

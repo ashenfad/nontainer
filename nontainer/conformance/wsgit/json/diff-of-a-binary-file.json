@@ -1,0 +1,52 @@
+{
+  "name": "diff-of-a-binary-file",
+  "steps": [
+    {
+      "data": "AAECAwQ=",
+      "kind": "write",
+      "path": "/workspace/blob.bin",
+      "session": "main",
+      "text": null
+    },
+    {
+      "command": "ws-git commit -m blob",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] blob (1 file)\n"
+    },
+    {
+      "data": "AAECAwUG",
+      "kind": "write",
+      "path": "/workspace/blob.bin",
+      "session": "main",
+      "text": null
+    },
+    {
+      "command": "ws-git diff",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Binary files a/blob.bin and b/blob.bin differ\n"
+    },
+    {
+      "command": "ws-git diff --stat",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " blob.bin | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+    },
+    {
+      "command": "ws-git show HEAD:blob.bin",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "binary file HEAD:blob.bin (5 bytes)\n"
+    }
+  ],
+  "summary": "Bytes that aren't text are named, not shown."
+}

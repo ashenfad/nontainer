@@ -1,0 +1,30 @@
+{
+  "name": "a-clean-status-is-silent",
+  "steps": [
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status --porcelain",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status -s",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    }
+  ],
+  "summary": "Nothing modified prints nothing, as in git."
+}

@@ -1,0 +1,60 @@
+{
+  "name": "a-configured-root",
+  "steps": [
+    {
+      "ignore": [],
+      "kind": "open",
+      "root": "/proj",
+      "session": "main"
+    },
+    {
+      "command": "echo a > a.txt && mkdir -p src && echo s > src/s.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " A a.txt\n A src/s.py\n"
+    },
+    {
+      "command": "ws-git commit -m seed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] seed (2 files)\n"
+    },
+    {
+      "command": "echo outside > /tmp-file.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c1> seed\n"
+    }
+  ],
+  "summary": "Paths print relative to the session's root, and outside it absolute."
+}

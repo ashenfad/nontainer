@@ -1,0 +1,102 @@
+{
+  "name": "merges-take-only-committed-work",
+  "steps": [
+    {
+      "command": "echo base > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo done > done.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m done",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] done (1 file)\n"
+    },
+    {
+      "command": "echo wip > wip.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo mine > mine.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git merge worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: uncommitted ws-git work on this session: 1 path(s) differ from your last ws-git commit, and a merge takes only what has been committed. Land it (ws-git commit -m ...) or drop it (ws-git checkout <c1>), then merge.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m mine",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c3>] mine (1 file)\n"
+    },
+    {
+      "command": "ws-git merge worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: uncommitted ws-git work on 'worker': 1 path(s) differ from that session's last ws-git commit, and a merge takes only what has been committed. Land it there (ws-git commit -m ... in that session) or drop it (ws-git checkout <its last commit>), then merge.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m wip",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c4>] wip (1 file)\n"
+    },
+    {
+      "command": "cd /workspace && ws-git merge worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging done.txt\nAuto-merging wip.txt\n[main <c5>] merge worker (2 files)\n"
+    }
+  ],
+  "summary": "A merge is refused over the agent's uncommitted work and over a source with work past its last commit, in the agent's terms."
+}

@@ -1,0 +1,44 @@
+{
+  "name": "diff-of-the-final-newline",
+  "steps": [
+    {
+      "data": null,
+      "kind": "write",
+      "path": "/workspace/a.txt",
+      "session": "main",
+      "text": "one\ntwo\n"
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "data": null,
+      "kind": "write",
+      "path": "/workspace/a.txt",
+      "session": "main",
+      "text": "one\ntwo"
+    },
+    {
+      "command": "ws-git diff",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+two\n\\ No newline at end of file\n"
+    },
+    {
+      "command": "ws-git diff --stat",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " a.txt | 2 +-\n 1 file changed, 1 insertion(+), 1 deletion(-)\n"
+    }
+  ],
+  "summary": "A change to the final newline shows git's marker, and counts in --stat."
+}

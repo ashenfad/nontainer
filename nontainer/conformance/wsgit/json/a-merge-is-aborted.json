@@ -1,0 +1,110 @@
+{
+  "name": "a-merge-is-aborted",
+  "steps": [
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nb\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nWORKER\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'worker edit'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] worker edit (1 file)\n"
+    },
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nMAIN\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'main edit'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c3>] main edit (1 file)\n"
+    },
+    {
+      "command": "ws-git merge --abort",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: no merge to abort: nothing is outstanding here. A merge that conflicts stays outstanding until its markers are gone — start one with ws-git merge <session>.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git merge worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: Merge landed with conflict markers in 1 file(s): fix them and commit (ws-git status shows them as UU).",
+      "stdout": "CONFLICT (content): Merge conflict in doc.txt\n[main <c4>] merge worker (1 file)\n"
+    },
+    {
+      "command": "ws-git merge --abort",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main] aborted merge of worker, restored to <c3>\n"
+    },
+    {
+      "command": "cat doc.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "a\nMAIN\nc\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git merge --abort",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: no merge to abort: nothing is outstanding here. A merge that conflicts stays outstanding until its markers are gone — start one with ws-git merge <session>.",
+      "stdout": ""
+    }
+  ],
+  "summary": "merge --abort goes back to where the merge landed; with nothing outstanding it says so."
+}

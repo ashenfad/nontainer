@@ -1,0 +1,158 @@
+{
+  "name": "a-conflicted-merge",
+  "steps": [
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nb\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nWORKER\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'worker edit'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] worker edit (1 file)\n"
+    },
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nMAIN\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'main edit'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c3>] main edit (1 file)\n"
+    },
+    {
+      "command": "ws-git diff worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# what worker changed since <c4>, where the two last met: what `ws-git merge worker` brings\n# also changed here since then: doc.txt (the merge combines both sides, or marks a conflict)\ndiff --git a/doc.txt b/doc.txt\n--- a/doc.txt\n+++ b/doc.txt\n@@ -1,3 +1,3 @@\n a\n-b\n+WORKER\n c\n"
+    },
+    {
+      "command": "ws-git merge worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: Merge landed with conflict markers in 1 file(s): fix them and commit (ws-git status shows them as UU).",
+      "stdout": "CONFLICT (content): Merge conflict in doc.txt\n[main <c5>] merge worker (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "## merging worker@<c5> (1 unresolved)\nUU doc.txt\n"
+    },
+    {
+      "command": "cat doc.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "a\n<<<<<<< ours\nMAIN\n=======\nWORKER\n>>>>>>> theirs\nc\n"
+    },
+    {
+      "command": "ws-git diff --check",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: exited with code 2",
+      "stdout": "doc.txt:2: leftover conflict marker\ndoc.txt:4: leftover conflict marker\ndoc.txt:6: leftover conflict marker\n"
+    },
+    {
+      "command": "ws-git checkout <c2>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: no commit '<c2>' on session 'main'",
+      "stdout": ""
+    },
+    {
+      "command": "echo other > x.txt && ws-git commit -m nope",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c6>] nope (1 file)\n"
+    },
+    {
+      "command": "cat > doc.txt <<'EOF'\na\nBOTH\nc\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git diff --check",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m resolved",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c7>] resolved (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c7> resolved\n<c6> nope\n<c5> ws-git.merge from worker\n<c3> main edit\n<c1> base\n"
+    }
+  ],
+  "summary": "A merge that conflicts lands with markers, shows as UU with a ## merging line, is found by diff --check, and ends when they go."
+}

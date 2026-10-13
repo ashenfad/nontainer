@@ -1,0 +1,126 @@
+{
+  "name": "checkout-takes-paths",
+  "steps": [
+    {
+      "command": "mkdir pkg && echo keep > pkg/keep.py && echo doomed > pkg/old.py && echo mine > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m seed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] seed (3 files)\n"
+    },
+    {
+      "command": "echo changed > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git checkout -- a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Updated 1 path from <c1*>\n"
+    },
+    {
+      "command": "cat a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "mine\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "rm pkg/old.py && echo new > pkg/new.py && echo theirs > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m work",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] work (3 files)\n"
+    },
+    {
+      "command": "ws-git checkout worker -- pkg",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Updated 1 path from worker\n"
+    },
+    {
+      "command": "ls pkg; cat a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "keep.py\nnew.py\nmine\n"
+    },
+    {
+      "command": "ws-git checkout worker -- a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Updated 1 path from worker\n"
+    },
+    {
+      "command": "cat a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "theirs\n"
+    },
+    {
+      "command": "ws-git checkout HEAD -- ghost.txt",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: nothing at '/workspace/ghost.txt' in main@<c1*> — a take makes a path match the ref, and that ref holds no such file or directory.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git checkout --",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: checkout -- needs at least one path.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git checkout a b -- c",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: checkout takes one ref before --.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    }
+  ],
+  "summary": "checkout <ref> -- <paths> makes those paths match a ref of yours or another session's, mirroring a directory."
+}

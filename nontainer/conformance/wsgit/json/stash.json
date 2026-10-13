@@ -1,0 +1,174 @@
+{
+  "name": "stash",
+  "steps": [
+    {
+      "command": "ws-git stash",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: You do not have the initial commit yet",
+      "stdout": ""
+    },
+    {
+      "command": "echo one > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: You do not have the initial commit yet",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m first",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] first (1 file)\n"
+    },
+    {
+      "command": "ws-git stash",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: No local changes to save",
+      "stdout": ""
+    },
+    {
+      "command": "echo two > a.txt; echo b > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash push -m 'half done'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Saved working directory and index state stash@{0}: half done\n"
+    },
+    {
+      "command": "cat a.txt; ls",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "one\na.txt\n"
+    },
+    {
+      "command": "echo three > c.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Saved working directory and index state stash@{0}: first\n"
+    },
+    {
+      "command": "ws-git stash list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "stash@{0}: first\nstash@{1}: half done\n"
+    },
+    {
+      "command": "ws-git branch",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "* main\n  main.stash-0\n  main.stash-1\n"
+    },
+    {
+      "command": "ws-git stash show stash@{1}",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+b\n"
+    },
+    {
+      "command": "ws-git stash pop stash@{1}",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging a.txt\nAuto-merging b.txt\n[main <c2>] merge main.stash-0 (2 files)\nDropped stash@{1} (main.stash-0)\n"
+    },
+    {
+      "command": "cat a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "two\n"
+    },
+    {
+      "command": "ws-git stash list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "stash@{0}: first\n"
+    },
+    {
+      "command": "ws-git stash drop",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Dropped stash@{0} (main.stash-1)\n"
+    },
+    {
+      "command": "ws-git stash list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "(none)\n"
+    },
+    {
+      "command": "ws-git stash pop stash@{4}",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: no stash@{4}: this session has no stashes",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash pop nope",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: 'nope' is not a stash: one is spelled stash@{N} (ws-git stash list lists them).",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash apply",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: stash takes no 'apply' (push, list, pop, drop, show).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    }
+  ],
+  "summary": "stash puts the work aside on a branch of its own and restores the tree; list, show and pop bring it back; drop deletes it."
+}

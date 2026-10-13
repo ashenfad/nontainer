@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **A `ws-git` script corpus for ports of the verb.** `nontainer.conformance.wsgit` holds short scripts covering every verb and its refusals: terminal commands across sessions, plus the host steps that set a scene. `python -m nontainer.conformance.export` records each script by running it and writes it under `conformance/wsgit/json/` with what every command printed. Commit ids are named by order of appearance, so a port in another language can replay the steps and compare. The drift test fails when the verb's output changes without a re-export.
 - **Mount a filesystem object, not only a host directory** (#242). `Mount(fs=obj)` mounts any object with the monkeyfs reads (`exists`, `isdir`, `isfile`, `islink`, `list`, `read`, `stat`, `getsize`), so a workspace can expose content that isn't on local disk, such as a document store fetched as the agent reads it. Both tools see it, under `isolation="process"` too, and only the agent's reads reach it: commits, ws-git and forks read none of it. It is mounted read-only, a fork shares it, and closing the workspace leaves it open. An executor that copies the tree into a machine of its own declares `copies_tree`, and refuses such a mount; `DudExecutor` does.
 
 ### Fixed

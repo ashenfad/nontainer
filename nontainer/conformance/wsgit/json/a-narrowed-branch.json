@@ -1,0 +1,102 @@
+{
+  "name": "a-narrowed-branch",
+  "steps": [
+    {
+      "command": "mkdir src && echo a > src/a.py && echo b > b.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m seed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] seed (2 files)\n"
+    },
+    {
+      "command": "ws-git sparse-checkout",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "(full)\n"
+    },
+    {
+      "command": "ws-git branch child --paths src",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ls",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "child",
+      "stderr": "",
+      "stdout": "src\n"
+    },
+    {
+      "command": "ws-git sparse-checkout list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "child",
+      "stderr": "",
+      "stdout": "src/\n"
+    },
+    {
+      "command": "echo A > src/a.py && echo note > note.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "child",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "child",
+      "stderr": "",
+      "stdout": "view: src/\n A note.md\n M src/a.py\n"
+    },
+    {
+      "command": "ws-git commit -m work",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "child",
+      "stderr": "",
+      "stdout": "[child <c2>] work (2 files)\n"
+    },
+    {
+      "command": "ws-git diff child",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# what child changed since <c1>, where the two last met: what `ws-git merge child` brings\n# 1 path(s) in child's seed\ndiff --git a/src/a.py b/src/a.py\n--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-a\n+A\n# 1 path(s) elsewhere\ndiff --git a/note.md b/note.md\n--- a/note.md\n+++ b/note.md\n@@ -0,0 +1 @@\n+note\n"
+    },
+    {
+      "command": "ws-git sparse-checkout set src",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "child",
+      "stderr": "ws-git: sparse-checkout takes no 'set' (list is all there is): a view is given when the session is forked (ws-git branch <name> --paths <paths>) and cannot be changed here.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch kid --paths /",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: '/' names the whole filesystem, which is not a view — pass paths=None for the whole tree, or name the workspace root ('/workspace') to see all of it as a seed",
+      "stdout": ""
+    }
+  ],
+  "summary": "branch --paths narrows what the fork sees; it says so in status and sparse-checkout, and a diff of it groups its seed from the rest."
+}

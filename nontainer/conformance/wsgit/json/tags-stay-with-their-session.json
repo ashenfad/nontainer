@@ -1,0 +1,94 @@
+{
+  "name": "tags-stay-with-their-session",
+  "steps": [
+    {
+      "command": "echo one > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m first",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] first (1 file)\n"
+    },
+    {
+      "command": "ws-git tag mine",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git tag",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "(none)\n"
+    },
+    {
+      "command": "echo w > w.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m work",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] work (1 file)\n"
+    },
+    {
+      "command": "ws-git tag theirs",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git merge worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging w.txt\n[main <c3>] merge worker (1 file)\n"
+    },
+    {
+      "command": "ws-git tag",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "mine -> <c1>\n"
+    },
+    {
+      "command": "ws-git log worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c2> (tag: theirs) work\n"
+    }
+  ],
+  "summary": "A fork starts with no tags, and a merge brings none."
+}

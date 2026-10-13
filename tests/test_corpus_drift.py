@@ -2,7 +2,10 @@
 
 Harnesses in other languages read the files under
 ``nontainer/conformance/harness/json/`` and ``nontainer/conformance/
-schema/``; the scenarios and the turn events are written in Python. This
+schema/``; the scenarios and the turn events are written in Python. Ports
+of ``ws-git`` read ``nontainer/conformance/wsgit/json/``, recorded by
+running each script here, so this also fails when the verb's output
+changes without the corpus being re-exported. This
 fails when the two drift apart. Regenerate with
 ``python -m nontainer.conformance.export``, or run this test with
 ``NONTAINER_UPDATE_GOLDEN=1``.
@@ -20,5 +23,10 @@ def test_the_committed_corpus_matches_its_sources():
     for path, text in wanted.items():
         assert path.exists(), f"{path.name} is missing: run the export"
         assert path.read_text() == text, f"{path.name} drifted: run the export"
-    stale = [p.name for p in export.JSON_DIR.glob("*.json") if p not in wanted]
-    assert not stale, f"no scenario makes {stale}: run the export"
+    stale = [
+        p.name
+        for directory in (export.JSON_DIR, export.WSGIT_DIR)
+        for p in directory.glob("*.json")
+        if p not in wanted
+    ]
+    assert not stale, f"no scenario or script makes {stale}: run the export"
