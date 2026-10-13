@@ -1,0 +1,30 @@
+{
+  "name": "ids-are-named-in-the-order-they-are-printed",
+  "steps": [
+    {
+      "command": "echo one > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m one > /dev/null && ws-git log --all -n 1 && ws-git show HEAD",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c1> ws-git.restore\ncommit <c2*>\n\n    one\n\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1 @@\n+one\n"
+    },
+    {
+      "command": "ws-git checkout <c2>",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main] restored to <c2>\n"
+    }
+  ],
+  "summary": "A short id and a different whole id first printed in one output are named in the order they appear."
+}
