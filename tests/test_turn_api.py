@@ -4,6 +4,7 @@ beginning to how it ended, landing in one commit."""
 import asyncio
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -357,6 +358,38 @@ def test_a_failed_conversation_write_puts_back_what_it_wrote(ws, monkeypatch):
     assert conversation.read_runs(kv, ["r1"]) == {"r1": {"said": "half"}}
     assert conversation.read_record(kv) == {"title": "t"}
     assert kv.get(CONVERSATION_RUN_PREFIX + "r2") is None
+
+
+class _FailingIndex(dict):
+    """A plain mapping, with no ``get_many``, whose index write fails."""
+
+    def __setitem__(self, key, value):
+        if key == CONVERSATION_INDEX_KEY:
+            raise OSError("the store is full")
+        super().__setitem__(key, value)
+
+
+@pytest.mark.parametrize("plain", [False, True], ids=["kvgit", "plain mapping"])
+def test_a_stored_none_is_put_back_as_none_and_dropped_as_a_key(ws, monkeypatch, plain):
+    """A key that holds ``None`` is a key all the same: a failed write
+    puts it back holding ``None`` rather than removing it, and a drop
+    removes it."""
+    key = CONVERSATION_RUN_PREFIX + "r1"
+    index = Index(harness="mine", session="s", runs=("r1",))
+    if plain:
+        kv = _FailingIndex({key: None})
+    else:
+        kv = ws.provider.kv
+        kv[key] = None
+        _failing_index_writes(ws, monkeypatch)
+    with pytest.raises(OSError):
+        conversation.write(kv, index, runs={"r1": {"said": "one"}})
+    assert key in kv and kv.get(key, "gone") is None
+
+    monkeypatch.undo()
+    target = dict(kv) if plain else kv
+    conversation.write(target, replace(index, runs=()), drop=["r1"])
+    assert key not in target
 
 
 def test_a_body_needs_a_harness_and_refuses_another_harnesss_conversation(ws):
