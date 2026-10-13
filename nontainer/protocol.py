@@ -41,6 +41,8 @@ take on serialization themselves.
 
 from __future__ import annotations
 
+import errno
+import posixpath
 import re
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, field
@@ -75,6 +77,38 @@ def read_files(files: Mapping[str, Any], paths: Iterable[str]) -> dict[str, Any]
     if batch is not None:
         return batch(paths)
     return {path: files[path] for path in paths if path in files}
+
+
+def clear_way(fs: Any, path: str, cleared: list[str] | None = None) -> None:
+    """Make way for a file at ``path``: remove the directory there when
+    it holds nothing but directories, deepest first, appending each one
+    removed to ``cleared``.
+
+    For a write that lands a file where the tree has a directory (a
+    restore, a harvest, across a directory/file swap). Directories are
+    not tracked, so what is left of one once its files are gone is only
+    in the way, and git clears it the same way. One that still holds a
+    file is refused with ``IsADirectoryError``: writing over it would
+    leave the path both a file and a directory, and removing it would
+    lose what no commit holds. ``cleared`` is filled as it goes, so a
+    caller undoing a failure can make them again.
+    """
+    if not fs.isdir(path):
+        return
+    below = [posixpath.join(path, rel) for rel in fs.list(path, recursive=True)]
+    held = sorted(p for p in below if not fs.isdir(p))
+    if held:
+        raise IsADirectoryError(
+            errno.EISDIR,
+            f"{path} is a directory holding {len(held)} file(s) "
+            f"({', '.join(held[:3])}{', ...' if len(held) > 3 else ''}), "
+            "so a file can't be written there",
+            path,
+        )
+    for directory in sorted(below, key=lambda p: p.count("/"), reverse=True) + [path]:
+        fs.rmdir(directory)
+        if cleared is not None:
+            cleared.append(directory)
 
 
 def expand_commit(commit: str, ids: "Iterable[str]", *, where: str) -> str:

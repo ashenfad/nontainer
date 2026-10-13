@@ -66,7 +66,13 @@ from .errors import (
     NotSupportedError,
     WorkspaceError,
 )
-from .protocol import CommitInfo, WorkspaceStatus, expand_commit, read_files
+from .protocol import (
+    CommitInfo,
+    WorkspaceStatus,
+    clear_way,
+    expand_commit,
+    read_files,
+)
 
 #: Reserved store key holding the agent's index and commit graph. Not a
 #: file key (the VFS prefixes its own), so no path can collide with it.
@@ -378,10 +384,13 @@ def write_stash(
     wherever it is read from and dies with the branch.
     """
     fs = provider.fs
+    # Removals first: across a directory/file swap, what is in the way
+    # of a write is gone before it lands (see _put).
     for path, value in sorted(files.items()):
         if value is None:
             fs.remove(path)
-        else:
+    for path, value in sorted(files.items()):
+        if value is not None:
             _put(fs, path, value)
     blob = parse_blob(provider.kv.get(BLOB_KEY))
     blob["stash"] = {"of": of, "message": message}
@@ -709,6 +718,18 @@ class AgentGit:
                 )
         else:
             files = sorted(modified)
+        # A path left out that stands in the way of one taken — a file
+        # where the taken path's directory goes, or a file under a taken
+        # path that is now a file — goes in with it, as `git add` takes
+        # it: a tree holds `x` or `x/...`, never both, so putting it
+        # back would leave the commit holding both or neither.
+        taken = set(files)
+        tangled = {
+            path
+            for path in modified - taken
+            if any(_in_way(path, other) for other in taken)
+        }
+        files = sorted(taken | tangled)
         reverted = sorted(modified - set(files))
 
         provider = self._provider
@@ -726,17 +747,6 @@ class AgentGit:
         # What the working tree holds for the paths this commit leaves
         # out, so it can hold it again once the commit is made.
         pending = {path: live.get(path) for path in reverted}
-
-        for path in reverted:
-            if path in base:
-                _put(fs, path, base[path])
-            elif path in live_files:
-                fs.remove(path)
-        for path in files:
-            if path in live:
-                # Re-set so the keyed commit picks the value up even
-                # when a framework commit already flushed it.
-                _put(fs, path, live[path])
 
         landed = dict(blob)
         landed["staged"] = []
@@ -759,7 +769,29 @@ class AgentGit:
             "files": list(files),
             "virtual_parents": [head] if head is not None else [],
         }
+        # Directories cleared from a put-back file's way; they come back
+        # with the work in progress, since the tree had them.
+        cleared: list[str] = []
+
+        def put_back() -> None:
+            self._restore(pending)
+            for directory in reversed(cleared):
+                fs.makedirs(directory, exist_ok=True)
+
         try:
+            # Removals before writes, so a file put back where the tree
+            # now has a directory finds only directories in its way.
+            for path in reverted:
+                if path not in base and path in live_files:
+                    fs.remove(path)
+            for path in reverted:
+                if path in base:
+                    _put(fs, path, base[path], cleared)
+            for path in files:
+                if path in live:
+                    # Re-set so the keyed commit picks the value up even
+                    # when a framework commit already flushed it.
+                    _put(fs, path, live[path])
             commit = provider.commit_keys(
                 commit_info, keys=[*files, *reverted, BLOB_KEY]
             )
@@ -772,11 +804,11 @@ class AgentGit:
             # value the branch already has — dirt the next commit
             # absorbs, and the price of not reaching into the store's
             # staging buffer to retract a write.
-            self._restore(pending)
+            put_back()
             self._write(blob)
             raise
 
-        self._restore(pending)
+        put_back()
         landed["head"] = commit
         # The restore is the agent's operation finishing, not the
         # workspace's policy: it commits itself, keyed to the paths it
@@ -881,11 +913,15 @@ class AgentGit:
             return
         fs = self._provider.fs
         after = self._provider.working_files()
+        # Removals first: across a directory/file swap, the file in the
+        # way of a directory's files is one of them, and the files in
+        # the way of a file leave only directories, which its write
+        # then clears.
         for path, value in pending.items():
-            if value is None:
-                if path in after:
-                    fs.remove(path)
-            else:
+            if value is None and path in after:
+                fs.remove(path)
+        for path, value in pending.items():
+            if value is not None:
                 _put(fs, path, value)
 
     # -- history -------------------------------------------------------
@@ -1071,10 +1107,6 @@ class AgentGit:
         live = read_files(provider.working_files(), [*gone, *changed])
         pending = {path: live.get(path) for path in (*gone, *changed)}
         target = read_files(provider.files_at(commit), changed)
-        for path in gone:
-            fs.remove(path)
-        for path in changed:
-            _put(fs, path, target[path])
         blob = self._read()
         before = dict(blob)
         blob.update(
@@ -1090,7 +1122,15 @@ class AgentGit:
         # workspace's autocommit policy. Nothing of the agent's is at
         # stake if it fails for good: the tree and the index go back.
         target_state = {path: target.get(path) for path in pending}
+        # The rewrite is inside too: one that fails partway (a file's
+        # way blocked by a directory that still holds a file) leaves the
+        # tree as it was rather than half restored.
+        cleared: list[str] = []
         try:
+            for path in gone:
+                fs.remove(path)
+            for path in changed:
+                _put(fs, path, target[path], cleared)
             self._record(
                 {"tool": CHECKOUT_TOOL, "restore_of": commit},
                 keys=[*pending, BLOB_KEY],
@@ -1099,6 +1139,8 @@ class AgentGit:
             )
         except BaseException:
             self._restore(pending)
+            for directory in reversed(cleared):
+                fs.makedirs(directory, exist_ok=True)
             self._write(before)
             raise
         # The tree moved under an executor that keeps its own copy of
@@ -1314,16 +1356,29 @@ def _unique(paths: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(paths))
 
 
-def _put(fs: Any, path: str, value: Any) -> None:
+def _put(fs: Any, path: str, value: Any, cleared: list[str] | None = None) -> None:
     """Write a stored file value back into the working tree.
 
     Through the filesystem, not the key: the file table the VFS keeps
     has to describe what the commit will hold, and only a real write
     keeps it in step.
+
+    A directory standing where the file goes is cleared first when it
+    holds nothing but directories, and refused when it holds a file
+    (:func:`~nontainer.protocol.clear_way`); each directory cleared is
+    appended to ``cleared``, so a caller undoing a failed restore can
+    make them again.
     """
     if not isinstance(value, bytes):
         value = value.encode() if isinstance(value, str) else bytes(value)
+    clear_way(fs, path, cleared)
     parent = posixpath.dirname(path)
     if parent:
         fs.makedirs(parent, exist_ok=True)
     fs.write(path, value)
+
+
+def _in_way(a: str, b: str) -> bool:
+    """Whether one path is under the other: a tree can't hold both, as
+    one is a file only where the other names a directory."""
+    return a.startswith(b + "/") or b.startswith(a + "/")

@@ -184,6 +184,23 @@ def test_checkout_restores_the_tree_across_the_rungs(ws):
     assert [e.info["message"] for e in ws.index.log()] == ["first"]
 
 
+def test_checkout_across_a_directory_file_swap_across_the_rungs(ws):
+    """Back from a directory to a file, with an empty directory made by
+    mkdir among what is cleared (#246): one file, on either rung."""
+    ws.terminal("cat > x <<'EOF'\nfile\nEOF")
+    ws.terminal("ws-git commit -m file")
+    first = ws.terminal("ws-git log").stdout.split()[0]
+    ws.terminal("rm x; mkdir -p x/empty; cat > x/c.txt <<'EOF'\nc\nEOF")
+    ws.terminal("ws-git commit -m dir")
+
+    r = ws.terminal(f"ws-git checkout {first}")
+    assert r.exit_code == 0, _said(r)
+
+    assert ws.terminal("cat x").stdout == "file\n"
+    assert ws.terminal("ls x/empty").exit_code != 0
+    assert ws.terminal("ws-git status").stdout == ""
+
+
 def test_log_S_across_the_rungs(ws):
     """The pickaxe reads the same wherever the writing was done: the
     commits where the string appeared and vanished, signed, and the one
