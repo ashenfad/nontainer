@@ -266,17 +266,27 @@ def write(
     _apply(kv, plan)
 
 
+def _held(kv: Any, keys: list[str]) -> dict[str, Any]:
+    """The keys ``kv`` holds, a stored ``None`` included, with their
+    values: in one batched read where the mapping offers ``get_many``,
+    which answers for the keys that exist."""
+    batch = getattr(kv, "get_many", None)
+    if batch is not None:
+        return dict(batch(*keys))
+    return {key: kv[key] for key in keys if key in kv}
+
+
 def _apply(kv: Any, plan: Mapping[str, Any]) -> None:
     """Make ``plan``'s changes in order (a value, or ``_DELETE``); on a
     failure, put back the keys already changed and raise. The put-back
     is best effort: it runs against the store that just failed."""
-    before = _get_many(kv, list(plan))
+    before = _held(kv, list(plan))
     done: list[str] = []
     try:
         for key, value in plan.items():
             if value is not _DELETE:
                 kv[key] = value
-            elif before.get(key) is not None:
+            elif key in before:
                 del kv[key]
             else:
                 continue
@@ -284,7 +294,7 @@ def _apply(kv: Any, plan: Mapping[str, Any]) -> None:
     except BaseException:
         for key in reversed(done):
             try:
-                if before.get(key) is not None:
+                if key in before:
                     kv[key] = before[key]
                 else:
                     del kv[key]
