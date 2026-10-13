@@ -77,6 +77,7 @@ from .protocol import (
     HarvestLost,
     StagedDiff,
     ViewSpec,
+    clear_way,
 )
 from .remote import Host, Local, build
 from .values import copy as copy_value
@@ -109,21 +110,27 @@ def _apply_diff(
     """Land a write/delete harvest on a workspace fs (parents created,
     missing deletes tolerated) — the single absorption loop shared by
     the workspace (``StagedDiff`` staging) and remote executors
-    (mutating-view write-through), so the two paths can't drift."""
+    (mutating-view write-through), so the two paths can't drift.
+
+    Deletes land first: a harvest that swapped a file for a directory
+    (or back) deletes what stands in the way of its writes, and a file
+    written where only emptied directories are left clears them
+    (:func:`~nontainer.protocol.clear_way`)."""
     from pathlib import PurePosixPath
 
-    for rel, data in writes.items():
-        path = "/" + rel.lstrip("/")
-        # PurePosixPath: workspace paths are POSIX regardless of host OS
-        parent = str(PurePosixPath(path).parent)
-        if parent not in (".", "/", ""):
-            fs.makedirs(parent, exist_ok=True)
-        fs.write(path, data)
     for rel in deletes:
         try:
             fs.remove("/" + rel.lstrip("/"))
         except Exception:
             pass  # already gone (e.g. parent dir removed first)
+    for rel, data in writes.items():
+        path = "/" + rel.lstrip("/")
+        clear_way(fs, path)
+        # PurePosixPath: workspace paths are POSIX regardless of host OS
+        parent = str(PurePosixPath(path).parent)
+        if parent not in (".", "/", ""):
+            fs.makedirs(parent, exist_ok=True)
+        fs.write(path, data)
 
 
 class _ReadOnlyCache(MutableMapping):
