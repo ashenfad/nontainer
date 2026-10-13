@@ -163,14 +163,19 @@ class _AgentFsFS:
         return bool(s and s.is_directory())
 
     def stat(self, path: str) -> Any:
+        from agentfs_sdk import ErrnoException
         from monkeyfs.base import FileMetadata
 
         p = self.resolve_path(path)
         if p == "/":
             return FileMetadata(size=0, created_at="", modified_at="", is_dir=True)
-        s = self._stat_raw(p)
-        if s is None:
-            raise FileNotFoundError(f"No such file or directory: '{path}'")
+        # Not through _stat_raw: the predicates turn any failure into a
+        # False answer, but stat (and so os.stat under patch) has to say
+        # which failure it was, as the standard library does.
+        try:
+            s = self._loop.call(self._fs.stat(p))
+        except ErrnoException as e:
+            raise _os_error(e, path) from e
         return FileMetadata(
             size=s.size,
             created_at=_iso(getattr(s, "ctime", None)),
