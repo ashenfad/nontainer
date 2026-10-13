@@ -323,7 +323,18 @@ class Scenario:
             raise ValueError(f"{self.name}: a budget needs 'compaction'")
         if self.delegates and "delegation" not in self.needs:
             raise ValueError(f"{self.name}: delegates need 'delegation'")
-        turns = sum(1 for a in self.acts if isinstance(a, Turn))
+        # A script ends on a reply: an event after the last one would
+        # never fire, and the runner could not tell a harness that used
+        # every reply from one that stopped short.
+        acts = [a for a in self.acts if isinstance(a, Turn)]
+        scripts = [(f"turn {n}", a.steps) for n, a in enumerate(acts, start=1)]
+        scripts += [(f"delegate {k!r}", d.steps) for k, d in self.delegates.items()]
+        for where, steps in scripts:
+            if steps and not isinstance(steps[-1], ModelStep):
+                raise ValueError(
+                    f"{self.name}: {where}'s script ends on an event, not a reply"
+                )
+        turns = len(acts)
         if len(self.expect.turns) != turns:
             raise ValueError(
                 f"{self.name}: {turns} turn(s) but {len(self.expect.turns)} "

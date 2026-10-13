@@ -529,7 +529,11 @@ inbox, the compaction folds, and how each delegate came back
 answer mentions, its wakes and the delegates it never heard from). Exact text, token counts and timing are not checked, and neither
 is how a harness decides to fold: only the record and its rules. The scripted model is the clock: an
 outside event (a cancel, a queued note) fires when the model is asked
-for the reply after it, so every harness sees the same timing.
+for the reply after it, so every harness sees the same timing. Every
+script ends on a reply, and a harness must ask for each one, no more
+and no fewer: asking past the end fails `script`, and a turn or a
+delegate that ends with replies left fails `turn<N>.script` or
+`delegate.<name>.script`.
 
 ```python
 from nontainer.conformance import applies, check, run

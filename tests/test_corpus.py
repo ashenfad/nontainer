@@ -24,6 +24,7 @@ from nontainer.conformance.corpus import (
     Scenario,
     TurnExp,
     cancel,
+    delegate,
     queue_note,
     says,
     turn,
@@ -289,6 +290,60 @@ def test_a_harness_that_asks_for_more_than_the_script_is_caught():
     assert "script" in check(scenario, run(scenario, GreedyHarness()))
 
 
+def test_a_harness_that_stops_before_the_last_reply_is_caught():
+    """A turn must use every reply its script holds. One that ends right
+    after its tool calls, never asking for the reply that follows, still
+    leaves the files, runs and commits a fork scenario checks."""
+
+    class Hasty(ReferenceSession):
+        def __init__(self, ws, clock, budget=None, sessions=None):
+            super().__init__(ws, clock, budget, sessions)
+            asked = clock.next
+            last = [None]
+
+            def next_reply(sent=None):
+                if last[0] is not None and last[0].tool_calls:
+                    last[0] = None
+                    return says("")  # ends the run without asking
+                last[0] = asked(sent)
+                return last[0]
+
+            self.clock = type(
+                "Hasty", (), {"next": lambda _, sent=None: next_reply(sent)}
+            )()
+
+    class HastyHarness(ReferenceHarness):
+        def open(self, ws, clock):
+            return Hasty(ws, clock)
+
+    scenario = by_name("a-full-fork-carries-the-conversation")
+    problems = check(scenario, run(scenario, HastyHarness()))
+    assert set(problems) == {"turn1.script"}
+    assert "1 step(s)" in problems["turn1.script"]
+
+
+def test_a_delegate_that_answers_before_its_last_reply_is_caught():
+    """A delegate must use every reply of its script too, across its
+    woken turns: one whose woken turn never asks the model answers with
+    the reply it was woken for still unread."""
+
+    class Drowsy(ReferenceSession):
+        def wake(self):
+            turn = self._begin()
+            turn.opening()
+            turn.end("completed", body={"messages": []})
+            return [RunStarted(run_id=turn.run_id), RunEnded(status="completed")]
+
+    class DrowsyHarness(ReferenceHarness):
+        def open(self, ws, clock, *, budget=None, sessions=None):
+            return Drowsy(ws, clock, budget, sessions)
+
+    scenario = by_name("a-delegate-hears-from-its-own-delegate-before-answering")
+    problems = check(scenario, run(scenario, DrowsyHarness()))
+    assert "delegate.scout.script" in problems
+    assert "delegate.helper.script" not in problems
+
+
 def test_a_harness_that_stores_a_summary_is_caught():
     """A fold's summary must never reach the stored conversation,
     whatever a harness stores its runs as: checked for every scenario."""
@@ -419,6 +474,18 @@ def test_delegates_need_delegation():
 def test_a_budget_needs_compaction():
     with pytest.raises(ValueError, match="a budget needs 'compaction'"):
         replace(by_name("a-request-over-budget-folds-the-earlier-turns"), needs=())
+
+
+def test_a_script_ends_on_a_reply():
+    """An event after the last reply would never fire, and the runner
+    could not tell a harness that used every reply from one that
+    stopped short."""
+    short = by_name("a-reply-alone-completes")
+    with pytest.raises(ValueError, match="turn 1's script ends on an event"):
+        replace(short, acts=(turn("go", says("done"), cancel()),))
+    delegating = by_name("a-delegates-answer-is-delivered-once-on-the-next-tool-result")
+    with pytest.raises(ValueError, match="delegate 'scout''s script ends on an event"):
+        replace(delegating, delegates={"scout": delegate(says("hi"), cancel())})
 
 
 def test_a_stream_must_open_with_run_started_and_close_with_run_ended():
@@ -658,8 +725,9 @@ def test_the_clock_fires_events_before_the_reply_they_precede():
     clock = Clock(fired.append)
     clock.load([writes("/workspace/a", "a"), queue_note("x"), cancel(), says("y")])
     assert clock.next().tool_calls and fired == []
+    assert clock.unused == 3
     assert clock.next().text == "y"
     assert [e.what for e in fired] == ["queue_note", "cancel"]
-    assert not clock.exhausted
+    assert not clock.exhausted and clock.unused == 0
     clock.next()
     assert clock.exhausted

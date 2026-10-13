@@ -81,6 +81,12 @@ class Clock:
         self._steps = list(steps)
         self.sent = None
 
+    @property
+    def unused(self) -> int:
+        """How many of the loaded steps no model call has reached yet:
+        after a turn, the replies the harness never asked for."""
+        return len(self._steps)
+
     def next(self, sent: Sequence[str] | None = None) -> ModelStep:
         """The next reply. ``sent`` is the text of each message the
         request carried, when the harness passes it: what a scenario
@@ -178,6 +184,8 @@ class Observed:
     commits: tuple[CommitView, ...]
     inbox: tuple[int, int]
     exhausted: bool = False
+    unused: tuple[int, ...] = ()
+    """Per turn, how many steps of its script were left when it ended."""
     sent: tuple[tuple[str, ...] | None, ...] = ()
     """Per turn, what its last model request carried, as the harness
     passed it to the clock (``None``: it passed nothing)."""
@@ -202,14 +210,16 @@ class DelegateView:
     """One delegate as the scenario saw it: the answer its asker got
     (``status`` empty when none came), how many woken turns it took, the
     delegates of its own it answered without hearing from (by the names
-    they were asked under), and whether it left writes uncommitted when
-    its runner returned."""
+    they were asked under), whether it left writes uncommitted when
+    its runner returned, and how many steps of its script it left
+    unused."""
 
     status: str = ""
     text: str = ""
     wakes: int = 0
     unread: tuple[str, ...] = ()
     uncommitted: bool = False
+    unused: int = 0
 
 
 class Delegation(Protocol):
@@ -287,6 +297,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
         holder["session"] = open_session(ws)
         turns: list[tuple[TurnEvent, ...]] = []
         sent: list[tuple[str, ...] | None] = []
+        unused: list[int] = []
         ended_at: list[str] = []
         stored_summary: str | None = None
         summaries: list[str] = []
@@ -298,6 +309,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
                 events = session.resume() if act.resume else session.turn(act.prompt)
                 turns.append(tuple(events))
                 sent.append(clock.sent)
+                unused.append(clock.unused)
                 ended_at.append(ws.head)
                 stored_summary = stored_summary or _stored_summary(ws)
                 recorded = folds(ws)
@@ -339,6 +351,7 @@ def run(scenario: Scenario, harness: Harness) -> Observed:
             commits=tuple(reversed(commits)),
             inbox=(len(session.inbox.pending()), len(session.inbox.delivered())),
             exhausted=clock.exhausted or delegates_ran_out,
+            unused=tuple(unused),
             sent=tuple(sent),
             folds=tuple(folds(ws)),
             stored_summary=stored_summary,
@@ -455,20 +468,27 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
     by check name: ``turn<N>.stream`` (N from 1; the stream opens with
     ``RunStarted`` and closes with ``RunEnded``, checked for every turn),
     ``turn<N>.status``, ``turn<N>.events``, ``turn<N>.folded``,
-    ``files``, ``runs``, ``commits``, ``inbox``, ``folds``,
-    ``delegate.<name>.<part>`` (and ``.uncommitted``, checked always),
-    ``summary``
+    ``turn<N>.script`` (the turn left replies unasked for, checked
+    always), ``files``, ``runs``, ``commits``, ``inbox``, ``folds``,
+    ``delegate.<name>.<part>`` (and ``.uncommitted`` and ``.script``,
+    checked always), ``summary``
     (a fold's summary in the stored conversation, checked always) and
-    ``script``. Empty when everything holds."""
+    ``script`` (the harness asked for more than a script holds). Empty
+    when everything holds."""
     expect = scenario.expect
     failures: dict[str, str] = {}
     first = next((a.prompt for a in scenario.acts if isinstance(a, Turn)), "")
     pad = len(observed.turns)
     sent = list(observed.sent) + [None] * (pad - len(observed.sent))
     current = list(observed.in_force) + [None] * (pad - len(observed.in_force))
-    for n, (want, got, request, summary) in enumerate(
-        zip(expect.turns, observed.turns, sent, current), start=1
+    unused = list(observed.unused) + [0] * (pad - len(observed.unused))
+    for n, (want, got, request, summary, left) in enumerate(
+        zip(expect.turns, observed.turns, sent, current, unused), start=1
     ):
+        if left:
+            failures[f"turn{n}.script"] = (
+                f"it ended with {left} step(s) of its script unused"
+            )
         if want.folded is not None:
             problem = _folded(want.folded, request, observed.summaries, summary, first)
             if problem:
@@ -545,6 +565,10 @@ def check(scenario: Scenario, observed: Observed) -> dict[str, str]:
         if seen.uncommitted:
             failures[f"delegate.{name}.uncommitted"] = (
                 "its runner returned with writes uncommitted"
+            )
+        if seen.unused:
+            failures[f"delegate.{name}.script"] = (
+                f"it answered with {seen.unused} step(s) of its script unused"
             )
     if observed.stored_summary is not None:
         failures["summary"] = (
