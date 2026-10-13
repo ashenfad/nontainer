@@ -1559,8 +1559,10 @@ def _show_commit(
     entry = git.entry(commit)
     if entry is None:
         return CommandResult(exit_code=1, stderr=f"no commit {spelled!r} here")
-    parents = entry.info.get("virtual_parents") or []
-    parent = parents[0] if parents else None
+    # Measured from the state it was composed on, as revert and
+    # cherry-pick measure it: a fork's first commit has no parent in the
+    # agent's graph, and its change is from the fork's base.
+    parent = ws._change_base(entry)
     files = entry.info.get("files")
     new = git.files_at(commit)
     old = git.files_at(parent) if parent else {}
@@ -2215,15 +2217,14 @@ def _walk(git: AgentGit, every: bool):
     session's history instead, where the parent is the commit before
     this one in the store.
     """
-    from .agentgit import virtual_parents
-
     if every:
         for entry in git.history():
             yield entry, (entry.parents[0] if entry.parents else None)
         return
     for entry in git.log():
-        parents = virtual_parents(entry.info)
-        yield entry, (parents[0] if parents else None)
+        # A fork's first commit is measured from its base, as show
+        # measures it, not from nothing.
+        yield entry, git._ws._change_base(entry)
 
 
 def _pickaxe(provider: Any, walk: Any, needle: str):

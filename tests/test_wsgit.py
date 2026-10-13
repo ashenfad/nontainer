@@ -2287,3 +2287,31 @@ def test_an_empty_log_says_where_the_history_is(peer_ws):
     assert "`ws-git log --all` lists" in peer_ws.terminal("ws-git log").stdout
     # nothing at all says nothing
     assert peer_ws.terminal("ws-git log -n 0").stdout == ""
+
+
+def test_a_forks_first_commit_is_shown_and_searched_from_its_base():
+    """A fork's first commit has no parent in the agent's graph; its
+    change is from the fork's base, as revert and cherry-pick read it.
+    So show prints what it changed in inherited files, deletions too,
+    and -S credits it with nothing it inherited."""
+    store = Store(memory=True)
+    ws = store.open("main")
+    register_wsgit(ws)
+    ws.terminal("echo one > a.txt; echo doomed > b.txt; echo needle > c.txt")
+    ws.terminal("ws-git commit -m seed")
+    ws.terminal("ws-git branch worker")
+    worker = store.open("worker")
+    register_wsgit(worker)
+    try:
+        worker.terminal("echo ONE > a.txt; rm b.txt")
+        worker.terminal("ws-git commit -m edits")
+        shown = worker.terminal("ws-git show HEAD").stdout
+        assert "-one\n+ONE" in shown
+        assert "-doomed" in shown
+        assert "needle" not in shown
+        assert worker.terminal("ws-git log -S needle").stdout == ""
+        assert "- edits" in worker.terminal("ws-git log -S doomed").stdout
+    finally:
+        worker.close()
+        ws.close()
+        store.close()
