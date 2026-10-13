@@ -380,6 +380,8 @@ class Workspace:
         self._executor_factory = executor_factory
         if executor is None and executor_factory is not None:
             executor = executor_factory()
+        # Before the init baseline, so a refused open commits nothing.
+        self._refuse_object_mounts(normalized_mounts, executor)
 
         # -- what a fork replays. Captured from the NORMALIZED values,
         # not the raw arguments, so a fork starts from the state this
@@ -495,11 +497,32 @@ class Workspace:
                 raise ValueError(
                     f"Mount points must be absolute and not '/': {point!r}"
                 )
+            if mount.fs is not None:
+                out[point] = mount  # an object: nothing to resolve
+                continue
             real = Path(mount.path).expanduser().resolve()
             if not real.is_dir():
                 raise ValueError(f"Mount source is not a directory: {real}")
             out[point] = Mount(real, readonly=mount.readonly)
         return out
+
+    @staticmethod
+    def _refuse_object_mounts(mounts: Mapping[str, Mount], executor: Any) -> None:
+        """Refuse a filesystem-object mount on an executor that copies
+        the workspace tree into a machine of its own (``copies_tree``):
+        the copy would read all of what the object holds, which is what
+        mounting it lazily was for, and nothing in the machine could
+        reach the object afterwards."""
+        if not getattr(executor, "copies_tree", False):
+            return
+        points = sorted(p for p, m in mounts.items() if m.fs is not None)
+        if points:
+            raise ValueError(
+                f"{type(executor).__name__} copies the workspace tree into a "
+                f"machine of its own, so it can't mount a filesystem object "
+                f"(at {points}). Mount a directory there, or run on an "
+                "executor that reads the workspace filesystem."
+            )
 
     @staticmethod
     def _build_fs(
@@ -515,7 +538,7 @@ class Workspace:
 
         mounted: dict[str, Any] = {}
         for point, mount in mounts.items():
-            sub: Any = IsolatedFS(str(mount.path))
+            sub: Any = mount.fs if mount.fs is not None else IsolatedFS(str(mount.path))
             if mount.readonly:
                 sub = ReadOnlyFS(sub)
             mounted[point] = sub

@@ -177,6 +177,7 @@ embedder's side, in the [API reference](api.md#executors).
 supports_commands: bool
 supports_ws_verbs: bool
 app_driver: AppDriver | None   # optional
+copies_tree: bool              # optional
 
 def open(self, context: ExecutionContext) -> None
 def close(self) -> None
@@ -238,6 +239,14 @@ name. Apps lowers its response-size caps to it, so a body too large to
 carry is refused with a message naming the limit rather than lost on
 the way. `DudExecutor` declares 64 MiB; `LocalExecutor` carries
 whatever it is handed and declares nothing.
+
+**`copies_tree`** *(optional)* — whether execution runs against a copy
+of the workspace tree the executor made in a machine of its own, rather
+than the workspace filesystem in place. The workspace then refuses a
+filesystem-object mount (`Mount(fs=...)`): the copy would read all of
+it, and nothing in the machine could reach the object afterwards.
+`DudExecutor` declares `True`; an executor that does not define the
+name reads as `False`.
 
 **`open(context)`** binds to one session's state and prepares what
 execution will need, without starting it. `LocalExecutor` builds the

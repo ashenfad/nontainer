@@ -991,6 +991,13 @@ class Executor(Protocol):
     commit flow) and ``sync`` whenever it changes provider state
     behind the executor's back (checkout/discard, host-side
     writes). Both are free no-ops for ``LocalExecutor``.
+
+    An executor of that kind, one that copies the workspace tree into a
+    machine of its own, declares the optional ``copies_tree = True``.
+    The workspace then refuses a filesystem-object mount
+    (``Mount(fs=...)``): the copy would read all of it, and nothing in
+    the machine could reach the object afterwards. An executor that
+    does not declare it reads the workspace filesystem in place.
     """
 
     # -- capabilities ----------------------------------------------------

@@ -2182,6 +2182,20 @@ class PythonConfig:
   inherited. Set it uniformly across the workspaces you build.
 - `Mount(path, readonly=True)` — a real directory in the workspace
   tree, visible to both tools, NOT versioned/forked.
+- `Mount(fs=obj)` — a filesystem object in place of the directory:
+  content that isn't on local disk, such as a document store fetched
+  as the agent reads it. It needs the monkeyfs reads `exists`, `isdir`,
+  `isfile`, `islink`, `list`, `read`, `stat` and `getsize`
+  (`MOUNT_FS_METHODS`), and is handed paths under its own root (at
+  `/workspace/docs`, `/workspace/docs/a.md` reaches it as `/a.md`).
+  Always read-only. Nothing but the agent's own reads reach it:
+  commits, ws-git and forks read none of it. The workspace borrows the
+  object: a fork shares it, so it must take calls from more than one
+  session and thread, and `close()` leaves it open. Under
+  `isolation="process"` the worker's reads come back to it on the host,
+  so a client and its credentials stay there. An executor that copies
+  the tree into a machine of its own (`copies_tree`, `DudExecutor`)
+  refuses it, since the copy would read all of it.
 
 ## Skills (`nontainer.skills`)
 
