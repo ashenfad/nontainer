@@ -106,8 +106,9 @@ class Script:
     steps: tuple[Step, ...] = field(default_factory=tuple)
 
 
-_FULL = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
-_SHORT = re.compile(r"(?<![0-9a-f])[0-9a-f]{7}(?![0-9a-f])")
+#: A commit id as ws-git prints one: whole, or its first seven
+#: characters. One pattern, so a text is named left to right.
+_ID = re.compile(r"(?<![0-9a-f])(?:[0-9a-f]{40}|[0-9a-f]{7})(?![0-9a-f])")
 _NAMED = re.compile(r"<c(\d+)(\*?)>")
 
 
@@ -136,16 +137,14 @@ class _Names:
         return self.number[commit]
 
     def hide(self, text: str) -> str:
-        def full(m: re.Match[str]) -> str:
+        def name(m: re.Match[str]) -> str:
             word = m.group(0)
-            return f"<c{self._name(word)}*>" if word in self.known else word
-
-        def short(m: re.Match[str]) -> str:
-            word = m.group(0)
+            if len(word) == 40:
+                return f"<c{self._name(word)}*>" if word in self.known else word
             found = [c for c in self.known if c.startswith(word)]
             return f"<c{self._name(found[0])}>" if len(found) == 1 else word
 
-        return _SHORT.sub(short, _FULL.sub(full, text))
+        return _ID.sub(name, text)
 
     def fill(self, command: str) -> str:
         def put(m: re.Match[str]) -> str:

@@ -170,12 +170,28 @@
       "stdout": "worktree /elsewhere: reviewer@<c3> (read-only)\n"
     },
     {
+      "command": "mkdir empty && ws-git worktree add empty reviewer",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree empty: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "cat empty/review.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "looks fine\n"
+    },
+    {
       "command": "ws-git status",
       "exit_code": 0,
       "kind": "run",
       "session": "main",
       "stderr": "",
-      "stdout": " M a.txt\nworktrees:\nworktree /elsewhere: reviewer@<c3> (read-only)\nworktree old: reviewer@<c1> (read-only)\n"
+      "stdout": " M a.txt\nworktrees:\nworktree /elsewhere: reviewer@<c3> (read-only)\nworktree empty: reviewer@<c3> (read-only)\nworktree old: reviewer@<c1> (read-only)\n"
     },
     {
       "command": "ws-git worktree prune",

@@ -605,6 +605,8 @@ SCRIPTS: tuple[Script, ...] = (
             Run("ws-git worktree remove rev"),
             Run("ws-git worktree list"),
             Run("ws-git worktree add /elsewhere reviewer"),
+            Run("mkdir empty && ws-git worktree add empty reviewer"),
+            Run("cat empty/review.md"),
             Run("ws-git status"),
             Run("ws-git worktree prune"),
         ),
@@ -690,6 +692,38 @@ SCRIPTS: tuple[Script, ...] = (
             Run("ws-git commit -m theirs", "stranger"),
             Run("ws-git diff stranger"),
             Run("ws-git merge stranger"),
+        ),
+    ),
+    Script(
+        "a-forks-first-commit",
+        "A fork's first commit is measured from where the fork began: show "
+        "prints what it changed in inherited files, and -S doesn't credit it "
+        "with what it inherited.",
+        (
+            Run("cat > a.txt <<'EOF'\none\ntwo\nEOF"),
+            Run("echo doomed > b.txt; echo needle > c.txt"),
+            Run("ws-git commit -m seed"),
+            Run("ws-git branch worker"),
+            Run("cat > a.txt <<'EOF'\none\nTWO\nEOF", "worker"),
+            Run("rm b.txt", "worker"),
+            Run("ws-git commit -m 'worker edits'", "worker"),
+            Run("ws-git show HEAD", "worker"),
+            Run("ws-git log -S needle", "worker"),
+            Run("ws-git log -S doomed", "worker"),
+            Run("ws-git show worker@<c2>"),
+            Run("ws-git log worker -S needle"),
+        ),
+    ),
+    Script(
+        "ids-are-named-in-the-order-they-are-printed",
+        "A short id and a different whole id first printed in one output are "
+        "named in the order they appear.",
+        (
+            Run("echo one > a.txt"),
+            Run(
+                "ws-git commit -m one > /dev/null && ws-git log --all -n 1 && ws-git show HEAD"
+            ),
+            Run("ws-git checkout <c2>"),
         ),
     ),
     # -- the edges -----------------------------------------------------------
