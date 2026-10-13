@@ -208,7 +208,9 @@ class Runtime:
             from .executor import LocalExecutor
 
             executor = LocalExecutor()
-        Workspace._refuse_object_mounts(extra, executor)
+        # The workspace's own mounts too: they are in the filesystem this
+        # runtime hands over, whichever runtime the workspace built first.
+        Workspace._refuse_object_mounts({**ws._settings.mounts, **extra}, executor)
         self._executor = executor
         # open() LAST: it may fork a persistent isolation worker (see
         # LocalExecutor.open), so nothing after it can fail and orphan
