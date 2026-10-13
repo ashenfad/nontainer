@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **The conformance runner catches a harness that stops short** (#241). A turn that ended with replies left in its script passed, so a harness that skipped the reply after its tool calls passed every scenario that doesn't check events, the fork scenarios among them. A turn with steps left now fails `turn<N>.script`, and a delegate `delegate.<name>.script`; a scenario's scripts, its delegates' included, must end on a reply.
+
 ## 0.11.1 - 2026-10-12
 
 ### Fixed

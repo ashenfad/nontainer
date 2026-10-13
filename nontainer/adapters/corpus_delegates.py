@@ -112,6 +112,7 @@ class CorpusDelegates:
                 wakes=settled.wakes,
                 unread=tuple(_short(n) for n in settled.unread),
                 uncommitted=uncommitted,
+                unused=clock.unused,
             )
         return settled.text
 
@@ -166,5 +167,6 @@ class CorpusDelegates:
                 wakes=seen.wakes,
                 unread=seen.unread,
                 uncommitted=seen.uncommitted,
+                unused=seen.unused,
             )
         return views
