@@ -1088,7 +1088,7 @@ class AgentGit:
 
     # -- checkout ------------------------------------------------------
 
-    def checkout(self, commit: str) -> str:
+    def checkout(self, commit: str, *, removed: list[str] | None = None) -> str:
         """Restore the working tree to a commit and move the agent's
         head there; returns the commit id.
 
@@ -1096,6 +1096,14 @@ class AgentGit:
         into the working tree and lands as a new commit, so nothing
         that was committed leaves the session's history. The index is
         cleared, as ``git reset --hard`` clears it.
+
+        Ignored paths (outside the root, authoring output, the
+        embedder's patterns) are never the agent's work, so the restore
+        leaves them as they are, as git's checkout leaves ignored
+        files. The one exception is git's too: an ignored file standing
+        where the commit puts a tracked file, or a directory for one,
+        is removed to make way. Each one removed is appended to
+        ``removed``, so the verb can say so.
         """
         self._writable("ws-git checkout")
         provider = self._provider
@@ -1108,12 +1116,14 @@ class AgentGit:
             raise ValueError(_NOT_YOURS.format(commit=commit[:7]))
         change = provider.working_diff(commit)
         fs = provider.fs
-        gone = sorted(change.added)
-        changed = sorted(change.removed | change.modified)
+        ws = self._ws
+        gone = sorted(ws._drop_ignored(change.added))
+        changed = sorted(ws._drop_ignored(change.removed | change.modified))
+        in_way = self._ignored_in_way(changed)
         # Captured before the rewrite: if the commit below fails, this
         # is what the tree has to hold again.
-        live = read_files(provider.working_files(), [*gone, *changed])
-        pending = {path: live.get(path) for path in (*gone, *changed)}
+        live = read_files(provider.working_files(), [*gone, *in_way, *changed])
+        pending = {path: live.get(path) for path in (*gone, *in_way, *changed)}
         target = read_files(provider.files_at(commit), changed)
         blob = self._read()
         before = dict(blob)
@@ -1135,7 +1145,7 @@ class AgentGit:
         # tree as it was rather than half restored.
         cleared: list[str] = []
         try:
-            for path in gone:
+            for path in (*gone, *in_way):
                 fs.remove(path)
             for path in changed:
                 _put(fs, path, target[path], cleared)
@@ -1151,11 +1161,35 @@ class AgentGit:
                 fs.makedirs(directory, exist_ok=True)
             self._write(before)
             raise
+        if removed is not None:
+            removed.extend(in_way)
         # The tree moved under an executor that keeps its own copy of
         # it (a guest rung does): flag its view so the next call
         # re-materializes rather than harvesting the old files back.
         self._ws._mark_executor_stale()
         return commit
+
+    def _ignored_in_way(self, changed: Iterable[str]) -> list[str]:
+        """The ignored files a restore of ``changed`` must remove: those
+        inside a directory standing where it writes a file.
+
+        Every other file in the way is one of the agent's, and a
+        checkout removes those already (the commit doesn't hold them),
+        so these are the only files that can still block a write. None
+        can stand where a write needs a directory: whatever an ignored
+        name covers, it covers everything beneath it, so no path the
+        restore writes is under one.
+        """
+        fs = self._provider.fs
+        ws = self._ws
+        found: list[str] = []
+        for path in changed:
+            if fs.isdir(path):
+                below = (
+                    posixpath.join(path, rel) for rel in fs.list(path, recursive=True)
+                )
+                found.extend(p for p in below if ws._ignores(p) and not fs.isdir(p))
+        return sorted(found)
 
     # -- merge ---------------------------------------------------------
 

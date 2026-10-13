@@ -23,7 +23,13 @@ Everything that decides what a session's work IS leaves them out:
   after the last commit does not leave a session "dirty";
 - diffs, and so the paths a delegate's answer says it changed;
 - merges and cherry-picks between sessions, which keep this side's
-  copy, so one session's scratch never lands in another's tree.
+  copy, so one session's scratch never lands in another's tree;
+- the agent's checkout (and so a stash), which leaves them as they are,
+  as git's does. An ignored file standing where the commit puts a
+  tracked file is the one exception: it is removed to make way, and
+  ``ws-git checkout`` names it. The host's ``ws.checkout`` restores the
+  whole session, ignored paths included: it is time travel, not the
+  agent's git.
 
 They are still written and kept, so the agent that wrote them can read
 them back and they survive a turn. A publication carries only the app.

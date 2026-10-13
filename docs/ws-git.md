@@ -774,6 +774,18 @@ The commits you stepped off are still in the session's history, which
 means an undo is redo-able and stepping off a line of work costs nothing
 — you do not have to tag or fork before going back.
 
+Ignored paths stay as they are: your logs, scratch outside the root and
+whatever the session's ignore patterns name are neither rolled back nor
+removed, as git's checkout leaves ignored files. The one exception is
+git's too. An ignored file standing where the commit puts a tracked
+file is removed to make way, and checkout says so:
+
+```
+$ ws-git checkout 23954a1
+[main] restored to 23954a1
+Removed ignored x/run.log: a tracked file needed its place
+```
+
 `ws-git log -S <string>` is git's pickaxe over the same history: only
 the commits where the number of times `<string>` occurs in the tree
 changed between the commit and its parent, with `+` or `-` after the id
