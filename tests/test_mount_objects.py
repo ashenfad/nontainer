@@ -11,6 +11,7 @@ from monkeyfs.base import FileMetadata
 
 from nontainer import Mount, PythonConfig, Store
 from nontainer.wsgit import register_wsgit
+from nontainer.wspytest import register_wspytest
 
 DOCS = "/workspace/docs"
 STAMP = "2026-10-13T00:00:00+00:00"
@@ -18,8 +19,9 @@ STAMP = "2026-10-13T00:00:00+00:00"
 
 class Shelf:
     """A read-only filesystem over a dict, with nothing but the reads a
-    mount needs, that counts what it is asked: a stand-in for a remote
-    store fetched lazily."""
+    mount needs (no ``islink``, ``getsize`` or ``glob``: the composition
+    derives those), that counts what it is asked: a stand-in for a
+    remote store fetched lazily."""
 
     def __init__(self, files):
         self.files = {"/" + path.lstrip("/"): data for path, data in files.items()}
@@ -43,9 +45,6 @@ class Shelf:
 
     def isdir(self, path):
         return path in self._dirs()
-
-    def islink(self, path):
-        return False
 
     def list(self, path=".", recursive=False):
         if path not in self._dirs():
@@ -75,9 +74,6 @@ class Shelf:
         return FileMetadata(
             size=size, created_at=STAMP, modified_at=STAMP, is_dir=is_dir
         )
-
-    def getsize(self, path):
-        return self.stat(path).size
 
     def close(self):
         self.closed = True
@@ -279,3 +275,46 @@ def test_dud_copies_the_tree_so_refuses_an_object_mount(store):
     assert DudExecutor.copies_tree is True
     with pytest.raises(ValueError, match="DudExecutor copies the workspace tree"):
         store.open("s", mounts={DOCS: Mount(fs=shelf())}, executor_factory=DudExecutor)
+
+
+# -- test discovery reaches into mounts ---------------------------------------
+
+PASSING = b"def test_ok():\n    assert True\n"
+
+
+def test_ws_pytest_runs_the_tests_in_an_object_mount(store):
+    """Discovery globs the directory it's given, and an object with no
+    ``glob`` of its own is globbed through its listing."""
+    docs = Shelf({"test_doc.py": PASSING, "sub/test_deep.py": PASSING})
+    ws = store.open("s", mounts={DOCS: Mount(fs=docs)})
+    register_wspytest(ws)
+    try:
+        r = ws.terminal("ws-pytest docs")
+        assert r.exit_code == 0, r.stdout + r.stderr
+        assert "2 passed" in r.stdout
+    finally:
+        ws.close()
+
+
+def test_ws_pytest_from_the_root_finds_the_tests_in_a_mount(store, tmp_path):
+    """A pattern rooted above a mount searches it too, for a directory
+    mount and an object mount alike. (A bare ``ws-pytest`` collects
+    ``tests/`` only, by design; naming the root collects everything.)"""
+    src = tmp_path / "lib"
+    src.mkdir()
+    (src / "test_lib.py").write_bytes(PASSING)
+    ws = store.open(
+        "s",
+        mounts={
+            DOCS: Mount(fs=Shelf({"test_doc.py": PASSING})),
+            "/workspace/lib": Mount(src),
+        },
+    )
+    register_wspytest(ws)
+    try:
+        ws.files.write("/workspace/test_own.py", PASSING.decode())
+        r = ws.terminal("ws-pytest .")
+        assert r.exit_code == 0, r.stdout + r.stderr
+        assert "3 passed" in r.stdout
+    finally:
+        ws.close()

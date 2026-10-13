@@ -17,13 +17,12 @@ Isolation = Literal["none", "process", "kernel"]
 
 
 #: What a filesystem object must offer to be mounted (``Mount(fs=...)``):
-#: the reads a shell and ``open()`` reach for, and ``getsize`` and
-#: ``islink``, which the composition asks a mount for directly
-#: (``os.path.getsize``, ``os.walk`` and ``glob`` reach them). It answers
-#: the working directory itself, so a mounted object needs no cwd.
-MOUNT_FS_METHODS = frozenset(
-    {"exists", "getsize", "isdir", "isfile", "islink", "list", "read", "stat"}
-)
+#: the reads a shell and ``open()`` reach for. The composition derives
+#: the rest a stdlib call can ask a mount for (``getsize`` and ``islink``
+#: for ``os.walk``, ``glob`` and ``os.path.getsize``, ``glob`` itself)
+#: when the object has no method of its own, and it answers the working
+#: directory itself, so a mounted object needs no cwd.
+MOUNT_FS_METHODS = frozenset({"exists", "isdir", "isfile", "list", "read", "stat"})
 
 
 @dataclass(frozen=True)
