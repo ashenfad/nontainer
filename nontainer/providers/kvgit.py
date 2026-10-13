@@ -42,6 +42,7 @@ cannot collide however a session is named.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
@@ -1109,6 +1110,12 @@ class KvgitProvider:
                 "ref spells session@commit[:/path], so a store tag holding "
                 "either delimiter could be stored and never addressed as "
                 "one."
+            )
+        if scope == STORE_SCOPE and re.fullmatch(r"[0-9a-f]{7,}", name):
+            raise ValueError(
+                f"Store tag name must not be spelled like a commit id: {name!r} "
+                "— seven or more hex characters is how a commit id is spelled, "
+                "and a word that could be read as either would be neither."
             )
 
     def check_tag(self, name: str, *, scope: str = SESSION_SCOPE) -> None:

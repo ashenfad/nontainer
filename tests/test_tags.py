@@ -719,3 +719,27 @@ def test_a_store_tag_name_may_not_hold_a_ref_delimiter(tmp_path):
 
     ws.close()
     s.close()
+
+
+def test_a_store_tag_name_may_not_be_spelled_like_a_commit_id(tmp_path):
+    """ws-git reads seven or more hex characters as a commit id before
+    anything else, so a store tag spelled that way would be one no verb
+    could reach by name: a word that could be read as either is neither.
+    A session tag keeps the looser rule."""
+    from nontainer import Store
+
+    s = Store(tmp_path / "store")
+    ws = s.open("alpha")
+    ws.files.write("/workspace/a.txt", "one")
+
+    for name in ("abcdef0", "0123456789abcdef"):
+        with pytest.raises(ValueError, match="spelled like a commit id"):
+            s.tags.add(ws, name)
+        assert name not in s.tags.list()
+    # short of seven, or with a letter past f, it is a name
+    assert s.tags.add(ws, "abcdef")
+    assert s.tags.add(ws, "release1")
+    assert ws.tags.add("abcdef0")
+
+    ws.close()
+    s.close()
