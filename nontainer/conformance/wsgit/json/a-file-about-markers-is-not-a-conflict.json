@@ -1,0 +1,118 @@
+{
+  "name": "a-file-about-markers-is-not-a-conflict",
+  "steps": [
+    {
+      "command": "cat > notes.md <<'EOF'\nresolve it:\n<<<<<<< HEAD\nours\n=======\n\nline\nend\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m notes",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] notes (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo w > w.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'worker file'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] worker file (1 file)\n"
+    },
+    {
+      "command": "ws-git merge worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging w.txt\n[main <c3>] merge worker (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git branch other",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "cat > notes.md <<'EOF'\nresolve it:\n<<<<<<< HEAD\nours\n=======\n\nOTHER\nend\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "other",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'other edit'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "other",
+      "stderr": "",
+      "stdout": "[other <c4>] other edit (1 file)\n"
+    },
+    {
+      "command": "cat > notes.md <<'EOF'\nresolve it:\n<<<<<<< HEAD\nours\n=======\n\nMAIN\nend\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'main edit'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c5>] main edit (1 file)\n"
+    },
+    {
+      "command": "ws-git merge other",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: Merge landed with conflict markers in 1 file(s): fix them and commit (ws-git status shows them as UU).",
+      "stdout": "CONFLICT (content): Merge conflict in notes.md\n[main <c6>] merge other (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "## merging other@<c6> (1 unresolved)\nUU notes.md\n"
+    }
+  ],
+  "summary": "Marker text a side already held is neither a conflict nor a hiding place for a new one."
+}

@@ -1,0 +1,134 @@
+{
+  "name": "another-sessions-history",
+  "steps": [
+    {
+      "command": "echo base > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo w > w.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'worker work'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] worker work (1 file)\n"
+    },
+    {
+      "command": "echo framework > f.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git log worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c2> worker work\n"
+    },
+    {
+      "command": "ws-git log worker --all -n 1",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c3> terminal\n"
+    },
+    {
+      "command": "ws-git show worker@<c2>",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "commit <c2*> (session: worker)\n\n    worker work\n\ndiff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -0,0 +1 @@\n+w\n"
+    },
+    {
+      "command": "ws-git show worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: 'worker' is a session, not a commit: ws-git log worker lists its commits, and ws-git show worker@<commit> shows one.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show worker@<c3>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: <c3> is a commit on 'worker' that its agent did not make (ws-git log worker lists the ones it did); ws-git show worker@<c3>:<path> reads a file at it.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show worker@0000000",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: no commit '0000000' on session 'worker'",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show nobody@<c2>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: unknown session 'nobody' (ws-git branch lists them)",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show worker:w.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "w\n"
+    },
+    {
+      "command": "ws-git show worker@<c2>:w.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "w\n"
+    },
+    {
+      "command": "ws-git log nobody",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: unknown session or store tag 'nobody': this store holds no session and no store tag of that name (ws-git branch lists the sessions; a store tag is a name given to a commit so that it outlives its session)",
+      "stdout": ""
+    }
+  ],
+  "summary": "log <session> lists that session's commits; show <session>@<commit> shows one; a bare session or one of its framework commits is refused."
+}

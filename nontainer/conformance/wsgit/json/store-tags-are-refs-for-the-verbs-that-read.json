@@ -1,0 +1,159 @@
+{
+  "name": "store-tags-are-refs-for-the-verbs-that-read",
+  "steps": [
+    {
+      "command": "echo one > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m first",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] first (1 file)\n"
+    },
+    {
+      "command": "ws-git branch pub",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo published > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "pub",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m publish",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "pub",
+      "stderr": "",
+      "stdout": "[pub <c2>] publish (1 file)\n"
+    },
+    {
+      "command": "echo after > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "pub",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "kind": "tag",
+      "name": "release",
+      "session": "pub"
+    },
+    {
+      "kind": "delete",
+      "session": "pub"
+    },
+    {
+      "command": "ws-git log release",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c2> publish\n"
+    },
+    {
+      "command": "ws-git show release",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "commit <c2*> (tag: release)\n\n    publish\n\ndiff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+published\nchanges at the tag after its last ws-git commit:\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+after\n"
+    },
+    {
+      "command": "ws-git diff release",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+published\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+after\n"
+    },
+    {
+      "command": "ws-git show release:a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "published\n"
+    },
+    {
+      "command": "ws-git checkout release -- a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Updated 1 path from release\n"
+    },
+    {
+      "command": "cat a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "published\n"
+    },
+    {
+      "command": "ws-git worktree add pub release",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree pub: @store/tag/release@<c3> (read-only)\n"
+    },
+    {
+      "command": "cat pub/b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "after\n"
+    },
+    {
+      "command": "ws-git commit -m 'taken from the release'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c4>] taken from the release (1 file)\n"
+    },
+    {
+      "command": "ws-git merge release",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: unknown branch 'release'",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show nothing",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: 'nothing' is not a commit — sessions are branches, and a branch does not switch here. Name a commit from ws-git log, or a tag from ws-git tag.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git log nothing",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: unknown session or store tag 'nothing': this store holds no session and no store tag of that name (ws-git branch lists the sessions; a store tag is a name given to a commit so that it outlives its session)",
+      "stdout": ""
+    }
+  ],
+  "summary": "A store tag reads frozen: diff, log, show, checkout -- and worktree add take it, the verbs that write don't, and it outlives its session."
+}

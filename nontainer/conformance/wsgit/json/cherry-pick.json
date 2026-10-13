@@ -1,0 +1,126 @@
+{
+  "name": "cherry-pick",
+  "steps": [
+    {
+      "command": "echo base > base.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m seed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] seed (1 file)\n"
+    },
+    {
+      "command": "ws-git branch worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo one > one.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m one",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c2>] one (1 file)\n"
+    },
+    {
+      "command": "echo two > two.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m two",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "worker",
+      "stderr": "",
+      "stdout": "[worker <c3>] two (1 file)\n"
+    },
+    {
+      "command": "ws-git log worker",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c3> two\n<c2> one\n"
+    },
+    {
+      "command": "ws-git cherry-pick worker@<c3>",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging two.txt\n[main <c4>] cherry-pick worker@<c3> (1 file)\n"
+    },
+    {
+      "command": "ls",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "base.txt\ntwo.txt\n"
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c4> two from worker@<c3>\n<c1> seed\n"
+    },
+    {
+      "command": "ws-git cherry-pick worker",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cherry-pick takes one commit of another session, spelled <session>@<commit> (ws-git log worker lists them).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git cherry-pick worker@<c1>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: nothing to cherry-pick: worker@<c1> changes nothing this tree does not already hold. Nothing changed.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git cherry-pick nobody@<c3>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: unknown session 'nobody' (ws-git branch lists them)",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git cherry-pick worker@<c3>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: nothing to cherry-pick: worker@<c3> changes nothing this tree does not already hold. Nothing changed.",
+      "stdout": ""
+    }
+  ],
+  "summary": "cherry-pick brings one commit of another session's, measured in its graph; it names the commit and refuses a session alone."
+}

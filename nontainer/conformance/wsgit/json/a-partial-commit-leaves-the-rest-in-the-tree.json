@@ -1,0 +1,78 @@
+{
+  "name": "a-partial-commit-leaves-the-rest-in-the-tree",
+  "steps": [
+    {
+      "command": "echo A1 > a.py; echo B1 > b.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (2 files)\n"
+    },
+    {
+      "command": "echo A2 > a.py; echo B2 > b.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add a.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m 'just a'",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c2>] just a (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M b.py\n"
+    },
+    {
+      "command": "ws-git show HEAD:b.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "B1\n"
+    },
+    {
+      "command": "cat b.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "B2\n"
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c2> just a\n<c1> base\n"
+    }
+  ],
+  "summary": "What the commit left out is still modified, and the commit holds the file as it was at the last commit."
+}

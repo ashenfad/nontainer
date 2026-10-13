@@ -1,0 +1,103 @@
+{
+  "name": "ignored-paths-are-never-work",
+  "steps": [
+    {
+      "ignore": [
+        "*.log",
+        "__pycache__/"
+      ],
+      "kind": "open",
+      "root": null,
+      "session": "main"
+    },
+    {
+      "command": "echo 'x = 1' > app.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m start",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] start (1 file)\n"
+    },
+    {
+      "command": "echo ran > run.log && mkdir -p __pycache__ && echo c > __pycache__/app.pyc",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "mkdir -p /tmp && echo scratch > /tmp/t.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo 'x = 2' > app.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status --porcelain",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M app.py\n"
+    },
+    {
+      "command": "ws-git add run.log",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot stage '/workspace/run.log': it matches the session's ignore patterns, so it is never committed or merged",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add /tmp/t.txt",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot stage '/tmp/t.txt': it is outside the workspace root (/workspace), so it is never committed or merged",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add -A && ws-git commit -m two",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c2>] two (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "cat run.log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "ran\n"
+    }
+  ],
+  "summary": "Paths the ignore patterns name, and anything outside the root, are left out of status and commits, and refused by name when staged."
+}

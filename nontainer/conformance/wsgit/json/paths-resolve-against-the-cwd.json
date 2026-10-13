@@ -1,0 +1,30 @@
+{
+  "name": "paths-resolve-against-the-cwd",
+  "steps": [
+    {
+      "command": "mkdir -p pkg/sub && cd pkg/sub && echo x > f.txt && ws-git stage f.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "A  pkg/sub/f.txt\n"
+    },
+    {
+      "command": "cd /workspace/pkg && ws-git unstage sub/f.txt && ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " A pkg/sub/f.txt\n"
+    }
+  ],
+  "summary": "A relative path is read from where the shell stands, and printed relative to the root."
+}

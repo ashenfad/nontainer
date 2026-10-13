@@ -1,0 +1,190 @@
+{
+  "name": "worktrees",
+  "steps": [
+    {
+      "command": "ws-git worktree",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "usage: ws-git worktree add <dir> (<session>[@<commit>] | <tag>)\n       ws-git worktree list\n       ws-git worktree remove <dir>\n"
+    },
+    {
+      "command": "echo base > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "command": "ws-git branch reviewer",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo 'looks fine' > review.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "reviewer",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m review",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "reviewer",
+      "stderr": "",
+      "stdout": "[reviewer <c2>] review (1 file)\n"
+    },
+    {
+      "command": "ws-git worktree add rev reviewer",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree rev: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "ws-git worktree list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree rev: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "cat rev/review.md; ls rev",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "looks fine\na.txt\nreview.md\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktrees:\nworktree rev: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "echo mine > a.txt && ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M a.txt\nworktrees:\nworktree rev: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "ws-git worktree add rev reviewer",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: there is already a worktree at 'rev': it is pinned at a commit, so seeing newer work means taking it down and putting it up again (ws-git worktree remove rev).",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree add rev/inner reviewer",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot add a worktree at 'rev/inner': that is inside the worktree rev.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree add a.txt reviewer",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot add a worktree at 'a.txt': a file is already there.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree add self main",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot add a worktree of 'main': a worktree reads another session, and this one is already your own tree.",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree add old reviewer@<c1>",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree old: reviewer@<c1> (read-only)\n"
+    },
+    {
+      "command": "ws-git worktree list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree old: reviewer@<c1> (read-only)\nworktree rev: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "ws-git worktree remove rev",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree remove rev",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: no worktree at 'rev' (worktrees here: old).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree old: reviewer@<c1> (read-only)\n"
+    },
+    {
+      "command": "ws-git worktree add /elsewhere reviewer",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree /elsewhere: reviewer@<c3> (read-only)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M a.txt\nworktrees:\nworktree /elsewhere: reviewer@<c3> (read-only)\nworktree old: reviewer@<c1> (read-only)\n"
+    },
+    {
+      "command": "ws-git worktree prune",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: worktree takes no 'prune' (add, list, remove).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    }
+  ],
+  "summary": "worktree add checks another session out under a directory, read-only; list, status and remove know about it."
+}

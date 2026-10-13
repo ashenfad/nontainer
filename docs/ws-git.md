@@ -782,3 +782,16 @@ file is not one of them. It reads the files that changed in each commit
 and no others — a file both sides hold unchanged counts the same on each
 side, so it cannot move the total — and bytes that are not text hold no
 occurrences, so a binary file never matches.
+
+## The script corpus
+
+`ws-git` is text a model reads, so a port of it is checked against what
+this one prints. `nontainer.conformance.wsgit` holds short scripts, one
+per behaviour: terminal commands in named sessions, plus the host steps
+that set a scene (exact bytes, a store tag, a deleted session, a root or
+ignore patterns). `python -m nontainer.conformance.export` runs each one
+and writes it under `nontainer/conformance/wsgit/json/` with every
+command's stdout, stderr and exit code. Commit ids are named by first
+appearance (`<c1>` for the seven characters ws-git prints, `<c1*>` for
+a whole id), and a later command may name one that way. A port replays
+the steps with ids of its own and compares.

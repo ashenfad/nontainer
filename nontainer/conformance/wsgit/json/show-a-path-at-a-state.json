@@ -1,0 +1,86 @@
+{
+  "name": "show-a-path-at-a-state",
+  "steps": [
+    {
+      "command": "mkdir -p pkg && echo one > a.txt && echo m > pkg/mod.py && echo n > pkg/new.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m seed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] seed (3 files)\n"
+    },
+    {
+      "command": "echo two > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show HEAD:a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "one\n"
+    },
+    {
+      "command": "ws-git show HEAD:/a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "one\n"
+    },
+    {
+      "command": "ws-git show HEAD:/workspace/a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "one\n"
+    },
+    {
+      "command": "cd pkg && ws-git show HEAD:./mod.py",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "m\n"
+    },
+    {
+      "command": "ws-git show HEAD:pkg",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "tree HEAD:pkg\n\nmod.py\nnew.py\n"
+    },
+    {
+      "command": "ws-git show HEAD:missing.txt",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: path 'missing.txt' does not exist in 'HEAD'",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show :a.txt",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: show :<path> needs a ref before the colon (HEAD:<path> for your last commit).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    }
+  ],
+  "summary": "show <ref>:<path> prints one file, lists a directory, and refuses what the state doesn't hold."
+}

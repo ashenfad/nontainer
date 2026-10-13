@@ -1,0 +1,142 @@
+{
+  "name": "revert",
+  "steps": [
+    {
+      "command": "cat > a.txt <<'EOF'\none\ntwo\nthree\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m first",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] first (1 file)\n"
+    },
+    {
+      "command": "cat > a.txt <<'EOF'\none\nTWO\nthree\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m second",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c2>] second (1 file)\n"
+    },
+    {
+      "command": "echo b > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m third",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c3>] third (1 file)\n"
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c3> third\n<c2> second\n<c1> first\n"
+    },
+    {
+      "command": "ws-git revert <c3>",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging b.txt\n[main <c4>] revert <c3> (1 file)\n"
+    },
+    {
+      "command": "ls",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "a.txt\n"
+    },
+    {
+      "command": "ws-git revert <c3>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: nothing to revert: <c3> changes nothing this tree does not already hold. Nothing changed.",
+      "stdout": ""
+    },
+    {
+      "command": "cat > a.txt <<'EOF'\none\nLATER\nthree\nEOF",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m later",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c5>] later (1 file)\n"
+    },
+    {
+      "command": "ws-git revert <c2>",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: Revert landed with conflict markers in 1 file(s): fix them and commit (ws-git status shows them as UU).",
+      "stdout": "CONFLICT (content): Merge conflict in a.txt\n[main <c6>] revert <c2> (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "## merging main@<c2> (1 unresolved)\nUU a.txt\n"
+    },
+    {
+      "command": "ws-git log",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c6> Revert \"second\"\n<c5> later\n<c4> Revert \"third\"\n<c3> third\n<c2> second\n<c1> first\n"
+    },
+    {
+      "command": "ws-git revert",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: revert takes one commit (a commit from ws-git log).\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git revert worker",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: 'worker' is not a commit — sessions are branches, and a branch does not switch here. Name a commit from ws-git log, or a tag from ws-git tag.",
+      "stdout": ""
+    }
+  ],
+  "summary": "revert undoes one commit's change as a new commit; again, it has nothing to do; overlapping work lands with markers."
+}

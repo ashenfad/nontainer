@@ -1,0 +1,94 @@
+{
+  "name": "a-stash-pop-that-conflicts-keeps-the-stash",
+  "steps": [
+    {
+      "command": "echo base > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m base",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] base (1 file)\n"
+    },
+    {
+      "command": "echo stashed > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Saved working directory and index state stash@{0}: base\n"
+    },
+    {
+      "command": "echo committed > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m committed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c2>] committed (1 file)\n"
+    },
+    {
+      "command": "ws-git stash pop",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: Merge landed with conflict markers in 1 file(s): fix them and commit (ws-git status shows them as UU). The stash is kept as stash@{0}: drop it (ws-git stash drop) once you are done with it.",
+      "stdout": "CONFLICT (content): Merge conflict in a.txt\n[main <c3>] merge main.stash-0 (1 file)\n"
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "## merging main.stash-0@<c3> (1 unresolved)\nUU a.txt\n"
+    },
+    {
+      "command": "ws-git stash list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "stash@{0}: base\n"
+    },
+    {
+      "command": "echo more > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stash",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: an unresolved merge from main.stash-0 is outstanding: 1 path(s) still carry conflict markers, and nothing else moves this tree until they are gone. Fix them and commit (ws-git commit -m ...), or drop the merge (ws-git merge --abort), then stash.",
+      "stdout": ""
+    }
+  ],
+  "summary": "A pop is a merge: a conflicted one lands with markers and keeps the stash, and a stash is refused over an outstanding merge."
+}

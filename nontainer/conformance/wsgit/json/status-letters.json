@@ -1,0 +1,54 @@
+{
+  "name": "status-letters",
+  "steps": [
+    {
+      "command": "echo one > a.txt; echo two > b.txt; echo three > c.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m seed",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] seed (3 files)\n"
+    },
+    {
+      "command": "echo changed > a.txt; rm b.txt; echo new > d.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M a.txt\n D b.txt\n A d.txt\n"
+    },
+    {
+      "command": "ws-git stage b.txt d.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status --short",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " M a.txt\nD  b.txt\nA  d.txt\n"
+    }
+  ],
+  "summary": "A is new, D deleted, M changed, in the column that says staged or not."
+}

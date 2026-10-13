@@ -1,0 +1,54 @@
+{
+  "name": "a-session-with-no-shared-history",
+  "steps": [
+    {
+      "command": "echo mine > a.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m mine",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "[main <c1>] mine (1 file)\n"
+    },
+    {
+      "command": "echo theirs > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "stranger",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git commit -m theirs",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "stranger",
+      "stderr": "",
+      "stdout": "[stranger <c2>] theirs (1 file)\n"
+    },
+    {
+      "command": "ws-git diff stranger",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# what stranger changed since <c3>, where the two last met: what `ws-git merge stranger` brings\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -0,0 +1 @@\n+theirs\n"
+    },
+    {
+      "command": "ws-git merge stranger",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "Auto-merging b.txt\n[main <c4>] merge stranger (1 file)\n"
+    }
+  ],
+  "summary": "A diff of a session opened on its own reads as all it holds."
+}
