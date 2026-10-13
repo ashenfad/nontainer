@@ -210,6 +210,7 @@ def read_runs(
 
 
 _KEEP: Any = object()
+_DELETE: Any = object()
 
 
 def _keys_under(kv: Any, *prefixes: str) -> list[str]:
@@ -231,9 +232,16 @@ def write(
     run the new index keeps that the write does not supply is carried
     over, the legacy record becomes the record unless one is given, and
     every legacy key is removed, in this same write.
+
+    All or nothing: when a write fails partway, the keys already
+    written are put back as they were before it raises, so no run body
+    is left staged that the index does not name.
     """
     runs = dict(runs or {})
     dropped = {str(r) for r in drop}
+    # Every change, in the order it is made: a key to its new value,
+    # or _DELETE. Planned before any is made, so a failure can undo them.
+    plan: dict[str, Any] = {}
     legacy = kv.get(LEGACY_SESSION_KEY)
     if legacy is not None:
         carry = [rid for rid in index.runs if rid not in runs and rid not in dropped]
@@ -245,19 +253,44 @@ def write(
         if record is _KEEP and isinstance(legacy, Mapping):
             record = {k: v for k, v in legacy.items() if k != "run_ids"}
         for key in _keys_under(kv, LEGACY_CONVERSATION_PREFIX):
-            del kv[key]
+            plan[key] = _DELETE
     for rid in dropped:
-        key = CONVERSATION_RUN_PREFIX + rid
-        if kv.get(key) is not None:
-            del kv[key]
+        plan[CONVERSATION_RUN_PREFIX + rid] = _DELETE
     for rid, body in runs.items():
-        kv[CONVERSATION_RUN_PREFIX + str(rid)] = body
+        plan[CONVERSATION_RUN_PREFIX + str(rid)] = body
     if record is None:
-        if kv.get(CONVERSATION_RECORD_KEY) is not None:
-            del kv[CONVERSATION_RECORD_KEY]
+        plan[CONVERSATION_RECORD_KEY] = _DELETE
     elif record is not _KEEP:
-        kv[CONVERSATION_RECORD_KEY] = record
-    kv[CONVERSATION_INDEX_KEY] = index.to_dict()
+        plan[CONVERSATION_RECORD_KEY] = record
+    plan[CONVERSATION_INDEX_KEY] = index.to_dict()
+    _apply(kv, plan)
+
+
+def _apply(kv: Any, plan: Mapping[str, Any]) -> None:
+    """Make ``plan``'s changes in order (a value, or ``_DELETE``); on a
+    failure, put back the keys already changed and raise. The put-back
+    is best effort: it runs against the store that just failed."""
+    before = _get_many(kv, list(plan))
+    done: list[str] = []
+    try:
+        for key, value in plan.items():
+            if value is not _DELETE:
+                kv[key] = value
+            elif before.get(key) is not None:
+                del kv[key]
+            else:
+                continue
+            done.append(key)
+    except BaseException:
+        for key in reversed(done):
+            try:
+                if before.get(key) is not None:
+                    kv[key] = before[key]
+                else:
+                    del kv[key]
+            except Exception:  # noqa: BLE001 - the original failure is the one to raise
+                pass
+        raise
 
 
 def rebind(kv: Any, child: str, *, parent: str) -> bool:

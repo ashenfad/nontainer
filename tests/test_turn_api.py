@@ -10,6 +10,11 @@ import pytest
 from nontainer import NotSupportedError, Store, TurnInProgress, conversation
 from nontainer.conversation import Index
 from nontainer.inbox import Inbox, split
+from nontainer.planes import (
+    CONVERSATION_INDEX_KEY,
+    CONVERSATION_PREFIXES,
+    CONVERSATION_RUN_PREFIX,
+)
 from nontainer.turns import Turns
 
 
@@ -278,6 +283,82 @@ def test_a_run_body_joins_the_conversation_in_the_turns_commit(ws):
     assert not ws.uncommitted
 
 
+def _failing_index_writes(ws, monkeypatch):
+    """Make every write of the conversation's index raise, as a store
+    that fails mid-write does: what was written before it stays staged
+    unless the write undoes it."""
+    kv = ws.provider.kv
+    real = type(kv).__setitem__
+
+    def failing(self, key, value):
+        if key == CONVERSATION_INDEX_KEY:
+            raise OSError("the store is full")
+        return real(self, key, value)
+
+    monkeypatch.setattr(type(kv), "__setitem__", failing)
+
+
+def _conversation_keys(ws):
+    return sorted(
+        k
+        for k in ws.provider.kv.keys()
+        if isinstance(k, str) and k.startswith(CONVERSATION_PREFIXES)
+    )
+
+
+def test_a_run_that_fails_to_store_puts_its_notes_back(ws, monkeypatch):
+    """No stored run holds what the model was told, so the notes it was
+    told go back to the queue for the next delivery, rather than being
+    settled and lost (#243). The error still reaches the harness, and
+    the workspace takes turns again."""
+    with ws.turn("r0", harness="mine") as turn:
+        turn.complete(body={"said": "zero"})
+    stored = _conversation_keys(ws)
+    inbox = Inbox()
+    inbox.put("a correction")
+    turn = ws.turn("r1", harness="mine", inbox=inbox)
+    _, notes = turn.deliver("ok")
+    assert [n.text for n in notes] == ["a correction"]
+
+    _failing_index_writes(ws, monkeypatch)
+    with pytest.raises(OSError, match="full"):
+        turn.complete(body={"said": "one"})
+    monkeypatch.undo()
+
+    assert ws.turns.current is None
+    assert inbox.delivered() == []
+    assert [n.text for n in inbox.pending()] == ["a correction"]
+    # nothing of the run stays staged for the next commit to land
+    assert _conversation_keys(ws) == stored
+    assert not ws.uncommitted
+
+    with ws.turn("r2", inbox=inbox) as turn:
+        _, notes = turn.deliver("ok")
+        assert [n.text for n in notes] == ["a correction"]
+        turn.complete(body={"said": "two"})
+    assert inbox.pending() == [] and inbox.delivered() == []
+    assert conversation.index_of(ws).runs == ("r0", "r2")
+
+
+def test_a_failed_conversation_write_puts_back_what_it_wrote(ws, monkeypatch):
+    """A write that fails partway leaves the conversation as it was: a
+    resumed run keeps its old body and record, and a new one leaves no
+    body behind that the index does not name."""
+    kv = ws.provider.kv
+    with ws.turn("r1", harness="mine") as turn:
+        turn.interrupt("overloaded", body={"said": "half"}, record={"title": "t"})
+    _failing_index_writes(ws, monkeypatch)
+    index = conversation.index_of(ws)
+    with pytest.raises(OSError):
+        conversation.write(
+            kv, index, runs={"r1": {"said": "all"}, "r2": {}}, record={"title": "u"}
+        )
+    monkeypatch.undo()
+    assert conversation.read_runs(kv, ["r1"]) == {"r1": {"said": "half"}}
+    assert conversation.read_record(kv) == {"title": "t"}
+    assert kv.get(CONVERSATION_RUN_PREFIX + "r2") is None
+
+
 def test_a_body_needs_a_harness_and_refuses_another_harnesss_conversation(ws):
     with pytest.raises(ValueError, match="harness"):
         ws.turn("r1").complete(body={})
@@ -446,6 +527,28 @@ def test_a_source_that_raises_costs_neither_the_result_nor_the_queue(ws, caplog)
         assert queued in inbox.delivered()
     assert "delivery source raised" in caplog.text
     assert [n.text for n in inbox.pending()] == ["half made"]
+
+
+def test_failing_sources_put_their_notes_back_in_source_order(ws, caplog):
+    """Each failing source's notes go back once, in the order of their
+    sources and ahead of anything queued after: restored one source at
+    a time, the second source's notes jumped ahead of the first's
+    (#243)."""
+    inbox = Inbox()
+
+    def failing(text):
+        def source(given):
+            given.deliver_now(text, kind="mechanism")
+            raise RuntimeError(f"{text} broke")
+
+        return source
+
+    sources = [failing("first"), failing("second")]
+    with ws.turn("r1", inbox=inbox, sources=sources) as turn:
+        turn.deliver("ok")
+        inbox.put("queued later")
+        assert [n.text for n in inbox.pending()] == ["first", "second", "queued later"]
+    assert caplog.text.count("delivery source raised") == 2
 
 
 def test_a_cancel_during_an_async_callback_puts_the_notes_back(ws):
