@@ -608,12 +608,30 @@ $ ws-git commit -m "sheets: read merged ranges through their anchor (merged-cell
   into a regression test, the way software already works. It is the
   one oracle this loop makes for itself, and prose skills have no
   equivalent.
-- **The builder can try before it proposes.** Granted a `sessions`
-  runner, it can ask a delegate to attempt one of the wiki's evidence
-  cases with the candidate skill in its tree and then read the
-  delegate's trace — an experiment the paper's proposer has no way to
-  run. Evidence is training data by definition and never a trial task,
-  so trying on it costs the gate nothing.
+- **The builder can try before it proposes, and iterate.** Granted a
+  `sessions` runner, it can ask delegates to attempt the wiki's
+  evidence cases with the candidate skill in their trees and read
+  their traces — an experiment the paper's proposer has no way to run.
+  Evidence is training data by definition and never a trial task, so
+  trying on it costs the gate nothing. The try is a loop, not a single
+  check. Each round forks real states twice (`Sessions.ask(take=)`,
+  once the candidate is in) — the commit before the turn the evidence
+  came from, `inherit="fresh"`, one arm with the candidate taken in
+  and one with the library as it stands — and the builder reads both
+  arms' traces for the failures a win rate cannot show: the skill
+  never opened, a function called the way the helper it replaces was
+  called, the delegate writing its own version anyway, the candidate
+  patched in place. Costs (turns, tokens) compare only when both arms
+  succeeded. What a round turns up revises the candidate — a
+  signature, the catalog summary, a name — and the next round tests
+  the revision. This loop is where a library's API is actually
+  designed: a skill or a function is a hypothesis about how an agent
+  will work, and only a delegate working can refute it. It stays
+  small: a handful of pairs per round, looking for ergonomic failure,
+  within a budget the host sets, and it stops when a round finds
+  nothing new. Its deliverable is the candidate plus an evidence
+  package — the states forked, the rounds run, the revisions they
+  caused — which the gate can re-run rather than take on trust.
 - **"One proposal" is the gate's policy, not the agent's discipline.**
   The gate can refuse a pass that changed more than one skill
   directory or made more than one commit; a pass that wrote past its
@@ -750,6 +768,26 @@ be exactly what a poisoned session aims at, and the gate is never the
 builder. Below, `gate` is a `Sessions` helper over a session of the
 gate's own, so its trial runs are named `gate.<pet>`, and the proposal
 is what a builder pass's answer names: `lib.quiet-wren@7c4e1d2`.
+
+**Two loops, not a waterfall.** Read as a sequence — propose, then be
+judged — the gate is a stage the builder throws work over, and the
+candidate arrives as finished as its author could make it unaided.
+The builder's own experimental loop (above) is the inner loop:
+iterative, comparative, deliberately fitted to the evidence the
+candidate was extracted from, and therefore no evidence about
+anything else. The gate is the same method run once more at the outer
+loop, over tasks the builder was not allowed to see — held out by
+rule, cleanest when they are sessions that landed after the wiki page
+was written — plus the two things a builder cannot do for itself:
+a second reader of the code, and probation. So the separation to keep
+is not between making and judging but between the data each may touch:
+blur the process, keep the accounts. Where the builder's evidence
+package replays exactly, the gate's confirmatory run is cheap because
+the builder already did the work; what the gate adds is a corpus, not
+a ceremony. A candidate that fails the outer loop goes back as a
+branch nobody merged, and its evidence package — rounds, revisions
+and the holdout it failed on, as counts — is what the next builder
+pass starts from.
 
 ### Checks that need no labels
 
