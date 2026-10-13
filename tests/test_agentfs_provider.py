@@ -74,6 +74,10 @@ def test_exist_ok_forgives_a_directory_and_not_a_file(afs_ws):
             "ENOENT",
         ),
         (lambda fs: fs.makedirs("/workspace/f/s/t"), NotADirectoryError, "ENOTDIR"),
+        (lambda fs: fs.stat("/workspace/missing"), FileNotFoundError, "ENOENT"),
+        # AgentFS reports ENOENT here, where a real filesystem says
+        # ENOTDIR; the error follows the code AgentFS reports.
+        (lambda fs: fs.stat("/workspace/f/c"), FileNotFoundError, "ENOENT"),
     ],
     ids=[
         "write-over-dir",
@@ -86,6 +90,8 @@ def test_exist_ok_forgives_a_directory_and_not_a_file(afs_ws):
         "rmdir-nonempty",
         "rename-missing",
         "makedirs-under-file",
+        "stat-missing",
+        "stat-under-file",
     ],
 )
 def test_errors_are_the_standard_librarys(afs_ws, operation, expected, code):
@@ -101,6 +107,17 @@ def test_errors_are_the_standard_librarys(afs_ws, operation, expected, code):
         operation(fs)
     assert caught.value.errno == getattr(errno, code)
     assert type(caught.value).__module__ == "builtins"
+
+
+def test_the_predicates_still_answer_rather_than_raise(afs_ws):
+    """``exists`` and the type predicates answer False for a path the
+    SDK can't stat, whatever errno it reports; only ``stat`` raises."""
+    fs = afs_ws.files.fs
+    fs.write("/workspace/f", b"x")
+    for path in ("/workspace/missing", "/workspace/f/c"):
+        assert not fs.exists(path)
+        assert not fs.isfile(path)
+        assert not fs.isdir(path)
 
 
 def test_caps(afs_ws):
