@@ -259,6 +259,19 @@ def test_a_runtimes_own_object_mount_is_refused_there_too(store):
         ws.close()
 
 
+def test_a_runtime_over_a_workspace_with_an_object_mount_is_refused(store):
+    """A second runtime hands the executor the workspace's filesystem,
+    its object mounts included, so a copying one is refused there too."""
+    from nontainer.runtime import Runtime
+
+    ws = store.open("s", mounts={DOCS: Mount(fs=shelf())})
+    try:
+        with pytest.raises(ValueError, match=r"at \['/workspace/docs'\]"):
+            Runtime(ws, executor=_Copying())
+    finally:
+        ws.close()
+
+
 def test_dud_copies_the_tree_so_refuses_an_object_mount(store):
     pytest.importorskip("dud")
     from nontainer.executor_dud import DudExecutor
