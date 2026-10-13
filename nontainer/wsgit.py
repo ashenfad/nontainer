@@ -518,6 +518,11 @@ def _add(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             under = [m for m in modified if m.startswith(prefix)]
             if under or ws.files.fs.isdir(path):
                 wanted.extend(under)
+                if path in modified:
+                    # A file now where the head has a directory, or the
+                    # other way round: the path itself changed too, and
+                    # git stages it with what was under it.
+                    wanted.append(path)
             else:
                 wanted.append(path)
     if wanted:

@@ -210,6 +210,72 @@ def test_staging_one_side_of_a_swap_commits_the_swap(ws, to, stage, files):
     assert status(ws) == " M keep.txt\n"
 
 
+def several_children_then_a_file(ws, children):
+    """A base commit holding ``children`` under `x`, then `x` swapped
+    for a file, uncommitted."""
+    for child in children:
+        ws.files.write(f"x/{child}", f"{child}\n")
+    ws.index.commit("base")
+    assert ws.terminal("rm -r x")
+    ws.files.write("x", "f\n")
+
+
+@pytest.mark.parametrize("children", [["a", "b"], ["a", "b/c", "d"]])
+def test_staging_one_childs_deletion_takes_only_that_deletion(ws, children):
+    """Removing `x/a` clashes with nothing: the commit holds the rest of
+    `x/` as it was, and the file `x` stays in the tree uncommitted, as
+    `git rm --cached x/a` leaves it. Taking the live file `x` along
+    would commit a file nobody staged, and then clash with the other
+    children."""
+    several_children_then_a_file(ws, children)
+    r = ws.terminal("ws-git add x/a && ws-git commit -m 'drop a'")
+    assert r, r.stderr
+    assert committed(ws) == [f"/workspace/x/{c}" for c in children[1:]]
+    assert tree(ws) == ["x"] and ws.files.read("x") == b"f\n"
+    rest = "".join(f" D x/{c}\n" for c in children[1:])
+    assert status(ws) == f" A x\n{rest}"
+
+
+@pytest.mark.parametrize("verb", ["add", "stage"])
+@pytest.mark.parametrize("children", [["a", "b"], ["a", "b/c", "d"]])
+def test_staging_the_file_takes_every_child_in_its_way(ws, children, verb):
+    """`add x` stages the file and the deletions under it, as git does;
+    `stage x` names the file alone, and the children in its way go in
+    with it."""
+    several_children_then_a_file(ws, children)
+    r = ws.terminal(f"ws-git {verb} x && ws-git commit -m 'x is a file'")
+    assert r, r.stderr
+    assert committed(ws) == ["/workspace/x"]
+    assert status(ws) == ""
+
+
+def test_adding_a_directory_that_was_a_file_stages_the_files_deletion(ws):
+    ws.files.write("x", "f\n")
+    ws.index.commit("base")
+    ws.files.remove("x")
+    ws.files.write("x/a", "a\n")
+    r = ws.terminal("ws-git add x && ws-git commit -m 'x is a directory'")
+    assert r, r.stderr
+    assert committed(ws) == ["/workspace/x/a"]
+    assert status(ws) == ""
+
+
+def test_staging_one_child_of_a_new_directory_takes_the_file_it_replaces(ws):
+    """The other direction: `x` was a file and is now a directory with
+    several files. Staging one of them takes the file's deletion, and
+    the children not staged stay out of the commit."""
+    ws.files.write("x", "f\n")
+    ws.index.commit("base")
+    ws.files.remove("x")
+    for child in ("a", "b/c", "d"):
+        ws.files.write(f"x/{child}", f"{child}\n")
+    r = ws.terminal("ws-git add x/a && ws-git commit -m 'x/a'")
+    assert r, r.stderr
+    assert committed(ws) == ["/workspace/x/a"]
+    assert tree(ws) == ["x", "x/a", "x/b", "x/b/c", "x/d"]
+    assert status(ws) == " A x/b/c\n A x/d\n"
+
+
 @pytest.mark.parametrize(
     ("to", "files", "left"),
     [

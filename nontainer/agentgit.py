@@ -718,19 +718,6 @@ class AgentGit:
                 )
         else:
             files = sorted(modified)
-        # A path left out that stands in the way of one taken — a file
-        # where the taken path's directory goes, or a file under a taken
-        # path that is now a file — goes in with it, as `git add` takes
-        # it: a tree holds `x` or `x/...`, never both, so putting it
-        # back would leave the commit holding both or neither.
-        taken = set(files)
-        tangled = {
-            path
-            for path in modified - taken
-            if any(_in_way(path, other) for other in taken)
-        }
-        files = sorted(taken | tangled)
-        reverted = sorted(modified - set(files))
 
         provider = self._provider
         fs = provider.fs
@@ -742,6 +729,27 @@ class AgentGit:
         live_files = provider.working_files()
         restore_from = head or blob["base"]
         base_files = provider.files_at(restore_from) if restore_from is not None else {}
+
+        # A tree holds `x` or `x/...`, never both. The commit holds a
+        # path taken as the tree has it and one left out as the head
+        # has it, so the two clash only when a path taken is IN the
+        # tree and one in its way is left out but at the head: a file
+        # where the taken file's directory goes, or a file under a
+        # taken path that is now a file. That one goes in with it, as
+        # `git add` takes it. A path in the way of a live one can't be
+        # live itself, so what goes in is a deletion, which clashes
+        # with nothing: one pass is the whole closure. A staged
+        # deletion takes nothing along (`git rm --cached x/a` leaves
+        # the rest of `x/` committed and a new file `x` untracked).
+        present = [path for path in files if path in live_files]
+        tangled = {
+            path
+            for path in modified - set(files)
+            if path in base_files and any(_in_way(path, p) for p in present)
+        }
+        files = sorted({*files, *tangled})
+        reverted = sorted(modified - set(files))
+
         live = read_files(live_files, {*files, *reverted, *blob["unresolved"]})
         base = read_files(base_files, {*reverted, *blob["unresolved"]})
         # What the working tree holds for the paths this commit leaves
