@@ -184,8 +184,6 @@ class Observed:
     commits: tuple[CommitView, ...]
     inbox: tuple[int, int]
     exhausted: bool = False
-    unused: tuple[int, ...] = ()
-    """Per turn, how many steps of its script were left when it ended."""
     sent: tuple[tuple[str, ...] | None, ...] = ()
     """Per turn, what its last model request carried, as the harness
     passed it to the clock (``None``: it passed nothing)."""
@@ -203,6 +201,8 @@ class Observed:
     """Per turn, the summary of the fold in force as it ended: the
     latest the workspace records then (a rewind takes later ones away),
     or ``None`` when it records none."""
+    unused: tuple[int, ...] = ()
+    """Per turn, how many steps of its script were left when it ended."""
 
 
 @dataclass(frozen=True)

@@ -325,14 +325,15 @@ class Scenario:
             raise ValueError(f"{self.name}: delegates need 'delegation'")
         # A script ends on a reply: an event after the last one would
         # never fire, and the runner could not tell a harness that used
-        # every reply from one that stopped short.
+        # every reply from one that stopped short. An empty one would
+        # pass a harness that never asked the model at all.
         acts = [a for a in self.acts if isinstance(a, Turn)]
         scripts = [(f"turn {n}", a.steps) for n, a in enumerate(acts, start=1)]
         scripts += [(f"delegate {k!r}", d.steps) for k, d in self.delegates.items()]
         for where, steps in scripts:
-            if steps and not isinstance(steps[-1], ModelStep):
+            if not steps or not isinstance(steps[-1], ModelStep):
                 raise ValueError(
-                    f"{self.name}: {where}'s script ends on an event, not a reply"
+                    f"{self.name}: {where}'s script doesn't end on a reply"
                 )
         turns = len(acts)
         if len(self.expect.turns) != turns:
