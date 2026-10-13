@@ -8,6 +8,7 @@ mtime drift can leave real table dirt that the terminal tail
 commits, which is provider behavior (PR 2), not terminal shape.
 """
 
+import posixpath
 import re
 
 import pytest
@@ -410,6 +411,83 @@ def test_revert_conflict_lands_with_markers(ws):
     ws.files.fs.write("/workspace/doc.txt", b"a\nRESOLVED\nc\n")
     ws.terminal("ws-git commit -m resolved")
     assert ws.terminal("ws-git status").stdout == ""
+
+
+#: A file that holds conflict-marker text of its own: notes on resolving
+#: a merge. Its first and last lines are far enough apart to merge apart.
+GUIDE = (
+    b"# Resolving merges\n"
+    b"A conflict looks like:\n"
+    b"<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n"
+    b"\n"
+    b"setting = 1\n"
+)
+
+
+def _edit(w, path, old, new, message):
+    """Replace ``old`` with ``new`` in a file and commit it with ws-git."""
+    body = w.files.read(path).replace(old, new)
+    w.files.fs.write(path, body)
+    r = w.terminal(
+        f"ws-git stage {posixpath.basename(path)} && ws-git commit -m {message}"
+    )
+    assert r.exit_code == 0, r.stderr
+
+
+def test_a_conflict_in_a_file_that_already_holds_markers_is_reported(ws):
+    """Whether a merge conflicted is the merge's own answer, not a scan:
+    marker text the file already held can't hide a new conflict (#246)."""
+    ws.files.fs.write("/workspace/doc.txt", GUIDE)
+    ws.terminal("ws-git stage doc.txt && ws-git commit -m base")
+    fork = ws.fork("worker")
+    try:
+        _edit(fork, "/workspace/doc.txt", b"setting = 1", b"setting = 2", "theirs")
+        _edit(ws, "/workspace/doc.txt", b"setting = 1", b"setting = 3", "ours")
+
+        r = ws.terminal("ws-git merge worker")
+    finally:
+        fork.close()
+
+    assert r.exit_code == 1
+    assert r.stdout.splitlines()[0] == "CONFLICT (content): Merge conflict in doc.txt"
+    lines = ws.terminal("ws-git status").stdout.splitlines()
+    assert re.fullmatch(rf"## merging worker@{SHORT} \(1 unresolved\)", lines[0]), lines
+    assert lines[1:] == ["UU doc.txt"]
+
+
+def test_a_revert_conflict_in_a_file_that_already_holds_markers_is_reported(ws):
+    """Revert and cherry-pick go through the same three-way as a merge."""
+    ws.files.fs.write("/workspace/doc.txt", GUIDE)
+    ws.terminal("ws-git stage doc.txt && ws-git commit -m first")
+    _edit(ws, "/workspace/doc.txt", b"setting = 1", b"setting = 2", "second")
+    second = ws.terminal("ws-git log").stdout.split()[0]
+    _edit(ws, "/workspace/doc.txt", b"setting = 2", b"setting = 3", "third")
+
+    r = ws.terminal(f"ws-git revert {second}")
+
+    assert r.exit_code == 1
+    assert r.stdout.splitlines()[0] == "CONFLICT (content): Merge conflict in doc.txt"
+    assert ws.terminal("ws-git status").stdout.splitlines()[1:] == ["UU doc.txt"]
+
+
+def test_marker_text_in_a_file_that_merges_cleanly_is_not_a_conflict(ws):
+    ws.files.fs.write("/workspace/doc.txt", GUIDE)
+    ws.terminal("ws-git stage doc.txt && ws-git commit -m base")
+    fork = ws.fork("worker")
+    try:
+        _edit(fork, "/workspace/doc.txt", b"# Resolving", b"# On resolving", "title")
+        _edit(ws, "/workspace/doc.txt", b"setting = 1", b"setting = 3", "setting")
+
+        r = ws.terminal("ws-git merge worker")
+    finally:
+        fork.close()
+
+    assert r.exit_code == 0, r.stderr
+    assert r.stdout.splitlines()[0] == "Auto-merging doc.txt"
+    assert ws.terminal("ws-git status").stdout == ""
+    body = ws.files.read("/workspace/doc.txt")
+    assert b"# On resolving" in body and b"setting = 3" in body
+    assert body.count(b"<<<<<<< ") == 1
 
 
 def test_revert_takes_only_a_commit(ws):
