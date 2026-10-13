@@ -111,11 +111,11 @@ class Runtime:
             current config when it already has a runtime (serving a
             snapshot under the session's own policy), else the
             defaults.
-        mounts: Real directories exposed to *this runtime's*
-            executions only. A workspace composes its own mounts into
-            the filesystem it hands over — so ``ws.files.fs`` and execution
-            agree — and passes none here; a standalone runtime uses
-            this to add mounts of its own.
+        mounts: Real directories (or filesystem objects) exposed to
+            *this runtime's* executions only. A workspace composes its
+            own mounts into the filesystem it hands over — so
+            ``ws.files.fs`` and execution agree — and passes none here;
+            a standalone runtime uses this to add mounts of its own.
         commands: Terminal commands available to shell executions
             (termish ``CommandFunc`` signature). Reserved names and the
             framework's ``ws-`` prefix are refused.
@@ -150,10 +150,9 @@ class Runtime:
         # mounts here are this runtime's alone and are deliberately NOT
         # visible through ``ws.files.fs``.
         self._fs = ws._fs
-        if mounts:
-            self._fs = Workspace._build_fs(
-                self._fs, Workspace._normalize_mounts(mounts)
-            )
+        extra = Workspace._normalize_mounts(mounts)
+        if extra:
+            self._fs = Workspace._build_fs(self._fs, extra)
 
         # -- terminal commands: user injections + the python bridge --
         user_commands = dict(commands or {})
@@ -209,6 +208,7 @@ class Runtime:
             from .executor import LocalExecutor
 
             executor = LocalExecutor()
+        Workspace._refuse_object_mounts(extra, executor)
         self._executor = executor
         # open() LAST: it may fork a persistent isolation worker (see
         # LocalExecutor.open), so nothing after it can fail and orphan

@@ -16,16 +16,28 @@ if TYPE_CHECKING:
 Isolation = Literal["none", "process", "kernel"]
 
 
+#: What a filesystem object must offer to be mounted (``Mount(fs=...)``):
+#: the reads a shell and ``open()`` reach for, and ``getsize`` and
+#: ``islink``, which the composition asks a mount for directly
+#: (``os.path.getsize``, ``os.walk`` and ``glob`` reach them). It answers
+#: the working directory itself, so a mounted object needs no cwd.
+MOUNT_FS_METHODS = frozenset(
+    {"exists", "getsize", "isdir", "isfile", "islink", "list", "read", "stat"}
+)
+
+
 @dataclass(frozen=True)
 class Mount:
-    """A real directory exposed inside the workspace tree (a "volume").
+    """A real directory, or a filesystem object, exposed inside the
+    workspace tree (a "volume").
 
     Mounts are a *workspace* concern, not a python-sandbox concern:
     both tools see them — ``terminal("ls /data")`` and sandboxed
     ``open("/data/x.csv")`` agree. Composed via monkeyfs ``MountFS``
-    (+ ``IsolatedFS``, + ``ReadOnlyFS`` when ``readonly``).
+    (+ ``IsolatedFS`` for a directory, + ``ReadOnlyFS`` when
+    ``readonly``).
 
-    Mounted paths are live views of the real directory: they are NOT
+    Mounted paths are live views of their source: they are NOT
     versioned and NOT captured by commits, so a checkout leaves them
     exactly as they are.
 
@@ -36,12 +48,44 @@ class Mount:
     Write-enabled mounts therefore punch through the time-travel
     story — prefer ``readonly=True`` (the default) and have the agent
     copy inputs into the workspace when it needs to own them.
+
+    ``fs`` mounts an object instead of a directory: content that isn't
+    on local disk, such as a document store fetched as the agent reads
+    it. It implements the monkeyfs filesystem protocol's reads
+    (:data:`MOUNT_FS_METHODS`, plus whatever else it can answer), and is
+    handed paths under its own root: ``/workspace/docs/a.md``, mounted
+    at ``/workspace/docs``, reaches it as ``/a.md``. It is mounted
+    read-only. The workspace borrows it: a fork shares it, so it must
+    take calls from more than one session and thread, and closing the
+    workspace leaves it open. Only an executor that runs against the
+    workspace filesystem can reach it; one that copies the tree into a
+    machine of its own (``DudExecutor``) refuses it, since the copy
+    would read all of it.
     """
 
-    path: str | Path
+    path: str | Path | None = None
     """Real directory on the host filesystem."""
 
     readonly: bool = True
+
+    fs: Any = None
+    """A filesystem object to mount in place of a directory."""
+
+    def __post_init__(self) -> None:
+        if (self.path is None) == (self.fs is None):
+            raise ValueError(
+                "A Mount takes one source: a directory path or an fs object"
+            )
+        if self.fs is None:
+            return
+        if not self.readonly:
+            raise ValueError("A filesystem object is mounted read-only")
+        missing = sorted(m for m in MOUNT_FS_METHODS if not hasattr(self.fs, m))
+        if missing:
+            raise TypeError(
+                f"Mount(fs=...): {type(self.fs).__name__} has no {missing}, "
+                "which a mounted filesystem needs"
+            )
 
 
 @dataclass(frozen=True)
@@ -344,8 +388,8 @@ class Profile:
     """What sandboxed code may touch, host objects included."""
 
     mounts: Mapping[str, Mount] = field(default_factory=dict, hash=False)
-    """Real directories exposed inside the tree (skills mounted with
-    :func:`nontainer.skills.mounts` among them)."""
+    """Real directories and filesystem objects exposed inside the tree
+    (skills mounted with :func:`nontainer.skills.mounts` among them)."""
 
     commands: Mapping[str, Callable[..., Any]] = field(default_factory=dict, hash=False)
     """Custom terminal commands."""

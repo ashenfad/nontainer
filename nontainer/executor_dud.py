@@ -792,6 +792,10 @@ class DudExecutor:
     # over the hostcall channel.
     supports_ws_verbs = True
 
+    # The guest runs against a copy of the tree (_push_tree), so a
+    # filesystem-object mount is refused: the push would read all of it.
+    copies_tree = True
+
     # The largest body a view execution carries back when asked to
     # (``ViewSpec.result_bytes``); see ``_VIEW_RESULT_LIMIT``.
     view_result_limit = _VIEW_RESULT_LIMIT

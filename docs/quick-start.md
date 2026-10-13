@@ -227,7 +227,9 @@ Notes:
   values of.
 - Mounts are visible to BOTH tools and are not versioned; prefer
   `readonly=True` (the default) and copy inputs in when the agent
-  should own them.
+  should own them. `Mount(fs=obj)` mounts a filesystem object instead
+  of a directory, read as the agent touches it (not on `DudExecutor`;
+  see the [API reference](api.md)).
 - The sandbox is a walled garden for cooperative LLM-generated code
   (see sandtrap's security docs); `PythonConfig(isolation="process")`
   or `"kernel"` when you want real distance.
