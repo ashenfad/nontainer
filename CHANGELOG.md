@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Fixed
+- **ws-git reports a conflict in a file that already holds marker text** (#246). A merge counted a file as conflicted only when it held `<<<<<<< ` and neither parent's version did. So in a file with marker text of its own (notes on resolving merges, a test fixture), a real conflict from an overlapping edit was reported as auto-merged: the merge exited 0, recorded no outstanding merge, and `ws-git status` read clean over live markers. Revert and cherry-pick had the same gap. Each file's text merge now reports whether it conflicted (kvgit's `text_merge_result`), and that answer is what counts; the merged bytes are unchanged.
 - **The conformance runner catches a harness that stops short** (#241). A turn that ended with replies left in its script passed, so a harness that skipped the reply after its tool calls passed every scenario that doesn't check events, the fork scenarios among them. A turn with steps left now fails `turn<N>.script`, and a delegate `delegate.<name>.script`; a scenario's scripts, its delegates' included, must end on a reply.
 
 ## Unreleased

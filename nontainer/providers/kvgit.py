@@ -85,6 +85,38 @@ def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
     return ours if ours is not None else theirs
 
 
+class _TextMerges:
+    """The text merges of one three-way, and which of them conflicted.
+
+    A conflict is the merge's own answer (``text_merge_result``), not a
+    scan of what it produced: a file can hold marker text of its own,
+    and a new conflict in it would hide behind that. Each merge
+    records the bytes it made with its answer, and a key counts as
+    conflicted only while it holds exactly those bytes. kvgit may run a
+    merge again (a commit that loses its race retries), and a key the
+    second run resolved some other way then holds other bytes.
+    """
+
+    def __init__(self) -> None:
+        self._made: dict[str, tuple[bytes, bool]] = {}
+
+    def merge_for(self, key: str) -> Callable[[Any, Any, Any], bytes]:
+        """The text merge for one file key, recording what it made."""
+        from kvgit.merges import text_merge_result
+
+        def merge(old: Any, ours: Any, theirs: Any) -> bytes:
+            merged, conflicted = text_merge_result(old, ours, theirs)
+            self._made[key] = (merged, conflicted)
+            return merged
+
+        return merge
+
+    def conflicted(self, key: str | None, state: Mapping[str, Any]) -> bool:
+        """Whether ``key`` holds the bytes of a merge that conflicted."""
+        made = self._made.get(key) if key is not None else None
+        return made is not None and made[1] and state.get(key) == made[0]
+
+
 def _same(a: Any, b: Any) -> bool:
     """Whether two stored values are the same value.
 
@@ -1263,7 +1295,10 @@ class KvgitProvider:
         # describe bytes nothing holds.
         base = self._merge_base(self._wt.head, source_head)
         at_base = self._snapshot(base) if base is not None else None
-        merge_fns, merge_prefixes = self._three_way_rules(other, at_base, ignore)
+        texts = _TextMerges()
+        merge_fns, merge_prefixes = self._three_way_rules(
+            other, at_base, ignore, texts=texts
+        )
 
         # Markers commit WITH the merge (flagged in the outcome), they
         # don't block it: the agent resolves with ordinary edit tools
@@ -1298,12 +1333,10 @@ class KvgitProvider:
                 merged=True, commit=before, conflicts=(), auto_merged=()
             )
         # What the merge brought in: the diff from our pre-merge head
-        # lists exactly the merge's work. Conflict markers are reported
-        # by provenance, not by scan: a brought file may legitimately
-        # contain marker-like bytes, so only markers absent from both
-        # parents' versions count.
+        # lists exactly the merge's work. A conflict is what the text
+        # merge said it was, not what a scan finds: a file may hold
+        # marker text of its own, before the merge or brought by it.
         brought = self.diff(before, self._wt.head)
-        at_base = self._snapshot(before)
         rev = {
             display: key for key, display in self._file_keys(self._wt.keys()).items()
         }
@@ -1312,7 +1345,7 @@ class KvgitProvider:
             sorted(
                 path
                 for path in candidates
-                if self._markers_introduced(rev.get(path), at_base, other)
+                if texts.conflicted(rev.get(path), self._state)
             )
         )
         # HEAD moved underneath the VirtualFS object: drop its caches
@@ -1361,7 +1394,12 @@ class KvgitProvider:
         return not (change.added or change.removed or change.modified)
 
     def _three_way_rules(
-        self, other: Any, at_base: Any, ignore: Callable[[str], bool] | None = None
+        self,
+        other: Any,
+        at_base: Any,
+        ignore: Callable[[str], bool] | None = None,
+        *,
+        texts: _TextMerges | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """The rules a three-way over this session resolves by.
 
@@ -1380,7 +1418,8 @@ class KvgitProvider:
           the key it was registered for, so a blanket default would
           marker-merge cache blobs. Enumerated from ours and theirs;
           the union is harmless, since an uncontested key never
-          consults a function.
+          consults a function. With ``texts``, each merge records
+          whether it conflicted there (:class:`_TextMerges`).
         - a file's metadata row merges field-aware beside its blob,
           carrying the size of the merged bytes. Bound per key for the
           same reason: the function has to know which file it describes.
@@ -1423,7 +1462,10 @@ class KvgitProvider:
             keys = list(handle.keys())
             file_keys.update(self._file_keys(keys).keys())
             row_keys.update(k for k in keys if VirtualFS.is_metadata_key(k))
-        merge_fns: dict[str, Any] = {key: text_merge for key in file_keys}
+        merge_fns: dict[str, Any] = {
+            key: text_merge if texts is None else texts.merge_for(key)
+            for key in file_keys
+        }
         for key in row_keys:
             merge_fns[key] = self._row_merge_fn(key, other, at_base)
         if ignore is not None:
@@ -1500,7 +1542,10 @@ class KvgitProvider:
             )
         at_base = current_layout(self._at_commit(base))
         at_theirs = current_layout(self._at_commit(theirs))
-        merge_fns, merge_prefixes = self._three_way_rules(at_theirs, at_base, ignore)
+        texts = _TextMerges()
+        merge_fns, merge_prefixes = self._three_way_rules(
+            at_theirs, at_base, ignore, texts=texts
+        )
         # A key a policy gives to ours outright is not read at all: the
         # planes that take ours keep every key under them, and their
         # values are the one part of a session's state that is not
@@ -1581,7 +1626,6 @@ class KvgitProvider:
         written = self._stage_applied(changed, resolution, values)
         if not written:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
-        before = self._wt.head
         try:
             landed = self.commit(
                 info={
@@ -1599,16 +1643,13 @@ class KvgitProvider:
         # The tree moved under the VirtualFS object: drop its caches
         # like checkout()/discard() do, or listings and stat go stale.
         self._invalidate_fs()
-        # Conflicts by provenance, not by scan: a file the change
-        # brings may legitimately contain marker-like bytes, so only
-        # markers absent from both sides count.
-        at_before = self._snapshot(before)
+        # Conflicts as the text merge reported them, as a merge's are.
         paths = self._file_keys(written)
         conflicts = tuple(
             sorted(
                 path
                 for key, path in paths.items()
-                if self._markers_introduced(key, at_before, at_theirs)
+                if texts.conflicted(key, self._state)
             )
         )
         return MergeOutcome(
@@ -1840,27 +1881,6 @@ class KvgitProvider:
             except CantMark:
                 return None
         return len(merged) if merged is not None else None
-
-    def _markers_introduced(self, key: str | None, at_base: Any, other: Any) -> bool:
-        """Whether this merge introduced conflict markers into a key.
-
-        Marker-like bytes can predate the merge (docs, fixtures), so
-        current bytes carrying them are not enough: the markers must
-        be absent from both parents' versions. Reads stay scoped to
-        scan-positive candidates, so the common case costs one blob.
-        """
-        if key is None:
-            return False
-        value = self._state.get(key)
-        if not isinstance(value, bytes) or b"<<<<<<< " not in value:
-            return False
-        for handle in (at_base, other):
-            if handle is None:
-                continue
-            parent = handle.get(key)
-            if isinstance(parent, bytes) and b"<<<<<<< " in parent:
-                return False
-        return True
 
     def _changed_content(self, keys: dict[str, str], a: str, b: str) -> frozenset[str]:
         """Of these file keys, the paths whose bytes actually differ."""

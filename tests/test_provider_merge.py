@@ -340,6 +340,26 @@ def test_preexisting_markers_not_flagged(kv_ws):
         fork.close()
 
 
+def test_a_recorded_conflict_counts_only_while_the_key_holds_its_bytes():
+    """kvgit may run a merge twice (a commit that loses its race
+    retries); a key the second run resolved otherwise holds other bytes,
+    and an earlier run's conflict must not stick to it."""
+    from nontainer.providers.kvgit import _TextMerges
+
+    texts = _TextMerges()
+    merged = texts.merge_for("k")(b"a\n", b"b\n", b"c\n")
+    assert b"<<<<<<< " in merged
+    assert texts.conflicted("k", {"k": merged})
+    assert not texts.conflicted("k", {"k": b"c\n"})
+    assert not texts.conflicted("other", {"other": merged})
+    assert not texts.conflicted(None, {})
+
+    base, ours, theirs = b"a\nb\nc\nd\ne\n", b"A\nb\nc\nd\ne\n", b"a\nb\nc\nd\nE\n"
+    clean = texts.merge_for("j")(base, ours, theirs)
+    assert clean == b"A\nb\nc\nd\nE\n"
+    assert not texts.conflicted("j", {"j": clean})
+
+
 # -- the facade ----------------------------------------------------------------
 
 
