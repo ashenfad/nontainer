@@ -348,7 +348,8 @@ class Turn:
 
         A source that raises is logged and skipped, so it costs neither
         the tool result nor the other notes; any notes it had minted
-        before it raised go back to the queue for the next result.
+        before it raised go back to the queue for the next result, the
+        failing sources' notes in the order of their sources.
 
         For a result that is not text (one carrying images, say), call
         this, attach the notes yourself (``inbox.render(notes)``), and
@@ -359,6 +360,7 @@ class Turn:
         if inbox is None:
             return []
         notes = inbox.drain()
+        stray: list[Note] = []
         for source in self.sources:
             before = {note.id for note in inbox.delivered()}
             try:
@@ -368,9 +370,11 @@ class Turn:
                     "a delivery source raised; its notes wait for the next tool result",
                     exc_info=True,
                 )
-                stray = [n for n in inbox.delivered() if n.id not in before]
-                if stray:
-                    inbox.restore(stray)
+                stray.extend(n for n in inbox.delivered() if n.id not in before)
+        if stray:
+            # Once, in source order: restoring per source would put each
+            # failing source's notes ahead of the one before it.
+            inbox.restore(stray)
         return notes
 
     def opening(self) -> str | None:
@@ -512,6 +516,12 @@ class Turn:
         is given). Nothing is committed when nothing changed, or on a
         workspace that takes no commits.
 
+        When storing the run raises, the stored conversation is left as
+        it was, and the delivered notes go back to the front of the
+        queue rather than being settled: no stored run holds them, so
+        the next delivery carries them again. The error is raised as
+        before.
+
         A cancelled or failed run should be kept with a closing note,
         so the model remembers the work it did before the cut. The note
         is in the harness's own format, so the harness adds it to the
@@ -538,7 +548,14 @@ class Turn:
         with ws.lock:
             try:
                 if body is not None or record is not _KEEP:
-                    self._store(body, record)
+                    try:
+                        self._store(body, record)
+                    except BaseException:
+                        # No stored run holds what the model was told,
+                        # so the next delivery tells it again.
+                        if self.inbox is not None:
+                            self.inbox.requeue()
+                        raise
                 if self.inbox is not None:
                     self.inbox.settle()
                 info: dict[str, Any] = {"tool": "turn"}

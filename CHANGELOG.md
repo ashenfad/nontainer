@@ -7,14 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
-### Fixed
-- **ws-git reports a conflict in a file that already holds marker text** (#246). A merge counted a file as conflicted only when it held `<<<<<<< ` and neither parent's version did. So in a file with marker text of its own (notes on resolving merges, a test fixture), a real conflict from an overlapping edit was reported as auto-merged: the merge exited 0, recorded no outstanding merge, and `ws-git status` read clean over live markers. Revert and cherry-pick had the same gap. Each file's text merge now reports whether it conflicted (kvgit's `text_merge_result`), and that answer is what counts; the merged bytes are unchanged.
-- **The conformance runner catches a harness that stops short** (#241). A turn that ended with replies left in its script passed, so a harness that skipped the reply after its tool calls passed every scenario that doesn't check events, the fork scenarios among them. A turn with steps left now fails `turn<N>.script`, and a delegate `delegate.<name>.script`; a scenario's scripts, its delegates' included, must end on a reply.
-
-## Unreleased
-
 ### Added
 - **Mount a filesystem object, not only a host directory** (#242). `Mount(fs=obj)` mounts any object with the monkeyfs reads (`exists`, `isdir`, `isfile`, `islink`, `list`, `read`, `stat`, `getsize`), so a workspace can expose content that isn't on local disk, such as a document store fetched as the agent reads it. Both tools see it, under `isolation="process"` too, and only the agent's reads reach it: commits, ws-git and forks read none of it. It is mounted read-only, a fork shares it, and closing the workspace leaves it open. An executor that copies the tree into a machine of its own declares `copies_tree`, and refuses such a mount; `DudExecutor` does.
+
+### Fixed
+- **The conformance runner catches a harness that stops short** (#241). A turn that ended with replies left in its script passed, so a harness that skipped the reply after its tool calls passed every scenario that doesn't check events, the fork scenarios among them. A turn with steps left now fails `turn<N>.script`, and a delegate `delegate.<name>.script`; a scenario's scripts, its delegates' included, must end on a reply.
+- **ws-git reports a conflict in a file that already holds marker text** (#246). A merge counted a file as conflicted only when it held `<<<<<<< ` and neither parent's version did. So in a file with marker text of its own (notes on resolving merges, a test fixture), a real conflict from an overlapping edit was reported as auto-merged: the merge exited 0, recorded no outstanding merge, and `ws-git status` read clean over live markers. Revert and cherry-pick had the same gap. Each file's text merge now reports whether it conflicted (kvgit's `text_merge_result`), and that answer is what counts; the merged bytes are unchanged.
+- **A turn whose run fails to store keeps the notes it delivered** (#243). `Turn.end` settled the inbox only after storing the run, so when storing raised, the delivered notes stayed unsettled: the next turn neither delivered them again nor found them in any stored run, and its end settled them. A person's correction was lost with no sign. They now go back to the front of the queue, and the error is raised as before. A failed write also leaves the stored conversation as it was: `conversation.write` puts back the keys it had already written, where it left a run body staged that no index named, for the next commit to land.
+- **Notes from failing delivery sources keep their sources' order** (#243). Each failing source's notes were put back at the head of the queue one source at a time, so the second source's notes came out ahead of the first's. They are now put back once, in source order.
 
 ## 0.11.1 - 2026-10-12
 
