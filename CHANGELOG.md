@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.2 - 2026-10-13
 
 ### Added
 - **A `ws-git` script corpus for ports of the verb.** `nontainer.conformance.wsgit` holds short scripts covering every verb and its refusals: terminal commands across sessions, plus the host steps that set a scene. `python -m nontainer.conformance.export` records each script by running it and writes it under `conformance/wsgit/json/` with what every command printed. Commit ids are named by order of appearance, so a port in another language can replay the steps and compare. The drift test fails when the verb's output changes without a re-export.
