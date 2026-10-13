@@ -57,6 +57,52 @@ def test_exist_ok_forgives_a_directory_and_not_a_file(afs_ws):
         fs.mkdir("/workspace/taken.txt", exist_ok=True)
 
 
+@pytest.mark.parametrize(
+    "operation, expected, code",
+    [
+        (lambda fs: fs.write("/workspace/d", b"x"), IsADirectoryError, "EISDIR"),
+        (lambda fs: fs.write("/workspace/f/c", b"x"), NotADirectoryError, "ENOTDIR"),
+        (lambda fs: fs.read("/workspace/missing"), FileNotFoundError, "ENOENT"),
+        (lambda fs: fs.read("/workspace/d"), IsADirectoryError, "EISDIR"),
+        (lambda fs: fs.list("/workspace/missing"), FileNotFoundError, "ENOENT"),
+        (lambda fs: fs.list("/workspace/f"), NotADirectoryError, "ENOTDIR"),
+        (lambda fs: fs.remove("/workspace/d"), IsADirectoryError, "EISDIR"),
+        (lambda fs: fs.rmdir("/workspace/d"), OSError, "ENOTEMPTY"),
+        (
+            lambda fs: fs.rename("/workspace/missing", "/workspace/z"),
+            FileNotFoundError,
+            "ENOENT",
+        ),
+        (lambda fs: fs.makedirs("/workspace/f/s/t"), NotADirectoryError, "ENOTDIR"),
+    ],
+    ids=[
+        "write-over-dir",
+        "write-under-file",
+        "read-missing",
+        "read-dir",
+        "list-missing",
+        "list-file",
+        "remove-dir",
+        "rmdir-nonempty",
+        "rename-missing",
+        "makedirs-under-file",
+    ],
+)
+def test_errors_are_the_standard_librarys(afs_ws, operation, expected, code):
+    """AgentFS raises its own ErrnoException; callers (termish, the
+    monkeyfs patch layer and its conformance kit) catch the OSError
+    subclass the standard library raises for the same errno."""
+    import errno
+
+    fs = afs_ws.files.fs
+    fs.makedirs("/workspace/d/sub")
+    fs.write("/workspace/f", b"x")
+    with pytest.raises(expected) as caught:
+        operation(fs)
+    assert caught.value.errno == getattr(errno, code)
+    assert type(caught.value).__module__ == "builtins"
+
+
 def test_caps(afs_ws):
     caps = afs_ws.caps
     assert not caps.versioned

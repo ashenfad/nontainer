@@ -94,6 +94,20 @@ def _already_exists(path: str) -> FileExistsError:
     return FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), path)
 
 
+def _os_error(e: Any, path: str) -> OSError:
+    """An AgentFS ``ErrnoException`` as the ``OSError`` the standard
+    library raises for the same code: ``OSError`` built from an errno
+    is the matching subclass, so EISDIR is ``IsADirectoryError``, ENOENT
+    ``FileNotFoundError``, ENOTDIR ``NotADirectoryError``. Callers
+    (termish, the monkeyfs patch layer, its conformance kit) catch
+    those, never the SDK's own type. A code the errno module doesn't
+    know stays a plain ``OSError``."""
+    code = getattr(errno, getattr(e, "code", ""), None)
+    if code is None:
+        return OSError(str(e))
+    return OSError(code, os.strerror(code), path)
+
+
 class _AgentFsFS:
     """Sync fs adapter: termish protocol + monkeyfs patch surface."""
 
@@ -194,7 +208,7 @@ class _AgentFsFS:
                 self._fs.read_file(self.resolve_path(path), encoding=None)
             )
         except ErrnoException as e:
-            raise FileNotFoundError(str(e)) from e
+            raise _os_error(e, path) from e
         blob = data if isinstance(data, bytes) else data.encode()
         if offset == 0 and size < 0:
             return blob
@@ -206,7 +220,12 @@ class _AgentFsFS:
         if mode.startswith("a") and self.exists(p) and self.isfile(p):
             data = self.read(p) + data
         # AgentFS write_file auto-creates parent directories.
-        self._loop.call(self._fs.write_file(p, data))
+        from agentfs_sdk import ErrnoException
+
+        try:
+            self._loop.call(self._fs.write_file(p, data))
+        except ErrnoException as e:
+            raise _os_error(e, path) from e
 
     def touch(self, path: str) -> None:
         p = self.resolve_path(path)
@@ -274,7 +293,7 @@ class _AgentFsFS:
                 if not exist_ok or not self.isdir(p):
                     raise _already_exists(path) from e
             else:
-                raise
+                raise _os_error(e, path) from e
 
     def makedirs(self, path: str, exist_ok: bool = True) -> None:
         from agentfs_sdk import ErrnoException
@@ -293,7 +312,7 @@ class _AgentFsFS:
                 self._loop.call(self._fs.mkdir(cur))
             except ErrnoException as e:
                 if "EEXIST" not in str(e):
-                    raise
+                    raise _os_error(e, path) from e
         self.mkdir(p, exist_ok=exist_ok)
 
     def remove(self, path: str) -> None:
@@ -302,7 +321,7 @@ class _AgentFsFS:
         try:
             self._loop.call(self._fs.unlink(self.resolve_path(path)))
         except ErrnoException as e:
-            raise FileNotFoundError(str(e)) from e
+            raise _os_error(e, path) from e
 
     def rmdir(self, path: str) -> None:
         from agentfs_sdk import ErrnoException
@@ -310,7 +329,7 @@ class _AgentFsFS:
         try:
             self._loop.call(self._fs.rmdir(self.resolve_path(path)))
         except ErrnoException as e:
-            raise OSError(str(e)) from e
+            raise _os_error(e, path) from e
 
     def rename(self, src: str, dst: str) -> None:
         from agentfs_sdk import ErrnoException
@@ -320,13 +339,18 @@ class _AgentFsFS:
                 self._fs.rename(self.resolve_path(src), self.resolve_path(dst))
             )
         except ErrnoException as e:
-            raise OSError(str(e)) from e
+            raise _os_error(e, src) from e
 
     # -- listing ---------------------------------------------------------
 
     def list(self, path: str = ".", recursive: bool = False) -> list[str]:
+        from agentfs_sdk import ErrnoException
+
         p = self.resolve_path(path)
-        entries = self._loop.call(self._fs.readdir(p))
+        try:
+            entries = self._loop.call(self._fs.readdir(p))
+        except ErrnoException as e:
+            raise _os_error(e, path) from e
         if not recursive:
             return sorted(entries)
         out: list[str] = []
