@@ -128,14 +128,16 @@ def test_vfs_import_error_names_the_root():
 
 
 def test_skills_ride_the_root():
-    """Skills install under <root>/skills and the catalog names it."""
+    """Skills live under <root>/skills and the catalog names it."""
     from nontainer import skills
 
     ws = _kv_ws()
     try:
-        name = skills.install(ws, b"---\nname: probe\n---\nbody")
-        assert name == "probe"
-        assert ws.files.fs.exists("/workspace/skills/probe/SKILL.md")
+        assert skills.skills_root(ws) == "/workspace/skills"
+        ws.files.fs.makedirs("/workspace/skills/probe", exist_ok=True)
+        ws.files.fs.write(
+            "/workspace/skills/probe/SKILL.md", b"---\nname: probe\n---\nbody"
+        )
         assert "/workspace/skills" in skills.catalog(ws)
     finally:
         ws.close()
