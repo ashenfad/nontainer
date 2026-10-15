@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`KvgitStoreDb.get_sessions` and `KvgitSessionDb.get_sessions` honor agno's `include_runs=False`** (#257). agno 3 lets a list view ask for sessions without their run history; the argument was accepted and ignored, so every listed session's runs were still read. Now `runs` comes back `None` and no run is read. The default still returns the whole history.
+- **`skills.mounts_from_modules(python_or_modules, root=...)`**, the library-embedded-skill convention as mounts: every granted module whose package ships `<pkg>/skills/<name>/SKILL.md` gets a read-only mount per skill. It takes a `PythonConfig` or its `modules` list (modules, `ModuleGrant`s, names, nested preset lists), looks at each package once, skips a package whose skills have no directory on disk (a zip import), and raises `ValueError` for two skills with one name, as `mounts` does.
 
 ### Changed
 - **A store listing reads only the heads that moved** (#257). `KvgitStoreDb.get_sessions` read every branch's whole session record, `session_data` and all, to filter, sort and count, on every call. It now does that on a small row per head (session id, user, agent, name, created and updated times), kept by commit hash. A commit never changes, so a kept row is never stale: a turn, a rename, a fork, a checkout or a deletion moves the branch to another commit, which the next listing reads. Whole records are read only for the page returned, at the commit its row came from. Existing stores need nothing done.
 
+### Removed
+- **`skills.install` and `skills.install_from_modules`** (#256). A skill they copied in landed as workspace files in a framework commit, so ws-git, which measures from the agent's own last commit, listed it in a fresh session as work the agent never did. Nothing called them: embedders mount their skills. Mount instead: `skills.mounts(dir)` for an embedder's set, and `skills.mounts_from_modules(python)` for the skills granted packages ship. An agent's own skills are files it writes, as before. The name `install` is left free for curation's take of a published release, which will land in the agent's graph.
+
 ### Fixed
 - **Sessions with equal times list in one order** (#257). Ties fell back to the order of the store's branches, so a page boundary between two sessions with the same `created_at` could repeat one and skip the other. They are now ordered by session id, in either direction.
+- **A skill named with dots alone is refused.** `name: ..` in a skill's frontmatter put its mount point at `<root>/skills/..`, the workspace root; `mounts` now raises `ValueError`. Leading dots are dropped from a name, so a skill no longer lands as a hidden directory.
 
 ## 0.11.2 - 2026-10-13
 

@@ -560,8 +560,8 @@ untrusted input.
 
 `root` is the **workspace root**: the absolute path agent-visible
 files live under, and the one path contract shared across executors.
-cwd starts there, VFS module imports resolve from it, skills install
-to `<root>/skills`, the app tree is `<root>/app` — and a VM executor
+cwd starts there, VFS module imports resolve from it, skills live
+at `<root>/skills`, the app tree is `<root>/app` — and a VM executor
 (dud) mounts its guest workspace at this exact path, so an absolute
 path in agent code names the same file on every executor. Forks
 inherit it. `root="/"` selects the flat layout, with agent files at the
@@ -2206,33 +2206,41 @@ The agno toolkit appends a catalog of them to its instructions;
 reading one needs no tool beyond the terminal.
 
 ```python
-skills.install(ws, source)            # bytes, a .md file, or a skill directory
-skills.install_from_modules(ws)       # every granted module's <pkg>/skills/
-skills.catalog(ws)                    # the instructions' skills primer
 skills.mounts(*sources, root="/workspace") -> dict[str, Mount]
+skills.mounts_from_modules(python_or_modules, root="/workspace") -> dict[str, Mount]
 skills.discover(module)               # a package's skill directories
+skills.catalog(ws)                    # the instructions' skills primer
 ```
 
-**Two kinds.** An *installed* skill is ordinary workspace files: it
-versions, forks and rewinds with the session, and the agent can write
-or improve one like any other file. A *mounted* skill is a read-only
-view of a directory on the host, for skills that are never the agent's
-to change, such as an embedder's starter set or a library's:
+**Two kinds.** The agent's *own* skills are ordinary workspace files
+it writes: they version, fork and rewind with the session, and it can
+improve one like any other file. An embedder's or a library's skills,
+which are never the agent's to change, arrive *mounted*: a read-only
+view of a directory on the host.
 
 ```python
 ws = store.open("chat", mounts=skills.mounts(STARTER_SKILLS_DIR))
-ws = store.open("chat", mounts=skills.mounts(*skills.discover(mylib)))
+
+python = PythonConfig(modules=[mylib, dataframes()])
+ws = store.open("chat", python=python, mounts=skills.mounts_from_modules(python))
 ```
 
 `mounts` takes directories of skills (or single skill directories) and
 returns one read-only `Mount` per skill at `<root>/skills/<name>`,
-named as `install` would name it. Mounts are not versioned, so ws-git
-never lists a mounted skill and no commit, fork point or publication
-copies one; a fork sees the same directory. The catalog lists both
-kinds. `install` refuses a name that is mounted, and
-`install_from_modules` skips a library skill that is already mounted.
-An agent that wants to adapt a mounted skill copies it under a new
-name.
+named by its frontmatter `name` or else its directory's. A name of
+dots alone is refused, and leading dots are dropped.
+`mounts_from_modules` does the same for every granted module whose
+package ships `<pkg>/skills/<name>/SKILL.md`: it takes a
+`PythonConfig` or its `modules` list, looks at each package once, and
+skips a package whose skills have no directory on disk (one imported
+from a zip). Both raise `ValueError` for two skills with one name.
+
+Mounts are not versioned, so ws-git never lists a mounted skill and no
+commit, fork point or publication copies one; a fork sees the same
+directory. That is the point: a skill the framework copied into the
+tree would read in `ws-git status` as work the agent never did. The
+catalog lists mounted skills beside the agent's own. An agent that
+wants to adapt a mounted skill copies it under a new name.
 
 ## Presets (`nontainer.presets`)
 
