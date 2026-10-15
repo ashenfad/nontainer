@@ -203,9 +203,12 @@ were run, not just read.
   tool result, framed as the machinery speaking rather than its
   principal.
 - **Skills live in the tree.** `<root>/skills/<name>/SKILL.md`,
-  cataloged into the agno toolkit's instructions by frontmatter, and
-  installed by `skills.install` from bytes, a file, a directory or a
-  package resource.
+  cataloged into the agno toolkit's instructions by frontmatter. An
+  agent's own skills are files it writes; an embedder's or a library's
+  are mounted read-only (`skills.mounts`, `skills.mounts_from_modules`),
+  outside the session's history. Nothing copies a skill into the tree
+  yet: the copying `skills.install` was removed (#256), which leaves
+  the name free for the release take below.
 - **`ws-pytest` leaves vendored tests alone.** With no paths it
   collects `tests/` only, so that a vendored library's tests cannot
   fail a session's run; naming a path runs it.
@@ -1073,9 +1076,10 @@ away.
   sessions may already do.
 - **A host write into an agent's tree reads as the agent's work.**
   Every verb that writes there must land in the agent's graph, or it
-  breaks `status` and blocks merges. Today's `skills.install` commits
-  as the framework (`{"tool": "skill"}`) and has this problem as soon as
-  the agent has made one commit.
+  breaks `status` and blocks merges. The old `skills.install`
+  committed as the framework (`{"tool": "skill"}`) and had this
+  problem, which is why it was removed rather than kept beside the
+  release take.
 - **Traces on a VM rung are eager.** Curators belong on
   `LocalExecutor`.
 - **`.trace` can collide** with a real `.trace` in a session's tree;
