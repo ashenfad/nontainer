@@ -118,6 +118,24 @@ def _read_agno(kv: Any) -> dict[str, Any] | None:
     return _agno_record(index, conversation.read_record(kv, index))
 
 
+def _listing_row(record: dict[str, Any] | None) -> dict[str, Any] | None:
+    """What a store listing filters and sorts on, from a stored session
+    (as :func:`_read_agno` answers), or ``None`` where none is stored.
+    Small on purpose: it leaves out ``session_data`` but for the name,
+    and the run ids, which can both grow without bound."""
+    if not isinstance(record, dict):
+        return None
+    name = (record.get("session_data") or {}).get("session_name")
+    return {
+        "session_id": record.get("session_id"),
+        "user_id": record.get("user_id"),
+        "agent_id": record.get("agent_id"),
+        "session_name": name if isinstance(name, str) else "",
+        "created_at": record.get("created_at") or 0,
+        "updated_at": record.get("updated_at") or 0,
+    }
+
+
 def _store(
     kv: Any,
     data: dict[str, Any],
@@ -592,11 +610,13 @@ class KvgitSessionDb(JsonDb):
         sort_by: str | None = None,
         sort_order: str | None = None,
         deserialize: bool | None = True,
+        include_runs: bool = True,
         **_: Any,
     ) -> Any:
         """At most one session: the branch's. Filters that exclude it
         yield an empty result; sorting and pagination are moot over one
-        row and are accepted but ignored."""
+        row and are accepted but ignored. ``include_runs=False`` answers
+        without the runs, which are then not read at all."""
         record = self._record()
         matched = record is not None and self._matches(
             record,
@@ -621,7 +641,11 @@ class KvgitSessionDb(JsonDb):
         # or that one.
         if not matched:
             return ([], 0) if not deserialize else []
-        data = self._assembled(record)  # type: ignore[arg-type]
+        if include_runs:
+            data = self._assembled(record)  # type: ignore[arg-type]
+        else:
+            data = {k: v for k, v in record.items() if k != "run_ids"}  # type: ignore[union-attr]
+            data["runs"] = None
         if not deserialize:
             return [data], 1
         return [AgentSession.from_dict(data)]
@@ -1030,7 +1054,11 @@ class KvgitStoreDb(JsonDb):
     adds:
 
     - ``get_sessions`` lists the store's branches, reading each
-      committed head without opening it. agno's cross-session features
+      committed head without opening it. It filters, sorts and counts
+      on a small row per head, kept by commit hash so that only heads
+      that moved since the last listing are read again, and reads
+      whole records only for the page it returns (and their runs,
+      unless ``include_runs=False``). agno's cross-session features
       — ``search_past_sessions``, the AgentOS session routers — see
       every session in the store; with a store per user, that is the
       user's sessions.
@@ -1077,6 +1105,9 @@ class KvgitStoreDb(JsonDb):
         # committed head does not show, so looking a run up asks them
         # first (see ``_holder``).
         self._written: set[str] = set()
+        # Listing rows by the commit they were read from (see
+        # ``_listed_rows``); None for a commit holding no agno session.
+        self._listed: dict[str, dict[str, Any] | None] = {}
 
     def owns(self, workspace: Workspace) -> bool:
         """Whether this db commits the turns of ``workspace``: true when
@@ -1181,57 +1212,102 @@ class KvgitStoreDb(JsonDb):
         sort_by: str | None = None,
         sort_order: str | None = None,
         deserialize: bool | None = True,
+        include_runs: bool = True,
         **_: Any,
     ) -> Any:
         """Every session in the store that passes the filters, sorted
         (``created_at`` or ``updated_at``, newest first unless asked
-        otherwise) and paginated. Runs are read only for the page
-        returned."""
-        matched: list[tuple[str, Any, dict[str, Any]]] = []
-        for branch in self._branches():
-            snapshot, record = self._peek(branch)
-            # A plain Workspace.fork() — a published snapshot, say —
-            # inherits its parent's record under the parent's id. Only a
-            # branch whose record names it holds a session.
-            if not isinstance(record, dict) or record.get("session_id") != branch:
-                continue
+        otherwise, and by session id among equal times) and paginated.
+
+        Filtering, sorting and the total read only each branch's listing
+        row (see :meth:`_listed_rows`). Session records are read for the
+        page returned, and runs too unless ``include_runs=False``."""
+        matched: list[tuple[str, dict[str, Any]]] = []
+        for head, row in self._listed_rows():
             if not KvgitSessionDb._matches(
-                record,
+                row,
                 user_id=user_id,
                 session_type=session_type,
                 component_id=component_id,
             ):
                 continue
             if session_name is not None:
-                stored = (record.get("session_data") or {}).get("session_name") or ""
-                if session_name.lower() not in stored.lower():
+                if session_name.lower() not in row["session_name"].lower():
                     continue
-            created = record.get("created_at") or 0
+            created = row["created_at"]
             if start_timestamp is not None and created < start_timestamp:
                 continue
             if end_timestamp is not None and created > end_timestamp:
                 continue
-            matched.append((branch, snapshot, record))
+            matched.append((head, row))
 
         key = sort_by if sort_by in ("created_at", "updated_at") else "created_at"
-        matched.sort(
-            key=lambda item: item[2].get(key) or 0, reverse=sort_order != "asc"
-        )
+        # Two stable sorts: session id first, so sessions with equal
+        # times keep one order in either direction and a page boundary
+        # between them never repeats or skips one.
+        matched.sort(key=lambda item: item[1]["session_id"])
+        matched.sort(key=lambda item: item[1][key], reverse=sort_order != "asc")
         total = len(matched)
         if limit is not None:
             start = max((page or 1) - 1, 0) * limit
             matched = matched[start : start + limit]
 
         found: list[dict[str, Any]] = []
-        for _branch, snapshot, record in matched:
+        for head, _row in matched:
+            # Read at the very commit the row came from, so the page
+            # agrees with the filters even if a branch moved since.
+            snapshot = self._kvgit().snapshot(commit=head)
+            record = _read_agno(snapshot) or {}
             data = {k: v for k, v in record.items() if k != "run_ids"}
-            run_ids = record.get("run_ids") or []
-            held = conversation.read_runs(snapshot, run_ids)
-            data["runs"] = _runs_from(held, run_ids) or None
+            if include_runs:
+                run_ids = record.get("run_ids") or []
+                held = conversation.read_runs(snapshot, run_ids)
+                data["runs"] = _runs_from(held, run_ids) or None
+            else:
+                data["runs"] = None
             found.append(data)
         if not deserialize:
             return found, total
         return [AgentSession.from_dict(data) for data in found]
+
+    def _listed_rows(self) -> list[tuple[str, dict[str, Any]]]:
+        """``(head commit, listing row)`` for every branch that holds its
+        own session.
+
+        A row is what a listing filters and sorts on (:func:`_listing_row`),
+        read from a branch's committed head and kept by that commit's
+        hash. A commit never changes, so a kept row is never stale: a
+        turn, a rename, a fork, a checkout or a deletion moves the branch
+        to another commit (or takes it away), and the next listing reads
+        that one. Only branches whose head has moved since the last
+        listing are read, and the rows kept are pruned to the current
+        heads, so they never outnumber the branches.
+
+        A plain Workspace.fork() — a published snapshot, say — inherits
+        its parent's record under the parent's id: only a branch whose
+        record names it holds a session. Such a fork shares its parent's
+        head commit until it moves, and with it the row.
+        """
+        repo = self._kvgit()
+        kept = self._listed
+        heads: dict[str, dict[str, Any] | None] = {}
+        out: list[tuple[str, dict[str, Any]]] = []
+        for branch in list(repo.branches):
+            try:
+                head = repo.branches[branch]
+            except KeyError:
+                continue  # deleted since the names were read
+            if head in heads:
+                row = heads[head]
+            elif head in kept:
+                row = kept[head]
+            else:
+                row = _listing_row(_read_agno(repo.snapshot(commit=head)))
+            heads[head] = row
+            if row is not None and row["session_id"] == branch:
+                out.append((head, row))
+        self._listed = heads
+        return out
 
     def upsert_session(
         self, session: Session, deserialize: bool | None = True, **kwargs: Any

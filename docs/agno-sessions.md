@@ -330,13 +330,24 @@ Every session call is routed to a per-branch view over that
 workspace, so the commit trigger and the guards are unchanged. The
 store adds:
 
-- **Listing.** `get_sessions` reads the session key at every
-  branch's committed head, without opening the branch, then filters,
-  sorts and paginates. agno's `search_past_sessions` tool and the
-  AgentOS session routers see every session in the store; with a
-  store per user, that is the user's sessions. Runs are read only for
-  the page returned. A turn in flight in an open session shows once
-  its commit lands.
+- **Listing.** `get_sessions` reads every branch's committed head,
+  without opening the branch, then filters, sorts and paginates. agno's
+  `search_past_sessions` tool and the AgentOS session routers see every
+  session in the store; with a store per user, that is the user's
+  sessions. A turn in flight in an open session shows once its commit
+  lands.
+  - Filtering, sorting and the total use a small row per head (session
+    id, user, agent, name, created and updated times). Rows are kept by
+    commit hash, which never changes, so a later listing reads only
+    the branches whose heads have moved since: a turn, a rename, a
+    fork, a checkout or a deletion. Nothing has to keep the rows in
+    step, and a store written before them needs nothing done.
+  - Whole session records are read only for the page returned, at the
+    commit its row came from. Their runs are read too, unless agno's
+    `include_runs=False` is passed: then `runs` is `None` and no run is
+    read.
+  - Sessions with equal times are ordered by session id, in either
+    direction, so a page boundary between them is stable.
 - **agno's own fork.** `Agent.fork_session` writes a session under a
   new id whose `session_data["forked_from_session_id"]` names the
   parent. The store forks the parent's branch (files, cache, cwd, in

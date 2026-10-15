@@ -2817,8 +2817,12 @@ and resume or create the branch otherwise; `WorkspaceTools` checks that
 through `db.owns(workspace)`.
 
 What the store adds: `get_sessions` lists every branch (committed heads,
-read without opening; filters, `sort_by` `created_at`/`updated_at`,
-`limit`/`page`; runs loaded for the returned page only), so
+read without opening; filters, `sort_by` `created_at`/`updated_at`
+with ties by session id, `limit`/`page`; records loaded for the
+returned page only, and their runs unless `include_runs=False`; a
+small row per head, kept by commit hash, is what the filters and the
+count read, so only heads that moved since the last listing are read
+again), so
 `search_past_sessions` and the AgentOS routers see the store's
 sessions. `Agent.fork_session` works: a new id carrying
 `session_data["forked_from_session_id"]` forks the parent's branch and
