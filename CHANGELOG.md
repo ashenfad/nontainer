@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`KvgitStoreDb.get_sessions` and `KvgitSessionDb.get_sessions` honor agno's `include_runs=False`** (#257). agno 3 lets a list view ask for sessions without their run history; the argument was accepted and ignored, so every listed session's runs were still read. Now `runs` comes back `None` and no run is read. The default still returns the whole history.
+
+### Changed
+- **A store listing reads only the heads that moved** (#257). `KvgitStoreDb.get_sessions` read every branch's whole session record, `session_data` and all, to filter, sort and count, on every call. It now does that on a small row per head (session id, user, agent, name, created and updated times), kept by commit hash. A commit never changes, so a kept row is never stale: a turn, a rename, a fork, a checkout or a deletion moves the branch to another commit, which the next listing reads. Whole records are read only for the page returned, at the commit its row came from. Existing stores need nothing done.
+
+### Fixed
+- **Sessions with equal times list in one order** (#257). Ties fell back to the order of the store's branches, so a page boundary between two sessions with the same `created_at` could repeat one and skip the other. They are now ordered by session id, in either direction.
+
 ## 0.11.2 - 2026-10-13
 
 ### Added

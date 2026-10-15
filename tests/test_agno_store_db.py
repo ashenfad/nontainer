@@ -368,3 +368,150 @@ def test_team_sessions_are_refused_before_anything_opens(registry, tmp_path):
     with pytest.raises(NotSupportedError):
         db.upsert_session(TeamSession(session_id="t1", team_id="team"))
     assert registry.live == {}
+
+
+# -- listing without reading everything ----------------------------------------
+
+
+def count_calls(monkeypatch, module, name):
+    """Wrap ``module.name`` to count its calls; returns the counter."""
+    calls = []
+    real = getattr(module, name)
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, counted)
+    return calls
+
+
+def test_include_runs_false_lists_without_reading_a_run(
+    registry, tmp_path, monkeypatch
+):
+    db, ws, agent = build(registry, tmp_path, "chat-1")
+    run_turn(agent, write_turn("a.txt", "A"))
+    reads = count_calls(monkeypatch, conversation, "read_runs")
+
+    rows, total = db.get_sessions(deserialize=False, include_runs=False)
+    assert total == 1 and rows[0]["session_id"] == "chat-1"
+    assert rows[0]["runs"] is None
+    [session] = db.get_sessions(include_runs=False)
+    assert session.session_id == "chat-1" and not session.runs
+    assert reads == []
+
+    # the default is unchanged: the whole history
+    [session] = db.get_sessions()
+    assert len(session.runs) == 1
+
+
+def test_the_single_branch_db_honors_include_runs(tmp_path, monkeypatch):
+    from test_agno_db import build as build_one
+
+    ws, db, _tk, agent = build_one(tmp_path)
+    run_turn(agent, write_turn("a.txt", "A"))
+    reads = count_calls(monkeypatch, conversation, "read_runs")
+
+    rows, total = db.get_sessions(deserialize=False, include_runs=False)
+    assert total == 1 and rows[0]["runs"] is None
+    assert reads == []
+    assert len(db.get_sessions()[0].runs) == 1
+
+
+def test_a_warm_listing_reads_records_only_for_its_page(
+    registry, tmp_path, monkeypatch
+):
+    """Filtering, sorting and the count read each head once; after
+    that, a listing reads whole records for the page it returns and
+    for the branches that moved, and nothing else — however large the
+    others' histories and session data."""
+    from nontainer.adapters import agno_db
+
+    db = KvgitStoreDb(
+        registry.store, open=registry.open, db_path=str(tmp_path / "agno")
+    )
+    big = {"session_state": {"blob": "x" * 100_000}}
+    for i in range(6):
+        db.upsert_session(
+            AgentSession(
+                session_id=f"chat-{i}",
+                agent_id="a",
+                created_at=1000 + i,
+                session_data=dict(big),
+            )
+        )
+        registry.open(f"chat-{i}").commit(info={"tool": "test"})
+    peeks = count_calls(monkeypatch, agno_db, "_read_agno")
+    runs = count_calls(monkeypatch, conversation, "read_runs")
+
+    rows, total = db.get_sessions(deserialize=False, limit=2, include_runs=False)
+    assert total == 6 and [r["session_id"] for r in rows] == ["chat-5", "chat-4"]
+    assert len(peeks) == 6 + 2  # cold: every head, then the page
+
+    peeks.clear()
+    rows, total = db.get_sessions(
+        deserialize=False, limit=2, page=2, include_runs=False
+    )
+    assert total == 6 and [r["session_id"] for r in rows] == ["chat-3", "chat-2"]
+    assert len(peeks) == 2  # the page alone
+    assert rows[0]["session_data"]["session_state"] == big["session_state"]
+
+    db.rename_session("chat-0", None, "renamed")
+    peeks.clear()
+    runs.clear()
+    rows, _ = db.get_sessions(
+        deserialize=False, session_name="renamed", include_runs=False
+    )
+    assert [r["session_id"] for r in rows] == ["chat-0"]
+    assert len(peeks) == 1 + 1  # the head that moved, then the page
+    assert runs == []  # include_runs=False, and sessions with no runs
+
+
+def test_equal_times_list_in_session_id_order_both_ways(registry, tmp_path):
+    db = KvgitStoreDb(
+        registry.store, open=registry.open, db_path=str(tmp_path / "agno")
+    )
+    for sid in ("c", "a", "b"):
+        db.upsert_session(AgentSession(session_id=sid, agent_id="x", created_at=7))
+        registry.open(sid).commit(info={"tool": "test"})
+
+    def ids(**kwargs):
+        rows, _ = db.get_sessions(deserialize=False, **kwargs)
+        return [r["session_id"] for r in rows]
+
+    assert ids() == ["a", "b", "c"]
+    assert ids(sort_order="asc") == ["a", "b", "c"]
+    pages = [ids(limit=1, page=p) for p in (1, 2, 3)]
+    assert pages == [["a"], ["b"], ["c"]]
+
+
+def test_the_listing_follows_a_checkout_and_a_deleted_branch(registry, tmp_path):
+    """Rows are kept by commit, so a rewind lists what the rewound-to
+    commit holds and a deleted branch lists nothing, with nothing told."""
+    from nontainer import Store
+
+    db, ws, agent = build(registry, tmp_path, "chat-1")
+    run_turn(agent, write_turn("a.txt", "A"))
+    db.rename_session("chat-1", None, "first")
+    before = ws.provider.head
+    db.rename_session("chat-1", None, "second")
+
+    def names():
+        rows, _ = db.get_sessions(deserialize=False)
+        return [r["session_data"].get("session_name") for r in rows]
+
+    assert names() == ["second"]
+    ws.checkout(before)
+    assert names() == ["first"]
+
+    _, _ws2, agent2 = build(registry, tmp_path, "chat-2")
+    run_turn(agent2, write_turn("b.txt", "B"))
+    assert sorted(r["session_id"] for r in db.get_sessions(deserialize=False)[0]) == [
+        "chat-1",
+        "chat-2",
+    ]
+    registry.live.pop("chat-2").close()
+    Store(registry.store).delete("chat-2")
+    assert [r["session_id"] for r in db.get_sessions(deserialize=False)[0]] == [
+        "chat-1"
+    ]
