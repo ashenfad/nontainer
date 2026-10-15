@@ -1,6 +1,7 @@
-"""Skills: /skills/<name>/SKILL.md convention — install helpers,
-library-embedded discovery, and the catalog primer."""
+"""Skills: /skills/<name>/SKILL.md convention — mounts, library-embedded
+discovery, and the catalog primer."""
 
+import importlib
 import sys
 import textwrap
 
@@ -25,126 +26,119 @@ def ws(tmp_path):
     w.close()
 
 
-def test_install_bytes_names_from_frontmatter(ws):
-    name = skills.install(ws, SKILL_MD)
-    assert name == "ev-data-cleaning"  # slugified frontmatter name
-    assert ws.files.fs.read("/workspace/skills/ev-data-cleaning/SKILL.md") == SKILL_MD
-    # idempotent overwrite
-    assert skills.install(ws, SKILL_MD) == "ev-data-cleaning"
+def _write(ws, name, content):
+    """An agent's own skill: files it writes, like any other."""
+    path = f"{skills.skills_root(ws)}/{name}/SKILL.md"
+    ws.files.fs.makedirs(path.rsplit("/", 1)[0], exist_ok=True)
+    ws.files.fs.write(path, content)
+    return path
 
 
-def test_frontmatter_tolerates_utf8_bom(ws):
+def test_frontmatter_tolerates_utf8_bom(tmp_path):
     """A Windows-authored SKILL.md leads with a BOM; the frontmatter
     fields must still parse instead of failing startswith('---')."""
     bom_skill = b"\xef\xbb\xbf" + SKILL_MD
     assert skills.frontmatter(bom_skill)["name"] == "EV Data Cleaning"
-    assert skills.install(ws, bom_skill) == "ev-data-cleaning"
-
-
-def test_install_skips_non_regular_files(ws, tmp_path):
-    """A broken symlink (or fifo) in a skill directory is skipped, not
-    read — read_bytes on it would raise (or block, for pipes)."""
-    d = tmp_path / "my-skill"
+    d = tmp_path / "bom"
     d.mkdir()
-    (d / "SKILL.md").write_bytes(b"---\nname: linky\n---\nbody")
-    (d / "dangling").symlink_to(tmp_path / "does-not-exist")
-    assert skills.install(ws, d) == "linky"
-    assert not ws.files.fs.exists("/workspace/skills/linky/dangling")
+    (d / "SKILL.md").write_bytes(bom_skill)
+    assert list(skills.mounts(d)) == ["/workspace/skills/ev-data-cleaning"]
 
 
-def test_install_directory_with_references(ws, tmp_path):
-    d = tmp_path / "my-skill"
-    (d / "references").mkdir(parents=True)
-    (d / "SKILL.md").write_bytes(b"---\ndescription: a demo\n---\nbody")
-    (d / "references" / "guide.md").write_bytes(b"deep dive")
-    name = skills.install(ws, d)
-    assert name == "my-skill"  # no frontmatter name: directory fallback
-    assert (
-        ws.files.fs.read("/workspace/skills/my-skill/references/guide.md")
-        == b"deep dive"
-    )
-
-    bare = tmp_path / "bare"
-    bare.mkdir()
-    with pytest.raises(ValueError, match="SKILL.md"):
-        skills.install(ws, bare)
+def test_a_name_of_dots_alone_is_refused(tmp_path):
+    """``name: ..`` would mount the skill at skills/.., outside the
+    skills directory."""
+    for name in ("..", ".", "..."):
+        d = tmp_path / f"dots{len(name)}"
+        d.mkdir()
+        (d / "SKILL.md").write_text(f"---\nname: {name}\n---\nbody")
+        with pytest.raises(ValueError, match="dots alone"):
+            skills.mounts(d)
 
 
-def test_install_md_file_fallback_names(ws, tmp_path):
-    f = tmp_path / "publishing.md"
-    f.write_bytes(b"# no frontmatter")
-    assert skills.install(ws, f) == "publishing"
-
-    d = tmp_path / "checklist"
+def test_leading_dots_are_dropped(tmp_path):
+    """No skill lands as a hidden directory."""
+    d = tmp_path / "hidden"
     d.mkdir()
-    (d / "SKILL.md").write_bytes(b"# body")
-    assert skills.install(ws, d / "SKILL.md") == "checklist"  # parent dir name
+    (d / "SKILL.md").write_text("---\nname: .secret\n---\nbody")
+    assert list(skills.mounts(d)) == ["/workspace/skills/secret"]
+    (d / "SKILL.md").write_text("---\nname: ../escape\n---\nbody")
+    assert list(skills.mounts(d)) == ["/workspace/skills/escape"]
 
 
-def test_install_from_granted_modules(ws, tmp_path, monkeypatch):
-    """The convention: a granted library shipping <pkg>/skills/ teaches
-    the agent how to use it — one gesture."""
-    pkg = tmp_path / "demolib"
-    (pkg / "skills" / "using-demolib").mkdir(parents=True)
+def _demolib(tmp_path, monkeypatch, pkgname="demolib"):
+    pkg = tmp_path / pkgname
+    (pkg / "skills" / f"using-{pkgname}").mkdir(parents=True)
     (pkg / "__init__.py").write_text("x = 1\n")
-    (pkg / "skills" / "using-demolib" / "SKILL.md").write_text(
-        textwrap.dedent("""\
+    (pkg / "sub.py").write_text("y = 2\n")
+    (pkg / "skills" / f"using-{pkgname}" / "SKILL.md").write_text(
+        textwrap.dedent(f"""\
         ---
-        name: using-demolib
-        description: how to drive demolib
+        name: using-{pkgname}
+        description: how to drive {pkgname}
         ---
-        call demolib.x
+        call {pkgname}.x
         """)
     )
     monkeypatch.syspath_prepend(str(tmp_path))
-    import demolib  # noqa: F401
+    return importlib.import_module(pkgname)
 
-    w = workspace(
-        "skills-mod", store=tmp_path / "store", python=PythonConfig(modules=[demolib])
-    )
+
+def test_mounts_from_granted_modules(tmp_path, monkeypatch):
+    """The convention: a granted library shipping <pkg>/skills/ teaches
+    the agent how to use it — one gesture."""
+    demolib = _demolib(tmp_path, monkeypatch)
+    sub = importlib.import_module("demolib.sub")
+
+    from nontainer import ModuleGrant
+
+    python = PythonConfig(modules=[[demolib], ModuleGrant(sub)])
     try:
-        installed = skills.install_from_modules(w)
-        assert installed == ["using-demolib"]
-        assert w.files.fs.exists("/workspace/skills/using-demolib/SKILL.md")
+        points = skills.mounts_from_modules(python)
+        assert list(points) == ["/workspace/skills/using-demolib"]  # one package, once
+        assert points == skills.mounts_from_modules(python.modules)
+        assert points == skills.mounts_from_modules(["demolib"])
+        assert list(skills.mounts_from_modules(python, root="/")) == [
+            "/skills/using-demolib"
+        ]
+
+        w = workspace(
+            "skills-mod", store=tmp_path / "store", python=python, mounts=points
+        )
+        try:
+            assert "- using-demolib: how to drive demolib" in skills.catalog(w)
+            assert w.files.fs.exists("/workspace/skills/using-demolib/SKILL.md")
+        finally:
+            w.close()
     finally:
-        w.close()
         sys.modules.pop("demolib", None)
+        sys.modules.pop("demolib.sub", None)
 
 
-def test_install_lands_the_skill_over_an_open_composition(ws):
-    """Installing a skill is the framework writing, at a moment the
-    agent did not choose. It commits everything, which costs the agent
-    nothing: ws-git measures against the agent's own last commit, so a
-    composition in flight reads exactly as it did before."""
-    ws.files.fs.write("/workspace/staged.txt", b"staged")
-    ws.files.fs.write("/workspace/loose.txt", b"work in progress")
-    ws.index.stage(["/workspace/staged.txt"])
-    ws.index.commit("agent base")
-    ws.files.fs.write("/workspace/loose.txt", b"still going")
-    before = ws.index.status()
+def test_mounts_from_modules_with_no_skills_is_empty():
+    import json
 
-    name = skills.install(ws, SKILL_MD)
+    assert skills.mounts_from_modules([json, "nosuchpackage_xyz"]) == {}
+    assert skills.mounts_from_modules(PythonConfig()) == {}
 
-    installed = f"{skills.skills_root(ws)}/{name}/SKILL.md"
-    assert ws.files.exists(installed)
-    assert list(ws.log(limit=1))[0].info == {"tool": "skill", "skill": name}
-    # the skill is durable, and so is the agent's work in progress
-    head = ws._provider.files_at(ws.head)
-    assert installed in head
-    assert head["/workspace/loose.txt"] == b"still going"
 
-    # the composition is exactly where the agent left it — plus the
-    # skill's own file, which is a new file in the tree like any other
-    after = ws.index.status()
-    assert after.staged == before.staged
-    assert set(after.unstaged) - set(before.unstaged) == {installed}
-    assert "/workspace/loose.txt" in after.unstaged
+def test_mounts_from_modules_refuses_two_skills_with_one_name(tmp_path, monkeypatch):
+    a = _demolib(tmp_path, monkeypatch, "liba")
+    b = _demolib(tmp_path, monkeypatch, "libb")
+    clash = tmp_path / "libb" / "skills" / "using-libb" / "SKILL.md"
+    clash.write_text("---\nname: using-liba\n---\n")
+    try:
+        with pytest.raises(ValueError, match="two skills named 'using-liba'"):
+            skills.mounts_from_modules([a, b])
+    finally:
+        sys.modules.pop("liba", None)
+        sys.modules.pop("libb", None)
 
 
 def test_catalog_lists_frontmatter(ws):
     assert skills.catalog(ws) == ""  # no /skills: no primer text
-    skills.install(ws, SKILL_MD)
-    skills.install(ws, b"---\nname: bare\n---\nno description")
+    _write(ws, "ev-data-cleaning", SKILL_MD)
+    _write(ws, "bare", b"---\nname: bare\n---\nno description")
     text = skills.catalog(ws)
     assert "- ev-data-cleaning: handling this dataset's NaN" in text
     assert "- bare" in text
@@ -155,7 +149,7 @@ def test_agno_toolkit_instructions_include_catalog(ws):
     pytest.importorskip("agno")
     from nontainer.adapters.agno import WorkspaceTools
 
-    skills.install(ws, SKILL_MD)
+    _write(ws, "ev-data-cleaning", SKILL_MD)
     tk = WorkspaceTools(ws)
     assert "ev-data-cleaning" in tk.instructions
     assert "cat /workspace/skills/<name>/SKILL.md" in tk.instructions
@@ -181,7 +175,7 @@ def starter(tmp_path):
     return root
 
 
-def test_mounts_name_each_skill_as_install_would(starter, tmp_path):
+def test_mounts_name_each_skill_by_its_frontmatter(starter, tmp_path):
     points = skills.mounts(starter)
     assert sorted(points) == [
         "/workspace/skills/building-apps",
@@ -221,11 +215,12 @@ def test_a_mounted_skill_is_listed_read_only_and_never_work(starter, tmp_path):
         r = w.terminal("echo x > /workspace/skills/building-apps/SKILL.md")
         assert r.exit_code != 0 and "Read-only" in (r.stdout + r.stderr)
 
-        # an installed skill sits beside them, and is the agent's
-        skills.install(w, SKILL_MD)
-        assert "- ev-data-cleaning:" in skills.catalog(w)
-        with pytest.raises(Exception, match="mounted read-only"):
-            skills.install(w, starter / "building-apps")
+        # the agent's own skill sits beside them, and is its work
+        w.terminal("mkdir -p /workspace/skills/mine")
+        w.terminal("echo '---\nname: mine\n---' > /workspace/skills/mine/SKILL.md")
+        assert "- mine" in skills.catalog(w)
+        status = w.terminal("cd /workspace && ws-git status --porcelain").stdout
+        assert status == " A skills/mine/SKILL.md\n"
 
         # a fork sees the same skills
         kid = w.fork("mounted.kid", inherit="fresh")
@@ -237,29 +232,6 @@ def test_a_mounted_skill_is_listed_read_only_and_never_work(starter, tmp_path):
         w.close()
 
 
-def test_install_from_modules_leaves_a_mounted_library_skill_alone(
-    tmp_path, monkeypatch
-):
-    pkg = tmp_path / "mountlib"
-    _skill(pkg / "skills" / "using-mountlib", "using-mountlib", "how to drive mountlib")
-    (pkg / "__init__.py").write_text("x = 1\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    import mountlib
-
-    w = workspace(
-        "skills-mounted-mod",
-        store=tmp_path / "store",
-        python=PythonConfig(modules=[mountlib]),
-        mounts=skills.mounts(*skills.discover(mountlib)),
-    )
-    try:
-        assert skills.install_from_modules(w) == []
-        assert "- using-mountlib: how to drive mountlib" in skills.catalog(w)
-    finally:
-        w.close()
-        sys.modules.pop("mountlib", None)
-
-
 def test_mounts_normalize_the_root_as_the_workspace_does(starter, tmp_path):
     points = skills.mounts(starter, root="//deep//nest//")
     assert "/deep/nest/skills/building-apps" in points
@@ -268,20 +240,18 @@ def test_mounts_normalize_the_root_as_the_workspace_does(starter, tmp_path):
     )
     try:
         assert "- building-apps:" in skills.catalog(w)
-        with pytest.raises(Exception, match="mounted read-only"):
-            skills.install(w, starter / "building-apps")
     finally:
         w.close()
     with pytest.raises(ValueError, match=r"\. or \.\."):
         skills.mounts(starter, root="/a/../b")
 
 
-def test_a_skill_inside_a_zip_is_refused_with_the_way_out(tmp_path):
+def test_a_skill_inside_a_zip_is_refused(tmp_path):
     import zipfile
 
     archive = tmp_path / "lib.zip"
     with zipfile.ZipFile(archive, "w") as z:
         z.writestr("ziplib/skills/zipped/SKILL.md", "---\nname: zipped\n---\n")
     resource = zipfile.Path(archive, "ziplib/skills/zipped/")
-    with pytest.raises(ValueError, match="install\\(\\)"):
+    with pytest.raises(ValueError, match="nothing to mount"):
         skills.mounts(resource)

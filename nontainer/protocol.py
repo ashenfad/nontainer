@@ -349,8 +349,8 @@ class WorkspaceStatus:
     """Staged vs unstaged file paths plus live merge context.
 
     Everything here is relative to the AGENT's last commit, not the
-    store's head: the framework's own commits (a turn, a session db, a
-    skill install) move the store and leave this untouched.
+    store's head: the framework's own commits (a turn, a session db)
+    move the store and leave this untouched.
     """
 
     branch: str

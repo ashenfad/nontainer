@@ -376,7 +376,7 @@ class WorkspaceIndex:
     graph, not two.
 
     The framework's own commits (``ws.commit()``, a turn hook, a
-    session db, a skill install) never disturb it: everything here is
+    session db) never disturb it: everything here is
     measured against the agent's last commit, not the store's head.
     """
 
