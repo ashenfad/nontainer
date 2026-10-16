@@ -8,6 +8,9 @@ that checks a harness against them.
   :func:`check` what came of it.
 - :mod:`.codec`: the format's JSON and JSON Schema, which other
   languages read (``schema/``).
+- :mod:`.wsgit` and :mod:`.traces`: what ``ws-git`` prints and what a
+  rendered trace holds, recorded for ports (``wsgit/json/``,
+  ``traces/json/``).
 
 The agno adapter's harness is
 ``nontainer.adapters.agno_conformance.AgnoHarness``.
