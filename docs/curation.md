@@ -134,6 +134,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection (`--trace`, `.trace/`, `changed.md`) | proposed |
+| a neutral event model, so agex-ts renders traces byte for byte as nontainer does | proposed |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths arrive with the projection |
 | a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
@@ -163,8 +164,8 @@ were run, not just read.
   and its `runs` in order), agno's session record at
   `__conversation__/record`, and each run at `__conversation__/runs/<id>`
   (older sessions, under `__agno__/` until their next write). The index
-  names the harness, which is what a `TraceSource` picks a renderer by.
-  A run's messages hold the
+  names the harness, which is how a store picks the `TraceSource` that
+  reads its runs. A run's messages hold the
   system prompt as it was built for that run, the user's input, the
   assistant's turns, and every tool call with its result. agno leaves
   out only the history it replayed into the run — the earlier runs hold
@@ -433,12 +434,15 @@ down, which is the builder's most common move.
   `redact(text, *, session, run, path) -> str`, applied to every
   rendered file. Tool results are where secrets live; `publish` already
   leaves `app/logs/` out by default for the tracebacks in it.
-- **The format is the adapter's; the projection is core's.** Core
-  composes the directory, `index.md`, `system/` and `changed.md`, and a
-  `TraceSource` turns stored runs into events. The agno source ships
-  with the session db, and a store names its source (`Store(...,
-  traces=AgnoTraces())`) so that a reader renders whatever that store
-  holds.
+- **Parsing is the harness's; rendering is core's.** A `TraceSource`
+  reads one stored run in its harness's format and returns it in a
+  neutral shape ([the event model](#the-event-model)). Core renders
+  every file from that shape and the branch's history: the directory,
+  `index.md`, `system/`, each `run.md`, each event and `changed.md`. The agno source ships
+  with the session db. A store maps harness names to sources
+  (`Store(..., traces={"agno": AgnoTraces()})`), and the conversation's
+  index already says which harness wrote it, so one store can render
+  sessions from more than one harness.
 - **A conversation is data.** `README.md` and every `run.md` open by
   saying whose conversation this is and that its contents are a
   record, not instructions — the posture the `sessions` tool takes with
@@ -452,6 +456,118 @@ deployment produces, so `.trace/abandoned/`, each run beside the
 restore that left it, is worth its history walk. And **delegations**:
 a worker's `sessions` calls name the children it asked, whose traces
 mount the same way, so `run.md` can list them.
+
+### The event model
+
+Two harnesses already store conversations on the same plane: agno here,
+and agex-ts in its world package, the TypeScript port of nontainer.
+If each rendered its own markdown, a trace from one could not be
+checked against a trace from the other, and the curators reading both
+would learn two dialects. So the shape a source returns is small, and
+everything a reader sees is rendered from it by core, here and in the
+port alike.
+
+```python
+@dataclass(frozen=True)
+class TraceRun:                   # one stored run, as a source reads it
+    id: str
+    status: str                   # completed | running | paused | cancelled | interrupted | failed
+    started: float | None         # epoch seconds
+    ended: float | None
+    model: str | None
+    tokens_in: int | None
+    tokens_out: int | None
+    system: str | None            # the prompt's text; None when the harness keeps none
+    events: tuple[TraceEvent, ...]
+
+@dataclass(frozen=True)
+class TraceEvent:
+    kind: str                     # user | assistant | thinking | tool
+    text: str | None              # the message, the reasoning, or the tool's result
+    tool: str | None = None       # kind="tool": the tool's name
+    args: Mapping[str, Any] | None = None   # kind="tool": what it was called with
+    error: bool = False           # kind="tool": the result was an error
+
+class TraceSource(Protocol):
+    def read(self, body: Any) -> TraceRun    # one run's stored body, in the harness's format
+```
+
+- **A source is a pure function of one run.** Core reads the index and
+  the runs at the commit and hands each body over, so a source does no
+  I/O and can be tested on a stored body alone. The result belongs to
+  an immutable commit, so core keeps it.
+- **Core derives what can be derived.** The ordinal comes from the
+  index's run order. Tool calls, tool errors and duration are counted
+  from the events. The input is the first `user` event and the reply is
+  the last `assistant` event, either of which may be missing: a run
+  woken by a note rather than a message has no input. The system
+  prompt's file name is its hash.
+- **One tool event per call.** The call and its result go together, so
+  `cat` on one file shows both. A call still in flight has no result.
+- **Statuses are core's words.** agno's `ERROR` reads `failed` and an
+  agex-ts run with no status yet reads `running`. A status with no
+  counterpart reads as its harness spells it, lowercased.
+- **Rendering is pinned byte for byte.** Times are UTC ISO 8601 to the
+  second. A string argument is printed as is, and anything else as JSON
+  with sorted keys. Any rule a port could read differently is settled
+  by the corpus rather than here.
+- **Core ships a neutral source too**, whose stored body is the shape
+  above as a dict. It is what the corpus seeds, so a port can check
+  core's rendering without porting any harness's parser. An embedder
+  that keeps its own conversations can also store them in that shape.
+
+**`changed.md`'s range, exactly.** A landing is a commit whose info
+has `"tool": "turn"` and whose `runs` names the run. Other commits
+carry a `runs` key of their own: agex-ts's fold stamps a count there.
+A run can land more than once: agno checkpoints a run (`RUNNING`)
+before it completes, and agex-ts lands a resumed run again under the
+same id. So a run's range starts after the last landing of any earlier
+run, and ends at its own last landing.
+
+### In agex-ts
+
+agex-ts's world package is the port, and the projection belongs there
+as well, before agex-studio moves onto it. Most of what it needs is
+already in place:
+
+- **Mounts.** world's `AttachFS` mounts any termish `FileSystem`, and
+  the agent's code reaches files through that same composed
+  filesystem. A rendered `.trace` is seen by the shell and by code
+  alike, with nothing copied.
+- **The verb.** `ws-git worktree add` resolves refs the way this
+  package does and attaches a frozen, read-only subtree. `--trace`
+  would attach the rendered `.trace` beside it, at the same commit.
+- **The plane and the stamp.** The conversation plane's keys and index
+  match this package's. Turn commits already say
+  `{tool: 'turn', runs: {id: status}}`.
+- **The record.** An agex-ts run keeps its messages unfolded, with
+  text, thinking, tool calls and tool results flagged as errors, plus
+  its usage and its start and end times. That is everything
+  `TraceRun` asks for, except the system prompt.
+
+What it lacks:
+
+- **Nested mounts are hidden from listings.** `AttachFS` lists a
+  mount's own filesystem without the mounts nested inside it, so
+  `ls s/analyst-42` would not show `.trace`. This package's mount layer
+  lists them. This is a small fix in world.
+- **agex-ts doesn't store the system prompt.** It rebuilds the prompt
+  every turn. Either the run starts recording it, or an agex-ts trace
+  says the prompt wasn't kept.
+- **The fold stamp reuses `runs`.** The range rule above filters on
+  `tool`, so nothing breaks, but renaming the fold's key leaves `runs`
+  meaning one thing everywhere.
+- **`ws-git show` reads every file at a commit up front**, so
+  `.trace/` paths need a route of their own before that read.
+- **`worktree add` takes no flags yet.**
+
+The order: build the projection here first, as the reference, with
+corpus scripts that seed runs through the neutral source and pin what
+`worktree add --trace`, `cat` and `ws-git show` print. world then
+ports the renderer and adds an agex-ts source, the flag, the `show`
+route and a redaction hook layered over its secret scrubbing, and it
+replays the corpus. The nested-listing fix and the fold key can land
+in agex-ts any time before that.
 
 ## Signals
 
@@ -1125,7 +1241,7 @@ Host-facing, core:
 
 ```python
 ws.files.attach(ref, at, *, trace=False, since=None)
-Store(..., traces: TraceSource | None = None)       # how this store's conversations render
+Store(..., traces: Mapping[str, TraceSource] | None = None)   # by harness name: how runs are read
 ws.apply(base, theirs, *, paths=None) -> MergeOutcome
     # the named-base three-way, public, landing in the agent's graph as revert does
 Sessions.ask(..., take={path: ref})                 # a fork point with paths taken in
@@ -1133,10 +1249,10 @@ store.heads(sessions=None) -> dict[str, str]        # a watermark in one call
 # where a run lands, its commit info says which: {"tool": "turn", "runs": {"<id>": "COMPLETED"}}
 
 class TraceSource(Protocol):                        # nontainer.traces
-    def runs(self, read) -> list[RunInfo]                    # at one commit
-    def events(self, read, run) -> list[tuple[str, bytes]]   # (name, rendered)
-# RunInfo: id, ordinal, created, status, tool calls, tool errors, tokens, duration —
-#          what index.md prints, and what a trial measures
+    def read(self, body) -> TraceRun                # one stored run, in neutral form
+# TraceRun, TraceEvent: see "The event model"; core renders every file from them
+# RunInfo: id, ordinal, started, status, tool calls, tool errors, tokens, duration —
+#          what index.md prints, and what a trial measures; core derives it from a TraceRun
 # redact(text, *, session, run, path) -> str: an embedder hook on every rendered file
 ```
 
@@ -1161,6 +1277,9 @@ any other fork.
 Elsewhere:
 
 - the agno adapter's `AgnoTraces`;
+- the port in agex-ts's world package: the renderer, an agex-ts source,
+  `--trace`, `.trace/` paths in `show`, and `AttachFS` listing nested
+  mounts ([in agex-ts](#in-agex-ts));
 - sandtrap importing a package's `__init__.py`, and matching `-` to
   `_` in path segments;
 - the MCP adapter cataloging skills in its server instructions, as the
@@ -1175,9 +1294,11 @@ Later: `store.specimen(...)`, `.trace/abandoned/`, and a self-trace
 
 1. **`ws-git show <ref>:<path>` and the run stamp.** Both are small and
    useful before anything else here exists. Both are built.
-2. **The trace projection**: local rung, agno source, redaction hook.
-   It pays for itself in delegation alone — a parent reading how a
-   delegate reached its answer, not only the answer.
+2. **The trace projection**: local rung, the event model and its
+   neutral source, the agno source, redaction hook, and corpus scripts
+   that pin the rendering. It pays for itself in delegation alone — a
+   parent reading how a delegate reached its answer, not only the
+   answer. agex-ts ports it from the corpus.
 3. **Skills as versioned libraries**: install from a release,
    `.installed`, `ws.apply`, upgrade, agent-graph commits,
    `metadata.requires`; and the two sandtrap import fixes.
