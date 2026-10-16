@@ -214,6 +214,13 @@ class PythonConfig:
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
 
+    result_names: tuple[str, ...] | None = None
+    """Namespace keys returned by local Python execution. None preserves all
+    eligible locals; () returns none. Agent tools can use ("ui",) to retain
+    artifacts without copying large scratch arrays back into the host. Cache
+    writes and printed output are unaffected. Requires sandtrap's result_names
+    execution option; this does not bound parent-side cache allocations."""
+
     echo: Literal["none", "last", "all"] = "last"
     """Notebook-style display of bare top-level expressions in
     ``run_python`` (sandtrap's ``sys.displayhook`` semantics: repr

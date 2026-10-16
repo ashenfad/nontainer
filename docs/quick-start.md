@@ -65,6 +65,12 @@ instead, each with one job:
 | `cache` | session, **versioned** | data (picklable values) |
 | files | session, versioned | artifacts; reusable code goes in `helpers/` |
 
+For agent tools that only need printed output and UI artifacts,
+`PythonConfig(result_names=("ui",))` omits scratch locals before returning them
+from a local executor worker. The default (`None`) preserves the full namespace;
+`()` requests none. Explicit cache writes still serialize values into the
+parent's persistent store: cache compact summaries rather than raw batches.
+
 So an agent's reusable code becomes a file under `helpers/` that later
 calls `import`, and data it carries forward lands in `cache` — rather
 than a REPL namespace surviving between calls. See the

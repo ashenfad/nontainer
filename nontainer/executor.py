@@ -1215,6 +1215,11 @@ class LocalExecutor:
                     stdin=stdin,
                     argv=argv,
                     echo=echo,
+                    **(
+                        {"result_names": ctx.python_config.result_names}
+                        if ctx.python_config.result_names is not None
+                        else {}
+                    ),
                 )
             finally:
                 with self._running_lock:
