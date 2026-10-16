@@ -5,8 +5,9 @@ Harnesses in other languages read the files under
 schema/``; the scenarios and the turn events are written in Python. Ports
 of ``ws-git`` read ``nontainer/conformance/wsgit/json/``, recorded by
 running each script here, so this also fails when the verb's output
-changes without the corpus being re-exported. This
-fails when the two drift apart. Regenerate with
+changes without the corpus being re-exported. Ports of the trace
+renderer read ``nontainer/conformance/traces/json/``, each case's runs
+with the files they render to. This fails when any of them drift apart. Regenerate with
 ``python -m nontainer.conformance.export``, or run this test with
 ``NONTAINER_UPDATE_GOLDEN=1``.
 """
@@ -25,7 +26,7 @@ def test_the_committed_corpus_matches_its_sources():
         assert path.read_text() == text, f"{path.name} drifted: run the export"
     stale = [
         p.name
-        for directory in (export.JSON_DIR, export.WSGIT_DIR)
+        for directory in (export.JSON_DIR, export.WSGIT_DIR, export.TRACES_DIR)
         for p in directory.glob("*.json")
         if p not in wanted
     ]

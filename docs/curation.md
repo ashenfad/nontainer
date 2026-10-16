@@ -134,7 +134,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection (`--trace`, `.trace/`, `changed.md`) | proposed |
-| a neutral event model, so agex-ts renders traces byte for byte as nontainer does | proposed |
+| a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus; not mounted yet |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths arrive with the projection |
 | a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
@@ -1268,8 +1268,8 @@ store.heads(sessions=None) -> dict[str, str]        # a watermark in one call
 class TraceSource(Protocol):                        # nontainer.traces
     def read(self, body) -> TraceRun                # one stored run, in neutral form
 # TraceRun, TraceEvent: see "The event model"; core renders every file from them
-# RunInfo: id, ordinal, started, status, tool calls, tool errors, TraceTokens, duration —
-#          what index.md prints, and what a trial measures; core derives it from a TraceRun
+# what index.md prints, and what a trial measures: a TraceRun's own fields, its
+#   ordinal, and what core derives (tool_calls, tool_errors, duration, input, reply)
 # redact(text, *, session, run, path) -> str: an embedder hook on every rendered file
 ```
 

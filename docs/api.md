@@ -28,6 +28,7 @@ to import it from:
 | `nontainer.adapters.render.apps_notes(config)` | the apps section of a terminal tool description |
 | `nontainer.turns` | `Turn`, `RunStatus`, the `TurnEvent` classes ([below](#nontainerturns--the-turn-and-what-it-streams)) |
 | `nontainer.conversation` | the stored conversation's index ([below](#nontainerconversation--the-stored-conversation)) |
+| `nontainer.traces` | a stored conversation rendered as files: the neutral run shape, `TraceSource`, `Trace` ([below](#nontainertraces--a-conversation-rendered-as-files)) |
 | `nontainer.sessions` | `Sessions`, `until_settled`, `auntil_settled`, `Settled`, `answer_notes` ([Delegation](#delegation-nontainersessions)) |
 | `nontainer.inbox` | `Inbox`, `Note`, `render`, `split` |
 | `nontainer.compaction` | the `Fold` record, `record`, `folds`, `in_force`, and the helpers a loop may fold with |
@@ -1765,6 +1766,48 @@ adapter's `__agno__/` keys. Those read through the same `Index`
 (`legacy=True`), and the next `write` moves them, removing the old keys
 in the same write. History keeps the old plane, so a checkout or fork
 of an older commit reads it again and migrates on its next write.
+
+## `nontainer.traces` — a conversation rendered as files
+
+```python
+@dataclass(frozen=True)
+class TraceRun:                   # one stored run, in the neutral shape
+    id: str
+    status: str                   # completed | running | paused | cancelled | interrupted | failed
+    started: float | None = None  # epoch seconds
+    ended: float | None = None
+    model: str | None = None
+    tokens: TraceTokens = TraceTokens()
+    system: str | None = None     # the system prompt; None when the harness keeps none
+    events: tuple[TraceEvent, ...] = ()
+    # derived: tool_calls, tool_errors, duration, input, reply
+    to_dict() -> dict; from_dict(data) -> TraceRun      # the neutral body
+
+TraceTokens(input=None, output=None, cache_read=None, cache_write=None, reasoning=None)
+TraceEvent(kind, text, tool=None, args=None, error=False)   # kind: user | assistant | thinking | tool
+
+class TraceSource(Protocol):
+    def read(self, body) -> TraceRun    # one run's stored body, in its harness's format
+NeutralTraces()                         # the source for runs stored as TraceRun.to_dict()
+
+Trace(runs, *, session, commit, harness)
+    .paths() -> list[str]               # README.md, index.md, system/<hash>.md, runs/<NNN>-<id>/...
+    .read(path) -> str                  # rendered on read; FileNotFoundError for any other path
+    .files() -> dict[str, str]
+```
+
+The design is [curation's](curation.md#traces-as-files). A source
+parses one stored run, in its harness's format, into the neutral shape,
+doing no I/O; `Trace` renders every file from that shape, so a trace
+reads the same whichever harness wrote it. Token counts are kept as the
+harness recorded them and never summed, since providers disagree on
+what input and output include. `runs` are in the conversation index's
+order, and a run's ordinal is its position from 1.
+
+The rendering is pinned byte for byte by the trace corpus,
+`nontainer/conformance/traces/json/`: each case's runs as neutral
+bodies, with every file they render to. A port of the renderer reads
+the runs through its own neutral source and compares.
 
 ## `nontainer.values` — typed values across a boundary
 

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+- **`nontainer.traces`: a stored conversation rendered as files**, the first piece of curation's trace projection. A `TraceSource` reads one stored run, in its harness's format, into a neutral `TraceRun` (status, times, model, `TraceTokens`, system prompt, and `TraceEvent`s: user, assistant, thinking, and one per tool call with its result). `Trace` renders `README.md`, `index.md`, `system/<hash>.md`, and each run's `run.md` and event files from that shape, so a trace reads the same whichever harness wrote it. `NeutralTraces` reads runs stored in the neutral shape itself. Nothing mounts a trace yet; `ws-git worktree add --trace` comes next.
+- **The trace corpus** (`nontainer/conformance/traces/json/`) pins the rendering byte for byte, for agex-ts's port: each case's runs as neutral bodies, with every file they render to.
+
 ## 0.11.5 - 2026-10-16
 
 ### Changed
