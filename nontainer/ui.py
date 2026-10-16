@@ -214,6 +214,15 @@ def _normalize_card(i: dict) -> dict:
     return item
 
 
+def _has_plotly_encoder() -> bool:
+    """Whether plotly's JSON encoder is importable here."""
+    try:
+        import plotly.io.json  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _plotly_json(name: str, spec: dict) -> tuple[str, str | None]:
     """A plotly spec dict as JSON text, plus a note when the encoding
     had to approximate.
@@ -294,7 +303,9 @@ def _materialize_one(
     # component behind it. Named by its suffix rather than left for a
     # consumer to content-sniff out of a bare `.json`.
     if looks_like_plotly(value):
-        check_plotly_floor(value)
+        # bounded by the encoder that will run: without plotly a NumPy
+        # array is written as its (abbreviated) printed form
+        check_plotly_floor(value, arrays=_has_plotly_encoder())
         data, note = _plotly_json(name, value)
         if note is not None and notes is not None:
             notes.append(note)

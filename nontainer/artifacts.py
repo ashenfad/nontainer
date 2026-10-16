@@ -97,7 +97,7 @@ _PLOTLY_ARRAYS = (
 _PLOTLY_MARKER_ARRAYS = ("color", "size", "opacity", "symbol")
 
 
-def _array_floor(value: object) -> int:
+def _array_floor(value: object, *, arrays: bool = True) -> int:
     """Fewest bytes an array-valued plotly property can serialize to.
 
     plotly writes an array either as a JSON list, where every element
@@ -107,23 +107,28 @@ def _array_floor(value: object) -> int:
     an element of unknown type counts one byte. A float is never
     narrowed below four bytes, which base64 makes more than five, so a
     float element counts two.
+
+    Without ``arrays`` a NumPy array counts nothing: the encoder that
+    will run writes it as its printed form, which abbreviates.
     """
     size = getattr(value, "size", None)
     kind = getattr(getattr(value, "dtype", None), "kind", None)
     if isinstance(size, int) and kind is not None:  # a NumPy array
-        return size * (2 if kind == "f" else 1)
+        return size * (2 if kind == "f" else 1) if arrays else 0
     if isinstance(value, (list, tuple)):
         return len(value)
     return 0
 
 
-def plotly_size_floor(value: object) -> int:
+def plotly_size_floor(value: object, *, arrays: bool = True) -> int:
     """A lower bound on the size of a plotly figure's JSON, read from its
     trace arrays without serializing anything.
 
     A ``Figure``'s traces are read through their attributes, which hand
     back the arrays the figure holds rather than copies; a spec dict's
-    ``data`` entries are read as the dicts they are.
+    ``data`` entries are read as the dicts they are. ``arrays`` says
+    whether the encoder writes a NumPy array in full, as plotly's does;
+    without plotly, a spec's arrays are written as their printed form.
     """
     if isinstance(value, dict):
         traces = value.get("data") or ()
@@ -131,10 +136,15 @@ def plotly_size_floor(value: object) -> int:
         traces = getattr(value, "data", ()) or ()
     floor = 0
     for trace in traces:
-        floor += sum(_array_floor(_prop(trace, p)) for p in _PLOTLY_ARRAYS)
+        floor += sum(
+            _array_floor(_prop(trace, p), arrays=arrays) for p in _PLOTLY_ARRAYS
+        )
         marker = _prop(trace, "marker")
         if marker is not None:
-            floor += sum(_array_floor(_prop(marker, p)) for p in _PLOTLY_MARKER_ARRAYS)
+            floor += sum(
+                _array_floor(_prop(marker, p), arrays=arrays)
+                for p in _PLOTLY_MARKER_ARRAYS
+            )
     return floor
 
 
@@ -147,10 +157,11 @@ def _prop(obj: object, name: str) -> object:
         return None
 
 
-def check_plotly_floor(value: object) -> None:
+def check_plotly_floor(value: object, *, arrays: bool = True) -> None:
     """Refuse a figure whose arrays alone are over the cap, before the
-    encoder builds what would be refused anyway."""
-    floor = plotly_size_floor(value)
+    encoder builds what would be refused anyway. ``arrays`` as for
+    :func:`plotly_size_floor`."""
+    floor = plotly_size_floor(value, arrays=arrays)
     if floor > MAX_ARTIFACT_BYTES:
         raise ArtifactTooLarge(floor, at_least=True)
 
