@@ -2137,6 +2137,16 @@ class PythonConfig:
   disables that kernel restriction for the whole worker (seccomp/
   Landlock are monotonic). nontainer emits a `RuntimeWarning` at
   construction when this happens.
+- `memory_limit_mb` (process/kernel only) bounds how far the worker's
+  memory may grow during one execution, enforced by the kernel on Linux.
+  With `isolation="none"` it is refused at construction
+  (`NotSupportedError`): sandtrap sets the limit on the process the code
+  runs in, which in-process is the host, so it would cap the host and
+  every thread in it. A `policy` with a `memory_limit` is refused the
+  same way. It bounds the worker only, not what an execution costs
+  host-side: cache values and files the code writes, the host's copy of
+  the result, the shell, or `ui` rendering. On macOS it is enforced only
+  at sandtrap's checkpoints, which is not reliable.
 - `warm_view_workers` (process/kernel only) caps the resident workers kept
   for `exec_python(view=...)` calls — in practice, apps' handler
   dispatch (the live preview, `test_app`, published-app requests).
