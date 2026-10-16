@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`keep=` on `run_python`, `arun_python` and `runtime.exec_python`** names the bindings `result.namespace` carries; under process isolation the rest stay in the worker, unpickled (#263). `ui` is materialized either way.
 
 ### Changed
+- **Breaking: `memory_limit_mb` with `isolation="none"` is refused at construction** (#265). In-process, the limit capped the whole host process and its threads, not the sandboxed code. Use `isolation="process"` or `"kernel"`.
 - **The agent's `run_python` tool returns only `ui` from its namespace**, and apps dispatch and ws-pytest only their own result bindings, so a call's scratch values no longer cross from a worker (#263). An executor without `keep` still serves them: the runtime narrows the namespace itself.
 - **Requires `monkeyfs>=0.2.8` and `sandtrap>=0.5.0`.** A `run_python` call whose file save fails at an implicit close (`open(p, 'w').write(x)`) now fails with `StLostWrite` naming the file, rather than reporting success.
 

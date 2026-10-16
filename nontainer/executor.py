@@ -63,7 +63,7 @@ from types import ModuleType
 from typing import Any, Literal
 
 from .cache import Cache
-from .errors import WorkspaceError
+from .errors import NotSupportedError, WorkspaceError
 from .host_objects import HostObject, _by_value, _stubbed, _typed, _value
 
 # The contract itself lives in protocol.py, next to WorkspaceProvider,
@@ -267,6 +267,30 @@ def _named_classes(cfg: PythonConfig) -> list[type]:
             more = (entry.stub, *entry.methods.result_types())
             found.extend(t for t in more if t not in found)
     return found
+
+
+def _refuse_memory_limit_in_process(cfg: PythonConfig) -> None:
+    """Refuse, at open, a memory limit for code that runs in-process.
+
+    sandtrap enforces the limit as ``RLIMIT_AS`` on the process the code
+    runs in, and in-process that is the host: the cap lands on the whole
+    host and every thread in it, and two executions that overlap can
+    leave it there after both end. Only a worker can be given a limit of
+    its own, so a limit without one is a promise this rung cannot keep.
+    """
+    if cfg.isolation != "none":
+        return
+    if cfg.policy is not None:
+        limit, name = getattr(cfg.policy, "memory_limit", None), "policy.memory_limit"
+    else:
+        limit, name = cfg.memory_limit_mb, "memory_limit_mb"
+    if limit is not None:
+        raise NotSupportedError(
+            f"{name}={limit} with isolation='none' would cap the whole host "
+            "process, not the sandboxed code: the limit is set on the process "
+            "the code runs in. Use isolation='process' or 'kernel' to run the "
+            "code in a worker with a limit of its own."
+        )
 
 
 def _refuse_live_calls(cfg: PythonConfig, where: str) -> None:
@@ -804,6 +828,7 @@ class LocalExecutor:
         cfg = context.python_config
         _refuse_reserved_host_name(cfg)
         _refuse_async_host_methods(cfg)
+        _refuse_memory_limit_in_process(cfg)
         if cfg.isolation != "none":
             _refuse_unnameable_classes(cfg, "in a worker process")
             _refuse_live_calls(cfg, "in a worker process")

@@ -213,6 +213,14 @@ class PythonConfig:
     # is tens of millions of ticks, not a runaway.
     tick_limit: int = 50_000_000
     memory_limit_mb: int | None = None
+    """How far the worker's memory may grow during one execution, in
+    MB. Enforced by the kernel on Linux, in the worker only: it needs
+    ``isolation="process"`` or ``"kernel"``, and is refused at open with
+    ``"none"``, where it would cap the host itself. It does not bound
+    what an execution costs outside the worker: cache values and files
+    the code writes (both stored host-side), the host's copy of the
+    result, the shell, or ``ui`` rendering. On macOS it is enforced only
+    at sandtrap's checkpoints, which is not reliable."""
 
     echo: Literal["none", "last", "all"] = "last"
     """Notebook-style display of bare top-level expressions in
