@@ -168,3 +168,33 @@ def test_both_rungs_refuse_an_oversized_figure_with_one_note(tmp_path):
     (guest_root / "ui").mkdir(parents=True)
     _, guest = _materialize("chart", _figure(points, serializes=False), str(guest_root))
     assert host == [guest]
+
+
+def test_without_plotly_a_specs_arrays_are_bounded_by_their_printed_form():
+    """Without plotly a spec's NumPy arrays are written by json.dumps with
+    default=str, which abbreviates them; the bound follows that encoder."""
+    spec = {"data": [{"x": np.zeros(9_000_000, dtype=np.uint8), "y": [0] * 10}]}
+    assert plotly_size_floor(spec) == 9_000_010
+    assert plotly_size_floor(spec, arrays=False) == 10
+
+
+def test_a_spec_with_a_large_array_renders_approximately_without_plotly(tmp_path):
+    from plain_provider import PlainProvider
+
+    from nontainer import Workspace
+    from nontainer.ui import _has_plotly_encoder, materialize_ui
+
+    if _has_plotly_encoder():
+        pytest.skip("plotly is installed: its encoder writes the array in full")
+    spec = {
+        "data": [{"type": "scatter", "x": np.zeros(9_000_000, dtype=np.uint8)}],
+        "layout": {},
+    }
+    ws = Workspace(PlainProvider(tmp_path / "ws", session="cap"))
+    try:
+        out, problems = materialize_ui(ws, {"chart": spec})
+    finally:
+        ws.close()
+    assert out == [("chart", "/workspace/ui/chart.plotly.json")]
+    (problem,) = problems
+    assert "too large" not in problem and "plotly is not importable" in problem
