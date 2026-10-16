@@ -46,10 +46,15 @@ def test_in_process_without_a_limit_opens(tmp_path):
 def test_a_worker_takes_a_memory_limit(tmp_path, isolation):
     from sandtrap import IsolationUnavailable
 
+    ws = _open(tmp_path, isolation=isolation, memory_limit_mb=256)
+    # The worker starts with the first execution, which is where an
+    # isolation level the machine lacks is reported: warm it inside the
+    # guard, so a missing rung skips rather than fails.
     try:
-        ws = _open(tmp_path, isolation=isolation, memory_limit_mb=256)
+        ws.runtime.warm()
     except IsolationUnavailable as e:
-        pytest.skip(f"kernel isolation unavailable: {e}")
+        ws.close()
+        pytest.skip(f"isolation={isolation!r} unavailable here: {e}")
     try:
         result = ws.run_python("n = 1\n")
         assert result.error is None, result.error
