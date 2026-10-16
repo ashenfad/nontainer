@@ -319,7 +319,9 @@ class Toolset:
                 ui_before = set(ws.files.fs.list(ui_dir))
             except Exception:
                 ui_before = set()
-            result = ws.run_python(code)
+            # the agent sees the call's text and its ui; the rest of the
+            # namespace is for host callers, and stays in the worker
+            result = ws.run_python(code, keep=("ui",))
             text = render_python(result)
             # run_python has already materialized ``ui``, so the value
             # here is an ArtifactPath and this pass adds only the names

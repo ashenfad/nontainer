@@ -41,7 +41,14 @@ from __future__ import annotations
 
 import posixpath
 import threading
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+)
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -64,6 +71,7 @@ from ..protocol import (
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
+    keep_names,
     read_files,
 )
 from ..views import (
@@ -802,7 +810,11 @@ class Workspace:
         return replace(result, commit=cp) if cp else result
 
     def run_python(
-        self, code: str, *, inputs: Mapping[str, Any] | None = None
+        self,
+        code: str,
+        *,
+        inputs: Mapping[str, Any] | None = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         """Execute Python in the sandbox against the workspace.
 
@@ -816,12 +828,24 @@ class Workspace:
         commits), stdlib ``open()`` etc. routed to the workspace
         fs, and imports from ``helpers/`` on the fs. Never raises for
         sandboxed-code failure — check ``error`` / truthiness.
+
+        ``keep`` names the bindings ``result.namespace`` carries
+        (``None``: every one). Under process isolation the rest stay in
+        the worker, unpickled, so a caller that reads only ``ui`` pays
+        nothing for the code's scratch values. ``ui`` is materialized
+        either way: its artifacts are part of what the call did, not of
+        what the caller reads.
         """
+        names = keep_names(keep)
         with self._lock:
             self._check_open()
             was_dirty = self._provider.dirty
             try:
-                result = self._runtime.exec_python(code, inputs=inputs)
+                result = self._runtime.exec_python(
+                    code,
+                    inputs=inputs,
+                    keep=None if names is None else names | {"ui"},
+                )
             except PermissionError as e:
                 return PythonResult(stdout="", error=self._refused_frozen(e))
             absorbed = self._absorb_or_unwind(was_dirty)
@@ -835,6 +859,11 @@ class Workspace:
                 return replace(result, error=error, commit=cp)
             result = self._materialize_ui(result)
             cp = self._maybe_commit("run_python")
+        if names is not None and "ui" not in names:
+            result = replace(
+                result,
+                namespace={k: v for k, v in result.namespace.items() if k in names},
+            )
         return replace(result, commit=cp) if cp else result
 
     def _materialize_ui(self, result: PythonResult) -> PythonResult:
@@ -939,7 +968,11 @@ class Workspace:
         return await loop.run_in_executor(None, self.terminal, command)
 
     async def arun_python(
-        self, code: str, *, inputs: Mapping[str, Any] | None = None
+        self,
+        code: str,
+        *,
+        inputs: Mapping[str, Any] | None = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         """Async facade over :meth:`run_python` — see :meth:`aterminal`."""
         import asyncio
@@ -947,7 +980,7 @@ class Workspace:
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, partial(self.run_python, code, inputs=inputs)
+            None, partial(self.run_python, code, inputs=inputs, keep=keep)
         )
 
     # ------------------------------------------------------------------

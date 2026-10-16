@@ -997,6 +997,8 @@ class AppRuntime:
             # handlers are scripts: a stray module-level bare
             # expression must not echo reprs into api.log
             echo="none",
+            # the response is all that is read back
+            keep=(_WIRE,),
         )
 
         # The query string in the tag is what lets an agent correlate
