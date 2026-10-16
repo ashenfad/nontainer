@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **Requires `monkeyfs>=0.2.8` and `sandtrap>=0.5.0`.** A `run_python` call whose file save fails at an implicit close (`open(p, 'w').write(x)`) now fails with `StLostWrite` naming the file, rather than reporting success.
+
+### Fixed
+- **Sandboxed code reads large files from a disk store** (#264). With `isolation="none"`, a binary read of a file of 32KB or more written in an earlier commit raised `FileNotFoundError`.
+
 ## 0.11.3 - 2026-10-15
 
 ### Added

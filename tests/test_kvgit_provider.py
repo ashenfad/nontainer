@@ -617,6 +617,28 @@ def test_disk_store_persists_across_instances(tmp_path):
         assert len(list(ws2.log())) >= 2
 
 
+@pytest.mark.disk_only
+@pytest.mark.parametrize("mode", ["rb", "r"])
+def test_sandboxed_code_reads_a_large_file_from_the_disk_store(tmp_path, mode):
+    """A disk store keeps a value of 32KB or more in a file of its own and
+    reads it with the builtin open. In-process, sandboxed code reads the
+    workspace through a patched open, and the store's own read must not
+    land in the workspace instead (#264)."""
+    size = 5 * 1024 * 1024
+    with workspace("user-1", store=tmp_path, backend="kvgit") as ws:
+        wrote = ws.run_python(f"open('/workspace/big.txt', 'w').write('x' * {size})\n")
+        assert wrote.error is None, wrote.error
+
+    # A fresh instance: nothing has read the file yet, so nothing cached
+    # it, and the read reaches the store.
+    with workspace("user-1", store=tmp_path, backend="kvgit") as ws2:
+        result = ws2.run_python(
+            f"n = len(open('/workspace/big.txt', {mode!r}).read())\n"
+        )
+        assert result.error is None, result.error
+        assert result.namespace["n"] == size
+
+
 def test_sessions_are_independent_branches(tmp_path):
     with workspace("alice", store=tmp_path, backend="kvgit") as wa:
         wa.terminal("echo alice > who.txt")
