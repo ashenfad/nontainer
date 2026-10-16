@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **Printed values are rendered as they are printed, not copied** (#263). The sandbox renders each print with reprobate when it is made, so an oversized stdout is rebuilt from text; a printed 6M-row DataFrame no longer costs the host 164MB under process isolation.
+- **Over-long output keeps its start and its end.** Output that isn't prints, and stderr, used to keep only their start; captured output is now bounded in the sandbox at four observations.
+- **Requires `sandtrap[render]>=0.5.1`, `reprobate>=0.1.6` and `kvgit>=0.4.3`.** kvgit 0.4.3 bounds a worktree's read cache (32MB by default).
+
 ## 0.11.4 - 2026-10-16
 
 ### Added

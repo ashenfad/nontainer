@@ -773,10 +773,15 @@ read-only call, no-op edit, turn-mode committing (the id comes from
 `end_turn()` instead), or an unversioned provider. Host-facing like
 `namespace` — adapters never render it into the model's observation.
 
-Oversized stdout from `print()` is re-rendered **budget-aware** via
-[reprobate](https://github.com/ashenfad/reprobate): structural elision
-(`[0, 1, 2, ...996 more]`) instead of a mid-token cut. Small output
-stays byte-exact; non-print writes fall back to a head-cut.
+Oversized stdout from `print()` is rebuilt **budget-aware** from
+[reprobate](https://github.com/ashenfad/reprobate) renderings: structural
+elision (`[0, 1, 2, ...996 more]`) instead of a mid-token cut. The sandbox
+renders each print as it is made (sandtrap's `render_prints`), so printed
+values are never copied, and under process isolation only text crosses
+to the host; a note counts the prints that didn't fit. Small output stays
+byte-exact. Output that isn't prints (`sys.stdout.write`, a library's
+logging) and stderr keep their start and their end, with a marker
+between, as the sandbox captures them, at most four observations' worth.
 
 ### Files (`ws.files`)
 
