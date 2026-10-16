@@ -57,13 +57,112 @@ def is_rich(value: object) -> bool:
     return any(mod.startswith(p) and hasattr(value, a) for p, a in _RICH)
 
 
-def too_large_note(name: str, size: int, mod: str) -> str:
+class ArtifactTooLarge(ValueError):
+    """A value over the artifact cap. ``size`` is its size in bytes, or,
+    with ``at_least``, a lower bound on it: a value refused before it was
+    fully serialized is known only to be at least that large."""
+
+    def __init__(self, size: int, *, at_least: bool = False) -> None:
+        super().__init__(f"artifact too large ({size} bytes)")
+        self.size = size
+        self.at_least = at_least
+
+
+def capped_bytes(data: str | bytes) -> bytes:
+    """``data`` as the bytes of an artifact, or :class:`ArtifactTooLarge`.
+
+    A string is measured before it is encoded: a character is at least
+    one byte in UTF-8, so a string longer than the cap is refused without
+    building its bytes, and an ASCII one (what ``json.dumps`` and
+    plotly's encoder produce) is exactly that long.
+    """
+    if isinstance(data, str):
+        if len(data) > MAX_ARTIFACT_BYTES:
+            raise ArtifactTooLarge(len(data), at_least=not data.isascii())
+        data = data.encode()
+    if len(data) > MAX_ARTIFACT_BYTES:
+        raise ArtifactTooLarge(len(data))
+    return data
+
+
+#: Trace properties that carry per-point arrays, at the top of a trace
+#: and under its ``marker``. Only a lower bound is wanted, so a property
+#: left out makes the bound lower, never wrong.
+_PLOTLY_ARRAYS = (
+    "x", "y", "z", "lat", "lon", "r", "theta", "a", "b", "c",
+    "open", "high", "low", "close", "values", "labels", "ids", "parents",
+    "text", "hovertext", "customdata", "locations",
+    "i", "j", "k", "u", "v", "w", "intensity", "base", "width",
+)  # fmt: skip
+_PLOTLY_MARKER_ARRAYS = ("color", "size", "opacity", "symbol")
+
+
+def _array_floor(value: object) -> int:
+    """Fewest bytes an array-valued plotly property can serialize to.
+
+    plotly writes an array either as a JSON list, where every element
+    takes at least two bytes (a digit or quote pair, and a separator),
+    or as base64 of its binary form. An integer array may be narrowed
+    to a byte per element first, which base64 makes 4/3 of a byte, so
+    an element of unknown type counts one byte. A float is never
+    narrowed below four bytes, which base64 makes more than five, so a
+    float element counts two.
+    """
+    size = getattr(value, "size", None)
+    kind = getattr(getattr(value, "dtype", None), "kind", None)
+    if isinstance(size, int) and kind is not None:  # a NumPy array
+        return size * (2 if kind == "f" else 1)
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    return 0
+
+
+def plotly_size_floor(value: object) -> int:
+    """A lower bound on the size of a plotly figure's JSON, read from its
+    trace arrays without serializing anything.
+
+    A ``Figure``'s traces are read through their attributes, which hand
+    back the arrays the figure holds rather than copies; a spec dict's
+    ``data`` entries are read as the dicts they are.
+    """
+    if isinstance(value, dict):
+        traces = value.get("data") or ()
+    else:
+        traces = getattr(value, "data", ()) or ()
+    floor = 0
+    for trace in traces:
+        floor += sum(_array_floor(_prop(trace, p)) for p in _PLOTLY_ARRAYS)
+        marker = _prop(trace, "marker")
+        if marker is not None:
+            floor += sum(_array_floor(_prop(marker, p)) for p in _PLOTLY_MARKER_ARRAYS)
+    return floor
+
+
+def _prop(obj: object, name: str) -> object:
+    """A plotly object's or spec dict's property, or ``None`` where it
+    has none (a trace type without it raises rather than answering)."""
+    try:
+        return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    except Exception:
+        return None
+
+
+def check_plotly_floor(value: object) -> None:
+    """Refuse a figure whose arrays alone are over the cap, before the
+    encoder builds what would be refused anyway."""
+    floor = plotly_size_floor(value)
+    if floor > MAX_ARTIFACT_BYTES:
+        raise ArtifactTooLarge(floor, at_least=True)
+
+
+def too_large_note(name: str, size: int, mod: str, *, at_least: bool = False) -> str:
     """Actionable diagnosis for the cap: the agent reads this in the
     tool result and self-corrects; the human sees it where the figure
     would have been."""
+    over = "at least " if at_least else ""
     note = (
         f"ui artifact {name!r} NOT rendered: too large "
-        f"({size / 1e6:.1f}MB > {MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
+        f"({over}{size / 1e6:.1f}MB > {MAX_ARTIFACT_BYTES / 1e6:.0f}MB cap)."
     )
     if mod.startswith("plotly"):
         return note + (

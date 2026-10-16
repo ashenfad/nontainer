@@ -26,8 +26,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .artifacts import (
-    MAX_ARTIFACT_BYTES,
     ArtifactPath,
+    ArtifactTooLarge,
+    capped_bytes,
+    check_plotly_floor,
     looks_like_plotly,
     renderer_failed_note,
     too_large_note,
@@ -57,16 +59,6 @@ class _NotRenderable(ValueError):
         self.note = note
 
 
-class _ArtifactTooLarge(ValueError):
-    """A materialized value blew the artifact cap — carries the size so
-    the observation can say WHY (and how to shrink it) instead of
-    silently degrading to a repr."""
-
-    def __init__(self, size: int) -> None:
-        super().__init__(f"artifact too large ({size} bytes)")
-        self.size = size
-
-
 _IMAGE_MAGIC = {
     b"\x89PNG\r\n\x1a\n": "png",
     b"\xff\xd8\xff": "jpg",
@@ -75,10 +67,10 @@ _IMAGE_MAGIC = {
 }
 
 
-def _ui_write(ws: Workspace, path: str, data: bytes) -> str:
-    if len(data) > MAX_ARTIFACT_BYTES:
-        raise _ArtifactTooLarge(len(data))
-    ws.files.write(path, data)
+def _ui_write(ws: Workspace, path: str, data: str | bytes) -> str:
+    """Write one artifact, refusing it over the cap (text before it is
+    encoded: see :func:`capped_bytes`)."""
+    ws.files.write(path, capped_bytes(data))
     return path
 
 
@@ -222,8 +214,8 @@ def _normalize_card(i: dict) -> dict:
     return item
 
 
-def _plotly_json(name: str, spec: dict) -> tuple[bytes, str | None]:
-    """A plotly spec dict as JSON bytes, plus a note when the encoding
+def _plotly_json(name: str, spec: dict) -> tuple[str, str | None]:
+    """A plotly spec dict as JSON text, plus a note when the encoding
     had to approximate.
 
     A figure OBJECT is encoded by ``Figure.to_json()`` — plotly's own
@@ -247,12 +239,12 @@ def _plotly_json(name: str, spec: dict) -> tuple[bytes, str | None]:
     except ImportError:
         pass
     else:
-        return to_json_plotly(spec).encode(), None
+        return to_json_plotly(spec), None
     try:
-        return _json.dumps(spec).encode(), None
+        return _json.dumps(spec), None
     except (TypeError, ValueError):
         return (
-            _json.dumps(spec, default=str).encode(),
+            _json.dumps(spec, default=str),
             f"{name!r} is a plotly spec holding values only plotly can "
             "encode (a NumPy array, a timestamp), and plotly is not "
             "importable here, so they were written as text and may not "
@@ -295,14 +287,14 @@ def _materialize_one(
 
     # spec tier: shell-rendered, shell-themed
     if mod.startswith("plotly") and hasattr(value, "to_json"):
-        return _ui_write(
-            ws, f"{ui_root(ws)}/{name}.plotly.json", value.to_json().encode()
-        )
+        check_plotly_floor(value)  # before the encoder builds it
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.plotly.json", value.to_json())
     # A figure serialized to a plain dict (fig.to_dict(), a spec built
     # by hand, one loaded from JSON) is the one dict shape with a real
     # component behind it. Named by its suffix rather than left for a
     # consumer to content-sniff out of a bare `.json`.
     if looks_like_plotly(value):
+        check_plotly_floor(value)
         data, note = _plotly_json(name, value)
         if note is not None and notes is not None:
             notes.append(note)
@@ -316,9 +308,7 @@ def _materialize_one(
         kinds = _column_types(value)
         if kinds is not None:
             payload["columnTypes"] = kinds
-        return _ui_write(
-            ws, f"{ui_root(ws)}/{name}.table.json", _json.dumps(payload).encode()
-        )
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.table.json", _json.dumps(payload))
 
     # cards tier: a list of stat / callout dicts is a dashboard row — a
     # declarative shape with no other plausible rendering, so duck-type it
@@ -350,7 +340,7 @@ def _materialize_one(
         return _ui_write(
             ws,
             f"{ui_root(ws)}/{name}.cards.json",
-            _json.dumps({"items": items}, default=str).encode(),
+            _json.dumps({"items": items}, default=str),
         )
 
     # pixel tier
@@ -385,7 +375,7 @@ def _materialize_one(
         if isinstance(bundle, dict):
             if "text/html" in bundle:
                 return _ui_write(
-                    ws, f"{ui_root(ws)}/{name}.html", str(bundle["text/html"]).encode()
+                    ws, f"{ui_root(ws)}/{name}.html", str(bundle["text/html"])
                 )
             if "image/png" in bundle:
                 import base64 as _b64
@@ -395,7 +385,7 @@ def _materialize_one(
                 return _ui_write(ws, f"{ui_root(ws)}/{name}.png", data)
     html_fn = getattr(value, "_repr_html_", None)
     if callable(html_fn):
-        return _ui_write(ws, f"{ui_root(ws)}/{name}.html", str(html_fn()).encode())
+        return _ui_write(ws, f"{ui_root(ws)}/{name}.html", str(html_fn()))
 
     # No tier claimed it, so nothing renders it. There is no JSON floor:
     # a file holding a bare literal is not an artifact, and announcing
@@ -456,10 +446,15 @@ def materialize_ui(
             if not near_miss:
                 problems.append(e.note)
             continue
-        except _ArtifactTooLarge as e:
+        except ArtifactTooLarge as e:
             # the one failure agents hit in practice — say WHY, in both
             # the artifact slot (human) and the problems note (agent)
-            msg = too_large_note(str(raw_name), e.size, type(value).__module__ or "")
+            msg = too_large_note(
+                str(raw_name),
+                e.size,
+                type(value).__module__ or "",
+                at_least=e.at_least,
+            )
             problems.append(msg)
             try:
                 path = _ui_write(ws, f"{ui_root(ws)}/{name}.txt", msg.encode())
