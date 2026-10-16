@@ -173,28 +173,45 @@ class _ReadOnlyCache(MutableMapping):
 # ----------------------------------------------------------------------
 
 
-def _render_prints(prints: list[tuple[Any, ...]], budget: int) -> str:
-    """Budget-aware stdout reconstruction from snapshotted print args.
+def _print_rendering(max_observation: int) -> Any:
+    """How the sandbox renders each print as it is made: up to half the
+    observation for one print, so a single large value keeps its
+    structure, and as many prints as the observation can show at the
+    smallest share each (a print gets at least 200 characters)."""
+    from sandtrap import PrintRendering
+
+    return PrintRendering(
+        per_print=max(200, max_observation // 2),
+        limit=max(1, max_observation // 200),
+    )
+
+
+def _render_prints(rendered: list[str], count: int, budget: int) -> str:
+    """Stdout rebuilt from the prints the sandbox rendered as they were
+    made, within ``budget``.
 
     Each print gets an even share of the budget (floored so early
-    prints stay legible when there are many); every value renders via
-    reprobate with a hard per-value budget. Approximation caveat:
-    print's sep/end kwargs aren't snapshotted — args join with a
-    space, prints with newlines (the overwhelmingly common case).
+    prints stay legible when there are many), and one rendered longer
+    than its share is cut there. ``count`` is every print made, so the
+    elision says how many were left out, those never rendered included.
+    Approximation caveat: print's sep/end kwargs aren't captured, so
+    values join with a space and prints with newlines (the overwhelmingly
+    common case).
     """
-    import reprobate
-
-    per_print = max(200, budget // max(1, len(prints)))
+    per_print = max(200, budget // max(1, count))
     lines: list[str] = []
     used = 0
-    for i, args in enumerate(prints):
-        if used + per_print > budget:
-            lines.append(f"[...{len(prints) - i} more print(s) elided]")
+    for i, text in enumerate(rendered):
+        if len(text) > per_print:
+            text = text[: per_print - 3] + "..."
+        if used + len(text) > budget:
+            lines.append(f"[...{count - i} more print(s) elided]")
             break
-        per_arg = max(40, per_print // max(1, len(args)))
-        rendered = " ".join(reprobate.render(a, budget=per_arg) for a in args)
-        lines.append(rendered)
-        used += len(rendered) + 1
+        lines.append(text)
+        used += len(text) + 1
+    else:
+        if count > len(rendered):
+            lines.append(f"[...{count - len(rendered)} more print(s) elided]")
     return "\n".join(lines)
 
 
@@ -202,6 +219,21 @@ def _truncate(text: str, limit: int) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
     return text[:limit], True
+
+
+def _truncate_ends(text: str, limit: int) -> tuple[str, bool]:
+    """``text`` within ``limit``, keeping its start and its end.
+
+    The start says what a run was doing and the end how it finished,
+    where a head cut loses the second.
+    """
+    if len(text) <= limit:
+        return text, False
+    marker = f"\n... [{len(text)} characters, cut to {limit}] ...\n"
+    room = max(0, limit - len(marker))
+    head = room // 2
+    tail = room - head
+    return text[:head] + marker + (text[-tail:] if tail else ""), True
 
 
 def _host_object_rpc_handler(obj: Any):
@@ -979,10 +1011,11 @@ class LocalExecutor:
             mode="raw",
             filesystem=fs,
             rpc_handlers=rpc_handlers,
-            # Snapshot print() ARGUMENTS (objects, not text) so oversized
-            # stdout can be re-rendered budget-aware via reprobate — see
-            # _render_prints. Structural elision beats a mid-token cut.
-            snapshot_prints=True,
+            # Each print rendered by reprobate as it is made, so oversized
+            # stdout can be rebuilt within budget from structural
+            # renderings (see _render_prints) rather than cut mid-token,
+            # and without copying the printed values.
+            render_prints=_print_rendering(ctx.max_observation),
             # the sandbox-level default; script surfaces (terminal
             # python, app handlers) override per-exec with echo="none"
             echo=cfg.echo,
@@ -1021,6 +1054,13 @@ class LocalExecutor:
                 tick_limit=tick_limit if tick_limit is not None else cfg.tick_limit,
                 memory_limit=cfg.memory_limit_mb,
                 allow_network=cfg.network,
+                # Captured output is bounded where it is captured, at a
+                # few observations' worth, keeping its start and its end:
+                # past one observation the result is rebuilt from the
+                # rendered prints or cut to it, so more would only cross
+                # to be thrown away.
+                max_stdout=4 * ctx.max_observation,
+                stdout_keep="ends",
                 # VFS imports resolve from the workspace root, so
                 # `from helpers import x` finds <root>/helpers.py — the
                 # same place agent open() sees it, and the same place a
@@ -1266,17 +1306,20 @@ class LocalExecutor:
         }
 
         raw_stdout = exec_result.stdout
-        if len(raw_stdout) > ctx.max_observation and getattr(
-            exec_result, "prints", None
-        ):
-            # Oversized stdout + snapshotted print objects: rebuild the
-            # view with reprobate's structural elision (hard budget,
-            # "...N more" markers) instead of a mid-token head-cut.
-            stdout = _render_prints(exec_result.prints, ctx.max_observation)
+        rendered = getattr(exec_result, "rendered_prints", None)
+        if len(raw_stdout) > ctx.max_observation and rendered:
+            # Oversized stdout with rendered prints: rebuild the view from
+            # reprobate's structural renderings (hard budget, "...N more"
+            # markers) instead of a mid-token cut.
+            stdout = _render_prints(
+                rendered, exec_result.print_count, ctx.max_observation
+            )
             trunc_out = True
         else:
-            stdout, trunc_out = _truncate(raw_stdout, ctx.max_observation)
-        stderr, trunc_err = _truncate(exec_result.stderr, ctx.max_observation)
+            # output that isn't prints (sys.stdout.write, a library's
+            # logging): its start and its end, as the sandbox kept them
+            stdout, trunc_out = _truncate_ends(raw_stdout, ctx.max_observation)
+        stderr, trunc_err = _truncate_ends(exec_result.stderr, ctx.max_observation)
         return PythonResult(
             stdout=stdout,
             stderr=stderr,
