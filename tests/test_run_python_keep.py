@@ -162,3 +162,20 @@ def test_the_dud_rung_narrows_what_the_guest_returned():
     result = PythonResult(stdout="", namespace={"ui": 1, "scratch": 2})
     assert _kept(result, ("ui",)).namespace == {"ui": 1}
     assert _kept(result, None) is result
+
+
+@pytest.mark.parametrize("keep", [(), ("n",)])
+def test_a_refused_harvest_still_returns_only_what_was_kept(ws, monkeypatch, keep):
+    """A remote executor's refused harvest returns early, with the
+    refusal on the error; ui, asked for internally, must not leak there
+    either."""
+    from nontainer.workspace.core import _Absorbed
+
+    monkeypatch.setattr(
+        ws,
+        "_absorb_or_unwind",
+        lambda was_dirty: _Absorbed(refusal="harvest refused", landed=False),
+    )
+    result = ws.run_python("ui = {'note': 'x'}\nn = 1\n", keep=keep)
+    assert "harvest refused" in result.error
+    assert result.namespace == {k: v for k, v in {"n": 1}.items() if k in keep}

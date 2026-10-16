@@ -837,6 +837,17 @@ class Workspace:
         what the caller reads.
         """
         names = keep_names(keep)
+
+        def narrowed(result: PythonResult) -> PythonResult:
+            # ui is asked for whatever keep says, to be materialized;
+            # what the caller gets back is what it named, on every path
+            if names is None or "ui" in names:
+                return result
+            return replace(
+                result,
+                namespace={k: v for k, v in result.namespace.items() if k in names},
+            )
+
         with self._lock:
             self._check_open()
             was_dirty = self._provider.dirty
@@ -856,14 +867,10 @@ class Workspace:
                 # and commit under its tool — see :meth:`terminal`.
                 cp = self._maybe_commit("run_python") if absorbed.landed else None
                 error = f"{result.error}\n\n{torn}" if result.error else torn
-                return replace(result, error=error, commit=cp)
+                return narrowed(replace(result, error=error, commit=cp))
             result = self._materialize_ui(result)
             cp = self._maybe_commit("run_python")
-        if names is not None and "ui" not in names:
-            result = replace(
-                result,
-                namespace={k: v for k, v in result.namespace.items() if k in names},
-            )
+        result = narrowed(result)
         return replace(result, commit=cp) if cp else result
 
     def _materialize_ui(self, result: PythonResult) -> PythonResult:
