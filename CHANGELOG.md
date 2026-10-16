@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.4 - 2026-10-16
 
 ### Added
 - **`keep=` on `run_python`, `arun_python` and `runtime.exec_python`** names the bindings `result.namespace` carries; under process isolation the rest stay in the worker, unpickled (#263). `ui` is materialized either way.
