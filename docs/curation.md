@@ -194,8 +194,8 @@ were run, not just read.
   that commit, with a chat of its own; `inherit="full"` keeps the
   conversation as it stood there.
 - **A run records what it cost.** agno stores each run's token counts
-  (input, output, cache reads, reasoning) and its duration with the
-  run; its tool calls and their errors are in its messages.
+  (input, output, cache reads and writes, reasoning) and its duration
+  with the run; its tool calls and their errors are in its messages.
 - **A release can wait.** `store.publish(..., current=False)` records
   a version without making it current; `set_current` switches later,
   and back.
@@ -475,10 +475,17 @@ class TraceRun:                   # one stored run, as a source reads it
     started: float | None         # epoch seconds
     ended: float | None
     model: str | None
-    tokens_in: int | None
-    tokens_out: int | None
+    tokens: TraceTokens           # each count None when the harness doesn't record it
     system: str | None            # the prompt's text; None when the harness keeps none
     events: tuple[TraceEvent, ...]
+
+@dataclass(frozen=True)
+class TraceTokens:                # as the harness recorded them; never summed
+    input: int | None = None
+    output: int | None = None
+    cache_read: int | None = None
+    cache_write: int | None = None
+    reasoning: int | None = None
 
 @dataclass(frozen=True)
 class TraceEvent:
@@ -502,6 +509,14 @@ class TraceSource(Protocol):
   the last `assistant` event, either of which may be missing: a run
   woken by a note rather than a message has no input. The system
   prompt's file name is its hash.
+- **Token counts are kept apart.** agno records input, output, cache
+  reads, cache writes and reasoning. agex-ts records all but
+  reasoning, so its source leaves that one `None` rather than zero.
+  Providers disagree on whether input includes cache reads and whether
+  output includes reasoning, so a source passes the counts on as its
+  harness recorded them, and core prints each one and never adds them
+  up. `index.md` shows input and output; `run.md` shows every count
+  recorded.
 - **One tool event per call.** The call and its result go together, so
   `cat` on one file shows both. A call still in flight has no result.
 - **Statuses are core's words.** agno's `ERROR` reads `failed` and an
@@ -991,7 +1006,9 @@ list the skills as its own work.
   count only when both arms succeeded, since fewer turns because the
   agent gave up is worse, and they include the skill's own tokens. All
   of it is in the run records: agno stores each run's tokens and
-  duration, and the tool calls and their errors are its messages. A
+  duration, and the tool calls and their errors are its messages.
+  Tokens compare only between arms on the same model and provider,
+  since providers count cache reads and reasoning differently. A
   pair whose treatment never opened the skill says nothing about the
   skill, and is counted that way.
 - **More pairs than feels reasonable.** Only pairs whose arms disagree
@@ -1251,7 +1268,7 @@ store.heads(sessions=None) -> dict[str, str]        # a watermark in one call
 class TraceSource(Protocol):                        # nontainer.traces
     def read(self, body) -> TraceRun                # one stored run, in neutral form
 # TraceRun, TraceEvent: see "The event model"; core renders every file from them
-# RunInfo: id, ordinal, started, status, tool calls, tool errors, tokens, duration —
+# RunInfo: id, ordinal, started, status, tool calls, tool errors, TraceTokens, duration —
 #          what index.md prints, and what a trial measures; core derives it from a TraceRun
 # redact(text, *, session, run, path) -> str: an embedder hook on every rendered file
 ```
