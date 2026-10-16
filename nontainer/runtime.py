@@ -28,12 +28,14 @@ runtime keeps running.
 
 from __future__ import annotations
 
+import inspect
 import re
 import warnings
-from collections.abc import Callable, Iterator, Mapping, MutableMapping
+from collections.abc import Callable, Collection, Iterator, Mapping, MutableMapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from .protocol import ExecutionContext, StagedDiff, ViewSpec
+from .protocol import ExecutionContext, StagedDiff, ViewSpec, keep_names
 from .workspace import (
     Mount,
     PythonConfig,
@@ -94,6 +96,18 @@ class _ShellEnv(MutableMapping[str, str]):
 
     def __repr__(self) -> str:
         return f"<shell env: {sorted(self._values)}>"
+
+
+def _accepts_keep(executor: Any) -> bool:
+    """Whether ``executor.exec_python`` takes ``keep``: by name, or
+    through ``**kwargs``. One written before ``keep`` existed does not."""
+    try:
+        params = inspect.signature(executor.exec_python).parameters
+    except (TypeError, ValueError):
+        return False
+    return "keep" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 class Runtime:
@@ -395,6 +409,7 @@ class Runtime:
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
         view: "ViewSpec | None" = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         """EXTENSION SURFACE: the raw execution path — no commit,
         no lock. For embedders composing execution features on top of
@@ -410,7 +425,9 @@ class Runtime:
         expression-echo for this call (``None`` = ``PythonConfig.echo``;
         script surfaces pass ``"none"``); ``stdin``/``argv`` expose the
         synthetic ``sys`` (the terminal ``python`` builtin wires the
-        pipeline in). Safe to call concurrently — a ``view`` mints a
+        pipeline in). ``keep`` names the bindings ``result.namespace``
+        carries (``None``: every one); an executor carrying the namespace
+        across a boundary leaves the rest behind. Safe to call concurrently — a ``view`` mints a
         fresh sandbox per call (frozen app serving relies on this);
         callers whose work mutates the workspace serialize via
         ``Workspace.lock``.
@@ -421,14 +438,26 @@ class Runtime:
         # terminal ``python`` builtin, and apps dispatch all land here,
         # so a host-side write is visible to every one of them.
         self.sync_if_stale()
-        return self._executor.exec_python(
+        names = keep_names(keep)
+        selects = names is not None and _accepts_keep(self._executor)
+        result = self._executor.exec_python(
             code,
             inputs=inputs,
             stdin=stdin,
             argv=argv,
             echo=echo,
             view=view,
+            **({"keep": names} if selects else {}),
         )
+        if names is not None and not selects:
+            # An executor written before keep existed returns every
+            # binding: the narrowing happens here instead, so a caller
+            # that selects gets what it asked for on any executor.
+            result = replace(
+                result,
+                namespace={k: v for k, v in result.namespace.items() if k in names},
+            )
+        return result
 
     def _python_command(self, ctx: Any) -> Any:
         """The reserved ``python`` terminal builtin: a thin bridge over
@@ -494,6 +523,7 @@ class Runtime:
             stdin=stdin,
             argv=argv,
             echo="none",
+            keep=(),  # a script's output is its text
         )
         ctx.stdout.write(result.stdout)
         if result.error is not None:

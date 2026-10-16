@@ -900,6 +900,7 @@ def run_options(ws: Any, options: Options, cwd: str | None = None) -> TestReport
             inputs={"nt__maxfail": budget},
             view=_view(ws),
             echo="none",
+            keep=("nt__where", "nt__results"),
         )
         if result.stdout:
             stdout.append(result.stdout)

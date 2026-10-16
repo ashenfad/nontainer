@@ -684,18 +684,28 @@ closes the workspaces it handed out — that is the caller's, above.
 
 ```python
 ws.terminal(command: str) -> TerminalResult
-ws.run_python(code: str, *, inputs: dict | None = None) -> PythonResult
+ws.run_python(code: str, *, inputs: dict | None = None,
+              keep: Collection[str] | None = None) -> PythonResult
 
 # async host facades — run the sync execution in a thread so an
 # event-loop host (FastAPI, etc.) stays responsive. Same results,
 # same semantics; the agent's code is unchanged (still sync).
 await ws.aterminal(command) -> TerminalResult
-await ws.arun_python(code, *, inputs=None) -> PythonResult
+await ws.arun_python(code, *, inputs=None, keep=None) -> PythonResult
 ```
 
 Neither raises for agent-code failure — check truthiness. `inputs`
 must be picklable data (per-call counterpart to the construction-time
 `host_objects`, which are live resources).
+
+`keep` names the bindings `result.namespace` carries (`None`, the
+default: every one). Under process isolation the rest stay in the
+worker, unpickled, so a caller that reads only a binding or two pays
+nothing to serialize and transfer the code's scratch values. `ui` is
+materialized either way, since its artifacts are part of what the call
+did. The agent's `run_python` tool keeps only `ui`; apps dispatch and
+ws-pytest keep their own result bindings. A bare string is refused:
+write `keep=("ui",)`.
 
 Use the `a*` variants when embedding in an async server — they're
 just `run_in_executor` wrappers, so CPU-bound sandbox work never
@@ -1401,7 +1411,7 @@ reach into internals (and stay portable across providers):
 
 ```python
 ws.runtime.exec_python(code, *, inputs=None, stdin=None, argv=None,
-               echo=None, view=None) -> PythonResult
+               echo=None, view=None, keep=None) -> PythonResult
     # the raw execution path: no commit, no lock. `view` (a
     # ViewSpec) requests a restricted, budgeted execution — a
     # read-only fs/cache view, a tighter timeout/tick budget, contract

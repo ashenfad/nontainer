@@ -63,7 +63,7 @@ import sys
 import tarfile
 import threading
 import time
-from collections.abc import Iterator, Mapping, MutableMapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, MutableMapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal
@@ -89,6 +89,7 @@ from .executor import (
     flatten_grants,
 )
 from .host_objects import _by_value, _stubbed, _typed, _value
+from .protocol import keep_names
 from .remote import Host
 from .views import read_many
 from .workspace import PythonResult, TerminalResult, _trim_rendered_traceback
@@ -743,6 +744,17 @@ def _merge_packages(derived: list[str], explicit: Any) -> list[str]:
     return merged
 
 
+def _kept(result: PythonResult, keep: Collection[str] | None) -> PythonResult:
+    """``result`` with its namespace narrowed to ``keep`` (``None``: as
+    it is)."""
+    names = keep_names(keep)
+    if names is None:
+        return result
+    return replace(
+        result, namespace={k: v for k, v in result.namespace.items() if k in names}
+    )
+
+
 class DudExecutor:
     """Executor over a dud backend — a host process or a real microVM.
 
@@ -1171,6 +1183,7 @@ class DudExecutor:
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
         view: "ViewSpec | None" = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         """Run code in a fresh guest runner (script model, literally:
         one interpreter per exec).
@@ -1179,7 +1192,10 @@ class DudExecutor:
         echo); per-call override is not wired in v0. ``stdin``/``argv``
         have no dud verb yet — and the terminal ``python`` builtin that
         used them doesn't exist here (real bash runs real python) — so
-        they fail loud rather than silently dropping data. ``view``
+        they fail loud rather than silently dropping data. ``keep`` is
+        applied as the guest's outputs come back, after the bindings
+        this executor reads for itself are lifted off; the guest emits
+        what it emits, under its own caps. ``view``
         (apps handler dispatch) is implemented in stage 3c (read-only
         views + contract-class injection + per-request atomicity);
         until that lands it raises rather than silently running a
@@ -1199,7 +1215,7 @@ class DudExecutor:
             # check can't see a concurrent call's writes.
             with self._lock:
                 self._ensure_session()
-                return self._exec_view(ctx, code, dict(inputs or {}), view)
+                return _kept(self._exec_view(ctx, code, dict(inputs or {}), view), keep)
 
         from dud.values import NotRepresentable
 
@@ -1253,7 +1269,7 @@ class DudExecutor:
                 out,
                 namespace={k: v for k, v in out.namespace.items() if k not in bound},
             )
-        return out
+        return _kept(out, keep)
 
     def _exec_view(
         self,

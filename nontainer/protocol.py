@@ -44,7 +44,7 @@ from __future__ import annotations
 import errno
 import posixpath
 import re
-from collections.abc import Callable, Iterable, Mapping, MutableMapping
+from collections.abc import Callable, Collection, Iterable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
@@ -1015,6 +1015,26 @@ class ViewSpec:
     host objects; the caller checks that before asking."""
 
 
+def keep_names(keep: Collection[str] | None) -> frozenset[str] | None:
+    """``keep`` as a frozenset of names, or ``None`` for every binding.
+
+    A bare string is refused: it is a collection of its characters, so
+    ``keep="ui"`` would quietly keep ``u`` and ``i``.
+    """
+    if keep is None:
+        return None
+    if isinstance(keep, (str, bytes)) or not isinstance(keep, Collection):
+        raise TypeError(
+            f"keep must be a collection of names, not {type(keep).__name__}: "
+            'write keep=("ui",) for a single name.'
+        )
+    names = frozenset(keep)
+    for name in names:
+        if not isinstance(name, str):
+            raise TypeError(f"keep names must be strings, got {name!r}")
+    return names
+
+
 @runtime_checkable
 class Executor(Protocol):
     """Execution contract. See module docstring for the seam's shape.
@@ -1105,6 +1125,7 @@ class Executor(Protocol):
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
         view: ViewSpec | None = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         """One scripted python execution against workspace state.
 
@@ -1120,6 +1141,14 @@ class Executor(Protocol):
         budget, contract classes in scope. It is executor-neutral: no
         sandbox object crosses the seam (see :class:`ViewSpec`). The
         default (``None``) is the executor's standard environment.
+
+        ``keep`` names the bindings ``PythonResult.namespace`` carries
+        (``None``: every one). An executor that has to carry the
+        namespace across a boundary should leave the rest behind
+        unserialized; bindings it reads for itself (a wire binding it
+        lifts off the namespace) are its own to keep. Callers that
+        select pass ``keep`` and others don't, so an executor without the
+        parameter still serves the latter.
 
         A view call MUST be reentrant. Every other execution runs under
         the workspace's single-writer lock and so arrives one at a

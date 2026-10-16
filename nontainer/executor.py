@@ -57,7 +57,7 @@ import pickle
 import threading
 import time
 import warnings
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Collection, Mapping, MutableMapping
 from contextlib import contextmanager
 from types import ModuleType
 from typing import Any, Literal
@@ -78,6 +78,7 @@ from .protocol import (
     StagedDiff,
     ViewSpec,
     clear_way,
+    keep_names,
 )
 from .remote import Host, Local, build
 from .values import copy as copy_value
@@ -1105,6 +1106,7 @@ class LocalExecutor:
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
         view: ViewSpec | None = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         """See ``Workspace.exec_python`` (the documented extension
         surface, which delegates here) for the caller-facing contract."""
@@ -1215,6 +1217,9 @@ class LocalExecutor:
                     stdin=stdin,
                     argv=argv,
                     echo=echo,
+                    # a worker leaves an unselected binding behind
+                    # unpickled
+                    keep=keep_names(keep),
                 )
             finally:
                 with self._running_lock:
@@ -1364,6 +1369,7 @@ class NoExecutor:
         argv: list[str] | None = None,
         echo: Literal["none", "last", "all"] | None = None,
         view: ViewSpec | None = None,
+        keep: Collection[str] | None = None,
     ) -> PythonResult:
         raise WorkspaceError(self._reason)
 
