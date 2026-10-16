@@ -46,7 +46,9 @@ import re
 from typing import Any
 
 from .artifacts import (
-    MAX_ARTIFACT_BYTES,
+    ArtifactTooLarge,
+    capped_bytes,
+    check_plotly_floor,
     is_rich,
     renderer_failed_note,
     too_large_note,
@@ -198,7 +200,7 @@ def _put(workspace: str, relpath: str, data: bytes) -> str:
 
 
 def _write(
-    workspace: str, relpath: str, data: bytes, name: str, mod: str
+    workspace: str, relpath: str, data: str | bytes, name: str, mod: str
 ) -> tuple[str | None, str | None]:
     """Write one artifact, or a note saying why it could not be.
 
@@ -207,13 +209,21 @@ def _write(
     ``ui``, which makes the whole binding unrepresentable and silently
     takes its representable siblings down with it.
     """
-    if len(data) > MAX_ARTIFACT_BYTES:
-        # Same text the host renderer produces for the same condition,
-        # from the same function -- two copies of this message drifted
-        # once already.
-        problem = too_large_note(name, len(data), mod)
-        return _note(workspace, name, problem), problem
+    try:
+        data = capped_bytes(data)
+    except ArtifactTooLarge as e:
+        return _too_large(workspace, name, mod, e)
     return _put(workspace, relpath, data), None
+
+
+def _too_large(
+    workspace: str, name: str, mod: str, e: ArtifactTooLarge
+) -> tuple[str | None, str | None]:
+    # Same text the host renderer produces for the same condition, from
+    # the same function -- two copies of this message drifted once
+    # already.
+    problem = too_large_note(name, e.size, mod, at_least=e.at_least)
+    return _note(workspace, name, problem), problem
 
 
 def _materialize(
@@ -230,9 +240,11 @@ def _materialize(
     mod = type(value).__module__ or ""
 
     if mod.startswith("plotly") and hasattr(value, "to_json"):
-        return _write(
-            workspace, f"ui/{name}.plotly.json", value.to_json().encode(), name, mod
-        )
+        try:
+            check_plotly_floor(value)  # before the encoder builds it
+        except ArtifactTooLarge as e:
+            return _too_large(workspace, name, mod, e)
+        return _write(workspace, f"ui/{name}.plotly.json", value.to_json(), name, mod)
 
     if mod.startswith("pandas") and hasattr(value, "columns"):
         payload = json.loads(value.head(200).to_json(orient="split", date_format="iso"))
@@ -241,7 +253,7 @@ def _materialize(
         if kinds is not None:
             payload["columnTypes"] = kinds
         return _write(
-            workspace, f"ui/{name}.table.json", json.dumps(payload).encode(), name, mod
+            workspace, f"ui/{name}.table.json", json.dumps(payload), name, mod
         )
 
     if mod.startswith("matplotlib") and hasattr(value, "savefig"):
