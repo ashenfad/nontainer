@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **`nontainer.traces`: a stored conversation rendered as files**, the first piece of curation's trace projection. A `TraceSource` reads one stored run, in its harness's format, into a neutral `TraceRun` (status, times, model, `TraceTokens`, system prompt, and `TraceEvent`s: user, assistant, thinking, and one per tool call with its result). `Trace` renders `README.md`, `index.md`, `system/<hash>.md`, and each run's `run.md` and event files from that shape, so a trace reads the same whichever harness wrote it. `NeutralTraces` reads runs stored in the neutral shape itself. Nothing mounts a trace yet; `ws-git worktree add --trace` comes next.
 - **The trace corpus** (`nontainer/conformance/traces/json/`) pins the rendering byte for byte, for agex-ts's port: each case's runs as neutral bodies, with every file they render to.
+- **`nontainer.adapters.agno_traces.AgnoTraces`, the trace source for agno's stored runs.** It reads a run `KvgitSessionDb` stored into the neutral `TraceRun`: status in core's words, times, token counts, the system prompt, and the run's own events. History agno replayed into the run is left out, and each call is paired with its result. It parses the stored dict alone, so reading an agno session's trace needs no agno install. A tool failure counts as an error only when agno flagged it; nontainer's own tools don't flag theirs yet.
 
 ## 0.11.5 - 2026-10-16
 
