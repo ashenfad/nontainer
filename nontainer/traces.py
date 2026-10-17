@@ -30,6 +30,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Protocol
 
 __all__ = [
@@ -75,6 +76,12 @@ def _str_or_none(value: Any, where: str) -> str | None:
     if value is None or isinstance(value, str):
         return value
     raise ValueError(f"{where}: expected a string or null, got {value!r}")
+
+
+def _bool(value: Any, where: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(f"{where}: expected true or false, got {value!r}")
 
 
 def _time_or_none(value: Any, where: str) -> float | None:
@@ -157,7 +164,7 @@ class TraceEvent:
             text=_str_or_none(data.get("text"), "event text"),
             tool=_str_or_none(data.get("tool"), "event tool"),
             args=args,
-            error=bool(data.get("error", False)),
+            error=_bool(data.get("error", False), "event error"),
         )
 
 
@@ -350,23 +357,55 @@ def _fence(text: str) -> str:
     return f"{ticks}\n{body}\n{ticks}"
 
 
-def _plain(value: Any) -> Any:
-    """``value`` with every integral float made an int, so ``2.0`` prints
-    ``2`` as JavaScript prints it."""
-    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
-        return int(value)
-    if isinstance(value, Mapping):
-        return {str(k): _plain(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_plain(v) for v in value]
-    return value
+def _key_order(key: str) -> bytes:
+    """JavaScript's default sort order: by UTF-16 code units, which puts
+    a key outside the BMP before one from U+E000 up."""
+    return key.encode("utf-16-be", "surrogatepass")
+
+
+def _number(x: float) -> str:
+    """A float as JavaScript's ``Number.prototype.toString`` writes it.
+    Python's ``repr`` and JavaScript both give the shortest digits that
+    round-trip; they differ in where they switch to an exponent and how
+    they spell it (``1e-07`` against ``1e-7``)."""
+    if not math.isfinite(x):
+        return "null"  # as JSON.stringify writes NaN and the infinities
+    if x == 0:
+        return "0"
+    sign = "-" if x < 0 else ""
+    digits, exponent = Decimal(repr(abs(x))).normalize().as_tuple()[1:]
+    d = "".join(map(str, digits))
+    k, n = len(d), int(exponent) + len(d)  # x = 0.d × 10^n
+    if k <= n <= 21:
+        return sign + d + "0" * (n - k)
+    if 0 < n <= 21:
+        return sign + d[:n] + "." + d[n:]
+    if -6 < n <= 0:
+        return sign + "0." + "0" * -n + d
+    e = n - 1
+    mantissa = d if k == 1 else d[0] + "." + d[1:]
+    return f"{sign}{mantissa}e{'+' if e >= 0 else '-'}{abs(e)}"
 
 
 def _json(value: Any) -> str:
-    """Compact JSON, keys sorted, non-ASCII kept."""
-    return json.dumps(
-        _plain(value), sort_keys=True, ensure_ascii=False, separators=(",", ":")
-    )
+    """Compact JSON as JavaScript's ``JSON.stringify`` writes it, with
+    keys in JavaScript's sort order and non-ASCII kept."""
+    if value is None or isinstance(value, bool):
+        return json.dumps(value)
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return _number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, Mapping):
+        items = sorted(
+            ((str(k), v) for k, v in value.items()), key=lambda kv: _key_order(kv[0])
+        )
+        return "{" + ",".join(f"{_json(k)}:{_json(v)}" for k, v in items) + "}"
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_json(v) for v in value) + "]"
+    return _json(str(value))
 
 
 def _hash(text: str) -> str:
@@ -387,9 +426,10 @@ def _event_name(n: int, event: TraceEvent) -> str:
 
 def _arg_summary(args: Mapping[str, Any] | None) -> str | None:
     """A tool call's line in ``run.md``: the first one-line string
-    argument by sorted key, or else the first line of the first
+    argument by sorted key (JavaScript's order), or else the first line of the first
     multi-line one."""
-    strings = [v for _, v in sorted((args or {}).items()) if isinstance(v, str)]
+    keys = sorted(args or {}, key=_key_order)
+    strings = [args[k] for k in keys if isinstance(args[k], str)]  # type: ignore[index]
     ordered = [v for v in strings if "\n" not in v] + [v for v in strings if "\n" in v]
     for value in ordered:
         line = _summary(value)
@@ -574,7 +614,7 @@ class Trace:
         args = event.args or {}
         inline = []
         blocks = []
-        for key in sorted(args):
+        for key in sorted(args, key=_key_order):
             value = args[key]
             if isinstance(value, str) and "\n" in value:
                 blocks.append(f"### {key}\n\n{_fence(value)}")

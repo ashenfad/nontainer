@@ -131,6 +131,23 @@ _LONG_INPUT = TraceRun(
     ),
 )
 
+_NUMBERS = TraceRun(
+    id="e1e2e3e4-0000-4000-8000-000000000002",
+    status="completed",
+    events=(
+        _tool(
+            "measure",
+            {
+                "values": [1e-7, 1e-6, 0.1, 1 / 3, 2.0, -0.0, 1e20, 1e21, 1.5e300],
+                "ints": [0, -7, 9007199254740991],
+                "keys": {"b": 1, "a": 2, "\uff21": 3, "😀": 4, "10": 5, "9": 6},
+                "text": 'a "quote", a tab\t, a \u2028 and \x01',
+            },
+            "ok",
+        ),
+    ),
+)
+
 CASES: tuple[Case, ...] = (
     Case(
         "an-empty-conversation",
@@ -167,5 +184,13 @@ CASES: tuple[Case, ...] = (
         "an emoji is one code point. A cancelled run with no reply.",
         (_LONG_INPUT,),
         harness="agex",
+    ),
+    Case(
+        "numbers-and-keys-as-javascript-writes-them",
+        "A non-string argument is JSON as JSON.stringify writes it: shortest "
+        "round-trip digits, an exponent below 1e-6 and from 1e21 (1e-7, "
+        "1e+21), -0 as 0; keys sorted by UTF-16 code units, so an emoji key "
+        "comes before U+FF21 and '10' before '9'.",
+        (_NUMBERS,),
     ),
 )

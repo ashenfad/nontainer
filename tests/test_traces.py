@@ -16,6 +16,7 @@ from nontainer.traces import (
     TraceEvent,
     TraceRun,
     TraceTokens,
+    _json,
 )
 
 
@@ -64,6 +65,14 @@ class TestShape:
             ({"id": "r", "status": "x", "tokens": {"input": True}}, "tokens.input"),
             ({"id": "r", "status": "x", "started": "noon"}, "run started"),
             (
+                {
+                    "id": "r",
+                    "status": "x",
+                    "events": [{"kind": "tool", "error": "false"}],
+                },
+                "event error",
+            ),
+            (
                 {"id": "r", "status": "x", "events": [{"kind": "tool", "args": [1]}]},
                 "args",
             ),
@@ -99,6 +108,30 @@ class TestDerived:
         assert _run(started=0.9, ended=2.1).duration == 2
         assert _run(started=5.0).duration is None
         assert _run(started=5.0, ended=4.0).duration == 0
+
+
+class TestJson:
+    @pytest.mark.parametrize(
+        "x, js",
+        [
+            (1e-7, "1e-7"),
+            (1e-6, "0.000001"),
+            (1e21, "1e+21"),
+            (1e20, "100000000000000000000"),
+            (-2.5e-8, "-2.5e-8"),
+            (2.0, "2"),
+            (-0.0, "0"),
+            (1 / 3, "0.3333333333333333"),
+            (float("nan"), "null"),
+        ],
+    )
+    def test_floats_print_as_javascript_prints_them(self, x, js):
+        assert _json(x) == js
+
+    def test_keys_sort_by_utf16_code_units(self):
+        assert _json({"\uff21": 1, "😀": 2, "b": 3, "10": 4, "9": 5}) == (
+            '{"10":4,"9":5,"b":3,"😀":2,"\uff21":1}'
+        )
 
 
 class TestTrace:
