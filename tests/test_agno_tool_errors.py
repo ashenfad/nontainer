@@ -2,7 +2,7 @@
 
 nontainer's tools say a call failed in their text and return normally,
 so agno stored every one as a success (``tool_call_error: false``). The
-toolkit now logs each call's outcome by call id, and ``KvgitSessionDb``
+toolkit now logs each call's outcome by call id and tool name, and ``KvgitSessionDb``
 flags the failed ones in the run it stores (``_agno_calls``). The
 matching is checked on bare dicts first, then through a real agno
 ``Agent``."""
@@ -15,20 +15,33 @@ from nontainer.adapters.agno_traces import AgnoTraces
 
 
 def _log(*calls):
+    """Calls as (call id, failed), all of the toolkit's terminal, or as
+    (call id, tool, failed)."""
     log = CallLog()
-    for call_id, failed in calls:
-        log.note(call_id, failed)
+    for call in calls:
+        call_id, tool, failed = (
+            call if len(call) == 3 else (call[0], "terminal", call[1])
+        )
+        log.note(call_id, tool, failed)
     return log
 
 
-def _tool(call_id, *, mid=None, error=False):
-    return {
+def _tool(call_id, *, mid=None, error=False, tool="terminal", history=False):
+    message = {
         "role": "tool",
         "id": mid or f"m-{call_id}",
         "tool_call_id": call_id,
+        "tool_name": tool,
         "content": "x",
         "tool_call_error": error,
     }
+    if history:
+        message["from_history"] = True
+    return message
+
+
+def _execution(call_id, tool="terminal"):
+    return {"tool_call_id": call_id, "tool_name": tool, "tool_call_error": False}
 
 
 def _run(*messages, tools=None):
@@ -47,10 +60,7 @@ class TestMatching:
         run = _run(
             _tool("a"),
             _tool("b"),
-            tools=[
-                {"tool_call_id": "a", "tool_call_error": False},
-                {"tool_call_id": "b", "tool_call_error": False},
-            ],
+            tools=[_execution("a"), _execution("b")],
         )
         out = flag_failures(run, None, _log(("a", True), ("b", False)))
         assert _flags(out) == [True, False]
@@ -68,6 +78,33 @@ class TestMatching:
         assert _flags(
             flag_failures(run, None, _log(("call_0", True), ("call_0", False)))
         ) == [False]
+
+    def test_another_toolkits_call_under_the_same_id_takes_nothing(self):
+        # call_0 twice: the workspace's failed terminal, then another
+        # toolkit's search, which the log never saw
+        run = _run(_tool("call_0", mid="m1"), _tool("call_0", mid="m2", tool="search"))
+        assert _flags(flag_failures(run, None, _log(("call_0", True)))) == [True, False]
+
+    def test_history_in_the_messages_takes_nothing_from_the_log(self):
+        # store_history_messages: an earlier run's call_0 is replayed
+        # here, and only this run's call is in tools
+        run = _run(
+            _tool("call_0", mid="old", history=True),
+            _tool("call_0", mid="new"),
+            tools=[_execution("call_0")],
+        )
+        out = flag_failures(run, None, _log(("call_0", True)))
+        assert _flags(out) == [False, True]
+        assert out["tools"][0]["tool_call_error"] is True
+
+    def test_more_outcomes_than_entries_align_from_the_end(self):
+        run = _run(
+            _tool("call_0", mid="m1"),
+            _tool("call_0", mid="m2"),
+            tools=[_execution("call_0")],
+        )
+        out = flag_failures(run, None, _log(("call_0", False), ("call_0", True)))
+        assert [t["tool_call_error"] for t in out["tools"]] == [True]
 
     def test_a_finished_run_closes_the_log(self):
         log = _log(("call_0", True))
@@ -93,7 +130,7 @@ class TestMatching:
         assert flag_failures(run, None, _log(("a", False))) is run
         assert flag_failures(run, None, None) is run
 
-    def test_a_call_with_no_function_call_is_not_logged(self):
+    def test_a_call_without_its_function_call_is_not_logged(self):
         ws = object.__new__(type("W", (), {}))
         note(ws, None, True)
         assert log_of(ws) is None
