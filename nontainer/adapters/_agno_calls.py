@@ -8,8 +8,8 @@ record, and a trace counted none of those failures. agno has no field
 that carries a flag from a tool's result into the message it stores.
 
 So the toolkit keeps a log per workspace. Every call through
-``WorkspaceTools`` notes its call id (agno hands an entrypoint its
-``FunctionCall`` as ``fc``) and whether it failed. ``KvgitSessionDb``
+``WorkspaceTools`` notes its call id and tool name (agno hands an
+entrypoint its ``FunctionCall`` as ``fc``) and whether it failed. ``KvgitSessionDb``
 reads the log of the workspace it writes, and flags the failed calls'
 tool messages, and their ``tools`` entries, before it stores a run.
 Both dbs write through the live workspace the toolkit's tools use, so
@@ -19,11 +19,14 @@ the log is found by that object.
 agno hands back the session's earlier runs with every write, and their
 call ids can recur in the newest one. A finished run closes the log
 (:meth:`CallLog.close`), so the calls logged since are the newest run's.
-Its tool messages name their call ids, and a model may reuse an id from
-one reply to the next (numbering each reply's calls from zero). The
-calls of one reply have distinct ids, and replies run one after
-another, so the run's occurrences of an id are the latest calls logged
-under it, in order.
+A call is known by its id and its tool's name: the log holds only the
+toolkit's calls, and an agent's tool names are distinct, so another
+toolkit's call never takes one of its outcomes. A model may reuse an id
+from one reply to the next (numbering each reply's calls from zero).
+The calls of one reply have distinct ids, and replies run one after
+another, so the run's occurrences of a call are the latest logged under
+it, in order. Messages replayed from history (``from_history``) belong
+to earlier runs and take nothing from the log.
 
 **Keeping a flag.** agno's in-memory run never carries the flag, so a
 later write of the same session hands back a stored run unflagged. A
@@ -48,15 +51,16 @@ a run of fewer calls than this is always matched in full."""
 
 class CallLog:
     """One workspace's tool calls, oldest first: each call id with
-    whether the call failed, since the last run finished."""
+    its tool's name and whether the call failed, since the last run
+    finished."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._calls: deque[tuple[str, bool]] = deque(maxlen=_LIMIT)
+        self._calls: deque[tuple[tuple[str, str], bool]] = deque(maxlen=_LIMIT)
 
-    def note(self, call_id: str, failed: bool) -> None:
+    def note(self, call_id: str, tool: str, failed: bool) -> None:
         with self._lock:
-            self._calls.append((call_id, failed))
+            self._calls.append(((call_id, tool), failed))
 
     def close(self) -> None:
         """A run finished: what it logged is stored, and none of it is
@@ -64,11 +68,11 @@ class CallLog:
         with self._lock:
             self._calls.clear()
 
-    def latest(self, call_id: str, n: int) -> list[bool]:
-        """The outcomes of the latest ``n`` calls under ``call_id``,
-        oldest first; fewer when fewer were logged."""
+    def latest(self, key: tuple[str, str], n: int) -> list[bool]:
+        """The outcomes of the latest ``n`` calls under ``key``, a call
+        id and a tool name, oldest first; fewer when fewer were logged."""
         with self._lock:
-            found = [failed for cid, failed in self._calls if cid == call_id]
+            found = [failed for k, failed in self._calls if k == key]
         return found[-n:] if n > 0 else []
 
 
@@ -85,13 +89,14 @@ def note(workspace: Any, fc: Any, failed: bool) -> None:
     agno handed the entrypoint; a call without one (an embedder calling
     the function directly) is not logged."""
     call_id = getattr(fc, "call_id", None)
-    if call_id is None:
+    tool = getattr(getattr(fc, "function", None), "name", None)
+    if call_id is None or tool is None:
         return
     with _LOGS_LOCK:
         log = _LOGS.get(workspace)
         if log is None:
             log = _LOGS[workspace] = CallLog()
-    log.note(str(call_id), bool(failed))
+    log.note(str(call_id), str(tool), bool(failed))
 
 
 def log_of(workspace: Any) -> CallLog | None:
@@ -108,21 +113,25 @@ def _tool_messages(run: Mapping[str, Any]) -> list[tuple[int, Mapping[str, Any]]
     ]
 
 
-def _by_call(items: list[tuple[int, Any]]) -> dict[str, list[int]]:
-    """Positions grouped by call id, in order."""
-    out: dict[str, list[int]] = {}
-    for i, call_id in items:
-        if call_id is not None:
-            out.setdefault(str(call_id), []).append(i)
+def _by_call(
+    items: list[tuple[int, Mapping[str, Any]]],
+) -> dict[tuple[str, str], list[int]]:
+    """Positions grouped by call id and tool name, in order."""
+    out: dict[tuple[str, str], list[int]] = {}
+    for i, item in items:
+        call_id, tool = item.get("tool_call_id"), item.get("tool_name")
+        if call_id is not None and tool is not None:
+            out.setdefault((str(call_id), str(tool)), []).append(i)
     return out
 
 
 def _aligned(positions: list[int], outcomes: list[bool]) -> dict[int, bool]:
-    """``outcomes`` matched to the last of ``positions``: the latest
-    calls logged are a run's latest occurrences of the id."""
-    if not outcomes:
+    """``outcomes`` matched to ``positions`` from the end of both: the
+    latest calls are the latest occurrences."""
+    n = min(len(positions), len(outcomes))
+    if n == 0:
         return {}
-    return dict(zip(positions[-len(outcomes) :], outcomes))
+    return dict(zip(positions[-n:], outcomes[-n:]))
 
 
 def flag_failures(
@@ -140,25 +149,19 @@ def flag_failures(
         if m.get("tool_call_error") is True and m.get("id") is not None
     }
     failed_messages: set[int] = {i for i, m in messages if m.get("id") in stored}
-    failed_by_call: dict[str, list[bool]] = {}
-    grouped = _by_call([(i, m.get("tool_call_id")) for i, m in messages])
-    for call_id, positions in grouped.items():
-        logged = log.latest(call_id, len(positions)) if log is not None else []
+    failed_by_call: dict[tuple[str, str], list[bool]] = {}
+    own = [(i, m) for i, m in messages if not m.get("from_history")]
+    for key, positions in _by_call(own).items():
+        logged = log.latest(key, len(positions)) if log is not None else []
         flags = _aligned(positions, logged)
         failed_messages |= {i for i, failed in flags.items() if failed}
-        failed_by_call[call_id] = [i in failed_messages for i in positions]
+        failed_by_call[key] = [i in failed_messages for i in positions]
 
     tools = run.get("tools") or []
     failed_tools: set[int] = set()
-    tool_ids = _by_call(
-        [
-            (i, t.get("tool_call_id"))
-            for i, t in enumerate(tools)
-            if isinstance(t, Mapping)
-        ]
-    )
-    for call_id, positions in tool_ids.items():
-        flags = _aligned(positions, failed_by_call.get(call_id, []))
+    tool_ids = _by_call([(i, t) for i, t in enumerate(tools) if isinstance(t, Mapping)])
+    for key, positions in tool_ids.items():
+        flags = _aligned(positions, failed_by_call.get(key, []))
         failed_tools |= {i for i, failed in flags.items() if failed}
 
     def unflagged(items: Any, indices: set[int]) -> set[int]:
