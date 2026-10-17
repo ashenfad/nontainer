@@ -194,7 +194,8 @@ class TestRealRuns:
         first, second = runs
         assert first.status == second.status == "completed"
         assert first.model == "scripted"
-        assert first.system is not None and first.system.startswith("Be terse.")
+        # agno 2.1 wraps the instructions in <instructions> tags; later ones don't
+        assert first.system is not None and "Be terse." in first.system
         assert [(e.kind, e.tool) for e in first.events] == [
             ("user", None),
             ("tool", "file_write"),
