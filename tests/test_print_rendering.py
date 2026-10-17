@@ -106,3 +106,28 @@ def test_a_printed_dataframe_does_not_cross_to_the_host():
     )
     grew = float(done.stdout.strip().splitlines()[-1])
     assert grew < 20, f"the host's peak grew {grew:.0f}MB"
+
+
+@pytest.mark.parametrize("limit", [1, 10, 37, 40, 60])
+def test_a_head_and_tail_cut_never_exceeds_a_small_limit(limit):
+    out, cut = _truncate_ends("x" * 1000, limit)
+    assert cut
+    assert len(out) <= limit
+
+
+@pytest.mark.parametrize("max_observation", [500, 32_000, 1_000_000])
+def test_what_the_renderings_retain_is_bounded(max_observation):
+    """Per print and count are each capped, so their product doesn't grow
+    with the observation."""
+    from nontainer.executor import _print_rendering
+
+    rendering = _print_rendering(max_observation)
+    assert rendering.per_print * rendering.limit <= 16_000 * 160
+    assert rendering.per_print <= max(200, max_observation // 2)
+
+
+def test_the_default_observation_renders_as_it_did():
+    from nontainer.executor import _print_rendering
+
+    rendering = _print_rendering(32_000)
+    assert (rendering.per_print, rendering.limit) == (16_000, 160)
