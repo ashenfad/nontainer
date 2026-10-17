@@ -14,6 +14,10 @@ composed once when the workspace is built:
   the executor is handed the filesystem object once at open and an
   attachment made later has to be visible through the same object.
 
+One filesystem of its own, too: :class:`TraceFS`, a rendered
+conversation, which ``attach(..., trace=True)`` mounts at ``.trace``
+beside the attached tree.
+
 **The write rule.** A narrowed session may CREATE a new path anywhere
 — notes and scratch are ordinary, and a new path merges as an
 addition. Modifying or deleting a path that exists outside the view is
@@ -803,3 +807,174 @@ class SubtreeFS:
         invalidate = getattr(self._fs, "invalidate", None)
         if invalidate is not None:
             invalidate()
+
+
+class TraceFS:
+    """A rendered trace (:class:`~nontainer.traces.Trace`) as a
+    filesystem: what ``attach(..., trace=True)`` mounts at ``.trace``.
+
+    Nothing is rendered until something is read. ``load`` is called once,
+    on the first call that needs the files, and returns the trace with
+    the epoch time every file reports as its own (the pinned commit's).
+    Each file is rendered the first time it is read and kept: it belongs
+    to an immutable commit. Directories are the ones the files' paths
+    imply. Reads only; ``ReadOnlyFS`` wraps this to refuse the rest by
+    name.
+    """
+
+    __slots__ = ("_load", "_lock", "_trace", "_time", "_files", "_dirs", "_rendered")
+
+    def __init__(self, load: Any) -> None:
+        import threading
+
+        self._load = load
+        self._lock = threading.Lock()
+        self._trace: Any = None
+        self._time = ""
+        self._files: frozenset[str] = frozenset()
+        self._dirs: frozenset[str] = frozenset()
+        self._rendered: dict[str, bytes] = {}
+
+    def __repr__(self) -> str:
+        return "<trace>" if self._trace is None else f"<trace of {self._trace.session}>"
+
+    def _loaded(self) -> Any:
+        with self._lock:
+            if self._trace is None:
+                from datetime import datetime, timezone
+
+                trace, time = self._load()
+                files = frozenset(trace.paths())
+                dirs = {""}
+                for path in files:
+                    parent = posixpath.dirname(path)
+                    while parent not in dirs:
+                        dirs.add(parent)
+                        parent = posixpath.dirname(parent)
+                self._time = datetime.fromtimestamp(time or 0, timezone.utc).isoformat()
+                self._files = files
+                self._dirs = frozenset(dirs)
+                self._trace = trace
+            return self._trace
+
+    @staticmethod
+    def _key(path: str) -> str:
+        """``path`` as the trace names it: relative to its root, which
+        is also this filesystem's working directory."""
+        return posixpath.normpath("/" + (path or "")).lstrip("/")
+
+    def _bytes(self, key: str) -> bytes:
+        trace = self._loaded()
+        with self._lock:
+            held = self._rendered.get(key)
+        if held is None:
+            if key in self._dirs:
+                raise IsADirectoryError(f"Is a directory: '/{key}'")
+            try:
+                held = trace.read(key).encode("utf-8")
+            except FileNotFoundError:
+                raise FileNotFoundError(f"No such file: '/{key}'") from None
+            with self._lock:
+                held = self._rendered.setdefault(key, held)
+        return held
+
+    # -- reads ----------------------------------------------------------
+
+    def read(self, path: str, offset: int = 0, size: int = -1) -> bytes:
+        data = self._bytes(self._key(path))
+        if offset < 0:
+            raise ValueError(f"negative offset: {offset}")
+        return data[offset:] if size < 0 else data[offset : offset + size]
+
+    def read_many(self, paths: Iterable[str]) -> dict[str, bytes]:
+        found: dict[str, bytes] = {}
+        for path in paths:
+            try:
+                found[path] = self.read(path)
+            except (FileNotFoundError, IsADirectoryError):
+                continue
+        return found
+
+    def isdir(self, path: str) -> bool:
+        self._loaded()
+        return self._key(path) in self._dirs
+
+    def isfile(self, path: str) -> bool:
+        self._loaded()
+        return self._key(path) in self._files
+
+    def exists(self, path: str) -> bool:
+        return self.isdir(path) or self.isfile(path)
+
+    def lexists(self, path: str) -> bool:
+        return self.exists(path)
+
+    def islink(self, path: str) -> bool:
+        return False
+
+    def stat(self, path: str) -> Any:
+        from monkeyfs import FileMetadata
+
+        key = self._key(path)
+        if self.isdir(key):
+            return FileMetadata(0, self._time, self._time, is_dir=True)
+        size = len(self._bytes(key))
+        return FileMetadata(size, self._time, self._time)
+
+    def getsize(self, path: str) -> int:
+        return self.stat(path).size
+
+    def list(self, path: str = ".", recursive: bool = False) -> list[str]:
+        key = self._key(path)
+        if not self.isdir(key):
+            if self.isfile(key):
+                raise NotADirectoryError(f"Not a directory: '/{key}'")
+            raise FileNotFoundError(f"No such directory: '/{key}'")
+        prefix = f"{key}/" if key else ""
+        names = set()
+        for entry in self._files | self._dirs:
+            if not entry or not entry.startswith(prefix):
+                continue
+            rest = entry[len(prefix) :]
+            names.add(rest if recursive else rest.split("/")[0])
+        return sorted(names)
+
+    def list_detailed(self, path: str = ".", recursive: bool = False) -> list[Any]:
+        from monkeyfs import FileInfo
+
+        # Each entry is named under the directory as it was asked for,
+        # as every filesystem here names one.
+        shown = "" if path in ("", ".") else path.rstrip("/") or "/"
+        infos = []
+        for name in self.list(path, recursive=recursive):
+            full = f"{self._key(path)}/{name}".lstrip("/")
+            meta = self.stat(full)
+            infos.append(
+                FileInfo(
+                    name=posixpath.basename(name),
+                    path=posixpath.join(shown, name),
+                    size=meta.size,
+                    created_at=meta.created_at,
+                    modified_at=meta.modified_at,
+                    is_dir=meta.is_dir,
+                )
+            )
+        return infos
+
+    def get_metadata_snapshot(self) -> dict[str, Any]:
+        return {name: self.stat(name) for name in self.list("/", recursive=True)}
+
+    # -- position -------------------------------------------------------
+
+    def getcwd(self) -> str:
+        return "/"
+
+    def chdir(self, path: str) -> None:
+        if not self.isdir(path):
+            raise FileNotFoundError(f"No such directory: {path!r}")
+
+    def resolve_path(self, path: str) -> str:
+        return "/" + self._key(path)
+
+    def realpath(self, path: str) -> str:
+        return self.resolve_path(path)

@@ -284,6 +284,7 @@ class WorkspaceFiles:
         *,
         readonly: bool = True,
         root: str | None = None,
+        trace: bool = False,
     ) -> str:
         """Mount another session's tree, frozen at a commit, inside
         this one at ``at``; returns the ref it was attached from.
@@ -325,11 +326,21 @@ class WorkspaceFiles:
         attached the working directory belongs to the composition, so
         a session committed in that state reopens at its root rather
         than where its agent was standing.
+
+        ``trace=True`` mounts the conversation stored at the same commit
+        beside the files, at ``<at>/.trace``, rendered as markdown
+        (:class:`~nontainer.traces.Trace`): one attachment, so
+        :meth:`detach` takes both down. The store reads the runs with
+        the trace source it was given for the harness that wrote them
+        (``Store(traces=...)``), and only when the trace is first read.
+        A state with no conversation is refused, and so is one whose
+        harness the store has no source for. The trace hides a
+        ``.trace`` the tree holds of its own.
         """
         ws = self._ws
         with ws._lock:
             ws._check_open()
-            return ws._attach(ref, at, readonly=readonly, root=root)
+            return ws._attach(ref, at, readonly=readonly, root=root, trace=trace)
 
     def detach(self, at: str) -> None:
         """Remove an attachment and release the state behind it."""
