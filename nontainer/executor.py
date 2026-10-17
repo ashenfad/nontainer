@@ -173,16 +173,25 @@ class _ReadOnlyCache(MutableMapping):
 # ----------------------------------------------------------------------
 
 
+#: The most one print's rendering may take, and the most prints rendered.
+#: At the default observation they are what the observation asks for; a
+#: larger observation is held to them, so what the renderings retain stays
+#: bounded (about 2.5M characters) however large the observation is set.
+_MAX_PER_PRINT = 16_000
+_MAX_RENDERED_PRINTS = 160
+
+
 def _print_rendering(max_observation: int) -> Any:
     """How the sandbox renders each print as it is made: up to half the
     observation for one print, so a single large value keeps its
     structure, and as many prints as the observation can show at the
-    smallest share each (a print gets at least 200 characters)."""
+    smallest share each (a print gets at least 200 characters), each
+    held to its cap."""
     from sandtrap import PrintRendering
 
     return PrintRendering(
-        per_print=max(200, max_observation // 2),
-        limit=max(1, max_observation // 200),
+        per_print=min(_MAX_PER_PRINT, max(200, max_observation // 2)),
+        limit=min(_MAX_RENDERED_PRINTS, max(1, max_observation // 200)),
     )
 
 
@@ -230,7 +239,10 @@ def _truncate_ends(text: str, limit: int) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False
     marker = f"\n... [{len(text)} characters, cut to {limit}] ...\n"
-    room = max(0, limit - len(marker))
+    if len(marker) >= limit:
+        # no room to say what was cut: the start, within the limit
+        return text[:limit], True
+    room = limit - len(marker)
     head = room // 2
     tail = room - head
     return text[:head] + marker + (text[-tail:] if tail else ""), True
