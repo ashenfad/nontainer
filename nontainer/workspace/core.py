@@ -168,6 +168,9 @@ class _Attachment(NamedTuple):
 
     ref: str
     snapshot: "Workspace"
+    trace: int | None = None
+    """The runs in the conversation mounted at ``.trace``, or ``None``
+    when no trace was asked for."""
 
 
 class _Absorbed(NamedTuple):
@@ -185,6 +188,12 @@ class _Absorbed(NamedTuple):
 
     refusal: str | None = None
     landed: bool = False
+
+
+def _shown_ref(ref: "Ref") -> str:
+    """A ref as a message names it: the store tag, or the session and
+    seven characters of the commit, as ws-git prints one."""
+    return ref.tag or f"{ref.session}@{ref.commit[:7]}"
 
 
 def _show_root(git: Any, path: str) -> str:
@@ -1700,11 +1709,12 @@ class Workspace:
         *,
         readonly: bool = True,
         root: str | None = None,
+        trace: bool = False,
     ) -> str:
         """``ws.files.attach``, under the lock. See it for the contract."""
-        from monkeyfs import ReadOnlyFS
+        from monkeyfs import MountFS, ReadOnlyFS
 
-        from ..views import SubtreeFS
+        from ..views import SubtreeFS, TraceFS
 
         if not readonly:
             raise NotSupportedError(
@@ -1724,6 +1734,7 @@ class Workspace:
         # used, so resolving at the wrong one reads an empty tree, and
         # a lineage shares one.
         snapshot = self._store.resolve(wanted, root=root or self._root)
+        runs: int | None = None
         try:
             # The PROVIDER's filesystem, not the snapshot workspace's:
             # a session forked with a narrow view composes one over its
@@ -1731,15 +1742,71 @@ class Workspace:
             # what the delegate could see — while the whole reason to
             # attach a delegate is to look at everything it did. The
             # provider always holds the whole branch.
-            self._fs.attach(
-                point, ReadOnlyFS(SubtreeFS(snapshot._provider.fs, snapshot.root))
-            )
+            tree: Any = SubtreeFS(snapshot._provider.fs, snapshot.root)
+            if trace:
+                load, runs = self._trace_of(wanted, snapshot)
+                # One attachment: the tree and its conversation, pinned
+                # together and taken down together. The trace shadows
+                # any .trace the tree holds of its own.
+                tree = MountFS(tree, {"/.trace": TraceFS(load)})
+            self._fs.attach(point, ReadOnlyFS(tree))
         except BaseException:
             snapshot.close()
             raise
-        self._attached[point] = _Attachment(str(wanted), snapshot)
+        self._attached[point] = _Attachment(str(wanted), snapshot, runs)
         self._mark_executor_stale()
         return str(wanted)
+
+    def _trace_of(self, ref: "Ref", snapshot: Workspace) -> tuple[Any, int]:
+        """What ``attach(..., trace=True)`` mounts at ``.trace``: a
+        loader for the conversation stored at ``ref``, rendered, and how
+        many runs it holds. Refuses a state with no conversation, or one
+        written by a harness this store has no trace source for.
+
+        Nothing is read but the index until the trace is: the loader
+        reads every run at that commit, and the source parses each.
+        """
+        from ..traces import Trace
+
+        kv = snapshot._provider.kv
+        index = conversation.read_index(kv)
+        if index is None:
+            raise ValueError(
+                f"{_shown_ref(ref)} holds no conversation to trace: no "
+                "agent's runs are stored at that commit"
+            )
+        source = self._store.traces.get(index.harness) if self._store else None
+        if source is None:
+            raise NotSupportedError(
+                f"{_shown_ref(ref)} holds a conversation written by "
+                f"{index.harness!r}, which this store cannot read, so it "
+                "has no trace"
+            )
+        session = (index.session or ref.tag) if ref.tag else ref.session
+
+        def load() -> tuple[Trace, float | None]:
+            bodies = conversation.read_runs(kv, index.runs, index)
+            runs = []
+            for rid in index.runs:
+                if rid not in bodies:
+                    continue  # named by the index, never stored
+                try:
+                    runs.append(source.read(bodies[rid]))
+                except ValueError:
+                    continue  # a body its source can't read
+            try:
+                time = next(iter(snapshot._provider.history(limit=1)), None)
+            except NotSupportedError:
+                time = None
+            rendered = Trace(
+                runs,
+                session=session or "",
+                commit=ref.commit[:7],
+                harness=index.harness,
+            )
+            return rendered, None if time is None else time.time
+
+        return load, len(index.runs)
 
     def _detach(self, at: str) -> None:
         point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")

@@ -28,6 +28,7 @@ import threading
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from ..errors import NotSupportedError, WorkspaceError
@@ -57,6 +58,7 @@ from .refs import Ref, StoreTags
 if TYPE_CHECKING:
     from ..migrate import LayoutMigration
     from ..protocol import Executor
+    from ..traces import TraceSource
     from ..workspace import Mount, Profile, PythonConfig, Workspace
 
 
@@ -98,6 +100,13 @@ class Store(_Publishing):
             ``provider_factory`` each say where state lives, so each is
             refused alongside it, and only the ``"kvgit"`` backend has a
             memory form. ``NONTAINER_KV`` is not consulted.
+        traces: How this store reads a stored conversation, by the name
+            of the harness that wrote it: ``{"agno": AgnoTraces()}``.
+            Each is a :class:`~nontainer.traces.TraceSource`. A session's
+            conversation index names its harness, so one store can trace
+            sessions from several. A conversation whose harness has no
+            source here has no trace: ``ws.files.attach(...,
+            trace=True)`` refuses it. Nothing by default.
     """
 
     def __init__(
@@ -108,7 +117,15 @@ class Store(_Publishing):
         kv: Any = None,
         provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
         memory: bool = False,
+        traces: "Mapping[str, TraceSource] | None" = None,
     ) -> None:
+        for harness, source in (traces or {}).items():
+            if not callable(getattr(source, "read", None)):
+                raise TypeError(
+                    f"traces[{harness!r}] is not a trace source: it needs a "
+                    "read(body) method returning a TraceRun"
+                )
+        self._traces: Mapping[str, TraceSource] = MappingProxyType(dict(traces or {}))
         if memory:
             given = [
                 name
@@ -188,6 +205,12 @@ class Store(_Publishing):
     @property
     def backend(self) -> str:
         return self._backend
+
+    @property
+    def traces(self) -> "Mapping[str, TraceSource]":
+        """The trace sources this store was given, by harness name (see
+        the ``traces`` argument). Read-only."""
+        return self._traces
 
     @property
     def repo(self) -> Any:

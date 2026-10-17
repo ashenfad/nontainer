@@ -4,7 +4,8 @@ step types and for ``<cN>``."""
 
 from __future__ import annotations
 
-from . import Delete, Open, Run, Script, Tag, Write
+from ...traces import TraceEvent, TraceRun, TraceTokens
+from . import Converse, Delete, Open, Run, Script, Tag, Write
 
 _HEREDOC_DOC = "cat > doc.txt <<'EOF'\na\nb\nc\nEOF"
 
@@ -21,6 +22,48 @@ def _conflict(main: str = "main", worker: str = "worker") -> tuple:
         Run("ws-git commit -m 'main edit'", main),
     )
 
+
+_SYSTEM = "You are an analyst. Work in /workspace.\n"
+
+#: Two runs of an analyst's conversation, for the trace scripts.
+_SUMMED = TraceRun(
+    id="1f3a9c2e-7d41-4b8e-9a62-0c5e8f1d2b37",
+    status="completed",
+    started=1760529600.0,
+    ended=1760529612.0,
+    model="claude-sonnet-5-5",
+    tokens=TraceTokens(input=1200, output=300, cache_read=5000, cache_write=0),
+    system=_SYSTEM,
+    events=(
+        TraceEvent("user", "Total the sales in sales.csv."),
+        TraceEvent(
+            "tool",
+            "10\n",
+            tool="terminal",
+            args={"command": "awk -F, '{s+=$2} END {print s}' sales.csv"},
+        ),
+        TraceEvent("assistant", "The total is 10."),
+    ),
+)
+_BY_REGION = TraceRun(
+    id="77b0e2d1-0a3c-4f2e-8d1b-5e6f7a8b9c0d",
+    status="failed",
+    started=1760529900.0,
+    ended=1760529960.0,
+    model="claude-sonnet-5-5",
+    tokens=TraceTokens(input=900, output=120, cache_read=4800, cache_write=0),
+    system=_SYSTEM,
+    events=(
+        TraceEvent("user", "Now split it by region."),
+        TraceEvent(
+            "tool",
+            "Traceback (most recent call last):\n  ...\nKeyError: 'region'\n",
+            tool="run_python",
+            args={"code": "df.groupby('region')\n"},
+            error=True,
+        ),
+    ),
+)
 
 SCRIPTS: tuple[Script, ...] = (
     # -- status, staging, committing --------------------------------------
@@ -609,6 +652,56 @@ SCRIPTS: tuple[Script, ...] = (
             Run("cat empty/review.md"),
             Run("ws-git status"),
             Run("ws-git worktree prune"),
+        ),
+    ),
+    Script(
+        "a-worktree-with-its-trace",
+        "worktree add --trace mounts the conversation stored at the commit "
+        "beside the files, at .trace, rendered and read-only; list says how "
+        "many runs it holds, and remove takes both down.",
+        (
+            Run("echo 'q1,4' > sales.csv; echo 'q2,6' >> sales.csv", "analyst"),
+            Converse(_SUMMED, "analyst"),
+            Run("echo 'region?' > notes.md", "analyst"),
+            Converse(_BY_REGION, "analyst"),
+            Run("ws-git log analyst --all"),
+            Run("ws-git worktree add --trace an analyst"),
+            Run("ls -a an; ls an/.trace"),
+            Run("find an/.trace -type f"),
+            Run("cat an/.trace/README.md"),
+            Run("cat an/.trace/index.md"),
+            Run("cat an/.trace/runs/002-77b0e2d1/run.md"),
+            Run("cat an/.trace/runs/002-77b0e2d1/events/002-tool-run_python.md"),
+            Run("grep -rl KeyError an/.trace"),
+            Run("echo x > an/.trace/x"),
+            Run("ws-git worktree add --trace first analyst@<c3>"),
+            Run("cat first/.trace/index.md; ls first"),
+            Run("ws-git worktree list"),
+            Run("ws-git worktree remove an"),
+            Run("ls"),
+            Run("ws-git worktree list"),
+        ),
+    ),
+    Script(
+        "a-trace-is-refused-where-there-is-none",
+        "A state with no conversation has no trace, and neither has one "
+        "written by a harness the store can't read; a trace hides a .trace "
+        "the tree holds of its own, and says so.",
+        (
+            Run("echo a > a.txt", "plain"),
+            Run("ws-git commit -m a", "plain"),
+            Run("ws-git worktree add --trace p plain"),
+            Run("ls"),
+            Run("echo b > b.txt", "other"),
+            Converse(_SUMMED, "other", harness="elsewhere"),
+            Run("ws-git worktree add --trace o other"),
+            Run("ws-git worktree add o other"),
+            Run("ls -a o"),
+            Run("mkdir .trace && echo mine > .trace/notes.md", "keeper"),
+            Converse(_SUMMED, "keeper"),
+            Run("ws-git worktree add --trace k keeper"),
+            Run("ls k/.trace"),
+            Run("ws-git worktree add --trace"),
         ),
     ),
     # -- views ---------------------------------------------------------------

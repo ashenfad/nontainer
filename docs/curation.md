@@ -133,8 +133,9 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | importing skill code (`from skills.sheets.cells import f`) | exists for modules; not for packages or hyphenated names |
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
-| the trace projection (`--trace`, `.trace/`, `changed.md`) | proposed |
-| a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus; not mounted yet |
+| the trace projection: `.trace/` beside a worktree's files (`worktree add --trace`, `files.attach(trace=True)`, `Store(traces=...)`) | exists, local rung and lazy; pinned by the ws-git corpus |
+| `changed.md`, `--since`, and the redaction hook | proposed |
+| a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus |
 | the agno trace source | exists: `nontainer.adapters.agno_traces.AgnoTraces`, with nontainer's tool failures flagged in the runs `KvgitSessionDb` stores |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths arrive with the projection |
 | a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
@@ -1295,6 +1296,14 @@ any other fork.
 Elsewhere:
 
 - the agno adapter's `AgnoTraces`;
+- agex's own source, beside its run record (`agex/record.py`), for the
+  sessions agex drives over nontainer. It reads the record's parts
+  (text, thinking, tool calls, and tool results flagged as errors),
+  its status, which is already core's, and its usage. agex rebuilds the
+  system prompt every turn and stores none, so its runs read "(not
+  kept)" until it does. agex stores its runs in snake_case and agex-ts
+  in camelCase under the same `"agex"` harness name, so either the
+  source reads both or the two agree on one;
 - the port in agex-ts's world package: the renderer, an agex-ts source,
   `--trace`, `.trace/` paths in `show`, and `AttachFS` listing nested
   mounts ([in agex-ts](#in-agex-ts));
