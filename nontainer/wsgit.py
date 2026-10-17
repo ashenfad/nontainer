@@ -62,6 +62,9 @@ wherever cheap; each deviation carries a recorded reason:
   its own, as git's does, but read-only and frozen at a commit: work
   moves between sessions by merge and take, and a second tree an agent
   could edit in place would be a third way with no way back.
+  ``--trace`` mounts the conversation stored at that commit beside the
+  files, at ``.trace``: git keeps no conversation, and here the runs
+  that wrote a tree share its commit.
 - ``diff <name>`` and ``log <name>`` read another session, and where
   that session has a narrowed view ``diff`` groups its changes under
   ``# ... in <name>'s view`` / ``# ... elsewhere``. git has no such
@@ -131,7 +134,7 @@ _SUPPORTED = (
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge (<session> | --abort) | revert <commit> | "
     "cherry-pick <session>@<commit> | "
-    "worktree (add <dir> <session>[@<commit>] | <tag> | list | "
+    "worktree (add [--trace] <dir> <session>[@<commit>] | <tag> | list | "
     "remove <dir>) | "
     "sparse-checkout [list] | help"
 )
@@ -147,7 +150,7 @@ _EDGE = {
 }
 
 #: The three forms, printed by a bare ``ws-git worktree``.
-_WORKTREE_FORMS = """usage: ws-git worktree add <dir> (<session>[@<commit>] | <tag>)
+_WORKTREE_FORMS = """usage: ws-git worktree add [--trace] <dir> (<session>[@<commit>] | <tag>)
        ws-git worktree list
        ws-git worktree remove <dir>"""
 
@@ -228,11 +231,13 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   cherry-pick <session>@<commit>
                     a new commit applying one commit's change from
                     another session
-  worktree add <dir> (<session>[@<commit>] | <tag>)
+  worktree add [--trace] <dir> (<session>[@<commit>] | <tag>)
                     check another session's tree, or a tagged state,
                     out under <dir>, read-only, and read it with cat,
                     ls and grep. It is pinned at a commit: to see newer
-                    work, remove it and add it again
+                    work, remove it and add it again. --trace adds the
+                    conversation stored at that commit, as markdown
+                    under <dir>/.trace (start at its README.md)
   worktree list     the worktrees here, one line each
   worktree remove <dir>
                     take one down
@@ -1191,18 +1196,29 @@ def _worktree_lines(ws: Any) -> list[str]:
     """One line per worktree: where it is, what it holds, and that it
     cannot be written to."""
     return [
-        f"worktree {_show(ws, at)}: {_short_ref(ref)} (read-only)"
-        for at, ref in sorted(ws.files.attachments().items())
+        f"worktree {_show(ws, at)}: {_short_ref(held.ref)} "
+        f"({_worktree_holds(held.trace)})"
+        for at, held in sorted(ws._attached.items())
     ]
+
+
+def _worktree_holds(runs: int | None) -> str:
+    """What a worktree line says it holds besides the files: the trace,
+    when one was added."""
+    if runs is None:
+        return "read-only"
+    return f"read-only; trace: {runs} run{'' if runs == 1 else 's'}"
 
 
 def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
     from termish import CommandResult
 
+    trace = "--trace" in rest
+    rest = [a for a in rest if a != "--trace"]
     if len(rest) != 2 or any(a.startswith("-") for a in rest):
         return _usage_error(
             "worktree add takes a directory and a session (ws-git branch "
-            "lists them) or a store tag."
+            "lists them) or a store tag, and --trace for the conversation."
         )
     where, ref = rest
     point = _abspath(ctx, where)
@@ -1258,9 +1274,22 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 exit_code=1,
                 stderr=f"cannot add a worktree at {where!r}: {reason}.",
             )
-    landed = ws.files.attach(wanted, point)
-    ctx.stdout.write(f"worktree {_show(ws, point)}: {_short_ref(landed)} (read-only)\n")
+    landed = ws.files.attach(wanted, point, trace=trace)
+    ctx.stdout.write(
+        f"worktree {_show(ws, point)}: {_short_ref(landed)} "
+        f"({_worktree_holds(ws._attached[point].trace)})\n"
+    )
+    if trace and _tree_has_trace(ws._attached[point].snapshot):
+        ctx.stdout.write(
+            "note: the tree's own .trace is hidden; the conversation is there instead\n"
+        )
     return None
+
+
+def _tree_has_trace(snapshot: Any) -> bool:
+    """Whether a tree holds a ``.trace`` of its own, which the trace
+    mounted over it hides."""
+    return snapshot._provider.fs.exists(posixpath.join(snapshot.root, ".trace"))
 
 
 def _whole_ref(ws: Any, ref: str) -> str:

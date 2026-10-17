@@ -49,6 +49,7 @@ Store(
     kv: KVStore | str | None = None,      # kvgit: where its data lives (below)
     provider_factory: Callable[[str], WorkspaceProvider] | None = None,
     memory: bool = False,                 # everything in this process (below)
+    traces: Mapping[str, TraceSource] | None = None,   # by harness name (below)
 )
 nontainer.store(...)                      # the same, as sugar
 
@@ -67,6 +68,7 @@ store.tags -> StoreTags                   # store-scoped tags (below)
 store.repo -> kvgit.Repo                  # kvgit: the repository (power tool)
 store.path -> Path | None                 # None for a memory store
 store.memory -> bool
+store.traces -> Mapping[str, TraceSource] # read-only
 store.close() -> None                     # also a context manager
 ```
 
@@ -1067,7 +1069,7 @@ the commit records `{"tool": "checkout", "taken_from": "<ref>",
 dropped something) — a soft reference, not ancestry. Only file keys
 move, so the merge-policy question never arises.
 
-**`ws.files.attach(ref, at, *, readonly=True, root=None)`** mounts
+**`ws.files.attach(ref, at, *, readonly=True, root=None, trace=False)`** mounts
 another session's tree — or the state a store tag names, which needs no
 session at all — frozen at a commit, inside this one at `at`;
 `detach(at)` removes it and `attachments()` lists `{point: ref}`. For
@@ -1087,6 +1089,21 @@ sees it — the contract a `Mount` outside the root already has. And as
 with a mount, while anything is attached the working directory belongs
 to the composition, so a session committed in that state reopens at its
 root rather than where its agent was standing.
+
+`trace=True` mounts the conversation stored at the same commit beside
+the files, at `<at>/.trace`, rendered by
+[`Trace`](#nontainertraces--a-conversation-rendered-as-files): one
+attachment, so one `detach` takes both down. The store reads the runs
+with the source it was given for the harness the conversation's index
+names (`Store(traces={"agno": AgnoTraces()})`), and only when the
+trace is first read; each file is rendered on its first read and kept.
+A state with no conversation is refused (`ValueError`), and so is one
+whose harness the store has no source for (`NotSupportedError`). A run
+its source cannot read is left out. The trace hides a `.trace` the
+tree holds of its own. On a rung that runs elsewhere, the guest is
+handed the root's files, so a trace mounted inside the root is
+rendered whole at each push. The agent's spelling is `ws-git worktree
+add --trace`.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s
@@ -1804,6 +1821,10 @@ reads the same whichever harness wrote it. Token counts are kept as the
 harness recorded them and never summed, since providers disagree on
 what input and output include. `runs` are in the conversation index's
 order, and a run's ordinal is its position from 1.
+
+A store maps harness names to sources (`Store(traces=...)`), and
+`ws.files.attach(ref, at, trace=True)` mounts the conversation at a
+commit as these files ([above](#versioning-gated-by-wscaps)).
 
 The rendering is pinned byte for byte by the trace corpus,
 `nontainer/conformance/traces/json/`: each case's runs as neutral
@@ -2924,8 +2945,9 @@ AgnoTraces().read(body) -> TraceRun    # one stored agno RunOutput dict, in the 
 
 The [trace source](#nontainertraces--a-conversation-rendered-as-files)
 for conversations `KvgitSessionDb` wrote, registered under the harness
-name their index carries, `"agno"`. It parses the stored dict alone, so
-reading an agno session's trace needs no agno install.
+name their index carries, `"agno"`:
+`Store(..., traces={"agno": AgnoTraces()})`. It parses the stored dict
+alone, so reading an agno session's trace needs no agno install.
 
 - **Status** in core's words: `ERROR` is `failed`, `PENDING` is
   `running`, and a status with no counterpart is lowercased.

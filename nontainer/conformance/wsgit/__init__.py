@@ -25,6 +25,14 @@ shown (``ws-git checkout <c2>``); a port substitutes its own ids.
   spell: a file without a final newline, binary content), committed.
 - :class:`Tag` — a store tag of the session's current state.
 - :class:`Delete` — delete a session.
+- :class:`Converse` — a run of the session's conversation, stored the
+  way a harness's turn stores one: its body in the neutral trace shape
+  (:meth:`~nontainer.traces.TraceRun.to_dict`), landed by a turn that
+  ends with the run's status, with whatever the session left
+  uncommitted. The store reads the ``"neutral"`` harness with
+  :class:`~nontainer.traces.NeutralTraces` and has no source for any
+  other, so ``worktree add --trace`` can be pinned without porting a
+  harness's parser.
 
 ``python -m nontainer.conformance.export`` writes the recorded scripts
 under ``wsgit/json/``; ``tests/test_corpus_drift.py`` fails when they
@@ -39,7 +47,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Union
 
+from ...traces import TraceRun
+
 __all__ = [
+    "Converse",
     "Delete",
     "Open",
     "Run",
@@ -96,7 +107,17 @@ class Delete:
     session: str
 
 
-Step = Union[Run, Open, Write, Tag, Delete]
+@dataclass(frozen=True)
+class Converse:
+    """A run stored in the session's conversation by a turn that ends
+    with its status (``completed``, ``failed``, ...)."""
+
+    run: TraceRun
+    session: str = "main"
+    harness: str = "neutral"
+
+
+Step = Union[Run, Open, Write, Tag, Delete, Converse]
 
 
 @dataclass(frozen=True)
@@ -161,9 +182,10 @@ def record(script: Script) -> dict[str, Any]:
     """Run ``script`` on a fresh memory store; the steps with what each
     command printed, commit ids named."""
     from ...store import Store
+    from ...traces import NeutralTraces
     from ...wsgit import register_wsgit
 
-    store = Store(memory=True)
+    store = Store(memory=True, traces={"neutral": NeutralTraces()})
     sessions: dict[str, Any] = {}
     names = _Names()
 
@@ -231,6 +253,19 @@ def record(script: Script) -> dict[str, Any]:
                 names.learn(store)
                 steps.append(
                     {"kind": "tag", "session": step.session, "name": step.name}
+                )
+            elif isinstance(step, Converse):
+                ws = session(step.session)
+                turn = ws.turns.begin(step.run.id, harness=step.harness)
+                turn.end(step.run.status, body=step.run.to_dict())  # type: ignore[arg-type]
+                names.learn(store)
+                steps.append(
+                    {
+                        "kind": "converse",
+                        "session": step.session,
+                        "harness": step.harness,
+                        "run": step.run.to_dict(),
+                    }
                 )
             elif isinstance(step, Delete):
                 held = sessions.pop(step.session, None)
