@@ -63,6 +63,7 @@ from ..conversation import Index
 from ..errors import NotSupportedError, WorkspaceError
 from ..planes import COMPACTION_PREFIX, CONVERSATION_RUN_PREFIX
 from ..workspace import Workspace
+from . import _agno_calls
 
 if TYPE_CHECKING:
     from ..store import Store
@@ -726,11 +727,19 @@ class KvgitSessionDb(JsonDb):
             written: dict[str, Any] = {}
             changed: dict[str, Any] = {}
             held = conversation.read_runs(kv, [str(run["run_id"]) for run in runs])
+            # nontainer's tools say a call failed in their text, which
+            # agno's record can't flag; the toolkit logs it (_agno_calls)
+            calls = _agno_calls.log_of(self._ws)
+            newest = incoming[-1] if incoming else None
             for run in runs:
                 rid = str(run["run_id"])
+                log = calls if rid == newest else None
+                run = _agno_calls.flag_failures(run, held.get(rid), log)
                 if not _same(held.get(rid), run):
                     changed[rid] = held[rid] = run
                     written[rid] = run.get("status")
+                if log is not None and run.get("status") not in _agno_calls.OPEN:
+                    log.close()
 
             now = int(time.time())
             stored = {k: v for k, v in data.items() if k != "runs"}
@@ -809,10 +818,15 @@ class KvgitSessionDb(JsonDb):
                 return
             rid = str(run_id)
             held = conversation.read_runs(kv, [rid]).get(rid)
-            changed = {} if held == run_data else {rid: dict(run_data)}
             run_ids = list(record.get("run_ids") or [])
             if rid not in run_ids:
                 run_ids.append(rid)
+            # the run upsert_session just flagged comes back unflagged
+            calls = _agno_calls.log_of(self._ws) if rid == run_ids[-1] else None
+            run_data = _agno_calls.flag_failures(run_data, held, calls)
+            if calls is not None and run_data.get("status") not in _agno_calls.OPEN:
+                calls.close()
+            changed = {} if held == run_data else {rid: dict(run_data)}
             if changed or run_ids != list(record.get("run_ids") or []):
                 _store(kv, dict(record, run_ids=run_ids), runs=changed)
 

@@ -2938,9 +2938,11 @@ reading an agno session's trace needs no agno install.
   An assistant message gives its reasoning, then its text, then one tool
   event per call. A call's result is the matching `tool` message among
   those right after it, since call ids repeat across a run.
-- **Errors** are agno's `tool_call_error`, which agno sets only when a
-  tool function fails. nontainer's own tools report a failed call in
-  their text, so their failures don't count as errors yet.
+- **Errors** are the stored `tool_call_error`. agno sets it when a tool
+  function fails. nontainer's tools return normally and say in their
+  text that a call failed, so `WorkspaceTools` logs each call's outcome
+  by call id and `KvgitSessionDb` sets the flag on a failed call's
+  stored message. agno never sends the flag to a model.
 
 ### agno compaction (`nontainer.adapters.agno_compaction`, `[agno]` extra, agno 2.5+)
 

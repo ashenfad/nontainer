@@ -23,10 +23,11 @@ What it reads from a run:
   across a run, so only the results right after a call answer it); and
   a ``tool`` message no call claims, on its own.
 
-A tool event is an error when agno says so (``tool_call_error``). agno
-sets that only when a tool function itself fails. nontainer's own tools
-report a failed call in their text and return normally, so until the
-toolkit records its failures in the run, their errors read as results.
+A tool event is an error when the stored run says so
+(``tool_call_error``). agno sets that when a tool function itself fails;
+``KvgitSessionDb`` sets it for a call through nontainer's toolkit that
+failed (a non-zero exit, python that raised), which agno would have
+stored as a success.
 """
 
 from __future__ import annotations

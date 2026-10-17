@@ -51,11 +51,12 @@ from typing import Any
 
 from agno.media import Image
 from agno.tools import Toolkit
-from agno.tools.function import ToolResult
+from agno.tools.function import FunctionCall, ToolResult
 
 from ..inbox import Inbox, Note
 from ..turns import RunStatus, Turn
 from ..workspace import Workspace
+from . import _agno_calls
 from .render import PYTHON_UI_NOTE, ToolsMode, toolkit_instructions
 from .tools import ToolOutput, Toolset
 
@@ -623,16 +624,24 @@ class WorkspaceTools(Toolkit):
             )
 
         # Thin typed wrappers: agno derives each tool's schema from the
-        # signature, and the toolset does the work.
-        def terminal(command: str) -> str:
+        # signature, and the toolset does the work. Each takes the
+        # FunctionCall agno hands an entrypoint that asks for ``fc``
+        # (the annotation keeps it out of the schema), and logs whether
+        # the call failed, which agno's record can't hold: the session
+        # db flags it in the stored run (_agno_calls).
+        def noted(fc: Any, out: ToolOutput) -> ToolOutput:
+            _agno_calls.note(workspace, fc, out.is_error)
+            return out
+
+        def terminal(command: str, fc: FunctionCall = None) -> str:  # type: ignore[assignment]
             """Run a shell script in the persistent workspace."""
-            return toolset.terminal(command).text
+            return noted(fc, toolset.terminal(command)).text
 
         terminal.__doc__ = toolset.description("terminal")
 
-        def file_write(path: str, content: str) -> str:
+        def file_write(path: str, content: str, fc: FunctionCall = None) -> str:  # type: ignore[assignment]
             """Write a file in the workspace."""
-            return toolset.file_write(path, content).text
+            return noted(fc, toolset.file_write(path, content)).text
 
         file_write.__doc__ = toolset.description("file_write")
 
@@ -641,17 +650,19 @@ class WorkspaceTools(Toolkit):
             old_string: str,
             new_string: str,
             replace_all: bool = False,
+            fc: FunctionCall = None,  # type: ignore[assignment]
         ) -> str:
             """Exact-string replacement in a workspace file."""
-            return toolset.file_edit(
+            out = toolset.file_edit(
                 path, old_string, new_string, replace_all=replace_all
-            ).text
+            )
+            return noted(fc, out).text
 
         file_edit.__doc__ = toolset.description("file_edit")
 
-        def view_image(path: str) -> ToolResult:
+        def view_image(path: str, fc: FunctionCall = None) -> ToolResult:  # type: ignore[assignment]
             """View an image file from the workspace."""
-            return _tool_result(toolset.view_image(path))
+            return _tool_result(noted(fc, toolset.view_image(path)))
 
         view_image.__doc__ = toolset.description("view_image")
 
@@ -661,9 +672,9 @@ class WorkspaceTools(Toolkit):
 
         if split:
 
-            def run_python(code: str) -> str:
+            def run_python(code: str, fc: FunctionCall = None) -> str:  # type: ignore[assignment]
                 """Run Python in the sandboxed workspace environment."""
-                return toolset.run_python(code).text
+                return noted(fc, toolset.run_python(code)).text
 
             # The ui note promises that artifacts display beside the
             # reply, which a host rendering this toolkit's conversation
@@ -684,9 +695,11 @@ class WorkspaceTools(Toolkit):
                 actions: "list[dict] | str",
                 viewport: "str | dict" = "desktop",
                 bind: "dict | str | None" = None,
+                fc: FunctionCall = None,  # type: ignore[assignment]
             ) -> ToolResult:
                 """Verify the app headlessly."""
-                return _tool_result(toolset.test_app(actions, viewport, bind))
+                out = toolset.test_app(actions, viewport, bind)
+                return _tool_result(noted(fc, out))
 
             test_app.__doc__ = toolset.description("test_app")
             registered.append(test_app)
@@ -714,9 +727,10 @@ class WorkspaceTools(Toolkit):
                 fork_from: str = "",
                 resume: str = "",
                 wait: bool = False,
+                fc: FunctionCall = None,  # type: ignore[assignment]
             ) -> str:
                 """Delegate to a fork of this session, and read it back."""
-                return toolset.sessions_action(
+                out = toolset.sessions_action(
                     action,
                     task=task,
                     name=name,
@@ -725,7 +739,8 @@ class WorkspaceTools(Toolkit):
                     fork_from=fork_from,
                     resume=resume,
                     wait=wait,
-                ).text
+                )
+                return noted(fc, out).text
 
             sessions_tool.__name__ = "sessions"
             sessions_tool.__doc__ = toolset.description("sessions")
