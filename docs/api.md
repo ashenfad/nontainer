@@ -34,6 +34,7 @@ to import it from:
 | `nontainer.compaction` | the `Fold` record, `record`, `folds`, `in_force`, and the helpers a loop may fold with |
 | `nontainer.conformance` | the harness corpus: `run`, `check`, `applies`, `Harness`; scenarios in `.corpus` and `.harness` ([extending.md](extending.md#a-harness--the-loop-that-drives-a-session)) |
 | `nontainer.adapters.agno_db` | `KvgitSessionDb`, `KvgitStoreDb`, `fork_session` — agno session storage over a store |
+| `nontainer.adapters.agno_traces` | `AgnoTraces`, the trace source for runs agno stored; needs no agno install |
 
 ## `nontainer.Store` — where sessions live
 
@@ -2914,6 +2915,32 @@ embedder's because `open` must hand back the *live* workspace for a
 session already open — a second `Workspace` over the same branch would
 split the turn across two staging buffers — and only the embedder
 knows which ones it is holding.
+
+### agno traces (`nontainer.adapters.agno_traces`, no extra)
+
+```python
+AgnoTraces().read(body) -> TraceRun    # one stored agno RunOutput dict, in the neutral shape
+```
+
+The [trace source](#nontainertraces--a-conversation-rendered-as-files)
+for conversations `KvgitSessionDb` wrote, registered under the harness
+name their index carries, `"agno"`. It parses the stored dict alone, so
+reading an agno session's trace needs no agno install.
+
+- **Status** in core's words: `ERROR` is `failed`, `PENDING` is
+  `running`, and a status with no counterpart is lowercased.
+- **Times**: `created_at` starts the run; `created_at` plus
+  `metrics.duration` ends it.
+- **Tokens** from `metrics`. agno counts all five and drops zeros when
+  it stores them, so with `metrics` present a missing count is 0.
+- **The system prompt** is the run's first `system` message.
+- **Events** follow `messages`, leaving out any replayed from history.
+  An assistant message gives its reasoning, then its text, then one tool
+  event per call. A call's result is the matching `tool` message among
+  those right after it, since call ids repeat across a run.
+- **Errors** are agno's `tool_call_error`, which agno sets only when a
+  tool function fails. nontainer's own tools report a failed call in
+  their text, so their failures don't count as errors yet.
 
 ### agno compaction (`nontainer.adapters.agno_compaction`, `[agno]` extra, agno 2.5+)
 

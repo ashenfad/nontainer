@@ -135,6 +135,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection (`--trace`, `.trace/`, `changed.md`) | proposed |
 | a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus; not mounted yet |
+| the agno trace source | exists: `nontainer.adapters.agno_traces.AgnoTraces`; nontainer's own tool failures are not yet flagged in agno's stored runs |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths arrive with the projection |
 | a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
