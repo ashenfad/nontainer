@@ -117,3 +117,12 @@ def test_workspace_helper_refuses_memory_with_a_store_or_provider():
 
     with pytest.raises(ValueError, match="provider"):
         workspace("s", memory=True, provider=KvgitProvider.open(None, session="s"))
+
+
+def test_the_factory_takes_what_store_takes():
+    # ``nontainer.store`` is documented as the same as ``Store``, as sugar
+    import inspect
+
+    ours = list(inspect.signature(store).parameters)
+    theirs = list(inspect.signature(Store.__init__).parameters)[1:]
+    assert ours == theirs

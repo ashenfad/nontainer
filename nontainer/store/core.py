@@ -1209,6 +1209,7 @@ def store(
     kv: Any = None,
     provider_factory: "Callable[[str], WorkspaceProvider] | None" = None,
     memory: bool = False,
+    traces: "Mapping[str, TraceSource] | None" = None,
 ) -> Store:
     """Build a :class:`Store` (sugar, matching ``nontainer.workspace``)."""
     return Store(
@@ -1217,4 +1218,5 @@ def store(
         kv=kv,
         provider_factory=provider_factory,
         memory=memory,
+        traces=traces,
     )
