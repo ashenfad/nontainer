@@ -250,6 +250,26 @@ class TestChanged:
         )
         a.close()
 
+    @pytest.mark.parametrize("inherit", ["fresh", "full"])
+    def test_a_fork_starts_its_own(self, ws, store, inherit):
+        parent = store.open("parent")
+        parent.terminal("echo p > parent.txt")
+        _converse(parent, _run("r-parent"))
+        parent.terminal("echo later > later.txt")
+        child = parent.fork("child", inherit=inherit)
+        child.terminal("echo c > child.txt")
+        _converse(child, _run("r-child"))
+        ws.files.attach("child", "c", trace=True)
+        runs = ws.files.fs.list("/workspace/c/.trace/runs")
+        changed = ws.files.read(f"c/.trace/runs/{runs[-1]}/changed.md").decode()
+        assert "- A child.txt" in changed and "- files: 1" in changed
+        if inherit == "full":
+            assert runs == ["001-r-parent", "002-r-child"]
+            inherited = ws.files.read("c/.trace/runs/001-r-parent/changed.md")
+            assert b"- A parent.txt" in inherited and b"later.txt" not in inherited
+        child.close()
+        parent.close()
+
     def test_with_no_history_nothing_is_known(self, ws, worker, monkeypatch):
         from nontainer.providers.kvgit import KvgitProvider
 

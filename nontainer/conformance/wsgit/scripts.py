@@ -686,8 +686,9 @@ SCRIPTS: tuple[Script, ...] = (
         "what-each-run-changed",
         "Each run's changed.md lists the commits from after the run before it "
         "landed through its own landing that changed a file, the host's "
-        "among them; --since marks the runs new since a state, and show "
-        "reads one file of another session's trace with nothing mounted.",
+        "among them, and nothing from before the session's fork; --since "
+        "marks the runs new since a state, and show reads one file of "
+        "another session's trace with nothing mounted.",
         (
             Write("seed.csv", text="q0,1\n", session="analyst"),
             Run("echo 'q1,4' > sales.csv; mkdir out", "analyst"),
@@ -712,6 +713,11 @@ SCRIPTS: tuple[Script, ...] = (
             Run("ws-git show analyst@<c1>:.trace", "analyst"),
             Run("ws-git worktree add --since <c4> x analyst"),
             Run("ws-git worktree add --trace x analyst --since"),
+            Run("ws-git branch kid --fresh", "analyst"),
+            Run("echo k > kid.txt", "kid"),
+            Converse(_SUMMED, "kid"),
+            Run("ws-git worktree add --trace k kid"),
+            Run("cat k/.trace/runs/001-1f3a9c2e/changed.md"),
         ),
     ),
     Script(

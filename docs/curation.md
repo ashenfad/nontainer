@@ -540,7 +540,11 @@ carry a `runs` key of their own: agex-ts's fold stamps a count there.
 A run can land more than once: agno checkpoints a run (`RUNNING`)
 before it completes, and agex-ts lands a resumed run again under the
 same id. So a run's range starts after the last landing of any earlier
-run, and ends at its own last landing.
+run, and ends at its own last landing. A fork is a boundary too: a
+branch's history runs back through its parent's, and every fork lands
+a `"tool": "ws-git.fork"` commit on the child, so no range reaches back
+past the last one before the run's landing. A port marks its forks the
+same way.
 
 ### In agex-ts
 

@@ -1107,7 +1107,8 @@ add --trace`.
 
 Each run's `changed.md` comes from the branch's history, read with the
 runs: the commits after the landing of the run before it, through its
-own last landing, that changed a file ([`run_ranges`](#nontainertraces--a-conversation-rendered-as-files)).
+own last landing, that changed a file, and none from before the
+session's fork ([`run_ranges`](#nontainertraces--a-conversation-rendered-as-files)).
 Where the provider keeps no history, or a run never landed on this
 branch, its files read `-`. `since=`, with `trace=True`, is a state the
 reader has seen (a pass's watermark): any ref `ref` can be, or a bare
@@ -1847,6 +1848,10 @@ A commit LANDS a run when its info says `"tool": "turn"` and its `runs`
 names the run. `run_ranges` gives each run the commits after the last
 landing of any run before it, through its own last landing; other
 commits' `runs` keys (agex-ts's fold stamps a count there) don't count.
+A fork is a boundary too: every fork lands a `"tool": "ws-git.fork"`
+commit on the child (`FORK_TOOL`), and no range reaches back past the
+last one before the run's landing, so a forked session's first run
+isn't given its parent's history.
 
 The rendering is pinned byte for byte by the trace corpus,
 `nontainer/conformance/traces/json/`: each case's runs as neutral

@@ -11,6 +11,7 @@ import pytest
 from nontainer.conformance import export
 from nontainer.conformance.traces import CASES
 from nontainer.traces import (
+    FORK_TOOL,
     NeutralTraces,
     Trace,
     TraceCommit,
@@ -202,6 +203,32 @@ class TestRunRanges:
             "c": range(1, 3),
         }
 
+    def test_a_fork_is_where_the_childs_first_run_starts(self):
+        # a fresh fork: the parent's work, then the fork, then the child's
+        infos = [{"tool": "terminal"}, {"tool": FORK_TOOL}, {"tool": "x"}, _turn("c")]
+        assert run_ranges(["c"], infos) == {"c": range(2, 4)}
+
+    def test_a_fork_after_the_parents_runs_leaves_them_their_ranges(self):
+        # a full fork: the parent's run keeps its range, and what the
+        # parent did after it is the tree the child started from
+        infos = [
+            {"tool": "x"},
+            _turn("p"),
+            {"tool": "put"},
+            {"tool": FORK_TOOL},
+            {"tool": "y"},
+            _turn("c"),
+        ]
+        assert run_ranges(["p", "c"], infos) == {
+            "p": range(0, 2),
+            "c": range(4, 6),
+        }
+
+    def test_the_fork_marker_is_ws_gits(self):
+        from nontainer import agentgit
+
+        assert FORK_TOOL == agentgit.FORK_TOOL
+
     def test_a_run_landing_before_the_run_before_it_has_an_empty_range(self):
         infos = [_turn("b"), _turn("a")]
         assert list(run_ranges(["a", "b"], infos)["b"]) == []
@@ -213,6 +240,11 @@ class TestChanges:
         assert commit.added == ("a", "b")
         assert commit.paths == ("a", "b", "z")
         assert TraceCommit.from_dict(commit.to_dict()) == commit
+
+    @pytest.mark.parametrize("paths", ["foo.py", 3, ["a", 1]])
+    def test_a_path_field_must_be_a_list_of_paths(self, paths):
+        with pytest.raises(ValueError, match="list of paths"):
+            TraceCommit.from_dict({"id": "abc1234", "added": paths})
 
     def test_new_runs_need_a_since(self):
         with pytest.raises(ValueError, match="since="):
