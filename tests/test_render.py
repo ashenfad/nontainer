@@ -34,6 +34,84 @@ def test_render_terminal_failure_and_truncation():
     assert "[output truncated]" in out
 
 
+# -- a failed script's stderr, as the terminal tool shows it ----------------
+#
+# A failed script reports on [stderr] exactly what reached stderr
+# unredirected: the failing final command's own diagnostic, named once,
+# or nothing when it failed silently or its stderr was redirected.
+
+
+@pytest.fixture
+def tool_ws():
+    from nontainer.wsgit import register_wsgit
+
+    w = make_ws()
+    register_wsgit(w)
+    w.files.fs.write("/workspace/somefile", b"one\ntwo\nthree\nfour\n")
+    yield w
+    w.close()
+
+
+def _terminal(w, command):
+    from nontainer.adapters.tools import Toolset
+
+    out = Toolset(w).terminal(command)
+    assert out.is_error
+    return out.text
+
+
+_LS_MISSING = "ls: cannot access '/workspace/app': No such file or directory"
+_REPRO = "cat somefile | head -3; echo ----; ls /workspace /workspace/app"
+
+
+def test_terminal_merged_stderr_appears_once_in_stdout(tool_ws):
+    assert _terminal(tool_ws, _REPRO + " 2>&1") == (
+        f"one\ntwo\nthree\n----\n/workspace:\nsomefile\n{_LS_MISSING}\n[exit code 2]"
+    )
+
+
+def test_terminal_stderr_appears_once_named_once(tool_ws):
+    assert _terminal(tool_ws, _REPRO) == (
+        "one\ntwo\nthree\n----\n/workspace:\nsomefile\n"
+        f"[exit code 2]\n[stderr]\n{_LS_MISSING}"
+    )
+
+
+def test_terminal_discarded_stderr_is_not_shown(tool_ws):
+    assert _terminal(tool_ws, "ls /workspace/app 2>/dev/null") == "[exit code 1]"
+
+
+def test_terminal_stderr_written_to_a_file_is_not_shown(tool_ws):
+    assert _terminal(tool_ws, "ls /workspace /workspace/app 2>err.txt") == (
+        "/workspace:\nsomefile\n[exit code 2]"
+    )
+    assert tool_ws.files.fs.read("/workspace/err.txt").decode() == _LS_MISSING + "\n"
+
+
+def test_terminal_silent_failures_show_only_the_exit_code(tool_ws):
+    assert _terminal(tool_ws, "grep -r zebra .") == "[exit code 1]"
+    assert _terminal(tool_ws, "test -f /nope") == "[exit code 1]"
+
+
+def test_terminal_earlier_failure_stays_in_the_output(tool_ws):
+    assert _terminal(tool_ws, "cat nope; grep -r zebra .") == (
+        "cat: nope: No such file or directory\n[exit code 1]"
+    )
+
+
+def test_terminal_ws_git_usage_keeps_its_name(tool_ws):
+    from nontainer.wsgit import _USAGE
+
+    assert _terminal(tool_ws, "ws-git") == (
+        f"[exit code 2]\n[stderr]\nws-git: {_USAGE.rstrip()}"
+    )
+
+
+def test_terminal_parse_error_is_unchanged(tool_ws):
+    out = _terminal(tool_ws, "echo $(pwd)")
+    assert out.startswith("[exit code 2]\n[stderr]\nparse error: ")
+
+
 def test_render_python_never_renders_namespace():
     """Not the values, and not the names either — the agent wrote them."""
     r = PythonResult(stdout="", namespace={"ui": {"secret": list(range(1000))}})

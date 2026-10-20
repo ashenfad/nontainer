@@ -1358,9 +1358,17 @@ class LocalExecutor:
         except ParseError as e:
             output, exit_code, stderr = "", 2, f"parse error: {e}"
         except TerminalError as e:
-            # termish >= 0.1.7 preserves command exit codes (127 for
-            # not-found, a CommandResult's own code — curl's 22 survives)
-            output, exit_code, stderr = e.partial_output, e.exit_code, e.message
+            # The exit code is the failing command's own (127 for
+            # not-found, curl's 22). Its stderr is only what reached the
+            # screen: the command's own diagnostic, named once, or ""
+            # when it failed silently or its stderr was redirected
+            # (2>&1 put it in the output already). Earlier failures the
+            # script ran past are in the output, where they were shown.
+            output, exit_code, stderr = (
+                e.partial_output,
+                e.exit_code,
+                e.display_stderr,
+            )
 
         stdout, trunc_out = _truncate(output, ctx.max_observation)
         stderr, trunc_err = _truncate(stderr, ctx.max_observation)
