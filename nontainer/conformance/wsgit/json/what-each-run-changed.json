@@ -1,0 +1,244 @@
+{
+  "name": "what-each-run-changed",
+  "steps": [
+    {
+      "data": null,
+      "kind": "write",
+      "path": "seed.csv",
+      "session": "analyst",
+      "text": "q0,1\n"
+    },
+    {
+      "command": "echo 'q1,4' > sales.csv; mkdir out",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "analyst",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "harness": "neutral",
+      "kind": "converse",
+      "run": {
+        "ended": 1760529612.0,
+        "events": [
+          {
+            "kind": "user",
+            "text": "Total the sales in sales.csv."
+          },
+          {
+            "args": {
+              "command": "awk -F, '{s+=$2} END {print s}' sales.csv"
+            },
+            "kind": "tool",
+            "text": "10\n",
+            "tool": "terminal"
+          },
+          {
+            "kind": "assistant",
+            "text": "The total is 10."
+          }
+        ],
+        "id": "1f3a9c2e-7d41-4b8e-9a62-0c5e8f1d2b37",
+        "model": "claude-sonnet-5-5",
+        "started": 1760529600.0,
+        "status": "completed",
+        "system": "You are an analyst. Work in /workspace.\n",
+        "tokens": {
+          "cache_read": 5000,
+          "cache_write": 0,
+          "input": 1200,
+          "output": 300
+        }
+      },
+      "session": "analyst"
+    },
+    {
+      "command": "rm seed.csv; echo 'q2,6' >> sales.csv",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "analyst",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "echo 'region?' > out/notes.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "analyst",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "harness": "neutral",
+      "kind": "converse",
+      "run": {
+        "ended": 1760529960.0,
+        "events": [
+          {
+            "kind": "user",
+            "text": "Now split it by region."
+          },
+          {
+            "args": {
+              "code": "df.groupby('region')\n"
+            },
+            "error": true,
+            "kind": "tool",
+            "text": "Traceback (most recent call last):\n  ...\nKeyError: 'region'\n",
+            "tool": "run_python"
+          }
+        ],
+        "id": "77b0e2d1-0a3c-4f2e-8d1b-5e6f7a8b9c0d",
+        "model": "claude-sonnet-5-5",
+        "started": 1760529900.0,
+        "status": "failed",
+        "system": "You are an analyst. Work in /workspace.\n",
+        "tokens": {
+          "cache_read": 4800,
+          "cache_write": 0,
+          "input": 900,
+          "output": 120
+        }
+      },
+      "session": "analyst"
+    },
+    {
+      "command": "ws-git log analyst --all",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "<c1> turn\n<c2> terminal\n<c3> terminal\n<c4> turn\n<c5> terminal\n<c6> file_write\n<c7> init\n<c8> ?\n"
+    },
+    {
+      "command": "ws-git worktree add --trace an analyst",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree an: analyst@<c1> (read-only; trace: 2 runs)\n"
+    },
+    {
+      "command": "cat an/.trace/index.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# Runs\n\nThe runs of `analyst` at <c1>, written by neutral, in order.\n\n001-1f3a9c2e  2025-10-15T12:00:00Z  completed    12s       calls:1 err:0 files:2  in:1200 out:300  Total the sales in sales.csv.\n002-77b0e2d1  2025-10-15T12:05:00Z  failed       1m00s     calls:1 err:1 files:3  in:900 out:120  Now split it by region.\n"
+    },
+    {
+      "command": "cat an/.trace/runs/001-1f3a9c2e/changed.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# Changed by run 001-1f3a9c2e\n\nThe files run 001-1f3a9c2e changed, in the conversation of `analyst` at <c1>, written by neutral:\neach commit after the run before it landed, through this run's own\nlanding, that changed a file. Paths are relative to the tree's root;\nA is added, M modified, D removed.\n\n- files: 2\n\n## <c6> file_write\n\n- A seed.csv\n\n## <c5> terminal\n\n- A sales.csv\n"
+    },
+    {
+      "command": "cat an/.trace/runs/002-77b0e2d1/changed.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# Changed by run 002-77b0e2d1\n\nThe files run 002-77b0e2d1 changed, in the conversation of `analyst` at <c1>, written by neutral:\neach commit after the run before it landed, through this run's own\nlanding, that changed a file. Paths are relative to the tree's root;\nA is added, M modified, D removed.\n\n- files: 3\n\n## <c3> terminal\n\n- M sales.csv\n- D seed.csv\n\n## <c2> terminal\n\n- A out/notes.md\n"
+    },
+    {
+      "command": "grep -l notes.md an/.trace/runs/*/changed.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "an/.trace/runs/002-77b0e2d1/changed.md\n"
+    },
+    {
+      "command": "ws-git worktree add --trace --since analyst@<c4> since analyst",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree since: analyst@<c1> (read-only; trace: 2 runs, 1 new)\n"
+    },
+    {
+      "command": "cat since/.trace/index.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# Runs\n\nThe runs of `analyst` at <c1>, written by neutral, in order.\nRuns marked + are new since analyst@<c4>.\n\n  001-1f3a9c2e  2025-10-15T12:00:00Z  completed    12s       calls:1 err:0 files:2  in:1200 out:300  Total the sales in sales.csv.\n+ 002-77b0e2d1  2025-10-15T12:05:00Z  failed       1m00s     calls:1 err:1 files:3  in:900 out:120  Now split it by region.\n"
+    },
+    {
+      "command": "ws-git worktree add --since <c4> --trace bare analyst",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree bare: analyst@<c1> (read-only; trace: 2 runs, 1 new)\n"
+    },
+    {
+      "command": "ws-git worktree list",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "worktree an: analyst@<c1> (read-only; trace: 2 runs)\nworktree bare: analyst@<c1> (read-only; trace: 2 runs, 1 new)\nworktree since: analyst@<c1> (read-only; trace: 2 runs, 1 new)\n"
+    },
+    {
+      "command": "ws-git show analyst@<c1>:.trace/runs/002-77b0e2d1/changed.md",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "# Changed by run 002-77b0e2d1\n\nThe files run 002-77b0e2d1 changed, in the conversation of `analyst` at <c1>, written by neutral:\neach commit after the run before it landed, through this run's own\nlanding, that changed a file. Paths are relative to the tree's root;\nA is added, M modified, D removed.\n\n- files: 3\n\n## <c3> terminal\n\n- M sales.csv\n- D seed.csv\n\n## <c2> terminal\n\n- A out/notes.md\n"
+    },
+    {
+      "command": "ws-git show analyst@<c1>:.trace",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "tree analyst@<c1>:.trace\n\nREADME.md\nindex.md\nruns/\nsystem/\n"
+    },
+    {
+      "command": "ws-git show analyst@<c1>:.trace/runs",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "tree analyst@<c1>:.trace/runs\n\n001-1f3a9c2e/\n002-77b0e2d1/\n"
+    },
+    {
+      "command": "ws-git show analyst@<c1>:.trace/runs/009-nope/run.md",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: path '.trace/runs/009-nope/run.md' does not exist in the trace of 'analyst@<c1>' (analyst@<c1>:.trace/index.md lists its runs)",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git show analyst@<c1>:.trace",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "analyst",
+      "stderr": "ws-git: path '.trace' does not exist in 'analyst@<c1>' (.trace/ reads another session's conversation, or a store tag's; this session's own is not shown as a trace)",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree add --since <c4> x analyst",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: --since marks the new runs of a trace: add --trace with it.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git worktree add --trace x analyst --since",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: --since takes a ref: the state whose runs you have read.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stdout": ""
+    }
+  ],
+  "summary": "Each run's changed.md lists the commits from after the run before it landed through its own landing that changed a file, the host's among them; --since marks the runs new since a state, and show reads one file of another session's trace with nothing mounted."
+}

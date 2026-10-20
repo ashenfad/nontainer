@@ -14,7 +14,12 @@ The layout, relative to the trace's root::
     index.md                        one line per run
     system/<hash>.md                each distinct system prompt, once
     runs/<NNN>-<id>/run.md          one run: its facts, input, reply, tool calls
+    runs/<NNN>-<id>/changed.md      what it changed in the files, commit by commit
     runs/<NNN>-<id>/events/<NNN>-<kind>.md      one event each
+
+What a run changed comes from the branch's history, not the run: a
+:class:`TraceCommit` per commit, which :func:`run_ranges` assigns to runs
+by where each one landed.
 
 Rendering is pinned, so every rule a port could read differently is
 spelled out where it is applied: times, durations, truncation, file
@@ -27,7 +32,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -38,10 +43,12 @@ __all__ = [
     "NEUTRAL",
     "NeutralTraces",
     "Trace",
+    "TraceCommit",
     "TraceEvent",
     "TraceRun",
     "TraceSource",
     "TraceTokens",
+    "run_ranges",
 ]
 
 NEUTRAL = "neutral"
@@ -259,6 +266,96 @@ class TraceRun:
         )
 
 
+@dataclass(frozen=True)
+class TraceCommit:
+    """One commit in a run's range, and the files it changed against
+    the commit before it on the branch. Paths are relative to the tree's
+    root."""
+
+    id: str
+    """Printed as given (ws-git passes seven characters)."""
+
+    tool: str | None
+    """What the commit's info names: the agent's tool (``terminal``,
+    ``run_python``), the turn that landed the run, or the host's own
+    (``file_write``, ``put``)."""
+
+    added: tuple[str, ...] = ()
+    modified: tuple[str, ...] = ()
+    removed: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("added", "modified", "removed"):
+            object.__setattr__(self, name, tuple(sorted(getattr(self, name))))
+
+    @property
+    def paths(self) -> tuple[str, ...]:
+        return tuple(sorted({*self.added, *self.modified, *self.removed}))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "tool": self.tool,
+            "added": list(self.added),
+            "modified": list(self.modified),
+            "removed": list(self.removed),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> TraceCommit:
+        commit = data.get("id")
+        if not isinstance(commit, str) or not commit:
+            raise ValueError(f"commit id: expected a string, got {commit!r}")
+        paths = {}
+        for name in ("added", "modified", "removed"):
+            value = data.get(name) or ()
+            if not all(isinstance(p, str) for p in value):
+                raise ValueError(f"commit {name}: expected strings, got {value!r}")
+            paths[name] = tuple(value)
+        return cls(
+            id=commit, tool=_str_or_none(data.get("tool"), "commit tool"), **paths
+        )
+
+
+def run_ranges(
+    runs: Sequence[str], infos: Sequence[Mapping[str, Any]]
+) -> dict[str, range]:
+    """Which commits belong to which run: positions in ``infos``, the
+    branch's commits' info oldest first.
+
+    A commit LANDS a run when its info says ``"tool": "turn"`` and its
+    ``runs`` names the run. A run can land more than once (a checkpoint,
+    then its end; a resumed run), and other commits carry a ``runs`` key
+    of their own, so only turns count and the last landing is the one.
+    A run's range starts after the last landing of any run before it in
+    ``runs`` and ends at its own last landing. A run that never landed
+    in ``infos`` has no range, and the next run's starts where it would
+    have without it.
+    """
+    last: dict[str, int] = {}
+    for i, info in enumerate(infos):
+        if not isinstance(info, Mapping) or info.get("tool") != "turn":
+            continue
+        landed = info.get("runs")
+        if isinstance(landed, Mapping):
+            ids = landed.keys()
+        elif isinstance(landed, (list, tuple)):
+            ids = landed
+        else:
+            continue
+        for rid in ids:
+            last[str(rid)] = i
+    out: dict[str, range] = {}
+    start = 0
+    for rid in runs:
+        end = last.get(rid)
+        if end is None:
+            continue
+        out[rid] = range(start, end + 1)
+        start = max(start, end + 1)
+    return out
+
+
 class TraceSource(Protocol):
     """Reads one stored run, in its harness's format, into the neutral
     shape. A pure function of the body: core reads the conversation
@@ -449,6 +546,12 @@ class Trace:
     ``runs`` are in the index's order: a run's ordinal is its position,
     from 1. ``session``, ``commit`` and ``harness`` are printed as given
     (ws-git passes the seven-character commit).
+
+    ``changes`` holds, by run id, the commits in each run's range that
+    changed a file, oldest first (see :func:`run_ranges`); a run it
+    doesn't name has no known range, and its files read ``-``. With
+    ``since`` (a ref, printed as given), ``index.md`` marks the runs in
+    ``new`` with ``+``.
     """
 
     def __init__(
@@ -458,11 +561,19 @@ class Trace:
         session: str,
         commit: str,
         harness: str,
+        changes: Mapping[str, Sequence[TraceCommit]] | None = None,
+        since: str | None = None,
+        new: Collection[str] = (),
     ) -> None:
+        if new and since is None:
+            raise ValueError("new runs are new since something: pass since=")
         self.runs = tuple(runs)
         self.session = session
         self.commit = commit
         self.harness = harness
+        self.changes = {k: tuple(v) for k, v in (changes or {}).items()}
+        self.since = since
+        self.new = frozenset(new)
         self._dirs = [_run_dir(i, r.id) for i, r in enumerate(self.runs, 1)]
         self._systems: dict[str, str] = {}
         for run in self.runs:
@@ -476,6 +587,7 @@ class Trace:
             self._files[f"system/{name}.md"] = lambda n=name: self._system(n)
         for i, (d, run) in enumerate(zip(self._dirs, self.runs), 1):
             self._files[f"runs/{d}/run.md"] = lambda i=i: self._run(i)
+            self._files[f"runs/{d}/changed.md"] = lambda i=i: self._changed(i)
             for n, event in enumerate(run.events, 1):
                 path = f"runs/{d}/events/{_event_name(n, event)}"
                 self._files[path] = lambda i=i, n=n: self._event(i, n)
@@ -512,17 +624,28 @@ class Trace:
             "- `index.md`: one line per run. Start here.\n"
             "- `runs/<ordinal>-<id>/run.md`: one run, with its input, its reply\n"
             "  and a line per tool call.\n"
+            "- `runs/<ordinal>-<id>/changed.md`: the files the run changed,\n"
+            "  commit by commit.\n"
             "- `runs/<ordinal>-<id>/events/`: every event of a run, one file each.\n"
             "- `system/<hash>.md`: each distinct system prompt, once.\n"
         )
+
+    def _files_changed(self, run: TraceRun) -> int | None:
+        """How many paths the run changed, or ``None`` if not known."""
+        commits = self.changes.get(run.id)
+        if commits is None:
+            return None
+        return len({p for c in commits for p in c.paths})
 
     def _index(self) -> str:
         lines = [
             "# Runs",
             "",
             f"The runs of {self._where()}, in order.",
-            "",
         ]
+        if self.since is not None:
+            lines.append(f"Runs marked + are new since {self.since}.")
+        lines.append("")
         if not self.runs:
             lines.append("No runs.")
         for d, run in zip(self._dirs, self.runs):
@@ -532,11 +655,15 @@ class Trace:
                 _time(run.started),
                 run.status.ljust(_STATUS_WIDTH),
                 _duration(run.duration).ljust(_DURATION_WIDTH),
-                f"calls:{run.tool_calls} err:{run.tool_errors}",
+                f"calls:{run.tool_calls} err:{run.tool_errors} "
+                f"files:{_count(self._files_changed(run))}",
                 f"in:{_count(t.input)} out:{_count(t.output)}",
                 _summary(run.input) or "",
             ]
-            lines.append("  ".join(fields).rstrip(" "))
+            line = "  ".join(fields).rstrip(" ")
+            if self.since is not None:
+                line = ("+ " if run.id in self.new else "  ") + line
+            lines.append(line)
         return "\n".join(lines) + "\n"
 
     def _system(self, name: str) -> str:
@@ -578,6 +705,7 @@ class Trace:
             ),
             f"- system prompt: {system}",
             f"- tool calls: {calls}",
+            f"- files changed: {_count(self._files_changed(run))} (changed.md)",
             "",
             "## Input",
             "",
@@ -603,6 +731,37 @@ class Trace:
             if summary:
                 line += f": {summary}"
             lines.append(line)
+        return "\n".join(lines) + "\n"
+
+    def _changed(self, ordinal: int) -> str:
+        run = self.runs[ordinal - 1]
+        d = self._dirs[ordinal - 1]
+        commits = self.changes.get(run.id)
+        lines = [
+            f"# Changed by run {d}",
+            "",
+            f"The files run {d} changed, in the conversation of {self._where()}:",
+            "each commit after the run before it landed, through this run's own",
+            "landing, that changed a file. Paths are relative to the tree's root;",
+            "A is added, M modified, D removed.",
+            "",
+            f"- files: {_count(self._files_changed(run))}",
+            "",
+        ]
+        if commits is None:
+            lines.append("Not known: this history holds no landing of the run.")
+        elif not commits:
+            lines.append("None: the run changed no files.")
+        for i, commit in enumerate(commits or ()):
+            if i:
+                lines.append("")
+            lines.extend([f"## {commit.id} {commit.tool or '-'}", ""])
+            marked = (
+                [(p, "A") for p in commit.added]
+                + [(p, "M") for p in commit.modified]
+                + [(p, "D") for p in commit.removed]
+            )
+            lines.extend(f"- {mark} {path}" for path, mark in sorted(marked))
         return "\n".join(lines) + "\n"
 
     def _event(self, ordinal: int, n: int) -> str:

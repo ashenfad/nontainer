@@ -64,7 +64,10 @@ wherever cheap; each deviation carries a recorded reason:
   could edit in place would be a third way with no way back.
   ``--trace`` mounts the conversation stored at that commit beside the
   files, at ``.trace``: git keeps no conversation, and here the runs
-  that wrote a tree share its commit.
+  that wrote a tree share its commit, so each run's ``changed.md``
+  lists what it changed. ``--since <ref>`` marks the runs that are new
+  since a state already read. ``show <ref>:.trace/<path>`` reads one
+  file of another session's trace with nothing mounted.
 - ``diff <name>`` and ``log <name>`` read another session, and where
   that session has a narrowed view ``diff`` groups its changes under
   ``# ... in <name>'s view`` / ``# ... elsewhere``. git has no such
@@ -134,7 +137,8 @@ _SUPPORTED = (
     "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
     "merge (<session> | --abort) | revert <commit> | "
     "cherry-pick <session>@<commit> | "
-    "worktree (add [--trace] <dir> <session>[@<commit>] | <tag> | list | "
+    "worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | "
+    "list | "
     "remove <dir>) | "
     "sparse-checkout [list] | help"
 )
@@ -150,7 +154,7 @@ _EDGE = {
 }
 
 #: The three forms, printed by a bare ``ws-git worktree``.
-_WORKTREE_FORMS = """usage: ws-git worktree add [--trace] <dir> (<session>[@<commit>] | <tag>)
+_WORKTREE_FORMS = """usage: ws-git worktree add [--trace [--since <ref>]] <dir> (<session>[@<commit>] | <tag>)
        ws-git worktree list
        ws-git worktree remove <dir>"""
 
@@ -193,7 +197,9 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
                     then anything written after it. <session>@<commit>
                     shows one of that session's commits
   show <ref>:<path> one file at that state, the path from the root; a
-                    directory lists what is in it
+                    directory lists what is in it. For another session
+                    or a store tag, .trace/<path> reads its conversation
+                    as worktree add --trace shows it
   checkout <ref>    restore the tree to a commit of yours (the restore
                     is a new commit)
   checkout <ref> -- <paths>
@@ -231,13 +237,16 @@ usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
   cherry-pick <session>@<commit>
                     a new commit applying one commit's change from
                     another session
-  worktree add [--trace] <dir> (<session>[@<commit>] | <tag>)
+  worktree add [--trace [--since <ref>]] <dir> (<session>[@<commit>] | <tag>)
                     check another session's tree, or a tagged state,
                     out under <dir>, read-only, and read it with cat,
                     ls and grep. It is pinned at a commit: to see newer
                     work, remove it and add it again. --trace adds the
                     conversation stored at that commit, as markdown
-                    under <dir>/.trace (start at its README.md)
+                    under <dir>/.trace (start at its README.md); each
+                    run's changed.md lists the files it changed.
+                    --since marks the runs new since a state you have
+                    read (a ref, or a commit of that session) with +
   worktree list     the worktrees here, one line each
   worktree remove <dir>
                     take one down
@@ -1197,24 +1206,43 @@ def _worktree_lines(ws: Any) -> list[str]:
     cannot be written to."""
     return [
         f"worktree {_show(ws, at)}: {_short_ref(held.ref)} "
-        f"({_worktree_holds(held.trace)})"
+        f"({_worktree_holds(held.trace, held.new)})"
         for at, held in sorted(ws._attached.items())
     ]
 
 
-def _worktree_holds(runs: int | None) -> str:
+def _worktree_holds(runs: int | None, new: int | None = None) -> str:
     """What a worktree line says it holds besides the files: the trace,
-    when one was added."""
+    when one was added, and how many of its runs are new."""
     if runs is None:
         return "read-only"
-    return f"read-only; trace: {runs} run{'' if runs == 1 else 's'}"
+    held = f"read-only; trace: {runs} run{'' if runs == 1 else 's'}"
+    return held if new is None else f"{held}, {new} new"
 
 
 def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
     from termish import CommandResult
 
-    trace = "--trace" in rest
-    rest = [a for a in rest if a != "--trace"]
+    trace = False
+    since: str | None = None
+    words: list[str] = []
+    args = iter(rest)
+    for arg in args:
+        if arg == "--trace":
+            trace = True
+        elif arg == "--since":
+            since = next(args, None)
+            if since is None or since.startswith("-"):
+                return _usage_error(
+                    "--since takes a ref: the state whose runs you have read."
+                )
+        else:
+            words.append(arg)
+    if since is not None and not trace:
+        return _usage_error(
+            "--since marks the new runs of a trace: add --trace with it."
+        )
+    rest = words
     if len(rest) != 2 or any(a.startswith("-") for a in rest):
         return _usage_error(
             "worktree add takes a directory and a session (ws-git branch "
@@ -1274,10 +1302,11 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
                 exit_code=1,
                 stderr=f"cannot add a worktree at {where!r}: {reason}.",
             )
-    landed = ws.files.attach(wanted, point, trace=trace)
+    landed = ws.files.attach(wanted, point, trace=trace, since=since)
+    held = ws._attached[point]
     ctx.stdout.write(
         f"worktree {_show(ws, point)}: {_short_ref(landed)} "
-        f"({_worktree_holds(ws._attached[point].trace)})\n"
+        f"({_worktree_holds(held.trace, held.new)})\n"
     )
     if trace and _tree_has_trace(ws._attached[point].snapshot):
         ctx.stdout.write(
@@ -1486,8 +1515,14 @@ def _show_path(git: AgentGit, ws: Any, ctx: Any, ref: str, path: str) -> Any:
             "show :<path> needs a ref before the colon "
             "(HEAD:<path> for your last commit)."
         )
-    commit = _commit_for_read(git, ws, ref)
+    read = _ref_for_read(git, ws, ref)
+    commit = read.commit
     target = _ref_path(ws, ctx, path)
+    inside = _in_trace(ws, target)
+    if inside is not None and read.session != ws.session:
+        shown = _show_trace(ws, ctx, read, inside, f"{ref}:{path}")
+        if shown:
+            return None
     view = ws._provider.files_at(commit)
     found = read_files(view, [target])
     spelled = f"{ref}:{path}"
@@ -1520,6 +1555,11 @@ def _show_path(git: AgentGit, ws: Any, ctx: Any, ref: str, path: str) -> Any:
                 f" (a session reads at its last ws-git commit; "
                 f"ws-git log {ref} --all lists every commit it holds)"
             )
+        if inside is not None and read.session == ws.session:
+            hint = (
+                " (.trace/ reads another session's conversation, or a store "
+                "tag's; this session's own is not shown as a trace)"
+            )
         raise ValueError(f"path {path!r} does not exist in {ref!r}{hint}")
     ctx.stdout.write(f"tree {spelled}\n\n" + "\n".join(sorted(entries)) + "\n")
     return None
@@ -1527,28 +1567,80 @@ def _show_path(git: AgentGit, ws: Any, ctx: Any, ref: str, path: str) -> Any:
 
 def _commit_for_read(git: AgentGit, ws: Any, ref: str) -> str:
     """The commit one ref names, for a verb that only reads a tree."""
+    return _ref_for_read(git, ws, ref).commit
+
+
+def _ref_for_read(git: AgentGit, ws: Any, ref: str) -> Any:
+    """The state one ref names, for a verb that only reads: its commit,
+    and the session (or store tag) it is read on."""
     from .store import Ref
 
     if ref == "HEAD":
-        return git.resolve("HEAD")
+        return Ref(ws.session, git.resolve("HEAD"))
     if "@" in ref:
         parsed = Ref.parse(ref)
         if parsed.tag is not None:
-            return _tag_commit(ws, parsed)
-        return ws._ref_commit(parsed.session, parsed.commit)
+            return Ref.at_tag(parsed.tag, _tag_commit(ws, parsed))
+        return Ref(parsed.session, ws._ref_commit(parsed.session, parsed.commit))
     # Your own spellings before anyone else's, as the other read verbs
     # take them: a hash or a bookmark of this session's.
     if HASH_RE.fullmatch(ref) or ref in git.tags():
-        return ws._ref_commit(ws.session, ref)
+        return Ref(ws.session, ws._ref_commit(ws.session, ref))
     # This session's own name too, which _is_session leaves out: a
     # session is read before a store tag of the same name, and this one
     # is read the way another session would read it.
     if ref == ws.session or _is_session(ws, ref):
-        return git.source_commit(ref)
+        return Ref(ref, git.source_commit(ref))
     tagged = _store_tag_ref(ws, ref)
     if tagged is not None:
-        return tagged.commit
+        return tagged
     raise ValueError(ws._no_such_ref(ref))
+
+
+def _in_trace(ws: Any, target: str) -> str | None:
+    """A workspace path's place under the root's ``.trace``: ``""`` for
+    ``.trace`` itself, the rest of the path below it, or ``None`` for a
+    path outside it."""
+    trace = posixpath.join(ws.root, ".trace")
+    if target == trace:
+        return ""
+    if target.startswith(trace + "/"):
+        return target[len(trace) + 1 :]
+    return None
+
+
+def _show_trace(ws: Any, ctx: Any, read: Any, inside: str, spelled: str) -> bool:
+    """``show <ref>:.trace/<path>``: one file of another session's trace,
+    rendered as ``worktree add --trace`` mounts it, with nothing
+    mounted. False where the state holds no conversation, so the path
+    reads as the tree's own; a harness the store cannot read is refused
+    as ``worktree add --trace`` refuses it."""
+    from . import conversation
+    from .views import TraceFS
+
+    snapshot = ws._store.resolve(read, root=ws.root)
+    try:
+        if conversation.read_index(snapshot._provider.kv) is None:
+            return False
+        load, _, _ = ws._trace_of(read, snapshot)
+        trace = TraceFS(load)
+        if trace.isfile(inside):
+            ctx.stdout.write(trace.read(inside).decode("utf-8"))
+            return True
+        if not trace.isdir(inside):
+            raise ValueError(
+                f"path {spelled.partition(':')[2]!r} does not exist in the "
+                f"trace of {spelled.partition(':')[0]!r} "
+                f"({spelled.partition(':')[0]}:.trace/index.md lists its runs)"
+            )
+        entries = [
+            name + ("/" if trace.isdir(posixpath.join(inside, name)) else "")
+            for name in trace.list(inside or "/")
+        ]
+        ctx.stdout.write(f"tree {spelled}\n\n" + "\n".join(sorted(entries)) + "\n")
+        return True
+    finally:
+        snapshot.close()
 
 
 def _ref_path(ws: Any, ctx: Any, path: str) -> str:

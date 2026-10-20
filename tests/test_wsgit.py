@@ -1089,7 +1089,10 @@ def test_worktree_bare_prints_the_forms(peer_ws):
     r = peer_ws.terminal("ws-git worktree")
     assert r.exit_code == 0
     assert r.stdout == _WORKTREE_FORMS + "\n"
-    assert "worktree add [--trace] <dir> (<session>[@<commit>] | <tag>)" in r.stdout
+    assert (
+        "worktree add [--trace [--since <ref>]] <dir> (<session>[@<commit>] | <tag>)"
+        in r.stdout
+    )
 
 
 def test_status_ends_with_the_worktrees(peer_ws):

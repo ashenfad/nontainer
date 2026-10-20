@@ -103,6 +103,7 @@ if TYPE_CHECKING:
     from ..protocol import Executor
     from ..runtime import Runtime
     from ..store import Ref, Store
+    from ..traces import TraceCommit
     from ..turns import Source, Turn, Turns
 
 
@@ -172,6 +173,10 @@ class _Attachment(NamedTuple):
     """The runs in the conversation mounted at ``.trace``, or ``None``
     when no trace was asked for."""
 
+    new: int | None = None
+    """How many of those runs are new since the ``since`` ref, or
+    ``None`` when none was given."""
+
 
 class _Absorbed(NamedTuple):
     """What a remote executor's harvest did to the session.
@@ -194,6 +199,53 @@ def _shown_ref(ref: "Ref") -> str:
     """A ref as a message names it: the store tag, or the session and
     seven characters of the commit, as ws-git prints one."""
     return ref.tag or f"{ref.session}@{ref.commit[:7]}"
+
+
+def _oldest_first(provider: Any) -> "list[CommitInfo]":
+    """A branch's commits, oldest first: empty where the provider keeps
+    no history."""
+    try:
+        return list(provider.history())[::-1]
+    except NotSupportedError:
+        return []
+
+
+def _changes(
+    provider: Any, commits: "list[CommitInfo]", span: range, root: str
+) -> "list[TraceCommit]":
+    """The commits at ``span`` in ``commits`` that changed a file, each
+    against the commit before it, with paths relative to ``root``."""
+    from ..traces import TraceCommit
+
+    base = root.rstrip("/")
+
+    def rel(path: str) -> str:
+        if path.startswith(base + "/"):
+            return path[len(base) + 1 :]
+        return path
+
+    out = []
+    for i in span:
+        commit = commits[i]
+        before = commits[i - 1].id if i else (commit.parents or (None,))[0]
+        if before is None:  # a root commit: everything in it is added
+            added, modified, removed = list(provider.files_at(commit.id)), [], []
+        else:
+            diff = provider.diff(before, commit.id)
+            added, modified, removed = diff.added, diff.modified, diff.removed
+        if not (added or modified or removed):
+            continue
+        tool = commit.info.get("tool")
+        out.append(
+            TraceCommit(
+                id=commit.id[:7],
+                tool=tool if isinstance(tool, str) else None,
+                added=tuple(rel(p) for p in added),
+                modified=tuple(rel(p) for p in modified),
+                removed=tuple(rel(p) for p in removed),
+            )
+        )
+    return out
 
 
 def _show_root(git: Any, path: str) -> str:
@@ -1710,12 +1762,17 @@ class Workspace:
         readonly: bool = True,
         root: str | None = None,
         trace: bool = False,
+        since: "str | Ref | None" = None,
     ) -> str:
         """``ws.files.attach``, under the lock. See it for the contract."""
         from monkeyfs import MountFS, ReadOnlyFS
 
         from ..views import SubtreeFS, TraceFS
 
+        if since is not None and not trace:
+            raise ValueError(
+                "since= marks a trace's runs that are new: pass trace=True with it"
+            )
         if not readonly:
             raise NotSupportedError(
                 "an attachment is a frozen state and accepts no writes: "
@@ -1729,12 +1786,14 @@ class Workspace:
                 + ("the root is the session's own" if point == "/" else "already taken")
             )
         wanted = self._snapshot_ref(ref)
+        before = self._since_ref(since, wanted) if since is not None else None
         # Read under the caller's root unless told otherwise: a commit
         # holds its files at whatever root the session that made them
         # used, so resolving at the wrong one reads an empty tree, and
         # a lineage shares one.
         snapshot = self._store.resolve(wanted, root=root or self._root)
         runs: int | None = None
+        new: int | None = None
         try:
             # The PROVIDER's filesystem, not the snapshot workspace's:
             # a session forked with a narrow view composes one over its
@@ -1744,7 +1803,7 @@ class Workspace:
             # provider always holds the whole branch.
             tree: Any = SubtreeFS(snapshot._provider.fs, snapshot.root)
             if trace:
-                load, runs = self._trace_of(wanted, snapshot)
+                load, runs, new = self._trace_of(wanted, snapshot, since=before)
                 # One attachment: the tree and its conversation, pinned
                 # together and taken down together. The trace shadows
                 # any .trace the tree holds of its own.
@@ -1753,22 +1812,29 @@ class Workspace:
         except BaseException:
             snapshot.close()
             raise
-        self._attached[point] = _Attachment(str(wanted), snapshot, runs)
+        self._attached[point] = _Attachment(str(wanted), snapshot, runs, new)
         self._mark_executor_stale()
         return str(wanted)
 
-    def _trace_of(self, ref: "Ref", snapshot: Workspace) -> tuple[Any, int]:
+    def _trace_of(
+        self, ref: "Ref", snapshot: Workspace, *, since: "Ref | None" = None
+    ) -> tuple[Any, int, int | None]:
         """What ``attach(..., trace=True)`` mounts at ``.trace``: a
-        loader for the conversation stored at ``ref``, rendered, and how
-        many runs it holds. Refuses a state with no conversation, or one
+        loader for the conversation stored at ``ref``, rendered; how
+        many runs it holds; and with ``since``, how many of them are new
+        since that state. Refuses a state with no conversation, or one
         written by a harness this store has no trace source for.
 
-        Nothing is read but the index until the trace is: the loader
-        reads every run at that commit, and the source parses each.
+        Nothing is read but the index until the trace is, unless
+        ``since`` asks which runs are new: that walks both histories
+        when the trace is attached, to name them in ``worktree list``.
+        The loader reads every run at that commit, which the source
+        parses, and the branch's history, to find what each run changed.
         """
-        from ..traces import Trace
+        from ..traces import Trace, run_ranges
 
-        kv = snapshot._provider.kv
+        provider = snapshot._provider
+        kv = provider.kv
         index = conversation.read_index(kv)
         if index is None:
             raise ValueError(
@@ -1784,7 +1850,14 @@ class Workspace:
             )
         session = (index.session or ref.tag) if ref.tag else ref.session
 
+        walked: list[CommitInfo] | None = None
+        new: frozenset[str] = frozenset()
+        if since is not None:
+            walked = _oldest_first(provider)
+            new = self._new_since(index, walked, since, snapshot.root)
+
         def load() -> tuple[Trace, float | None]:
+            commits = walked if walked is not None else _oldest_first(provider)
             bodies = conversation.read_runs(kv, index.runs, index)
             runs = []
             for rid in index.runs:
@@ -1794,19 +1867,67 @@ class Workspace:
                     runs.append(source.read(bodies[rid]))
                 except ValueError:
                     continue  # a body its source can't read
-            try:
-                time = next(iter(snapshot._provider.history(limit=1)), None)
-            except NotSupportedError:
-                time = None
+            ranges = run_ranges(index.runs, [c.info for c in commits])
+            changes = {
+                rid: _changes(provider, commits, span, snapshot.root)
+                for rid, span in ranges.items()
+            }
             rendered = Trace(
                 runs,
                 session=session or "",
                 commit=ref.commit[:7],
                 harness=index.harness,
+                changes=changes,
+                since=None if since is None else _shown_ref(since),
+                new=new,
             )
-            return rendered, None if time is None else time.time
+            return rendered, commits[-1].time if commits else None
 
-        return load, len(index.runs)
+        return load, len(index.runs), None if since is None else len(new)
+
+    def _since_ref(self, since: "str | Ref", wanted: "Ref") -> "Ref":
+        """The state ``since`` names, for a trace of ``wanted``: any ref
+        :meth:`_snapshot_ref` reads, or a bare commit of the session
+        being traced."""
+        from ..agentgit import HASH_RE
+        from ..store import Ref
+
+        text = str(since).strip()
+        if (
+            not isinstance(since, Ref)
+            and wanted.tag is None
+            and HASH_RE.fullmatch(text)
+        ):
+            return self._read_ref(f"{wanted.session}@{text}")
+        return self._snapshot_ref(since)
+
+    def _new_since(
+        self, index: Any, walked: "list[CommitInfo]", since: "Ref", root: str
+    ) -> frozenset[str]:
+        """The runs of ``index`` that are new since ``since``: those
+        whose last landing is not in its history (a run that landed
+        before it and again after is new), or, for a run with no landing
+        in ``walked``, that its conversation doesn't name."""
+        from ..traces import run_ranges
+
+        assert self._store is not None
+        earlier = self._store.resolve(since, root=root)
+        try:
+            seen = {c.id for c in _oldest_first(earlier._provider)}
+            known = conversation.read_index(earlier._provider.kv)
+        finally:
+            earlier.close()
+        named = set(known.runs) if known is not None else set()
+        ranges = run_ranges(index.runs, [c.info for c in walked])
+        out = set()
+        for rid in index.runs:
+            span = ranges.get(rid)
+            if span is not None:
+                if walked[span.stop - 1].id not in seen:
+                    out.add(rid)
+            elif rid not in named:
+                out.add(rid)
+        return frozenset(out)
 
     def _detach(self, at: str) -> None:
         point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")

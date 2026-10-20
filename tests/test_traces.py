@@ -13,10 +13,12 @@ from nontainer.conformance.traces import CASES
 from nontainer.traces import (
     NeutralTraces,
     Trace,
+    TraceCommit,
     TraceEvent,
     TraceRun,
     TraceTokens,
     _json,
+    run_ranges,
 )
 
 
@@ -171,6 +173,57 @@ class TestTrace:
         assert "runs/001-______et/events/001-tool-___a_b.md" in trace.paths()
 
 
+def _turn(*ids, tool="turn"):
+    return {"tool": tool, "runs": {i: "completed" for i in ids}}
+
+
+class TestRunRanges:
+    def test_a_run_is_what_came_after_the_run_before_through_its_landing(self):
+        infos = [{}, {"tool": "put"}, _turn("a"), {"tool": "terminal"}, _turn("b")]
+        assert run_ranges(["a", "b"], infos) == {"a": range(0, 3), "b": range(3, 5)}
+
+    def test_the_last_landing_is_the_one(self):
+        # a checkpoint, then the end: the work between them is the run's
+        infos = [_turn("a"), {"tool": "terminal"}, _turn("a"), _turn("b")]
+        assert run_ranges(["a", "b"], infos) == {"a": range(0, 3), "b": range(3, 4)}
+
+    def test_only_turns_land_a_run(self):
+        # agex-ts's fold stamps a count under the same key
+        infos = [{"tool": "fold", "runs": 3}, {"tool": "x", "runs": {"a": "done"}}]
+        assert run_ranges(["a"], infos) == {}
+        assert run_ranges(["a"], [{"tool": "turn", "runs": ["a"]}]) == {
+            "a": range(0, 1)
+        }
+
+    def test_a_run_that_never_landed_has_no_range_and_takes_nothing(self):
+        infos = [_turn("a"), {"tool": "terminal"}, _turn("c")]
+        assert run_ranges(["a", "b", "c"], infos) == {
+            "a": range(0, 1),
+            "c": range(1, 3),
+        }
+
+    def test_a_run_landing_before_the_run_before_it_has_an_empty_range(self):
+        infos = [_turn("b"), _turn("a")]
+        assert list(run_ranges(["a", "b"], infos)["b"]) == []
+
+
+class TestChanges:
+    def test_a_commit_round_trips_and_sorts_its_paths(self):
+        commit = TraceCommit("abc1234", "terminal", added=("b", "a"), removed=("z",))
+        assert commit.added == ("a", "b")
+        assert commit.paths == ("a", "b", "z")
+        assert TraceCommit.from_dict(commit.to_dict()) == commit
+
+    def test_new_runs_need_a_since(self):
+        with pytest.raises(ValueError, match="since="):
+            Trace([], session="s", commit="c", harness="h", new={"r"})
+
+    def test_a_run_without_changes_is_not_known(self):
+        trace = Trace([_run()], session="s", commit="c", harness="h")
+        assert "files:-" in trace.read("index.md")
+        assert "Not known" in trace.read("runs/001-r1/changed.md")
+
+
 class TestCorpus:
     @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
     def test_a_port_renders_each_case_from_its_json_alone(self, case):
@@ -181,5 +234,11 @@ class TestCorpus:
             session=recorded["session"],
             commit=recorded["commit"],
             harness=recorded["harness"],
+            changes={
+                rid: [TraceCommit.from_dict(c) for c in commits]
+                for rid, commits in recorded["changes"].items()
+            },
+            since=recorded["since"],
+            new=recorded["new"],
         )
         assert trace.files() == recorded["files"]
