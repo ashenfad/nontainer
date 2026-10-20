@@ -46,11 +46,9 @@ describe('add', () => {
 
 BROKEN = "throw new Error('this file does not load');\n"
 
-#: The three things two rungs cannot agree on, none of them the verb's:
-#: how long a run took, how long a test took, and termish's own
-#: nonzero-exit announcement (real bash writes none).
+#: The two things two rungs cannot agree on, neither of them the verb's:
+#: how long a run took and how long a test took.
 _ELAPSED = re.compile(r"\d+\.\d\ds|\d+ms")
-_SHELL_EXIT = re.compile(r"^ws-vitest: exited with code \d+\n?", re.M)
 
 #: The console tail is the browser's, and a 404's resource line arrives
 #: whenever the page happens to log it.
@@ -58,7 +56,7 @@ _CONSOLE = re.compile(r"^\[(error|warning|log|info)\].*\n?", re.M)
 
 
 def _normalize(text):
-    return _CONSOLE.sub("", _SHELL_EXIT.sub("", _ELAPSED.sub("0ms", text)))
+    return _CONSOLE.sub("", _ELAPSED.sub("0ms", text))
 
 
 def _ws(rung, name):

@@ -16,6 +16,12 @@ class TerminalResult:
 
     exit_code: int
     stderr: str = ""
+    """What a failed script's final command wrote to stderr unredirected,
+    named once (``ls: cannot access ...``); ``""`` when it failed
+    silently or its stderr was redirected. An earlier failure the script
+    ran past is in ``stdout``, where a terminal showed it. A rung that
+    runs real bash merges stderr into ``stdout`` and keeps this for its
+    own notices (a timeout)."""
     truncated: bool = False
 
     commit: str | None = None

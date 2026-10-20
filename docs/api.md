@@ -744,6 +744,8 @@ class TerminalResult:
     stdout: str; exit_code: int; stderr: str = ""; truncated: bool = False
     commit: str | None = None       # commit this call created
     # truthy iff exit_code == 0
+    # stderr: the failing final command's own, unredirected; "" when it
+    # failed silently or 2>&1 / 2>/dev/null / 2>file sent it elsewhere
 
 @dataclass(frozen=True)
 class PythonResult:

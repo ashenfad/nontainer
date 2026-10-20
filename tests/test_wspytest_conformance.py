@@ -50,16 +50,12 @@ MIXED = (
 BROKEN = "raise RuntimeError('this file does not import')\n"
 
 #: The one thing two rungs cannot agree on: how long the run took.
+#: Everything the verb writes must match byte for byte.
 _ELAPSED = re.compile(r"in \d+\.\d\ds")
-
-#: termish announces a nonzero exit; real bash does not. That line is
-#: the shell's, not the verb's, so it is normalized away — everything
-#: the verb itself writes must match byte for byte.
-_SHELL_EXIT = re.compile(r"^ws-pytest: exited with code \d+\n?", re.M)
 
 
 def _normalize(text):
-    return _SHELL_EXIT.sub("", _ELAPSED.sub("in 0.00s", text))
+    return _ELAPSED.sub("in 0.00s", text)
 
 
 def _ws(rung, name):

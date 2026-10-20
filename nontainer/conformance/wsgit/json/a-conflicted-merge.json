@@ -94,7 +94,7 @@
       "exit_code": 2,
       "kind": "run",
       "session": "main",
-      "stderr": "ws-git: exited with code 2",
+      "stderr": "",
       "stdout": "doc.txt:2: leftover conflict marker\ndoc.txt:4: leftover conflict marker\ndoc.txt:6: leftover conflict marker\n"
     },
     {
