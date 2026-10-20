@@ -683,6 +683,38 @@ SCRIPTS: tuple[Script, ...] = (
         ),
     ),
     Script(
+        "what-each-run-changed",
+        "Each run's changed.md lists the commits from after the run before it "
+        "landed through its own landing that changed a file, the host's "
+        "among them; --since marks the runs new since a state, and show "
+        "reads one file of another session's trace with nothing mounted.",
+        (
+            Write("seed.csv", text="q0,1\n", session="analyst"),
+            Run("echo 'q1,4' > sales.csv; mkdir out", "analyst"),
+            Converse(_SUMMED, "analyst"),
+            Run("rm seed.csv; echo 'q2,6' >> sales.csv", "analyst"),
+            Run("echo 'region?' > out/notes.md", "analyst"),
+            Converse(_BY_REGION, "analyst"),
+            Run("ws-git log analyst --all"),
+            Run("ws-git worktree add --trace an analyst"),
+            Run("cat an/.trace/index.md"),
+            Run("cat an/.trace/runs/001-1f3a9c2e/changed.md"),
+            Run("cat an/.trace/runs/002-77b0e2d1/changed.md"),
+            Run("grep -l notes.md an/.trace/runs/*/changed.md"),
+            Run("ws-git worktree add --trace --since analyst@<c4> since analyst"),
+            Run("cat since/.trace/index.md"),
+            Run("ws-git worktree add --since <c4> --trace bare analyst"),
+            Run("ws-git worktree list"),
+            Run("ws-git show analyst@<c1>:.trace/runs/002-77b0e2d1/changed.md"),
+            Run("ws-git show analyst@<c1>:.trace"),
+            Run("ws-git show analyst@<c1>:.trace/runs"),
+            Run("ws-git show analyst@<c1>:.trace/runs/009-nope/run.md"),
+            Run("ws-git show analyst@<c1>:.trace", "analyst"),
+            Run("ws-git worktree add --since <c4> x analyst"),
+            Run("ws-git worktree add --trace x analyst --since"),
+        ),
+    ),
+    Script(
         "a-trace-is-refused-where-there-is-none",
         "A state with no conversation has no trace, and neither has one "
         "written by a harness the store can't read; a trace hides a .trace "

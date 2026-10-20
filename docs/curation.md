@@ -134,10 +134,11 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection: `.trace/` beside a worktree's files (`worktree add --trace`, `files.attach(trace=True)`, `Store(traces=...)`) | exists, local rung and lazy; pinned by the ws-git corpus |
-| `changed.md`, `--since`, and the redaction hook | proposed |
+| each run's `changed.md`, and `--since` marking the runs new since a state (`files.attach(trace=True, since=...)`) | exists; the rendering pinned by the trace corpus, the history walk by the ws-git corpus |
+| the redaction hook | proposed |
 | a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus |
 | the agno trace source | exists: `nontainer.adapters.agno_traces.AgnoTraces`, with nontainer's tool failures flagged in the runs `KvgitSessionDb` stores |
-| `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths arrive with the projection |
+| `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths, for another session or a store tag, exist |
 | a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
 | `Sessions.ask(take=...)`: a fork point with paths taken in | proposed |
@@ -625,7 +626,7 @@ the changed sessions under `corpus/` with `trace=True` and `since=`
 the watermark, and runs it. The task says what is mounted and what to
 do: document what recurs, cite evidence, commit once.
 
-A pass, illustrated; everything under `.trace/` is proposed:
+A pass, illustrated:
 
 ```
 $ cat index.md
@@ -637,7 +638,7 @@ worktree corpus/analyst-42: analyst-42@a3f9c2e (read-only; trace: 23 runs, 4 new
 worktree corpus/analyst-51: analyst-51@77d01b4 (read-only; trace: 6 runs, 6 new)
 
 $ grep -h '^+' corpus/*/.trace/index.md
-+ 020-1f3a9c2e  2026-09-30 14:02  completed  12 tools  err:3  3 files  "reconcile the Q3 sheet against…"
++ 020-1f3a9c2e  2026-09-30T14:02:11Z  completed    4m12s     calls:12 err:3 files:3  in:48210 out:3904  reconcile the Q3 sheet against…
 …
 $ cat corpus/analyst-42/.trace/runs/020-1f3a9c2e/events/017-tool-run_python.md
 $ cat corpus/analyst-42/.trace/runs/020-1f3a9c2e/changed.md

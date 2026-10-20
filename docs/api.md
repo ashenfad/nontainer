@@ -1069,7 +1069,7 @@ the commit records `{"tool": "checkout", "taken_from": "<ref>",
 dropped something) — a soft reference, not ancestry. Only file keys
 move, so the merge-policy question never arises.
 
-**`ws.files.attach(ref, at, *, readonly=True, root=None, trace=False)`** mounts
+**`ws.files.attach(ref, at, *, readonly=True, root=None, trace=False, since=None)`** mounts
 another session's tree — or the state a store tag names, which needs no
 session at all — frozen at a commit, inside this one at `at`;
 `detach(at)` removes it and `attachments()` lists `{point: ref}`. For
@@ -1104,6 +1104,18 @@ tree holds of its own. On a rung that runs elsewhere, the guest is
 handed the root's files, so a trace mounted inside the root is
 rendered whole at each push. The agent's spelling is `ws-git worktree
 add --trace`.
+
+Each run's `changed.md` comes from the branch's history, read with the
+runs: the commits after the landing of the run before it, through its
+own last landing, that changed a file ([`run_ranges`](#nontainertraces--a-conversation-rendered-as-files)).
+Where the provider keeps no history, or a run never landed on this
+branch, its files read `-`. `since=`, with `trace=True`, is a state the
+reader has seen (a pass's watermark): any ref `ref` can be, or a bare
+commit of the session being traced. `index.md` marks the runs whose last
+landing isn't in that state's history with `+`. Finding them walks both
+histories at attach time, though no run is read until the trace is.
+`ws-git show <ref>:.trace/<path>` reads one file of another session's
+trace with nothing mounted.
 
 **`store.fork(src, dst, *, at=None, inherit=, paths=)`** is the same
 verb for host code with no workspace open, and takes `store.open`'s
@@ -1808,7 +1820,12 @@ class TraceSource(Protocol):
     def read(self, body) -> TraceRun    # one run's stored body, in its harness's format
 NeutralTraces()                         # the source for runs stored as TraceRun.to_dict()
 
-Trace(runs, *, session, commit, harness)
+TraceCommit(id, tool, added=(), modified=(), removed=())   # paths relative to the root
+run_ranges(runs, infos) -> dict[str, range]   # each run's commits, by position in infos (oldest first)
+
+Trace(runs, *, session, commit, harness, changes=None, since=None, new=())
+    # changes: {run id: [TraceCommit, ...]}, a run not named reads "not known"
+    # since: a ref, printed as given; new: the run ids index.md marks with +
     .paths() -> list[str]               # README.md, index.md, system/<hash>.md, runs/<NNN>-<id>/...
     .read(path) -> str                  # rendered on read; FileNotFoundError for any other path
     .files() -> dict[str, str]
@@ -1826,10 +1843,17 @@ A store maps harness names to sources (`Store(traces=...)`), and
 `ws.files.attach(ref, at, trace=True)` mounts the conversation at a
 commit as these files ([above](#versioning-gated-by-wscaps)).
 
+A commit LANDS a run when its info says `"tool": "turn"` and its `runs`
+names the run. `run_ranges` gives each run the commits after the last
+landing of any run before it, through its own last landing; other
+commits' `runs` keys (agex-ts's fold stamps a count there) don't count.
+
 The rendering is pinned byte for byte by the trace corpus,
 `nontainer/conformance/traces/json/`: each case's runs as neutral
-bodies, with every file they render to. A port of the renderer reads
-the runs through its own neutral source and compares.
+bodies, what each changed, and the `since` ref, with every file they
+render to. A port of the renderer reads the runs through its own
+neutral source and compares. Which commits are a run's is pinned by the
+ws-git corpus (`what-each-run-changed`).
 
 ## `nontainer.values` — typed values across a boundary
 

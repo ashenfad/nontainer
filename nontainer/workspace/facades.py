@@ -285,6 +285,7 @@ class WorkspaceFiles:
         readonly: bool = True,
         root: str | None = None,
         trace: bool = False,
+        since: "str | Ref | None" = None,
     ) -> str:
         """Mount another session's tree, frozen at a commit, inside
         this one at ``at``; returns the ref it was attached from.
@@ -336,11 +337,21 @@ class WorkspaceFiles:
         A state with no conversation is refused, and so is one whose
         harness the store has no source for. The trace hides a
         ``.trace`` the tree holds of its own.
+
+        Each run's ``changed.md`` lists the commits that changed a file
+        between the landing of the run before it and its own, read from
+        the branch's history with the runs. ``since``, with ``trace=True``,
+        is a state the reader has already seen (the last pass's
+        watermark): ``index.md`` marks the runs that landed after it
+        with ``+``. It is any ref ``ref`` can be, or a bare commit of
+        the session being traced.
         """
         ws = self._ws
         with ws._lock:
             ws._check_open()
-            return ws._attach(ref, at, readonly=readonly, root=root, trace=trace)
+            return ws._attach(
+                ref, at, readonly=readonly, root=root, trace=trace, since=since
+            )
 
     def detach(self, at: str) -> None:
         """Remove an attachment and release the state behind it."""

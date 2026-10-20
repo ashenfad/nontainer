@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from ...traces import TraceEvent, TraceRun, TraceTokens
+from ...traces import TraceCommit, TraceEvent, TraceRun, TraceTokens
 from . import Case
 
 
@@ -148,6 +148,30 @@ _NUMBERS = TraceRun(
     ),
 )
 
+_CHART_CHANGED = (
+    TraceCommit("4c1d2e3", "run_python", added=("chart.png",)),
+    TraceCommit(
+        "9a8b7c6",
+        "terminal",
+        added=("reports/q3 summary.md",),
+        modified=("sales.csv",),
+        removed=("old/chart.png",),
+    ),
+    TraceCommit("5e6f7a8", "turn", modified=("chart.png",)),
+)
+
+_NOTES = TraceRun(
+    id="2b3c4d5e-0000-4000-8000-000000000003",
+    status="completed",
+    started=_at("2026-10-15T17:00:00"),
+    ended=_at("2026-10-15T17:00:20"),
+    events=(
+        _user("Write the notes up."),
+        _tool("terminal", {"command": "echo done > notes.md"}, ""),
+        _assistant("Written to notes.md."),
+    ),
+)
+
 CASES: tuple[Case, ...] = (
     Case(
         "an-empty-conversation",
@@ -167,8 +191,24 @@ CASES: tuple[Case, ...] = (
         "Three runs over one system prompt, which is stored once. A failed "
         "run with an erroring call, a run longer than an hour, and a run "
         "still in flight: no end, no duration, a call with no result, and a "
-        "system prompt the harness didn't keep.",
+        "system prompt the harness didn't keep. What each changed: the first "
+        "three files over three commits, one of them its turn's (a path "
+        "counts once however many commits touch it); the failed run "
+        "nothing; the run in flight never landed, so it is not known.",
         (_CHART, _FAILED, _IN_FLIGHT),
+        changes={_CHART.id: _CHART_CHANGED, _FAILED.id: ()},
+    ),
+    Case(
+        "runs-new-since-a-state",
+        "With a since ref, the index says what it is and marks the runs "
+        "new since it with +, the others with two spaces.",
+        (_CHART, _NOTES),
+        changes={
+            _CHART.id: _CHART_CHANGED,
+            _NOTES.id: (TraceCommit("0d1e2f3", "terminal", added=("notes.md",)),),
+        },
+        since="analyst-42@5e6f7a8",
+        new=(_NOTES.id,),
     ),
     Case(
         "names-and-values-that-need-care",

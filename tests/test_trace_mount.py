@@ -211,6 +211,132 @@ class TestWhatIsShown:
         assert ".trace/runs" in listed
 
 
+class TestChanged:
+    def test_a_run_lists_what_it_changed_after_the_run_before(self, ws, store):
+        a = store.open("a")
+        a.files.write("seed.txt", b"s\n")
+        a.terminal("echo 1 > one.txt")
+        _converse(a, _run("r-one"))
+        a.terminal("echo two >> one.txt; rm seed.txt; mkdir d; echo x > d/x.txt")
+        _converse(a, _run("r-two"))
+        ws.files.attach("a", "a", trace=True)
+        first = ws.files.read("a/.trace/runs/001-r-one/changed.md").decode()
+        second = ws.files.read("a/.trace/runs/002-r-two/changed.md").decode()
+        assert "file_write\n\n- A seed.txt" in first and "- A one.txt" in first
+        assert "one.txt" in second and "seed.txt" in second
+        assert second.index("- D seed.txt") > second.index("- M one.txt")
+        assert "- A d/x.txt" in second and "- files: 3" in second
+        index = ws.files.read("a/.trace/index.md").decode()
+        assert "files:2" in index and "files:3" in index
+        a.close()
+
+    def test_work_landed_by_the_turn_itself_is_the_turns(self, ws, store):
+        a = store.open("a", autocommit=False)
+        turn = a.turns.begin("r", harness="neutral")
+        a.files.write("late.txt", b"x")
+        turn.end("completed", body=_run("r").to_dict())
+        ws.files.attach("a", "a", trace=True)
+        changed = ws.files.read("a/.trace/runs/001-r/changed.md").decode()
+        assert " turn\n\n- A late.txt" in changed
+        a.close()
+
+    def test_a_run_that_changed_nothing_says_so(self, ws, store):
+        a = store.open("a")
+        _converse(a, _run("r"))
+        ws.files.attach("a", "a", trace=True)
+        assert (
+            "None: the run changed no files."
+            in ws.files.read("a/.trace/runs/001-r/changed.md").decode()
+        )
+        a.close()
+
+    def test_with_no_history_nothing_is_known(self, ws, worker, monkeypatch):
+        from nontainer.providers.kvgit import KvgitProvider
+
+        def no_history(self, *, limit=None):
+            raise NotSupportedError("no history")
+
+        monkeypatch.setattr(KvgitProvider, "history", no_history)
+        ws.files.attach("worker", "w", trace=True)
+        assert "files:-" in ws.files.read("w/.trace/index.md").decode()
+        assert (
+            "Not known" in ws.files.read("w/.trace/runs/001-r-one/changed.md").decode()
+        )
+
+
+class TestSince:
+    def test_runs_that_landed_after_it_are_new(self, ws, worker):
+        seen = worker.head
+        _converse(worker, _run("r-two", "second"))
+        ws.files.attach("worker", "w", trace=True, since=seen[:7])
+        assert ws._attached["/workspace/w"].new == 1
+        index = ws.files.read("w/.trace/index.md").decode()
+        assert f"new since worker@{seen[:7]}." in index
+        assert "\n  001-r-one" in index and "\n+ 002-r-two" in index
+
+    def test_a_run_that_landed_again_is_new(self, ws, worker):
+        worker.turns.begin("r-two", harness="neutral").end(
+            "interrupted", body=_run("r-two", status="interrupted").to_dict()
+        )
+        seen = worker.head
+        _converse(worker, _run("r-two"))
+        ws.files.attach("worker", "w", trace=True, since=f"worker@{seen}")
+        assert ws._attached["/workspace/w"].new == 1
+        assert "\n+ 002-r-two" in ws.files.read("w/.trace/index.md").decode()
+
+    def test_a_store_tag_and_a_session_are_states_too(self, ws, worker, store):
+        store.tags.add(worker, "seen")
+        _converse(worker, _run("r-two"))
+        ws.files.attach("worker", "t", trace=True, since="seen")
+        ws.files.attach("worker", "s", trace=True, since="worker")
+        assert ws._attached["/workspace/t"].new == 1
+        assert ws._attached["/workspace/s"].new == 0
+        assert "new since seen." in ws.files.read("t/.trace/index.md").decode()
+
+    def test_it_reads_no_run_until_the_trace_is_read(self, ws, worker, source):
+        seen = worker.head
+        _converse(worker, _run("r-two"))
+        ws.files.attach("worker", "w", trace=True, since=seen)
+        assert source.reads == []
+
+    def test_it_needs_a_trace_and_a_state(self, ws, worker):
+        with pytest.raises(ValueError, match="trace=True"):
+            ws.files.attach("worker", "w", since=worker.head)
+        with pytest.raises(ValueError):
+            ws.files.attach("worker", "w", trace=True, since="nobody")
+        assert ws.files.attachments() == {}
+
+
+class TestShow:
+    @pytest.fixture
+    def git(self, ws):
+        from nontainer.wsgit import register_wsgit
+
+        register_wsgit(ws)
+        return ws
+
+    def test_a_file_of_another_sessions_trace(self, git, worker):
+        out = git.terminal(f"ws-git show worker@{worker.head[:7]}:.trace/index.md")
+        assert out.exit_code == 0 and "001-r-one" in out.stdout
+        assert git.files.attachments() == {}
+
+    def test_a_tree_with_no_conversation_shows_its_own(self, git, store):
+        keeper = store.open("keeper")
+        keeper.files.write(".trace/notes.md", b"mine\n")
+        head = keeper.head
+        keeper.close()
+        out = git.terminal(f"ws-git show keeper@{head[:7]}:.trace/notes.md")
+        assert out.stdout == "mine\n"
+
+    def test_a_harness_the_store_cannot_read_is_refused(self, git, store):
+        other = store.open("other")
+        _converse(other, _run("r"), harness="elsewhere")
+        head = other.head
+        other.close()
+        out = git.terminal(f"ws-git show other@{head[:7]}:.trace/index.md")
+        assert out.exit_code != 0 and "'elsewhere'" in out.stderr
+
+
 class TestTraceFS:
     @pytest.fixture
     def fs(self):
@@ -305,6 +431,8 @@ class TestAgno:
             assert "calls:2 err:1" in index and "Write a.txt" in index
             run = ws.files.read(f"c/.trace/runs/001-{rid[:8]}/run.md").decode()
             assert "- status: completed" in run and "## Reply\n\nwrote it" in run
+            changed = ws.files.read(f"c/.trace/runs/001-{rid[:8]}/changed.md")
+            assert b"- A a.txt" in changed
             ws.close()
             chat.close()
         finally:
