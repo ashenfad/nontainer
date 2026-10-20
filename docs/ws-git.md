@@ -593,6 +593,8 @@ names the run that wrote a file.
 `changed.md` is commit by commit, oldest first: each commit after the
 run before it landed, through this run's own landing, that changed a
 file, under the tool its commit names, with each path marked A, M or D.
+Nothing from before the session was forked counts: that is the tree it
+started from.
 The host's commits in that stretch are listed too, under their own
 names (a `file_write`, a `put`), so the agent's work can be told from
 what happened to its tree:

@@ -40,6 +40,7 @@ from typing import Any, Protocol
 
 __all__ = [
     "EVENT_KINDS",
+    "FORK_TOOL",
     "NEUTRAL",
     "NeutralTraces",
     "Trace",
@@ -61,6 +62,10 @@ _SUMMARY_WIDTH = 80
 
 _DURATION_WIDTH = 8
 """``1h02m03s``: ``index.md`` pads durations to it."""
+
+FORK_TOOL = "ws-git.fork"
+"""The ``tool`` of the commit every fork lands on its child: where the
+child's own history starts (``nontainer.agentgit.FORK_TOOL``)."""
 
 _STATUS_WIDTH = 11
 """``interrupted``, the longest of core's statuses: ``index.md`` pads to it."""
@@ -309,8 +314,12 @@ class TraceCommit:
         paths = {}
         for name in ("added", "modified", "removed"):
             value = data.get(name) or ()
-            if not all(isinstance(p, str) for p in value):
-                raise ValueError(f"commit {name}: expected strings, got {value!r}")
+            if not isinstance(value, (list, tuple)) or not all(
+                isinstance(p, str) for p in value
+            ):
+                raise ValueError(
+                    f"commit {name}: expected a list of paths, got {value!r}"
+                )
             paths[name] = tuple(value)
         return cls(
             id=commit, tool=_str_or_none(data.get("tool"), "commit tool"), **paths
@@ -331,10 +340,24 @@ def run_ranges(
     ``runs`` and ends at its own last landing. A run that never landed
     in ``infos`` has no range, and the next run's starts where it would
     have without it.
+
+    A fork is a boundary too. Every fork lands a commit on the child
+    whose info says ``"tool": "ws-git.fork"``, and a branch's history
+    runs back through its parent's, so no range reaches back past the
+    last fork before the run's landing: what the parent did is the tree
+    the child started from, not its first run's work. That holds when
+    the child's conversation starts empty (``inherit="fresh"``, or a
+    parent with none) as much as when it carries the parent's runs.
     """
     last: dict[str, int] = {}
+    forks: list[int] = []
     for i, info in enumerate(infos):
-        if not isinstance(info, Mapping) or info.get("tool") != "turn":
+        if not isinstance(info, Mapping):
+            continue
+        if info.get("tool") == FORK_TOOL:
+            forks.append(i)
+            continue
+        if info.get("tool") != "turn":
             continue
         landed = info.get("runs")
         if isinstance(landed, Mapping):
@@ -351,7 +374,8 @@ def run_ranges(
         end = last.get(rid)
         if end is None:
             continue
-        out[rid] = range(start, end + 1)
+        begin = max([start] + [f + 1 for f in forks if f < end])
+        out[rid] = range(begin, end + 1)
         start = max(start, end + 1)
     return out
 
@@ -741,9 +765,10 @@ class Trace:
             f"# Changed by run {d}",
             "",
             f"The files run {d} changed, in the conversation of {self._where()}:",
-            "each commit after the run before it landed, through this run's own",
-            "landing, that changed a file. Paths are relative to the tree's root;",
-            "A is added, M modified, D removed.",
+            "each commit after the run before it landed (or after the session's",
+            "fork, if that is later), through this run's own landing, that changed",
+            "a file. Paths are relative to the tree's root; A is added, M modified,",
+            "D removed.",
             "",
             f"- files: {_count(self._files_changed(run))}",
             "",
