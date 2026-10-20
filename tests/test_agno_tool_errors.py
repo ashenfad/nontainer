@@ -7,6 +7,8 @@ flags the failed ones in the run it stores (``_agno_calls``). The
 matching is checked on bare dicts first, then through a real agno
 ``Agent``."""
 
+import logging
+
 import pytest
 
 from nontainer import conversation
@@ -185,3 +187,66 @@ class TestThroughAgno:
         for function in functions.values():
             function.process_entrypoint()
             assert "fc" not in function.parameters["properties"], function.name
+
+    def test_agno_logs_nothing_for_the_call(self, tmp_path):
+        # agno 2.x tries the parameter, fails, and logs an ERROR for it
+        pytest.importorskip("agno")
+        import logging
+
+        from agno.utils import json_schema
+        from test_agno_db import build
+
+        class Held(logging.Handler):
+            def __init__(self):
+                super().__init__()
+                self.records = []
+
+            def emit(self, record):
+                self.records.append(record)
+
+        held = Held()
+        json_schema.logger.addHandler(held)
+        try:
+            _, _, tk, _ = build(tmp_path)
+            functions = (
+                tk.get_functions() if hasattr(tk, "get_functions") else tk.functions
+            )
+            for function in functions.values():
+                function.process_entrypoint()
+        finally:
+            json_schema.logger.removeHandler(held)
+        assert [r.getMessage() for r in held.records if " fc" in r.getMessage()] == []
+
+
+class TestTheLogFilter:
+    def _record(self, msg, module="json_schema"):
+        return logging.LogRecord(
+            "agno", logging.ERROR, f"/x/{module}.py", 1, msg, None, None
+        )
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "Error processing argument fc",
+            "Error processing argument fc: Cannot generate a JsonSchema",
+        ],
+    )
+    def test_the_fc_error_is_dropped(self, msg):
+        pytest.importorskip("agno")
+        from nontainer.adapters.agno import _FcSchemaLog
+
+        assert not _FcSchemaLog().filter(self._record(msg))
+
+    @pytest.mark.parametrize(
+        "msg, module",
+        [
+            ("Error processing argument fcx: no", "json_schema"),
+            ("Error processing argument path: no", "json_schema"),
+            ("Error processing argument fc", "function"),
+        ],
+    )
+    def test_anything_else_is_kept(self, msg, module):
+        pytest.importorskip("agno")
+        from nontainer.adapters.agno import _FcSchemaLog
+
+        assert _FcSchemaLog().filter(self._record(msg, module))

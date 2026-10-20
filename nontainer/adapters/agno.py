@@ -63,6 +63,42 @@ from .tools import ToolOutput, Toolset
 _logger = logging.getLogger("nontainer.adapters.agno")
 
 
+class _FcSchemaLog(logging.Filter):
+    """Drops agno 2.x's error for the toolkit's ``fc`` parameter.
+
+    agno 3 leaves a ``FunctionCall`` parameter out of a tool's schema by
+    its type. agno 2.x leaves out only a fixed list of names, so it tries
+    to build a schema for ``fc``, fails, logs ``Error processing argument
+    fc`` at ERROR (2.8 with a traceback), and leaves it out anyway. That
+    is once per tool, every time agno reads the tools, for a parameter
+    that works. Only that record from agno's schema module is dropped."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            record.module == "json_schema"
+            and isinstance(record.msg, str)
+            and (
+                record.msg == "Error processing argument fc"
+                or record.msg.startswith("Error processing argument fc: ")
+            )
+        )
+
+
+def _hide_fc_schema_log() -> None:
+    try:
+        from agno.utils import json_schema
+    except ImportError:  # pragma: no cover - every supported agno has it
+        return
+    logger = getattr(json_schema, "logger", None)
+    if isinstance(logger, logging.Logger) and not any(
+        isinstance(f, _FcSchemaLog) for f in logger.filters
+    ):
+        logger.addFilter(_FcSchemaLog())
+
+
+_hide_fc_schema_log()
+
+
 def _media_note(count: int) -> str:
     """Provenance line for tool results that carry images.
 
@@ -626,7 +662,8 @@ class WorkspaceTools(Toolkit):
         # Thin typed wrappers: agno derives each tool's schema from the
         # signature, and the toolset does the work. Each takes the
         # FunctionCall agno hands an entrypoint that asks for ``fc``
-        # (the annotation keeps it out of the schema), and logs whether
+        # (the annotation keeps it out of the schema; agno 2.x logs an
+        # error for it first, which _FcSchemaLog drops), and logs whether
         # the call failed, which agno's record can't hold: the session
         # db flags it in the stored run (_agno_calls).
         def noted(fc: Any, out: ToolOutput) -> ToolOutput:
