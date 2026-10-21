@@ -1220,7 +1220,7 @@ requires-dist = [
     { name = "sandtrap", extras = ["render"], specifier = ">=0.5.1" },
     { name = "sqlalchemy", marker = "extra == 'dev'" },
     { name = "starlette", marker = "extra == 'apps'", specifier = ">=0.37" },
-    { name = "termish", specifier = ">=0.2.3" },
+    { name = "termish", specifier = ">=0.2.4" },
 ]
 provides-extras = ["agentfs", "apps", "agno", "mcp", "postgres", "dud", "dev"]
 
@@ -2705,11 +2705,11 @@ wheels = [
 
 [[package]]
 name = "termish"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e4/bf/d4abc2bd94633180ff3a04f0d47d9360d05a257ef0344e079a5d446db7c5/termish-0.2.3.tar.gz", hash = "sha256:57ba8df0c05981c88ea63058c5c62c7b32aa585622a1b051a3691f39269bea69", size = 138013, upload-time = "2026-10-13T18:55:53.983Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/b9/2a176f0c30fb95277360c2463fd3c171f35b2c548b55f23bd20a6389f51a/termish-0.2.4.tar.gz", hash = "sha256:029f59a68afdacc47f4907a0d6dd2bd3d85fa98dbf564a950915c31ff154b8ca", size = 183201, upload-time = "2026-10-21T02:19:25.167Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/90/36eec6860494f85ad9dd2953753e2ab164dd7fc84928b7fd2861f122997e/termish-0.2.3-py3-none-any.whl", hash = "sha256:57efcca91934808d1fb75e835a993a0d9d4064ca2b94c071b26299297a532d9c", size = 95730, upload-time = "2026-10-13T18:55:52.639Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/e8/b6996b0bc17def89023b2bf2564c70080ef5abb9b5b7d4db218c3e567a5b/termish-0.2.4-py3-none-any.whl", hash = "sha256:53932bd164a4b4e9e28146147128a2acbfccac015af4115ae49ec4d8ddde29bf", size = 139291, upload-time = "2026-10-21T02:19:23.653Z" },
 ]
 
 [[package]]
