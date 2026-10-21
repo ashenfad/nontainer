@@ -1352,6 +1352,9 @@ class LocalExecutor:
         # Snapshot per call: command mutations of the env dict must not
         # leak across calls (termish shares the dict it is given).
         env = dict(ctx.shell_env or {})
+        # termish refuses an unset variable, so $HOME needs a value: the
+        # workspace root, unless the runtime's environment sets one.
+        env.setdefault("HOME", ctx.root)
         try:
             output = execute(script, ctx.fs, commands=ctx.commands, env=env)
             exit_code, stderr = 0, ""

@@ -203,6 +203,14 @@ def test_each_runtime_sees_only_its_own_shell_environment(ws):
         second.close()
 
 
+def test_home_is_the_workspace_root_unless_set(ws):
+    """termish refuses an unset variable, so the local terminal gives
+    $HOME the workspace root; a runtime's own HOME wins."""
+    assert ws.runtime.exec_shell("echo $HOME").stdout.strip() == "/workspace"
+    ws.runtime.env["HOME"] = "/workspace/home"
+    assert ws.runtime.exec_shell("echo $HOME").stdout.strip() == "/workspace/home"
+
+
 def test_each_runtime_sees_only_its_own_commands(ws):
     """Same rule for the command registry: a command registered on one
     runtime is not a command on another over the same workspace."""
