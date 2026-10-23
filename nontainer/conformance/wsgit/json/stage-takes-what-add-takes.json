@@ -34,6 +34,30 @@
       "stdout": ""
     },
     {
+      "command": "ws-git stage /",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot stage '/': it is outside the workspace root (/workspace), so it is never committed or merged",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add /",
+      "exit_code": 1,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: cannot stage '/': it is outside the workspace root (/workspace), so it is never committed or merged",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " A b.txt\n A src/a.py\n"
+    },
+    {
       "command": "cd src && ws-git stage . && cd /workspace",
       "exit_code": 0,
       "kind": "run",
@@ -74,5 +98,5 @@
       "stdout": ""
     }
   ],
-  "summary": "stage and add are one verb: -A stages everything modified, a directory (or .) what is modified under it, and an option neither takes is one line naming the verb's synopsis."
+  "summary": "stage and add are one verb: -A stages everything modified, a directory (or .) what is modified under it, and an option neither takes is one line naming the verb's synopsis. A path above the root is refused, never read as everything under it."
 }

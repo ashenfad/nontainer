@@ -198,12 +198,16 @@ SCRIPTS: tuple[Script, ...] = (
         "stage-takes-what-add-takes",
         "stage and add are one verb: -A stages everything modified, a "
         "directory (or .) what is modified under it, and an option neither "
-        "takes is one line naming the verb's synopsis.",
+        "takes is one line naming the verb's synopsis. A path above the "
+        "root is refused, never read as everything under it.",
         (
             Run("mkdir -p src && echo a > src/a.py && echo b > b.txt"),
             Run("ws-git stage -A"),
             Run("ws-git status"),
             Run("ws-git reset"),
+            Run("ws-git stage /"),
+            Run("ws-git add /"),
+            Run("ws-git status"),
             Run("cd src && ws-git stage . && cd /workspace"),
             Run("ws-git status"),
             Run("ws-git stage -x"),
