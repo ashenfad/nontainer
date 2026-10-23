@@ -531,8 +531,14 @@ def _stage(git: AgentGit, ws: Any, ctx: Any, verb: str, rest: list[str]) -> Any:
     if not named:
         wanted = modified
     else:
+        root = ws.root.rstrip("/")
         wanted = []
         for path in named:
+            if root and path != root and not path.startswith(root + "/"):
+                # Outside the root, ``/`` included: never expanded, so
+                # the index refuses it in its own words.
+                wanted.append(path)
+                continue
             prefix = "/" if path == "/" else path.rstrip("/") + "/"
             under = [m for m in modified if m.startswith(prefix)]
             if under or ws.files.fs.isdir(path):
@@ -544,8 +550,8 @@ def _stage(git: AgentGit, ws: Any, ctx: Any, verb: str, rest: list[str]) -> Any:
                     wanted.append(path)
             else:
                 wanted.append(path)
-    if wanted:
-        git.stage(wanted)
+    # Even with nothing to stage: a frozen view still refuses.
+    git.stage(wanted)
     return None  # silent, like git add
 
 
