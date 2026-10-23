@@ -6,7 +6,7 @@
       "exit_code": 2,
       "kind": "run",
       "session": "main",
-      "stderr": "ws-git: stage needs at least one path.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stderr": "ws-git: stage needs at least one path, or -A. usage: ws-git stage (<paths> | -A); see 'ws-git help'",
       "stdout": ""
     },
     {
@@ -27,10 +27,10 @@
     },
     {
       "command": "ws-git stage sub",
-      "exit_code": 1,
+      "exit_code": 0,
       "kind": "run",
       "session": "main",
-      "stderr": "ws-git: cannot stage '/workspace/sub': stage files, not directories",
+      "stderr": "",
       "stdout": ""
     },
     {
@@ -86,7 +86,7 @@
       "exit_code": 2,
       "kind": "run",
       "session": "main",
-      "stderr": "ws-git: reset is mixed-only (no --soft/--hard) — going back to a commit is: ws-git checkout <ref>.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stderr": "ws-git: reset is mixed-only (no --soft/--hard) — going back to a commit is: ws-git checkout <ref>. usage: ws-git reset; see 'ws-git help'",
       "stdout": ""
     },
     {
@@ -98,5 +98,5 @@
       "stdout": "one\n"
     }
   ],
-  "summary": "stage needs known files; unstage and reset leave the tree alone."
+  "summary": "stage needs a path it knows, and a directory with nothing modified under it stages nothing; unstage and reset leave the tree alone."
 }
