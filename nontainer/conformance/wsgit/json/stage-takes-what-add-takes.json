@@ -1,0 +1,78 @@
+{
+  "name": "stage-takes-what-add-takes",
+  "steps": [
+    {
+      "command": "mkdir -p src && echo a > src/a.py && echo b > b.txt",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stage -A",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": "A  b.txt\nA  src/a.py\n"
+    },
+    {
+      "command": "ws-git reset",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "cd src && ws-git stage . && cd /workspace",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git status",
+      "exit_code": 0,
+      "kind": "run",
+      "session": "main",
+      "stderr": "",
+      "stdout": " A b.txt\nA  src/a.py\n"
+    },
+    {
+      "command": "ws-git stage -x",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: stage takes no '-x'. usage: ws-git stage (<paths> | -A); see 'ws-git help'",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git add -u",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: add takes no '-u'. usage: ws-git add (<paths> | -A); see 'ws-git help'",
+      "stdout": ""
+    },
+    {
+      "command": "ws-git stage",
+      "exit_code": 2,
+      "kind": "run",
+      "session": "main",
+      "stderr": "ws-git: stage needs at least one path, or -A. usage: ws-git stage (<paths> | -A); see 'ws-git help'",
+      "stdout": ""
+    }
+  ],
+  "summary": "stage and add are one verb: -A stages everything modified, a directory (or .) what is modified under it, and an option neither takes is one line naming the verb's synopsis."
+}

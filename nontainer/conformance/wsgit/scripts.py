@@ -140,7 +140,8 @@ SCRIPTS: tuple[Script, ...] = (
     ),
     Script(
         "stage-unstage-and-reset",
-        "stage needs known files; unstage and reset leave the tree alone.",
+        "stage needs a path it knows, and a directory with nothing modified "
+        "under it stages nothing; unstage and reset leave the tree alone.",
         (
             Run("ws-git stage"),
             Run("ws-git stage nope.txt"),
@@ -191,6 +192,23 @@ SCRIPTS: tuple[Script, ...] = (
             Run("rm -r docs"),
             Run("ws-git add docs"),
             Run("ws-git status"),
+        ),
+    ),
+    Script(
+        "stage-takes-what-add-takes",
+        "stage and add are one verb: -A stages everything modified, a "
+        "directory (or .) what is modified under it, and an option neither "
+        "takes is one line naming the verb's synopsis.",
+        (
+            Run("mkdir -p src && echo a > src/a.py && echo b > b.txt"),
+            Run("ws-git stage -A"),
+            Run("ws-git status"),
+            Run("ws-git reset"),
+            Run("cd src && ws-git stage . && cd /workspace"),
+            Run("ws-git status"),
+            Run("ws-git stage -x"),
+            Run("ws-git add -u"),
+            Run("ws-git stage"),
         ),
     ),
     # -- diff ----------------------------------------------------------------

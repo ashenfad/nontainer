@@ -121,27 +121,37 @@ _VERBS = (
     "help",
 )
 _USAGE = (
-    "usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|"
+    "usage: ws-git (stage|add|unstage|commit|reset|status|diff|log|show|"
     "checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|"
     "sparse-checkout) [...]"
 )
-_SUPPORTED = (
-    "supported: stage <paths> (or add <paths> | add -A) | unstage <paths> | "
-    "commit [-m MSG] | reset | "
-    "status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | "
-    "log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | "
-    "checkout <ref> [-- <paths>] | "
-    "tag [[-f] <name> [<commit>] | -d <name>] | "
-    "stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | "
-    "show [stash@{N}]] | "
-    "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | "
-    "merge (<session> | --abort) | revert <commit> | "
-    "cherry-pick <session>@<commit> | "
-    "worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | "
-    "list | "
-    "remove <dir>) | "
-    "sparse-checkout [list] | help"
-)
+#: Each verb's synopsis, for the one line a verb given arguments it
+#: does not take prints; the whole surface is ``ws-git help``.
+_FORMS = {
+    "stage": "stage (<paths> | -A)",
+    "add": "add (<paths> | -A)",
+    "unstage": "unstage <paths>",
+    "commit": "commit [-m MSG]",
+    "reset": "reset",
+    "status": "status [--porcelain | -s | --short]",
+    "diff": "diff [<session>] [--cached] [--check] [--stat] [[--] <paths>]",
+    "log": "log [<session>] [-n N] [--all] [-S <string>]",
+    "show": "show <ref>[:<path>]",
+    "checkout": "checkout <ref> [-- <paths>]",
+    "tag": "tag [[-f] <name> [<commit>] | -d <name>]",
+    "stash": (
+        "stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] "
+        "| show [stash@{N}]]"
+    ),
+    "branch": "branch [<name> [--at <ref>] [--fresh] [--paths <paths>]]",
+    "merge": "merge (<session> | --abort)",
+    "revert": "revert <commit>",
+    "cherry-pick": "cherry-pick <session>@<commit>",
+    "worktree": (
+        "worktree (add [--trace [--since <ref>]] <dir> <ref> | list | remove <dir>)"
+    ),
+    "sparse-checkout": "sparse-checkout [list]",
+}
 # Movie-set edge: name the missing corner in git's own terms plus the
 # terminal verb an agent can reach for instead — never host Python it
 # cannot run. Exit 1: refusals, not usage errors.
@@ -160,13 +170,13 @@ _WORKTREE_FORMS = """usage: ws-git worktree add [--trace [--since <ref>]] <dir> 
 
 _HELP = """ws-git: the agent's git over this session.
 
-usage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|
-               tag|stash|branch|merge|revert|cherry-pick|worktree|
-               sparse-checkout) [...]
-  stage <paths>     add paths to the index
-  add <paths> | add -A
-                    stage under git's name; a directory (or .) stages
+usage: ws-git (stage|add|unstage|commit|reset|status|diff|log|show|
+               checkout|tag|stash|branch|merge|revert|cherry-pick|
+               worktree|sparse-checkout) [...]
+  stage <paths> | -A
+                    add paths to the index; a directory (or .) stages
                     what is modified under it, -A everything modified
+  add               stage under git's name, the same verb
   unstage <paths>   drop paths from the index
   commit [-m MSG]   commit the staged set, or everything modified when
                     nothing is staged. No -a and no pathspec: what you
@@ -339,8 +349,7 @@ def make_wsgit_command(ws: Any) -> Any:
         if verb not in _VERBS:
             return CommandResult(
                 exit_code=2,
-                stderr=f"{verb!r} is not a ws-git command. "
-                f"See 'ws-git help'.\n{_SUPPORTED}",
+                stderr=f"{verb!r} is not a ws-git command. {_USAGE}; see 'ws-git help'",
             )
         if not getattr(provider.caps, "index", False):
             return CommandResult(
@@ -352,10 +361,8 @@ def make_wsgit_command(ws: Any) -> Any:
         try:
             if verb == "status":
                 return _status(git, ws, ctx, rest)
-            if verb == "stage":
-                return _stage(git, ctx, rest)
-            if verb == "add":
-                return _add(git, ws, ctx, rest)
+            if verb in ("stage", "add"):
+                return _stage(git, ws, ctx, verb, rest)
             if verb == "unstage":
                 return _unstage(git, ctx, rest)
             if verb == "commit":
@@ -399,7 +406,7 @@ def make_wsgit_command(ws: Any) -> Any:
 
     wsgit.__doc__ = (
         "The agent's git over this session and its neighbours: ws-git "
-        "(stage|unstage|commit|reset|status|diff|log|show|checkout|tag|"
+        "(stage|add|unstage|commit|reset|status|diff|log|show|checkout|tag|"
         "stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) "
         "[...]"
     )
@@ -434,17 +441,24 @@ def _show(ws: Any, path: str) -> str:
     return path
 
 
-def _usage_error(detail: str) -> Any:
+def _usage_error(verb: str, detail: str) -> Any:
+    """A verb given arguments it does not take: what was wrong and the
+    verb's synopsis, on one line. ``ws-git help`` has the rest."""
     from termish import CommandResult
 
-    return CommandResult(exit_code=2, stderr=f"{detail}\n{_USAGE}\n{_SUPPORTED}")
+    return CommandResult(
+        exit_code=2,
+        stderr=f"{detail} usage: ws-git {_FORMS[verb]}; see 'ws-git help'",
+    )
 
 
 def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     for flag in rest:
         # -s/--short are git's names for the format this already prints
         if flag not in ("--porcelain", "-s", "--short"):
-            return _usage_error(f"status takes no {flag!r} (porcelain is the default).")
+            return _usage_error(
+                "status", f"status takes no {flag!r} (porcelain is the default)."
+            )
     st = git.status()
     lines: list[str] = []
     # A narrowed session discovers what it cannot see by being refused,
@@ -485,21 +499,15 @@ def _status(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     return None
 
 
-def _stage(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
-    if not rest or any(a.startswith("-") for a in rest):
-        return _usage_error("stage needs at least one path.")
-    git.stage([_abspath(ctx, a) for a in rest])
-    return None  # silent, like git add
-
-
-def _add(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
-    """``stage`` under git's name, which is the one agents type.
+def _stage(git: AgentGit, ws: Any, ctx: Any, verb: str, rest: list[str]) -> Any:
+    """``stage``, and ``add`` — git's name for it, the one agents type:
+    one verb under two names.
 
     Spelled the way git takes it: a directory — ``.`` included — stages
     what is modified under it, deletions too, so a directory removed
     with ``rm -rf`` stages its removal; ``-A`` (``--all``) with no path
     stages everything modified, and with paths it is those paths, as in
-    git. ``stage`` itself takes file paths only, so both expand to the
+    git. The index takes file paths only, so both expand to the
     modified paths they cover, and a directory with nothing modified
     under it stages nothing, silently, as git does.
 
@@ -513,14 +521,11 @@ def _add(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         if arg in ("-A", "--all"):
             every = True
         elif arg.startswith("-"):
-            return _usage_error(
-                "add takes paths, or -A for everything modified "
-                "(it is ws-git stage under git's name)."
-            )
+            return _usage_error(verb, f"{verb} takes no {arg!r}.")
         else:
             named.append(_abspath(ctx, arg))
     if not every and not named:
-        return _usage_error("add needs at least one path, or -A.")
+        return _usage_error(verb, f"{verb} needs at least one path, or -A.")
     status = git.status()
     modified = sorted(set(status.unstaged) | set(status.staged))
     if not named:
@@ -546,7 +551,7 @@ def _add(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
 
 def _unstage(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     if not rest or any(a.startswith("-") for a in rest):
-        return _usage_error("unstage needs at least one path.")
+        return _usage_error("unstage", "unstage needs at least one path.")
     git.unstage([_abspath(ctx, a) for a in rest])
     return None
 
@@ -560,11 +565,12 @@ def _commit(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
             message = args.pop(0)
         elif flag == "-a":
             return _usage_error(
-                "commit stages nothing itself (no -a) — stage first, then commit."
+                "commit",
+                "commit stages nothing itself (no -a) — stage first, then commit.",
             )
         else:
             return _usage_error(
-                "commit takes the staged set only (no pathspec; try: -m MSG)."
+                "commit", "commit takes the staged set only (no pathspec; try: -m MSG)."
             )
     branch = git.branch
     commit, files = git.commit(message)
@@ -579,8 +585,9 @@ def _commit(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
 def _reset(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     if rest:
         return _usage_error(
+            "reset",
             "reset is mixed-only (no --soft/--hard) — "
-            "going back to a commit is: ws-git checkout <ref>."
+            "going back to a commit is: ws-git checkout <ref>.",
         )
     git.discard()
     return None
@@ -673,9 +680,9 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         cut = rest.index("--")
         head, paths = rest[:cut], rest[cut + 1 :]
         if len(head) > 1 or any(a.startswith("-") for a in head):
-            return _usage_error("checkout takes one ref before --.")
+            return _usage_error("checkout", "checkout takes one ref before --.")
         if not paths:
-            return _usage_error("checkout -- needs at least one path.")
+            return _usage_error("checkout", "checkout -- needs at least one path.")
         want = head[0] if head else "HEAD"
         if want == "HEAD" and git.head is None and git.base is not None:
             # Before a fork's first commit there is no HEAD to restore
@@ -693,7 +700,9 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         ctx.stdout.write(f"Updated {n} path{plural} from {ref}\n")
         return None
     if len(rest) != 1 or rest[0].startswith("-"):
-        return _usage_error("checkout takes one ref (a commit from ws-git log).")
+        return _usage_error(
+            "checkout", "checkout takes one ref (a commit from ws-git log)."
+        )
     commit = git.resolve(rest[0])
     ws._require_unmerged(git, "checkout")
     removed: list[str] = []
@@ -731,7 +740,7 @@ def _tag(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
         return None
     if rest[0] == "-d":
         if len(rest) != 2 or rest[1].startswith("-"):
-            return _usage_error("tag -d takes one name.")
+            return _usage_error("tag", "tag -d takes one name.")
         commit = git.delete_tag(rest[1])
         ctx.stdout.write(f"Deleted tag {rest[1]!r} (was {commit[:7]})\n")
         return None
@@ -739,8 +748,9 @@ def _tag(git: AgentGit, ctx: Any, rest: list[str]) -> Any:
     args = rest[1:] if force else rest
     if not 1 <= len(args) <= 2 or any(a.startswith("-") for a in args):
         return _usage_error(
+            "tag",
             "tag takes a name and optionally a commit (try: -f to move a "
-            "name that is taken, -d to drop one)."
+            "name that is taken, -d to drop one).",
         )
     git.tag(args[0], args[1] if len(args) > 1 else None, force=force)
     return None  # silent, like git tag
@@ -840,15 +850,17 @@ def _stash(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     else:
         sub, args = rest[0], rest[1:]
     if sub not in ("push", "list", "pop", "drop", "show"):
-        return _usage_error(f"stash takes no {sub!r} (push, list, pop, drop, show).")
+        return _usage_error(
+            "stash", f"stash takes no {sub!r} (push, list, pop, drop, show)."
+        )
     _stash_store(ws)
     if sub == "push":
         return _stash_push(git, ws, ctx, args)
     if len(args) > 1 or any(a.startswith("-") for a in args):
-        return _usage_error(f"stash {sub} takes one stash at most.")
+        return _usage_error("stash", f"stash {sub} takes one stash at most.")
     if sub == "list":
         if args:
-            return _usage_error("stash list takes no arguments.")
+            return _usage_error("stash", "stash list takes no arguments.")
         lines = [
             f"stash@{{{i}}}: {message}" for i, (_, message) in enumerate(_stashes(ws))
         ]
@@ -884,7 +896,7 @@ def _stash_push(git: AgentGit, ws: Any, ctx: Any, args: list[str]) -> Any:
         if flag in ("-m", "--message") and args:
             message = args.pop(0)
         else:
-            return _usage_error("stash push takes a message only (-m MSG).")
+            return _usage_error("stash", "stash push takes a message only (-m MSG).")
 
     # A stash MOVES the tree rather than landing a change in it, which
     # is exactly what an outstanding merge cannot survive: the branch
@@ -992,7 +1004,7 @@ def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
         return None
     name, at, fresh, paths = rest[0], None, False, None
     if name.startswith("-"):
-        return _usage_error("branch takes a name first.")
+        return _usage_error("branch", "branch takes a name first.")
     args = rest[1:]
     while args:
         flag = args.pop(0)
@@ -1008,10 +1020,11 @@ def _branch(ws: Any, ctx: Any, rest: list[str]) -> Any:
             while args and not args[0].startswith("-"):
                 paths.append(args.pop(0))
             if not paths:
-                return _usage_error("--paths needs at least one path.")
+                return _usage_error("branch", "--paths needs at least one path.")
         else:
             return _usage_error(
-                f"branch takes no {flag!r} (try: --at <ref>, --fresh, --paths <paths>)."
+                "branch",
+                f"branch takes no {flag!r} (try: --at <ref>, --fresh, --paths <paths>).",
             )
     child = ws.fork(
         name,
@@ -1052,7 +1065,8 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         return None
     if len(rest) != 1 or rest[0].startswith("-"):
         return _usage_error(
-            "merge takes one session name (ws-git branch lists them), or --abort."
+            "merge",
+            "merge takes one session name (ws-git branch lists them), or --abort.",
         )
     source = rest[0]
     _settle(ws)
@@ -1104,7 +1118,9 @@ def _merged(
 
 def _revert(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if len(rest) != 1 or rest[0].startswith("-"):
-        return _usage_error("revert takes one commit (a commit from ws-git log).")
+        return _usage_error(
+            "revert", "revert takes one commit (a commit from ws-git log)."
+        )
     commit = git.resolve(rest[0])
     _settle(ws)
     return _applied(
@@ -1116,8 +1132,9 @@ def _cherry_pick(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if len(rest) != 1 or rest[0].startswith("-") or "@" not in rest[0]:
         named = rest[0] if rest and not rest[0].startswith("-") else "<session>"
         return _usage_error(
+            "cherry-pick",
             "cherry-pick takes one commit of another session, spelled "
-            f"<session>@<commit> (ws-git log {named} lists them)."
+            f"<session>@<commit> (ws-git log {named} lists them).",
         )
     ref = _short_ref(_whole_ref(ws, rest[0]))
     _settle(ws)
@@ -1193,12 +1210,12 @@ def _worktree(ws: Any, ctx: Any, rest: list[str]) -> Any:
         return _worktree_add(ws, ctx, args)
     if sub == "list":
         if args:
-            return _usage_error("worktree list takes no arguments.")
+            return _usage_error("worktree", "worktree list takes no arguments.")
         ctx.stdout.write("\n".join(_worktree_lines(ws) or ["(none)"]) + "\n")
         return None
     if sub == "remove":
         return _worktree_remove(ws, ctx, args)
-    return _usage_error(f"worktree takes no {sub!r} (add, list, remove).")
+    return _usage_error("worktree", f"worktree takes no {sub!r} (add, list, remove).")
 
 
 def _worktree_lines(ws: Any) -> list[str]:
@@ -1234,19 +1251,21 @@ def _worktree_add(ws: Any, ctx: Any, rest: list[str]) -> Any:
             since = next(args, None)
             if since is None or since.startswith("-"):
                 return _usage_error(
-                    "--since takes a ref: the state whose runs you have read."
+                    "worktree",
+                    "--since takes a ref: the state whose runs you have read.",
                 )
         else:
             words.append(arg)
     if since is not None and not trace:
         return _usage_error(
-            "--since marks the new runs of a trace: add --trace with it."
+            "worktree", "--since marks the new runs of a trace: add --trace with it."
         )
     rest = words
     if len(rest) != 2 or any(a.startswith("-") for a in rest):
         return _usage_error(
+            "worktree",
             "worktree add takes a directory and a session (ws-git branch "
-            "lists them) or a store tag, and --trace for the conversation."
+            "lists them) or a store tag, and --trace for the conversation.",
         )
     where, ref = rest
     point = _abspath(ctx, where)
@@ -1348,15 +1367,16 @@ def _short_ref(ref: str) -> str:
 
 def _worktree_remove(ws: Any, ctx: Any, rest: list[str]) -> Any:
     if len(rest) != 1 or rest[0].startswith("-"):
-        return _usage_error("worktree remove takes one directory.")
+        return _usage_error("worktree", "worktree remove takes one directory.")
     where = rest[0]
     point = _abspath(ctx, where)
     held = sorted(ws.files.attachments())
     if point not in held:
         known = ", ".join(_show(ws, p) for p in held)
         return _usage_error(
+            "worktree",
             f"no worktree at {where!r} "
-            f"({'worktrees here: ' + known if held else 'no worktrees here'})."
+            f"({'worktrees here: ' + known if held else 'no worktrees here'}).",
         )
     ws.files.detach(point)
     return None  # silent, like git worktree remove
@@ -1382,12 +1402,15 @@ def _seed_paths(ws: Any) -> list[str]:
 def _sparse_checkout(ws: Any, ctx: Any, rest: list[str]) -> Any:
     if rest and rest[0] != "list":
         return _usage_error(
+            "sparse-checkout",
             f"sparse-checkout takes no {rest[0]!r} (list is all there is): "
             "a view is given when the session is forked (ws-git branch "
-            "<name> --paths <paths>) and cannot be changed here."
+            "<name> --paths <paths>) and cannot be changed here.",
         )
     if len(rest) > 1:
-        return _usage_error("sparse-checkout list takes no arguments.")
+        return _usage_error(
+            "sparse-checkout", "sparse-checkout list takes no arguments."
+        )
     ctx.stdout.write("\n".join(_seed_paths(ws) or ["(full)"]) + "\n")
     return None
 
@@ -1395,8 +1418,9 @@ def _sparse_checkout(ws: Any, ctx: Any, rest: list[str]) -> Any:
 def _show_verb(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     if len(rest) != 1 or rest[0].startswith("-"):
         return _usage_error(
+            "show",
             "show takes one ref (a commit from ws-git log), or <ref>:<path> "
-            "for one file at that state."
+            "for one file at that state.",
         )
     word = rest[0]
     # The colon is the path's: no ref spelling holds one (a store tag
@@ -1512,8 +1536,9 @@ def _show_path(git: AgentGit, ws: Any, ctx: Any, ref: str, path: str) -> Any:
     """
     if not ref:
         return _usage_error(
+            "show",
             "show :<path> needs a ref before the colon "
-            "(HEAD:<path> for your last commit)."
+            "(HEAD:<path> for your last commit).",
         )
     read = _ref_for_read(git, ws, ref)
     commit = read.commit
@@ -1872,23 +1897,25 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         elif flag == "--stat":
             stat = True
         elif flag.startswith("-"):
-            return _usage_error(f"diff takes no {flag!r}.")
+            return _usage_error("diff", f"diff takes no {flag!r}.")
         else:
             words.append(flag)
     if after is not None:
         if len(words) > 1:
-            return _usage_error("diff takes one ref before --.")
+            return _usage_error("diff", "diff takes one ref before --.")
         ref, words = (words[0] if words else None), after
         if ref is not None:
             tagged = _store_tag_ref(ws, ref)
             if tagged is None and not _is_session(ws, ref):
                 return _usage_error(
-                    f"diff {ref} -- <paths>: {ref!r} is not a session or a store tag."
+                    "diff",
+                    f"diff {ref} -- <paths>: {ref!r} is not a session or a store tag.",
                 )
             if cached or check:
                 return _usage_error(
+                    "diff",
                     "diff <session> takes no --cached or --check: those "
-                    "read your own composition."
+                    "read your own composition.",
                 )
             paths = [_abspath(ctx, word) for word in words]
             return _diff_branch(git, ws, ctx, ref, tagged, paths=paths, stat=stat)
@@ -1903,8 +1930,9 @@ def _diff(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         if tagged is not None or _is_session(ws, words[0]):
             if cached or check:
                 return _usage_error(
+                    "diff",
                     "diff <session> takes no --cached or --check: those "
-                    "read your own composition."
+                    "read your own composition.",
                 )
             return _diff_branch(
                 git, ws, ctx, words[0], tagged, paths=paths[1:], stat=stat
@@ -2219,7 +2247,8 @@ def _log(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
             session = flag
         else:
             return _usage_error(
-                f"log takes no {flag!r} (try: -n N, -N, --oneline, --all, -S <string>)."
+                "log",
+                f"log takes no {flag!r} (try: -n N, -N, --oneline, --all, -S <string>).",
             )
     if session is not None and session != ws.session:
         other = _other_session(ws, session)

@@ -18,7 +18,6 @@ from nontainer import Store, Workspace
 from nontainer.providers import KvgitProvider
 from nontainer.wsgit import (
     _HELP,
-    _SUPPORTED,
     _USAGE,
     _WORKTREE_FORMS,
     make_wsgit_command,
@@ -285,7 +284,10 @@ def test_commit_without_an_index_takes_everything(ws):
 def test_stage_needs_paths_and_known_files(ws):
     r = ws.terminal("ws-git stage")
     assert r.exit_code == 2
-    assert r.stderr == f"ws-git: stage needs at least one path.\n{_USAGE}\n{_SUPPORTED}"
+    assert r.stderr == (
+        "ws-git: stage needs at least one path, or -A. "
+        "usage: ws-git stage (<paths> | -A); see 'ws-git help'"
+    )
     r = ws.terminal("ws-git stage nope.txt")
     assert r.exit_code == 1
     assert r.stderr == (
@@ -588,8 +590,7 @@ def test_edges_name_what_the_agent_can_do(ws):
     r = ws.terminal("ws-git frobnicate")
     assert r.exit_code == 2
     assert r.stderr == (
-        "ws-git: 'frobnicate' is not a ws-git command. See 'ws-git help'.\n"
-        f"{_SUPPORTED}"
+        f"ws-git: 'frobnicate' is not a ws-git command. {_USAGE}; see 'ws-git help'"
     )
 
     for cmd, first in [
@@ -606,7 +607,11 @@ def test_edges_name_what_the_agent_can_do(ws):
         r = ws.terminal(cmd)
         assert r.exit_code == 2, cmd
         assert r.stderr.startswith(f"{first}"), (cmd, r.stderr)
-        assert r.stderr.endswith(f"{_USAGE}\n{_SUPPORTED}"), (cmd, r.stderr)
+        # one line: what was wrong, the verb's synopsis, where the rest is
+        assert "\n" not in r.stderr, (cmd, r.stderr)
+        verb = cmd.split()[1]
+        assert f" usage: ws-git {verb}" in r.stderr, (cmd, r.stderr)
+        assert r.stderr.endswith("; see 'ws-git help'"), (cmd, r.stderr)
 
 
 def test_bare_and_help(ws):
@@ -2242,8 +2247,30 @@ def test_add_all_stages_everything_modified(edited):
 def test_add_refuses_what_it_does_not_mean(edited):
     r = edited.terminal("ws-git add -p")
     assert r.exit_code == 2
-    assert "ws-git stage under git's name" in r.stderr
+    assert r.stderr == (
+        "ws-git: add takes no '-p'. usage: ws-git add (<paths> | -A); see 'ws-git help'"
+    )
     assert edited.terminal("ws-git add").exit_code == 2
+
+
+@pytest.mark.parametrize("args", ["-A", "--all", ".", "src", "b.md src"])
+def test_stage_is_add_under_its_own_name(edited, args):
+    """One verb, two names: whatever add takes, stage takes the same."""
+    r = edited.terminal(f"ws-git stage {args}")
+    assert r.exit_code == 0, r.stderr
+    by_stage = _staged(edited)
+    edited.terminal("ws-git reset")
+    edited.terminal(f"ws-git add {args}")
+    assert by_stage == _staged(edited) != []
+
+
+def test_stage_refuses_an_option_on_one_line(edited):
+    r = edited.terminal("ws-git stage -x")
+    assert r.exit_code == 2
+    assert r.stderr == (
+        "ws-git: stage takes no '-x'. usage: ws-git stage (<paths> | -A); "
+        "see 'ws-git help'"
+    )
 
 
 def test_add_with_a_path_and_all_stages_only_that_path(edited):

@@ -86,7 +86,7 @@
       "exit_code": 2,
       "kind": "run",
       "session": "child",
-      "stderr": "ws-git: sparse-checkout takes no 'set' (list is all there is): a view is given when the session is forked (ws-git branch <name> --paths <paths>) and cannot be changed here.\nusage: ws-git (stage|unstage|commit|reset|status|diff|log|show|checkout|tag|stash|branch|merge|revert|cherry-pick|worktree|sparse-checkout) [...]\nsupported: stage <paths> (or add <paths> | add -A) | unstage <paths> | commit [-m MSG] | reset | status [--porcelain | -s] | diff [<session>] [--cached] [--check] [--stat] [[--] paths...] | log [<session>] [-n N] [--all] [-S <string>] | show <ref>[:<path>] | checkout <ref> [-- <paths>] | tag [[-f] <name> [<commit>] | -d <name>] | stash [push [-m MSG] | list | pop [stash@{N}] | drop [stash@{N}] | show [stash@{N}]] | branch [<name> [--at <ref>] [--fresh] [--paths <paths>]] | merge (<session> | --abort) | revert <commit> | cherry-pick <session>@<commit> | worktree (add [--trace [--since <ref>]] <dir> <session>[@<commit>] | <tag> | list | remove <dir>) | sparse-checkout [list] | help",
+      "stderr": "ws-git: sparse-checkout takes no 'set' (list is all there is): a view is given when the session is forked (ws-git branch <name> --paths <paths>) and cannot be changed here. usage: ws-git sparse-checkout [list]; see 'ws-git help'",
       "stdout": ""
     },
     {

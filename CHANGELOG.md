@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`nontainer.adapters.agno_traces.AgnoTraces`, the trace source for agno's stored runs.** It reads a run `KvgitSessionDb` stored into the neutral `TraceRun`: status in core's words, times, token counts, the system prompt, and the run's own events. History agno replayed into the run is left out, and each call is paired with its result. It parses the stored dict alone, so reading an agno session's trace needs no agno install. A tool call counts as an error when the stored run flags it, which it now does for nontainer's own tools too (see Fixed).
 
 ### Changed
+- **`ws-git stage` is `ws-git add` under its own name.** Both take paths, a directory (`.` included) or `-A`, so `ws-git stage -A` stages everything modified and `ws-git stage <dir>` what is modified under it.
+- **A ws-git verb given arguments it does not take answers in one line.** What was wrong, the verb's synopsis and `see 'ws-git help'` replace the whole usage text, and an unknown verb lists the verbs.
 - **Requires `termish>=0.2.4`; `$HOME` is the workspace root.** termish 0.2.4 makes an unset variable an error, so the local terminal sets `HOME` to the workspace root unless the runtime's environment sets it.
 
 ### Fixed

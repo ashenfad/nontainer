@@ -31,8 +31,8 @@ Git's spelling is on the left, what it does here on the right.
 
 | ws-git | what it does here |
 |---|---|
-| `stage <paths>` | add paths to the index. Silent, like `git add` |
-| `add <paths>` / `add -A` | `stage` under git's name: a directory (`.` included) stages what is modified under it, and `-A` everything modified |
+| `stage <paths>` / `stage -A` | add paths to the index: a directory (`.` included) stages what is modified under it, and `-A` everything modified. Silent, like `git add` |
+| `add <paths>` / `add -A` | `stage` under git's name: the same verb |
 | `unstage <paths>` | drop paths from the index |
 | `commit [-m MSG]` | commit the staged set, or everything modified when nothing is staged |
 | `reset` | abandon the composition and keep the tree. Mixed-only |
@@ -111,6 +111,14 @@ $ ws-git status
 `ws-git reset` clears the index and leaves every file as it is. Going
 back to a commit is `ws-git checkout <ref>`, so `--soft` and `--hard`
 are usage errors naming it.
+
+A verb given arguments it does not take answers in one line: what was
+wrong, then the verb's synopsis, then where the rest is.
+
+```
+$ ws-git stage -x
+ws-git: stage takes no '-x'. usage: ws-git stage (<paths> | -A); see 'ws-git help'
+```
 
 ## What status shows
 
@@ -804,7 +812,7 @@ append-only, so branch from the commit you want
 
 `switch`, `reflog`, `remote` and every other git verb are simply not
 ws-git commands: they earn the unknown-command message, which lists the
-whole supported surface. What each would have meant is covered anyway —
+verbs there are. What each would have meant is covered anyway —
 a session **is** a branch, so there is nothing to switch to;
 `ws-git log --all` is the reflog, showing every commit the session
 holds; and there is no remote, because every session lives in one store
