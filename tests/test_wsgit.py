@@ -2345,3 +2345,24 @@ def test_a_forks_first_commit_is_shown_and_searched_from_its_base():
         worker.close()
         ws.close()
         store.close()
+
+
+@pytest.mark.parametrize("verb", ["add", "stage"])
+def test_add_refuses_a_path_outside_the_root(edited, verb):
+    """``/`` is above /workspace: refused, not read as every path."""
+    r = edited.terminal(f"ws-git {verb} /")
+    assert r.exit_code == 1
+    assert _staged(edited) == []
+
+
+@pytest.mark.parametrize("args", ["-A", "src"])
+def test_add_with_nothing_to_stage_still_refuses_on_a_snapshot(edited, args):
+    edited.terminal("ws-git add -A && ws-git commit -m all")
+    edited.tags.add("v1")
+    snap = edited.tags.at("v1")
+    try:
+        r = snap.terminal(f"ws-git add {args}")
+        assert r.exit_code == 1
+        assert "frozen" in r.stderr
+    finally:
+        snap.close()
