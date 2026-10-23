@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.6 - 2026-10-22
 
 ### Added
 - **`nontainer.traces`: a stored conversation rendered as files**, the first piece of curation's trace projection. A `TraceSource` reads one stored run, in its harness's format, into a neutral `TraceRun` (status, times, model, `TraceTokens`, system prompt, and `TraceEvent`s: user, assistant, thinking, and one per tool call with its result). `Trace` renders `README.md`, `index.md`, `system/<hash>.md`, and each run's `run.md` and event files from that shape, so a trace reads the same whichever harness wrote it. `NeutralTraces` reads runs stored in the neutral shape itself.
@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Requires `termish>=0.2.4`; `$HOME` is the workspace root.** termish 0.2.4 makes an unset variable an error, so the local terminal sets `HOME` to the workspace root unless the runtime's environment sets it.
 
 ### Fixed
+- **`ws-git add /` no longer stages the whole workspace.** A path above the root was read as a directory holding every modified file; it is now refused like any path outside the root, and on a frozen snapshot `add -A` with nothing to stage reports the snapshot frozen rather than succeeding.
 - **A failed command's stderr appears once, as it was written.** The terminal's `[stderr]` is only what reached stderr: nothing after `2>&1`, `2>/dev/null`, `2>file` or a silent failure such as `grep` with no match (no more `grep: exited with code 1`), and `ls: ...` rather than `ls: ls: ...`.
 - **A failed tool call is stored as failed in an agno session.** nontainer's tools return normally and say in their text that a call failed (a non-zero exit, python that raised, an edit that missed), so agno stored every one with `tool_call_error: false`, and a trace counted no errors. `WorkspaceTools` now logs each call's outcome by the call id agno hands it, and `KvgitSessionDb` and `KvgitStoreDb` flag the failed calls' messages and `tools` entries in the run they store. A flag already stored is kept when agno writes the session again. What the model sees is unchanged: agno never sends the flag to a provider. agno 2.x can't leave the call id's parameter out of a tool's schema without logging an error for it; nontainer filters out exactly that error.
 
