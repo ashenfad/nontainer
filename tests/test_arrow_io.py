@@ -253,3 +253,26 @@ def test_a_host_fs_grant_keeps_native_io(tmp_path, monkeypatch):
             pq.write_table(pa.table({"a": [1]}), str(path))
         assert not os.path.exists(str(path))  # the VFS's view: not there
     assert path.exists()
+
+
+def test_an_import_meanwhile_does_not_break_the_install(monkeypatch):
+    """Another thread may import while the routing is installed: the
+    walk over loaded modules reads a copy, not the live dict."""
+    import sys
+    import types
+
+    from nontainer import _arrow_io
+
+    class Importing(types.ModuleType):
+        @property
+        def __dict__(self):  # what another thread's import does meanwhile
+            sys.modules[f"pyarrow._imported_meanwhile_{len(sys.modules)}"] = None
+            return {}
+
+    monkeypatch.setitem(
+        sys.modules, "pyarrow._importing", Importing("pyarrow._importing")
+    )
+    before = set(sys.modules)
+    _arrow_io._patch({})
+    for name in set(sys.modules) - before:
+        del sys.modules[name]
