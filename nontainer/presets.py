@@ -350,10 +350,16 @@ def dataframes() -> list[ModuleGrant]:
     # library code runs natively).
     try:
         import pyarrow
-
-        grants.append(ModuleGrant(pyarrow, recursive=True))
     except ImportError:
-        pass
+        return grants
+    grants.append(ModuleGrant(pyarrow, recursive=True))
+    # pyarrow opens a path in C++, beneath the VFS: the module routes it
+    # to the workspace (pandas' parquet I/O included) when imported, which
+    # this does here and a worker does when it re-imports the grants.
+    # Nothing in it is the agent's to reach.
+    from . import _arrow_io
+
+    grants.append(ModuleGrant(_arrow_io, include=(), exclude="*"))
     return grants
 
 

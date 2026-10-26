@@ -2378,10 +2378,31 @@ from nontainer.presets import dataframes, plotting
 PythonConfig(modules=[dataframes(), plotting()])
 
 STDLIB                    # the stdlib=True grant tuple, reusable
-dataframes()              # numpy + pandas (ImportError if missing)
+dataframes()              # numpy + pandas (ImportError if missing), and
+                          # pyarrow when installed, its file I/O routed
 plotting(plotly=None)     # matplotlib: Agg-pinned + font cache warmed
                           # plotly: None=if installed, True=required, False=skip
 ```
+
+**pyarrow's file I/O stays in the workspace.** pyarrow opens a path in
+C++, beneath the VFS's patches, so without help a path handed to it —
+by agent code, or by pandas, which since 3.1 hands parquet paths
+straight to pyarrow — would read and write the host's disk. With
+pyarrow installed, `dataframes()` routes that I/O through a pyarrow
+filesystem over the workspace: parquet (pandas' too), datasets, csv,
+json, feather, ipc, orc, `input_stream`/`output_stream`, `OSFile`,
+`memory_map` for reading, and `pyarrow.fs.LocalFileSystem()`, which
+returns the workspace's filesystem. A writable memory map has no
+workspace equivalent and is refused with a reason; a URI with a scheme
+(`s3://`) is left to pyarrow. The rule is the one Python's `open()`
+follows: I/O goes where `open()` would go at that moment. Host code is
+untouched, and so is a module granted the host's filesystem
+(`ModuleGrant(host_fs=True)`), whose calls keep pyarrow's native I/O.
+The routing is installed when the preset runs, and in each worker as it
+re-imports the preset's grants; a pyarrow grant made without the preset
+is not routed. pyarrow calls the filesystem from its own threads, so the
+workspace sees one of those operations at a time; I/O runs at Python's
+speed, not C++'s.
 
 **`nontainer.executor.flatten_grants(cfg) -> list[ModuleGrant]`** is
 the other direction: a whole `PythonConfig` read the way the thing
