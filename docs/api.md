@@ -1102,7 +1102,9 @@ trace is first read; each file is rendered on its first read and kept.
 A state with no conversation is refused (`ValueError`), and so is one
 whose harness the store has no source for (`NotSupportedError`). A run
 its source cannot read is left out. The trace hides a `.trace` the
-tree holds of its own. On a rung that runs elsewhere, the guest is
+tree holds of its own. Any session on the store can mount any other's
+trace, as it can its files: the store is the trust boundary, and a
+store given no sources mounts none. On a rung that runs elsewhere, the guest is
 handed the root's files, so a trace mounted inside the root is
 rendered whole at each push. The agent's spelling is `ws-git worktree
 add --trace`.
