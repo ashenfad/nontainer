@@ -135,9 +135,10 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
 | the trace projection: `.trace/` beside a worktree's files (`worktree add --trace`, `files.attach(trace=True)`, `Store(traces=...)`) | exists, local rung and lazy; pinned by the ws-git corpus |
 | each run's `changed.md`, and `--since` marking the runs new since a state (`files.attach(trace=True, since=...)`) | exists; the rendering pinned by the trace corpus, the history walk by the ws-git corpus |
-| the redaction hook | proposed |
+| the redaction hook | proposed, with `store.specimen`; within a store, a host wraps its trace source |
 | a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus |
 | the agno trace source | exists: `nontainer.adapters.agno_traces.AgnoTraces`, with nontainer's tool failures flagged in the runs `KvgitSessionDb` stores |
+| the agex trace source | exists in agex: `agex.traces.AgexTraces` (no system prompt: agex doesn't store one) |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths, for another session or a store tag, exist |
 | a turn commit naming the runs it carried (`"runs": {id: status}`) | released in 0.8.6 |
 | `skills.install` from a release; `upgrade`, `installed`, `patched` | proposed |
@@ -189,8 +190,13 @@ were run, not just read.
 - **Every session on a store is readable from every other.** `ws-git
   branch` lists them; `worktree add`, `diff`, `log` and `checkout <ref>
   -- <paths>` read them, and `show` reads one of their commits or one
-  of their files. The store is the trust boundary, and has been all
-  along.
+  of their files. Their conversations too: a fork from another
+  session (`Sessions.ask(fork_from=...)`) takes its conversation by
+  default, and a store given trace sources (`Store(traces=...)`) lets
+  `worktree add --trace` and `show <ref>:.trace/<path>` read it as
+  files. The store is the trust boundary, and has been all along;
+  whether a store reads conversations as files is the host's choice,
+  made by giving it sources or not.
 - **A fork can take a moment's files and leave its conversation.**
   `Sessions.ask(task, fork_from="analyst-42@<commit>",
   inherit="fresh")` starts a child on that session's tree as it was at
@@ -432,11 +438,19 @@ down, which is the builder's most common move.
   under the root, attachments included — so a trace mounted inside the
   root is rendered whole and pushed at every sync. Curators read;
   they belong on `LocalExecutor`.
-- **Redaction belongs to rendering.** Nothing is copied, so the moment
-  a byte becomes visible is the moment to redact: an embedder hook,
-  `redact(text, *, session, run, path) -> str`, applied to every
-  rendered file. Tool results are where secrets live; `publish` already
-  leaves `app/logs/` out by default for the tracebacks in it.
+- **Redaction belongs to derivation.** Within one store, redacting a
+  trace hides nothing: every agent there can already read the
+  conversation through a fork, and the files through ws-git. What
+  redaction keeps out is a secret crossing a boundary, and a
+  [specimen](#reach-one-store-and-more-than-one) is what crosses the
+  store's, so a specimen is redacted once, when it is derived: an
+  embedder hook over the trace's rendered files and the paths it
+  takes. Tool results are where secrets live; `publish` already leaves
+  `app/logs/` out by default for the tracebacks in it. Until specimens
+  exist, a host that wants a store's traces scrubbed wraps its source:
+  a `TraceSource` that reads with another and scrubs the `TraceRun`'s
+  text, arguments and system prompt, where a result is still told from
+  an argument.
 - **Parsing is the harness's; rendering is core's.** A `TraceSource`
   reads one stored run in its harness's format and returns it in a
   neutral shape ([the event model](#the-event-model)). Core renders
@@ -587,9 +601,9 @@ The order: build the projection here first, as the reference, with
 corpus scripts that seed runs through the neutral source and pin what
 `worktree add --trace`, `cat` and `ws-git show` print. world then
 ports the renderer and adds an agex-ts source, the flag, the `show`
-route and a redaction hook layered over its secret scrubbing, and it
-replays the corpus. The nested-listing fix and the fold key can land
-in agex-ts any time before that.
+route, and it replays the corpus; its secret scrubbing is what a
+redactor builds on when specimens come. The nested-listing fix and the
+fold key can land in agex-ts any time before that.
 
 ## Signals
 
@@ -1191,8 +1205,8 @@ which makes a store per user the natural layout, and a maintainer
 learning from many users' sessions should not read their raw traces
 anyway. Across that line, derive. A **specimen** is a new commit in the
 curation store holding chosen paths from one session's tree, plus its
-trace rendered to files and passed through the redactor, with
-provenance as a soft reference — `publish`'s reasoning, applied to a
+trace rendered to files and passed through the embedder's redactor,
+with provenance as a soft reference — `publish`'s reasoning, applied to a
 session instead of an app. It is redacted once, at derivation;
 independent of its source for garbage collection; readable after the
 source is gone; and a copy of blobs, which is cheap at these sizes. A
@@ -1277,7 +1291,6 @@ class TraceSource(Protocol):                        # nontainer.traces
 # TraceRun, TraceEvent: see "The event model"; core renders every file from them
 # what index.md prints, and what a trial measures: a TraceRun's own fields, its
 #   ordinal, and what core derives (tool_calls, tool_errors, duration, input, reply)
-# redact(text, *, session, run, path) -> str: an embedder hook on every rendered file
 ```
 
 Host-facing, skills:
@@ -1327,7 +1340,7 @@ Later: `store.specimen(...)`, `.trace/abandoned/`, and a self-trace
 1. **`ws-git show <ref>:<path>` and the run stamp.** Both are small and
    useful before anything else here exists. Both are built.
 2. **The trace projection**: local rung, the event model and its
-   neutral source, the agno source, redaction hook, and corpus scripts
+   neutral source, the agno source, and corpus scripts
    that pin the rendering. It pays for itself in delegation alone — a
    parent reading how a delegate reached its answer, not only the
    answer. agex-ts ports it from the corpus.
