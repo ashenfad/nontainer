@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **pyarrow's file I/O stays in the workspace.** pyarrow opens a path in C++, beneath the sandbox's filesystem, so pandas 3.1's `to_parquet` and `read_parquet` (which hand the path straight to pyarrow), and pyarrow's own readers and writers, used the host's disk instead of the workspace. The `dataframes` preset now routes that I/O through a pyarrow filesystem over the workspace: parquet, datasets, csv, json, feather, ipc, orc, `input_stream`/`output_stream`, `OSFile`, reading `memory_map`, and `pyarrow.fs.LocalFileSystem()`. A writable memory map is refused with a reason. Host code, and a module granted the host's filesystem, keep pyarrow's native I/O, following the switch Python's own `open()` follows.
+
 ## 0.11.6 - 2026-10-22
 
 ### Added
