@@ -582,25 +582,35 @@ def _replacements() -> dict[int, tuple[Any, Any]]:
     return {id(real): (real, stand_in) for real, stand_in in pairs}
 
 
+_INSTALLING = threading.Lock()
+
+
 def _install() -> None:
     """Replace each original wherever a loaded pyarrow module binds it:
     pyarrow's modules import these names from one another, so each
     binding is its own lookup."""
-    if pa is None or getattr(pa, "_nontainer_arrow_io", False):
+    if pa is None:
         return
-    replacements = _replacements()
-    for name, module in list(sys.modules.items()):
+    with _INSTALLING:
+        if getattr(pa, "_nontainer_arrow_io", False):
+            return
+        _patch(_replacements())
+        pa._nontainer_arrow_io = True  # type: ignore[attr-defined]
+
+
+def _patch(replacements: dict[int, tuple[Any, Any]]) -> None:
+    # a copy, not an iteration: another thread may be importing meanwhile
+    for name, module in sys.modules.copy().items():
         if module is None or not (name == "pyarrow" or name.startswith("pyarrow.")):
             continue
         namespace = getattr(module, "__dict__", None)
         if namespace is None:
             continue
-        for attr, value in list(namespace.items()):
+        for attr, value in namespace.copy().items():
             found = replacements.get(id(value))
             if found is not None and found[0] is value:
                 with contextlib.suppress(AttributeError, TypeError):
                     setattr(module, attr, found[1])
-    pa._nontainer_arrow_io = True  # type: ignore[attr-defined]
 
 
 _install()
