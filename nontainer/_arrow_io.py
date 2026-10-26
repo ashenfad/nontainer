@@ -312,6 +312,46 @@ if pa is not None:
                 return _RealLocal(*args, **kwargs)
             return _workspace(fs)
 
+    _RealFileSystem = pafs.FileSystem
+    _RealSubTree = pafs.SubTreeFileSystem
+
+    def _reroute(filesystem: Any, fs: Any) -> Any:
+        """``filesystem`` with a native local filesystem under it — itself,
+        or the base of a subtree (what a ``file://`` URI resolves to) —
+        replaced by the workspace's."""
+        if isinstance(filesystem, _RealLocal):
+            return _workspace(fs)
+        if isinstance(filesystem, _RealSubTree):
+            base = filesystem.base_fs
+            rerouted = _reroute(base, fs)
+            if rerouted is not base:
+                return _RealSubTree(filesystem.base_path, rerouted)
+        return filesystem
+
+    _real_from_uri = _RealFileSystem.from_uri
+
+    def from_uri(uri: Any) -> Any:
+        filesystem, path = _real_from_uri(uri)
+        fs = _active()
+        if fs is not None:
+            filesystem = _reroute(filesystem, fs)
+        return filesystem, path
+
+    from_uri.__doc__ = _real_from_uri.__doc__
+
+    class _FileSystemMeta(_stand_in(_RealFileSystem)):  # type: ignore[misc]
+        def __getattr__(cls, name: str) -> Any:
+            return getattr(_RealFileSystem, name)
+
+    class FileSystem(metaclass=_FileSystemMeta):  # type: ignore[misc]
+        """pyarrow's ``FileSystem``, whose ``from_uri`` gives a ``file://``
+        URI the workspace's filesystem while the VFS is active."""
+
+        from_uri = staticmethod(from_uri)
+
+        def __new__(cls, *args: Any, **kwargs: Any) -> Any:
+            return _RealFileSystem(*args, **kwargs)
+
     _RealOSFile = pa.OSFile
 
     class OSFile(metaclass=_stand_in(_RealOSFile)):  # type: ignore[misc]
@@ -333,10 +373,15 @@ if pa is not None:
 
     # -- functions --------------------------------------------------------------
 
-    _real_resolve = pafs._resolve_filesystem_and_path
-    _real_ensure = pafs._ensure_filesystem
+    # private, so looked up rather than assumed: a pyarrow without one
+    # leaves that route as it was
+    _real_resolve = getattr(pafs, "_resolve_filesystem_and_path", None)
+    _real_ensure = getattr(pafs, "_ensure_filesystem", None)
 
-    @functools.wraps(_real_resolve)
+    def _wraps(real: Any) -> Any:
+        return functools.wraps(real) if real is not None else (lambda f: f)
+
+    @_wraps(_real_resolve)
     def _resolve_filesystem_and_path(
         path: Any, filesystem: Any = None, **kwargs: Any
     ) -> Any:
@@ -348,18 +393,15 @@ if pa is not None:
             if found is not None:
                 return found
         filesystem, path = _real_resolve(path, filesystem, **kwargs)
-        if fs is not None and isinstance(filesystem, _RealLocal):
-            # a file:// URI resolved by pyarrow itself
-            return _workspace(fs), path
+        if fs is not None:
+            filesystem = _reroute(filesystem, fs)
         return filesystem, path
 
-    @functools.wraps(_real_ensure)
+    @_wraps(_real_ensure)
     def _ensure_filesystem(filesystem: Any, **kwargs: Any) -> Any:
         out = _real_ensure(filesystem, **kwargs)
         fs = _active()
-        if fs is not None and isinstance(out, _RealLocal):
-            return _workspace(fs)
-        return out
+        return out if fs is None else _reroute(out, fs)
 
     _real_input_stream = pa.input_stream
     _real_output_stream = pa.output_stream
@@ -548,6 +590,7 @@ def _replacements() -> dict[int, tuple[Any, Any]]:
 
     pairs: list[tuple[Any, Any]] = [
         (_RealLocal, LocalFileSystem),
+        (_RealFileSystem, FileSystem),
         (_RealOSFile, OSFile),
         (_real_resolve, _resolve_filesystem_and_path),
         (_real_ensure, _ensure_filesystem),
@@ -560,18 +603,19 @@ def _replacements() -> dict[int, tuple[Any, Any]]:
         (csv.write_csv, _writer(csv.write_csv, "output_file")),
         (csv.CSVWriter, _closing_writer(csv.CSVWriter)),
         (json_.read_json, _reader(json_.read_json, "input_file", decompress=True)),
-        (
-            feather._read_table_internal,
-            _reader(feather._read_table_internal, "source"),
-        ),
+        (feather.read_table, _reader(feather.read_table, "source")),
         (feather.write_feather, _writer(feather.write_feather, "dest")),
         (ipc.RecordBatchFileReader, _opening_reader(ipc.RecordBatchFileReader)),
         (ipc.RecordBatchStreamReader, _opening_reader(ipc.RecordBatchStreamReader)),
         (ipc.RecordBatchFileWriter, _closing_writer(ipc.RecordBatchFileWriter)),
         (ipc.RecordBatchStreamWriter, _closing_writer(ipc.RecordBatchStreamWriter)),
     ]
+    # newer than some pyarrow this runs with: each is routed where it exists
     if hasattr(json_, "open_json"):
         pairs.append((json_.open_json, _streaming(json_.open_json, "input_file")))
+    internal = getattr(feather, "_read_table_internal", None)
+    if internal is not None:  # read_feather's own path, from pyarrow 25
+        pairs.append((internal, _reader(internal, "source")))
     try:
         import pyarrow.orc as orc
     except ImportError:  # pragma: no cover - a pyarrow built without ORC
@@ -579,7 +623,7 @@ def _replacements() -> dict[int, tuple[Any, Any]]:
     else:
         pairs.append((orc.ORCFile, _opening_reader(orc.ORCFile)))
         pairs.append((orc.ORCWriter, _closing_writer(orc.ORCWriter)))
-    return {id(real): (real, stand_in) for real, stand_in in pairs}
+    return {id(real): (real, stand_in) for real, stand_in in pairs if real is not None}
 
 
 _INSTALLING = threading.Lock()

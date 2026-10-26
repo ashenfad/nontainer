@@ -204,6 +204,52 @@ def test_a_host_file_is_out_of_reach(ws, tmp_path, case):
     assert "host" not in result.stdout
 
 
+URI_READS = {
+    "a filesystem URI": (
+        "import pyarrow.parquet as pq\n"
+        "pq.read_table({name!r}, filesystem='file://' + {d!r})"
+    ),
+    "from_uri": (
+        "import pyarrow.fs as fs\n"
+        "local, path = fs.FileSystem.from_uri('file://' + {p!r})\n"
+        "local.open_input_stream(path).read()"
+    ),
+    "from_uri, a subtree": (
+        "import pyarrow.fs as fs, pyarrow.parquet as pq\n"
+        "sub = fs.SubTreeFileSystem({d!r}, fs.FileSystem.from_uri({d!r})[0])\n"
+        "pq.read_table({name!r}, filesystem=sub)"
+    ),
+}
+
+
+@pytest.mark.parametrize("case", sorted(URI_READS))
+def test_a_file_uri_is_the_workspaces_too(ws, tmp_path, case):
+    """A ``file://`` URI, or a filesystem pyarrow builds from one, is a
+    path like any other: the host's file is out of reach."""
+    secret = tmp_path / "secret.parquet"
+    pa.parquet.write_table(pa.table({"s": ["host"]}), secret)
+    code = URI_READS[case].format(p=str(secret), d=str(tmp_path), name=secret.name)
+    result = ws.run_python(code)
+    assert result.error is not None
+    assert "host" not in result.stdout
+
+
+def test_a_file_uri_into_the_workspace_reads_it(ws):
+    out = run(
+        ws,
+        """
+        import os, pyarrow as pa, pyarrow.fs as fs, pyarrow.parquet as pq
+        os.makedirs("data")
+        pq.write_table(pa.table({"a": [1, 2]}), "data/t.parquet")
+        print(pq.read_table("t.parquet", filesystem="file:///workspace/data").num_rows)
+        local, path = fs.FileSystem.from_uri("file:///workspace/data/t.parquet")
+        print(local.get_file_info(path).size > 0)
+        """,
+    )
+    assert out == "2\nTrue"
+    assert_nothing_on_the_host(ws)
+
+
 def test_a_writable_memory_map_is_refused_with_a_reason(ws):
     result = ws.run_python("import pyarrow as pa; pa.memory_map('m.bin', 'r+')")
     assert "not available in the workspace" in result.error

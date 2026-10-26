@@ -2392,7 +2392,9 @@ pyarrow installed, `dataframes()` routes that I/O through a pyarrow
 filesystem over the workspace: parquet (pandas' too), datasets, csv,
 json, feather, ipc, orc, `input_stream`/`output_stream`, `OSFile`,
 `memory_map` for reading, and `pyarrow.fs.LocalFileSystem()`, which
-returns the workspace's filesystem. A writable memory map has no
+returns the workspace's filesystem; a `file://` URI, as a path or as a
+filesystem (`filesystem="file:///data"`, `FileSystem.from_uri`), is a
+workspace path too. A writable memory map has no
 workspace equivalent and is refused with a reason; a URI with a scheme
 (`s3://`) is left to pyarrow. The rule is the one Python's `open()`
 follows: I/O goes where `open()` would go at that moment. Host code is
