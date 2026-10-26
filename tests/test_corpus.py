@@ -133,8 +133,13 @@ class ReferenceSession:
                 events.append(
                     ToolStarted(call_id=call_id, name=call.name, args=call.args)
                 )
+                failed = False
                 if call.name == "sessions":
                     output = run_action(self.sessions, **call.args)
+                elif call.name == "terminal":
+                    # a failed command is a failed call, though the tool ran
+                    result = self.ws.terminal(call.args["command"])
+                    output, failed = result.stdout, result.exit_code != 0
                 else:
                     self.ws.files.write(call.args["path"], call.args["content"])
                     self.ws.commit(info={"tool": call.name})
@@ -149,7 +154,11 @@ class ReferenceSession:
                         )
                     )
                 messages.append({"role": "tool", "text": text})
-                events.append(ToolEnded(call_id=call_id, name=call.name, result=output))
+                events.append(
+                    ToolEnded(
+                        call_id=call_id, name=call.name, result=output, is_error=failed
+                    )
+                )
         if status in ("cancelled", "failed"):
             messages.append({"role": "note", "text": f"ended early: {message}"})
         turn.end(status, body={"messages": messages}, message=message)

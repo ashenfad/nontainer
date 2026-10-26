@@ -1,0 +1,83 @@
+{
+  "acts": [
+    {
+      "kind": "turn",
+      "prompt": "run the check",
+      "resume": false,
+      "steps": [
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "",
+          "thinking": "",
+          "tool_calls": [
+            {
+              "args": {
+                "command": "exit 3"
+              },
+              "name": "terminal"
+            }
+          ]
+        },
+        {
+          "fail": "",
+          "input_tokens": 0,
+          "kind": "model",
+          "text": "the check failed",
+          "thinking": "",
+          "tool_calls": []
+        }
+      ]
+    }
+  ],
+  "budget": null,
+  "delegates": {},
+  "expect": {
+    "absent": [],
+    "commits": [
+      {
+        "runs": [
+          "completed"
+        ],
+        "tool": "turn"
+      }
+    ],
+    "delegates": null,
+    "files": {},
+    "folds": null,
+    "inbox": {
+      "delivered": 0,
+      "pending": 0
+    },
+    "runs": [
+      {
+        "closing_note": false,
+        "tool_results": 1
+      }
+    ],
+    "turns": [
+      {
+        "events": [
+          "RunStarted",
+          "ToolStarted",
+          "ToolEnded:error",
+          "TextDelta",
+          "RunEnded:completed"
+        ],
+        "folded": null,
+        "status": "completed"
+      }
+    ]
+  },
+  "name": "a-failed-command-is-a-failed-call",
+  "needs": [],
+  "summary": "A command that exits non-zero ends its call as failed (ToolEnded's is_error), though the tool itself ran: a harness marks the call by the tool's outcome, not by whether it raised. The turn goes on and completes.",
+  "tiers": [
+    0,
+    1
+  ],
+  "world": {
+    "files": {}
+  }
+}

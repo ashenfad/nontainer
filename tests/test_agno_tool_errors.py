@@ -250,3 +250,57 @@ class TestTheLogFilter:
         from nontainer.adapters.agno import _FcSchemaLog
 
         assert _FcSchemaLog().filter(self._record(msg, module))
+
+
+class TestToolFailed:
+    """``tool_failed``: what a ``ToolCallCompleted`` event's call came to,
+    by its outcome, for a harness's ``ToolEnded.is_error``."""
+
+    def _tool(self, call_id="call_0", name="terminal", error=False):
+        return type(
+            "ToolExecution",
+            (),
+            {"tool_call_id": call_id, "tool_name": name, "tool_call_error": error},
+        )()
+
+    def _ws(self, *calls):
+        ws = object.__new__(type("W", (), {}))
+        for call_id, name, failed in calls:
+            fc = type(
+                "FC",
+                (),
+                {"call_id": call_id, "function": type("F", (), {"name": name})()},
+            )()
+            note(ws, fc, failed)
+        return ws
+
+    def test_a_logged_failure_is_a_failed_call(self):
+        from nontainer.adapters.agno import tool_failed
+
+        ws = self._ws(("call_0", "terminal", True))
+        assert tool_failed(ws, self._tool())
+
+    def test_a_logged_success_is_not(self):
+        from nontainer.adapters.agno import tool_failed
+
+        ws = self._ws(("call_0", "terminal", False))
+        assert not tool_failed(ws, self._tool())
+
+    def test_the_latest_call_under_a_reused_id_is_the_one(self):
+        from nontainer.adapters.agno import tool_failed
+
+        ws = self._ws(("call_0", "terminal", True), ("call_0", "terminal", False))
+        assert not tool_failed(ws, self._tool())
+
+    def test_another_tools_call_under_the_id_is_not_this_one(self):
+        from nontainer.adapters.agno import tool_failed
+
+        ws = self._ws(("call_0", "terminal", True))
+        assert not tool_failed(ws, self._tool(name="search"))
+
+    def test_agnos_own_flag_counts_with_no_log(self):
+        from nontainer.adapters.agno import tool_failed
+
+        ws = self._ws()
+        assert tool_failed(ws, self._tool(error=True))
+        assert not tool_failed(ws, self._tool())

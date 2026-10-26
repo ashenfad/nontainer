@@ -9,6 +9,7 @@ from ..corpus import (
     RunExp,
     Scenario,
     TurnExp,
+    calls,
     cancel,
     fails,
     resume,
@@ -68,6 +69,40 @@ SCENARIOS = (
                 CommitExp(tool="file_write"),
                 CommitExp(tool="turn", runs=("completed",)),
             ),
+            inbox=InboxExp(),
+        ),
+    ),
+    Scenario(
+        name="a-failed-command-is-a-failed-call",
+        summary=(
+            "A command that exits non-zero ends its call as failed "
+            "(ToolEnded's is_error), though the tool itself ran: a harness "
+            "marks the call by the tool's outcome, not by whether it raised. "
+            "The turn goes on and completes."
+        ),
+        tiers=(0, 1),
+        acts=(
+            turn(
+                "run the check",
+                calls("terminal", command="exit 3"),
+                says("the check failed"),
+            ),
+        ),
+        expect=Expect(
+            turns=(
+                TurnExp(
+                    status="completed",
+                    events=(
+                        "RunStarted",
+                        "ToolStarted",
+                        "ToolEnded:error",
+                        "TextDelta",
+                        "RunEnded:completed",
+                    ),
+                ),
+            ),
+            runs=(RunExp(tool_results=1),),
+            commits=(CommitExp(tool="turn", runs=("completed",)),),
             inbox=InboxExp(),
         ),
     ),
