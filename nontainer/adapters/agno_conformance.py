@@ -65,7 +65,7 @@ from ..turns import (
     Usage,
 )
 from ..workspace import Workspace
-from .agno import WorkspaceTools, finish_turn, status_of_error
+from .agno import WorkspaceTools, finish_turn, status_of_error, tool_failed
 from .agno_db import KvgitSessionDb
 
 __all__ = ["AgnoHarness", "AgnoSession", "ScriptedModel"]
@@ -339,7 +339,7 @@ class AgnoSession:
                     call_id=str(getattr(tool, "tool_call_id", "") or ""),
                     name=str(getattr(tool, "tool_name", "") or ""),
                     result=result,
-                    is_error=bool(getattr(tool, "tool_call_error", False)),
+                    is_error=tool_failed(self.ws, tool),
                 )
             )
         elif kind == "ModelRequestCompleted":

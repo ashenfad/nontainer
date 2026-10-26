@@ -274,6 +274,28 @@ def status_of_error(error_type: str | None) -> RunStatus:
     return "interrupted" if error_type in PROVIDER_ERRORS else "failed"
 
 
+def tool_failed(workspace: Any, tool: Any) -> bool:
+    """Whether a tool call failed, by its outcome rather than by whether
+    it raised: ``ToolEnded.is_error`` for a ``ToolCallCompleted`` event.
+
+    ``tool`` is the event's ``ToolExecution``. agno flags a call failed
+    (``tool_call_error``) only when the function raised. A call through
+    :class:`WorkspaceTools` returns normally and says in its text that it
+    failed (a non-zero exit, python that raised, an edit that missed);
+    the toolkit logs that outcome by the call's id and tool name, and
+    this reads it. Read it as the event arrives: the log keeps a run's
+    calls only until the run is stored, and a later reply may reuse the
+    id."""
+    if getattr(tool, "tool_call_error", False):
+        return True
+    call_id = getattr(tool, "tool_call_id", None)
+    name = getattr(tool, "tool_name", None)
+    log = _agno_calls.log_of(workspace)
+    if call_id is None or name is None or log is None:
+        return False
+    return any(log.latest((str(call_id), str(name)), 1))
+
+
 def finish_turn(
     turn: Turn,
     db: Any,

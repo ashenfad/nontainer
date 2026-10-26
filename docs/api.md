@@ -2750,6 +2750,16 @@ stamped with agno's own `CANCELLED`/`ERROR`. The settle no longer
 depends on a post hook running, which a streamed run on agno 2.1 never
 does.
 
+**A tool call's outcome.** `ToolEnded.is_error` says a call did not
+come out as asked: a non-zero exit, python that raised, an edit that
+missed. agno's own `tool_call_error` says only that the function
+raised, and nontainer's tools never raise, so a harness that streams
+agno's events reads the outcome with `tool_failed(ws, ev.tool)` when a
+`ToolCallCompleted` arrives: agno's flag, or the outcome the toolkit
+logged under the call's id and tool name. Read it as the event arrives,
+not later: the log keeps a run's calls until the run is stored, and a
+model may reuse a call id in its next reply.
+
 With `sessions=` wired, every delegate answer that has landed is taken
 at the same delivery point (`Sessions.take()`) and arrives as a
 `mechanism` note — mid-turn instead of on the next one.
