@@ -1100,13 +1100,13 @@ class _Publishing:
         leaves behind. Such a branch holds nobody's state, so it neither
         blocks a retry nor needs anyone's provenance to be cleared.
         """
-        from kvgit.hamt import EMPTY_HASH
+        from kvgit import EMPTY_ROOT
 
         with self._repo() as repo:
             if repo is None or branch not in repo.branches:
                 return None, None
             commit = repo.get_commit(repo.branches[branch])
-            if commit.root == EMPTY_HASH and not commit.info:
+            if commit.root == EMPTY_ROOT and not commit.info:
                 return None, None
             return commit.hash, commit.info
 

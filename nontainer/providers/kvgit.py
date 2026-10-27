@@ -1537,8 +1537,6 @@ class KvgitProvider:
         is ever written to this head.
         """
         from kvgit import MergeChoice, MergeConflict
-        from kvgit.versioned.keyset import KeysetEntry, MetaEntry
-        from kvgit.versioned.merge import Change, pick_merge_policy, resolve_merge
 
         from ..migrate import current_layout
 
@@ -1557,70 +1555,33 @@ class KvgitProvider:
         # planes that take ours keep every key under them, and their
         # values are the one part of a session's state that is not
         # content to compare.
+        repo = self._repo
         changed = {
             key
             for key in self._changed_keys(base, theirs, at_base, at_theirs)
-            if pick_merge_policy(key, merge_fns, merge_prefixes, None)
+            if repo.merge_rule(key, merge_fns=merge_fns, merge_prefixes=merge_prefixes)
             is not MergeChoice.OURS
         }
         if not changed:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
 
-        # kvgit resolves a three-way from each side's CHANGES since the
-        # base — per key, an entry there and an entry here, each naming
-        # content by id, with a reader from id to value — and it
-        # compares those ids only within one key. So the three trees are
-        # handed to it as ids of values: one per distinct value of a key,
-        # and a reader that hands the value back. That keeps the
-        # resolution kvgit's own (equal-content shortcuts, removals, the
-        # order a policy is picked in) while the base is ours to name,
-        # which is the whole difference between this and a merge.
-        values: dict[str, Any] = {}
-        base_keys: dict[str, str] = {}
-        our_keys: dict[str, str] = {}
-        their_keys: dict[str, str] = {}
-        for key in changed:
-            slots: list[tuple[Any, str]] = []
-            for keyset, handle in (
-                (base_keys, at_base),
-                (our_keys, self._wt),
-                (their_keys, at_theirs),
-            ):
-                if handle is None or key not in handle:
-                    continue
-                value = handle.get(key)
-                for held, name in slots:
-                    if _same(held, value):
-                        keyset[key] = name
-                        break
-                else:
-                    name = f"{key}#{len(slots)}"
-                    slots.append((value, name))
-                    values[name] = value
-                    keyset[key] = name
-
-        def entry(name: str | None) -> Any:
-            # Every entry carries the same metadata, so two entries are
-            # equal exactly when they name the same value.
-            return (
-                None if name is None else KeysetEntry(blob=name, meta=MetaEntry(size=0))
-            )
-
-        def changes(side: dict[str, str]) -> dict[str, Any]:
-            return {
-                key: Change(entry(base_keys.get(key)), entry(side.get(key)))
-                for key in changed
-                if side.get(key) != base_keys.get(key)
-            }
+        # The three trees' values of the changed keys, handed to kvgit's
+        # own resolve with the base this apply names: the resolution is a
+        # merge's (equal-content shortcuts, removals, the order a policy
+        # is picked in), and the base is ours to choose, which is the
+        # whole difference between this and a merge.
+        def side(handle: Any) -> dict[str, Any]:
+            if handle is None:
+                return {}
+            return {key: handle.get(key) for key in changed if key in handle}
 
         try:
-            resolution = resolve_merge(
-                changes(our_keys),
-                changes(their_keys),
-                values.get,
-                merge_fns,
-                None,
-                merge_prefixes,
+            resolution = repo.resolve(
+                side(at_base),
+                side(self._wt),
+                side(at_theirs),
+                merge_fns=merge_fns,
+                merge_prefixes=merge_prefixes,
             )
         except MergeConflict as e:
             return MergeOutcome(
@@ -1630,7 +1591,7 @@ class KvgitProvider:
                 auto_merged=(),
             )
 
-        written = self._stage_applied(changed, resolution, values)
+        written = self._stage_applied(changed, resolution)
         if not written:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
         try:
@@ -1666,23 +1627,18 @@ class KvgitProvider:
             auto_merged=tuple(sorted(set(paths.values()) - set(conflicts))),
         )
 
-    def _stage_applied(
-        self, changed: "Iterable[str]", resolution: Any, values: dict[str, Any]
-    ) -> set[str]:
+    def _stage_applied(self, changed: "Iterable[str]", resolution: Any) -> set[str]:
         """Stage a resolved apply; returns the keys it wrote.
 
-        The resolution says what to change on our side: a key a merge
-        function produced a value for, a key that takes the value one
-        side holds, a key that goes. A key it leaves alone keeps ours. A
+        The resolution says what to change on our side: the value a key
+        takes, or that the key goes. A key it leaves alone keeps ours. A
         key whose resolution is what the tree already holds is not
         written at all, so a change already present costs no commit.
         """
         written: set[str] = set()
         for key in changed:
-            if key in resolution.merged_values:
-                value = resolution.merged_values[key]
-            elif key in resolution.updates:
-                value = values[resolution.updates[key].blob]
+            if key in resolution.values:
+                value = resolution.values[key]
             elif key in resolution.removals:
                 if key in self._wt:
                     del self._wt[key]
