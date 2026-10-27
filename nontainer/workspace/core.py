@@ -1491,6 +1491,12 @@ class Workspace:
         collection, so taking from one works with the session that
         reached it deleted.
         """
+        source, commit = self._state_ref(ref, "take from")
+        return source, self._provider.files_at(commit)
+
+    def _state_ref(self, ref: "str | Ref", verb: str) -> tuple[str, str]:
+        """``(ref as recorded, its commit)``: the state a take or an
+        apply reads, by :meth:`_take_source`'s rules."""
         from ..agentgit import BLOB_KEY, parse_blob
         from ..store import Ref
 
@@ -1498,26 +1504,27 @@ class Workspace:
         if isinstance(ref, Ref) or "@" in text:
             parsed = Ref.parse(text)
             if parsed.tag is not None:
-                return str(parsed), self._provider.files_at(parsed.commit)
+                return str(parsed), parsed.commit
             commit = self._ref_commit(parsed.session, parsed.commit)
-            return str(Ref(parsed.session, commit)), self._provider.files_at(commit)
+            return str(Ref(parsed.session, commit)), commit
         try:
             head = self._provider.branch_head(text)
         except (ValueError, NotSupportedError, AttributeError):
             tagged = self._store_tag_ref(text)
             if tagged is not None:
-                return str(tagged), self._provider.files_at(tagged.commit)
+                return str(tagged), tagged.commit
             commit = self._expand_commit(text)
             try:
-                return f"{self.session}@{commit}", self._provider.files_at(commit)
+                self._provider.files_at(commit)
             except CommitNotFoundError:
                 raise CommitNotFoundError(
-                    f"nothing to take from {text!r}: this store holds no "
+                    f"nothing to {verb} {text!r}: this store holds no "
                     "session, no store tag and no commit of this session "
                     "under that name."
                 ) from None
+            return f"{self.session}@{commit}", commit
         virtual = parse_blob(self._provider.key_at(head, BLOB_KEY))["head"] or head
-        return f"{text}@{virtual}", self._provider.files_at(virtual)
+        return f"{text}@{virtual}", virtual
 
     def log(self, *, limit: int | None = None, kind: str = "work") -> list[CommitInfo]:
         """The session's commits, newest first.
@@ -2193,6 +2200,73 @@ class Workspace:
             },
         )
 
+    def apply(
+        self,
+        base: "str | Ref | None",
+        theirs: "str | Ref | None",
+        *,
+        paths: "Iterable[str] | str | None" = None,
+        message: str | None = None,
+    ) -> MergeOutcome:
+        """Apply the change from one state to another here, as a NEW
+        commit; returns the outcome.
+
+        The three-way a merge makes, with the base NAMED rather than
+        found: what changed from ``base`` to ``theirs`` lands on this
+        tree, so work of this session's own that the change doesn't
+        touch stands, and overlapping work comes back with conflict
+        markers IN the commit, reported in the outcome, to resolve with
+        ordinary edits and a commit, as a merge's are. ``base`` and
+        ``theirs`` are any states a take reads: ``session@commit``, a
+        session (its last agent commit), a store tag, or a commit of
+        this session; ``None`` names the tree before anything, so
+        applying from ``None`` brings everything ``theirs`` holds.
+
+        ``paths`` narrows the change to those files and directories
+        (relative to the root, or absolute), which is how a vendored
+        library upgrades: ``ws.apply("sheets/v1", "sheets/v2",
+        paths="skills/sheets")`` brings the release's changes and keeps
+        a local fix. Paths outside the view are refused, as a take's are.
+
+        The commit lands in the agent's graph (``ws-git.apply``), as a
+        revert does, with ``message`` (default ``Apply <base>..<theirs>``)
+        and both states as soft references, never as parents. Where the
+        change holds nothing this tree lacks, nothing is committed and
+        the outcome says so. Refuses work the agent has not committed
+        and a merge still outstanding. Requires ``caps.merge``.
+        """
+        from ..agentgit import APPLY_TOOL
+
+        self._require_apply("apply")
+        if base is None and theirs is None:
+            raise ValueError("apply needs a state on at least one side")
+        b = None if base is None else self._state_ref(base, "apply")
+        t = None if theirs is None else self._state_ref(theirs, "apply")
+        wanted = None if paths is None else normalize_view(paths, self._root)
+        if wanted is not None:
+            self._refuse_hidden(wanted)
+
+        def shown(state: "tuple[str, str] | None") -> str:
+            from ..store import Ref
+
+            return "nothing" if state is None else _shown_ref(Ref.parse(state[0]))
+
+        info: dict[str, Any] = {
+            "tool": APPLY_TOOL,
+            "message": message or f"Apply {shown(b)}..{shown(t)}",
+            "applied": [None if b is None else b[0], None if t is None else t[0]],
+        }
+        if wanted is not None:
+            info["paths"] = wanted
+        return self._apply_change(
+            base=None if b is None else b[1],
+            theirs=None if t is None else t[1],
+            source=shown(t),
+            verb="apply",
+            info=info,
+            paths=wanted,
+        )
+
     def cherry_pick(self, ref: "str | Ref") -> MergeOutcome:
         """Apply one commit's change from another session; returns the
         outcome.
@@ -2325,8 +2399,10 @@ class Workspace:
         source: str,
         verb: str,
         info: dict[str, Any],
+        paths: "list[str] | None" = None,
     ) -> MergeOutcome:
-        """The body of :meth:`revert` and :meth:`cherry_pick`.
+        """The body of :meth:`revert`, :meth:`cherry_pick` and
+        :meth:`apply`.
 
         One engine, two signs: the two verbs differ in which commit is
         the base and which is theirs, and in what they record. Both
@@ -2356,7 +2432,11 @@ class Workspace:
                 # walks through it instead of stopping at it.
                 info = {**info, "virtual_parents": [head] if head else []}
             outcome = self._provider.apply(
-                base, theirs, info=info, ignore=self._ignores
+                base,
+                theirs,
+                info=info,
+                ignore=self._ignores,
+                **({} if paths is None else {"paths": paths}),
             )
             if outcome.merged:
                 if indexed:

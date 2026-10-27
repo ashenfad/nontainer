@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **`ws.apply(base, theirs, *, paths=None, message=None)`: the change from one state to another, landed here.** A merge's three-way with the base named, which revert and cherry-pick already ran on, now public: either side is any state a take reads, or `None` for the tree before anything, and `paths` narrows it, so `ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")` upgrades a vendored library and keeps a local fix. It lands in the agent's graph as `ws-git.apply`. Providers' `apply` takes `paths`.
+
 ### Fixed
 - **A trace refuses a run time it can't print.** A neutral body's `started` or `ended` of NaN, an infinity, or outside years 1 to 9999 was taken, and every read of the trace's `index.md` and `run.md` then raised. Such a time is refused where the body is read, so the run is left out. The years are the ones agex-ts's port prints the same way. Dates are written field by field too, since `strftime`'s `%Y` pads a year below 1000 on some platforms only.
 

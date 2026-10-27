@@ -605,7 +605,13 @@ class AgentFSProvider:
         raise self._unsupported("merge")
 
     def apply(
-        self, base: Any, theirs: Any, *, info: Any = None, ignore: Any = None
+        self,
+        base: Any,
+        theirs: Any,
+        *,
+        info: Any = None,
+        ignore: Any = None,
+        paths: Any = None,
     ) -> Any:
         raise self._unsupported("apply")
 

@@ -635,6 +635,7 @@ class WorkspaceProvider(Protocol):
         *,
         info: dict[str, Any] | None = None,
         ignore: Callable[[str], bool] | None = None,
+        paths: Collection[str] | None = None,
     ) -> MergeOutcome:
         """Apply the change between two commits here (requires
         ``caps.merge``).
@@ -666,6 +667,9 @@ class WorkspaceProvider(Protocol):
         the provider does not hold raises ``CommitNotFoundError``.
         Providers without the capability raise ``NotSupportedError``.
         ``ignore`` is a merge's: paths it names keep this side's copy.
+        ``paths`` (absolute workspace paths) narrows the change to the
+        files at or under them, and the directories that hold them;
+        ``None`` applies all of it.
         """
         ...
 
