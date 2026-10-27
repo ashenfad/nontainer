@@ -67,6 +67,10 @@ class TestShape:
             ({"id": "r", "status": "x", "tokens": {"input": "5"}}, "tokens.input"),
             ({"id": "r", "status": "x", "tokens": {"input": True}}, "tokens.input"),
             ({"id": "r", "status": "x", "started": "noon"}, "run started"),
+            ({"id": "r", "status": "x", "started": float("nan")}, "run started"),
+            ({"id": "r", "status": "x", "ended": float("inf")}, "run ended"),
+            ({"id": "r", "status": "x", "started": 253402300800}, "run started"),
+            ({"id": "r", "status": "x", "started": -62135596801}, "run started"),
             (
                 {
                     "id": "r",
@@ -84,6 +88,22 @@ class TestShape:
     def test_a_malformed_body_is_refused_with_where(self, body, says):
         with pytest.raises(ValueError, match=says):
             NeutralTraces().read(body)
+
+    def test_times_run_from_year_1_through_9999(self):
+        run = NeutralTraces().read(
+            {
+                "id": "r",
+                "status": "x",
+                "started": -62135596800,
+                "ended": 253402300799.5,
+            }
+        )
+        text = Trace([run], session="s", commit="c", harness="h").read(
+            "runs/001-r/run.md"
+        )
+        assert (
+            "- started: 0001-01-01T00:00:00Z\n- ended: 9999-12-31T23:59:59Z\n" in text
+        )
 
     def test_a_body_that_is_not_an_object_is_refused(self):
         with pytest.raises(ValueError, match="object"):

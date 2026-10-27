@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **A trace refuses a run time it can't print.** A neutral body's `started` or `ended` of NaN, an infinity, or outside years 1 to 9999 was taken, and every read of the trace's `index.md` and `run.md` then raised. Such a time is refused where the body is read, so the run is left out. The years are the ones agex-ts's port prints the same way. Dates are written field by field too, since `strftime`'s `%Y` pads a year below 1000 on some platforms only.
+
 ## 0.11.8 - 2026-10-26
 
 ### Added

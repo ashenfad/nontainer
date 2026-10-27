@@ -96,10 +96,21 @@ def _bool(value: Any, where: str) -> bool:
     raise ValueError(f"{where}: expected true or false, got {value!r}")
 
 
+_MIN_TIME = -62135596800
+_END_TIME = 253402300800
+"""The times a trace prints, in epoch seconds: years 1 to 9999, which
+Python's dates hold and agex-ts's port writes the same way."""
+
+
 def _time_or_none(value: Any, where: str) -> float | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    # a time that can't print as a date would make the trace unreadable
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not _MIN_TIME <= value < _END_TIME
+    ):
         raise ValueError(f"{where}: expected epoch seconds or null, got {value!r}")
     return float(value)
 
@@ -419,8 +430,12 @@ def _time(t: float | None) -> str:
     """UTC ISO 8601 to the second, fractions floored; ``-`` for none."""
     if t is None:
         return "-"
-    stamp = datetime.fromtimestamp(math.floor(t), tz=timezone.utc)
-    return stamp.strftime("%Y-%m-%dT%H:%M:%SZ")
+    s = datetime.fromtimestamp(math.floor(t), tz=timezone.utc)
+    # not strftime: its %Y pads a year below 1000 on some platforms only
+    return (
+        f"{s.year:04d}-{s.month:02d}-{s.day:02d}"
+        f"T{s.hour:02d}:{s.minute:02d}:{s.second:02d}Z"
+    )
 
 
 def _duration(seconds: int | None) -> str:
