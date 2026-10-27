@@ -97,10 +97,12 @@ TOOL = "ws-git"
 #: agent's tree and join its graph: a merge of another session, a
 #: revert of one commit's change, a cherry-pick of one from elsewhere.
 #: The host invokes them; the agent sees them, so each is one of the
-#: agent's commits.
+#: agent's commits. ``ws.apply`` lands the change between any two
+#: states the same way.
 MERGE_TOOL = "ws-git.merge"
 REVERT_TOOL = "ws-git.revert"
 PICK_TOOL = "ws-git.cherry-pick"
+APPLY_TOOL = "ws-git.apply"
 
 #: The fiction's OWN bookkeeping commits: the working-tree restore
 #: after a partial commit, the tree a checkout writes, the blob a merge
@@ -140,7 +142,7 @@ _NOT_YOURS = (
 
 #: The tool values of the agent's own commits, as one set: the ones it
 #: composed and the ones a host verb made that changed its tree.
-AGENT_TOOLS = frozenset({TOOL, MERGE_TOOL, REVERT_TOOL, PICK_TOOL})
+AGENT_TOOLS = frozenset({TOOL, MERGE_TOOL, REVERT_TOOL, PICK_TOOL, APPLY_TOOL})
 
 
 def is_agent_commit(info: Mapping[str, Any]) -> bool:

@@ -42,8 +42,16 @@ cannot collide however a session is named.
 from __future__ import annotations
 
 import json
+import posixpath
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
+from collections.abc import (
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+)
 from pathlib import Path
 from typing import Any
 
@@ -1506,6 +1514,7 @@ class KvgitProvider:
         *,
         info: dict[str, Any] | None = None,
         ignore: Callable[[str], bool] | None = None,
+        paths: Collection[str] | None = None,
     ) -> MergeOutcome:
         """Apply the change between two commits to the working tree.
 
@@ -1530,6 +1539,10 @@ class KvgitProvider:
         session's. Conflicts are spelled exactly as a merge's are:
         markers land IN the commit and are reported in the outcome,
         with only contested state no rule resolves aborting untouched.
+
+        ``paths`` narrows the change to the files at or under those
+        absolute paths, with the metadata rows of the directories that
+        lead to them; nothing else of the change is read.
 
         Either commit may predate per-file metadata rows: both are read
         in the current layout (see :mod:`nontainer.migrate`), so the
@@ -1563,6 +1576,8 @@ class KvgitProvider:
             if pick_merge_policy(key, merge_fns, merge_prefixes, None)
             is not MergeChoice.OURS
         }
+        if paths is not None:
+            changed = self._keys_within(changed, paths)
         if not changed:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
 
@@ -1907,6 +1922,38 @@ class KvgitProvider:
         return frozenset(
             path for key, path in keys.items() if before.get(key) != after.get(key)
         )
+
+    def _keys_within(self, keys: Iterable[str], paths: Collection[str]) -> set[str]:
+        """The keys of files at or under ``paths`` (absolute), and the
+        metadata rows of those files and of the directories on the way
+        to them: what a change narrowed to those paths touches."""
+        from monkeyfs import VirtualFS
+
+        wanted = [posixpath.normpath(p) for p in paths]
+
+        def within(path: str) -> bool:
+            return any(
+                w == "/" or path == w or path.startswith(w + "/") for w in wanted
+            )
+
+        def leads(path: str) -> bool:
+            return path == "/" or any(
+                w.startswith(path.rstrip("/") + "/") for w in wanted
+            )
+
+        keys = set(keys)
+        files = self._file_keys(keys)
+        out = {key for key, path in files.items() if within(path)}
+        for key in keys - set(files):
+            if not VirtualFS.is_metadata_key(key):
+                continue
+            try:
+                path = "/" + VirtualFS.path_for_metadata_key(key).lstrip("/")
+            except ValueError:
+                continue
+            if within(path) or leads(path):
+                out.add(key)
+        return out
 
     def _file_keys(self, keys: Iterable[str]) -> dict[str, str]:
         """Store key → workspace file path, for the keys that are files."""

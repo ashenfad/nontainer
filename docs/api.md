@@ -867,6 +867,8 @@ ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
 ws.merge(source: str) -> MergeOutcome            # needs caps.merge
 ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
 ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
+ws.apply(base, theirs, *, paths=None, message=None) -> MergeOutcome
+                                                 # the change from one state to another
 ws.discard() -> None                             # drop staged writes
 ws.turn(run_id=None, *, resume=False, inbox=None, harness=None, sources=()) -> Turn
                                                  # one run of a harness's loop;
@@ -1220,6 +1222,24 @@ nothing is committed: `merged` False, `commit` None, and no conflicts.
 The commit records where the change came from (`reverted`,
 `picked_from`) as a soft reference, never as a parent — applying one
 commit's change does not make its history this session's.
+
+**`ws.apply(base, theirs, *, paths=None, message=None)`** is the same
+three-way with both states named: what changed from `base` to `theirs`
+lands here. Either is any state a take reads (`session@commit`, a
+session at its last agent commit, a store tag, a commit of this
+session), and `None` is the tree before anything, so applying from
+`None` brings everything `theirs` holds. `paths` narrows the change to
+those files and directories, which is how a vendored library upgrades
+with a local fix kept:
+
+```python
+ws.checkout("sheets/v1", paths=["skills/sheets"])         # vendored, then patched here
+ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")  # the release's changes; the patch stays
+```
+
+It lands in the agent's graph as `ws-git.apply` (`Apply sheets/v1..sheets/v2`
+in `ws-git log`, or `message`), recording both states (`applied`) and
+the `paths`, and refuses, conflicts and commits nothing as revert does.
 
 Unversioned providers raise `NotSupportedError`; `autocommit` is
 forced off for them. With autocommit on, each successful mutating

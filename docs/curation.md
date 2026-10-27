@@ -132,7 +132,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | taking a published skill into a session (`ws.checkout("sheets/v1", paths=[...])`) | exists, and records `taken_from` |
 | importing skill code (`from skills.sheets.cells import f`) | exists for modules; not for packages or hyphenated names |
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
-| three-way upgrade of a vendored skill (`apply(base=v1, theirs=v2)`) | exists in the provider; no public verb |
+| three-way upgrade of a vendored skill (`ws.apply(v1, v2, paths=skill)`) | exists, in the agent's graph |
 | the trace projection: `.trace/` beside a worktree's files (`worktree add --trace`, `files.attach(trace=True)`, `Store(traces=...)`) | exists, local rung and lazy; pinned by the ws-git corpus; [checked live](#checked-live) with curators on both loops |
 | each run's `changed.md`, and `--since` marking the runs new since a state (`files.attach(trace=True, since=...)`) | exists; the rendering pinned by the trace corpus, the history walk by the ws-git corpus |
 | the redaction hook | proposed, with `store.specimen`; within a store, a host wraps its trace source |
