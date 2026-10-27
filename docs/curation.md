@@ -137,6 +137,7 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | each run's `changed.md`, and `--since` marking the runs new since a state (`files.attach(trace=True, since=...)`) | exists; the rendering pinned by the trace corpus, the history walk by the ws-git corpus |
 | the redaction hook | proposed, with `store.specimen`; within a store, a host wraps its trace source |
 | a neutral event model, so agex-ts renders traces byte for byte as nontainer does | exists: `nontainer.traces`, pinned by the trace corpus |
+| the port in agex-ts: renderer, `--trace`, `--since`, `.trace/` in `show`, and the agex-ts source | exists in world 0.1.5 and agex-ts 0.6.2, replaying both corpora ([in agex-ts](#in-agex-ts)) |
 | the agno trace source | exists: `nontainer.adapters.agno_traces.AgnoTraces`, with nontainer's tool failures flagged in the runs `KvgitSessionDb` stores |
 | the agex trace source | exists in agex: `agex.traces.AgexTraces` (no system prompt: agex doesn't store one) |
 | `ws-git show <session>@<commit>` and `<ref>:<path>` | released in 0.8.6; `.trace/` paths, for another session or a store tag, exist |
@@ -550,60 +551,46 @@ class TraceSource(Protocol):
 
 **`changed.md`'s range, exactly.** A landing is a commit whose info
 has `"tool": "turn"` and whose `runs` names the run. Other commits
-carry a `runs` key of their own: agex-ts's fold stamps a count there.
+could carry a `runs` key of their own (agex-ts's fold stamped a count
+there until it took `folded`).
 A run can land more than once: agno checkpoints a run (`RUNNING`)
 before it completes, and agex-ts lands a resumed run again under the
 same id. So a run's range starts after the last landing of any earlier
 run, and ends at its own last landing. A fork is a boundary too: a
 branch's history runs back through its parent's, and every fork lands
 a `"tool": "ws-git.fork"` commit on the child, so no range reaches back
-past the last one before the run's landing. A port marks its forks the
-same way.
+past the last one before the run's landing. A port bounds its ranges
+at its own fork commits (world's are `{tool: 'fork', parent}`).
 
 ### In agex-ts
 
-agex-ts's world package is the port, and the projection belongs there
-as well, before agex-studio moves onto it. Most of what it needs is
-already in place:
+agex-ts's world package holds the port (world 0.1.5, agex-ts 0.6.2),
+checked against this package's corpora: every trace case renders byte
+for byte, and the ws-git trace scripts replay word for word, but for
+one wording (a write into the trace is refused in world's own words).
 
-- **Mounts.** world's `AttachFS` mounts any termish `FileSystem`, and
-  the agent's code reaches files through that same composed
-  filesystem. A rendered `.trace` is seen by the shell and by code
-  alike, with nothing copied.
-- **The verb.** `ws-git worktree add` resolves refs the way this
-  package does and attaches a frozen, read-only subtree. `--trace`
-  would attach the rendered `.trace` beside it, at the same commit.
-- **The plane and the stamp.** The conversation plane's keys and index
-  match this package's. Turn commits already say
-  `{tool: 'turn', runs: {id: status}}`.
-- **The record.** An agex-ts run keeps its messages unfolded, with
-  text, thinking, tool calls and tool results flagged as errors, plus
-  its usage and its start and end times. That is everything
-  `TraceRun` asks for, except the system prompt.
-
-What it lacks:
-
-- **Nested mounts are hidden from listings.** `AttachFS` lists a
-  mount's own filesystem without the mounts nested inside it, so
-  `ls s/analyst-42` would not show `.trace`. This package's mount layer
-  lists them. This is a small fix in world.
-- **agex-ts doesn't store the system prompt.** It rebuilds the prompt
-  every turn. Either the run starts recording it, or an agex-ts trace
-  says the prompt wasn't kept.
-- **The fold stamp reuses `runs`.** The range rule above filters on
-  `tool`, so nothing breaks, but renaming the fold's key leaves `runs`
-  meaning one thing everywhere.
-- **`ws-git show` reads every file at a commit up front**, so
-  `.trace/` paths need a route of their own before that read.
-- **`worktree add` takes no flags yet.**
-
-The order: build the projection here first, as the reference, with
-corpus scripts that seed runs through the neutral source and pin what
-`worktree add --trace`, `cat` and `ws-git show` print. world then
-ports the renderer and adds an agex-ts source, the flag, the `show`
-route, and it replays the corpus; its secret scrubbing is what a
-redactor builds on when specimens come. The nested-listing fix and the
-fold key can land in agex-ts any time before that.
+- **The renderer** is `world/src/traces.ts`: the neutral shape,
+  `NeutralTraces`, `runRanges` and `Trace`, with `TraceFS` serving it
+  as a filesystem. `Trace.create` is async only because a system
+  prompt's name is a Web Crypto digest; reading is synchronous.
+- **The mount** is `ws.files.attach(ref, at, { trace: true, since })`,
+  with `Store.open(kv, { traces })` naming the sources, and the verb is
+  `ws-git worktree add --trace [--since <ref>]`, with `show
+  <ref>:.trace/<path>` routed before `show` reads a commit's files.
+  `AttachFS` lists a mount nested in another, so `ls` shows `.trace`.
+- **Forks needed no new mark.** world already lands `{tool: 'fork',
+  parent}` on every child (a parent's own commit before a fork names a
+  `child` instead), so world's `runRanges` takes that as the boundary,
+  as well as this package's `ws-git.fork`.
+- **The fold's stamp** says `folded` now, so `runs` on a commit means
+  only the runs a turn landed.
+- **The agex-ts source** is `AgexTraces` in agex-ts, reading its
+  camelCase record as `agex.traces.AgexTraces` reads agex's, with
+  times made seconds from milliseconds. agex-ts rebuilds its system
+  prompt every turn and stores none, so its runs read "(not kept)".
+- **A run time** outside years 1 to 9999 is refused where a body is
+  read, here and there alike: past 9999 JavaScript writes an extended
+  year that Python can't write at all.
 
 ### Checked live
 
@@ -1381,11 +1368,8 @@ Elsewhere:
   its status, which is already core's, and its usage. agex rebuilds the
   system prompt every turn and stores none, so its runs read "(not
   kept)" until it does. agex stores its runs in snake_case and agex-ts
-  in camelCase under the same `"agex"` harness name, so either the
-  source reads both or the two agree on one;
-- the port in agex-ts's world package: the renderer, an agex-ts source,
-  `--trace`, `.trace/` paths in `show`, and `AttachFS` listing nested
-  mounts ([in agex-ts](#in-agex-ts));
+  in camelCase under the same `"agex"` harness name, and each has its
+  own source, since a store holds one or the other;
 - sandtrap importing a package's `__init__.py`, and matching `-` to
   `_` in path segments;
 - the MCP adapter cataloging skills in its server instructions, as the
@@ -1404,7 +1388,8 @@ Later: `store.specimen(...)`, `.trace/abandoned/`, and a self-trace
    neutral source, the agno source, and corpus scripts
    that pin the rendering. It pays for itself in delegation alone — a
    parent reading how a delegate reached its answer, not only the
-   answer. agex-ts ports it from the corpus.
+   answer. agex-ts ports it from the corpus. All of it is built, in
+   both.
 3. **Skills as versioned libraries**: install from a release,
    `.installed`, `ws.apply`, upgrade, agent-graph commits,
    `metadata.requires`; and the two sandtrap import fixes.
