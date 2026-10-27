@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.8 - 2026-10-26
 
 ### Added
 - **`nontainer.adapters.agno.tool_failed(ws, tool)`: whether a streamed agno tool call failed, by its outcome.** agno flags a call failed only when the function raises, and nontainer's tools never do, so a harness that took `ToolEnded.is_error` from agno's flag reported a command that exited non-zero as a success. `tool_failed` reads the outcome the toolkit logs for each call. The agno conformance adapter uses it.
