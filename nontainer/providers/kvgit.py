@@ -88,6 +88,9 @@ _KVGIT_CAPS = Capabilities(
     tags=True,
 )
 
+# A key an apply removes, in its plan (see KvgitProvider._plan_applied).
+_GONE = object()
+
 
 def _keep_ours(old: Any, ours: Any, theirs: Any) -> Any:
     """Positional session state (cwd): the merger's context wins."""
@@ -1515,6 +1518,7 @@ class KvgitProvider:
         info: dict[str, Any] | None = None,
         ignore: Callable[[str], bool] | None = None,
         paths: Collection[str] | None = None,
+        admit: Callable[[list[str]], None] | None = None,
     ) -> MergeOutcome:
         """Apply the change between two commits to the working tree.
 
@@ -1543,6 +1547,11 @@ class KvgitProvider:
         ``paths`` narrows the change to the files at or under those
         absolute paths, with the metadata rows of the directories that
         lead to them; nothing else of the change is read.
+
+        ``admit`` is shown the files the resolved change will write or
+        remove, once, before any of it is staged: raising refuses the
+        whole apply with nothing written, and what it writes to the tree
+        itself rides the apply's commit.
 
         Either commit may predate per-file metadata rows: both are read
         in the current layout (see :mod:`nontainer.migrate`), so the
@@ -1645,9 +1654,18 @@ class KvgitProvider:
                 auto_merged=(),
             )
 
-        written = self._stage_applied(changed, resolution, values)
-        if not written:
+        plan = self._plan_applied(changed, resolution, values)
+        if not plan:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
+        if admit is not None:
+            try:
+                admit(self._touched_files(plan))
+            except BaseException:
+                # admit may have written to the tree before refusing
+                self._wt.discard()
+                self._invalidate_fs()
+                raise
+        written = self._stage_applied(plan)
         try:
             landed = self.commit(
                 info={
@@ -1681,18 +1699,19 @@ class KvgitProvider:
             auto_merged=tuple(sorted(set(paths.values()) - set(conflicts))),
         )
 
-    def _stage_applied(
+    def _plan_applied(
         self, changed: "Iterable[str]", resolution: Any, values: dict[str, Any]
-    ) -> set[str]:
-        """Stage a resolved apply; returns the keys it wrote.
+    ) -> dict[str, Any]:
+        """What a resolved apply changes here: key → the value it gets,
+        or ``_GONE`` for a key it removes.
 
         The resolution says what to change on our side: a key a merge
         function produced a value for, a key that takes the value one
         side holds, a key that goes. A key it leaves alone keeps ours. A
-        key whose resolution is what the tree already holds is not
-        written at all, so a change already present costs no commit.
+        key whose resolution is what the tree already holds is left out,
+        so a change already present costs no commit.
         """
-        written: set[str] = set()
+        plan: dict[str, Any] = {}
         for key in changed:
             if key in resolution.merged_values:
                 value = resolution.merged_values[key]
@@ -1700,16 +1719,44 @@ class KvgitProvider:
                 value = values[resolution.updates[key].blob]
             elif key in resolution.removals:
                 if key in self._wt:
-                    del self._wt[key]
-                    written.add(key)
+                    plan[key] = _GONE
                 continue
             else:
                 continue
             if key in self._wt and _same(self._wt.get(key), value):
                 continue
-            self._wt[key] = value
-            written.add(key)
-        return written
+            plan[key] = value
+        return plan
+
+    def _stage_applied(self, plan: dict[str, Any]) -> set[str]:
+        """Stage a planned apply; returns the keys it wrote."""
+        for key, value in plan.items():
+            if value is _GONE:
+                del self._wt[key]
+            else:
+                self._wt[key] = value
+        return set(plan)
+
+    def _touched_files(self, keys: "Iterable[str]") -> list[str]:
+        """The workspace paths these keys change, as a write rule asks
+        about them: files, by their blobs and their metadata rows, and
+        directories this tree does not hold. A row of a directory that
+        is here is left out, as a write through the filesystem leaves
+        the directories it writes under unasked."""
+        from monkeyfs import VirtualFS
+
+        keys = set(keys)
+        out = set(self._file_keys(keys).values())
+        for key in keys:
+            if not VirtualFS.is_metadata_key(key):
+                continue
+            try:
+                path = "/" + VirtualFS.path_for_metadata_key(key).lstrip("/")
+            except ValueError:
+                continue
+            if path not in out and not self.fs.isdir(path):
+                out.add(path)
+        return sorted(out)
 
     def _at_commit(self, commit: str | None) -> Any:
         """A read handle on one commit, or ``None`` for the empty tree.

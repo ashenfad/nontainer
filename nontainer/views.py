@@ -348,8 +348,33 @@ class ViewFS:
             return None
         return self._hidden(path)
 
-    def _widen(self, target: str) -> None:
-        self._paths = tuple(sorted({*self._paths, target}))
+    def admit(self, paths: Iterable[str]) -> None:
+        """The write rule over files written underneath this filesystem,
+        all of them at once: refuse if any changes a path the view
+        hides, and otherwise widen the view by the ones it creates.
+
+        For a change that lands in the tree beneath the view rather
+        than through it — an apply, written by the provider — which
+        would otherwise change a hidden file unasked, and create files
+        the session then could not see. Nothing is widened unless all
+        of it is admitted.
+        """
+        paths = list(paths)
+        for path in paths:
+            reason = self.refuse_reason(path)
+            if reason is not None:
+                raise PermissionError(reason)
+        new = {self._abs(path) for path in paths if not self._visible(path)}
+        if new:
+            self._widen(*new)
+
+    def reset(self, paths: tuple[str, ...]) -> None:
+        """Put the view back to ``paths``, recording nothing: for a
+        caller undoing an :meth:`admit` whose change did not land."""
+        self._paths = tuple(sorted(set(paths)))
+
+    def _widen(self, *targets: str) -> None:
+        self._paths = tuple(sorted({*self._paths, *targets}))
         if self._extend is not None:
             self._extend(self._paths)
 

@@ -636,6 +636,7 @@ class WorkspaceProvider(Protocol):
         info: dict[str, Any] | None = None,
         ignore: Callable[[str], bool] | None = None,
         paths: Collection[str] | None = None,
+        admit: Callable[[list[str]], None] | None = None,
     ) -> MergeOutcome:
         """Apply the change between two commits here (requires
         ``caps.merge``).
@@ -669,7 +670,12 @@ class WorkspaceProvider(Protocol):
         ``ignore`` is a merge's: paths it names keep this side's copy.
         ``paths`` (absolute workspace paths) narrows the change to the
         files at or under them, and the directories that hold them;
-        ``None`` applies all of it.
+        ``None`` applies all of it. ``admit``, when given, is called
+        once with the workspace paths the resolved change writes or
+        removes, before any of it is written; raising refuses the apply
+        with nothing written, and what it writes to the tree rides the
+        apply's commit (a narrowed view's write rule, put by the
+        workspace).
         """
         ...
 
