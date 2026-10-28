@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.9 - 2026-10-27
 
 ### Added
 - **`ws.apply(base, theirs, *, paths=None, message=None)`: the change from one state to another, landed here.** A merge's three-way with the base named, which revert and cherry-pick already ran on, now public: either side is any state a take reads, or `None` for the tree before anything, and `paths` narrows it, so `ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")` upgrades a vendored library and keeps a local fix. It lands in the agent's graph as `ws-git.apply`. Providers' `apply` takes `paths`, and `admit`, which is shown the files the resolved change writes before any of them is written.
