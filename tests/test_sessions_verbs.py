@@ -516,6 +516,60 @@ def test_a_take_the_view_refuses_writes_nothing_at_all(ws):
         child.close()
 
 
+def test_a_clean_merge_into_a_narrowed_session_stays_out_of_sight(ws):
+    """A sparse view, not a fence: the branch takes what the merge
+    brings, hidden files included, and the view stays as it was."""
+    _seed(ws, **{"mine/a.txt": "a\n", "hidden.txt": "one\n"})
+    child = ws.fork("child", paths=["mine"])
+    register_wsgit(child)
+    try:
+        ws.files.write("/workspace/hidden.txt", "two\n")
+        ws.files.write("/workspace/new.txt", "new\n")
+        ws.index.commit("main moves")
+
+        out = child.merge("main")
+
+        assert out.merged and out.conflicts == ()
+        assert child._provider.fs.read("/workspace/hidden.txt") == b"two\n"
+        assert not child.files.exists("/workspace/hidden.txt")
+        assert not child.files.exists("/workspace/new.txt")
+    finally:
+        child.close()
+
+
+def test_a_conflict_the_view_hides_joins_the_view(ws, store):
+    """Markers in a file the session cannot read or write would leave
+    it nothing to do but abort; a conflicted path joins the view, as
+    git's sparse checkout writes one outside the cone into the tree."""
+    _seed(ws, **{"mine/a.txt": "a\n", "hidden.txt": "one\ntwo\nthree\n"})
+    sib = ws.fork("sib")
+    child = ws.fork("child", paths=["mine"])
+    register_wsgit(child)
+    try:
+        sib.files.write("/workspace/hidden.txt", "one\nSIB\nthree\n")
+        sib.index.commit("sib")
+        ws.files.write("/workspace/hidden.txt", "one\nMAIN\nthree\n")
+        ws.index.commit("main")
+        assert child.merge("sib").conflicts == ()
+
+        out = child.merge("main")
+
+        assert out.conflicts == ("/workspace/hidden.txt",)
+        assert b"<<<<<<< " in child.files.read("/workspace/hidden.txt")
+        assert not child._provider.dirty
+        child.files.write("/workspace/hidden.txt", "one\nBOTH\nthree\n")
+        assert child.terminal("ws-git commit -m resolved").exit_code == 0
+        assert child.terminal("ws-git status").stdout.splitlines()[1:] == []
+    finally:
+        sib.close()
+        child.close()
+    again = store.open("child")
+    try:
+        assert again.files.read("/workspace/hidden.txt") == b"one\nBOTH\nthree\n"
+    finally:
+        again.close()
+
+
 def test_take_of_a_ref_and_of_nothing(ws):
     _seed(ws, **{"a.txt": "one\n"})
     first = ws.ref

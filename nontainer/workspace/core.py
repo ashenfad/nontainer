@@ -2088,6 +2088,17 @@ class Workspace:
                 from ..agentgit import AgentGit
 
                 AgentGit(self).record_merge(source, outcome.commit, outcome.conflicts)
+            if outcome.conflicts and self._view_fs is not None:
+                # A conflict is the session's to resolve, so a file the
+                # view hides joins it when the merge leaves it marked, as
+                # git's sparse checkout writes a conflicted path outside
+                # the cone into the tree. A clean merge stays out of
+                # sight, where the view put it.
+                shown = self._view_fs.show(outcome.conflicts)
+                if shown:
+                    self._provider.commit_keys(
+                        {"tool": "view", "shown": list(shown)}, keys=[VIEW_KEY]
+                    )
             # provider state moved under the executor: flag its view.
             self._mark_executor_stale()
             return outcome

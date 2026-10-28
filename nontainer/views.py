@@ -24,7 +24,9 @@ addition. Modifying or deleting a path that exists outside the view is
 refused with ``PermissionError``: you cannot overwrite what you cannot
 see. Created paths join the view, because a delegate that could not
 read back its own note would be a worse deal than git's sparse
-checkout, not a better one.
+checkout, not a better one. A merge brings hidden files without asking,
+as a sparse checkout does, but one it leaves conflicted joins the view:
+the session has to resolve it.
 
 **Where the view is recorded.** :data:`VIEW_KEY`, a reserved store key
 beside the ws-git blob, so it survives reopen and travels with a fork.
@@ -367,6 +369,19 @@ class ViewFS:
         new = {self._abs(path) for path in paths if not self._visible(path)}
         if new:
             self._widen(*new)
+
+    def show(self, paths: Iterable[str]) -> tuple[str, ...]:
+        """Widen the view by whichever of ``paths`` it hides; returns
+        those, as absolute paths.
+
+        For a file the session has to act on though it was not given
+        it: a merge's conflict in a hidden file is the session's to
+        resolve, and markers it cannot read are no way to ask.
+        """
+        hidden = tuple(sorted({self._abs(p) for p in paths if not self._visible(p)}))
+        if hidden:
+            self._widen(*hidden)
+        return hidden
 
     def reset(self, paths: tuple[str, ...]) -> None:
         """Put the view back to ``paths``, recording nothing: for a

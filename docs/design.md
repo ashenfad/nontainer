@@ -299,6 +299,15 @@ the check is cheap, and a guest rung applies the same rule to the
 write harvest — the only way a guest can reach a hidden path is by
 recreating it by name.
 
+A change that lands beneath the view keeps to it as well. A merge into
+a narrowed session takes what the source brings, hidden files
+included, and leaves them hidden, as git's sparse checkout does; but a
+file the merge leaves with conflict markers is the session's to
+resolve, so it joins the view. A take, an apply, a revert and a
+cherry-pick put the write rule to the files they resolve to: a hidden
+one refuses the whole change before anything lands, and one they
+create joins the view.
+
 **The merge unit is the child's whole diff**, not the paths the caller
 remembers pushing. Collateral edits are the common case — the delegate
 touched a caller in `main.py` — and taking only what was seeded yields
