@@ -25,7 +25,7 @@ dependencies = [
     # The termish, monkeyfs, sandtrap and kvgit floors are the releases
     # whose features nontainer uses; the CHANGELOG says which needed what.
     "termish>=0.2.4",
-    "monkeyfs>=0.2.8",
+    "monkeyfs>=0.2.9",
     "sandtrap[render]>=0.5.1",
     # Capped below 0.5: merges resolve through kvgit.versioned.merge,
     # which is not public API.
