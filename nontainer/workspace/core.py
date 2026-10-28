@@ -2226,7 +2226,11 @@ class Workspace:
         (relative to the root, or absolute), which is how a vendored
         library upgrades: ``ws.apply("sheets/v1", "sheets/v2",
         paths="skills/sheets")`` brings the release's changes and keeps
-        a local fix. Paths outside the view are refused, as a take's are.
+        a local fix.
+
+        A narrowed view holds over the files the change resolves to, as
+        it holds over a take's: one the view hides is refused, before
+        anything lands, and one the change creates joins the view.
 
         The commit lands in the agent's graph (``ws-git.apply``), as a
         revert does, with ``message`` (default ``Apply <base>..<theirs>``)
@@ -2431,13 +2435,27 @@ class Workspace:
                 # The commit joins the agent's graph, so its own log
                 # walks through it instead of stopping at it.
                 info = {**info, "virtual_parents": [head] if head else []}
-            outcome = self._provider.apply(
-                base,
-                theirs,
-                info=info,
-                ignore=self._ignores,
-                **({} if paths is None else {"paths": paths}),
-            )
+            # The provider writes beneath the view, so the view's write
+            # rule is put to the files the change resolved to, before any
+            # of it lands: a hidden file is no more the change's to
+            # overwrite or drop than the agent's, and what the change
+            # creates joins the view, as a file the agent creates does.
+            view = self._view_fs
+            before = None if view is None else (view.view, self._view)
+            try:
+                outcome = self._provider.apply(
+                    base,
+                    theirs,
+                    info=info,
+                    ignore=self._ignores,
+                    **({} if paths is None else {"paths": paths}),
+                    **({} if view is None else {"admit": view.admit}),
+                )
+            except BaseException:
+                if view is not None and before is not None:
+                    view.reset(before[0])
+                    self._view = before[1]
+                raise
             if outcome.merged:
                 if indexed:
                     from ..agentgit import AgentGit

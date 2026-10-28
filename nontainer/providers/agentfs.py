@@ -612,6 +612,7 @@ class AgentFSProvider:
         info: Any = None,
         ignore: Any = None,
         paths: Any = None,
+        admit: Any = None,
     ) -> Any:
         raise self._unsupported("apply")
 

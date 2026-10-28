@@ -163,3 +163,65 @@ def test_a_provider_without_merge_says_so(tmp_path):
             ws.apply("a", "b")
     finally:
         ws.close()
+
+
+# -- a narrowed view -----------------------------------------------------------
+
+
+def _narrowed(ws, paths):
+    child = ws.fork("child", paths=paths)
+    register_wsgit(child)
+    return child
+
+
+@pytest.mark.parametrize("paths", [None, "/workspace"])
+def test_a_hidden_file_the_change_touches_is_refused(ws, releases, paths):
+    ws.checkout("sheets/v1", paths=["skills/sheets", "notes.md"])
+    ws.index.commit("vendor sheets v1, with its notes")
+    child = _narrowed(ws, ["skills/sheets"])
+    try:
+        head = child.head
+        with pytest.raises(PermissionError, match="outside this session's view"):
+            child.apply("sheets/v1", "sheets/v2", paths=paths)
+        # nothing of it landed, in the view or out of it
+        assert child.head == head
+        assert child.files.read("/workspace/skills/sheets/cells.py").decode() == V1
+        assert child._provider.fs.read("/workspace/notes.md") == b"v1 notes\n"
+        assert not child._provider.dirty
+    finally:
+        child.close()
+
+
+def test_a_file_the_change_creates_joins_the_view(ws, store, releases):
+    _vendor_v1(ws)
+    child = _narrowed(ws, ["skills/sheets"])
+    try:
+        out = child.apply(None, "sheets/v1")
+        assert out.merged
+        assert child.files.read("/workspace/notes.md") == b"v1 notes\n"
+        assert not child._provider.dirty
+    finally:
+        child.close()
+    again = store.open("child")
+    try:
+        assert again.files.read("/workspace/notes.md") == b"v1 notes\n"
+    finally:
+        again.close()
+
+
+def test_a_cherry_pick_is_held_to_the_view_too(ws, store):
+    ws.files.write("/workspace/mine/a.txt", "a\n")
+    ws.files.write("/workspace/theirs.txt", "one\n")
+    ws.index.commit("seed")
+    other = ws.fork("other")
+    other.files.write("/workspace/theirs.txt", "two\n")
+    picked = other.head
+    other.close()
+    child = _narrowed(ws, ["mine"])
+    try:
+        head = child.head
+        with pytest.raises(PermissionError, match="outside this session's view"):
+            child.cherry_pick(f"other@{picked[:7]}")
+        assert child.head == head
+    finally:
+        child.close()
