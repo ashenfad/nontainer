@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from ..protocol import Executor
+    from ..protocol import Executor, ViewSpec
     from .core import Workspace
 
 
@@ -129,6 +131,106 @@ class ModuleGrant:
     name: str | None = None
     """Registration name override. Needed for submodules reached as
     attributes (``ModuleGrant(os.path, name="os.path")``)."""
+
+
+@dataclass(frozen=True)
+class SetupEvent:
+    """Which worker a :class:`WorkerSetup` is about to prepare, handed to
+    its ``admit`` gate."""
+
+    worker: Literal["session", "view"]
+    """``"session"``: the worker ``run_python`` and a plain
+    ``exec_python`` run on. ``"view"``: one serving
+    ``exec_python(view=...)``, apps' handler dispatch."""
+
+    view: ViewSpec | None
+    """The view a view worker serves; ``None`` for the session worker."""
+
+    pooled: bool
+    """Whether the worker is kept for later calls: the session worker,
+    and a view worker within ``warm_view_workers``. A transient view
+    worker, started past the pool's cap, serves one call and goes."""
+
+    generation: int
+    """``1`` for a sandbox's first worker, and one more for each that
+    replaced it after a crash or a kill."""
+
+
+@dataclass(frozen=True)
+class WorkerSetup:
+    """Code run in each worker before any execution reaches it.
+
+    A worker keeps what code leaves in it (a granted module's state, a
+    library's caches) until it goes, and workers come and go out of
+    sight: started on first use, past the view pool's cap, after
+    ``Runtime.reap_idle`` and after a crash. ``source`` runs on every one,
+    the first and each replacement, once its isolation and the
+    workspace's host objects are in place and before the execution that
+    started it, so what it prepares is there for every execution the
+    worker serves.
+
+    It runs as sandboxed code under the workspace's own policy, with the
+    namespace and ``host`` module an execution on that worker gets: it
+    reaches what the agent's code could, and its output is discarded. It
+    is the embedder's code, never the agent's, which is what makes a
+    granted module's setup function the natural thing for it to call::
+
+        PythonConfig(
+            modules=[ModuleGrant(client_lib, host_fs=True)],
+            isolation="process",
+            worker_setup=WorkerSetup(
+                "import client_lib\\nclient_lib.load_metadata()",
+                timeout=60.0,
+            ),
+        )
+
+    A setup that raises, or runs past ``timeout``, fails the start: the
+    worker is killed, the call that needed it raises
+    :class:`~nontainer.errors.WorkerSetupError`, and the next call starts
+    a fresh worker and runs the setup again. Nothing is marked ready on a
+    worker the setup did not finish on.
+
+    ``isolation="process"`` or ``"kernel"`` only: in-process there is no
+    worker, and the setup would change the host's own modules, which
+    every workspace shares. ``DudExecutor`` refuses it too.
+    """
+
+    source: str
+    """Python run on each new worker. Compiled when the config is built,
+    so a syntax error is found then rather than at the first call."""
+
+    timeout: float | None = None
+    """The setup's own wall-clock budget, in seconds; ``None`` takes
+    ``PythonConfig.timeout``. Independent of a view's ``timeout``, so a
+    slow setup needs no different view, and lands in the same pool."""
+
+    admit: Callable[[SetupEvent], AbstractContextManager[Any]] | None = field(
+        default=None, compare=False
+    )
+    """Admits each setup, for a host that bounds concurrent work: called
+    with a :class:`SetupEvent`, it returns a context manager that is
+    entered before the setup runs and exited after it, however it ends.
+    ``limiter.slot`` of a host's own limiter, say. It runs on the thread
+    that needed the worker, so blocking in it holds that call."""
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, str):
+            raise TypeError(
+                f"WorkerSetup.source is Python source, not {type(self.source).__name__}"
+            )
+        compile(self.source, "<worker_setup>", "exec")
+        if self.timeout is not None and (
+            isinstance(self.timeout, bool)
+            or not isinstance(self.timeout, (int, float))
+            or not math.isfinite(self.timeout)
+            or self.timeout <= 0
+        ):
+            raise ValueError(
+                "WorkerSetup.timeout is a positive, finite number of seconds, "
+                f"not {self.timeout!r}"
+            )
+        if self.admit is not None and not callable(self.admit):
+            raise TypeError("WorkerSetup.admit must be callable")
 
 
 @dataclass(frozen=True)
@@ -332,6 +434,11 @@ class PythonConfig:
     """A pre-built ``sandtrap.Policy``; overrides everything above
     except ``host_objects``."""
 
+    worker_setup: WorkerSetup | None = field(default=None, hash=False)
+    """Code run in each worker before any execution reaches it, the
+    first and every replacement: see :class:`WorkerSetup`.
+    ``isolation="process"``/``"kernel"`` only."""
+
     classes: Sequence[type] = field(default=(), hash=False)
     """Classes bound by name in every run, and importable from ``host``:
     the types agent code builds values of (a task's result type, say).
@@ -368,6 +475,13 @@ class PythonConfig:
                 "or the cache)"
             )
         object.__setattr__(self, "classes", classes)
+        if self.worker_setup is not None and not isinstance(
+            self.worker_setup, WorkerSetup
+        ):
+            raise TypeError(
+                "PythonConfig.worker_setup takes a WorkerSetup, not "
+                f"{type(self.worker_setup).__name__}"
+            )
 
 
 @dataclass(frozen=True)

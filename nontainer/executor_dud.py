@@ -940,7 +940,16 @@ class DudExecutor:
         "packages_from_grants": False}`` turns the derivation off for a
         custom image that already carries what it needs; an explicit
         ``vm={"packages": [...]}`` is merged either way, its pins
-        winning."""
+        winning.
+
+        ``worker_setup`` is refused on every rung: a guest has no start
+        hook to run it on, so a setup would never run."""
+        if cfg.worker_setup is not None:
+            raise NotSupportedError(
+                "worker_setup on DudExecutor: a guest has no start hook to run "
+                "it on, so it would never run. Use LocalExecutor with "
+                "isolation='process' or 'kernel'."
+            )
         if self._backend == "subprocess":
             if cfg.isolation != "none":
                 raise NotSupportedError(

@@ -183,6 +183,7 @@ def open(self, context: ExecutionContext) -> None
 def close(self) -> None
 def reap_idle(self, max_age: float) -> int   # optional
 def warm(self) -> None                        # optional
+def warm_view(self, view: ViewSpec) -> int    # optional
 def exec_python(code, *, inputs=None, stdin=None, argv=None,
                 echo=None, view=None) -> PythonResult
 def exec_shell(script: str) -> TerminalResult
@@ -273,6 +274,17 @@ process and no machine; `warm()` starts either ahead of the first
 execution. `Runtime.warm` calls it where it is defined and does
 nothing where it is not. It must be idempotent and safe to call from
 any thread.
+
+**`warm_view(view)`** *(optional)* — start the workers a view keeps
+between calls now, and return how many it started. `LocalExecutor`
+fills that view's pool to `warm_view_workers`. `Runtime.warm(view)`
+calls it and answers 0 for an executor that does not define it, so an
+executor with no per-view workers leaves it out.
+
+An executor handed a `PythonConfig.worker_setup` runs it on every
+worker or machine it starts, before any execution reaches that one, or
+refuses the config at `open` with `NotSupportedError`. Ignoring it
+would leave a host believing its workers prepared when none is.
 
 **`reap_idle(max_age)`** *(optional)* — release whatever the executor
 keeps warm between calls and has left unused for at least `max_age`

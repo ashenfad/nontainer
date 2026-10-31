@@ -1523,6 +1523,8 @@ rt.commands / rt.framework_commands   # the live mappings
 rt.stale -> bool ; rt.mark_stale() ; rt.sync_if_stale()
 rt.diff() -> StagedDiff | None
 rt.warm() -> None                     # start the session worker now
+rt.warm(view: ViewSpec) -> int        # start that view's pooled workers;
+                                      # how many it started
 rt.reap_idle(max_age: float) -> int   # close workers idle >= max_age
                                       # seconds; how many it closed
 rt.interrupt() -> bool                # stop the code running now;
@@ -1562,6 +1564,18 @@ host that knows code is coming (a chat session opening) and wants that
 first call to pay nothing, or that wants to learn at open that the
 rung is unavailable. It is idempotent, and a no-op on a closed runtime
 and wherever there is nothing to start (in-process isolation).
+
+**`rt.warm(view)`** does the same for a view's workers: it fills that
+view's pool to `PythonConfig.warm_view_workers`, each worker started,
+prepared by the `worker_setup` if there is one, and left idle, so the
+first requests to a published app find workers ready. It returns how
+many it started (`0` once the pool is full), and counts workers already
+serving a call toward the cap without waiting for them. Only pooled
+workers can be warmed: a call past the cap still starts a transient
+one. It answers `0` wherever there is nothing to warm: in-process
+isolation, `warm_view_workers=0`, `DudExecutor`, a closed runtime, and
+any executor without `warm_view`. Either form raises `WorkerSetupError`
+when a setup fails, with the workers already started kept.
 
 **`rt.reap_idle(max_age)`** releases what a runtime holds warm and
 unused. On `LocalExecutor` under process/kernel isolation that is the
@@ -2082,6 +2096,7 @@ class PythonConfig:
     warm_view_workers: int = 1                   # resident app-handler workers
     preload_grants: bool = False            # share granted modules via the broker
     policy: sandtrap.Policy | None = None   # bypass the sugar entirely
+    worker_setup: WorkerSetup | None = None # run on every worker before it serves
     classes: Sequence[type] = ()            # bound by name in every run
 ```
 
@@ -2317,6 +2332,45 @@ class PythonConfig:
   broker multi-threaded, and a worker forked from it can inherit a lock held
   by that thread — the exact hang the forkserver default prevents. Your
   grants are yours to vouch for; the stdlib and data-stack presets are fine.
+- `worker_setup` (process/kernel only) runs embedder code on each worker
+  before any execution reaches it: the session worker, every view worker,
+  pooled or transient, and each replacement after `reap_idle` or a crash.
+  It is how a host prepares what lives in a worker (a granted library's
+  metadata, a client it caches) without the broker, where `preload_grants`
+  would put it and where threads and live connections must not be, and
+  without prefixing every call's source:
+
+  ```python
+  PythonConfig(
+      modules=[ModuleGrant(client_lib, host_fs=True)],
+      isolation="process",
+      worker_setup=WorkerSetup(
+          "import client_lib\nclient_lib.load_metadata()",
+          timeout=60.0,          # its own budget; None takes `timeout`
+          admit=limiter.slot,    # optional: (SetupEvent) -> context manager
+      ),
+  )
+  ```
+
+  The source is compiled when the `WorkerSetup` is built and runs as
+  sandboxed code under the workspace's own policy, with the namespace and
+  `host` module an execution on that worker gets; its output is discarded.
+  Its `timeout` is its own, so a slow setup needs no different `ViewSpec`
+  and lands in the same pool. `admit`, if given, is called with a
+  `SetupEvent(worker="session" | "view", view, pooled, generation)` and
+  returns a context manager entered before the setup and exited after it
+  however it ends, so a host can admit setups through the limiter it
+  already runs. `interrupt()` cancels a setup like any execution.
+
+  A setup that raises or runs past its budget fails the start: the worker
+  is killed, the call that needed it (or `rt.warm`) raises
+  `WorkerSetupError`, and the next call starts a fresh worker and runs the
+  setup again. A worker the setup did not finish on never serves a call.
+  `isolation="none"` refuses it at open (there is no worker, and the setup
+  would change the host's own modules), and so does `DudExecutor`, whose
+  guests have no start hook. A transient worker pays for the setup on
+  every call it serves, since it serves one, so a slow setup is a reason
+  to raise `warm_view_workers` and to `rt.warm(view)` ahead of traffic.
 
   **It is process-wide, not per-workspace.** The preload list is read once,
   when the broker starts, so the first workspace to start a worker decides
@@ -2521,6 +2575,7 @@ and arguments that don't fit a constructor (`HostObject`,
 `PythonConfig`, `Profile`) raise `TypeError` / `ValueError`.
 
 `WorkspaceError` (base) · `NotSupportedError` (capability missing) ·
+`WorkerSetupError` (`PythonConfig.worker_setup` failed on a new worker) ·
 `SessionIdError` · `CommitNotFoundError` · `BookkeepingLost` ·
 `SessionsError` (no such job, or an ask refused) · `JobRunning` (not yet) ·
 `TurnInProgress` (a turn is already open on this workspace) ·

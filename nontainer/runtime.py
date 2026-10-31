@@ -33,7 +33,7 @@ import re
 import warnings
 from collections.abc import Callable, Collection, Iterator, Mapping, MutableMapping
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from .protocol import ExecutionContext, StagedDiff, ViewSpec, keep_names
 from .workspace import (
@@ -666,7 +666,13 @@ class Runtime:
     # lifecycle
     # ------------------------------------------------------------------
 
-    def warm(self) -> None:
+    @overload
+    def warm(self) -> None: ...
+
+    @overload
+    def warm(self, view: ViewSpec) -> int: ...
+
+    def warm(self, view: ViewSpec | None = None) -> int | None:
         """Start now what the executor would otherwise start at its first
         execution — on ``LocalExecutor`` under process/kernel isolation,
         the session worker ``run_python`` runs on; on ``DudExecutor``,
@@ -680,12 +686,28 @@ class Runtime:
         at open that the rung is unavailable calls it straight after
         opening. Idempotent, and a no-op on a closed runtime and on an
         executor with nothing to start (in-process isolation).
+
+        With ``view``, it starts the workers that view keeps warm instead
+        (``PythonConfig.warm_view_workers``) and returns how many it
+        started, so the first calls for that view, a published app's
+        handlers say, find a worker ready and prepared. ``0`` where there
+        is nothing to warm, including an executor without
+        ``warm_view``.
+
+        Either way the ``worker_setup`` runs on each worker started, and a
+        failed one raises :class:`~nontainer.errors.WorkerSetupError`.
         """
+        if view is not None:
+            if self._closed:
+                return 0
+            warm_view = getattr(self._executor, "warm_view", None)
+            return warm_view(view) if warm_view is not None else 0
         if self._closed:
-            return
+            return None
         warm = getattr(self._executor, "warm", None)
         if warm is not None:
             warm()
+        return None
 
     def reap_idle(self, max_age: float) -> int:
         """Release execution resources that have sat idle for at least

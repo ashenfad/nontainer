@@ -65,7 +65,7 @@ def _pool(size: int = 2, *, enabled: bool = True) -> _ViewWorkerPool:
 
 
 def _builder(made: list) -> callable:
-    def build():
+    def build(pooled: bool = True):
         sb = FakeSandbox()
         made.append(sb)
         return sb
@@ -218,7 +218,7 @@ def test_checkout_returns_a_warm_worker_even_when_the_body_raises():
 def test_checkout_yields_a_workerless_sandbox_untouched():
     """``isolation="none"`` has nothing to enter or reap."""
     pool = _pool(size=1)
-    with pool.checkout(VIEW, InProcessSandbox) as sb:
+    with pool.checkout(VIEW, lambda pooled: InProcessSandbox()) as sb:
         assert isinstance(sb, InProcessSandbox)
     assert pool._live.get(_view_key(VIEW), 0) == 0
 
@@ -300,7 +300,7 @@ def test_workerless_sandbox_is_not_pooled_and_frees_its_reservation():
     pool must hand them straight back without burning a slot."""
     pool = _pool(size=1)
 
-    sb, pooled = pool.acquire(VIEW, InProcessSandbox)
+    sb, pooled = pool.acquire(VIEW, lambda pooled: InProcessSandbox())
     assert not pooled and isinstance(sb, InProcessSandbox)
     assert pool._live.get(_view_key(VIEW), 0) == 0
 
@@ -312,7 +312,7 @@ def test_workerless_sandbox_is_not_pooled_and_frees_its_reservation():
 def test_failed_worker_start_frees_its_reservation():
     pool = _pool(size=1)
 
-    def explode():
+    def explode(pooled: bool):
         raise RuntimeError("fork failed")
 
     with pytest.raises(RuntimeError, match="fork failed"):
@@ -474,7 +474,7 @@ def test_reap_idle_shuts_workers_down_outside_the_lock():
             seen.append(pool._lock.locked())
             super().shutdown()
 
-    worker, _ = pool.acquire(VIEW, Slow)
+    worker, _ = pool.acquire(VIEW, lambda pooled: Slow())
     pool.release(VIEW, worker)
     clock.advance(10)
 
@@ -523,7 +523,7 @@ def test_reap_idle_is_safe_against_concurrent_checkouts():
                 violations.append("reaped while checked out")
             super().shutdown()
 
-    def build():
+    def build(pooled: bool = True):
         sb = Tracked()
         with made_lock:
             made.append(sb)
