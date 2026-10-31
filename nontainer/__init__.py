@@ -26,7 +26,7 @@ Public surface:
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CommitNotFoundError, BookkeepingLost, SessionsError,
             JobRunning, BranchExpired, CacheError, HarvestLost,
-            LegacyLayoutError
+            LegacyLayoutError, WorkerSetupError
 
 Extension surfaces (built by the embedder, never assumed present):
 
@@ -58,6 +58,7 @@ from .errors import (
     SessionIdError,
     SessionsError,
     TurnInProgress,
+    WorkerSetupError,
     WorkspaceError,
 )
 from .migrate import LayoutMigration
@@ -147,6 +148,7 @@ __all__ = [
     "CacheError",
     "WorkspaceError",
     "NotSupportedError",
+    "WorkerSetupError",
     "SessionIdError",
     "CommitNotFoundError",
     "BookkeepingLost",

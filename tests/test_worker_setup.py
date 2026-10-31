@@ -14,8 +14,15 @@ from contextlib import contextmanager
 import pytest
 import setup_state
 
-from nontainer import ModuleGrant, PythonConfig, ViewSpec, WorkerSetup, Workspace
-from nontainer.errors import NotSupportedError, WorkerSetupError
+from nontainer import (
+    ModuleGrant,
+    NotSupportedError,
+    PythonConfig,
+    ViewSpec,
+    WorkerSetup,
+    WorkerSetupError,
+    Workspace,
+)
 from nontainer.providers.kvgit import KvgitProvider
 
 pytest.importorskip("sandtrap.fs.remote", reason="needs sandtrap with RemoteFS")
