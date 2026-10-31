@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.10 - 2026-10-30
 
 ### Added
 - **`PythonConfig(worker_setup=WorkerSetup(source, timeout=, admit=))`: code run on every worker before it serves** (#297). The session worker, each view worker, pooled or transient, and each replacement after `reap_idle` or a crash run the setup before any execution reaches them, so a host can prepare what lives in a worker without the broker or a source prefix. A failed setup kills the worker and raises `WorkerSetupError`; the next call starts afresh. `admit` hands each setup a `SetupEvent` for the host's own limiter. Process/kernel isolation only; `DudExecutor` refuses it.
