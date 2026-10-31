@@ -58,12 +58,12 @@ import threading
 import time
 import warnings
 from collections.abc import Callable, Collection, Mapping, MutableMapping
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from types import ModuleType
 from typing import Any, Literal
 
 from .cache import Cache
-from .errors import NotSupportedError, WorkspaceError
+from .errors import NotSupportedError, WorkerSetupError, WorkspaceError
 from .host_objects import HostObject, _by_value, _stubbed, _typed, _value
 
 # The contract itself lives in protocol.py, next to WorkspaceProvider,
@@ -90,6 +90,7 @@ from .workspace import (
     ModuleGrant,
     PythonConfig,
     PythonResult,
+    SetupEvent,
     TerminalResult,
     _render_error,
 )
@@ -669,7 +670,7 @@ class _ViewWorkerPool:
         return self._size > 0
 
     @contextmanager
-    def checkout(self, view: ViewSpec, build: Callable[[], Any]):
+    def checkout(self, view: ViewSpec, build: Callable[[bool], Any]):
         """Yield a sandbox ready to ``exec``, whatever its provenance.
 
         **The way to use this pool.** :meth:`acquire` and :meth:`release`
@@ -703,17 +704,18 @@ class _ViewWorkerPool:
         else:
             yield sandbox
 
-    def acquire(self, view: ViewSpec, build: Callable[[], Any]) -> tuple[Any, bool]:
+    def acquire(self, view: ViewSpec, build: Callable[[bool], Any]) -> tuple[Any, bool]:
         """Check out a worker for ``view``, or build a transient sandbox.
 
         Prefer :meth:`checkout`, which owns the lifecycle for both cases.
         This is the primitive: it returns ``(sandbox, pooled)``, where a
         pooled sandbox is already entered and must be handed back to
         :meth:`release`, and a transient one is the caller's to enter and
-        reap. Only a POOLED sandbox may be released.
+        reap. Only a POOLED sandbox may be released. ``build`` is told
+        which the sandbox it builds will be.
         """
         if self._size <= 0 or self._closed:
-            return build(), False
+            return build(False), False
 
         key = _view_key(view)
         with self._lock:
@@ -727,13 +729,20 @@ class _ViewWorkerPool:
                 self._live[key] -= 1
                 _shutdown_quietly(sandbox)
             if self._live.get(key, 0) >= self._size:
-                return build(), False
+                return build(False), False
             self._live[key] = self._live.get(key, 0) + 1
+        return self._start_reserved(key, build)
 
+    def _start_reserved(
+        self, key: tuple, build: Callable[[bool], Any]
+    ) -> tuple[Any, bool]:
+        """Build and start a worker for a slot already reserved under
+        ``key``, giving the slot back if it can't be pooled or fails to
+        start."""
         # Fork outside the lock: a concurrent checkout of an idle worker
         # must not queue behind someone else's worker start.
         try:
-            sandbox = build()
+            sandbox = build(True)
             enter = getattr(sandbox, "__enter__", None)
             if not callable(getattr(sandbox, "shutdown", None)) or enter is None:
                 # No worker to pool (in-process sandbox): hand it back as
@@ -749,6 +758,29 @@ class _ViewWorkerPool:
                 self._live[key] -= 1
             raise
         return sandbox, True
+
+    def fill(self, view: ViewSpec, build: Callable[[bool], Any]) -> int:
+        """Start workers for ``view`` until it holds as many as the pool
+        keeps, leaving each idle; returns how many it started.
+
+        Workers checked out count toward the cap and are not waited for.
+        A worker that fails to start gives its slot back and the failure
+        propagates, with the ones already started kept.
+        """
+        if self._size <= 0:
+            return 0
+        key = _view_key(view)
+        started = 0
+        while True:
+            with self._lock:
+                if self._closed or self._live.get(key, 0) >= self._size:
+                    return started
+                self._live[key] = self._live.get(key, 0) + 1
+            sandbox, pooled = self._start_reserved(key, build)
+            if not pooled:  # in-process: nothing to keep warm
+                return started
+            self.release(view, sandbox)
+            started += 1
 
     def release(self, view: ViewSpec, sandbox: Any) -> None:
         """Return a checked-out worker. Dead or post-close workers are
@@ -873,6 +905,14 @@ class LocalExecutor:
         _refuse_reserved_host_name(cfg)
         _refuse_async_host_methods(cfg)
         _refuse_memory_limit_in_process(cfg)
+        if cfg.worker_setup is not None and cfg.isolation == "none":
+            raise NotSupportedError(
+                "worker_setup prepares a worker, and isolation='none' runs code "
+                "in this process: there is no worker, and the setup would "
+                "change the host's own modules, which every workspace shares. "
+                "Use isolation='process' or 'kernel', or prepare the host "
+                "yourself."
+            )
         if cfg.isolation != "none":
             _refuse_unnameable_classes(cfg, "in a worker process")
             _refuse_live_calls(cfg, "in a worker process")
@@ -919,6 +959,25 @@ class LocalExecutor:
             self._sandbox.__enter__()
             self._session_started = True
 
+    def warm_view(self, view: ViewSpec) -> int:
+        """Start the workers ``view`` keeps warm now, rather than at the
+        calls that would need them; returns how many it started.
+
+        Fills the view's pool to ``PythonConfig.warm_view_workers``, each
+        worker started (and prepared, with ``worker_setup``) and left
+        idle, so the first calls for that view find one ready. Only kept
+        workers can be warmed: a call past the cap still gets a transient
+        one. Raises :class:`~nontainer.errors.WorkerSetupError` if a
+        setup fails, with the workers already started kept. ``0`` where
+        there is nothing to warm: in-process isolation, a pool of size
+        0, or an executor not yet open or already closed."""
+        ctx = self._ctx
+        if ctx is None or self._closed or ctx.python_config.isolation == "none":
+            return 0
+        return self._pool.fill(
+            view, lambda pooled: self._build_sandbox(view, pooled=pooled)
+        )
+
     def close(self) -> None:
         self._pool.close()  # best-effort internally
         with self._session_lock:
@@ -962,7 +1021,9 @@ class LocalExecutor:
 
     # -- python ----------------------------------------------------------
 
-    def _build_sandbox(self, view: ViewSpec | None = None) -> Any:
+    def _build_sandbox(
+        self, view: ViewSpec | None = None, *, pooled: bool = True
+    ) -> Any:
         """Build a sandtrap sandbox for the executor's standard
         environment (``view=None``, the long-lived default built at
         :meth:`open`) or for a per-call restricted view (apps handler
@@ -976,7 +1037,9 @@ class LocalExecutor:
         race-tolerant: a duplicate build is wasted work, not corruption.
         Read-only fs/cache views are realized here — ``ReadOnlyFS`` and
         the ro cache rpc handler — so the returned sandbox refuses
-        writes on its own."""
+        writes on its own. A worker sandbox runs the config's
+        ``worker_setup`` on each worker it starts; ``pooled`` says whether
+        it is kept for later calls, for the setup's ``admit`` gate."""
         from sandtrap import sandbox
 
         ctx = self._require_ctx()
@@ -1039,7 +1102,59 @@ class LocalExecutor:
             # for the process — sandtrap warns when a later one asks for
             # a preload the running broker doesn't have.
             preload_grants=cfg.preload_grants,
+            **(
+                {"on_worker_start": self._worker_setup(view, pooled)}
+                if cfg.isolation != "none" and cfg.worker_setup is not None
+                else {}
+            ),
         )
+
+    def _worker_setup(
+        self, view: ViewSpec | None, pooled: bool
+    ) -> Callable[[Any], None]:
+        """The start hook that runs ``PythonConfig.worker_setup`` on each
+        worker a sandbox starts, before any execution reaches it.
+
+        Admitted through the setup's ``admit`` gate, given the namespace
+        an execution on that worker gets, and cancellable by
+        ``interrupt()`` like one. Raising fails the start: sandtrap kills
+        the worker, and the next execution starts a fresh one."""
+        setup = self._require_ctx().python_config.worker_setup
+        assert setup is not None
+
+        def prepare(sb: Any) -> None:
+            event = SetupEvent(
+                worker="session" if view is None else "view",
+                view=view,
+                pooled=pooled,
+                generation=sb.generation,
+            )
+            gate = setup.admit(event) if setup.admit is not None else nullcontext()
+            with gate:
+                namespace: dict[str, Any] = {}
+                host_module = self._bind_names(namespace, sb, view)
+                call = object()
+                with self._running_lock:
+                    self._running[call] = sb
+                try:
+                    result = sb.exec(
+                        setup.source,
+                        namespace=namespace,
+                        modules={HOST_MODULE: host_module},
+                        echo="none",
+                        keep=(),
+                        timeout=setup.timeout,
+                    )
+                finally:
+                    with self._running_lock:
+                        del self._running[call]
+            if result.error is not None:
+                raise WorkerSetupError(
+                    "worker_setup failed on a new "
+                    f"{event.worker} worker:\n{_render_error(result.error)}"
+                )
+
+        return prepare
 
     def _build_policy(
         self,
@@ -1213,75 +1328,15 @@ class LocalExecutor:
         with ExitStack() as stack:
             if view is not None:
                 sb = stack.enter_context(
-                    self._pool.checkout(view, lambda: self._build_sandbox(view))
+                    self._pool.checkout(
+                        view,
+                        lambda pooled: self._build_sandbox(view, pooled=pooled),
+                    )
                 )
             else:
                 sb = self._session_sandbox()
-            bridged = hasattr(sb, "_rpc_handlers")
 
-            for name, entry in ctx.python_config.host_objects.items():
-                obj = _value(entry)
-                if _typed(entry) and not bridged:
-                    # data sent by value: each run its own copy, as a
-                    # worker's unpickled one is, so a change lasts the
-                    # run and never reaches the host's object
-                    obj = copy_value(obj)
-                if _stubbed(entry):
-                    namespace[name] = _stub_for(name, entry, bridged)
-                elif bridged and not _by_value(entry):
-                    from sandtrap import RpcProxyMarker
-
-                    # Methods RPC to the parent's live object; attribute READS
-                    # don't cross. Declare the object's surface so the worker's
-                    # proxy can SAY that — undeclared, it hands back a callable
-                    # for every name, so `obj.attr` reads as None and `obj.attr =
-                    # x` is silently lost. Older sandtrap ignores the extra
-                    # fields, so this degrades to the previous behaviour.
-                    namespace[name] = RpcProxyMarker(
-                        target=f"host:{name}", **_surface_kwargs(obj)
-                    )
-                else:
-                    namespace[name] = obj
-            for klass in ctx.python_config.classes:
-                namespace[klass.__name__] = klass
-            # A view's bindings: one host object handed over under
-            # another's name, before the host module is built from the
-            # namespace, so the import and the bare name agree.
-            # Every right-hand side is read from the names as they
-            # were, so {"db": "testdb", "testdb": "db"} swaps the two.
-            original = dict(namespace)
-            for name, other in view.bind if view is not None else ():
-                namespace[name] = original[other]
-
-            # Cache injection mirrors _build_sandbox's rpc-handler choice:
-            # a read-only view gets the read-only wrapper (in-process) or
-            # the marker onto the ro rpc handler (bridged).
-            ro_cache = bool(view and view.readonly_cache and ctx.cache_enabled)
-            if ctx.cache_enabled:
-                if not bridged:
-                    base = Cache(ctx.kv)
-                    namespace["cache"] = _ReadOnlyCache(base) if ro_cache else base
-                else:
-                    from sandtrap import RpcProxyMarker
-
-                    # wrapper (imported in the worker) restores mapping
-                    # syntax — a bare RpcProxy can't serve cache[k]
-                    namespace["cache"] = RpcProxyMarker(
-                        target="cache", wrapper="nontainer.cache:RemoteCache"
-                    )
-            # The same values under a name code can import. Built from
-            # the namespace rather than from the config, so the module's
-            # attributes are whatever the namespace got: markers (which
-            # sandtrap materializes as live proxies worker-side, exactly
-            # as it does for the namespace) under bridged isolation, and
-            # the view's own cache — the read-only one under a GET.
-            # Handed to the exec rather than to the sandbox because host
-            # objects differ per call and pooled workers outlive one.
-            host_module = {
-                name: namespace[name]
-                for name in _host_module_names(ctx.python_config)
-                if name in namespace
-            }
+            host_module = self._bind_names(namespace, sb, view)
             start = time.monotonic()
             call = object()
             with self._running_lock:
@@ -1341,6 +1396,80 @@ class LocalExecutor:
             truncated=trunc_out or trunc_err,
             namespace=out_ns,
         )
+
+    def _bind_names(
+        self, namespace: dict[str, Any], sb: Any, view: ViewSpec | None
+    ) -> dict[str, Any]:
+        """Add what every execution on ``sb`` is given to ``namespace``:
+        host objects, classes, a view's bindings and the cache. Returns
+        the ``host`` module's attributes, built from the same values."""
+        ctx = self._require_ctx()
+        bridged = hasattr(sb, "_rpc_handlers")
+
+        for name, entry in ctx.python_config.host_objects.items():
+            obj = _value(entry)
+            if _typed(entry) and not bridged:
+                # data sent by value: each run its own copy, as a
+                # worker's unpickled one is, so a change lasts the
+                # run and never reaches the host's object
+                obj = copy_value(obj)
+            if _stubbed(entry):
+                namespace[name] = _stub_for(name, entry, bridged)
+            elif bridged and not _by_value(entry):
+                from sandtrap import RpcProxyMarker
+
+                # Methods RPC to the parent's live object; attribute READS
+                # don't cross. Declare the object's surface so the worker's
+                # proxy can SAY that — undeclared, it hands back a callable
+                # for every name, so `obj.attr` reads as None and `obj.attr =
+                # x` is silently lost. Older sandtrap ignores the extra
+                # fields, so this degrades to the previous behaviour.
+                namespace[name] = RpcProxyMarker(
+                    target=f"host:{name}", **_surface_kwargs(obj)
+                )
+            else:
+                namespace[name] = obj
+        for klass in ctx.python_config.classes:
+            namespace[klass.__name__] = klass
+        # A view's bindings: one host object handed over under
+        # another's name, before the host module is built from the
+        # namespace, so the import and the bare name agree.
+        # Every right-hand side is read from the names as they
+        # were, so {"db": "testdb", "testdb": "db"} swaps the two.
+        original = dict(namespace)
+        for name, other in view.bind if view is not None else ():
+            namespace[name] = original[other]
+
+        # Cache injection mirrors _build_sandbox's rpc-handler choice:
+        # a read-only view gets the read-only wrapper (in-process) or
+        # the marker onto the ro rpc handler (bridged).
+        ro_cache = bool(view and view.readonly_cache and ctx.cache_enabled)
+        if ctx.cache_enabled:
+            if not bridged:
+                base = Cache(ctx.kv)
+                namespace["cache"] = _ReadOnlyCache(base) if ro_cache else base
+            else:
+                from sandtrap import RpcProxyMarker
+
+                # wrapper (imported in the worker) restores mapping
+                # syntax — a bare RpcProxy can't serve cache[k]
+                namespace["cache"] = RpcProxyMarker(
+                    target="cache", wrapper="nontainer.cache:RemoteCache"
+                )
+        # The same values under a name code can import. Built from
+        # the namespace rather than from the config, so the module's
+        # attributes are whatever the namespace got: markers (which
+        # sandtrap materializes as live proxies worker-side, exactly
+        # as it does for the namespace) under bridged isolation, and
+        # the view's own cache — the read-only one under a GET.
+        # Handed to the exec rather than to the sandbox because host
+        # objects differ per call and pooled workers outlive one.
+        host_module = {
+            name: namespace[name]
+            for name in _host_module_names(ctx.python_config)
+            if name in namespace
+        }
+        return host_module
 
     # -- shell -----------------------------------------------------------
 

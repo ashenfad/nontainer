@@ -1692,6 +1692,17 @@ def _cfg(**kw):
     return PythonConfig(**kw)
 
 
+@pytest.mark.parametrize("backend", ["subprocess", "vfkit"])
+def test_every_rung_refuses_a_worker_setup(backend):
+    from nontainer.errors import NotSupportedError
+    from nontainer.workspace import WorkerSetup
+
+    with pytest.raises(NotSupportedError, match="no start hook"):
+        DudExecutor(backend=backend)._prepare_config(
+            _cfg(worker_setup=WorkerSetup("x = 1"))
+        )
+
+
 def test_vm_rung_refuses_network():
     from nontainer.errors import NotSupportedError
 

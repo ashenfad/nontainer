@@ -5,6 +5,15 @@ class WorkspaceError(Exception):
     """Base class for nontainer errors."""
 
 
+class WorkerSetupError(WorkspaceError):
+    """``PythonConfig.worker_setup`` failed on a new worker.
+
+    Raised by the call that needed the worker (or by ``Runtime.warm``).
+    The worker was killed, so nothing it half-prepared serves a call;
+    the next call starts a fresh one and runs the setup again.
+    """
+
+
 class NotSupportedError(WorkspaceError):
     """The active provider lacks the capability for this operation.
 
