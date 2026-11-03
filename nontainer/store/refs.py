@@ -217,7 +217,8 @@ class StoreTags:
 
         A store-scoped tag belongs to no session, so ``ws.session``
         names whichever branch the read was anchored on rather than an
-        origin: the tag is the identity here, not the session. A store
+        origin: the tag is the identity here, not the session, and
+        ``ws.ref`` quotes it (``ws.ref.tag == name``). A store
         with sessions on it anchors on one of those, a store of
         publications on a publication's branch, and a store with
         neither on a reserved branch of its own — so a tag opens for as
@@ -232,8 +233,12 @@ class StoreTags:
         handler reaches a live host object (``python=PythonConfig(
         host_objects={"db": db})``). The commit holds files, never the
         objects.
+
+        A commit needs no tag to be read: :meth:`Store.resolve` opens
+        the same frozen workspace at a ``session@commit`` ref. A tag is
+        for the commit that must outlive its session.
         """
         _check_frozen_settings("StoreTags.at()", settings)
         return self._store._frozen_workspace(
-            self._store._provider_at_store_tag(name), **settings
+            self._store._provider_at_store_tag(name), store_tag=name, **settings
         )

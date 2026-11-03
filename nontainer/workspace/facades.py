@@ -672,5 +672,9 @@ class WorkspaceTags:
         Reads see the tagged files, cache and cwd; nothing can be
         written or committed (see :attr:`Workspace.frozen`). Close it
         when done — it holds an executor of its own.
+
+        A commit needs no tag to be read: :meth:`Store.resolve` opens
+        the same frozen workspace at a ``session@commit`` ref
+        (``ws.ref`` is this session's).
         """
         return self._ws._at_tag(name, scope="session")

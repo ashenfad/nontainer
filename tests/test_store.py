@@ -208,6 +208,168 @@ def test_resolve_refuses_an_unknown_commit(tmp_path):
         st.resolve("real@0123456789abcdef")
 
 
+def test_resolve_reads_a_commit_while_the_session_moves_on(tmp_path):
+    """A host hands work to another process by commit: it lands the
+    session's staged work under the lock, takes the ref, and reads
+    that commit while the live session goes on changing — no tag."""
+    st = Store(tmp_path)
+    ws = st.open("demo", autocommit=False)
+    ws.files.write("input.txt", "committed")
+    ws.cache["count"] = 1
+    ws.commit()
+    ws.files.write("input.txt", "staged")
+    ws.cache["count"] = 2
+    assert ws.terminal("mkdir -p work && cd work")
+    with ws.lock:
+        ws.commit({"tool": "task"})
+        ref = ws.ref
+
+    ws.files.write("input.txt", "later")
+    ws.cache["count"] = 3
+    frozen = st.resolve(ref)
+    short = st.resolve(f"demo@{ref.commit[:7]}")
+    ws.commit()
+    ws.terminal("cd /workspace")
+    ws.close()  # the live workspace closing takes nothing from them
+    try:
+        for snap in (frozen, short):
+            assert snap.frozen
+            assert snap.files.read("/workspace/input.txt") == b"staged"
+            assert snap.cache["count"] == 2
+            assert snap.files.fs.getcwd() == "/workspace/work"
+            assert snap.ref == ref
+    finally:
+        frozen.close()
+        short.close()
+    assert st.tags.list() == {}
+
+
+def test_resolve_refuses_another_sessions_commit_under_this_name(tmp_path):
+    """A ref names a session AND a commit: a commit another session
+    made is not one this session's name reaches, however whole the id,
+    so it is refused rather than read as this session's state."""
+    st = Store(tmp_path)
+    with st.open("demo") as ws:
+        ws.files.write("input.txt", "demo's")
+        ws.commit()
+    with st.open("other") as other:
+        other.files.write("input.txt", "other's")
+        other.commit()
+        foreign = other.head
+
+    for spelling in (foreign, foreign[:7]):
+        with pytest.raises(CommitNotFoundError, match="'demo'"):
+            st.resolve(f"demo@{spelling}")
+    with st.resolve(f"other@{foreign}") as snap:  # under its own name it reads
+        assert snap.files.read("input.txt") == b"other's"
+
+
+def test_a_merged_in_commit_is_read_under_the_session_that_made_it(tmp_path):
+    """ "On a session" is its own line of history, the commits its head
+    moved through — the line a short id expands against. A merge brings
+    another session's work into the tree, but the commits it brings
+    stay that session's, and a ref to one names it."""
+    st = Store(tmp_path)
+    parent = st.open("parent")
+    parent.files.write("/workspace/a.txt", "base\n")
+    parent.commit(info={"tool": "seed"})
+    child = parent.fork("parent.child", inherit="fresh")
+    child.files.write("/workspace/b.txt", "from the child\n")
+    child.commit(info={"tool": "work"})
+    theirs = child.head
+    child.close()
+    parent.files.write("/workspace/c.txt", "the parent's own\n")
+    parent.commit(info={"tool": "turn"})
+    parent.merge("parent.child")
+    try:
+        with pytest.raises(CommitNotFoundError, match="another line"):
+            st.resolve(f"parent@{theirs}")
+        with st.resolve(f"parent.child@{theirs}") as snap:
+            assert snap.files.read("/workspace/b.txt") == b"from the child\n"
+        with st.resolve(parent.ref) as merged:  # the merge itself is the parent's
+            assert merged.files.read("/workspace/b.txt") == b"from the child\n"
+    finally:
+        parent.close()
+
+
+def test_a_resolved_ref_lasts_as_long_as_its_session(tmp_path):
+    """Heads only move forward, so a commit on a session's line reads
+    for as long as the session exists. Deleting the session ends it."""
+    st = Store(tmp_path)
+    with st.open("demo") as ws:
+        ws.files.write("input.txt", "v1")
+        ws.commit()
+        ref = ws.ref
+        ws.checkout(ws.log()[-1].id)  # a restore appends; nothing rewinds
+    with st.resolve(ref) as snap:
+        assert snap.files.read("input.txt") == b"v1"
+    st.delete("demo", min_age=0)
+    with pytest.raises(WorkspaceError, match="No such session"):
+        st.resolve(ref)
+
+
+def test_every_verb_that_reads_a_ref_refuses_another_sessions_commit(tmp_path):
+    """One rule for ``session@commit`` wherever it is read: the
+    workspace verbs that take a ref measure the commit against the
+    named session's line just as ``store.resolve`` does."""
+    st = Store(tmp_path)
+    with st.open("other") as other:
+        other.files.write("/workspace/b.txt", "other's\n")
+        other.commit()
+        foreign = other.head
+    ws = st.open("demo")
+    ws.files.write("/workspace/a.txt", "demo's\n")
+    ws.commit()
+    try:
+        with pytest.raises(CommitNotFoundError, match="'demo'"):
+            ws.checkout(foreign)
+        with pytest.raises(CommitNotFoundError):
+            ws.checkout(foreign, paths=["/workspace/b.txt"])
+        with pytest.raises(CommitNotFoundError, match="another line"):
+            ws.fork("demo.child", at=foreign)
+        with pytest.raises(CommitNotFoundError, match="another line"):
+            ws.files.attach(f"demo@{foreign}", "peek")
+        with pytest.raises(CommitNotFoundError, match="another line"):
+            st.tags.add(f"demo@{foreign}", "mislabelled")
+        assert "mislabelled" not in st.tags.list()
+        assert st.sessions() == ["demo", "other"]  # the refused fork made nothing
+        assert ws.files.read("/workspace/a.txt") == b"demo's\n"
+
+        # Named by the session that made it, each one reads.
+        ws.checkout(f"other@{foreign}", paths=["/workspace/b.txt"])
+        assert ws.files.read("/workspace/b.txt") == b"other's\n"
+        assert st.tags.add(f"other@{foreign}", "theirs") == foreign
+    finally:
+        ws.close()
+
+
+def test_fork_at_takes_a_ref_into_another_session_or_a_store_tag(tmp_path):
+    """A bare word is this session's fork point; a ref forks from the
+    state it names — another session's commit, or a store tag's."""
+    st = Store(tmp_path)
+    with st.open("other") as other:
+        other.files.write("/workspace/b.txt", "other's\n")
+        other.commit()
+        foreign = other.head
+        st.tags.add(other, "kept")
+    ws = st.open("demo")
+    ws.files.write("/workspace/a.txt", "demo's\n")
+    ws.commit()
+    try:
+        for name, at in (
+            ("demo.ref", f"other@{foreign[:7]}"),
+            ("demo.obj", Ref("other", foreign)),
+            ("demo.tag", ws.expand_ref("kept")),
+        ):
+            with ws.fork(name, at=at) as child:
+                assert child.files.read("/workspace/b.txt") == b"other's\n"
+                assert not child.files.exists("/workspace/a.txt")
+            with st.resolve(f"{name}@{foreign}"):  # the fork point is on its line
+                pass
+    finally:
+        ws.close()
+
+
 # -- store-scoped tags -------------------------------------------------------
 
 
@@ -287,10 +449,16 @@ def test_a_store_scoped_read_needs_no_session(tmp_path):
 
     with st.tags.at("report") as snap:
         assert snap.files.read("report.txt") == b"published\n"
-        anchored = snap.ref
-    # The anchor is a branch, so the ref that snapshot quotes resolves.
-    with st.resolve(anchored) as again:
+        quoted = snap.ref
+    # The anchor is only what the read borrowed: the snapshot quotes the
+    # tag, which is what holds the commit, and that ref resolves.
+    assert quoted.tag == "report"
+    with st.resolve(quoted) as again:
         assert again.files.read("report.txt") == b"published\n"
+        assert again.ref == quoted
+    st.tags.delete("report")
+    with pytest.raises(WorkspaceError, match="No such store tag"):
+        st.resolve(quoted)
 
     assert st.sessions() == []  # ...and the anchor is not a session
     assert "@store/anchor" in st._branches()
@@ -337,7 +505,7 @@ def test_delete_deletes_sessions_only(tmp_path):
         st.tags.add(ws, "report")
     st.delete("author", min_age=0)
     with st.tags.at("report") as snap:  # nothing to borrow: mints the anchor
-        anchored = snap.ref
+        quoted = snap.ref
 
     with st.open("publisher") as ws:
         ws.files.write("app/index.html", "<h1>scores</h1>")
@@ -351,8 +519,8 @@ def test_delete_deletes_sessions_only(tmp_path):
             st.delete([reserved], min_age=0)
         assert reserved in st._branches()
 
-    # ...so a snapshot ref taken against the anchor still resolves.
-    with st.resolve(anchored) as again:
+    # ...so a snapshot read through the anchor still resolves.
+    with st.resolve(quoted) as again:
         assert again.files.read("app/index.html") == b"<h1>scores</h1>"
 
 

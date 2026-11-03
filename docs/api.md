@@ -178,18 +178,54 @@ migrated head when no file changed between the two, and is refused
 otherwise.
 
 **`store.resolve(ref)`** opens a frozen `Workspace` at the exact
-commit a ref names. A `Ref` is `session@commit`, optionally
+commit a ref names — files, cache and cwd, with no tag needed. A `Ref` is `session@commit`, optionally
 `session@commit:/path` (the path is carried, not yet interpreted);
 `Ref.parse(str)` and `str(ref)` are the two directions. Resolving into
 a session the store has never held raises rather than creating the
 branch. **A commit may be spelled short**, wherever a ref is taken
-(`store.resolve`, `ws.checkout`, `ws.fork(at=)`, `ws.files.attach`, the
-ws-git verbs):
+(`store.resolve`, `ws.checkout`, `ws.fork(at=)`, `ws.files.attach`,
+`store.tags.add`, the ws-git verbs):
 a unique prefix of seven hex characters or more — the length every
 ws-git line prints — expands against that session's whole history, the
 framework's commits included. An ambiguous prefix raises `ValueError`
 naming the commits it could mean; one nothing matches raises
 `CommitNotFoundError`, exactly as a whole id nothing matches does.
+
+**A ref names a session AND a commit.** The commit must be on that
+session's own line of history — the commits its head moved through,
+the line a short id expands against — in every verb above. A whole id
+another session made raises `CommitNotFoundError` rather than reading
+as this session's state, and a commit a merge brought in is read under
+the session that made it.
+
+A host that hands work to another process commits under `ws.lock`,
+takes `ws.ref`, and resolves it there while the live session moves on:
+later commits, staged writes, and the live workspace closing reach
+none of what the frozen one reads.
+
+```python
+with ws.lock:
+    ws.commit({"tool": "task"})   # lands staged work: a ref is exact when clean
+    ref = ws.ref
+with store.resolve(ref) as snap:  # in the worker
+    data = snap.files.read("/workspace/input.txt")
+```
+
+**How long a ref reads.** Heads only move forward — `ws.checkout`
+appends a restoring commit and nothing rewinds — so a commit on a
+session's line resolves for as long as the session exists. Deleting the
+session ends that: `store.resolve` raises `WorkspaceError` (no such
+session), and once no branch or tag reaches the commit, the sweep that
+`store.delete` and `store.clean` run collects it after `min_age` (an
+hour by default). A frozen workspace still open on a swept commit then
+reads its files as missing (`FileNotFoundError`), so close frozen
+workspaces before deleting their session. A store tag keeps a commit
+past its session.
+
+**A commit made with live mounts holds the committed tree alone.** The
+mounted contents were never in it, and nor was the cwd, which the mount
+composition keeps for itself: a frozen open of such a commit reads no
+mount and starts at the workspace root.
 
 **`ws.expand_ref(ref) -> Ref`** spells that commit half whole up
 front: a short id, a whole one, or that session's own ws-git tag, and
@@ -244,7 +280,9 @@ it must be one this store opened — `Store.open`, or a fork/snapshot of
 one; a workspace from elsewhere is refused rather than silently tagging
 *its* store. Session-scoped tags stay on the workspace (`ws.tags`). Because a store-scoped tag belongs
 to no session, `store.tags.at(name).session` names whichever branch the
-read was anchored on — the tag is the identity there, not the session.
+read was anchored on — the tag is the identity there, not the session,
+and the snapshot's `ref` quotes the tag (`ref.tag == name`), which
+`store.resolve` reads back for as long as the tag exists.
 kvgit has no handle without a branch, so the read borrows one where it
 can and mints one where it cannot: a session if the store has any,
 otherwise a publication's own `@store/pub/...` branch, otherwise the
@@ -983,8 +1021,11 @@ log, and checking it out returns you to it.
 **`ws.fork(name, *, at=None, inherit="full", paths=None)`** branches
 this session into a new one and opens it.
 
-`at` is any ref this session can name: a commit id whole or short, or
-one of the agent's own `ws.index` tags.
+`at` is any ref: a bare word is this session's — a commit id whole or
+short, or one of the agent's own `ws.index` tags — and a ref
+(`session@commit`, a `Ref`, a store tag's ref) forks from the state it
+names, another session's included. Either way the commit must be on
+the history of the session that names it.
 
 **A fork point is always a commit.** Uncommitted writes here are landed
 first, under `{"tool": "fork", "child": name}`, and that commit is the
