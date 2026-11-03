@@ -136,7 +136,8 @@ def _apply_diff(
 
 
 class _ReadOnlyCache(MutableMapping):
-    """Read-only cache view for GET handlers (structural REST).
+    """Read-only cache view for a read-only handler: a GET, a published
+    app's, or any under ``AppsConfig.readonly_handlers``.
 
     MutableMapping so derived mutators (pop, clear, update, setdefault)
     route through ``__setitem__``/``__delitem__`` and raise
@@ -163,10 +164,10 @@ class _ReadOnlyCache(MutableMapping):
         return self._cache.get(key, default)
 
     def __setitem__(self, key: str, value: Any) -> None:
-        raise PermissionError("cache is read-only in GET handlers")
+        raise PermissionError("cache is read-only in this handler")
 
     def __delitem__(self, key: str) -> None:
-        raise PermissionError("cache is read-only in GET handlers")
+        raise PermissionError("cache is read-only in this handler")
 
 
 # ----------------------------------------------------------------------

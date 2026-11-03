@@ -329,7 +329,12 @@ registers the extra classes; `DudExecutor` ships those classes' module
 *source* so a guest with no nontainer installed can synthesize them,
 and rejects a non-empty write-diff (rung 1) or mounts read-only (VM
 rungs). No sandbox object crosses the seam, so nothing sandtrap-shaped
-rides on the protocol. `tick_limit` is LocalExecutor's alone — a remote
+rides on the protocol. The read-only pair is not optional: dispatch
+asks for it on every GET, on every request to a published app, and on
+every request under `AppsConfig.readonly_handlers`, and checks nothing
+afterwards, so an executor must refuse a write with a `PermissionError`
+whose message says "read-only" (dispatch reads that to say why in
+`api.log`). `tick_limit` is LocalExecutor's alone — a remote
 executor has no tick machinery, and wall-clock is its guard.
 `result_bytes` is the largest bytes value the caller needs back (apps:
 the response body, under its size caps); `DudExecutor` raises dud's

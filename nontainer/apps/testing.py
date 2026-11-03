@@ -36,9 +36,10 @@ patches normally — ``patch.object`` on a workspace module, a class or
 an instance reaches what the module itself reads.
 
 One asymmetry, stated rather than papered over: ``call`` does not
-reproduce the read-only filesystem a real GET runs under, because the
-handler runs in the test's own sandbox. A GET that writes passes here
-and 500s under ``ws-curl``. The wire tier is where structural REST is
+reproduce the read-only filesystem a real GET runs under (and every
+handler, under ``AppsConfig.readonly_handlers``), because the handler
+runs in the test's own sandbox. A read-only handler that writes passes
+here and 500s under ``ws-curl``. The wire tier is where structural REST is
 enforced; this tier is where the logic is checked.
 """
 

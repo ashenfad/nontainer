@@ -471,6 +471,21 @@ def test_handler_example_is_the_embedders_where_the_store_differs():
     assert "ONLY verb functions" in empty
 
 
+def test_the_notes_say_which_handlers_are_read_only():
+    from nontainer.adapters.render import apps_notes
+    from nontainer.apps import AppsConfig
+
+    default = apps_notes(AppsConfig())
+    assert "GET handlers have a READ-ONLY filesystem and cache" in default
+    assert "whatever the verb" not in default
+
+    policy = apps_notes(AppsConfig(readonly_handlers=True))
+    assert "Every handler has a READ-ONLY filesystem and cache" in policy
+    assert "GET handlers have" not in policy
+    # the example is the same either way: it writes nothing
+    assert 'open("/workspace/app/data/scores.json")' in policy
+
+
 def test_the_default_handler_example_keeps_no_state_a_publication_drops():
     """A publication carries the files under app/ and no cache, and its
     handlers are read-only for every verb, so an example that kept state

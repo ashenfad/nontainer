@@ -167,7 +167,13 @@ def post(req):
   During *authoring* (ws-curl / test_app) mutating verbs get staged writes,
   atomic per request (a raise discards them). But **serving is frozen**
   (see below): a served handler is read-only regardless of verb, so a
-  VFS write is always a 500.
+  VFS write is always a 500. `AppsConfig(readonly_handlers=True)` makes
+  authoring answer the same way: every handler, whatever its verb, runs
+  against the read-only filesystem and cache, through ws-curl, test_app,
+  a preview and a direct `dispatch` alike, and `api.log` says why a
+  write was refused. It is about the workspace only — a handler still
+  calls the host objects it is granted, and a database's write method
+  still writes — and the agent's own tools still write the workspace.
 - **App state guidance — this is the load-bearing convention.** The
   workspace (`cache`, files) is **not** the app's database. It's the
   agent's authoring scratchpad, and the served snapshot is read-only, so
@@ -175,8 +181,11 @@ def post(req):
   **external store injected via `host_objects`** — a sqlite/postgres
   client the handlers call. `cache`/files are for single-session,
   authoring-time state only; shared mutable state goes to the store,
-  which owns its own concurrency (serving is lock-free). Tell the agent
-  about the injected store with a **primer** (see the adapters). The
+  which owns its own concurrency (serving is lock-free). Under
+  `readonly_handlers` it is the only place a handler can keep state,
+  while authoring too. Tell the agent about the injected store with a
+  `handler_example` that uses it, since the example is what an agent
+  copies, and a **primer** for the rest (see the adapters). The
   `webapp` example shows the whole pattern.
 
 ### Table returns

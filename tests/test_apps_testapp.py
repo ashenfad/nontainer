@@ -93,6 +93,38 @@ def test_click_flow_mutates_backend(app_ws):
     assert ws.cache["scores"] == ["alice", "bob", "carol"]  # real backend mutation
 
 
+def test_readonly_handlers_refuse_the_pages_writes_and_keep_the_runs_own(
+    chromium_available,
+):
+    """Under AppsConfig.readonly_handlers the page's POST is refused
+    like any request's: the run names the failed request, the cache is
+    untouched, and api.log says why. The run's own output is the
+    runtime's, not a handler's, so its screenshot and request log are
+    still written."""
+    from nontainer.apps import AppsConfig
+
+    ws = Workspace(KvgitProvider.open(None, session="s1"))
+    rt = enable_apps(ws, AppsConfig(readonly_handlers=True))
+    try:
+        ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+        ws.files.fs.write("/workspace/app/index.html", APP_HTML.encode())
+        ws.files.fs.write("/workspace/app/api/scores.py", HANDLER.encode())
+        ws.cache["scores"] = ["alice", "bob"]
+        ws.commit()
+        result = rt.test_app(
+            [{"type": ["#name", "carol"]}, {"click": "#add"}, {"screenshot": True}]
+        )
+        assert "POST api/scores -> 500" in result.failed_requests
+        assert ws.cache["scores"] == ["alice", "bob"]
+        assert len(result.screenshots) == 1
+        assert ws.files.fs.exists(result.screenshots[0])
+        log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
+        assert "POST /api/scores -> 500" in log
+        assert "whatever the verb" in log
+    finally:
+        ws.close()
+
+
 def test_run_flushes_the_request_log(app_ws):
     """Read-only request lines buffer so a page's GET can't cost the
     next POST its rollback; the end of a run is where they go out,
