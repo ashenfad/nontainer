@@ -107,6 +107,13 @@ def _error_response(status: int, message: str, **extra: str) -> WireResponse:
     return WireResponse(int(status), error_body(message, **extra), "application/json")
 
 
+def _refused_write(error: str) -> bool:
+    """Whether a handler's error is a write its read-only view refused.
+    Each executor phrases the refusal its own way, but every one is a
+    ``PermissionError`` saying "read-only"."""
+    return "PermissionError" in error and "read-only" in error.lower()
+
+
 _STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -745,6 +752,34 @@ class AppsConfig:
     JSON, which is why the text refusal suggests asking for Arrow.
 
     Declared last: see ``frontend_notes``."""
+    readonly_handlers: bool = False
+    """Every handler runs against a read-only filesystem and cache,
+    whatever its verb, while the app is authored as well as once it is
+    published.
+
+    By default only a GET is read-only while authoring, and a POST, PUT,
+    PATCH or DELETE handler may write the workspace's files and cache,
+    though a published app's handlers can write neither. With this set,
+    authoring answers the way serving will: a handler's write raises
+    ``PermissionError`` where it happens, the request answers 500, and
+    ``api.log`` says why. It holds wherever a request is dispatched —
+    ``ws-curl``, ``test_app``'s page, an embedder's preview, a direct
+    ``dispatch`` — on every executor, since each realizes the read-only
+    view a GET already gets.
+
+    It concerns the workspace alone. Every verb is still a valid HTTP
+    method, and a handler can still call a host object it is granted,
+    so a database's write method writes: that is where an app's state
+    belongs under this policy, and nothing here makes it read-only or
+    transactional. The agent's own tools (``run_python``, the terminal,
+    the file tools) write the workspace as before, and ``test_app``
+    still writes its screenshots and the request log, which are the
+    runtime's writes rather than a handler's.
+
+    The apps notes say every handler is read-only. Teach where an app's
+    state goes instead with ``handler_example``.
+
+    Declared last: see ``frontend_notes``."""
 
     def __post_init__(self) -> None:
         """Copy ``static_assets`` and check its in-memory files, and
@@ -959,9 +994,10 @@ class AppRuntime:
             raise HttpError(405, f"{request.method} not supported by {name}")
 
         # Frozen serving: every verb is read-only (no mutation, so
-        # requests are concurrent). Authoring: GET is read-only, mutating
-        # verbs stage writes with per-request atomicity.
-        readonly = self._frozen or verb == "get"
+        # requests are concurrent). Authoring: GET is read-only, and so is
+        # every verb under readonly_handlers; otherwise mutating verbs
+        # stage writes with per-request atomicity.
+        readonly = self._frozen or verb == "get" or self._config.readonly_handlers
         ws = self._ws
         atomic = not readonly and ws.caps.staging and not ws.uncommitted
 
@@ -1015,6 +1051,8 @@ class AppRuntime:
 
             hint = error_hint(result.error)
             suffix = f"\n[hint: {hint}]" if hint else ""
+            if readonly and _refused_write(result.error):
+                suffix += f"\n[hint: {self._readonly_why(verb)}]"
             self._log(f"[{where}] ERROR:\n{result.error}{suffix}")
             return _error_response(500, "internal error", log=self._log_path)
 
@@ -1065,6 +1103,24 @@ class AppRuntime:
             self._log(f"[{where}] BAD RETURN: {refusal}")
             return _error_response(500, refusal)
         return resp
+
+    def _readonly_why(self, verb: str) -> str:
+        """Why a handler's write was refused, for its ``api.log`` entry.
+        The refusal itself is the executor's and names no reason: the
+        same read-only view serves a GET, a published app, and an app
+        whose embedder made every handler read-only."""
+        if self._frozen:
+            why = "a published app's handlers can't write files or the cache"
+        elif self._config.readonly_handlers:
+            why = (
+                "this app's handlers can't write files or the cache, whatever the verb"
+            )
+        else:
+            why = f"a {verb.upper()} handler can't write files or the cache"
+        return (
+            f"{why}; anything an app must remember between requests "
+            "belongs in an object the host gives you"
+        )
 
     def test_app(
         self,

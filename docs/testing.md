@@ -257,8 +257,10 @@ call(module, method="GET", path=None, *, params=None, body=None,
   plain call is for.
 
 One asymmetry: **`call` does not reproduce the read-only
-filesystem a real GET runs under.** The handler runs in the test's own
-sandbox, so a GET that writes passes here and 500s under `ws-curl`.
+filesystem a real GET runs under** (and every handler, under
+`AppsConfig.readonly_handlers`). The handler runs in the test's own
+sandbox, so a read-only handler that writes passes here and 500s under
+`ws-curl`.
 That is the price of the mock being visible to the handler at all, and
 the wire tier is where structural REST is enforced.
 

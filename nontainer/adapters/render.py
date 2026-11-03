@@ -478,6 +478,8 @@ def _handler_example(config: Any) -> str:
 
 def _readonly_rule(config: Any) -> str:
     """Which handlers run against a read-only filesystem and cache."""
+    if getattr(config, "readonly_handlers", False):
+        return "Every handler has a READ-ONLY filesystem and cache, whatever the verb."
     return (
         "GET handlers have a READ-ONLY filesystem and cache; once published,\n"
         "every handler does."
@@ -524,9 +526,9 @@ _NO_CURL_NOTE = """There is no curl here — the terminal is a real shell, and t
 answers requests only through test_app. Verify endpoints by driving
 the page that calls them (test_app runs the frontend's fetches against
 your handlers) rather than probing routes directly. Don't import a
-handler module to call its verb by hand: that skips routing and runs
-GET without its read-only filesystem, so it can pass on code the real
-request path rejects."""
+handler module to call its verb by hand: that skips routing and the
+read-only filesystem a request runs under, so it can pass on code the
+real request path rejects."""
 
 
 def apps_notes(

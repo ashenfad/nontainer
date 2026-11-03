@@ -470,6 +470,52 @@ def test_apps_readonly_get_rejects_fs_write(ws):
         runtime.close()
 
 
+def test_apps_readonly_handlers_refuse_a_posts_writes(ws):
+    """Under AppsConfig.readonly_handlers a POST gets the view a GET
+    does: a cache write raises in the guest, a file write is rejected
+    after the call, and neither lands. A granted host object still
+    writes."""
+    from nontainer import PythonConfig
+    from nontainer.apps import AppsConfig, enable_apps, request
+
+    class Db:
+        def __init__(self):
+            self.names = []
+
+        def add(self, name: str) -> None:
+            self.names.append(name)
+
+    db = Db()
+    w = Workspace(
+        KvgitProvider.open(None, session="dud-readonly"),
+        executor=DudExecutor(backend="subprocess"),
+        python=PythonConfig(host_objects={"db": db}),
+    )
+    try:
+        _seed_app(w, "c.py", b"def post(req):\n    cache['x'] = 1\n    return {}\n")
+        _seed_app(
+            w,
+            "f.py",
+            b"def post(req):\n    open('sneak.txt','w').write('x')\n    return {}\n",
+        )
+        _seed_app(
+            w,
+            "d.py",
+            b"def post(req):\n    db.add('ada')\n    return {'ok': True}\n",
+        )
+        runtime = enable_apps(w, AppsConfig(readonly_handlers=True))
+        assert runtime.dispatch(request("POST", "/api/c")).status == 500
+        assert "x" not in w.cache
+        assert runtime.dispatch(request("POST", "/api/f")).status == 500
+        assert not w.files.fs.exists("/workspace/sneak.txt")
+        assert runtime.dispatch(request("POST", "/api/d")).status == 200
+        assert db.names == ["ada"]
+        log = w.files.fs.read("/workspace/app/logs/api.log").decode()
+        assert log.count("whatever the verb") == 2
+    finally:
+        w.close()
+
+
 def test_apps_mutating_handler_absorbs_fs_write(ws):
     """A POST writing a relative path lands in the provider, like
     LocalExecutor's write-through (visible in ws.files.fs afterward)."""

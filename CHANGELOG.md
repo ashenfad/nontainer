@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **`AppsConfig(readonly_handlers=True)`: every handler runs against a read-only filesystem and cache, whatever its verb, while authoring as well as once published** (#300). By default only a GET is read-only while authoring, so a POST that wrote the workspace verified green and answered 500 once published. With the flag, a handler's write raises `PermissionError` where it happens and the request answers 500, through `ws-curl`, `test_app`'s page, an embedder's preview and a direct `dispatch` alike, on every executor. The policy concerns the workspace alone: a handler still calls the host objects it is granted, and a database's write method still writes; the agent's own tools still write the workspace; `test_app` still writes its screenshots and the request log. The apps notes then say every handler is read-only. Off by default.
+
 ### Changed
+- **A handler's refused write says why in `api.log`.** The read-only view's refusal is the same whether the handler was a GET, a published app's, or one under `readonly_handlers`, so it now reads "cache is read-only in this handler" (and "filesystem is read-only in this handler" on dud) rather than naming GET, and dispatch adds a hint line saying which it was and that what an app must remember belongs in an object the host gives it. `ViewSpec.readonly_fs` and `readonly_cache` are documented as a MUST for an executor: dispatch checks nothing after the call.
 - **The default handler example keeps no state a publication drops.** It kept scores in `cache`, written by a `post`, but a publication carries the files under `app/` and no cache, and its handlers are read-only for every verb: an app copied from it verified green while authoring and, once published, answered `[]` to the GET and 500 to the POST. The example is now a `get` that reads a file under `app/data/`. The apps notes say what a published app holds (the files under `app/`, an empty cache) and that what an app must remember between requests belongs in an object the host gives it, and teach `req.require`, which only the old `post` showed. An embedder's `handler_example` still replaces the example.
 
 ## 0.11.10 - 2026-10-30

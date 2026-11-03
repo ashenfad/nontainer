@@ -430,6 +430,143 @@ def test_post_can_write():
     ws.close()
 
 
+def test_a_refused_write_says_why_in_the_log():
+    """The executor's refusal names no reason, since one read-only view
+    serves a GET, a published app and the readonly_handlers policy, so
+    dispatch adds it to the handler's api.log entry."""
+    ws, rt = make_ws()
+    write_handler(ws, "sneaky", "def get(req):\n    cache['x'] = 1\n    return {}\n")
+    assert rt.dispatch(request("GET", "/api/sneaky")).status == 500
+    log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
+    assert "cache is read-only in this handler" in log
+    assert "[hint: a GET handler can't write files or the cache;" in log
+    assert "in GET handlers" not in log
+    ws.close()
+
+
+# -- readonly_handlers -------------------------------------------------------
+
+_WRITER = """\
+def {verb}(req):
+    {write}
+    return {{"ok": True}}
+"""
+
+_WRITES = {
+    "file": "with open('/workspace/out.txt', 'w') as f:\n        f.write('x')",
+    "file delete": "import os\n    os.remove('/workspace/seed.txt')",
+    "cache set": "cache['written'] = True",
+    "cache delete": "del cache['seed']",
+}
+
+
+def _readonly_ws(isolation: str, **python):
+    from nontainer.apps import AppsConfig
+
+    ws = Workspace(
+        KvgitProvider.open(None, session="s1"),
+        python=PythonConfig(isolation=isolation, **python),
+    )
+    rt = enable_apps(ws, AppsConfig(readonly_handlers=True))
+    ws.files.write("seed.txt", "seed")
+    ws.cache["seed"] = 1
+    return ws, rt
+
+
+@pytest.mark.parametrize("isolation", ["none", "process"])
+def test_readonly_handlers_refuse_every_verbs_writes(isolation):
+    """Under the policy a handler of any verb runs against the read-only
+    filesystem and cache: each kind of write raises where it happens,
+    the request answers 500, nothing lands, and api.log says why."""
+    ws, rt = _readonly_ws(isolation)
+    try:
+        for verb in ("get", "post", "put", "patch", "delete"):
+            for kind, write in _WRITES.items():
+                name = f"{verb}_{kind.replace(' ', '_')}"
+                write_handler(ws, name, _WRITER.format(verb=verb, write=write))
+                ws.commit()
+                resp = rt.dispatch(request(verb.upper(), f"/api/{name}"))
+                assert resp.status == 500, (verb, kind)
+                assert not ws.files.fs.exists("/workspace/out.txt"), (verb, kind)
+                assert ws.files.read("seed.txt") == b"seed", (verb, kind)
+                assert "written" not in ws.cache, (verb, kind)
+                assert ws.cache["seed"] == 1, (verb, kind)
+        log = ws.files.fs.read("/workspace/app/logs/api.log").decode()
+        assert "[post_cache_set:post] ERROR" in log
+        assert "this app's handlers can't write files or the cache, whatever" in log
+        assert "a GET handler can't" not in log
+    finally:
+        ws.close()
+
+
+@pytest.mark.parametrize("isolation", ["none", "process"])
+def test_readonly_handlers_leave_a_granted_host_object_writable(isolation):
+    """The policy is about the workspace: a database the host grants
+    still writes, which is where an app's state belongs under it."""
+
+    class Db:
+        def __init__(self):
+            self.names = []
+
+        def add(self, name: str) -> None:
+            self.names.append(name)
+
+    db = Db()
+    ws, rt = _readonly_ws(isolation, host_objects={"db": db})
+    try:
+        write_handler(
+            ws,
+            "names",
+            "def post(req):\n    db.add(req.require('name'))\n    return {'ok': True}\n",
+        )
+        resp = rt.dispatch(request("POST", "/api/names", body=b'{"name": "ada"}'))
+        assert resp.status == 200, resp.content
+        assert db.names == ["ada"]
+    finally:
+        ws.close()
+
+
+def test_readonly_handlers_leave_the_agents_own_tools_writable():
+    """Only handlers are read-only: run_python, the terminal and the file
+    tools author the workspace as before."""
+    ws, _ = _readonly_ws("none")
+    try:
+        assert ws.run_python("cache['n'] = 2\nopen('a.txt', 'w').write('a')")
+        assert ws.terminal("echo b > b.txt && rm seed.txt")
+        ws.files.write("c.txt", "c")
+        assert ws.cache["n"] == 2
+        assert ws.files.read("a.txt") == b"a"
+        assert ws.files.read("b.txt") == b"b\n"
+        assert not ws.files.exists("seed.txt")
+        assert ws.files.read("c.txt") == b"c"
+    finally:
+        ws.close()
+
+
+def test_readonly_handlers_hold_through_ws_curl():
+    """ws-curl dispatches through the same runtime, so a POST it sends
+    is refused the same way."""
+    ws, _ = _readonly_ws("none")
+    try:
+        write_handler(ws, "save", _WRITER.format(verb="post", write=_WRITES["file"]))
+        r = ws.terminal("ws-curl -f -X POST $APP_ORIGIN/api/save")
+        assert r.exit_code == 22, r
+        assert not ws.files.exists("out.txt")
+    finally:
+        ws.close()
+
+
+def test_readonly_handlers_are_off_by_default():
+    from nontainer.apps import AppsConfig
+
+    assert AppsConfig().readonly_handlers is False
+    ws, rt = make_ws()
+    write_handler(ws, "save", _WRITER.format(verb="post", write=_WRITES["file"]))
+    assert rt.dispatch(request("POST", "/api/save")).status == 200
+    assert ws.files.read("out.txt") == b"x"
+    ws.close()
+
+
 def test_failed_post_discards_staged_writes():
     """Atomic rollback happens only when the provider is clean at
     dispatch — otherwise discard would nuke unrelated pending work

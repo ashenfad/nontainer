@@ -3267,14 +3267,16 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   port here is decorative.
            handler_example=None,  # the example handler the apps notes
            #   show — the code an agent copies for its first endpoint.
-           #   None = the built-in get/post pair keeping state in cache;
-           #   "" omits it; a string REPLACES it (__WS__ in it becomes
-           #   the workspace root). For an embedder whose handlers must
-           #   use a different store: an example showing `cache` with
-           #   the real rule in apps_primer underneath it loses, because
+           #   None = the built-in get reading a file under app/data/,
+           #   which keeps no state a publication drops; "" omits it; a
+           #   string REPLACES it (__WS__ in it becomes the workspace
+           #   root). For an embedder whose handlers keep state in a
+           #   store it injects: an example that doesn't use it, with
+           #   the real rule in apps_primer underneath, loses, because
            #   the example is what gets copied. nontainer's own contract
            #   stays either way — only verb functions are routed, the
-           #   return shapes, HttpError, read-only GET.
+           #   return shapes, HttpError, the read-only handlers, what a
+           #   published app holds.
            driver=None,  # the AppDriver test_app runs through. None
            #   picks: this field, then the executor's own
            #   (ws.runtime.app_driver), then a headless Chromium on the
@@ -3283,11 +3285,22 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   callable into this dispatch) — and answers a DriveReport.
            #   The invariant: the driver's dispatcher is the dispatcher
            #   the publication will use. See apps.md.
-           max_binary_response_bytes=32_000_000)  # the largest body of
+           max_binary_response_bytes=32_000_000,  # the largest body of
            #   any type max_response_bytes does not cover: images,
            #   octet-stream, the Arrow stream a table return answers
-           #   with. Enforced the same way. Fields are declared in this
-           #   order, so positional construction binds them this way.
+           #   with. Enforced the same way.
+           readonly_handlers=False)  # True: every handler runs against
+           #   a read-only filesystem and cache, whatever the verb, while
+           #   authoring as once published — through ws-curl, test_app,
+           #   a preview and dispatch alike, on every executor. A write
+           #   raises PermissionError, the request 500s, api.log says
+           #   why. Host objects stay writable (a db's insert writes),
+           #   and so does the workspace through the agent's own tools;
+           #   test_app still writes screenshots and the request log.
+           #   The apps notes then say every handler is read-only;
+           #   teach where state goes with handler_example. Fields are
+           #   declared in this order, so positional construction binds
+           #   them this way.
 
 AppRuntime.dispatch(request: Request, *, bind=None) -> WireResponse
 AppRuntime.test_app(actions, *, viewport="desktop", bind=None, ...) -> TestAppResult
@@ -3452,8 +3465,9 @@ them in scope of the test and of every handler module composed into it
 — the ones a test `call`s, and the ones it imports.
 
 `call` does not reproduce the read-only filesystem a real GET runs
-under — a GET that writes passes there and 500s under `ws-curl`, which
-is where structural REST is enforced.
+under (and every handler, under `AppsConfig.readonly_handlers`) — a
+read-only handler that writes passes there and 500s under `ws-curl`,
+which is where structural REST is enforced.
 
 Serving (frozen snapshots — read-only, concurrent):
 

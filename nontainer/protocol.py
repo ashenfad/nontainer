@@ -984,14 +984,22 @@ class ViewSpec:
     """
 
     readonly_fs: bool = False
-    """A GET-handler view: writes to the workspace fs are refused.
-    LocalExecutor wraps the fs in ``ReadOnlyFS`` (write-time
-    ``PermissionError``); a remote executor rejects a non-empty
-    write-diff after the call (rung-1 dud) or mounts read-only (VM
-    rungs)."""
+    """A read-only handler's view — a GET, any handler of a published
+    app, and any handler under ``AppsConfig.readonly_handlers``: writes
+    to the workspace fs are refused.
+
+    An executor MUST honor it, and refuse with a ``PermissionError``
+    whose message says "read-only": nothing checks after the call that
+    a handler wrote nothing, so an executor that ignores the flag lets
+    a handler's writes land. LocalExecutor wraps the fs in
+    ``ReadOnlyFS`` (write-time ``PermissionError``); a remote executor
+    rejects a non-empty write-diff after the call (rung-1 dud) or mounts
+    read-only (VM rungs)."""
 
     readonly_cache: bool = False
-    """The cache is read-only for this call (GET structural REST)."""
+    """The cache is read-only for this call, set wherever ``readonly_fs``
+    is. Honored the same way, and a MUST in the same way: a write or
+    delete raises ``PermissionError`` saying "read-only"."""
 
     timeout: float | None = None
     """Per-call wall-clock budget (else the config's)."""

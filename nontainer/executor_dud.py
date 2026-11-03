@@ -1335,17 +1335,19 @@ class DudExecutor:
         refusal: str | None = None
         if view.readonly_fs:
             # A session lost during this check recovers to a fresh guest
-            # whose diff is empty — correct for a GET: nothing was
-            # supposed to be written, nothing gets absorbed either way.
+            # whose diff is empty — correct for a read-only view: nothing
+            # was supposed to be written, nothing gets absorbed either way.
             d = self._with_recovery(lambda: self._session.diff(rebase=False))
             if not d.empty:
-                # A GET that wrote the fs (rung-1 has no read-only mount,
-                # so the write lands then is rejected here — DESIGN.md).
+                # A read-only handler (a GET, or any verb under
+                # readonly_handlers) that wrote the fs: rung-1 has no
+                # read-only mount, so the write lands then is rejected
+                # here — DESIGN.md.
                 self._with_recovery(lambda: self._session.reset())
                 return PythonResult(
                     stdout="",
                     stderr="",
-                    error="PermissionError: filesystem is read-only in GET handlers",
+                    error="PermissionError: filesystem is read-only in this handler",
                     ticks=0,
                     duration=duration,
                     truncated=False,
