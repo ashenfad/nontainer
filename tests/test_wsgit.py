@@ -1787,6 +1787,25 @@ def test_a_bad_ref_says_what_was_looked_up_and_where(peer_ws, store):
     assert peer_ws.terminal("ws-git worktree add review polish@shipped").exit_code == 0
 
 
+def test_a_ref_to_another_sessions_commit_is_refused_by_name(peer_ws, store):
+    """A whole commit id is no license to read it under any session's
+    name: a ref names the session whose line holds the commit, as the
+    short id ws-git prints of it already had to."""
+    peer_ws.files.fs.write("/workspace/a.txt", b"one\n")
+    peer_ws.terminal("ws-git commit -m base")
+    peer_ws.terminal("ws-git branch polish")
+    peer_ws.files.fs.write("/workspace/a.txt", b"two\n")
+    peer_ws.terminal("ws-git commit -m later")
+    later = peer_ws.head  # main's, made after polish branched
+
+    r = peer_ws.terminal(f"ws-git worktree add review polish@{later}")
+    assert r.exit_code == 1, r.stdout
+    assert "on session 'polish': the store holds it on another line" in r.stderr
+    r = peer_ws.terminal(f"ws-git worktree add review polish@{later[:7]}")
+    assert r.exit_code == 1, r.stdout
+    assert "on session 'polish'" in r.stderr, r.stderr
+
+
 def test_branch_at_takes_a_tag_and_a_short_id(peer_ws, store):
     """`--at` is a ref, so every spelling of one works there: what the
     log printed, and what the session bookmarked."""

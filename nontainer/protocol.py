@@ -137,6 +137,17 @@ def expand_commit(commit: str, ids: "Iterable[str]", *, where: str) -> str:
     )
 
 
+def not_on_session(session: str, commit: str) -> str:
+    """Why a commit the store holds is not the one ``session@commit``
+    names: it is on another line of history. One wording wherever a ref
+    is read, store or workspace."""
+    return (
+        f"no commit {commit!r} on session {session!r}: the store holds it "
+        "on another line of history, and a ref names the session whose own "
+        f"history it is on (ws-git log {session} lists what this one holds)"
+    )
+
+
 def validate_session_id(session: str) -> str:
     """Return ``session`` unchanged or raise ``SessionIdError``."""
     from .errors import SessionIdError
@@ -190,7 +201,9 @@ class Capabilities:
     ``tag_info`` / ``delete_tag`` / ``at_tag`` raise
     ``NotSupportedError``. It does not gate ``diff``: comparing two
     commits is a versioning question, and a name is one way to reach a
-    commit rather than what makes two of them comparable."""
+    commit rather than what makes two of them comparable. Reaching one
+    needs no name either: ``Store.resolve`` opens a frozen workspace at
+    a ``session@commit`` ref (``caps.versioned``)."""
 
     index: bool = False
     """Keyed commits are available, so the agent-facing git fiction is:

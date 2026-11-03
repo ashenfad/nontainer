@@ -79,6 +79,7 @@ from .protocol import SESSION_ID_RE, Answer, AsyncSessionRunner, Job, SessionRun
 
 if TYPE_CHECKING:
     from .inbox import Inbox, Note
+    from .store import Ref
     from .workspace import Workspace
 
 _logger = logging.getLogger("nontainer.sessions")
@@ -437,15 +438,15 @@ class Sessions:
             child_name, base = previous.name, None
             child = self._reopen(child_name)
         else:
-            source = None
+            source = point = None
             if fork_from is not None:
-                given, commit, source = self._origin(fork_from)
+                given, commit, source, point = self._origin(fork_from)
                 origin = (given, commit)
             else:
                 origin = None
             try:
                 child, child_name, base = self._fork(
-                    name, paths=paths, inherit=inherit, at=origin[1] if origin else None
+                    name, paths=paths, inherit=inherit, at=point
                 )
             except CommitNotFoundError as exc:
                 # The funnel classifies the word; the store is what
@@ -975,7 +976,7 @@ class Sessions:
         *,
         paths: "Iterable[str] | str | None",
         inherit: str,
-        at: str | None = None,
+        at: "Ref | None" = None,
     ) -> "tuple[Workspace, str, str | None]":
         """``(child, its name, the fork point)``.
 
@@ -984,10 +985,11 @@ class Sessions:
         name — and the fork itself is the authority on collision, since
         a branch may exist that no job here remembers.
 
-        ``at`` names the commit to fork FROM, for a child that starts
-        somewhere other than this session's head. It is the child's
-        base, and this session's uncommitted writes are left alone,
-        because they are no part of where that child came from.
+        ``at`` is a ref naming the commit to fork FROM, for a child
+        that starts somewhere other than this session's head. Its
+        commit is the child's base, and this session's uncommitted
+        writes are left alone, because they are no part of where that
+        child came from.
 
         A name the CALLER gave is refused when its branch is taken,
         rather than suffixed: the caller is naming the child it means to
@@ -1018,7 +1020,7 @@ class Sessions:
                             f"take a minted one."
                         ) from exc
                     continue
-                return child, candidate, self._ws.head if at is None else at
+                return child, candidate, self._ws.head if at is None else at.commit
         raise SessionsError(
             f"could not mint a free name for a child of {self._ws.session!r} "
             f"in {_MINT_TRIES} tries (last: {candidate!r})"
@@ -1216,9 +1218,9 @@ class Sessions:
             )
         return store.open(name, root=self._ws.root, ignore=self._ws.ignore)
 
-    def _origin(self, fork_from: "str | Any") -> "tuple[str, str, str]":
+    def _origin(self, fork_from: "str | Any") -> "tuple[str, str, str, Ref]":
         """``(the fork point as the caller spelled it, its commit, the
-        ref an answer from there descends from)``.
+        ref an answer from there descends from, the ref to fork at)``.
 
         A ``session@commit`` ref — or a :class:`~nontainer.Ref` —
         resolves the way every other cross-session read does, so a short
@@ -1231,6 +1233,10 @@ class Sessions:
         session), and a session as ``session@commit``. Reading the
         name again when the answer lands could classify it differently,
         if a tag or session of that name came or went during the run.
+
+        The fourth is what ``fork(at=)`` is handed: a ref naming the
+        session (or store tag) the commit is on, never a bare commit,
+        which the fork would read as one of this session's own.
         """
         from .store import Ref
 
@@ -1249,13 +1255,14 @@ class Sessions:
         if isinstance(fork_from, Ref) or "@" in given:
             with self._ws.lock:
                 commit = self._ws.expand_ref(fork_from).commit
-            return given, commit, str(Ref(Ref.parse(given).session, commit))
+            point = Ref(Ref.parse(given).session, commit)
+            return given, commit, str(point), point
         tags = self._store_tags()
         if given in tags:
-            return given, tags[given], tags[given]
+            return given, tags[given], tags[given], Ref.at_tag(given, tags[given])
         head = self._session_head(given)
         if head is not None:
-            return given, head, str(Ref(given, head))
+            return given, head, str(Ref(given, head)), Ref(given, head)
         known = ", ".join(sorted(tags)) or "none"
         sessions = self._session_names()
         shown = ", ".join(sessions[:12]) + (" …" if len(sessions) > 12 else "")

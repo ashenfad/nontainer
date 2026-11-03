@@ -72,8 +72,10 @@ from ..protocol import (
     WorkspaceDiff,
     WorkspaceProvider,
     keep_names,
+    not_on_session,
     read_files,
 )
+from ..store.refs import Ref
 from ..views import (
     VIEW_KEY,
     AttachFS,
@@ -102,7 +104,7 @@ if TYPE_CHECKING:
     from ..inbox import Inbox
     from ..protocol import Executor
     from ..runtime import Runtime
-    from ..store import Ref, Store
+    from ..store import Store
     from ..traces import TraceCommit
     from ..turns import Source, Turn, Turns
 
@@ -290,6 +292,11 @@ class Workspace:
         # for the workspace() helper's, whose store was built for it
         # alone. Forks carry _store but never this.
         self._owns_store = False
+        # The store tag a frozen snapshot was opened at, stamped by the
+        # store. Such a snapshot is read through a borrowed branch, so
+        # its session names no origin: the tag is its identity, and
+        # what ``ref`` quotes.
+        self._store_tag: str | None = None
         python_config = python or PythonConfig()
         self._cache_enabled = cache
         self._max_observation = max_observation
@@ -717,7 +724,13 @@ class Workspace:
         from; a session id alone names a moving head. The ref is the
         pair, and it is what a snapshot, a publication or a
         cross-session read quotes. Exact iff clean — staged changes are
-        in no commit, so check :attr:`uncommitted` first."""
+        in no commit, so check :attr:`uncommitted` first.
+
+        A snapshot of a STORE TAG quotes the tag (``ref.tag``): the
+        commit belongs to no session, and the branch the store read it
+        through is a borrowed one, not where it came from. The ref
+        resolves for as long as the tag exists, which is as long as the
+        tag holds the commit."""
         from ..store import Ref
 
         head = self.head
@@ -726,6 +739,8 @@ class Workspace:
                 f"Session {self.session!r} has no ref: its provider is not "
                 "versioned, so there is no commit to name."
             )
+        if self._store_tag is not None:
+            return Ref.at_tag(self._store_tag, head)
         return Ref(session=self.session, commit=head)
 
     @property
@@ -1155,6 +1170,10 @@ class Workspace:
                 return self._take(ref, paths)
             commit = self._expand_commit(str(ref))
             try:
+                if self._elsewhere(commit, self.session):
+                    raise CommitNotFoundError(
+                        "the store holds it on another line of history"
+                    )
                 landed = self._provider.checkout(commit, **self._reclaiming(commit))
             except CommitNotFoundError as e:
                 raise CommitNotFoundError(
@@ -1426,7 +1445,35 @@ class Workspace:
         # not evidence that the word was never a commit id.
         if self._provider.caps.versioned and not HASH_RE.fullmatch(whole):
             raise CommitNotFoundError(self._not_a_ref(session, commit))
+        if self._elsewhere(whole, session):
+            raise CommitNotFoundError(not_on_session(session, commit))
         return whole
+
+    def _elsewhere(self, commit: str, session: str) -> bool:
+        """Whether a commit id names a commit the store holds, but not
+        on ``session``'s own line of history.
+
+        A ref names a session AND a commit, so a commit another branch
+        made is not the one a ref under this name means, however whole
+        the id: reading it would hand back another session's state
+        under this one's name. The line is the one a short id expands
+        against and a cherry-pick reads (``commit_at`` with a
+        session), so a whole id and the seven characters ws-git prints
+        of it are refused or read alike.
+
+        A commit the store does not hold at all is not elsewhere: the
+        read that follows refuses it in its own words. Neither is a
+        word that is not a commit id, nor anything on a provider that
+        keeps no commit records (no ``caps.merge``) to check against.
+        """
+        from ..agentgit import HASH_RE
+
+        caps = self._provider.caps
+        if not (caps.versioned and caps.merge) or not HASH_RE.fullmatch(commit):
+            return False
+        if self._provider.commit_at(commit, session=session) is not None:
+            return False
+        return self._provider.commit_at(commit) is not None
 
     def _require_session(self, name: str, *, to_open: bool = False) -> None:
         """Refuse a name this store holds nothing under.
@@ -1515,6 +1562,8 @@ class Workspace:
                 return str(tagged), tagged.commit
             commit = self._expand_commit(text)
             try:
+                if self._elsewhere(commit, self.session):
+                    raise CommitNotFoundError(commit)
                 self._provider.files_at(commit)
             except CommitNotFoundError:
                 raise CommitNotFoundError(
@@ -1599,13 +1648,13 @@ class Workspace:
         self,
         name: str,
         *,
-        at: str | None = None,
+        at: "str | Ref | None" = None,
         inherit: Literal["full", "fresh"] = "full",
         paths: "Iterable[str] | str | None" = None,
     ) -> "Workspace":
         """Independent session seeded from current state — or, with
-        ``at``, from an earlier commit of this session, leaving this
-        session where it is. Inherits this workspace's construction
+        ``at``, from an earlier commit of this session or any state a
+        ref names, leaving this session where it is. Inherits this workspace's construction
         settings (see :class:`_Settings`) — python config, mounts, root,
         executor factory — plus its terminal commands. Cost varies by
         backend (see ``caps.cheap_fork`` and the README tradeoffs).
@@ -1621,10 +1670,14 @@ class Workspace:
         child starts at that commit with everything the commit holds,
         and nothing here is rewound to get it there. Nothing is
         committed for it either — the buffer belongs to this session's
-        present, not to the past the fork branches from. It is a ref
-        like any other: a commit id whole or shortened to the seven
-        characters a log line prints, or one of this session's own
-        ws-git tags.
+        present, not to the past the fork branches from. A bare word is
+        this session's: a commit id whole or shortened to the seven
+        characters a log line prints, or one of its own ws-git tags. A
+        ref — ``session@commit``, a :class:`~nontainer.Ref`, a store
+        tag's ref — forks from elsewhere, from the state it names: the
+        child is this workspace's in everything but its files. Either
+        way the commit must be on the history of the session that names
+        it (see :meth:`expand_ref`).
 
         ``inherit`` decides whether the stored conversation comes
         along, and nothing else: ``"full"`` (default) keeps it — the
@@ -1676,12 +1729,13 @@ class Workspace:
             # ``at``; only a fork from the past asks them for more. The
             # ref goes through the same funnel every other ref does, so
             # a fork point may be spelled the way the log printed it (a
-            # short id) or the way this session bookmarked it (a tag);
-            # the provider is handed a commit id either way.
+            # short id), the way this session bookmarked it (a tag), or
+            # as a ref into another session; the provider is handed a
+            # commit id every way.
             forked = (
                 self._provider.fork(name)
                 if at is None
-                else self._provider.fork(name, at=self._ref_commit(self.session, at))
+                else self._provider.fork(name, at=self._fork_point(at))
             )
             self._seed_fork(forked, inherit=inherit, seed=seed)
         # Commands and autocommit are replayed from the LIVE
@@ -1701,6 +1755,15 @@ class Workspace:
         new_ws.runtime.env.update(self._runtime.env)
         self._adopt_commands(new_ws)
         return new_ws
+
+    def _fork_point(self, at: "str | Ref") -> str:
+        """The commit ``fork(at=)`` names: a bare word read as this
+        session's, a ref as the session (or store tag) it names."""
+        from ..store import Ref
+
+        if isinstance(at, Ref) or "@" in str(at):
+            return self._read_ref(at).commit
+        return self._ref_commit(self.session, at)
 
     def _seed_fork(
         self,

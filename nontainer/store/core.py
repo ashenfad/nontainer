@@ -38,6 +38,7 @@ from ..protocol import (
     TagInfo,
     WorkspaceProvider,
     expand_commit,
+    not_on_session,
     validate_session_id,
 )
 from .layout import (
@@ -554,10 +555,36 @@ class Store(_Publishing):
     ) -> "Workspace":
         """A frozen workspace at the exact commit a ref names.
 
-        ``ref`` is ``session@commit`` (see :class:`Ref`). Reads see
-        that commit's files, cache and cwd; nothing can be written or
-        committed. Close it when done — it holds an executor and a
-        store handle of its own.
+        ``ref`` is ``session@commit`` (see :class:`Ref`), the commit
+        whole or short. Reads see that commit's files, cache and cwd;
+        nothing can be written or committed, and nothing the live
+        session does afterwards — commits, staged writes, closing —
+        reaches it. Close it when done — it holds an executor and a
+        store handle of its own. No tag is needed to read a commit:
+        a tag is a name for one, and this reads one by id.
+
+        The commit must be on the named session's own line of history,
+        the commits its head moved through — the line a short id
+        expands against. A whole id another session made raises
+        :class:`~nontainer.errors.CommitNotFoundError` rather than
+        reading as this session's state; a commit a merge brought in is
+        read under the session that made it.
+
+        HOW LONG A REF READS. Heads only move forward (a checkout
+        appends a restoring commit), so a commit on a session's line
+        resolves for as long as that session exists. Deleting it ends
+        that: ``resolve`` raises ``WorkspaceError`` (no such session),
+        and once no branch or tag reaches the commit, the sweep
+        :meth:`delete` and :meth:`clean` run collects it after
+        ``min_age``. A frozen workspace still open on a swept commit
+        then reads its files as missing, so close frozen workspaces
+        before deleting their session. A store tag keeps a commit past
+        its session (:attr:`tags`).
+
+        A commit made with live mounts holds the committed tree alone:
+        the mounted contents were never in it, and nor was the cwd,
+        which the mount composition keeps for itself — so a frozen open
+        of one reads no mount and starts at the workspace root.
 
         ``root`` is the workspace root to read the commit under, for a
         session that was not opened at the default one. A commit holds
@@ -593,7 +620,10 @@ class Store(_Publishing):
         if parsed.tag is not None:
             self._require_tag_at(parsed.tag, parsed)
             return self._frozen_workspace(
-                self._provider_at_store_tag(parsed.tag), root=root, **settings
+                self._provider_at_store_tag(parsed.tag),
+                root=root,
+                store_tag=parsed.tag,
+                **settings,
             )
         if not self._is_publication_branch(parsed.session):
             if parsed.session not in set(self._branches()):
@@ -811,7 +841,9 @@ class Store(_Publishing):
         its commit spelled whole, for the body.
 
         Two kinds of branch answer to a ref. A session opens through
-        the store's own session resolution. A publication's own
+        the store's own session resolution, and its commit must be one
+        that session's own line holds (see :meth:`_commit_on`). A
+        publication's own
         reserved branch opens the way :meth:`resolve` reads one: the
         registry says whether that version is still published, and the
         branch is opened only when it is already there. The handle
@@ -825,7 +857,13 @@ class Store(_Publishing):
         """
         with self._ref_source_held(ref, op) as source:
             if not self._is_publication_branch(source.session):
-                yield self._session_provider(source.session), source
+                provider = self._session_provider(source.session)
+                try:
+                    self._require_on_line(provider, source)
+                except BaseException:
+                    provider.close()
+                    raise
+                yield provider, source
                 return
             self._require_branch(source.session, op)
             from ..providers.kvgit import KvgitProvider
@@ -856,10 +894,15 @@ class Store(_Publishing):
         provider: WorkspaceProvider,
         *,
         root: str | None = None,
+        store_tag: str | None = None,
         **settings: Any,
     ) -> "Workspace":
         """A frozen workspace over ``provider``, built with the
         embedder's execution settings.
+
+        ``store_tag`` names the store tag the provider was opened at,
+        which the workspace then quotes as its ref (see
+        :attr:`Workspace.ref`).
 
         ``settings`` are the construction keywords the public frozen
         opens forward (see ``_FROZEN_SETTINGS``), already checked by
@@ -885,6 +928,7 @@ class Store(_Publishing):
         _check_frozen_mounts(settings.get("mounts"))
         ws = Workspace(provider, **settings)
         ws._store = self
+        ws._store_tag = store_tag
         return ws
 
     # -- kvgit specifics -------------------------------------------------
@@ -1122,18 +1166,72 @@ class Store(_Publishing):
 
         self._require_branch(session, f"read at {session}@{commit}")
         repo = self._kvgit_repo(create=True)
-        # What ws-git prints is seven characters of a commit id, and
-        # every spelling nontainer prints is one it accepts back.
-        commit = self._expand_commit(session, commit)
+        commit = self._commit_on(session, commit)
         try:
             snapshot = repo.snapshot(commit=commit)
         except UnknownCommitError:
-            raise CommitNotFoundError(
-                f"no commit {commit!r} on session {session!r} "
-                f"(ws-git log {session} lists what it holds)"
-            ) from None
+            raise CommitNotFoundError(self._no_commit_on(session, commit)) from None
         return KvgitProvider(
             repo, snapshot, session=session, frozen_at=commit, owns_repo=False
+        )
+
+    def _commit_on(self, session: str, commit: str) -> str:
+        """``commit`` spelled whole, and on ``session``'s own line of
+        history — or :class:`~nontainer.errors.CommitNotFoundError`.
+
+        A ref names a session AND a commit, so a commit another branch
+        made is not the one a ref under this name means, however whole
+        the id: reading it would hand back another session's state
+        under this one's name. "On the session" is its own line, the
+        first parent of each commit, which is the history a short id
+        expands against and a cherry-pick reads (see
+        :meth:`KvgitProvider.commit_at`), so a whole id and the seven
+        characters ws-git prints of it are refused or read alike. A
+        commit merged in from another session is that session's, and
+        its ref names that session.
+
+        The walk stops at the commit, so a ref to recent work costs a
+        few reads; only a ref the line does not hold walks all of it.
+        """
+        # What ws-git prints is seven characters of a commit id, and
+        # every spelling nontainer prints is one it accepts back.
+        whole = self._expand_commit(session, commit)
+        if whole != commit:
+            return whole  # expanded against that same line
+        repo = self._kvgit_repo(create=True)
+        if any(c.hash == whole for c in repo.log(branch=session, first_parent=True)):
+            return whole
+        from kvgit import UnknownCommitError
+
+        from ..errors import CommitNotFoundError
+
+        try:
+            repo.get_commit(whole)
+        except UnknownCommitError:
+            raise CommitNotFoundError(self._no_commit_on(session, commit)) from None
+        raise CommitNotFoundError(not_on_session(session, commit))
+
+    def _require_on_line(self, provider: WorkspaceProvider, ref: Ref) -> None:
+        """:meth:`_commit_on`'s rule, asked through a provider open on
+        the ref's session — for a store whose sessions may come from a
+        ``provider_factory``. A provider with no commit records to read
+        (no ``caps.merge``) has no line to check against, and the read
+        that follows judges the commit."""
+        if not provider.caps.merge:
+            return
+        if provider.commit_at(ref.commit, session=ref.session) is not None:
+            return
+        from ..errors import CommitNotFoundError
+
+        if provider.commit_at(ref.commit) is None:
+            raise CommitNotFoundError(self._no_commit_on(ref.session, ref.commit))
+        raise CommitNotFoundError(not_on_session(ref.session, ref.commit))
+
+    @staticmethod
+    def _no_commit_on(session: str, commit: str) -> str:
+        return (
+            f"no commit {commit!r} on session {session!r} "
+            f"(ws-git log {session} lists what it holds)"
         )
 
     def _expand_commit(self, session: str, commit: str) -> str:
