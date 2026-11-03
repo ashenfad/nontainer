@@ -642,6 +642,41 @@ def test_a_published_handler_imports_a_module_beside_it(tmp_path):
     snapshot.close()
 
 
+def test_the_default_handler_example_serves_once_published(tmp_path):
+    """The example the agent copies answers the same in preview and
+    once published: its data is a file under app/, which a publication
+    carries, and it writes nothing a published handler couldn't."""
+    import textwrap
+
+    from nontainer import Store
+    from nontainer.adapters.render import DEFAULT_HANDLER_EXAMPLE
+    from nontainer.apps import request
+
+    _, code = DEFAULT_HANDLER_EXAMPLE.split("\n", 1)
+    code = textwrap.dedent(code).replace("__WS__", "/workspace")
+
+    store = Store(tmp_path)
+    ws = store.open("author")
+    preview = enable_apps(ws)
+    ws.files.write("app/api/scores.py", code)
+    ws.files.write("app/data/scores.json", json.dumps(["ada", "bo", "cy"]))
+    ws.commit()
+    authored = preview.dispatch(request("GET", "/api/scores?limit=2"))
+    assert json.loads(authored.content) == {"scores": ["ada", "bo"]}
+    pub = store.publish(ws, "scores")
+    ws.close()
+
+    snapshot = pub.open()
+    token = mint_token()
+    app = Starlette()
+    app.mount("/apps", build_router(lambda t: snapshot if t == token else None))
+    client = TestClient(app)
+    assert client.get(f"/apps/{token}/api/scores?limit=2").json() == {
+        "scores": ["ada", "bo"]
+    }
+    snapshot.close()
+
+
 GUESTBOOK = """
 def get(req):
     return {"entries": db.entries()}

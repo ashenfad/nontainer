@@ -294,10 +294,16 @@ called by requests; read filters/actions from params inside a verb.
 Return dict/list (JSON), str (text), bytes, a DataFrame or other table
 (JSON rows, or an Arrow stream when the request sends Accept:
 application/vnd.apache.arrow.stream), or Response(status=, body=);
-raise HttpError(404, 'msg') for error responses. GET handlers
-have a READ-ONLY filesystem and cache. Handlers see the same
-environment as your python code (cache, files via open(), injected
-objects). Use `with open(...)` for writes.
+raise HttpError(404, 'msg') for error responses. req.params is the
+query; req.require("name") or req.require("n", int) reads a JSON body
+field or query param, and answers 400 when it is missing or mistyped.
+Handlers see the same environment as your python code (cache, files
+via open(), injected objects).
+__READONLY_RULE__
+A published app is a snapshot of __WS__/app: its handlers read the
+files under it and see an empty cache. Data a handler serves goes in a
+file under app/; anything an app must remember between requests
+belongs in an object the host gives you.
 
 __CURL_NOTE__
 
@@ -336,27 +342,31 @@ reports exactly what it rejected and why."""
 DEFAULT_HANDLER_EXAMPLE = """\
 Handlers export verb functions; example __WS__/app/api/scores.py:
 
+    import json
+
     def get(req):
         limit = int(req.params.get("limit", 10))
-        return {"scores": cache.get("scores", [])[:limit]}
-
-    def post(req):
-        name = req.require("name")          # a str, else a 400
-        points = req.require("points", int)  # a number takes its type
-        scores = cache.get("scores", []) + [[name, points]]
-        cache["scores"] = scores       # NOT allowed in get() (read-only)
-        return {"ok": True}
+        with open("__WS__/app/data/scores.json") as f:
+            return {"scores": json.load(f)[:limit]}
 """
-"""The handler an agent copies, and the store it keeps state in.
+"""The handler an agent copies, and where its data comes from.
 
 The rules around it — which function names are routed, what a handler
-may return, ``HttpError``, the read-only GET — are nontainer's and stay
-in the template. WHERE a handler puts state is not: ``cache`` is the
-right answer only for a deployment whose apps keep state in the cache,
-and an embedder that hands handlers a database wants the example to
-use that instead. An example is the most emphatic instruction in the
-notes, so an embedder whose rule lives in a primer underneath it is
-contradicted by the code the agent copies first.
+may return, ``HttpError``, the read-only filesystem and cache, what a
+published app holds — are nontainer's and stay in the template. WHERE
+an app keeps what it must remember is not: nontainer has no store to
+offer, so the default reads a file under ``app/``, which is what
+publishing carries, and writes nothing. An embedder that hands handlers
+a database replaces it with an example that uses one. An example is the
+most emphatic instruction in the notes, so an embedder whose rule lives
+in a primer underneath it is contradicted by the code the agent copies
+first.
+
+It keeps no state in ``cache`` or in workspace files, because a
+published app can do neither: a publication carries the files under
+``app/`` and no cache, and its handlers are read-only for every verb.
+An example that kept scores in ``cache`` verified green while authoring
+and answered ``[]`` and 500 once published.
 
 The example carries its own opening line so a replacement can name its
 own file, and ``__WS__`` in it is substituted with the workspace root
@@ -466,6 +476,14 @@ def _handler_example(config: Any) -> str:
     return f"{example}\n" if example else ""
 
 
+def _readonly_rule(config: Any) -> str:
+    """Which handlers run against a read-only filesystem and cache."""
+    return (
+        "GET handlers have a READ-ONLY filesystem and cache; once published,\n"
+        "every handler does."
+    )
+
+
 def _static_assets_note(config: Any) -> str:
     """The sentence for AppsConfig.static_assets, or nothing when none
     are declared. Derived rather than left to ``apps_primer``: an
@@ -533,6 +551,7 @@ def apps_notes(
     notes = (
         _APPS_NOTES_TEMPLATE.replace("__SCRIPT_HOSTS__", _script_hosts_note(config))
         .replace("__HANDLER_EXAMPLE__", _handler_example(config))
+        .replace("__READONLY_RULE__", _readonly_rule(config))
         .replace("__FRONTEND_NOTES__", _frontend_notes(config))
         .replace("__STATIC_ASSETS__", _static_assets_note(config))
         .replace("__WS__", "" if root == "/" else root.rstrip("/"))

@@ -440,8 +440,8 @@ def test_handler_example_is_the_embedders_where_the_store_differs():
     from nontainer.apps import AppsConfig
 
     default = apps_notes(AppsConfig())
-    assert 'cache.get("scores", [])' in default  # the default block, verbatim
-    assert "def post(req):" in default
+    # the default block, verbatim: it reads a file publishing carries
+    assert 'open("/workspace/app/data/scores.json")' in default
 
     house = apps_notes(
         AppsConfig(
@@ -456,17 +456,32 @@ def test_handler_example_is_the_embedders_where_the_store_differs():
     )
     assert "/workspace/app/api/notes.py" in house  # __WS__ substituted
     assert "db.list()" in house
-    assert 'cache.get("scores", [])' not in house
+    assert "app/data/scores.json" not in house
     # nontainer's own contract is untouched either way
     for notes in (default, house):
         assert "ONLY verb functions" in notes
         assert "HttpError(404, 'msg')" in notes
         assert "READ-ONLY" in notes
+        assert "A published app is a snapshot of /workspace/app" in notes
         assert "__HANDLER_EXAMPLE__" not in notes
+        assert "__READONLY_RULE__" not in notes
 
     empty = apps_notes(AppsConfig(handler_example=""))
     assert "def get(req)" not in empty
     assert "ONLY verb functions" in empty
+
+
+def test_the_default_handler_example_keeps_no_state_a_publication_drops():
+    """A publication carries the files under app/ and no cache, and its
+    handlers are read-only for every verb, so an example that kept state
+    in cache verified green while authoring and answered [] and 500 once
+    published. The default reads a file under app/ and writes nothing."""
+    from nontainer.adapters.render import DEFAULT_HANDLER_EXAMPLE
+
+    assert "cache" not in DEFAULT_HANDLER_EXAMPLE
+    assert "def post" not in DEFAULT_HANDLER_EXAMPLE
+    assert '"w"' not in DEFAULT_HANDLER_EXAMPLE
+    assert "__WS__/app/data/" in DEFAULT_HANDLER_EXAMPLE
 
 
 def test_the_termish_terminal_says_there_is_no_node():

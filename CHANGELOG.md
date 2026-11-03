@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **The default handler example keeps no state a publication drops.** It kept scores in `cache`, written by a `post`, but a publication carries the files under `app/` and no cache, and its handlers are read-only for every verb: an app copied from it verified green while authoring and, once published, answered `[]` to the GET and 500 to the POST. The example is now a `get` that reads a file under `app/data/`. The apps notes say what a published app holds (the files under `app/`, an empty cache) and that what an app must remember between requests belongs in an object the host gives it, and teach `req.require`, which only the old `post` showed. An embedder's `handler_example` still replaces the example.
+
 ## 0.11.10 - 2026-10-30
 
 ### Added
