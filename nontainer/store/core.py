@@ -568,7 +568,13 @@ class Store(_Publishing):
         expands against. A whole id another session made raises
         :class:`~nontainer.errors.CommitNotFoundError` rather than
         reading as this session's state; a commit a merge brought in is
-        read under the session that made it.
+        read under the session that made it. One older spelling still
+        reads: a store tag's snapshot used to quote
+        ``<the branch it borrowed>@<commit>`` as its ref (and a version
+        published from one recorded that as ``published_from``), and a
+        whole id a store tag names resolves under any branch for as
+        long as the tag names it. The tag's own ref is the spelling to
+        keep.
 
         HOW LONG A REF READS. Heads only move forward (a checkout
         appends a restoring commit), so a commit on a session's line
@@ -1190,6 +1196,14 @@ class Store(_Publishing):
         commit merged in from another session is that session's, and
         its ref names that session.
 
+        One spelling is read off the line: a whole commit id that a
+        store tag names. A store tag's snapshot used to quote
+        ``<the branch it borrowed>@<commit>`` as its ref, and publish
+        recorded that as a version's ``published_from``, so refs of
+        that shape are saved in stores and by embedders. The tag holds
+        the commit store-wide, and the ref reads for as long as the tag
+        names it. Short ids and the workspace verbs keep the line.
+
         The walk stops at the commit, so a ref to recent work costs a
         few reads; only a ref the line does not hold walks all of it.
         """
@@ -1209,6 +1223,8 @@ class Store(_Publishing):
             repo.get_commit(whole)
         except UnknownCommitError:
             raise CommitNotFoundError(self._no_commit_on(session, commit)) from None
+        if whole in set(self.tags.list().values()):
+            return whole  # the spelling a store tag's snapshot quoted
         raise CommitNotFoundError(not_on_session(session, commit))
 
     def _require_on_line(self, provider: WorkspaceProvider, ref: Ref) -> None:

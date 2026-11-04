@@ -515,6 +515,54 @@ def test_a_store_scoped_read_needs_no_session(tmp_path):
     assert "@store/anchor" in st._branches()
 
 
+def test_a_ref_saved_from_a_tag_snapshot_before_it_quoted_the_tag(tmp_path):
+    """Earlier releases quoted ``<borrowed branch>@<commit>`` as a store
+    tag's snapshot ref, and embedders and publish rows saved it. The
+    commit is on no line of that branch's, and ``store.resolve`` still
+    reads it — while a store tag names that commit, by whole id, and
+    through ``resolve`` alone."""
+    st = Store(tmp_path)
+    with st.open("alpha") as ws:
+        ws.files.write("/workspace/a.txt", "alpha's\n")
+        ws.commit()
+    with st.open("zeta") as ws:
+        ws.files.write("/workspace/z.txt", "zeta's\n")
+        ws.commit()
+        kept = st.tags.add(ws, "kept")
+    old = Ref(st.sessions()[0], kept)  # what tags.at("kept").ref used to be
+    assert old.session == "alpha"
+
+    with st.resolve(old) as snap:
+        assert snap.files.read("/workspace/z.txt") == b"zeta's\n"
+        assert snap.ref == old
+    with pytest.raises(CommitNotFoundError):
+        st.resolve(Ref("alpha", kept[:7]))  # a short id keeps the line
+    with st.open("alpha") as ws:
+        with pytest.raises(CommitNotFoundError, match="another line"):
+            ws.fork("alpha.old", at=old)  # ...and so do the workspace verbs
+
+    # With the tag gone the commit is zeta's again, and only zeta's.
+    st.tags.delete("kept")
+    with pytest.raises(CommitNotFoundError, match="another line"):
+        st.resolve(old)
+    with st.resolve(f"zeta@{kept}") as snap:
+        assert snap.files.read("/workspace/z.txt") == b"zeta's\n"
+
+
+def test_a_ref_saved_from_an_anchored_tag_snapshot_still_resolves(tmp_path):
+    """The store's own anchor was the borrowed branch where no session
+    or publication was there to borrow."""
+    st = Store(tmp_path)
+    with st.open("author") as ws:
+        ws.terminal("echo published > report.txt")
+        kept = st.tags.add(ws, "report")
+    st.delete("author", min_age=0)
+    with st.tags.at("report"):
+        pass  # mints the anchor, as the first such read always did
+    with st.resolve(Ref("@store/anchor", kept)) as snap:
+        assert snap.files.read("report.txt") == b"published\n"
+
+
 def test_the_anchor_is_the_last_resort(tmp_path):
     """A store with a session to read through grows no anchor branch."""
     st = Store(tmp_path)
