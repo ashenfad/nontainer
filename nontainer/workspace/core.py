@@ -1363,7 +1363,10 @@ class Workspace:
         this store never held says so rather than reporting on a
         commit nothing could hold: ``ValueError`` for that, and
         :class:`~nontainer.errors.CommitNotFoundError` for a word that
-        is neither a tag nor a commit of that session.
+        is neither a tag nor a commit of that session. A store-tag ref
+        is checked against its tag, as :meth:`Store.resolve` checks
+        one: :class:`~nontainer.errors.WorkspaceError` once the tag is
+        deleted or names another commit.
         """
         with self._lock:
             self._check_open()
@@ -1384,9 +1387,31 @@ class Workspace:
             )
         parsed = Ref.parse(ref)
         if parsed.tag is not None:
-            return parsed
+            return self._held_tag_ref(parsed)
         commit = self._ref_commit(parsed.session, parsed.commit)
         return Ref(parsed.session, commit, parsed.path)
+
+    def _held_tag_ref(self, ref: "Ref") -> "Ref":
+        """A store-tag ref, checked against its tag and spelled whole.
+
+        A tag ref means the commit its tag names, so it is honored only
+        while the tag still names that commit: the store's own check,
+        the one :meth:`Store.resolve` makes, refuses a ref whose tag
+        was deleted, or deleted and added again at another commit, in
+        the same words for every verb. A commit half typed short is
+        expanded against the tag, as ws-git reads one.
+        """
+        if self._store is None:
+            raise WorkspaceError(
+                f"{str(ref)!r} names a store tag, and this workspace was "
+                "built straight from a provider, so no store holds one; "
+                "open it through Store.open(...) to read a store tag."
+            )
+        held = self._store_tag_ref(ref.tag or "")
+        if held is not None and held.commit.startswith(ref.commit):
+            ref = Ref(ref.session, held.commit, ref.path)
+        self._store._require_tag_at(ref.tag or "", ref)
+        return ref
 
     def _store_tag_ref(self, name: str) -> "Ref | None":
         """The ref for a store tag of this name, or ``None`` where no
@@ -1551,7 +1576,8 @@ class Workspace:
         if isinstance(ref, Ref) or "@" in text:
             parsed = Ref.parse(text)
             if parsed.tag is not None:
-                return str(parsed), parsed.commit
+                tagged = self._held_tag_ref(parsed)
+                return str(tagged), tagged.commit
             commit = self._ref_commit(parsed.session, parsed.commit)
             return str(Ref(parsed.session, commit)), commit
         try:
