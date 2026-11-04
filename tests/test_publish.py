@@ -200,6 +200,63 @@ def test_the_published_commit_holds_the_subtree_and_nothing_else(tmp_path):
     ws.close()
 
 
+def _tag_snapshot_store(tmp_path):
+    """A store whose tagged commit is zeta's, read through the branch
+    the tag snapshot borrows (alpha's, which sorts first)."""
+    store = Store(tmp_path)
+    with store.open("alpha") as ws:
+        ws.files.write("notes.txt", "alpha's")
+        ws.commit()
+    ws = seeded(store, "zeta")
+    kept = store.tags.add(ws, "kept")
+    ws.close()
+    return store, kept
+
+
+def test_a_version_published_from_a_store_tag_records_the_tags_ref(tmp_path):
+    """The snapshot's session is a branch it only borrowed; the tag is
+    where the state came from, and its ref reads back."""
+    store, kept = _tag_snapshot_store(tmp_path)
+    with store.tags.at("kept") as snap:
+        assert snap.session == "alpha"
+        pub = store.publish(snap, "scoreboard")
+    version = pub.current_version
+    assert version.published_from == Ref.at_tag("kept", kept)
+    assert pub.open().log()[0].info["published_from"] == str(version.published_from)
+    with store.resolve(version.published_from) as source:
+        assert (
+            source.files.read("/workspace/notes/private.txt")
+            == b"the transcript lives here"
+        )
+
+
+def test_a_tag_publish_that_died_spelling_its_source_the_old_way_is_resumed(
+    tmp_path, monkeypatch
+):
+    """An attempt that died under a release recording the borrowed
+    branch is the same attempt to a retry recording the tag: the source
+    is compared by its commit. The row records what the commit says."""
+    store, kept = _tag_snapshot_store(tmp_path)
+    with store.tags.at("kept") as snap:
+        tag, snap._store_tag = snap._store_tag, None  # an earlier release
+        _registry_write_dies(monkeypatch)
+        with pytest.raises(RuntimeError):
+            store.publish(snap, "scoreboard")
+        monkeypatch.undo()
+        stranded = store.tags.list()["scoreboard/v1"]
+
+        snap._store_tag = tag
+        pub = store.publish(snap, "scoreboard")
+    version = pub.current_version
+    assert version.ref.commit == stranded
+    assert version.published_from == Ref("alpha", kept)  # as the commit says
+    with store.resolve(version.published_from) as source:  # ...and it reads
+        assert (
+            source.files.read("/workspace/notes/private.txt")
+            == b"the transcript lives here"
+        )
+
+
 def test_provenance_is_a_soft_ref_not_a_parent(tmp_path):
     """The publication's history is one commit deep: the session it came
     from is named in the info, and pinned by nothing."""

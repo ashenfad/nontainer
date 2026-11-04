@@ -124,7 +124,11 @@ class Version:
     ``ref`` points at it on the publication's own branch, and
     ``published_from`` is the session ref it was derived from — a soft
     reference recorded in the commit's info, not a parent pointer, so
-    the version pins none of that session's history.
+    the version pins none of that session's history. A version
+    published from a store tag's snapshot records the tag's ref
+    (``published_from.tag``); one published that way before this was
+    recorded names the branch the read borrowed, which
+    :meth:`Store.resolve` still reads while the tag names that commit.
 
     ``info`` is the caller's own metadata from ``publish(info=...)``,
     recorded on the registry row as well as in the commit, so listing
@@ -384,6 +388,15 @@ def _is_publish_attempt(
     if any(key not in info for key in _PUBLISH_IDENTITY_KEYS):
         return False
     return all(info.get(key) == value for key, value in expect.items())
+
+
+def _source_commit(published_from: Any) -> Any:
+    """The commit half of a recorded ``published_from``, or the value
+    as it came where it does not parse as a ref."""
+    try:
+        return Ref.parse(published_from).commit
+    except ValueError:
+        return published_from
 
 
 def _next_version(versions: Mapping[str, Any]) -> str:
@@ -683,7 +696,15 @@ class _Publishing:
                 )
             tag = f"{name}/{chosen}"
             branch = f"{_PUB_BRANCH_PREFIX}{name}/{chosen}"
-            published_from = Ref(session=ws.session, commit=head)
+            # A store tag's snapshot reads through a branch it only
+            # borrows, and that branch's name is no record of where the
+            # state came from: the tag's ref is, and it reads back.
+            source_tag = getattr(ws, "_store_tag", None)
+            published_from = (
+                Ref.at_tag(source_tag, head)
+                if source_tag is not None
+                else Ref(session=ws.session, commit=head)
+            )
             commit_info: dict[str, Any] = {
                 "tool": "publish",
                 "name": name,
@@ -738,7 +759,9 @@ class _Publishing:
             versions[chosen] = {
                 "tag": tag,
                 "ref": str(Ref(session=branch, commit=commit)),
-                "published_from": str(published_from),
+                # The commit's own spelling: an adopted attempt may have
+                # recorded its source the way an earlier release did.
+                "published_from": str(landed.get("published_from") or published_from),
                 "created": time.time(),
                 "root": ws.root,
                 "paths": list(landed.get("paths") or sorted(paths)),
@@ -1202,16 +1225,23 @@ class _Publishing:
         The whole tree is not compared. What identifies the attempt is
         what it was told to do — one source commit, one set of paths and
         exclusions — because publishing that twice writes the same files
-        either way.
+        either way. The source is compared by its COMMIT: the ref's
+        other half is how it was spelled, and a store tag's snapshot
+        recorded the branch it borrowed before it recorded the tag.
         """
         from ..providers.kvgit import KvgitProvider
 
         commit, found = self._branch_head(branch)
         if commit is None:
             return None
-        if not _is_publish_attempt(
-            found, {key: commit_info.get(key) for key in _RESERVED_INFO_KEYS}
-        ):
+        expect = {
+            key: commit_info.get(key)
+            for key in _RESERVED_INFO_KEYS
+            if key != "published_from"
+        }
+        if not _is_publish_attempt(found, expect) or _source_commit(
+            (found or {}).get("published_from")
+        ) != _source_commit(commit_info.get("published_from")):
             return None
         landed = dict(found or {})
         existing = self._raw_tag_info(tag)

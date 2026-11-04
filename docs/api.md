@@ -282,7 +282,11 @@ one; a workspace from elsewhere is refused rather than silently tagging
 to no session, `store.tags.at(name).session` names whichever branch the
 read was anchored on — the tag is the identity there, not the session,
 and the snapshot's `ref` quotes the tag (`ref.tag == name`), which
-`store.resolve` reads back for as long as the tag exists.
+`store.resolve` reads back for as long as the tag exists. A version
+published from the snapshot records that ref as its `published_from`.
+Earlier releases quoted `<borrowed branch>@<commit>` in both places, and
+`store.resolve` still reads a saved ref of that shape while a store tag
+names its commit; the workspace verbs take the tag's ref.
 kvgit has no handle without a branch, so the read borrows one where it
 can and mints one where it cannot: a session if the store has any,
 otherwise a publication's own `@store/pub/...` branch, otherwise the
