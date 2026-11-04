@@ -911,6 +911,8 @@ ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
 ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
 ws.apply(base, theirs, *, paths=None, message=None) -> MergeOutcome
                                                  # the change from one state to another
+ws.land(base, theirs, *, info=None, expect_head=None) -> str | None
+                                                 # a fork's result, as a framework commit
 ws.discard() -> None                             # drop staged writes
 ws.turn(run_id=None, *, resume=False, inbox=None, harness=None, sources=()) -> Turn
                                                  # one run of a harness's loop;
@@ -1285,6 +1287,49 @@ ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")  # the release's chang
 It lands in the agent's graph as `ws-git.apply` (`Apply sheets/v1..sheets/v2`
 in `ws-git log`, or `message`), recording both states (`applied`) and
 the `paths`, and refuses, conflicts and commits nothing as revert does.
+
+**`ws.land(base, theirs, *, info=None, expect_head=None)`** is the
+host's verb for work run in a fork: fork the session at the commit the
+work starts from, let the work commit its result in the fork (another
+process can do that, against the same store), then land the change from
+the fork point to that result here. It needs `caps.land`. What moves is
+the session's state: files (writes, deletes, empty directories,
+per-file metadata), cache sets and deletes, and the cwd. The session's
+bookkeeping stays as it is, whatever the result holds: the agent's
+ws-git blob, the view seed, the stored conversation and compaction's
+records. It lands as one framework commit, outside the agent's graph,
+so the agent's `ws-git status` shows the landed files as working-tree
+changes, as if the work had run here. It returns the commit, or `None`
+when the change holds nothing this session lacks.
+
+```python
+with ws.lock:
+    dispatch = ws.commit({"tool": "dispatch"})     # the state the task starts from
+# in a worker, possibly another process:
+child = Store(path).fork("demo", "_task.1", at=dispatch)
+...                                                # the task's work
+result = child.commit({"tool": "task"})
+# back on the host:
+ws.land(dispatch, f"_task.1@{result}", info={"attempt": 1}, expect_head=dispatch)
+```
+
+`base` and `theirs` are exact states: `session@commit` on any session,
+a `Ref`, a store tag's ref, or a bare commit of this session. `info` is
+recorded as given: `tool` is `"land"` unless it names its own, and
+`landed` holds the two states, spelled whole. `expect_head` refuses the
+land unless the session's head is that commit (`HeadMoved`, with
+`expected` and `head`). The check is the commit's own compare-and-swap,
+so a head another process moved is refused too. Without it, the change
+lands on the head as it is now, and a file or cache key the session
+changed differently since `base` refuses the whole change
+(`LandConflict`, with `conflicts`). Neither way writes conflict markers
+or leaves merge state, and both refuse staged work. Authoring output
+lands like any file, since the work counts as this session's, and a
+narrowed view's rule holds as it does for a take. The cwd lands where
+the result stored one: a session with mounts keeps its cwd, and so does
+a land of work done in a worker opened with mounts, which stores none.
+Queueing, retries, validation of what a change may touch, and deleting
+the fork afterwards are the embedder's.
 
 Unversioned providers raise `NotSupportedError`; `autocommit` is
 forced off for them. With autocommit on, each successful mutating
@@ -2547,10 +2592,10 @@ Two ship:
 They declare what they can do rather than pretending equivalence, and
 `ws.caps` is that declaration:
 
-| | versioned | staging | cheap_fork | merge | tags | sql_audit |
-|---|---|---|---|---|---|---|
-| Kvgit | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
-| AgentFS | ❌ (spike) | ❌ | ❌ | ❌ | ❌ | ✅ |
+| | versioned | staging | cheap_fork | merge | land | tags | sql_audit |
+|---|---|---|---|---|---|---|---|
+| Kvgit | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| AgentFS | ❌ (spike) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 A verb a backend lacks raises `NotSupportedError` naming the
 capability, so a narrower substrate is a smaller surface rather than a
@@ -2626,7 +2671,9 @@ and arguments that don't fit a constructor (`HostObject`,
 `TurnInProgress` (a turn is already open on this workspace) ·
 `BranchExpired` (the job's branch was swept) · `LegacyLayoutError` (a
 head written before monkeyfs 0.1.10, which `store.migrate_layout`
-converts) · `CacheError` (a cache
+converts) · `HeadMoved` (`ws.land(expect_head=)` found the session
+elsewhere) · `LandConflict` (a land's change and the session changed
+the same file or cache key differently) · `CacheError` (a cache
 write that cannot complete — also a `ValueError`) · `HarvestLost` (a
 remote executor lost its guest between a successful exec and the write
 harvest, so the call is torn rather than absent — also a

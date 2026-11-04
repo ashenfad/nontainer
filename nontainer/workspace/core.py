@@ -1785,11 +1785,7 @@ class Workspace:
     def _fork_point(self, at: "str | Ref") -> str:
         """The commit ``fork(at=)`` names: a bare word read as this
         session's, a ref as the session (or store tag) it names."""
-        from ..store import Ref
-
-        if isinstance(at, Ref) or "@" in str(at):
-            return self._read_ref(at).commit
-        return self._ref_commit(self.session, at)
+        return self._exact_state(at)[1]
 
     def _seed_fork(
         self,
@@ -2370,6 +2366,131 @@ class Workspace:
             info=info,
             paths=wanted,
         )
+
+    def land(
+        self,
+        base: "str | Ref",
+        theirs: "str | Ref",
+        *,
+        info: "Mapping[str, Any] | None" = None,
+        expect_head: "str | Ref | None" = None,
+    ) -> str | None:
+        """Apply the change from ``base`` to ``theirs`` onto this
+        session as one framework commit; returns its id, or ``None``
+        when the change holds nothing this session lacks.
+
+        The host-side verb for work run in a fork: fork this session at
+        the commit the work starts from, let the work commit its result
+        there (another process may do it, against the same store), then
+        land that change here. What moves is the session's STATE: files
+        (writes, deletes, empty directories, per-file metadata), cache
+        sets and deletes, and the cwd. The session's own bookkeeping
+        stays as it is, whatever ``theirs`` holds: the agent's ws-git
+        blob, the view seed, the stored conversation, compaction's
+        records. The commit is a framework commit, so the agent's
+        ``ws-git status`` shows the landed files as working-tree changes,
+        exactly as if the work had run here.
+
+        ``base`` and ``theirs`` are exact states: a ``session@commit``
+        on any session in the store, a :class:`Ref`, a store tag's ref,
+        or a bare commit (or ws-git tag) of this session. ``info`` is
+        recorded as given, readable through :meth:`log`. ``tool``
+        is ``"land"`` unless it names its own, and ``landed`` is the
+        two states, spelled whole, which the caller may not set.
+
+        ``expect_head`` refuses the land unless this session's head is
+        that commit: :class:`~nontainer.errors.HeadMoved`, with nothing
+        written, decided by the commit's own compare-and-swap so a head
+        another process moves is refused too. Without it the change
+        lands on the head as it is now, and a file or cache key this
+        session changed differently since ``base`` refuses the whole
+        change (:class:`~nontainer.errors.LandConflict`, nothing
+        written). Either way: no conflict markers, no merge state.
+        Staged work is refused, so it cannot ride into the commit.
+
+        Authoring output lands like any other file: the work counts as
+        this session's. A narrowed view's rule still holds: a path it
+        hides is refused, and one the change creates joins it.
+
+        The cwd lands where ``theirs`` stored one. Two cases leave it
+        where it is: a workspace that keeps the cwd itself (a mount
+        composition, whose cwd is never committed), and work whose
+        commit stored none, which is what a worker opened with mounts
+        leaves behind (the root it parks the filesystem at, read as no
+        cwd, as opening a session reads it). Requires ``caps.land``.
+        """
+        with self._lock:
+            self._check_open()
+            self._check_writable("land")
+            caps = self._provider.caps
+            if not (caps.versioned and caps.land):
+                raise NotSupportedError(
+                    f"{type(self._provider).__name__} can't land a change: "
+                    "land() needs caps.land. Use the kvgit backend."
+                )
+            given = dict(info or {})
+            if "landed" in given:
+                raise ValueError(
+                    "info key 'landed' is land's own: it records the two "
+                    "states the change was read between. Name yours "
+                    "something else."
+                )
+            base_ref, base_commit = self._exact_state(base)
+            theirs_ref, theirs_commit = self._exact_state(theirs)
+            expected = None
+            if expect_head is not None:
+                expected = self._expand_commit(
+                    str(getattr(expect_head, "commit", expect_head))
+                )
+            carry_cwd = not (self._composed and self._owns_cwd) and self._stores_cwd(
+                theirs_commit
+            )
+            view = self._view_fs
+            before = None if view is None else (view.view, self._view)
+            try:
+                landed = self._provider.land(
+                    base_commit,
+                    theirs_commit,
+                    info={"tool": "land", **given, "landed": [base_ref, theirs_ref]},
+                    expect_head=expected,
+                    cwd=carry_cwd,
+                    **({} if view is None else {"admit": view.admit}),
+                )
+            except BaseException:
+                if view is not None and before is not None:
+                    view.reset(before[0])
+                    self._view = before[1]
+                raise
+            if landed is not None:
+                # provider state moved under the executor: flag its view.
+                self._mark_executor_stale()
+            return landed
+
+    def _stores_cwd(self, commit: str) -> bool:
+        """Whether ``commit`` holds a cwd of its own, by the rule opening
+        a session reads one: under a root other than ``/``, an absent
+        key and the root itself mean none was stored. A mount
+        composition parks the filesystem at the root and commits that,
+        so its sessions store no cwd."""
+        try:
+            value = self._provider.key_at(commit, _cwd_key())
+        except NotSupportedError:
+            return True
+        if not isinstance(value, str):
+            return False
+        return value != "/" or self._root == "/"
+
+    def _exact_state(self, at: "str | Ref") -> tuple[str, str]:
+        """``(ref, commit)`` for one exact state, as ``fork(at=)`` and
+        :meth:`land` read one: a ref (``session@commit``, a
+        :class:`Ref`, a store tag's ref) names the state it names, and a
+        bare word is this session's commit or ws-git tag. The ref comes
+        back spelled whole, for a record."""
+        if isinstance(at, Ref) or "@" in str(at):
+            ref = self._read_ref(at)
+            return str(Ref(ref.session, ref.commit)), ref.commit
+        commit = self._ref_commit(self.session, str(at))
+        return str(Ref(self.session, commit)), commit
 
     def cherry_pick(self, ref: "str | Ref") -> MergeOutcome:
         """Apply one commit's change from another session; returns the

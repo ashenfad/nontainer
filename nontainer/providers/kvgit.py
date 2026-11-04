@@ -77,6 +77,10 @@ from ..views import parse_seed
 #: committing to this session in a loop and the caller has to be told.
 _CHECKOUT_ATTEMPTS = 5
 
+# How many times a land without an expected head computes the change
+# afresh when another writer moves the branch under it.
+_LAND_ATTEMPTS = 5
+
 _KVGIT_CAPS = Capabilities(
     versioned=True,
     staging=True,
@@ -86,6 +90,7 @@ _KVGIT_CAPS = Capabilities(
     sql_audit=False,
     fuse_mount=False,
     tags=True,
+    land=True,
 )
 
 # A key an apply removes, in its plan (see KvgitProvider._plan_applied).
@@ -127,6 +132,16 @@ class _TextMerges:
         """Whether ``key`` holds the bytes of a merge that conflicted."""
         made = self._made.get(key) if key is not None else None
         return made is not None and made[1] and state.get(key) == made[0]
+
+
+def _moved(session: str, expected: str, head: "str | None") -> str:
+    """Why a guarded land refused: where the head is, and what it was
+    expected to be."""
+    found = "no commit" if head is None else head[:7]
+    return (
+        f"session {session!r} is at {found}, not {expected[:7]} as expected: "
+        "it moved since the change was made, and nothing was landed"
+    )
 
 
 def _same(a: Any, b: Any) -> bool:
@@ -1559,8 +1574,7 @@ class KvgitProvider:
         is ever written to this head.
         """
         from kvgit import MergeChoice, MergeConflict
-        from kvgit.versioned.keyset import KeysetEntry, MetaEntry
-        from kvgit.versioned.merge import Change, pick_merge_policy, resolve_merge
+        from kvgit.versioned.merge import pick_merge_policy
 
         from ..migrate import current_layout
 
@@ -1590,61 +1604,9 @@ class KvgitProvider:
         if not changed:
             return MergeOutcome(merged=False, commit=None, conflicts=(), auto_merged=())
 
-        # kvgit resolves a three-way from each side's CHANGES since the
-        # base — per key, an entry there and an entry here, each naming
-        # content by id, with a reader from id to value — and it
-        # compares those ids only within one key. So the three trees are
-        # handed to it as ids of values: one per distinct value of a key,
-        # and a reader that hands the value back. That keeps the
-        # resolution kvgit's own (equal-content shortcuts, removals, the
-        # order a policy is picked in) while the base is ours to name,
-        # which is the whole difference between this and a merge.
-        values: dict[str, Any] = {}
-        base_keys: dict[str, str] = {}
-        our_keys: dict[str, str] = {}
-        their_keys: dict[str, str] = {}
-        for key in changed:
-            slots: list[tuple[Any, str]] = []
-            for keyset, handle in (
-                (base_keys, at_base),
-                (our_keys, self._wt),
-                (their_keys, at_theirs),
-            ):
-                if handle is None or key not in handle:
-                    continue
-                value = handle.get(key)
-                for held, name in slots:
-                    if _same(held, value):
-                        keyset[key] = name
-                        break
-                else:
-                    name = f"{key}#{len(slots)}"
-                    slots.append((value, name))
-                    values[name] = value
-                    keyset[key] = name
-
-        def entry(name: str | None) -> Any:
-            # Every entry carries the same metadata, so two entries are
-            # equal exactly when they name the same value.
-            return (
-                None if name is None else KeysetEntry(blob=name, meta=MetaEntry(size=0))
-            )
-
-        def changes(side: dict[str, str]) -> dict[str, Any]:
-            return {
-                key: Change(entry(base_keys.get(key)), entry(side.get(key)))
-                for key in changed
-                if side.get(key) != base_keys.get(key)
-            }
-
         try:
-            resolution = resolve_merge(
-                changes(our_keys),
-                changes(their_keys),
-                values.get,
-                merge_fns,
-                None,
-                merge_prefixes,
+            resolution, values = self._resolve_change(
+                changed, at_base, at_theirs, merge_fns, merge_prefixes
             )
         except MergeConflict as e:
             return MergeOutcome(
@@ -1699,6 +1661,80 @@ class KvgitProvider:
             auto_merged=tuple(sorted(set(paths.values()) - set(conflicts))),
         )
 
+    def _resolve_change(
+        self,
+        changed: "Collection[str]",
+        at_base: Any,
+        at_theirs: Any,
+        merge_fns: dict[str, Any],
+        merge_prefixes: dict[str, Any],
+    ) -> "tuple[Any, dict[str, Any]]":
+        """Three-way ``changed`` between the base, this tree and theirs;
+        returns kvgit's resolution and the values its ids name. Raises
+        kvgit's ``MergeConflict`` for keys no rule resolves.
+
+        kvgit resolves a three-way from each side's CHANGES since the
+        base — per key, an entry there and an entry here, each naming
+        content by id, with a reader from id to value — and it compares
+        those ids only within one key. So the three trees are handed to
+        it as ids of values: one per distinct value of a key, and a
+        reader that hands the value back. That keeps the resolution
+        kvgit's own (equal-content shortcuts, removals, the order a
+        policy is picked in) while the base is the caller's to name,
+        which is the whole difference between an apply or a land and a
+        merge.
+        """
+        from kvgit.versioned.keyset import KeysetEntry, MetaEntry
+        from kvgit.versioned.merge import Change, resolve_merge
+
+        values: dict[str, Any] = {}
+        base_keys: dict[str, str] = {}
+        our_keys: dict[str, str] = {}
+        their_keys: dict[str, str] = {}
+        for key in changed:
+            slots: list[tuple[Any, str]] = []
+            for keyset, handle in (
+                (base_keys, at_base),
+                (our_keys, self._wt),
+                (their_keys, at_theirs),
+            ):
+                if handle is None or key not in handle:
+                    continue
+                value = handle.get(key)
+                for held, name in slots:
+                    if _same(held, value):
+                        keyset[key] = name
+                        break
+                else:
+                    name = f"{key}#{len(slots)}"
+                    slots.append((value, name))
+                    values[name] = value
+                    keyset[key] = name
+
+        def entry(name: str | None) -> Any:
+            # Every entry carries the same metadata, so two entries are
+            # equal exactly when they name the same value.
+            return (
+                None if name is None else KeysetEntry(blob=name, meta=MetaEntry(size=0))
+            )
+
+        def changes(side: dict[str, str]) -> dict[str, Any]:
+            return {
+                key: Change(entry(base_keys.get(key)), entry(side.get(key)))
+                for key in changed
+                if side.get(key) != base_keys.get(key)
+            }
+
+        resolution = resolve_merge(
+            changes(our_keys),
+            changes(their_keys),
+            values.get,
+            merge_fns,
+            None,
+            merge_prefixes,
+        )
+        return resolution, values
+
     def _plan_applied(
         self, changed: "Iterable[str]", resolution: Any, values: dict[str, Any]
     ) -> dict[str, Any]:
@@ -1736,6 +1772,172 @@ class KvgitProvider:
             else:
                 self._wt[key] = value
         return set(plan)
+
+    def land(
+        self,
+        base: str,
+        theirs: str,
+        *,
+        info: dict[str, Any] | None = None,
+        expect_head: str | None = None,
+        admit: Callable[[list[str]], None] | None = None,
+        cwd: bool = True,
+    ) -> str | None:
+        """Apply the change from ``base`` to ``theirs`` to this
+        session's STATE as one appended commit; returns it, or ``None``
+        when the change holds nothing this tree lacks.
+
+        What moves is the allowlist in :meth:`_landed_keys`: file blobs
+        and metadata rows, cache keys and (with ``cwd``) the cwd. The
+        rest of the change is the other session's bookkeeping, its
+        ws-git blob, view seed, conversation and compaction's records,
+        and it stays out of this tree whatever it holds. ``info`` is
+        recorded as given; the commit's only parent is this head.
+
+        The same three-way an apply resolves, against the head and with
+        no text merge: a key both sides changed to different values is
+        a :class:`~nontainer.errors.LandConflict`, raised with nothing
+        written. Metadata rows merge field by field, so two writers into
+        one directory do not collide on its row, and the cwd takes
+        theirs where the change moved it.
+
+        THE GUARD. With ``expect_head``, the commit lands only as a
+        fast-forward from that head, decided by kvgit's compare-and-swap
+        (``on_moved="raise"``): a head this handle holds elsewhere, or a
+        branch another process moved, raises
+        :class:`~nontainer.errors.HeadMoved` with nothing written.
+        Without it, a branch that moves under the commit is refreshed
+        to and the change resolved against the new head, bounded by
+        ``_LAND_ATTEMPTS``: never merged by kvgit's own concurrent-write
+        rules, which know nothing of a land's.
+        """
+        from kvgit import BranchMovedError, MergeConflict
+
+        from ..errors import HeadMoved, LandConflict
+        from ..migrate import current_layout
+
+        self._refuse_frozen("land")
+        if self.dirty:
+            raise WorkspaceError(
+                "uncommitted changes on this branch; a land needs a clean "
+                "tree to land on — commit or discard them first"
+            )
+        at_base = current_layout(self._snapshot(base))
+        at_theirs = current_layout(self._snapshot(theirs))
+        changed = self._landed_keys(base, theirs, at_base, at_theirs, cwd=cwd)
+        merge_fns = self._land_rules(changed, at_base, at_theirs)
+        attempts = 0
+        while True:
+            head = self._wt.head
+            if expect_head is not None and head != expect_head:
+                raise HeadMoved(
+                    _moved(self._session, expect_head, head),
+                    expected=expect_head,
+                    head=head,
+                )
+            try:
+                resolution, values = self._resolve_change(
+                    changed, at_base, at_theirs, merge_fns, {}
+                )
+            except MergeConflict as e:
+                conflicts = tuple(sorted(self._land_conflicts(e)))
+                raise LandConflict(
+                    f"can't land {theirs[:7]} on session {self._session!r}: "
+                    "this session changed the same things differently since "
+                    f"{base[:7]} ({', '.join(conflicts)}). Nothing was written.",
+                    conflicts=conflicts,
+                ) from None
+            plan = self._plan_applied(changed, resolution, values)
+            if not plan:
+                return None
+            try:
+                if admit is not None:
+                    admit(self._touched_files(plan))
+                self._stage_applied(plan)
+                result = self._wt.commit(info=info, on_moved="raise")
+            except BranchMovedError as e:
+                self._wt.discard()
+                self._invalidate_fs()
+                if expect_head is not None:
+                    raise HeadMoved(
+                        _moved(self._session, expect_head, e.head),
+                        expected=expect_head,
+                        head=e.head,
+                    ) from None
+                attempts += 1
+                if attempts >= _LAND_ATTEMPTS:
+                    raise WorkspaceError(
+                        f"land on session {self._session!r} could not settle in "
+                        f"{_LAND_ATTEMPTS} attempts: the branch head keeps moving "
+                        "under it. Another handle is writing to this session; "
+                        "nothing was written, and landing again once that "
+                        "writer is done lands the change."
+                    ) from None
+                self._wt.refresh()
+                self._invalidate_fs()
+                continue
+            except BaseException:
+                # The buffer holds only what this call put there.
+                self._wt.discard()
+                self._invalidate_fs()
+                raise
+            if not result.merged:
+                self._wt.discard()
+                self._invalidate_fs()
+                raise WorkspaceError(
+                    f"land on session {self._session!r} did not commit: {result}"
+                )
+            self._invalidate_fs()
+            return self._wt.head
+
+    def _landed_keys(
+        self, base: str, theirs: str, at_base: Any, at_theirs: Any, *, cwd: bool
+    ) -> set[str]:
+        """The keys of a change that a land moves: the session's state.
+
+        An allowlist rather than a list of what stays, so a plane added
+        later stays put until it is named here. Files are their blobs
+        and their metadata rows (a directory, empty or not, is a row);
+        the cache is every key under its prefix; the cwd is its one
+        key, left alone where the workspace keeps the cwd itself.
+        """
+        from monkeyfs import VirtualFS
+
+        changed = self._changed_keys(base, theirs, at_base, at_theirs)
+        files = self._file_keys(changed)
+        return {
+            key
+            for key in changed
+            if key in files
+            or VirtualFS.is_metadata_key(key)
+            or key.startswith(CACHE_PREFIX)
+            or (cwd and key == VirtualFS.CWD_KEY)
+        }
+
+    def _land_rules(
+        self, changed: "Iterable[str]", at_base: Any, at_theirs: Any
+    ) -> dict[str, Any]:
+        """The merge functions a land resolves by. A file's content and
+        a cache value have none, so a key both sides changed to
+        different values is a conflict rather than a merge."""
+        from kvgit import MergeChoice
+        from monkeyfs import VirtualFS
+
+        merge_fns: dict[str, Any] = {VirtualFS.CWD_KEY: MergeChoice.THEIRS}
+        for key in changed:
+            if VirtualFS.is_metadata_key(key):
+                merge_fns[key] = self._row_merge_fn(key, at_theirs, at_base)
+        return merge_fns
+
+    def _land_conflicts(self, exc: Exception) -> set[str]:
+        """A land's conflicts as a caller names them: files by path,
+        cache keys as ``cache:<key>``."""
+        return {
+            f"cache:{name[len(CACHE_PREFIX) :]}"
+            if name.startswith(CACHE_PREFIX)
+            else name
+            for name in self._display_conflicts(exc)
+        }
 
     def _touched_files(self, keys: "Iterable[str]") -> list[str]:
         """The workspace paths these keys change, as a write rule asks

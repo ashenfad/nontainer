@@ -213,6 +213,13 @@ class Capabilities:
     ``nontainer/agentgit.py``). Appended last so earlier positional
     ``Capabilities(...)`` constructions keep their meaning."""
 
+    land: bool = False
+    """``land`` applies the change between two commits of any session
+    here as one framework commit: files, cache and cwd, with the
+    session's own bookkeeping left as it is (see ``Workspace.land``).
+    When False, ``land`` raises ``NotSupportedError``. Appended last,
+    as ``index`` was."""
+
 
 @dataclass(frozen=True)
 class CommitInfo:
@@ -689,6 +696,45 @@ class WorkspaceProvider(Protocol):
         with nothing written, and what it writes to the tree rides the
         apply's commit (a narrowed view's write rule, put by the
         workspace).
+        """
+        ...
+
+    def land(
+        self,
+        base: str,
+        theirs: str,
+        *,
+        info: dict[str, Any] | None = None,
+        expect_head: str | None = None,
+        admit: Callable[[list[str]], None] | None = None,
+        cwd: bool = True,
+    ) -> str | None:
+        """Apply the change from ``base`` to ``theirs`` here as ONE
+        appended commit carrying ``info``; returns its id, or ``None``
+        when the change holds nothing this tree lacks (requires
+        ``caps.land``).
+
+        Unlike :meth:`apply`, what moves is the session's STATE: files
+        (blobs and metadata rows), cache keys and the cwd. Everything
+        else under the change, the ws-git blob, the view seed, the
+        stored conversation and compaction's records among it, stays
+        as this tree holds it. ``cwd`` False leaves the cwd key alone
+        too, for a workspace whose cwd is not the provider's to keep.
+
+        No conflict markers and no merge state: a file or cache key
+        both this tree and the change touched, to different values,
+        raises :class:`~nontainer.errors.LandConflict` with nothing
+        written. Directory and file metadata merge field by field, and
+        a cwd the change moved takes theirs.
+
+        ``expect_head`` names the commit this head must be: anything
+        else raises :class:`~nontainer.errors.HeadMoved` with nothing
+        written, decided by the commit's own compare-and-swap so a
+        writer in another process cannot slip between the check and
+        the commit. Without it, a head another writer moves is landed
+        on afresh. Refuses with ``WorkspaceError`` on uncommitted
+        changes here; a commit the provider does not hold raises
+        ``CommitNotFoundError``. ``admit`` is :meth:`apply`'s.
         """
         ...
 

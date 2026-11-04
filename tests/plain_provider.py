@@ -137,6 +137,9 @@ class PlainProvider:
     ) -> Any:
         raise self._unsupported("apply")
 
+    def land(self, base: Any, theirs: Any, **_: Any) -> Any:
+        raise self._unsupported("land")
+
     def commit_keys(self, info: Any = None, *, keys: Any = ()) -> Any:
         raise self._unsupported("commit_keys")
 

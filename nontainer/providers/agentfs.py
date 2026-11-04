@@ -616,6 +616,18 @@ class AgentFSProvider:
     ) -> Any:
         raise self._unsupported("apply")
 
+    def land(
+        self,
+        base: Any,
+        theirs: Any,
+        *,
+        info: Any = None,
+        expect_head: Any = None,
+        admit: Any = None,
+        cwd: Any = True,
+    ) -> Any:
+        raise self._unsupported("land")
+
     def commit_keys(self, info: Any = None, *, keys: Any = ()) -> Any:
         raise self._unsupported("commit_keys")
 
