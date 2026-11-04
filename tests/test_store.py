@@ -370,6 +370,57 @@ def test_fork_at_takes_a_ref_into_another_session_or_a_store_tag(tmp_path):
         ws.close()
 
 
+def test_a_store_tag_ref_reads_only_while_its_tag_names_it(tmp_path):
+    """A tag ref means the commit its tag names: every verb that reads
+    one checks it against the tag, as ``store.resolve`` does, so a ref
+    outlived by its tag — or made up — forks, takes and applies nothing,
+    even while the commit itself is still held."""
+    st = Store(tmp_path)
+    with st.open("other") as other:
+        other.files.write("/workspace/b.txt", "first\n")
+        other.commit()
+        first = other.head
+        st.tags.add(other, "kept")
+        other.files.write("/workspace/b.txt", "second\n")
+        other.commit()
+    ws = st.open("demo")
+    try:
+        # A commit half typed short is read against the tag.
+        short = f"@store/tag/kept@{first[:7]}"
+        assert ws.expand_ref(short) == ws.expand_ref("kept")
+        with ws.fork("demo.short", at=short) as child:
+            assert child.files.read("/workspace/b.txt") == b"first\n"
+        ws.checkout(short, paths=["/workspace/b.txt"])
+        assert ws.files.read("/workspace/b.txt") == b"first\n"
+
+        stale = ws.expand_ref("kept")
+        st.tags.delete("kept")  # "other" still holds the commit
+        made_up = Ref.at_tag("missing", first)
+        for ref in (stale, made_up):
+            for read in (
+                lambda: st.resolve(ref),
+                lambda: ws.expand_ref(ref),
+                lambda: ws.fork("demo.stale", at=ref),
+                lambda: ws.checkout(ref, paths=["/workspace/b.txt"]),
+                lambda: ws.apply(None, ref, paths="/workspace/b.txt"),
+                lambda: ws.files.attach(ref, "peek"),
+            ):
+                with pytest.raises(WorkspaceError, match="No such store tag"):
+                    read()
+
+        # Deleted and added again elsewhere: a different state under the
+        # same word, which the old ref is no way to read.
+        with st.open("other") as other:
+            assert st.tags.add(other, "kept") != first
+        with pytest.raises(WorkspaceError, match="names commit"):
+            ws.fork("demo.moved", at=stale)
+        with pytest.raises(WorkspaceError, match="names commit"):
+            ws.checkout(stale, paths=["/workspace/b.txt"])
+        assert st.sessions() == ["demo", "demo.short", "other"]
+    finally:
+        ws.close()
+
+
 # -- store-scoped tags -------------------------------------------------------
 
 

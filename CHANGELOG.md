@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **A ref names a session AND a commit, whole id or short** (#301). A whole commit id another session made was accepted under any session's name, so `store.resolve("demo@<other's id>")` read the other session's state as demo's. The same held for `ws.checkout`, `ws.fork(at=)`, `ws.files.attach`, `store.tags.add` and the ws-git verbs, where the short id ws-git prints was already refused. The commit must now be on the named session's own line of history, the line a short id expands against and a cherry-pick reads, and anything else raises `CommitNotFoundError` naming the session. A commit a merge brought in is read under the session that made it.
+- **A store tag's ref reads only while the tag names its commit, in every verb.** `store.resolve` and `ws.files.attach` refused a tag ref once the tag was deleted, or deleted and added again at another commit. `ws.fork(at=)`, `ws.checkout(ref, paths=)`, `ws.apply` and `ws.expand_ref` read the commit the ref carried, even when the tag was gone or never existed. They now make the same check and raise the same `WorkspaceError`. A commit half typed short is expanded against the tag, as ws-git already read one.
 
 ## 0.11.10 - 2026-10-30
 
