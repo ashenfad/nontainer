@@ -160,3 +160,35 @@ class LegacyLayoutError(WorkspaceError):
             store=None if path is None else str(path),
             backend=getattr(store, "backend", "kvgit"),
         )
+
+
+class HeadMoved(WorkspaceError):
+    """A guarded write found this session's head somewhere other than
+    the commit the caller expected.
+
+    ``ws.land(..., expect_head=<commit>)`` lands only onto that commit.
+    The check is the commit's own compare-and-swap, so a head another
+    process moved is refused as well, and nothing is written either
+    way. ``expected`` is the commit the caller named and ``head`` the
+    one found.
+    """
+
+    def __init__(self, message: str, *, expected: str, head: "str | None") -> None:
+        super().__init__(message)
+        self.expected = expected
+        self.head = head
+
+
+class LandConflict(WorkspaceError):
+    """A change can't land because this session changed the same
+    things differently since its base.
+
+    ``ws.land`` never writes conflict markers or leaves merge state: a
+    file or cache key that both sides changed to different values
+    refuses the whole change, with nothing written. ``conflicts`` names
+    them, files by path and cache keys as ``cache:<key>``.
+    """
+
+    def __init__(self, message: str, *, conflicts: "tuple[str, ...]") -> None:
+        super().__init__(message)
+        self.conflicts = tuple(conflicts)

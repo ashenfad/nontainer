@@ -26,7 +26,7 @@ Public surface:
     errors: WorkspaceError, NotSupportedError, SessionIdError,
             CommitNotFoundError, BookkeepingLost, SessionsError,
             JobRunning, BranchExpired, CacheError, HarvestLost,
-            LegacyLayoutError, WorkerSetupError
+            LegacyLayoutError, WorkerSetupError, HeadMoved, LandConflict
 
 Extension surfaces (built by the embedder, never assumed present):
 
@@ -52,7 +52,9 @@ from .errors import (
     BookkeepingLost,
     BranchExpired,
     CommitNotFoundError,
+    HeadMoved,
     JobRunning,
+    LandConflict,
     LegacyLayoutError,
     NotSupportedError,
     SessionIdError,
@@ -158,5 +160,7 @@ __all__ = [
     "HarvestLost",
     "LegacyLayoutError",
     "TurnInProgress",
+    "HeadMoved",
+    "LandConflict",
     "LayoutMigration",
 ]

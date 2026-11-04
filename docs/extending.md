@@ -134,6 +134,7 @@ with it False, `commit` / `checkout` / `history` / `fork` all raise
 | `staging` | writes accumulate until `commit()`; `discard()` drops them. False means writes are durable immediately and `discard()` raises |
 | `cheap_fork` | fork is O(1) with shared storage. False but versioned still forks — just expensively, by copy |
 | `merge` | `merge`, the `apply` primitive behind `ws.revert` / `ws.cherry_pick`, and the `commit_at` lookup that names the commits an apply resolves between — three verbs, not one |
+| `land` | `land`: the change between two commits of any session, applied as one framework commit that carries files, cache and cwd and leaves the session's bookkeeping alone. Refuses rather than merges where both sides changed a key, and guards on an expected head through the commit's own compare-and-swap |
 | `tags` | `tag` / `tags` / `tag_info` / `delete_tag` / `at_tag`. Not `diff`, which is versioning's: a name is one way to reach a commit, not what makes two comparable |
 | `index` | `commit_keys` and the read views, so the agent-facing git fiction is available |
 | `sql_audit` | an operation-level audit log queryable with SQL |
