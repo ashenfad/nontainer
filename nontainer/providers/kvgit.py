@@ -1803,9 +1803,12 @@ class KvgitProvider:
 
         THE GUARD. With ``expect_head``, the commit lands only as a
         fast-forward from that head, decided by kvgit's compare-and-swap
-        (``on_moved="raise"``): a head this handle holds elsewhere, or a
-        branch another process moved, raises
-        :class:`~nontainer.errors.HeadMoved` with nothing written.
+        (``on_moved="raise"``): a branch whose head is elsewhere raises
+        :class:`~nontainer.errors.HeadMoved` with nothing written. The
+        head judged is the branch's, read before the plan is made: a
+        handle another process moved past is first moved to the tip,
+        so a change it already holds is not mistaken for one the
+        session holds, and an empty plan cannot skip the check.
         Without it, a branch that moves under the commit is refreshed
         to and the change resolved against the new head, bounded by
         ``_LAND_ATTEMPTS``: never merged by kvgit's own concurrent-write
@@ -1828,6 +1831,15 @@ class KvgitProvider:
         merge_fns = self._land_rules(changed, at_base, at_theirs)
         attempts = 0
         while True:
+            # Judge the guard and the plan against the BRANCH, not this
+            # handle's last look at it: a handle another process has
+            # moved past may already hold the change, and an empty plan
+            # returns without the commit's compare-and-swap to catch
+            # that. The buffer is clean (refused above, discarded on a
+            # lost race), so moving to the tip loses nothing.
+            if self._repo.branches[self._session] != self._wt.head:
+                self._wt.refresh()
+                self._invalidate_fs()
             head = self._wt.head
             if expect_head is not None and head != expect_head:
                 raise HeadMoved(
@@ -1873,9 +1885,7 @@ class KvgitProvider:
                         "nothing was written, and landing again once that "
                         "writer is done lands the change."
                     ) from None
-                self._wt.refresh()
-                self._invalidate_fs()
-                continue
+                continue  # the top of the loop moves to the new tip
             except BaseException:
                 # The buffer holds only what this call put there.
                 self._wt.discard()

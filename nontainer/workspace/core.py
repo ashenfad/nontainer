@@ -2447,6 +2447,7 @@ class Workspace:
             )
             view = self._view_fs
             before = None if view is None else (view.view, self._view)
+            started = self._provider.head
             try:
                 landed = self._provider.land(
                     base_commit,
@@ -2461,8 +2462,10 @@ class Workspace:
                     view.reset(before[0])
                     self._view = before[1]
                 raise
-            if landed is not None:
-                # provider state moved under the executor: flag its view.
+            if self._provider.head != started:
+                # provider state moved under the executor (a landed
+                # commit, or a handle moved to the branch's tip): flag
+                # its view.
                 self._mark_executor_stale()
             return landed
 

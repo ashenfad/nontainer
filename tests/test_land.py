@@ -409,3 +409,95 @@ def test_a_frozen_snapshot_lands_nothing(tmp_path, store, ws):
     with store.resolve(f"demo@{base}") as snap:
         with pytest.raises(NotSupportedError, match="frozen"):
             snap.land(base, theirs)
+
+
+def _commit_elsewhere(path, session, write):
+    """Commit to ``session`` through a Store handle of its own, as
+    another process would; returns the commit."""
+    other = Store(path)
+    try:
+        with other.open(session, autocommit=False) as elsewhere:
+            write(elsewhere)
+            return elsewhere.commit({"tool": "elsewhere"})
+    finally:
+        other.close()
+
+
+def test_a_stale_handle_holding_the_change_still_meets_the_guard(tmp_path, store, ws):
+    """This handle already holds the change, and another process has
+    moved the branch since. The plan against the handle is empty, and
+    that must not skip the guard."""
+    ws.files.write("a.txt", "a")
+    base = _dispatch(ws)
+    theirs = _run_task(tmp_path, "demo", base, lambda c: c.files.write("b.txt", "b"))
+    landed = ws.land(base, theirs)
+    tip = _commit_elsewhere(tmp_path, "demo", lambda w: w.files.write("z.txt", "z"))
+
+    assert ws.head == landed  # this handle has not seen it
+    with pytest.raises(HeadMoved) as caught:
+        ws.land(base, theirs, expect_head=landed)
+    assert caught.value.head == tip
+    # Named as the head it is, the session takes the land, and holds
+    # the change already.
+    assert ws.land(base, theirs, expect_head=tip) is None
+    assert ws.head == tip
+
+
+def test_a_stale_handle_holding_the_change_still_sees_a_divergent_branch(
+    tmp_path, store, ws
+):
+    ws.files.write("a.txt", "a")
+    base = _dispatch(ws)
+    theirs = _run_task(tmp_path, "demo", base, lambda c: c.files.write("b.txt", "b"))
+    ws.land(base, theirs)
+    _commit_elsewhere(tmp_path, "demo", lambda w: w.files.write("b.txt", "elsewhere"))
+
+    with pytest.raises(LandConflict) as caught:
+        ws.land(base, theirs)
+    assert caught.value.conflicts == ("/workspace/b.txt",)
+    assert ws.files.read("/workspace/b.txt") == b"elsewhere"
+
+
+def _race_once(monkeypatch, ws, path):
+    """Have another process commit to the session between the land's
+    look at the branch and its commit; returns where its commits go."""
+    wt = ws._provider._wt
+    real = wt.commit
+    tips = []
+
+    def racing(**kwargs):
+        if not tips:
+            tips.append(
+                _commit_elsewhere(path, "demo", lambda w: w.files.write("z.txt", "z"))
+            )
+        return real(**kwargs)
+
+    monkeypatch.setattr(wt, "commit", racing)
+    return tips
+
+
+def test_a_writer_between_the_look_and_the_commit_meets_the_cas(
+    tmp_path, store, ws, monkeypatch
+):
+    ws.files.write("a.txt", "a")
+    base = _dispatch(ws)
+    theirs = _run_task(tmp_path, "demo", base, lambda c: c.files.write("b.txt", "b"))
+    tips = _race_once(monkeypatch, ws, tmp_path)
+    with pytest.raises(HeadMoved) as caught:
+        ws.land(base, theirs, expect_head=base)
+    assert caught.value.head == tips[0]
+    assert not ws._provider.dirty
+    assert not ws.files.exists("/workspace/b.txt")
+
+
+def test_without_the_guard_a_lost_race_is_landed_again_on_the_new_tip(
+    tmp_path, store, ws, monkeypatch
+):
+    ws.files.write("a.txt", "a")
+    base = _dispatch(ws)
+    theirs = _run_task(tmp_path, "demo", base, lambda c: c.files.write("b.txt", "b"))
+    tips = _race_once(monkeypatch, ws, tmp_path)
+    landed = ws.land(base, theirs)
+    assert ws.log()[0].id == landed and ws.log()[0].parents == (tips[0],)
+    assert ws.files.read("/workspace/z.txt") == b"z"
+    assert ws.files.read("/workspace/b.txt") == b"b"
