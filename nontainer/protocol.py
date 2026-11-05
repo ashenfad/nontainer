@@ -137,14 +137,16 @@ def expand_commit(commit: str, ids: "Iterable[str]", *, where: str) -> str:
     )
 
 
-def frozen_where(at: "str | None") -> str:
+def frozen_where(at: "str | None", kind: "str | None" = "tag") -> str:
     """Where a frozen snapshot was opened, as its refusals say it: at a
     tag by name, at a commit by its first seven characters, or nowhere
-    named. ``frozen_at`` holds either, and no tag can be spelled like a
-    commit id, so the spelling says which."""
+    named. ``kind`` says which of the two ``at`` is, as the provider
+    recorded it (``frozen_kind``): the spelling cannot, since a session
+    tag may be named like a commit id. A provider that records no kind
+    names a tag, as every frozen read did before commits had one."""
     if not at:
         return ""
-    if re.fullmatch(r"[0-9a-f]{7,}", at):
+    if kind == "commit":
         return f" at commit {at[:7]}"
     return f" at tag {at!r}"
 

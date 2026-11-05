@@ -425,6 +425,7 @@ class KvgitProvider:
         *,
         session: str,
         frozen_at: str | None = None,
+        frozen_kind: str = "tag",
         owns_repo: bool = True,
     ) -> None:
         """``handle`` is a kvgit ``Worktree`` on the session's branch or,
@@ -432,6 +433,8 @@ class KvgitProvider:
         ``frozen_at`` names what that snapshot was opened at and makes
         the provider a snapshot: see :meth:`at_tag`. Only a frozen
         provider takes one — a provider on a branch head never is.
+        ``frozen_kind`` says what ``frozen_at`` names, ``"tag"`` or
+        ``"commit"``, so a refusal can say where the snapshot is.
 
         ``owns_repo`` says whether :meth:`close` closes ``repo``. A
         provider opened on its own owns the repository it opened; one a
@@ -442,6 +445,7 @@ class KvgitProvider:
         self._repo = repo
         self._owns_repo = owns_repo
         self._frozen_at = frozen_at
+        self._frozen_kind = frozen_kind if frozen_at is not None else None
         self._wt: Any | None = None
         self._state: Any
         if frozen_at is None:
@@ -626,11 +630,18 @@ class KvgitProvider:
         """The tag or commit this snapshot was opened at, or ``None``."""
         return self._frozen_at
 
+    @property
+    def frozen_kind(self) -> str | None:
+        """What :attr:`frozen_at` names: ``"tag"`` or ``"commit"``, or
+        ``None`` for a provider on a branch head."""
+        return self._frozen_kind
+
     def _refuse_frozen(self, op: str) -> None:
         if self._frozen_at is not None:
             raise NotSupportedError(
                 f"frozen: this workspace is a snapshot"
-                f"{frozen_where(self._frozen_at)}; it accepts no writes, so "
+                f"{frozen_where(self._frozen_at, self._frozen_kind)}; it "
+                "accepts no writes, so "
                 f"{op}() is not supported"
             )
 

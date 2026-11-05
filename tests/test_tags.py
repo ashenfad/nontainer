@@ -743,3 +743,23 @@ def test_a_store_tag_name_may_not_be_spelled_like_a_commit_id(tmp_path):
 
     ws.close()
     s.close()
+
+
+def test_a_snapshot_says_whether_it_was_opened_at_a_tag_or_a_commit(tmp_path):
+    """The provider records which, because the name cannot tell: a
+    session tag may be spelled like a commit id."""
+    st = Store(tmp_path)
+    ws = st.open("demo")
+    try:
+        ws.files.write("a.txt", "one")
+        head = ws.commit()
+        ws.tags.add("deadbeef")
+        with ws.tags.at("deadbeef") as snap:
+            with pytest.raises(PermissionError, match="at tag 'deadbeef'"):
+                snap.files.fs.write("/workspace/b.txt", b"no")
+        with st.resolve(f"demo@{head}") as snap:
+            with pytest.raises(PermissionError, match=f"at commit {head[:7]};"):
+                snap.files.fs.write("/workspace/b.txt", b"no")
+    finally:
+        ws.close()
+        st.close()

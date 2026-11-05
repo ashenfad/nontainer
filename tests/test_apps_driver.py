@@ -384,24 +384,45 @@ def test_a_sink_that_raises_fails_that_screenshots_action_alone():
         ws.close()
 
 
-def test_a_driver_naming_a_path_outside_the_screenshot_dir_writes_nothing_there():
-    """A capture is written under the screenshot directory or not at
-    all: a driver's path elsewhere fails that action, and the file it
-    named is left alone."""
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspace/app/index.html",
+        "/workspace/app/screenshots/../index.html",
+        "/workspace/app/screenshots/nested/shot-1.png",
+    ],
+)
+@pytest.mark.parametrize("sunk", [False, True], ids=["written", "sunk"])
+def test_a_capture_path_that_is_not_a_captures_is_refused_either_way(path, sunk):
+    """A capture sits directly in the screenshot directory, spelled as
+    it is. Anything else a driver names fails that action, written or
+    sunk alike, so a worker's run and a direct one agree, and the file
+    it named is left alone."""
 
     def build(spec):
-        path = "/workspace/app/index.html"
         return DriveReport(
             loaded=True,
             actions=(ActionOutcome(0, ok=True, value=path),),
             screenshots={path: b"\x89PNG"},
         )
 
-    ws, rt, _ = make_ws("outside", build)
+    got = []
+    ws, rt, driver = make_ws("refused-path", build)
+    if sunk:
+        from nontainer.apps.dispatch import AppRuntime
+
+        rt = AppRuntime(
+            ws,
+            AppsConfig(driver=driver),
+            log_sink=lambda line: None,
+            screenshot_sink=lambda p, png: got.append(p),
+        )
     try:
         result = rt.test_app([{"screenshot": True}])
         assert not result.ok
         assert "not a screenshot path" in result.results[0].error
+        assert result.screenshots == ()
+        assert got == []
         assert ws.files.read("/workspace/app/index.html") == INDEX
     finally:
         ws.close()
@@ -413,9 +434,19 @@ def test_save_screenshots_puts_a_workers_captures_where_a_direct_run_would():
         shots = {"/workspace/app/screenshots/shot-1.png": b"\x89PNG one"}
         assert rt.save_screenshots(shots) == tuple(shots)
         assert ws.files.read("/workspace/app/screenshots/shot-1.png") == b"\x89PNG one"
-        with pytest.raises(ValueError, match="not a screenshot path"):
-            rt.save_screenshots({"/workspace/app/index.html": b"<p>no</p>"})
+        for bad in (
+            "/workspace/app/index.html",
+            "/workspace/app/screenshots/../index.html",
+            "/workspace/app/screenshots/",
+        ):
+            # Checked before anything is written, so a good capture
+            # beside a bad one lands neither.
+            with pytest.raises(ValueError, match="not a screenshot path"):
+                rt.save_screenshots(
+                    {"/workspace/app/screenshots/ok.png": b"\x89PNG", bad: b"<p>no</p>"}
+                )
         assert ws.files.read("/workspace/app/index.html") == INDEX
+        assert not ws.files.exists("/workspace/app/screenshots/ok.png")
     finally:
         ws.close()
 
