@@ -90,6 +90,7 @@ from .config import Mount, Profile, PythonConfig, _Settings, normalize_root
 from .facades import WorkspaceFiles, WorkspaceIndex, WorkspaceTags
 from .fs import (
     _cwd_key,
+    _CwdState,
     _frozen_fs,
     _frozen_message,
     _FrozenKV,
@@ -401,27 +402,34 @@ class Workspace:
         # handed ONE filesystem object when it opens, so a tree
         # attached later has to reach it through that same object.
         self._attached: dict[str, _Attachment] = {}
-        # A branch whose stored cwd is the mount park ("/" or none, on
-        # a tree that already exists) was last written by a mounted
-        # session, whose cwd lived in the composition and was never
-        # stored. Opened here without mounts it gets the same
-        # composition, mounts or not: its cwd is held in memory again,
-        # and opening it writes nothing. Storing a cwd here instead
-        # would land an "init" commit on a branch this handle may only
-        # have been opened to read: a delegate's, read back after it
-        # answers.
+        # Where the cwd lives. Where the filesystem owns the cwd key
+        # (kvgit's VirtualFS) it is that key, and a mount or attachment
+        # composition keeps its cwd under the same key through
+        # _cwd_state: one stored cwd, mounted or not, which a commit
+        # records and a fork, a frozen read or a reopen starts from.
+        # Elsewhere the workspace stores it itself (_save_cwd).
         self._owns_cwd = _owns_cwd(provider.fs)
-        parked = (
-            not normalized_mounts
-            and self._owns_cwd
-            and self._root != "/"
-            and provider.kv.get(_cwd_key()) in (None, "/")
-            and _quiet_isdir(viewed, self._root)
-        )
-        self._composed = bool(normalized_mounts) or parked
-        self._fs = AttachFS(
-            self._build_fs(viewed, normalized_mounts, compose=parked), self._root
-        )
+        self._cwd_state = _CwdState(provider.kv, self._root) if self._owns_cwd else None
+        composed = self._build_fs(viewed, normalized_mounts, state=self._cwd_state)
+        # A stored cwd this handle can't use starts it at the root, and
+        # opening writes nothing: no "init" commit on a branch this
+        # handle may only have been opened to read (a delegate's, read
+        # back after it answers), and none attempted on a frozen one.
+        # Unusable is the filesystem root an earlier release's
+        # composition committed, no cwd on a tree that exists, or a
+        # directory out of this handle's reach: inside a mount it
+        # wasn't given, or gone. Holding the root without storing it
+        # takes a composition, mounts or not.
+        fresh = not _quiet_isdir(viewed, self._root)
+        if self._cwd_state is not None and not fresh:
+            stored = provider.kv.get(_cwd_key())
+            if not self._cwd_state.usable(stored, composed):
+                self._cwd_state.hide(stored)
+                if composed is viewed:
+                    composed = self._build_fs(
+                        viewed, {}, compose=True, state=self._cwd_state
+                    )
+        self._fs = AttachFS(composed, self._root, state=self._cwd_state)
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
@@ -488,8 +496,11 @@ class Workspace:
         # them under {"tool": "init"} regardless of autocommit mode.
         # Reopening is read-only: the guards leave the provider clean,
         # so no second init commit is made.
+        # Judged under the mounts: one below the root shows the root as
+        # a directory on its way, which the session's own tree may not
+        # hold, and a reader without that mount would then make it.
         initialized = False
-        if self._root != "/" and not self._fs.isdir(self._root):
+        if self._root != "/" and fresh:
             self._fs.makedirs(self._root, exist_ok=True)
             initialized = True
 
@@ -497,27 +508,21 @@ class Workspace:
         # workspace root on a fresh session. Guarded so a no-op chdir
         # doesn't dirty staging providers (which would turn read-only
         # tool calls into commits).
-        if self._composed and self._owns_cwd:
-            # The composition resolves paths before handing them down,
-            # so the filesystem underneath has to sit at the root. Any
-            # cwd under the key belongs to un-mounted sessions of this
-            # store; honoring it here would break every relative path.
-            try:
-                if provider.fs.getcwd() != "/":
-                    provider.fs.chdir("/")
-            except Exception:  # noqa: BLE001 - a root that won't chdir is not ours to fix
-                pass
-            stored_cwd = self._root
+        if self._cwd_state is not None:
+            # The key is the cwd, read live (see _cwd_state above). A
+            # new tree with none it can use starts at its root, which
+            # the init commit records; any other is read as stored.
+            stored_cwd = "/"
+            if fresh and not self._cwd_state.usable(
+                provider.kv.get(_cwd_key()), self._fs
+            ):
+                stored_cwd = self._root
         else:
             stored = provider.kv.get(_cwd_key())
             if stored == "/" and self._root != "/":
-                # The filesystem root is not somewhere a session ever
-                # was: it is what a composition left behind. Mounts and
-                # attachments both park the filesystem underneath there
-                # (they hand it paths already resolved) and monkeyfs
-                # persists that park like any chdir, so a session that
-                # had a tree attached when it was last committed would
-                # otherwise reopen at "/" instead of its own root.
+                # Under another root, the filesystem root reads as no
+                # cwd, as it does where the filesystem owns the key
+                # (see _CwdState.usable).
                 stored = None
             stored_cwd = stored or self._root
         if stored_cwd != "/":
@@ -608,12 +613,18 @@ class Workspace:
 
     @staticmethod
     def _build_fs(
-        base: Any, mounts: Mapping[str, Mount], *, compose: bool = False
+        base: Any,
+        mounts: Mapping[str, Mount],
+        *,
+        compose: bool = False,
+        state: Any = None,
     ) -> Any:
         """Compose the mounted views over ``base``. Takes mounts already
         through :meth:`_normalize_mounts` — paths here are absolute and
-        checked. ``compose`` builds the composition with no mounts, for
-        a branch whose cwd a composition held (see ``__init__``)."""
+        checked. ``compose`` builds the composition with no mounts, to
+        hold a cwd the store can't give this handle (see ``__init__``).
+        ``state`` is where the composition keeps its cwd: the session's
+        own key (:class:`_CwdState`), or None for memory."""
         if not mounts and not compose:
             return base
         from monkeyfs import IsolatedFS, MountFS, ReadOnlyFS
@@ -624,7 +635,7 @@ class Workspace:
             if mount.readonly:
                 sub = ReadOnlyFS(sub)
             mounted[point] = sub
-        return MountFS(base, mounted)
+        return MountFS(base, mounted, state=state)
 
     # ------------------------------------------------------------------
     # identity
@@ -2448,9 +2459,7 @@ class Workspace:
                 expected = self._expand_commit(
                     str(getattr(expect_head, "commit", expect_head))
                 )
-            carry_cwd = not (self._composed and self._owns_cwd) and self._stores_cwd(
-                theirs_commit
-            )
+            carry_cwd = self._stores_cwd(theirs_commit)
             view = self._view_fs
             before = None if view is None else (view.view, self._view)
             started = self._provider.head
@@ -2478,9 +2487,8 @@ class Workspace:
     def _stores_cwd(self, commit: str) -> bool:
         """Whether ``commit`` holds a cwd of its own, by the rule opening
         a session reads one: under a root other than ``/``, an absent
-        key and the root itself mean none was stored. A mount
-        composition parks the filesystem at the root and commits that,
-        so its sessions store no cwd."""
+        key and the root itself mean none was stored. The root is what
+        a mount or attachment composition committed before 0.11.12."""
         try:
             value = self._provider.key_at(commit, _cwd_key())
         except NotSupportedError:

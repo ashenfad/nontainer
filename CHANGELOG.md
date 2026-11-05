@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **A session with mounts keeps its cwd across commits** (#310). A mount composition held the cwd in memory and committed the filesystem root in its place. Merely configuring a mount, even an unused read-only one, therefore changed where everything that reads a commit back started: a reopen, `store.resolve(ref)` and `store.fork(..., at=)` all started at the workspace root, and `ws.land` couldn't move a mounted parent's cwd. The same went for a session with a tree attached (`ws.files.attach`). The cwd is now committed as it is without mounts, and every one of those starts from it.
+  - **A cwd inside a mount** is stored as a path. A reader given that mount returns to it. Mount contents stay outside the store, and a read-only mount stays read-only.
+  - **A handle that can't reach the stored cwd starts at the workspace root.** This covers a reader without the mount, and a directory that is gone. Opening writes nothing, so a branch opened only to be read gets no commit and a frozen read stays clean. The stored cwd stays until the agent changes directory.
+  - **`ws.land`** carries the result's cwd into a mounted parent, with atomicity, `expect_head` and the refusal of staged work unchanged. A result that stored the filesystem root as its cwd (a worker opened with mounts under an earlier release) carries none, as before.
+  - **A fresh session with a mount below its root** now creates the root in its own tree. Before, the mount showed the root as a directory on its way, so a later reader without the mount made the root itself, with an `init` commit.
+  - **Mixed versions:** an earlier release reading such a commit without the mount gets a cwd that doesn't resolve.
+
+### Changed
+- **Requires `monkeyfs>=0.2.10`.** `MountFS` now passes absolute paths to the filesystem underneath, and keeps its cwd under the session's own cwd key (`MountFS(state=)`).
+
 ## 0.11.11 - 2026-11-05
 
 ### Added

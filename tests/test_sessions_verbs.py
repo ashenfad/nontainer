@@ -714,11 +714,10 @@ def test_attaching_does_not_move_the_session(ws, store):
     assert ws.terminal("cat ../a.txt").stdout == "mine\n"
 
 
-def test_a_session_that_had_a_tree_attached_reopens_at_its_root(ws, store):
-    """Composing parks the filesystem underneath at the root, and on a
-    backend where that filesystem OWNS the cwd key the park is a write
-    that rides the next commit. The filesystem root is not somewhere a
-    session was, so reopening starts at the workspace root instead."""
+def test_a_session_with_a_tree_attached_keeps_its_cwd(ws, store):
+    """The attachment's composition keeps its cwd under the session's
+    own key, so attaching moves nothing and the cwd is stored as it
+    was (#310). Detaching from inside the attachment goes home."""
     from monkeyfs import VirtualFS
 
     _seed(ws, **{"a.txt": "mine\n"})
@@ -729,7 +728,7 @@ def test_a_session_that_had_a_tree_attached_reopens_at_its_root(ws, store):
 
     ws.terminal("mkdir -p deep; cd deep")
     ws.files.attach("reviewer", "reviews")
-    assert ws._provider.kv.get(VirtualFS.CWD_KEY) == "/"  # the park
+    assert ws._provider.kv.get(VirtualFS.CWD_KEY) == "/workspace/deep"
     ws.commit(info={"tool": "test"})
 
     # detaching from INSIDE the attachment has nowhere to go back to,

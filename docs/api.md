@@ -222,10 +222,12 @@ reads its files as missing (`FileNotFoundError`), so close frozen
 workspaces before deleting their session. A store tag keeps a commit
 past its session.
 
-**A commit made with live mounts holds the committed tree alone.** The
-mounted contents were never in it, and nor was the cwd, which the mount
-composition keeps for itself: a frozen open of such a commit reads no
-mount and starts at the workspace root.
+**A commit made with live mounts holds the committed tree and the cwd.**
+The mounted contents were never in it. A frozen open given the same
+mounts (`store.resolve(ref, mounts=...)`) reads them and starts where
+the session stood, even inside a mount. Without them it reads no mount,
+and a cwd inside one starts it at the workspace root instead. A commit
+made with mounts before 0.11.12 holds no cwd and starts there too.
 
 **`ws.expand_ref(ref) -> Ref`** spells that commit half whole up
 front: a short id, a whole one, or that session's own ws-git tag, and
@@ -889,6 +891,13 @@ and mounts are external effects: their data is not committed,
 restored, or copied by a fork. A fork does inherit the mount *points*,
 and sees the same live directories behind them.
 
+**The cwd is committed, mounts or not.** A commit records it, and a
+reopen, a frozen read, a fork and `ws.land` all start from it, whether
+the session had mounts or attachments or not. A cwd inside a mount is
+stored as a path. A handle that can't reach the stored cwd starts at the
+workspace root and writes nothing until the agent changes directory,
+whether the mount is missing for it or the directory is gone.
+
 ```python
 ws.head: str | None      # current commit id; None if unversioned.
                          # Pins read-only observations (reads don't move
@@ -1136,10 +1145,10 @@ for a session from elsewhere. What lands is the source's **whole
 branch**, not what its own session can see: a delegate given a narrow
 view is exactly the one worth attaching. A point inside this session's root
 reaches every rung; outside it, an executor running elsewhere never
-sees it — the contract a `Mount` outside the root already has. And as
-with a mount, while anything is attached the working directory belongs
-to the composition, so a session committed in that state reopens at its
-root rather than where its agent was standing.
+sees it — the contract a `Mount` outside the root already has. The
+working directory is stored as it is with a mount, so a session
+committed with a tree attached reopens where its agent was standing, or
+at its root if that was inside the attachment.
 
 `trace=True` mounts the conversation stored at the same commit beside
 the files, at `<at>/.trace`, rendered by
@@ -1326,8 +1335,9 @@ changed differently since `base` refuses the whole change
 or leaves merge state, and both refuse staged work. Authoring output
 lands like any file, since the work counts as this session's, and a
 narrowed view's rule holds as it does for a take. The cwd lands where
-the result stored one: a session with mounts keeps its cwd, and so does
-a land of work done in a worker opened with mounts, which stores none.
+the result stored one, with mounts on either side or not. A result
+whose cwd is the filesystem root (a worker opened with mounts before
+0.11.12) stored none, and the session's cwd stays.
 Queueing, retries, validation of what a change may touch, and deleting
 the fork afterwards are the embedder's.
 
