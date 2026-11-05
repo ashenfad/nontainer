@@ -137,6 +137,18 @@ def expand_commit(commit: str, ids: "Iterable[str]", *, where: str) -> str:
     )
 
 
+def frozen_where(at: "str | None") -> str:
+    """Where a frozen snapshot was opened, as its refusals say it: at a
+    tag by name, at a commit by its first seven characters, or nowhere
+    named. ``frozen_at`` holds either, and no tag can be spelled like a
+    commit id, so the spelling says which."""
+    if not at:
+        return ""
+    if re.fullmatch(r"[0-9a-f]{7,}", at):
+        return f" at commit {at[:7]}"
+    return f" at tag {at!r}"
+
+
 def not_on_session(session: str, commit: str) -> str:
     """Why a commit the store holds is not the one ``session@commit``
     names: it is on another line of history. One wording wherever a ref

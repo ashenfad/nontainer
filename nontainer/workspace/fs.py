@@ -124,8 +124,11 @@ def _point_over(path: str, points: Mapping[str, Any]) -> str | None:
 
 def _frozen_message(tag: str | None) -> str:
     """What a frozen workspace tells whoever tried to write to it."""
-    where = f" at tag {tag!r}" if tag else ""
-    return f"this workspace is a frozen snapshot{where}; it accepts no writes"
+    from ..protocol import frozen_where
+
+    return (
+        f"this workspace is a frozen snapshot{frozen_where(tag)}; it accepts no writes"
+    )
 
 
 class _FrozenKV(MutableMapping):

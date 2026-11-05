@@ -66,6 +66,7 @@ from ..protocol import (
     TagInfo,
     WorkspaceDiff,
     expand_commit,
+    frozen_where,
     validate_session_id,
 )
 from ..views import VIEW_KEY as _VIEW_KEY
@@ -622,15 +623,15 @@ class KvgitProvider:
 
     @property
     def frozen_at(self) -> str | None:
-        """The tag this snapshot was opened at, or ``None``."""
+        """The tag or commit this snapshot was opened at, or ``None``."""
         return self._frozen_at
 
     def _refuse_frozen(self, op: str) -> None:
         if self._frozen_at is not None:
             raise NotSupportedError(
-                f"frozen: this workspace is a snapshot at tag "
-                f"{self._frozen_at!r}; it accepts no writes, so {op}() "
-                "is not supported"
+                f"frozen: this workspace is a snapshot"
+                f"{frozen_where(self._frozen_at)}; it accepts no writes, so "
+                f"{op}() is not supported"
             )
 
     # -- surfaces ------------------------------------------------------
