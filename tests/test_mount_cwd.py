@@ -191,3 +191,29 @@ def test_an_attachment_keeps_the_cwd_stored(store):
 
     with store.open("main") as again:
         assert again.files.fs.getcwd() == "/workspace/deep"
+
+
+def test_a_hidden_cwd_comes_back_with_a_state_that_has_it(store):
+    """A cwd hidden at open is judged again once the state underneath
+    moves: a checkout to a commit whose cwd exists restores it, and the
+    session's own commit with the directory still gone keeps it hidden."""
+    ws = store.open("demo")
+    try:
+        assert ws.terminal("mkdir -p work && cd work && echo hi > f.txt")
+        had_it = ws.provider.head
+        ws.files.fs.remove("/workspace/work/f.txt")
+        ws.files.fs.rmdir("/workspace/work")
+        ws.commit({"tool": "test"})
+    finally:
+        ws.close()
+
+    again = store.open("demo")
+    try:
+        assert again.files.fs.getcwd() == "/workspace"
+        assert again.terminal("echo x > top.txt")  # its own commit
+        assert again.files.fs.getcwd() == "/workspace"
+        again.checkout(had_it)
+        assert again.files.fs.getcwd() == "/workspace/work"
+        assert again.terminal("cat f.txt").stdout == "hi\n"
+    finally:
+        again.close()

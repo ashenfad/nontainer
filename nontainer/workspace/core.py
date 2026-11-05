@@ -409,7 +409,11 @@ class Workspace:
         # records and a fork, a frozen read or a reopen starts from.
         # Elsewhere the workspace stores it itself (_save_cwd).
         self._owns_cwd = _owns_cwd(provider.fs)
-        self._cwd_state = _CwdState(provider.kv, self._root) if self._owns_cwd else None
+        self._cwd_state = (
+            _CwdState(provider.kv, self._root, head=lambda: provider.head)
+            if self._owns_cwd
+            else None
+        )
         composed = self._build_fs(viewed, normalized_mounts, state=self._cwd_state)
         # A stored cwd this handle can't use starts it at the root, and
         # opening writes nothing: no "init" commit on a branch this
@@ -430,6 +434,8 @@ class Workspace:
                         viewed, {}, compose=True, state=self._cwd_state
                     )
         self._fs = AttachFS(composed, self._root, state=self._cwd_state)
+        if self._cwd_state is not None:
+            self._cwd_state.bind(self._fs)
         # A ws-git verb's mid-call harvest can fail after the guest
         # baseline advanced (provider refused part of the harvest):
         # the handler stashes the message here and terminal() unwinds
