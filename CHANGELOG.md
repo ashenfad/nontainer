@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.11 - 2026-11-05
 
 ### Added
 - **`AppsConfig(readonly_handlers=True)`: every handler runs against a read-only filesystem and cache, whatever its verb, while authoring as well as once published** (#300). By default only a GET is read-only while authoring, so a POST that wrote the workspace verified green and answered 500 once published. With the flag, a handler's write raises `PermissionError` where it happens and the request answers 500, through `ws-curl`, `test_app`'s page, an embedder's preview and a direct `dispatch` alike, on every executor. The policy concerns the workspace alone: a handler still calls the host objects it is granted, and a database's write method still writes; the agent's own tools still write the workspace; `test_app` still writes its screenshots and the request log. The apps notes then say every handler is read-only. Off by default.
