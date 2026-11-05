@@ -340,6 +340,9 @@ class Workspace:
         # property, and a third-party provider without it is not frozen.
         self._frozen = bool(getattr(provider, "frozen", False))
         self._frozen_at = getattr(provider, "frozen_at", None)
+        # What frozen_at names, where the provider says ("tag" when it
+        # does not: every frozen read was a tag's before commits).
+        self._frozen_kind = getattr(provider, "frozen_kind", "tag")
         # A head written before monkeyfs 0.1.10 keeps its metadata in a
         # table and its cwd under a key nothing reads as live state any
         # more. Writing over it would build new commits on a tree this
@@ -354,7 +357,9 @@ class Workspace:
         # What the executor's cache and the host-side ``cache`` build
         # on: the provider's kv, or a refusing view of it when frozen.
         self._kv_view: MutableMapping[str, Any] = (
-            _FrozenKV(provider.kv, self._frozen_at) if self._frozen else provider.kv
+            _FrozenKV(provider.kv, self._frozen_at, self._frozen_kind)
+            if self._frozen
+            else provider.kv
         )
 
         # autocommit is meaningless (and forced off) when the
@@ -434,7 +439,7 @@ class Workspace:
         # where it happens rather than landing in a staged buffer that
         # dies with the handle.
         self._public_fs = (
-            _frozen_fs(self._fs, self._frozen_at)
+            _frozen_fs(self._fs, self._frozen_at, self._frozen_kind)
             if self._frozen
             else _SyncingFS(self._fs, self._mark_executor_stale)
         )
@@ -3002,7 +3007,7 @@ class Workspace:
         inside a shell command or python call are refused by the
         read-only filesystem instead, at the moment they occur."""
         if self._frozen:
-            where = frozen_where(self._frozen_at)
+            where = frozen_where(self._frozen_at, self._frozen_kind)
             raise NotSupportedError(
                 f"frozen: this workspace is a snapshot{where}; it accepts no "
                 f"writes, so {op} is not supported"
@@ -3118,7 +3123,8 @@ class Workspace:
                 return _Absorbed()  # a read-only call on a snapshot
             self._mark_executor_stale()
             return _Absorbed(
-                f"{_frozen_message(self._frozen_at)}; this call's writes were "
+                f"{_frozen_message(self._frozen_at, self._frozen_kind)}; this "
+                "call's writes were "
                 "made in the executor's own tree and have been discarded"
             )
         refused = self._view_refusal(d)

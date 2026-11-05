@@ -122,12 +122,13 @@ def _point_over(path: str, points: Mapping[str, Any]) -> str | None:
     return best
 
 
-def _frozen_message(tag: str | None) -> str:
+def _frozen_message(tag: str | None, kind: str | None = "tag") -> str:
     """What a frozen workspace tells whoever tried to write to it."""
     from ..protocol import frozen_where
 
     return (
-        f"this workspace is a frozen snapshot{frozen_where(tag)}; it accepts no writes"
+        f"this workspace is a frozen snapshot{frozen_where(tag, kind)}; "
+        "it accepts no writes"
     )
 
 
@@ -143,9 +144,11 @@ class _FrozenKV(MutableMapping):
     raise rather than reaching the underlying store.
     """
 
-    def __init__(self, kv: MutableMapping[str, Any], tag: str | None) -> None:
+    def __init__(
+        self, kv: MutableMapping[str, Any], tag: str | None, kind: str | None = "tag"
+    ) -> None:
         self._kv = kv
-        self._message = _frozen_message(tag)
+        self._message = _frozen_message(tag, kind)
 
     def __getitem__(self, key: str) -> Any:
         return self._kv[key]
@@ -169,7 +172,7 @@ class _FrozenKV(MutableMapping):
         raise PermissionError(self._message)
 
 
-def _frozen_fs(fs: Any, tag: str | None) -> Any:
+def _frozen_fs(fs: Any, tag: str | None, kind: str | None = "tag") -> Any:
     """A read-only view over a frozen workspace's filesystem.
 
     The executor gets this instead of the live fs, so a write attempted
@@ -180,7 +183,7 @@ def _frozen_fs(fs: Any, tag: str | None) -> Any:
     """
     from monkeyfs import ReadOnlyFS
 
-    message = _frozen_message(tag)
+    message = _frozen_message(tag, kind)
 
     class FrozenFS(ReadOnlyFS):
         # Two refusal paths to override, because the wrapper has two:

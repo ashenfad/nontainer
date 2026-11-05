@@ -1188,22 +1188,38 @@ class AppRuntime:
         through one: an owner importing a worker's run puts them where a
         direct run would have, so they version with the session and the
         agent's tools find them. Each write takes the workspace's
-        single-writer lock, as the run's own do. A path outside
-        ``<root>/app/screenshots/`` is refused: a sink is handed paths,
-        and paths are where writes go."""
-        prefix = self._screenshot_dir + "/"
+        single-writer lock, as the run's own do. Every path is checked
+        before any is written (:meth:`_check_screenshot_path`): a sink
+        is handed paths, and paths are where writes go."""
         for path in shots:
-            if not isinstance(path, str) or not path.startswith(prefix):
-                raise ValueError(
-                    f"not a screenshot path: {path!r} (captures live under "
-                    f"{self._screenshot_dir}/)"
-                )
+            self._check_screenshot_path(path)
         ws = self._ws
         for path, png in shots.items():
             with ws.lock:
                 ws.files.fs.makedirs(self._screenshot_dir, exist_ok=True)
                 ws.files.fs.write(path, bytes(png))
         return tuple(shots)
+
+    def _check_screenshot_path(self, path: Any) -> None:
+        """Refuse a path that is not a capture's: ``ValueError`` unless it
+        sits directly in ``<root>/app/screenshots/``, spelled as it is.
+
+        One rule for every hand a capture passes through: a direct run's
+        write, a ``screenshot_sink``, and an owner's
+        :meth:`save_screenshots`. Drivers name captures
+        ``<screenshot_dir>/<label>-<n>.png``, so a path in another
+        directory, one whose ``..`` leads out, or one spelled two ways
+        (a trailing slash, a ``.``) is malformed, and the check is that
+        normalizing changes nothing and the parent is that directory."""
+        if (
+            not isinstance(path, str)
+            or posixpath.normpath(path) != path
+            or posixpath.dirname(path) != self._screenshot_dir
+        ):
+            raise ValueError(
+                f"not a screenshot path: {path!r} (captures live directly "
+                f"under {self._screenshot_dir}/)"
+            )
 
     # -- static ------------------------------------------------------------
 

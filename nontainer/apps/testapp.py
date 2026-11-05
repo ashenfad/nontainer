@@ -753,16 +753,18 @@ def _write_screenshots(
     A capture that cannot be kept is not a reason to lose the run:
     the paths that were kept come back first, and the ones that were
     not come back with the error, for the action that asked for each to
-    carry as its failure. A write fails with ``OSError``, or with
-    ``ValueError`` for a path a driver named outside the screenshot
-    directory, which is not written; a sink is the embedder's code and
-    may fail any way at all."""
+    carry as its failure. A path a driver named that is not a capture's
+    (``AppRuntime._check_screenshot_path``) is refused before it is
+    written or handed to the sink, the same way on both, so a worker's
+    run and a direct one agree. A write fails with ``OSError``; a sink
+    is the embedder's code and may fail any way at all."""
     sink = runtime._screenshot_sink
     refused: Any = (OSError, ValueError) if sink is None else Exception
     written: list[str] = []
     failed: dict[str, str] = {}
     for path, png in report.screenshots.items():
         try:
+            runtime._check_screenshot_path(path)
             if sink is None:
                 _save_screenshot(runtime, path, png)
             else:

@@ -1178,7 +1178,12 @@ class Store(_Publishing):
         except UnknownCommitError:
             raise CommitNotFoundError(self._no_commit_on(session, commit)) from None
         return KvgitProvider(
-            repo, snapshot, session=session, frozen_at=commit, owns_repo=False
+            repo,
+            snapshot,
+            session=session,
+            frozen_at=commit,
+            frozen_kind="commit",
+            owns_repo=False,
         )
 
     def _commit_on(self, session: str, commit: str) -> str:
