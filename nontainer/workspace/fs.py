@@ -63,16 +63,30 @@ class _CwdState(MutableMapping):
 
     A stored cwd this handle can't use reads as the workspace root and
     stays as stored until the agent changes directory, so opening
-    writes nothing (see :meth:`hide`). Every other key passes straight
-    through.
+    writes nothing (see :meth:`hide`). It is judged again once the
+    session's head has moved, since a checkout or a land can bring its
+    directory back. Every other key passes straight through.
     """
 
-    __slots__ = ("_kv", "_root", "_hidden")
+    __slots__ = ("_kv", "_root", "_hidden", "_head", "_fs")
 
-    def __init__(self, kv: MutableMapping[str, Any], root: str) -> None:
+    def __init__(
+        self,
+        kv: MutableMapping[str, Any],
+        root: str,
+        head: Callable[[], Any] = lambda: None,
+    ) -> None:
         self._kv = kv
         self._root = root
-        self._hidden: set[Any] = set()
+        self._head = head
+        self._fs: Any = None
+        # hidden value -> the head it was judged at
+        self._hidden: dict[Any, Any] = {}
+
+    def bind(self, fs: Any) -> None:
+        """The filesystem a hidden cwd is judged against again: the
+        handle's own, mounts and attachments included."""
+        self._fs = fs
 
     def usable(self, value: Any, fs: Any) -> bool:
         """Whether ``value``, a stored cwd, is somewhere this handle
@@ -85,14 +99,31 @@ class _CwdState(MutableMapping):
 
     def hide(self, value: Any) -> None:
         """Read ``value`` (None: no key) as the workspace root until
-        the agent changes directory to it."""
-        self._hidden.add(value)
+        the agent changes directory to it, or the state underneath
+        moves to one where it is usable."""
+        self._hidden[value] = self._head_now()
+
+    def _head_now(self) -> Any:
+        try:
+            return self._head()
+        except Exception:  # noqa: BLE001 - a closed handle judges nothing new
+            return None
+
+    def _still_hidden(self, value: Any) -> bool:
+        head = self._head_now()
+        if head == self._hidden[value] or self._fs is None:
+            return True
+        if self.usable(value, self._fs):
+            del self._hidden[value]
+            return False
+        self._hidden[value] = head
+        return True
 
     def __getitem__(self, key: str) -> Any:
         if key != _cwd_key():
             return self._kv[key]
         value = self._kv.get(key)
-        if value in self._hidden:
+        if value in self._hidden and self._still_hidden(value):
             return self._root
         if value is None:
             raise KeyError(key)
@@ -100,7 +131,7 @@ class _CwdState(MutableMapping):
 
     def __setitem__(self, key: str, value: Any) -> None:
         if key == _cwd_key():
-            self._hidden.discard(value)
+            self._hidden.pop(value, None)
         self._kv[key] = value
 
     def __delitem__(self, key: str) -> None:
