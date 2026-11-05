@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.11.12 - 2026-11-05
 
 ### Fixed
 - **A session with mounts keeps its cwd across commits** (#310). A mount composition held the cwd in memory and committed the filesystem root in its place. Merely configuring a mount, even an unused read-only one, therefore changed where everything that reads a commit back started: a reopen, `store.resolve(ref)` and `store.fork(..., at=)` all started at the workspace root, and `ws.land` couldn't move a mounted parent's cwd. The same went for a session with a tree attached (`ws.files.attach`). The cwd is now committed as it is without mounts, and every one of those starts from it.
