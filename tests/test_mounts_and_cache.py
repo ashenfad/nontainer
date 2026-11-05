@@ -289,10 +289,8 @@ def test_fork_keeps_the_parents_resolved_mount_source(tmp_path, monkeypatch):
 
 
 def test_a_snapshot_of_a_mounted_sessions_commit_is_clean_and_publishable(tmp_path):
-    """With mounts, the composition keeps the cwd and the store never
-    records one, so a frozen view of such a commit settles at the root
-    while it opens. That is bookkeeping: the view is exactly its commit,
-    reports nothing uncommitted, and publishes."""
+    """A frozen view of a mounted session's commit is exactly its
+    commit: it reports nothing uncommitted, and publishes."""
     from nontainer import Store
 
     data = tmp_path / "data"
@@ -325,11 +323,10 @@ def test_a_snapshot_of_a_mounted_sessions_commit_is_clean_and_publishable(tmp_pa
 
 
 def test_opening_a_mounted_sessions_branch_without_its_mounts_writes_nothing(tmp_path):
-    """A mounted session's cwd lives in the composition and is never
-    stored. Opened elsewhere without the mounts (a delegate's branch
-    read back after it answers, another session's read by ws-git), its
-    branch gets the same composition: the cwd is the root again, and
-    opening it lands no commit on a branch it was only opened to read."""
+    """Opened elsewhere without the mounts (a delegate's branch read
+    back after it answers, another session's read by ws-git), a mounted
+    session's branch reads its stored cwd, and opening it lands no
+    commit on a branch it was only opened to read."""
     from nontainer import Store
 
     data = tmp_path / "data"

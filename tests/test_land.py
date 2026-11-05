@@ -336,9 +336,9 @@ def test_the_executor_is_told_its_view_moved(tmp_path, store, ws, monkeypatch):
     assert calls
 
 
-def test_a_mounted_session_keeps_its_cwd(tmp_path):
-    """A mount composition keeps the cwd itself and never commits it,
-    so a land moves the files and leaves the cwd where it is."""
+def test_a_mounted_session_takes_the_results_cwd(tmp_path):
+    """A mounted session stores its cwd like any other (#310), so its
+    fork starts there and a land moves the parent's to the result's."""
     src = tmp_path / "data"
     src.mkdir()
     st = Store(tmp_path / "store")
@@ -349,22 +349,23 @@ def test_a_mounted_session_keeps_its_cwd(tmp_path):
         base = _dispatch(ws)
 
         def work(child):
-            child.files.write("w/out.txt", "out")
-            assert child.terminal("cd w")
+            assert child.files.fs.getcwd() == "/workspace/keep"
+            child.files.write("/workspace/w/out.txt", "out")
+            assert child.terminal("cd /workspace/w")
 
         theirs = _run_task(tmp_path / "store", "demo", base, work)
-        ws.land(base, theirs)
+        ws.land(base, theirs, expect_head=base)
         assert ws.files.read("/workspace/w/out.txt") == b"out"
-        assert ws.files.fs.getcwd() == "/workspace/keep"
-        assert ws._provider.fs.getcwd() == "/"  # the composition's floor
+        assert ws.files.fs.getcwd() == "/workspace/w"
+        assert ws.terminal("pwd").stdout.strip() == "/workspace/w"
     finally:
         ws.close()
         st.close()
 
 
-def test_a_worker_opened_with_mounts_leaves_the_cwd_where_it_was(tmp_path):
-    """Such a worker parks its filesystem at the root and commits that,
-    which is no cwd of its own: the session's cwd stays."""
+def test_a_worker_opened_with_mounts_carries_its_cwd(tmp_path):
+    """The worker starts at the session's cwd and its move lands, as an
+    unmounted worker's does."""
     src = tmp_path / "data"
     src.mkdir()
     st = Store(tmp_path / "store")
@@ -376,11 +377,36 @@ def test_a_worker_opened_with_mounts_leaves_the_cwd_where_it_was(tmp_path):
         worker = Store(tmp_path / "store")
         worker.fork("demo", "_task", at=base).close()
         with worker.open("_task", autocommit=False, mounts={"/data": Mount(src)}) as w:
-            w.files.write("/workspace/out.txt", "out")
+            assert w.files.fs.getcwd() == "/workspace/sub"
+            assert w.terminal("mkdir -p /workspace/out && cd ../out && echo x > f")
             result = w.commit({"tool": "task"})
         worker.close()
 
         ws.land(base, f"_task@{result}")
+        assert ws.files.read("/workspace/out/f") == b"x\n"
+        assert ws.files.fs.getcwd() == "/workspace/out"
+    finally:
+        ws.close()
+        st.close()
+
+
+def test_a_result_that_stored_the_root_leaves_the_cwd(tmp_path):
+    """A mounted worker of an earlier release committed the filesystem
+    root as its cwd. That is no cwd of its own, so the session's
+    stays."""
+    st = Store(tmp_path / "store")
+    ws = st.open("demo", autocommit=False)
+    try:
+        ws.files.write("a.txt", "a")
+        assert ws.terminal("mkdir -p sub && cd sub")
+        base = _dispatch(ws)
+
+        def work(child):
+            child.files.write("/workspace/out.txt", "out")
+            child.provider.kv["__vfs_cwd__"] = "/"
+
+        theirs = _run_task(tmp_path / "store", "demo", base, work)
+        ws.land(base, theirs)
         assert ws.files.read("/workspace/out.txt") == b"out"
         assert ws.files.fs.getcwd() == "/workspace/sub"
     finally:

@@ -35,14 +35,9 @@ def _owns_cwd(provider_fs: Any) -> bool:
     True for monkeyfs ``VirtualFS`` (the kvgit backend): cwd is a key
     in the provider's kv, written on ``chdir``, so it commits, forks
     and checks out with the files — and nontainer must not write it a
-    second time. It must not write it at all there, in fact: with
-    mounts the workspace's cwd is the composed ``MountFS``'s, and that
-    composition REQUIRES the filesystem underneath to stay at the root
-    (it hands that one paths it has already resolved), so a composed
-    cwd stored under this key would break every relative path. Mounted
-    trees are unversioned live views by contract, and on that backend
-    their cwd is now equally transient: it starts at the workspace root
-    each time the session is opened.
+    second time. A mount composition over it keeps its cwd under the
+    same key, through :class:`_CwdState`, so a mounted session's cwd
+    is stored as an unmounted one's is, even inside a mount.
 
     False for the filesystems that hold cwd in memory (a plain
     ``IsolatedFS``, the AgentFS adapter). There the workspace
@@ -53,6 +48,69 @@ def _owns_cwd(provider_fs: Any) -> bool:
     from monkeyfs import VirtualFS
 
     return isinstance(provider_fs, VirtualFS)
+
+
+class _CwdState(MutableMapping):
+    """The session's kv, as a mount composition's cwd store.
+
+    Handed to ``MountFS(state=)``, which keeps its cwd under
+    ``VirtualFS``'s key and reads it on every use. That makes the
+    composition's cwd the session's one stored cwd: a commit records
+    it, a fork or a frozen read starts from it, and whatever moves it
+    under the handle (a checkout, a land, a refresh) moves the
+    composition's with it. The path is the composition's, so it may
+    lie inside a mount; the mount's contents are never stored.
+
+    A stored cwd this handle can't use reads as the workspace root and
+    stays as stored until the agent changes directory, so opening
+    writes nothing (see :meth:`hide`). Every other key passes straight
+    through.
+    """
+
+    __slots__ = ("_kv", "_root", "_hidden")
+
+    def __init__(self, kv: MutableMapping[str, Any], root: str) -> None:
+        self._kv = kv
+        self._root = root
+        self._hidden: set[Any] = set()
+
+    def usable(self, value: Any, fs: Any) -> bool:
+        """Whether ``value``, a stored cwd, is somewhere this handle
+        can stand. Under a root other than ``/``, an absent key and the
+        filesystem root are not: the root is what a composition left
+        behind before the cwd was stored."""
+        if value is None or value == "/":
+            return self._root == "/"
+        return isinstance(value, str) and _quiet_isdir(fs, value)
+
+    def hide(self, value: Any) -> None:
+        """Read ``value`` (None: no key) as the workspace root until
+        the agent changes directory to it."""
+        self._hidden.add(value)
+
+    def __getitem__(self, key: str) -> Any:
+        if key != _cwd_key():
+            return self._kv[key]
+        value = self._kv.get(key)
+        if value in self._hidden:
+            return self._root
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        if key == _cwd_key():
+            self._hidden.discard(value)
+        self._kv[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._kv[key]
+
+    def __iter__(self) -> Any:
+        return iter(self._kv)
+
+    def __len__(self) -> int:
+        return len(self._kv)
 
 
 _MUTATING_FS_METHODS = frozenset(

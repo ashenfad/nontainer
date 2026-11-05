@@ -642,13 +642,11 @@ class AttachFS:
 
     An attachment is a ``MountFS`` mount like a workspace ``Mount`` —
     unversioned, explicit, and gone when the session closes. Composing
-    one moves the working directory into the composition, which needs
-    the filesystem underneath at the root (it hands that one paths it
-    has already resolved), so an attached session's cwd lives in the
-    composition for as long as anything is attached — the same trade a
-    configured mount already makes. On a backend whose filesystem
-    persists its own cwd, that park is what the store then holds, and
-    the workspace reads a stored ``/`` back as "start at the root".
+    one moves the working directory into the composition. ``state`` is
+    where a composition keeps it: the session's own cwd key, where the
+    filesystem underneath owns that key (see ``_CwdState``), so
+    attaching moves nothing and the cwd is stored as it was; or None,
+    for memory, where the workspace stores the cwd itself.
 
     ``home`` is where the cwd lands when the one it should go back to
     no longer resolves — detaching while standing inside the
@@ -656,13 +654,14 @@ class AttachFS:
     filesystem root.
     """
 
-    __slots__ = ("_base", "_attached", "_active", "_home")
+    __slots__ = ("_base", "_attached", "_active", "_home", "_state")
 
-    def __init__(self, base: Any, home: str = "/") -> None:
+    def __init__(self, base: Any, home: str = "/", *, state: Any = None) -> None:
         self._base = base
         self._attached: dict[str, Any] = {}
         self._active = base
         self._home = home
+        self._state = state
 
     def __repr__(self) -> str:
         return f"<{type(self._base).__name__} + {sorted(self._attached)}>"
@@ -697,8 +696,7 @@ class AttachFS:
         if self._attached:
             from monkeyfs import MountFS
 
-            self._move(self._base, "/")
-            active: Any = MountFS(self._base, dict(self._attached))
+            active: Any = MountFS(self._base, dict(self._attached), state=self._state)
         else:
             active = self._base
         self._active = active
@@ -713,7 +711,9 @@ class AttachFS:
     def _move(self, fs: Any, where: str) -> None:
         for target in (where, self._home):
             try:
-                if fs.getcwd() != target:
+                # A shared cwd is already "there" and may not resolve:
+                # inside the attachment just detached.
+                if fs.getcwd() != target or not fs.isdir(target):
                     fs.chdir(target)
                 return
             except Exception:  # noqa: BLE001 - try home, then give up
