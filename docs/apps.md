@@ -1038,6 +1038,69 @@ one yet, so every run ends up on the host's shared Chromium.
 a hermetic policy, no settling). Two consumers are what keep the
 protocol honest.
 
+### Verifying in a worker
+
+The whole run, not just the browser half, can run somewhere else: a
+worker process that verifies a pinned state and answers with data. The
+`DriveSpec` is not the thing to send, since its `serve` is a live
+callable. Send the request instead: `test_app`'s own arguments, which
+are all plain data (`actions`, `viewport`, `bind`, `max_screenshots`,
+`load_timeout_ms`, `action_timeout_ms`, `assert_timeout_ms`,
+`settle_cap`). The worker rebuilds everything that isn't data from its
+own trusted configuration, so no workspace object, client or browser
+crosses.
+
+```python
+# owner: pin the state and send {ref, request}
+with ws.lock:
+    ws.commit({"tool": "verify"})
+    ref = str(ws.ref)
+request = {"actions": [{"click": "#load"}, {"screenshot": "after"}],
+           "bind": {"db": "testdb"}}
+
+# worker: the same store, a frozen read of the ref, both sinks
+shots, logs = {}, []
+with Store(path).resolve(ref, python=trusted_python_config) as snap:
+    runtime = AppRuntime(snap, config,
+                         log_sink=logs.append,
+                         screenshot_sink=shots.__setitem__)
+    payload = runtime.test_app(**request).to_dict()   # JSON-safe, no bytes
+# ...answer with payload, shots (path -> PNG bytes) and logs
+
+# owner: decode, import, render
+result = TestAppResult.from_dict(payload)
+app_runtime.save_screenshots(shots)   # to the paths a direct run writes
+text = render_test_app(result)        # as a direct run renders
+```
+
+- **Nothing is written by the worker.** `screenshot_sink(path, png)`
+  receives each capture in capture order instead of the workspace, and
+  `log_sink` receives the handler log lines. `result.screenshots`
+  still names the paths a direct run writes, under
+  `<root>/app/screenshots/`. A sink that raises fails that capture's
+  action, as a failed write does.
+- **The owner decides what persists.** `AppRuntime.save_screenshots`
+  writes captures to their paths under the workspace lock, so they
+  version with the session and the agent's tools find them. Log lines
+  can go wherever the owner keeps diagnostics.
+- **Host objects are the worker's.** The pinned read takes trusted
+  settings (`python=PythonConfig(host_objects=...)`), so a
+  `bind={"db": "testdb"}` swaps objects the worker built for itself.
+- **Read-only parity.** A pinned input refuses writes, so a handler
+  that writes would fail in the worker and pass in a direct authoring
+  run. `AppsConfig(readonly_handlers=True)` on both sides makes every
+  handler read-only in both places, which is what makes verifying a
+  pinned input sound.
+- **Routing the agent's tool.** The toolset uses two things from its
+  `apps`: `.config`, for the tool description, and
+  `.test_app(actions, viewport=, bind=)`, after which it reads the
+  screenshots at the paths the result names. An object with those two
+  members that forwards to a worker, imports the captures, and returns
+  the decoded result routes the agent's `test_app` without changing
+  anything else.
+
+Queueing, transport and artifact storage are the embedder's.
+
 ## Delivery (where nontainer's concern ends)
 
 nontainer's delivery surface is exactly: the `/workspace/app` convention, the

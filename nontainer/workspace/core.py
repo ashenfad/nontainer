@@ -71,6 +71,7 @@ from ..protocol import (
     TagInfo,
     WorkspaceDiff,
     WorkspaceProvider,
+    frozen_where,
     keep_names,
     not_on_session,
     read_files,
@@ -3001,7 +3002,7 @@ class Workspace:
         inside a shell command or python call are refused by the
         read-only filesystem instead, at the moment they occur."""
         if self._frozen:
-            where = f" at tag {self._frozen_at!r}" if self._frozen_at else ""
+            where = frozen_where(self._frozen_at)
             raise NotSupportedError(
                 f"frozen: this workspace is a snapshot{where}; it accepts no "
                 f"writes, so {op} is not supported"

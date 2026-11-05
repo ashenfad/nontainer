@@ -3394,11 +3394,25 @@ AppsConfig(request_timeout=5.0, request_tick_limit=10_000_000,
            #   declared in this order, so positional construction binds
            #   them this way.
 
+AppRuntime(ws, config=None, *, frozen=False, log_sink=None, screenshot_sink=None)
+# log_sink(line) / screenshot_sink(path, png): handler log lines and
+# test_app captures, as data instead of workspace writes. With both, a
+# run writes nothing, so it can verify a pinned, read-only input.
 AppRuntime.dispatch(request: Request, *, bind=None) -> WireResponse
-AppRuntime.test_app(actions, *, viewport="desktop", bind=None, ...) -> TestAppResult
+AppRuntime.test_app(actions=None, *, viewport="desktop", bind=None,
+                    max_screenshots=5, load_timeout_ms=10_000,
+                    action_timeout_ms=5_000, assert_timeout_ms=2_000,
+                    settle_cap=5.0) -> TestAppResult
+# The arguments are the whole request, all plain data: a worker runs
+# runtime.test_app(**request) (docs/apps.md, "Verifying in a worker").
 # bind: {"name": "other"} has handlers read host object `other` where
 # they read `name`, for this run's (or this request's) requests only.
 # Nothing is bound unless asked. ws-curl takes it as --bind NAME=OTHER.
+AppRuntime.save_screenshots(shots: Mapping[str, bytes]) -> tuple[str, ...]
+# a worker's captures, written to the paths a direct run writes
+TestAppResult.to_dict() -> dict   /   TestAppResult.from_dict(d) -> TestAppResult
+# JSON-safe and bytes-free; round-trips exactly, so render_test_app
+# reads a decoded result as it reads a direct run's
 
 request(method, url, *, body=b"", headers=None) -> Request  # convenience
 

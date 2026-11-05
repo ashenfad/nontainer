@@ -23,7 +23,10 @@ instructive 404 during verification instead of breaking at delivery.
 Screenshots come back as bytes and are written to
 ``<root>/app/screenshots/`` once the run is over, returned as paths —
 bytes never ride in model-facing observations, and the screenshots
-version, fork and check out with the session.
+version, fork and check out with the session. A runtime built with a
+``screenshot_sink`` hands them to it instead and writes nothing, which
+is how a worker verifies a pinned, read-only input and returns the
+captures to its owner as data (docs/apps.md, "Verifying in a worker").
 
 Locking: nothing here holds ``ws.lock`` across a run. Each dispatched
 request takes it inside ``AppRuntime.dispatch`` (so a page's parallel
@@ -442,6 +445,26 @@ class ActionResult:
     value: str | None = None
     error: str | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe: see :meth:`TestAppResult.to_dict`."""
+        return {
+            "index": self.index,
+            "action": dict(self.action),
+            "ok": self.ok,
+            "value": self.value,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ActionResult":
+        return cls(
+            index=int(data["index"]),
+            action=dict(data["action"]),
+            ok=bool(data["ok"]),
+            value=data.get("value"),
+            error=data.get("error"),
+        )
+
 
 @dataclass(frozen=True)
 class TestAppResult:
@@ -482,16 +505,48 @@ class TestAppResult:
     def __bool__(self) -> bool:
         return self.ok
 
+    def to_dict(self) -> dict[str, Any]:
+        """The result as JSON-safe data: what a worker that ran the
+        verification sends its owner. It holds no bytes. Screenshots are
+        paths, and their bytes travel separately (``screenshot_sink``,
+        then :meth:`AppRuntime.save_screenshots` on the owner's side).
+        :meth:`from_dict` gives back an equal result, so
+        :func:`render_test_app` reads it exactly as it reads a direct
+        run's."""
+        return {
+            "ok": self.ok,
+            "results": [r.to_dict() for r in self.results],
+            "console": list(self.console),
+            "page_errors": list(self.page_errors),
+            "screenshots": list(self.screenshots),
+            "rejected": list(self.rejected),
+            "load_error": self.load_error,
+            "bound": [list(pair) for pair in self.bound],
+            "failed_requests": list(self.failed_requests),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TestAppResult":
+        """The result :meth:`to_dict` encoded. A key it does not know is
+        ignored and a missing one takes its default, so an owner and a
+        worker a release apart still read each other."""
+        return cls(
+            ok=bool(data["ok"]),
+            results=tuple(ActionResult.from_dict(r) for r in data.get("results", ())),
+            console=tuple(data.get("console", ())),
+            page_errors=tuple(data.get("page_errors", ())),
+            screenshots=tuple(data.get("screenshots", ())),
+            rejected=tuple(data.get("rejected", ())),
+            load_error=data.get("load_error"),
+            bound=tuple((str(a), str(b)) for a, b in data.get("bound", ())),
+            failed_requests=tuple(data.get("failed_requests", ())),
+        )
+
 
 def _save_screenshot(runtime: "AppRuntime", path: str, png: bytes) -> None:
     """Write a screenshot to the workspace fs, under the workspace's
-    single-writer lock: ``ws.files.fs`` is shared with dispatch and with
-    ordinary tool calls, and a write that skipped the lock could race
-    either."""
-    ws = runtime.workspace
-    with ws.lock:
-        ws.files.fs.makedirs(runtime._screenshot_dir, exist_ok=True)
-        ws.files.fs.write(path, png)
+    single-writer lock (see :meth:`AppRuntime.save_screenshots`)."""
+    runtime.save_screenshots({path: png})
 
 
 # ---------------------------------------------------------------------------
@@ -689,20 +744,30 @@ def _action_result(
 def _write_screenshots(
     runtime: "AppRuntime", report: DriveReport
 ) -> tuple[tuple[str, ...], dict[str, str]]:
-    """Persist the report's captures under ``<root>/app/screenshots/``,
-    in capture order. Bytes never ride in model-facing observations, and
-    the files version, fork and check out with the session.
+    """Persist the report's captures, in capture order: under
+    ``<root>/app/screenshots/``, or handed to the runtime's
+    ``screenshot_sink`` where it has one, at the same paths. Bytes never
+    ride in model-facing observations, and written files version, fork
+    and check out with the session.
 
-    A capture that cannot be written is not a reason to lose the run:
-    the paths that landed come back first, and the ones that did not
-    come back with the error, for the action that asked for each to
-    carry as its failure."""
+    A capture that cannot be kept is not a reason to lose the run:
+    the paths that were kept come back first, and the ones that were
+    not come back with the error, for the action that asked for each to
+    carry as its failure. A write fails with ``OSError``, or with
+    ``ValueError`` for a path a driver named outside the screenshot
+    directory, which is not written; a sink is the embedder's code and
+    may fail any way at all."""
+    sink = runtime._screenshot_sink
+    refused: Any = (OSError, ValueError) if sink is None else Exception
     written: list[str] = []
     failed: dict[str, str] = {}
     for path, png in report.screenshots.items():
         try:
-            _save_screenshot(runtime, path, png)
-        except OSError as e:
+            if sink is None:
+                _save_screenshot(runtime, path, png)
+            else:
+                sink(path, png)
+        except refused as e:
             failed[path] = f"screenshot not saved: {e}"
         else:
             written.append(path)

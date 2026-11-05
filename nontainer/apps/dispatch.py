@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..executor import ViewSpec
 from ..workspace import Workspace
@@ -44,6 +44,9 @@ from .contract import (
     nt__Encoder,
     size_refusal,
 )
+
+if TYPE_CHECKING:
+    from .testapp import TestAppResult
 
 # Fixed names under the workspace root (ws.root, default /workspace):
 # the app tree is <root>/app, handlers <root>/app/api, the handler log
@@ -833,12 +836,23 @@ class AppRuntime:
         *,
         frozen: bool = False,
         log_sink: "Callable[[str], None] | None" = None,
+        screenshot_sink: "Callable[[str, bytes], None] | None" = None,
     ) -> None:
         """``frozen=True`` (live serving of a published snapshot): every
         verb runs read-only — no mutation, so requests are concurrent
         and need no lock. ``log_sink`` routes handler stdout/errors off
         the (read-only) VFS; default is the VFS log at
         ``<root>/app/logs/api.log`` for the authoring loop.
+
+        ``screenshot_sink`` is the same seam for ``test_app``'s
+        captures: called as ``screenshot_sink(path, png)`` for each, in
+        capture order, in place of writing it under
+        ``<root>/app/screenshots/``. The result still names the paths a
+        direct run writes, so whoever keeps the bytes can put them
+        there (:meth:`save_screenshots`). A sink that raises fails the
+        action that asked for that capture, as a failed write does.
+        With both sinks, a run writes nothing to the workspace, which
+        is what lets it verify a pinned, read-only input.
 
         Handler executions are ``exec_python(view=...)`` calls: the
         executor gives each call a restricted sandbox of its own (policy
@@ -850,6 +864,7 @@ class AppRuntime:
         self._config = config or AppsConfig()
         self._frozen = frozen
         self._log_sink = log_sink
+        self._screenshot_sink = screenshot_sink
         self._log_broken = False  # warn once when logging fails
         self._log_started = False  # header written on first log write
         self._pending: list[str] = []  # request lines awaiting a free flush
@@ -1127,10 +1142,24 @@ class AppRuntime:
         actions: list[dict[str, Any]] | None = None,
         *,
         viewport: str | dict[str, int] = "desktop",
-        **kwargs: Any,
-    ) -> Any:
+        bind: "Mapping[str, str] | None" = None,
+        max_screenshots: int = 5,
+        load_timeout_ms: int = 10_000,
+        action_timeout_ms: int = 5_000,
+        assert_timeout_ms: int = 2_000,
+        settle_cap: float = 5.0,
+    ) -> "TestAppResult":
         """Headless verification via Playwright (see testapp.py).
         Requires the [apps] extra + `playwright install chromium`.
+
+        The arguments are the whole request, and all of them are plain
+        data (JSON as it stands): ``actions``, a ``viewport`` name or
+        ``{"width", "height"}``, a ``bind``, the screenshot cap and the
+        time budgets. So a run can be sent to a worker as they are and
+        made there with ``runtime.test_app(**request)``, against a
+        runtime the worker builds over the same state (see "Verifying in
+        a worker" in docs/apps.md). The result encodes with
+        :meth:`TestAppResult.to_dict`.
 
         ``bind={"db": "testdb"}`` runs the page's requests against a
         different host object than the session binds under that name,
@@ -1138,7 +1167,43 @@ class AppRuntime:
         a run says so."""
         from .testapp import run_test_app
 
-        return run_test_app(self, actions, viewport=viewport, **kwargs)
+        return run_test_app(
+            self,
+            actions,
+            viewport=viewport,
+            bind=bind,
+            max_screenshots=max_screenshots,
+            load_timeout_ms=load_timeout_ms,
+            action_timeout_ms=action_timeout_ms,
+            assert_timeout_ms=assert_timeout_ms,
+            settle_cap=settle_cap,
+        )
+
+    def save_screenshots(self, shots: "Mapping[str, bytes]") -> tuple[str, ...]:
+        """Write captures to the workspace, at the paths they name;
+        returns those paths in order.
+
+        What ``test_app`` does with its own captures when no
+        ``screenshot_sink`` is set, offered to whoever received them
+        through one: an owner importing a worker's run puts them where a
+        direct run would have, so they version with the session and the
+        agent's tools find them. Each write takes the workspace's
+        single-writer lock, as the run's own do. A path outside
+        ``<root>/app/screenshots/`` is refused: a sink is handed paths,
+        and paths are where writes go."""
+        prefix = self._screenshot_dir + "/"
+        for path in shots:
+            if not isinstance(path, str) or not path.startswith(prefix):
+                raise ValueError(
+                    f"not a screenshot path: {path!r} (captures live under "
+                    f"{self._screenshot_dir}/)"
+                )
+        ws = self._ws
+        for path, png in shots.items():
+            with ws.lock:
+                ws.files.fs.makedirs(self._screenshot_dir, exist_ok=True)
+                ws.files.fs.write(path, bytes(png))
+        return tuple(shots)
 
     # -- static ------------------------------------------------------------
 

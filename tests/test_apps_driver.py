@@ -323,6 +323,156 @@ def test_a_screenshot_that_cannot_be_saved_fails_its_action(monkeypatch):
         ws.close()
 
 
+# -- the screenshot sink (#303) ---------------------------------------------
+
+
+def _two_shots(spec):
+    first = f"{spec.screenshot_dir}/shot-1.png"
+    second = f"{spec.screenshot_dir}/shot-2.png"
+    return DriveReport(
+        loaded=True,
+        actions=(
+            ActionOutcome(0, ok=True, value=first),
+            ActionOutcome(1, ok=True, value=second),
+        ),
+        screenshots={first: b"\x89PNG one", second: b"\x89PNG two"},
+    )
+
+
+def _sunk_runtime(session, sink, **cfg):
+    """A runtime over a workspace with an app, whose captures go to
+    ``sink`` (and whose log lines go to a list)."""
+    from nontainer.apps.dispatch import AppRuntime
+
+    ws, _, driver = make_ws(session, _two_shots, **cfg)
+    runtime = AppRuntime(
+        ws, AppsConfig(driver=driver), log_sink=lambda line: None, screenshot_sink=sink
+    )
+    return ws, runtime
+
+
+def test_a_screenshot_sink_takes_the_captures_in_order_and_nothing_is_written():
+    got = []
+    ws, rt = _sunk_runtime("sink-order", lambda path, png: got.append((path, png)))
+    try:
+        result = rt.test_app([{"screenshot": "a"}, {"screenshot": "b"}])
+        assert result.ok
+        shots = (
+            "/workspace/app/screenshots/shot-1.png",
+            "/workspace/app/screenshots/shot-2.png",
+        )
+        assert result.screenshots == shots  # the paths a direct run writes
+        assert got == [(shots[0], b"\x89PNG one"), (shots[1], b"\x89PNG two")]
+        assert not ws.files.exists("/workspace/app/screenshots")
+    finally:
+        ws.close()
+
+
+def test_a_sink_that_raises_fails_that_screenshots_action_alone():
+    def sink(path, png):
+        if path.endswith("shot-1.png"):
+            raise RuntimeError("bucket unreachable")
+
+    ws, rt = _sunk_runtime("sink-raises", sink)
+    try:
+        result = rt.test_app([{"screenshot": "a"}, {"screenshot": "b"}])
+        assert not result.ok
+        assert result.results[0].error == "screenshot not saved: bucket unreachable"
+        assert result.results[1].ok
+        assert result.screenshots == ("/workspace/app/screenshots/shot-2.png",)
+    finally:
+        ws.close()
+
+
+def test_a_driver_naming_a_path_outside_the_screenshot_dir_writes_nothing_there():
+    """A capture is written under the screenshot directory or not at
+    all: a driver's path elsewhere fails that action, and the file it
+    named is left alone."""
+
+    def build(spec):
+        path = "/workspace/app/index.html"
+        return DriveReport(
+            loaded=True,
+            actions=(ActionOutcome(0, ok=True, value=path),),
+            screenshots={path: b"\x89PNG"},
+        )
+
+    ws, rt, _ = make_ws("outside", build)
+    try:
+        result = rt.test_app([{"screenshot": True}])
+        assert not result.ok
+        assert "not a screenshot path" in result.results[0].error
+        assert ws.files.read("/workspace/app/index.html") == INDEX
+    finally:
+        ws.close()
+
+
+def test_save_screenshots_puts_a_workers_captures_where_a_direct_run_would():
+    ws, rt, _ = make_ws("save-shots", _two_shots)
+    try:
+        shots = {"/workspace/app/screenshots/shot-1.png": b"\x89PNG one"}
+        assert rt.save_screenshots(shots) == tuple(shots)
+        assert ws.files.read("/workspace/app/screenshots/shot-1.png") == b"\x89PNG one"
+        with pytest.raises(ValueError, match="not a screenshot path"):
+            rt.save_screenshots({"/workspace/app/index.html": b"<p>no</p>"})
+        assert ws.files.read("/workspace/app/index.html") == INDEX
+    finally:
+        ws.close()
+
+
+def test_the_request_is_test_apps_own_arguments():
+    """Plain data in, all of it reaching the spec: what a worker is
+    sent and passes back in as ``runtime.test_app(**request)``."""
+    import json
+
+    ws, rt, driver = make_ws("request")
+    try:
+        request = {
+            "actions": [{"read": "#out"}],
+            "viewport": {"width": 640, "height": 480},
+            "max_screenshots": 2,
+            "load_timeout_ms": 4_000,
+            "action_timeout_ms": 3_000,
+            "assert_timeout_ms": 1_000,
+            "settle_cap": 1.5,
+        }
+        rt.test_app(**json.loads(json.dumps(request)))
+        (spec,) = driver.specs
+        assert spec.actions == ({"read": "#out"},)
+        assert (spec.width, spec.height) == (640, 480)
+        assert spec.max_screenshots == 2
+        assert (spec.load_timeout_ms, spec.action_timeout_ms) == (4_000, 3_000)
+        assert (spec.assert_timeout_ms, spec.settle_cap_ms) == (1_000, 1_500)
+    finally:
+        ws.close()
+
+
+def test_a_result_round_trips_through_json():
+    import json
+
+    from nontainer.apps import ActionResult, TestAppResult
+
+    result = TestAppResult(
+        ok=False,
+        results=(
+            ActionResult(0, {"click": "#go"}, ok=True),
+            ActionResult(1, {"assert": "x"}, ok=False, value="False", error="no"),
+        ),
+        console=("[error] boom (x2)",),
+        page_errors=("Error: boom",),
+        screenshots=("/workspace/app/screenshots/shot-1.png",),
+        rejected=("/api/x -> 404: absolute path",),
+        load_error=None,
+        bound=(("db", "testdb"),),
+        failed_requests=("GET api/x -> 500",),
+    )
+    back = TestAppResult.from_dict(json.loads(json.dumps(result.to_dict())))
+    assert back == result
+    assert render_test_app(back) == render_test_app(result)
+    # A key a newer release adds is ignored; a missing one defaults.
+    assert TestAppResult.from_dict({"ok": True, "later": 1}) == TestAppResult(ok=True)
+
+
 def test_a_driver_that_raises_is_a_load_error_not_a_raise():
     def build(spec):
         raise RuntimeError("no browser here")
