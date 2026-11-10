@@ -105,7 +105,7 @@ def test_a_merge_keeps_this_sides_copies(store, ws):
     finally:
         other.close()
 
-    outcome = ws.merge("other")
+    outcome = ws.index.merge("other")
     assert outcome.merged and outcome.conflicts == ()
     assert ws.files.read("/workspace/app/index.html") == b"<h1>theirs</h1>\n"
     assert ws.files.read(SHOT) == b"ours"
@@ -175,7 +175,7 @@ def test_a_delegate_that_checked_its_work_after_committing_merges_cleanly(store,
 
     assert answer.uncommitted is False
     assert answer.changed["seed"] == ("/workspace/app/intro.html",)
-    assert ws.merge(answer.branch).merged
+    assert ws.index.merge(answer.branch).merged
     assert ws.files.read("/workspace/app/intro.html") == b"<p>intro</p>\n"
     assert not ws.files.exists(SHOT)
     assert not ws.files.exists(LOG)
@@ -286,7 +286,7 @@ def test_a_fork_inherits_the_patterns_and_a_merge_keeps_them_out(ignoring):
         kid.index.commit("feature")
     finally:
         kid.close()
-    outcome = ignoring.merge("ignoring.kid")
+    outcome = ignoring.index.merge("ignoring.kid")
     assert outcome.merged
     assert ignoring.files.exists("/workspace/feature.py")
     assert not ignoring.files.exists("/workspace/kid.log")
@@ -355,7 +355,7 @@ def test_a_forks_partial_first_commit_puts_the_rest_back_to_its_base(fork_of):
     # merged into the parent, the commit changes a.txt and nothing else
     kid.terminal("ws-git checkout -- b.txt")
     kid.close()
-    outcome = parent.merge("base-parent.kid")
+    outcome = parent.index.merge("base-parent.kid")
     assert outcome.merged
     assert parent.files.read("/workspace/a.txt") == b"a edited\n"
     assert parent.files.read("/workspace/b.txt") == b"b\n"

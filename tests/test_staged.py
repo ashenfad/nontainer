@@ -415,7 +415,7 @@ def test_merge_takes_our_blob(kv_ws):
         kv_ws.files.fs.write("/workspace/a.txt", b"main")
         ours = kv_ws.index.commit("main work")
 
-        out = kv_ws.merge("worker")
+        out = kv_ws.index.merge("worker")
         assert out.merged
         assert kv_ws.index.head == out.commit
         # the merge joined the agent's graph rather than ending it
@@ -465,7 +465,7 @@ def test_status_reports_merge_context(kv_ws):
         kv_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         kv_ws.commit()
 
-        out = kv_ws.merge("worker")
+        out = kv_ws.index.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
         st = kv_ws.index.status()
         assert st.merge_source == "worker"
@@ -496,7 +496,7 @@ def test_merge_context_clears_on_a_framework_commit_too(kv_ws):
         fork.commit()
         kv_ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         kv_ws.commit()
-        kv_ws.merge("worker")
+        kv_ws.index.merge("worker")
         assert kv_ws.index.status().merge_source == "worker"
 
         kv_ws.files.fs.write("/workspace/doc.txt", b"a\nBOTH\n")
@@ -601,7 +601,7 @@ def test_merge_bookkeeping_commits_itself(kv_ws):
         second.terminal("echo two > two.txt")
         second.index.commit("two")
 
-        out = kv_ws.merge("worker-one")
+        out = kv_ws.index.merge("worker-one")
         assert out.merged
         assert not kv_ws.uncommitted
         assert kv_ws.index.head == out.commit
@@ -609,7 +609,7 @@ def test_merge_bookkeeping_commits_itself(kv_ws):
 
         # a clean tree is what the next merge needs, and it is what
         # the first one left behind
-        assert kv_ws.merge("worker-two").merged
+        assert kv_ws.index.merge("worker-two").merged
         assert not kv_ws.uncommitted
     finally:
         first.close()
@@ -628,7 +628,7 @@ def test_merge_bookkeeping_survives_without_autocommit(tmp_path):
         try:
             fork.terminal("echo kid > kid.txt")
             fork.index.commit("kid")
-            out = ws.merge("mergehost-kid")
+            out = ws.index.merge("mergehost-kid")
             assert out.merged
             assert not ws.uncommitted
         finally:
@@ -724,14 +724,14 @@ def test_merge_refuses_uncommitted_agent_work(kv_ws):
         kv_ws.terminal("echo mine > mine.txt")  # committed by the framework
         assert not kv_ws.uncommitted  # ... so the buffer says nothing is pending
         with pytest.raises(WorkspaceError) as excinfo:
-            kv_ws.merge("worker")
+            kv_ws.index.merge("worker")
         message = str(excinfo.value)
         assert "ws-git commit" in message
         assert "ws-git checkout" in message
 
         # either fix unblocks it
         kv_ws.index.commit("mine")
-        assert kv_ws.merge("worker").merged
+        assert kv_ws.index.merge("worker").merged
     finally:
         fork.close()
 
@@ -743,7 +743,7 @@ def test_merge_refuses_an_open_index_before_the_first_commit(kv_ws):
     fork = kv_ws.fork("worker")
     try:
         fork.terminal("echo worker > b.txt")
-        assert kv_ws.merge("worker").merged  # nothing staged: allowed
+        assert kv_ws.index.merge("worker").merged  # nothing staged: allowed
 
         kv_ws.terminal("echo more > c.txt")
         kv_ws.index.stage(["/workspace/c.txt"])
@@ -751,7 +751,7 @@ def test_merge_refuses_an_open_index_before_the_first_commit(kv_ws):
         try:
             second.terminal("echo two > d.txt")
             with pytest.raises(WorkspaceError, match="uncommitted ws-git work"):
-                kv_ws.merge("worker-two")
+                kv_ws.index.merge("worker-two")
         finally:
             second.close()
     finally:
@@ -774,11 +774,11 @@ def test_merge_refuses_a_source_with_work_in_flight(kv_ws):
         assert not fork.uncommitted
 
         with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
-            kv_ws.merge("worker")
+            kv_ws.index.merge("worker")
         assert not kv_ws.files.exists("/workspace/done.txt")
 
         fork.index.commit("wip")
-        out = kv_ws.merge("worker")
+        out = kv_ws.index.merge("worker")
         assert out.merged
         assert kv_ws.files.read("/workspace/wip.txt") == b"wip\n"
     finally:
@@ -799,7 +799,7 @@ def test_merge_takes_the_sources_last_agent_commit(kv_ws):
         fork.cache["scratch"] = "the delegate's own"  # framework commit
         assert fork.head != agent_head
 
-        assert kv_ws.merge("worker").merged
+        assert kv_ws.index.merge("worker").merged
         assert kv_ws.files.read("/workspace/done.txt") == b"done\n"
         assert "scratch" not in kv_ws.cache
     finally:
@@ -814,7 +814,7 @@ def test_merge_of_a_session_that_never_used_ws_git(kv_ws):
     try:
         fork.terminal("echo worker > b.txt")
         assert fork.index.head is None
-        assert kv_ws.merge("worker").merged
+        assert kv_ws.index.merge("worker").merged
         assert kv_ws.files.read("/workspace/b.txt") == b"worker\n"
     finally:
         fork.close()
@@ -834,7 +834,7 @@ def test_a_file_about_markers_is_not_a_conflict(kv_ws):
     try:
         fork.terminal("echo worker > b.txt")
         fork.index.commit("worker work")
-        out = kv_ws.merge("worker")
+        out = kv_ws.index.merge("worker")
         assert out.merged
         assert out.conflicts == ()
 
@@ -860,7 +860,7 @@ def test_the_context_holds_until_the_markers_are_gone(kv_ws):
         kv_ws.files.fs.write("/workspace/two.txt", b"a\nMAIN\n")
         kv_ws.index.commit("main work")
 
-        out = kv_ws.merge("worker")
+        out = kv_ws.index.merge("worker")
         assert set(out.conflicts) == {"/workspace/one.txt", "/workspace/two.txt"}
 
         # Resolve ONE and merely EDIT the other, then commit both.
@@ -1087,7 +1087,7 @@ def test_a_merge_record_that_cannot_land_names_the_merge(kv_ws):
 
         provider.commit_keys = refuse
         with pytest.raises(BookkeepingLost) as excinfo:
-            kv_ws.merge("worker")
+            kv_ws.index.merge("worker")
         del provider.commit_keys
 
         message = str(excinfo.value)
@@ -1164,7 +1164,7 @@ def test_merge_passes_both_keywords_to_the_provider(tmp_path):
 
     ws = Workspace(MergingPlainProvider(tmp_path / "ws", session="plain"))
     try:
-        out = ws.merge("other")
+        out = ws.index.merge("other")
         assert out.merged
         assert seen["source"] == "other"
         assert set(seen["kwargs"]) == {"at", "info", "ignore"}

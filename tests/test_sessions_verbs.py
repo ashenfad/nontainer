@@ -377,7 +377,7 @@ def test_the_view_record_merges_as_ours(ws):
     try:
         child.files.write("/workspace/a.py", "done\n")
         child.index.commit("done")
-        assert ws.merge("child").merged
+        assert ws.index.merge("child").merged
         assert ws._view is None
         assert ws.files.exists("/workspace/b.py")
     finally:
@@ -527,7 +527,7 @@ def test_a_clean_merge_into_a_narrowed_session_stays_out_of_sight(ws):
         ws.files.write("/workspace/new.txt", "new\n")
         ws.index.commit("main moves")
 
-        out = child.merge("main")
+        out = child.index.merge("main")
 
         assert out.merged and out.conflicts == ()
         assert child._provider.fs.read("/workspace/hidden.txt") == b"two\n"
@@ -550,9 +550,9 @@ def test_a_conflict_the_view_hides_joins_the_view(ws, store):
         sib.index.commit("sib")
         ws.files.write("/workspace/hidden.txt", "one\nMAIN\nthree\n")
         ws.index.commit("main")
-        assert child.merge("sib").conflicts == ()
+        assert child.index.merge("sib").conflicts == ()
 
-        out = child.merge("main")
+        out = child.index.merge("main")
 
         assert out.conflicts == ("/workspace/hidden.txt",)
         assert b"<<<<<<< " in child.files.read("/workspace/hidden.txt")
@@ -1003,7 +1003,7 @@ def test_merge_refuses_where_the_substrate_cannot(store, tmp_path):
     w = Workspace(PlainProvider(tmp_path / "plain", session="plain"))
     try:
         with pytest.raises(NotSupportedError):
-            w.merge("other")
+            w.index.merge("other")
         with pytest.raises((NotSupportedError, WorkspaceError)):
             w.fork("child")
     finally:

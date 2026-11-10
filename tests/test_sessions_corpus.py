@@ -79,7 +79,7 @@ def test_disjoint_files_on_both_sides_merge_clean(parent):
         parent.files.write("/workspace/from_parent.txt", "parent\n")
         parent.index.commit("parent work")
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged and not out.conflicts
         assert parent.files.read("/workspace/from_child.txt") == b"child\n"
         assert parent.files.read("/workspace/from_parent.txt") == b"parent\n"
@@ -107,7 +107,7 @@ def test_overlapping_edits_come_back_as_a_merge_the_agent_can_finish(parent):
         parent.files.write("/workspace/shared", "one\nPARENT\nthree\n")
         parent.index.commit("parent edit")
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged
         assert out.conflicts == ("/workspace/shared",)
         assert b"<<<<<<<" in parent.files.read("/workspace/shared")
@@ -151,7 +151,7 @@ def test_a_deletion_against_an_edit_conflicts(parent):
         parent.files.write("/workspace/doomed", "edited\n")
         parent.index.commit("kept it")
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged
         assert out.conflicts == ("/workspace/doomed",)
         body = parent.files.read("/workspace/doomed")
@@ -182,7 +182,7 @@ def test_a_cache_key_written_on_both_sides_keeps_ours(parent):
         parent.cache["shared"] = "the caller's"
         parent.commit(info={"tool": "test"})
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged and not out.conflicts
         assert parent.files.read("/workspace/result.txt") == b"done\n"
         assert parent.cache["shared"] == "the caller's"
@@ -217,7 +217,7 @@ def test_the_delegates_conversation_never_comes_back(parent, tmp_path):
         child.files.write("/workspace/result.txt", "done\n")
         child.index.commit("delegate work")
 
-        assert parent.merge("child").merged
+        assert parent.index.merge("child").merged
         assert parent.files.read("/workspace/result.txt") == b"done\n"
 
         record = here.get_session(session_id="parent", session_type=None)
@@ -249,7 +249,7 @@ def test_a_narrowed_view_merges_back_only_its_own_changes(parent):
         parent.files.write("/workspace/billing.py", "billing, edited\n")
         parent.index.commit("caller work")
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged and not out.conflicts
         assert parent.files.read("/workspace/auth.py") == b"auth, refactored\n"
         assert parent.files.read("/workspace/notes.md") == b"what I did\n"
@@ -274,8 +274,8 @@ def test_two_delegates_generating_the_same_file_merge_clean(parent):
             child.files.write(f"/workspace/{extra}", "note\n")
             child.index.commit("generated")
 
-        assert parent.merge("one").merged
-        out = parent.merge("two")
+        assert parent.index.merge("one").merged
+        out = parent.index.merge("two")
         assert out.merged and not out.conflicts
         assert parent.files.read("/workspace/generated.txt") == b"deterministic\n"
         assert parent.files.exists("/workspace/one.txt")
@@ -300,7 +300,7 @@ def test_the_merge_joins_the_ancestry_and_shows_in_the_agents_log(parent):
         parent.files.write("/workspace/shared", "one\nPARENT\nthree\n")
         parent.index.commit("parent edit")
 
-        first = parent.merge("child")
+        first = parent.index.merge("child")
         assert first.conflicts == ("/workspace/shared",)
         parent.files.write("/workspace/shared", "one\nBOTH\nthree\n")
         parent.index.commit("resolved")
@@ -318,7 +318,7 @@ def test_the_merge_joins_the_ancestry_and_shows_in_the_agents_log(parent):
         # caller made is not re-contested
         child.files.write("/workspace/later.txt", "later\n")
         child.index.commit("more work")
-        second = parent.merge("child")
+        second = parent.index.merge("child")
         assert second.merged and not second.conflicts
         assert parent.files.read("/workspace/shared") == b"one\nBOTH\nthree\n"
         assert parent.files.read("/workspace/later.txt") == b"later\n"
@@ -342,7 +342,7 @@ def test_a_fork_that_never_used_ws_git_merges_at_its_store_head(parent):
         assert child.index.head is None  # it never used ws-git
         assert not child.uncommitted  # but the store has it all
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged and not out.conflicts
         assert parent.files.read("/workspace/done.txt") == b"done\n"
         assert parent.files.read("/workspace/base") == b"base\nplus\n"
@@ -380,7 +380,7 @@ def test_a_fork_that_used_ws_git_merges_at_its_last_agent_commit(parent):
         child.terminal("echo later > /workspace/later.txt")
         child.index.commit("later too")
 
-        assert parent.merge("child").merged
+        assert parent.index.merge("child").merged
         assert parent.files.read("/workspace/later.txt") == b"later\n"
         assert agent in [c.id for c in child.index.log()]
     finally:
@@ -404,11 +404,11 @@ def test_a_source_with_work_in_flight_is_refused(parent):
         assert child.index.status().unstaged == ("/workspace/wip.txt",)
 
         with pytest.raises(WorkspaceError, match="uncommitted ws-git work on 'child'"):
-            parent.merge("child")
+            parent.index.merge("child")
         assert not parent.files.exists("/workspace/done.txt")
 
         child.terminal("ws-git commit -m 'wip too'")
-        assert parent.merge("child").merged
+        assert parent.index.merge("child").merged
         assert parent.files.read("/workspace/wip.txt") == b"wip\n"
     finally:
         child.close()
@@ -430,7 +430,7 @@ def test_agentfs_refuses_fork_and_merge_by_name(tmp_path):
         with pytest.raises(NotSupportedError):
             ws.fork("child")
         with pytest.raises(NotSupportedError, match="cannot merge"):
-            ws.merge("child")
+            ws.index.merge("child")
     finally:
         ws.close()
 
@@ -454,7 +454,7 @@ def test_one_file_is_one_conflict_and_two_files_merge_with_their_metadata(parent
         parent.files.write("/workspace/mine", "parent added a line\nmine\n")
         parent.index.commit("parent edits")
 
-        out = parent.merge("child")
+        out = parent.index.merge("child")
         assert out.merged
         # Once, by path: never a second entry for the metadata row.
         assert out.conflicts == ("/workspace/shared",)

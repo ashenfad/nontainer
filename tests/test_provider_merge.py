@@ -364,14 +364,14 @@ def test_a_recorded_conflict_counts_only_while_the_key_holds_its_bytes():
 
 
 def test_workspace_merge_brings_a_forks_work_home(kv_ws):
-    """``ws.merge`` is the provider verb under the workspace lock: the
+    """``ws.index.merge`` is the provider verb under the workspace lock: the
     fork's disjoint file arrives, and the outcome names it."""
     kv_ws.terminal("echo base > a.txt")
     fork = kv_ws.fork("worker")
     try:
         fork.terminal("echo worker > b.txt")
 
-        out = kv_ws.merge("worker")
+        out = kv_ws.index.merge("worker")
         assert out.merged
         assert out.conflicts == ()
         assert out.auto_merged == ("/workspace/b.txt",)
@@ -397,12 +397,12 @@ def test_workspace_merge_refuses_a_dirty_target(kv_ws):
         assert kv_ws.uncommitted
 
         with pytest.raises(WorkspaceError, match="ws.commit"):
-            kv_ws.merge("worker")
+            kv_ws.index.merge("worker")
         assert kv_ws.uncommitted  # nothing was taken from under the caller
         assert not kv_ws.files.fs.exists("/workspace/b.txt")
 
         kv_ws.commit()
-        assert kv_ws.merge("worker").merged
+        assert kv_ws.index.merge("worker").merged
     finally:
         fork.close()
 
@@ -414,4 +414,4 @@ def test_workspace_merge_needs_the_capability(tmp_path):
     with Workspace(PlainProvider(tmp_path / "ws", session="s1")) as ws:
         assert ws.caps.merge is False
         with pytest.raises(NotSupportedError, match="merge"):
-            ws.merge("other")
+            ws.index.merge("other")

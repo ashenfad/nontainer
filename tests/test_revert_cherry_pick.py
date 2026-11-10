@@ -128,7 +128,7 @@ def test_revert_of_a_merge_goes_back_to_ours(ws):
         ws.files.write("/workspace/mine.txt", "mine\n")
         ws.index.commit("my work")
 
-        merge = ws.merge("child")
+        merge = ws.index.merge("child")
         assert merge.merged
         assert ws.files.exists("/workspace/theirs.txt")
 
@@ -338,7 +338,7 @@ def test_both_refuse_while_a_merge_is_outstanding(ws):
         picked = child.index.head
         ws.files.write("/workspace/shared.txt", "one\nMINE\nthree\n")
         ws.index.commit("my edit")
-        assert ws.merge("child").conflicts
+        assert ws.index.merge("child").conflicts
 
         with pytest.raises(WorkspaceError, match="unresolved merge"):
             ws.revert(first)

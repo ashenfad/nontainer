@@ -97,8 +97,8 @@ TOOL = "ws-git"
 #: agent's tree and join its graph: a merge of another session, a
 #: revert of one commit's change, a cherry-pick of one from elsewhere.
 #: The host invokes them; the agent sees them, so each is one of the
-#: agent's commits. ``ws.apply`` lands the change between any two
-#: states the same way.
+#: agent's commits. ``ws.index.apply`` lands the change between any
+#: two states the same way.
 MERGE_TOOL = "ws-git.merge"
 REVERT_TOOL = "ws-git.revert"
 PICK_TOOL = "ws-git.cherry-pick"

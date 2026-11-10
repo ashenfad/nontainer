@@ -1,4 +1,4 @@
-"""ws.apply: the change between two named states, landed here.
+"""ws.index.apply: the change between two named states, landed here.
 
 A merge's three-way with the base named: what changed from ``base`` to
 ``theirs`` lands on this tree as one commit in the agent's graph, and
@@ -60,7 +60,7 @@ def test_an_upgrade_brings_the_release_and_keeps_a_local_fix(ws, releases):
     )
     ws.index.commit("fix row")
 
-    out = ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
+    out = ws.index.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
 
     assert out.merged and out.conflicts == ()
     cells = ws.files.read("/workspace/skills/sheets/cells.py").decode()
@@ -75,7 +75,7 @@ def test_it_lands_in_the_agents_graph(ws, releases):
     _vendor_v1(ws)
     before = ws.index.head
 
-    out = ws.apply("sheets/v1", "sheets/v2", paths=["skills/sheets"])
+    out = ws.index.apply("sheets/v1", "sheets/v2", paths=["skills/sheets"])
 
     assert ws.index.head == out.commit
     assert [e.id for e in ws.index.log()][:2] == [out.commit, before]
@@ -89,7 +89,9 @@ def test_it_lands_in_the_agents_graph(ws, releases):
 
 
 def test_from_nothing_it_brings_everything_theirs_holds(ws, releases):
-    out = ws.apply(None, "sheets/v1", paths="skills/sheets", message="install sheets")
+    out = ws.index.apply(
+        None, "sheets/v1", paths="skills/sheets", message="install sheets"
+    )
 
     assert out.merged
     assert ws.files.read("/workspace/skills/sheets/cells.py").decode() == V1
@@ -107,7 +109,7 @@ def test_overlapping_work_lands_with_markers(ws, releases):
     )
     ws.index.commit("my cell")
 
-    out = ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
+    out = ws.index.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
 
     assert out.merged
     assert out.conflicts == ("/workspace/skills/sheets/cells.py",)
@@ -117,10 +119,10 @@ def test_overlapping_work_lands_with_markers(ws, releases):
 
 def test_a_change_already_here_commits_nothing(ws, releases):
     _vendor_v1(ws)
-    ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
+    ws.index.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
     head = ws.head
 
-    out = ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
+    out = ws.index.apply("sheets/v1", "sheets/v2", paths="skills/sheets")
 
     assert not out.merged and out.commit is None
     assert ws.head == head
@@ -136,7 +138,7 @@ def test_sessions_and_their_commits_are_states_too(ws, store):
     ws.files.write("/workspace/a.txt", "one\n")
     ws.index.commit("a")
 
-    out = ws.apply(f"other@{first[:7]}", "other", paths="a.txt")
+    out = ws.index.apply(f"other@{first[:7]}", "other", paths="a.txt")
 
     assert out.merged
     assert ws.files.read("/workspace/a.txt") == b"two\n"
@@ -145,11 +147,11 @@ def test_sessions_and_their_commits_are_states_too(ws, store):
 
 def test_refusals(ws, releases):
     with pytest.raises(ValueError, match="at least one side"):
-        ws.apply(None, None)
+        ws.index.apply(None, None)
     _vendor_v1(ws)
     ws.files.write("/workspace/x.txt", "x")
     with pytest.raises(WorkspaceError, match="uncommitted ws-git work"):
-        ws.apply("sheets/v1", "sheets/v2")
+        ws.index.apply("sheets/v1", "sheets/v2")
 
 
 def test_a_provider_without_merge_says_so(tmp_path):
@@ -160,7 +162,7 @@ def test_a_provider_without_merge_says_so(tmp_path):
     ws = Workspace(PlainProvider(tmp_path / "ws", session="dir"))
     try:
         with pytest.raises(NotSupportedError, match="cannot apply"):
-            ws.apply("a", "b")
+            ws.index.apply("a", "b")
     finally:
         ws.close()
 
@@ -182,7 +184,7 @@ def test_a_hidden_file_the_change_touches_is_refused(ws, releases, paths):
     try:
         head = child.head
         with pytest.raises(PermissionError, match="outside this session's view"):
-            child.apply("sheets/v1", "sheets/v2", paths=paths)
+            child.index.apply("sheets/v1", "sheets/v2", paths=paths)
         # nothing of it landed, in the view or out of it
         assert child.head == head
         assert child.files.read("/workspace/skills/sheets/cells.py").decode() == V1
@@ -196,7 +198,7 @@ def test_a_file_the_change_creates_joins_the_view(ws, store, releases):
     _vendor_v1(ws)
     child = _narrowed(ws, ["skills/sheets"])
     try:
-        out = child.apply(None, "sheets/v1")
+        out = child.index.apply(None, "sheets/v1")
         assert out.merged
         assert child.files.read("/workspace/notes.md") == b"v1 notes\n"
         assert not child._provider.dirty

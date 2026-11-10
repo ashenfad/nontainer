@@ -377,7 +377,7 @@ def test_merges_between_migrated_branches_are_clean(tmp_path):
     store.migrate_layout()
 
     with store.open("main") as ws:
-        out = ws.merge("worker")
+        out = ws.index.merge("worker")
         assert out.merged
         assert out.conflicts == ()
         assert ws.files.read("/workspace/worker.txt") == b"from the worker\n"
@@ -399,7 +399,7 @@ def test_merging_an_unmigrated_branch_is_refused_by_name(tmp_path):
     with store.open("main") as ws:
         head = ws.head
         with pytest.raises(LegacyLayoutError) as excinfo:
-            ws.merge("worker")
+            ws.index.merge("worker")
         assert excinfo.value.session == "worker"
         assert "--session=worker" in str(excinfo.value)
         assert ws.head == head

@@ -112,12 +112,12 @@ def main() -> None:
     # A merge takes only what has been committed, on BOTH sides — and
     # this session still has its own work in flight.
     try:
-        ws.merge("polish")
+        ws.index.merge("polish")
     except WorkspaceError as e:
         print("refused:", str(e).split(", and a merge")[0])
     ws.terminal("ws-git commit -m 'my own work so far'")
 
-    out = ws.merge("polish")
+    out = ws.index.merge("polish")
     print("merged:", out.merged, "| conflicts:", out.conflicts)
     print("report.md now:", ws.files.read("/workspace/report.md").decode().strip())
     child.close()
