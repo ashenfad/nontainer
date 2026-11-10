@@ -464,7 +464,7 @@ def test_take_copies_paths_from_another_session(ws):
         child.files.write("/workspace/not_asked_for.txt", "theirs\n")
         child.index.commit("work")
 
-        landed = ws.checkout("child", paths=["a.txt", "only_theirs.txt"])
+        landed = ws.take("child", paths=["a.txt", "only_theirs.txt"])
         assert ws.files.read("/workspace/a.txt") == b"theirs\n"
         assert ws.files.read("/workspace/only_theirs.txt") == b"theirs\n"
         assert not ws.files.exists("/workspace/not_asked_for.txt")
@@ -490,7 +490,7 @@ def test_take_reads_a_session_at_its_agents_head(ws):
         child.index.commit("committed")
         child.terminal("echo in-flight > /workspace/a.txt")
 
-        ws.checkout("child", paths=["a.txt"])
+        ws.take("child", paths=["a.txt"])
         assert ws.files.read("/workspace/a.txt") == b"committed\n"
     finally:
         child.close()
@@ -508,7 +508,7 @@ def test_a_take_the_view_refuses_writes_nothing_at_all(ws):
         src.index.commit("theirs")
 
         with pytest.raises(PermissionError, match="outside this session's view"):
-            child.checkout("src", paths=["seen.txt", "hidden.txt"])
+            child.take("src", paths=["seen.txt", "hidden.txt"])
         assert child.files.read("/workspace/seen.txt") == b"S1\n"
         assert not child.uncommitted
     finally:
@@ -575,11 +575,11 @@ def test_take_of_a_ref_and_of_nothing(ws):
     first = ws.ref
     ws.files.write("/workspace/a.txt", "two\n")
 
-    ws.checkout(first, paths=["a.txt"])
+    ws.take(first, paths=["a.txt"])
     assert ws.files.read("/workspace/a.txt") == b"one\n"
 
     with pytest.raises(Exception, match="nothing at"):
-        ws.checkout(first, paths=["ghost.txt"])
+        ws.take(first, paths=["ghost.txt"])
 
 
 def test_taking_a_directory_mirrors_that_subtree(ws):
@@ -596,7 +596,7 @@ def test_taking_a_directory_mirrors_that_subtree(ws):
         child.files.write("/workspace/pkg/new.py", "new\n")
         child.index.commit("work")
 
-        landed = ws.checkout("child", paths=["pkg"])
+        landed = ws.take("child", paths=["pkg"])
         assert landed == ws.head
         assert not ws.files.exists("/workspace/pkg/deleted.py")
         assert ws.files.read("/workspace/pkg/new.py") == b"new\n"
@@ -625,7 +625,7 @@ def test_taking_one_file_removes_nothing(ws):
         child.files.write("/workspace/pkg/a.py", "theirs\n")
         child.index.commit("work")
 
-        ws.checkout("child", paths=["pkg/a.py"])
+        ws.take("child", paths=["pkg/a.py"])
         assert ws.files.read("/workspace/pkg/a.py") == b"theirs\n"
         assert ws.files.read("/workspace/pkg/beside.py") == b"mine\n"
 
@@ -651,7 +651,7 @@ def test_a_take_that_would_drop_a_hidden_file_writes_nothing_at_all(ws):
         src.index.commit("theirs")
 
         with pytest.raises(PermissionError, match="outside this session's view"):
-            child.checkout("src", paths=["pkg"])
+            child.take("src", paths=["pkg"])
         assert child.files.read("/workspace/pkg/seen.py") == b"S1\n"
         assert not child.uncommitted
         # and the hidden file is still there for whoever can see it
@@ -1334,7 +1334,7 @@ def test_store_resolve_takes_a_short_commit_id(ws, store):
 
 
 def test_a_take_reads_a_short_commit_id(ws):
-    """``ws.checkout(ref, paths=)`` takes the short spelling too, of
+    """``ws.take(ref, paths=)`` takes the short spelling too, of
     this session and of another."""
     _seed(ws, **{"a.txt": "one\n"})
     mine = ws.head
@@ -1345,10 +1345,10 @@ def test_a_take_reads_a_short_commit_id(ws):
         theirs = child.index.head
 
         ws.files.write("/workspace/a.txt", "two\n")
-        ws.checkout(f"main@{mine[:7]}", paths=["a.txt"])
+        ws.take(f"main@{mine[:7]}", paths=["a.txt"])
         assert ws.files.read("/workspace/a.txt") == b"one\n"
 
-        ws.checkout(f"child@{theirs[:7]}", paths=["b.txt"])
+        ws.take(f"child@{theirs[:7]}", paths=["b.txt"])
         assert ws.files.read("/workspace/b.txt") == b"theirs\n"
         assert next(iter(ws.log(limit=1))).info["taken_from"] == f"child@{theirs}"
     finally:

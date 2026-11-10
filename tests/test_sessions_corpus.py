@@ -361,7 +361,7 @@ def test_a_take_from_a_fork_that_never_used_ws_git_reads_its_head(parent):
     child = _fork(parent, "child")
     try:
         child.files.write("/workspace/note.md", "how I did it\n")
-        parent.checkout("child", paths=["note.md"])
+        parent.take("child", paths=["note.md"])
         assert parent.files.read("/workspace/note.md") == b"how I did it\n"
         taken = next(iter(parent.log(limit=1))).info["taken_from"]
         assert taken == f"child@{child.head}"
