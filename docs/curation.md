@@ -237,12 +237,12 @@ were run, not just read.
 - **A take from a release is recorded.** `ws.take("sheets/v1",
   paths=["skills/sheets"])` mirrors the directory and commits
   `{"tool": "checkout", "taken_from": "@store/tag/sheets/v1@…"}`.
-- **The upgrade primitive exists.** `provider.apply(base=<v1>,
-  theirs=<v2>)`, run on a session holding v1 plus a local fix, lands
-  v2's change and keeps the fix. No public verb reaches it:
-  `ws-git cherry-pick` takes `session@commit` only, and a published
-  version's commit has the store's empty root as its parent, so its
-  "change" would be the whole tree.
+- **The upgrade verb exists.** `ws.index.apply("sheets/v1",
+  "sheets/v2", paths="skills/sheets")`, run on a session holding v1
+  plus a local fix, lands v2's change and keeps the fix. A cherry-pick
+  cannot stand in for it: `ws-git cherry-pick` takes `session@commit`
+  only, and a published version's commit has the store's empty root as
+  its parent, so its "change" would be the whole tree.
 
 ## The cast
 
