@@ -1145,20 +1145,8 @@ class Workspace:
             self._check_writable("commit")
             return self._provider.commit(info)
 
-    def checkout(
-        self, ref: "str | Ref", paths: "Iterable[str] | str | None" = None
-    ) -> str:
-        """Two forms, as ``git checkout <ref> [-- <paths>]`` has two.
-
-        With ``paths``, TAKE: make those paths match any ref and leave
-        everything else alone — git's ``restore --source=<ref> --
-        <paths>``. A named directory is mirrored, so a file it holds
-        here and the ref does not is removed. See :meth:`_take`.
-
-        Without them, RESTORE the whole session. The rest of this
-        docstring is that form.
-
-        Make this session what it was at one of its own commits;
+    def checkout(self, commit: str) -> str:
+        """Make this session what it was at one of its own commits;
         returns the id of the commit that lands.
 
         The whole session, not the files alone: files, cache, cwd, the
@@ -1186,12 +1174,13 @@ class Workspace:
         graph live in a key the checkout restores like any other:
         after a checkout to a commit made when ``ws.index.head`` was
         X, it is X again, and ``ws.index.log()`` reads as it did then.
+
+        Bringing some paths from another state, and leaving the rest of
+        the session alone, is :meth:`take`.
         """
         with self._lock:
             self._check_writable("checkout")
-            if paths is not None:
-                return self._take(ref, paths)
-            commit = self._expand_commit(str(ref))
+            commit = self._expand_commit(str(commit))
             try:
                 if self._elsewhere(commit, self.session):
                     raise CommitNotFoundError(
@@ -1205,7 +1194,7 @@ class Workspace:
                     "session's history; sessions are branches, so reaching "
                     'another one is ws.fork("name") or store.open("name"). '
                     "To bring only some of its files here, name them: "
-                    "ws.checkout(ref, paths=[...])."
+                    "ws.take(ref, paths=[...])."
                 ) from e
             # provider state moved under the executor: flag its view,
             # and the next execution refreshes it (no-op for
@@ -1239,10 +1228,11 @@ class Workspace:
         session = self.session
         return {"adjust": lambda kv: conversation.reclaim(kv, session, lineage=lineage)}
 
-    def _take(self, ref: "str | Ref", paths: "Iterable[str] | str") -> str:
-        """``ws.checkout(ref, paths=[...])``: make these paths match
-        the ref; returns the commit that lands (or the current head
-        when nothing was written or autocommit is off).
+    def take(self, ref: "str | Ref", paths: "Iterable[str] | str") -> str:
+        """Make these paths match the ref and leave everything else
+        alone — git's ``restore --source=<ref> -- <paths>``; returns
+        the commit that lands (or the current head when nothing was
+        written or autocommit is off).
 
         A path that names a DIRECTORY in the ref mirrors that whole
         subtree: files the ref does not hold are removed from it, so
@@ -1262,7 +1252,16 @@ class Workspace:
         ``ref`` may be a ``session@commit``, a session name (that
         session's last agent commit, as a merge would read it), a store
         tag naming a commit, or a commit of this session.
+
+        Restoring the whole session to one of its own commits is
+        :meth:`checkout`.
         """
+        with self._lock:
+            self._check_writable("take")
+            return self._take(ref, paths)
+
+    def _take(self, ref: "str | Ref", paths: "Iterable[str] | str") -> str:
+        """:meth:`take`, under the lock. See it for the contract."""
         wanted = normalize_view(paths, self._root)
         source, files = self._take_source(ref)
         taken: set[str] = set()
@@ -1744,8 +1743,8 @@ class Workspace:
         reads only what is named (directories or files, absolute or
         relative to the root). So the merge back stays an ordinary
         three-way with no rule to special-case, and this session sees
-        the child's whole branch regardless — ``diff``,
-        ``checkout(ref, paths=)``, ``files.attach``. The child may
+        the child's whole branch regardless — ``diff``, :meth:`take`,
+        ``files.attach``. The child may
         CREATE new paths anywhere; changing or deleting one it cannot
         see is refused (see ``nontainer/views.py``). ``None`` is the
         whole tree, and an empty ``paths`` an empty view: a child given
@@ -1892,7 +1891,7 @@ class Workspace:
             raise NotSupportedError(
                 "an attachment is a frozen state and accepts no writes: "
                 "attach(..., readonly=True), and take what you want to "
-                "change with ws.checkout(ref, paths=[...])."
+                "change with ws.take(ref, paths=[...])."
             )
         point = posixpath.normpath(at if at.startswith("/") else f"{self._root}/{at}")
         if point == "/" or point in self._attached:

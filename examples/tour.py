@@ -146,7 +146,7 @@ def main() -> None:
     other.files.write("/workspace/method.md", "how the rates were sampled\n")
     other.commit(info={"tool": "seed"})
     other.close()
-    ws.checkout("colleague", paths=["method.md"])
+    ws.take("colleague", paths=["method.md"])
     print("taken:", ws.files.read("/workspace/method.md").decode().strip())
     print("provenance:", next(iter(ws.log(limit=1))).info)
 

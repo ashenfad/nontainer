@@ -700,7 +700,10 @@ def _checkout(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         # Ordinary writes into the tree, which a conflicted merge is
         # still composing: the guard the tree-moving verbs take.
         ws._require_unmerged(git, "checkout -- <paths>")
-        ws.checkout(ref, paths=[_abspath(ctx, a) for a in paths])
+        # The agent typed checkout, so a frozen session refuses it by
+        # that name.
+        ws._check_writable("checkout")
+        ws.take(ref, [_abspath(ctx, a) for a in paths])
         n = len(paths)
         plural = "" if n == 1 else "s"
         ctx.stdout.write(f"Updated {n} path{plural} from {ref}\n")

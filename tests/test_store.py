@@ -324,7 +324,7 @@ def test_every_verb_that_reads_a_ref_refuses_another_sessions_commit(tmp_path):
         with pytest.raises(CommitNotFoundError, match="'demo'"):
             ws.checkout(foreign)
         with pytest.raises(CommitNotFoundError):
-            ws.checkout(foreign, paths=["/workspace/b.txt"])
+            ws.take(foreign, paths=["/workspace/b.txt"])
         with pytest.raises(CommitNotFoundError, match="another line"):
             ws.fork("demo.child", at=foreign)
         with pytest.raises(CommitNotFoundError, match="another line"):
@@ -336,7 +336,7 @@ def test_every_verb_that_reads_a_ref_refuses_another_sessions_commit(tmp_path):
         assert ws.files.read("/workspace/a.txt") == b"demo's\n"
 
         # Named by the session that made it, each one reads.
-        ws.checkout(f"other@{foreign}", paths=["/workspace/b.txt"])
+        ws.take(f"other@{foreign}", paths=["/workspace/b.txt"])
         assert ws.files.read("/workspace/b.txt") == b"other's\n"
         assert st.tags.add(f"other@{foreign}", "theirs") == foreign
     finally:
@@ -390,7 +390,7 @@ def test_a_store_tag_ref_reads_only_while_its_tag_names_it(tmp_path):
         assert ws.expand_ref(short) == ws.expand_ref("kept")
         with ws.fork("demo.short", at=short) as child:
             assert child.files.read("/workspace/b.txt") == b"first\n"
-        ws.checkout(short, paths=["/workspace/b.txt"])
+        ws.take(short, paths=["/workspace/b.txt"])
         assert ws.files.read("/workspace/b.txt") == b"first\n"
 
         stale = ws.expand_ref("kept")
@@ -401,7 +401,7 @@ def test_a_store_tag_ref_reads_only_while_its_tag_names_it(tmp_path):
                 lambda: st.resolve(ref),
                 lambda: ws.expand_ref(ref),
                 lambda: ws.fork("demo.stale", at=ref),
-                lambda: ws.checkout(ref, paths=["/workspace/b.txt"]),
+                lambda: ws.take(ref, paths=["/workspace/b.txt"]),
                 lambda: ws.apply(None, ref, paths="/workspace/b.txt"),
                 lambda: ws.files.attach(ref, "peek"),
             ):
@@ -415,7 +415,7 @@ def test_a_store_tag_ref_reads_only_while_its_tag_names_it(tmp_path):
         with pytest.raises(WorkspaceError, match="names commit"):
             ws.fork("demo.moved", at=stale)
         with pytest.raises(WorkspaceError, match="names commit"):
-            ws.checkout(stale, paths=["/workspace/b.txt"])
+            ws.take(stale, paths=["/workspace/b.txt"])
         assert st.sessions() == ["demo", "demo.short", "other"]
     finally:
         ws.close()

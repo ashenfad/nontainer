@@ -245,7 +245,7 @@ def test_take_from_the_child_works_too(parent, store):
     with Sessions(parent, runner) as sessions:
         answer = sessions.ask("write notes", wait=True)
 
-    parent.checkout(answer.branch, paths=["notes.md"])
+    parent.take(answer.branch, paths=["notes.md"])
     assert parent.files.read("/workspace/notes.md") == b"how I did it\n"
     assert next(iter(parent.log(limit=1))).info["taken_from"] == answer.ref
 
@@ -853,7 +853,7 @@ def test_a_remainder_that_cannot_be_committed_is_still_reported(
     assert f"ws-git checkout {answer.branch} -- <paths>" in text
     with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
         parent.merge(answer.branch)
-    parent.checkout(answer.branch, paths=["report.md"])
+    parent.take(answer.branch, paths=["report.md"])
     assert parent.files.read("/workspace/report.md") == b"polished\n"
     assert "left work uncommitted" in run_action(sessions, "list")
 
@@ -1351,7 +1351,7 @@ def test_a_branch_forked_from_elsewhere_is_read_and_taken_like_any_other(
     assert parent.files.read("/workspace/theirs/answer.md") == b"north is 4\n"
     parent.files.detach("/workspace/theirs")
 
-    parent.checkout(answer.branch, paths=["answer.md"])
+    parent.take(answer.branch, paths=["answer.md"])
     assert parent.files.read("/workspace/answer.md") == b"north is 4\n"
 
 

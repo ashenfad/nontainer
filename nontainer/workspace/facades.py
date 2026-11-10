@@ -217,8 +217,8 @@ class WorkspaceFiles:
         One FILE. A path naming a directory is refused with
         ``IsADirectoryError``: a directory here is the shape of the
         files under it, so removing one means removing them, which is
-        the shell's ``rm -r`` or a ``ws.checkout(ref, paths=)`` that
-        mirrors the directory as the ref has it. A path holding
+        the shell's ``rm -r`` or a ``ws.take(ref, paths)`` that mirrors
+        the directory as the ref has it. A path holding
         nothing raises ``FileNotFoundError``, the way ``read`` does —
         absence is the caller's to check with ``exists``.
         """
@@ -231,7 +231,7 @@ class WorkspaceFiles:
                     f"{path!r} is a directory: files.remove takes one file. "
                     "A directory is the shape of the files under it, so "
                     "emptying one is 'rm -r' in the terminal, or "
-                    "ws.checkout(ref, paths=[...]) to make it match a ref."
+                    "ws.take(ref, paths=[...]) to make it match a ref."
                 )
             if not ws._fs.exists(path):
                 raise FileNotFoundError(path)

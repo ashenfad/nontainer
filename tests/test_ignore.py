@@ -140,7 +140,7 @@ def test_taking_a_directory_skips_them_both_ways(ws):
     finally:
         other.close()
 
-    ws.checkout("other", paths=["app"])
+    ws.take("other", paths=["app"])
     assert ws.files.read("/workspace/app/index.html") == b"<h1>taken</h1>\n"
     assert not ws.files.exists(SHOT)  # not brought
     assert (
@@ -148,7 +148,7 @@ def test_taking_a_directory_skips_them_both_ways(ws):
     )  # not dropped
 
     # named outright, it is taken, as git takes an ignored file it is told to
-    ws.checkout("other", paths=[SHOT])
+    ws.take("other", paths=[SHOT])
     assert ws.files.read(SHOT) == b"theirs"
 
 

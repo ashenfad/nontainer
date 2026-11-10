@@ -49,7 +49,7 @@ def releases(store):
 
 
 def _vendor_v1(ws):
-    ws.checkout("sheets/v1", paths=["skills/sheets"])
+    ws.take("sheets/v1", paths=["skills/sheets"])
     ws.index.commit("vendor sheets v1")
 
 
@@ -176,7 +176,7 @@ def _narrowed(ws, paths):
 
 @pytest.mark.parametrize("paths", [None, "/workspace"])
 def test_a_hidden_file_the_change_touches_is_refused(ws, releases, paths):
-    ws.checkout("sheets/v1", paths=["skills/sheets", "notes.md"])
+    ws.take("sheets/v1", paths=["skills/sheets", "notes.md"])
     ws.index.commit("vendor sheets v1, with its notes")
     child = _narrowed(ws, ["skills/sheets"])
     try:
