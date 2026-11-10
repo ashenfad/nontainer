@@ -123,7 +123,7 @@ def test_a_cherry_pick_leaves_them_behind(ws):
         commit = other.index.commit("work and a capture")
     finally:
         other.close()
-    assert ws.cherry_pick(f"other@{commit}").merged
+    assert ws._cherry_pick(f"other@{commit}").merged
     assert ws.files.read("/workspace/app/index.html") == b"<h1>picked</h1>\n"
     assert not ws.files.exists(SHOT)
 
