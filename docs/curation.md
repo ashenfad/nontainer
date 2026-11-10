@@ -129,10 +129,10 @@ skill stays the unit — `SKILL.md` is still what the model reads first
 | telling a running agent something changed (an inbox note) | exists |
 | publishing a subtree as an immutable version — from a past commit, too | exists: `store.publish(store.resolve(ref), ...)` |
 | a release recorded without becoming current (`publish(current=False)`) | exists |
-| taking a published skill into a session (`ws.checkout("sheets/v1", paths=[...])`) | exists, and records `taken_from` |
+| taking a published skill into a session (`ws.take("sheets/v1", paths=[...])`) | exists, and records `taken_from` |
 | importing skill code (`from skills.sheets.cells import f`) | exists for modules; not for packages or hyphenated names |
 | skill tests left out of a session's default `ws-pytest` run | exists, by design |
-| three-way upgrade of a vendored skill (`ws.apply(v1, v2, paths=skill)`) | exists, in the agent's graph |
+| three-way upgrade of a vendored skill (`ws.index.apply(v1, v2, paths=skill)`) | exists, in the agent's graph |
 | the trace projection: `.trace/` beside a worktree's files (`worktree add --trace`, `files.attach(trace=True)`, `Store(traces=...)`) | exists, local rung and lazy; pinned by the ws-git corpus; [checked live](#checked-live) with curators on both loops |
 | each run's `changed.md`, and `--since` marking the runs new since a state (`files.attach(trace=True, since=...)`) | exists; the rendering pinned by the trace corpus, the history walk by the ws-git corpus |
 | the redaction hook | proposed, with `store.specimen`; within a store, a host wraps its trace source |
@@ -234,13 +234,13 @@ were run, not just read.
   `store.publish(store.resolve("lib@4f2a1c9"), "sheets",
   paths=("skills/sheets/",))` publishes exactly the commit a gate
   tested, whatever its session has done since.
-- **A take from a release is recorded.** `ws.checkout("sheets/v1",
+- **A take from a release is recorded.** `ws.take("sheets/v1",
   paths=["skills/sheets"])` mirrors the directory and commits
   `{"tool": "checkout", "taken_from": "@store/tag/sheets/v1@…"}`.
 - **The upgrade primitive exists.** `provider.apply(base=<v1>,
   theirs=<v2>)`, run on a session holding v1 plus a local fix, lands
   v2's change and keeps the fix. No public verb reaches it:
-  `ws.cherry_pick` takes `session@commit` only, and a published
+  `ws-git cherry-pick` takes `session@commit` only, and a published
   version's commit has the store's empty root as its parent, so its
   "change" would be the whole tree.
 
@@ -307,8 +307,8 @@ agent's uncommitted work, and blocks the agent's merges until it
 commits something it never wrote. Home sessions avoid that by having
 no agent. Workers cannot — installing a skill writes into their tree
 — so install and upgrade land as commits in the agent's graph, keyed
-to the skill's paths, the way a host `ws.merge` or `ws.revert` already
-does ([design notes](design.md#ws-git-is-a-fiction-over-the-stores-history)).
+to the skill's paths, the way a host `ws.index.merge` or
+`ws.index.apply` already does ([design notes](design.md#ws-git-is-a-fiction-over-the-stores-history)).
 
 How the paper's parts map:
 
@@ -1328,7 +1328,7 @@ Host-facing, core:
 ```python
 ws.files.attach(ref, at, *, trace=False, since=None)
 Store(..., traces: Mapping[str, TraceSource] | None = None)   # by harness name: how runs are read
-ws.apply(base, theirs, *, paths=None) -> MergeOutcome
+ws.index.apply(base, theirs, *, paths=None) -> MergeOutcome
     # the named-base three-way, public, landing in the agent's graph as revert does
 Sessions.ask(..., take={path: ref})                 # a fork point with paths taken in
 store.heads(sessions=None) -> dict[str, str]        # a watermark in one call
@@ -1346,7 +1346,7 @@ Host-facing, skills:
 ```python
 skills.install(ws, "sheets" | "sheets/v4" | ref)   # a take in the agent's graph; writes .installed;
                                                    # checks metadata.requires
-skills.upgrade(ws, name, to=None) -> MergeOutcome  # ws.apply(installed, target, paths=the skill)
+skills.upgrade(ws, name, to=None) -> MergeOutcome  # ws.index.apply(installed, target, paths=the skill)
 skills.installed(ws) -> dict[str, Ref]
 skills.patched(ws) -> dict[str, WorkspaceDiff]
 skills.uninstall(ws, name)                         # in the agent's graph, like install
@@ -1391,7 +1391,7 @@ Later: `store.specimen(...)`, `.trace/abandoned/`, and a self-trace
    answer. agex-ts ports it from the corpus. All of it is built, in
    both.
 3. **Skills as versioned libraries**: install from a release,
-   `.installed`, `ws.apply`, upgrade, agent-graph commits,
+   `.installed`, `ws.index.apply`, upgrade, agent-graph commits,
    `metadata.requires`; and the two sandtrap import fixes.
 4. **`Sessions.ask(take=)`.**
 5. **The loop as an example** — workers, a maintainer pass, a builder

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **Breaking: `ws.merge` and `ws.apply` are now `ws.index.merge` and `ws.index.apply`.** Same arguments and outcomes; they are the agent's git, so they sit beside `ws.index.commit`, while the framework's `ws.checkout` and `ws.land` stay on the workspace.
+- **Breaking: a take is `ws.take(ref, paths)`.** `ws.checkout(commit)` is only the whole-session restore and takes no `paths`; the agent's `ws-git checkout <ref> -- <paths>` is unchanged.
+
+### Removed
+- **Breaking: `ws.revert` and `ws.cherry_pick` are gone.** They were `apply` with the two sides chosen for the caller; the agent's `ws-git revert` and `ws-git cherry-pick` work as before.
+
 ## 0.11.12 - 2026-11-05
 
 ### Fixed

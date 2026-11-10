@@ -270,7 +270,7 @@ in [sessions.md](sessions.md); this section is why it has that shape.
 store's initial empty commit, so a three-way merge from there sees
 every shared path as added on both sides and conflicts, and the
 conversation record has no merge rule at all. Getting files from an
-unrelated session is a take — `ws.checkout(ref, paths=[...])` — with
+unrelated session is a take — `ws.take(ref, paths=[...])` — with
 provenance in the commit's info, never a merge.
 
 **A fork point is always a commit.** If the parent has uncommitted
@@ -417,7 +417,7 @@ commit — because a published snapshot that could be written to is not
 a snapshot.
 
 **A store tag is also a ref**, wherever a verb reads one: the host's
-(`ws.expand_ref`, `ws.files.attach`, `ws.checkout(tag, paths=)`) and
+(`ws.expand_ref`, `ws.files.attach`, `ws.take(tag, paths)`) and
 the agent's (`ws-git worktree add`, `checkout <ref> -- <paths>`,
 `diff`, `log`, `show`). Such a ref carries the tag where a session
 would go and names the commit outright, so the read is frozen and
@@ -547,6 +547,25 @@ almost the opposite of what it does, since the whole point of that
 scope is that the session is irrelevant. So store-level state lives on
 `Store`, session-level state on `Workspace`, and a caller can tell
 which is which by where the verb is.
+
+The same rule sorts the verbs that move state between sessions. There
+are two families, and they differ in what moves and in what a conflict
+does. The framework's, `ws.checkout(commit)` (restore the whole
+session) and `ws.land(base, theirs)` (land a fork's result), move the
+session's *state* as a framework commit and never write a conflict
+marker: a change `land` cannot make cleanly is refused whole. The
+agent's git, `ws.index.merge` and `ws.index.apply`, moves *files*,
+lands a commit in the agent's own graph, and leaves conflict markers
+for the agent to resolve. So the first family is on `Workspace` and
+the second on `ws.index`, beside the agent's `commit` and `log`: a host
+that calls `ws.index.merge` can see from the call that it is acting in
+the agent's history. Revert and cherry-pick are `apply` with its two
+sides chosen for the caller, so they stay the agent's terminal verbs
+and have no host method. A take (some paths made to match a ref) is
+the host's, and is `ws.take(ref, paths)` rather than a second form of
+the whole-session restore; the agent keeps git's spelling,
+`ws-git checkout <ref> -- <paths>`, because that is the one a model
+knows.
 
 `nontainer.workspace(session)` stays as sugar for
 `Store(...).open(session)`: the one-session case is the common one and
