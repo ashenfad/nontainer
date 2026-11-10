@@ -183,8 +183,8 @@ commit a ref names — files, cache and cwd, with no tag needed. A `Ref` is `ses
 `Ref.parse(str)` and `str(ref)` are the two directions. Resolving into
 a session the store has never held raises rather than creating the
 branch. **A commit may be spelled short**, wherever a ref is taken
-(`store.resolve`, `ws.checkout`, `ws.fork(at=)`, `ws.files.attach`,
-`store.tags.add`, the ws-git verbs):
+(`store.resolve`, `ws.checkout`, `ws.take`, `ws.fork(at=)`,
+`ws.files.attach`, `store.tags.add`, the ws-git verbs):
 a unique prefix of seven hex characters or more — the length every
 ws-git line prints — expands against that session's whole history, the
 framework's commits included. An ambiguous prefix raises `ValueError`
@@ -296,7 +296,7 @@ store's own `@store/anchor`, created on that first read and holding a
 single empty commit. **A store-scoped tag therefore opens for as long
 as it exists**, with every session deleted and nothing published. It is
 also a **ref** the reading verbs take by name — `ws.expand_ref`,
-`ws.files.attach`, `ws.checkout(tag, paths=[...])`, `store.resolve` and
+`ws.files.attach`, `ws.take(tag, paths=[...])`, `store.resolve` and
 the ws-git verbs that read one — so the state a tag names is mountable
 and takeable from long after its session is gone, which is why an
 embedder tags a commit it may want to start from later. The
@@ -651,7 +651,7 @@ says which seam it belongs to:
 | | holds | |
 |---|---|---|
 | `ws.files` | the file surface | read / write / edit / remove / put / get / list / exists / read_artifact / attach / detach / attachments / export / fs |
-| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout |
+| `ws.index` | the agent's own git | stage / unstage / commit / status / discard / log / head / checkout / merge / apply |
 | `ws.index.tags` | the agent's own bookmarks | add / list / info / delete |
 | `ws.tags` | this session's tags | add / list / info / delete / at |
 | `ws.runtime` | how code runs | the executor, commands, shell variables, the raw calls |
@@ -859,7 +859,7 @@ ws.files.edit(path, old, new, replace_all=False) -> EditOutcome
 ws.files.remove(path) -> RemoveOutcome        # delete one file (committed)
     # the view rule and the commit flow that `write` gets, spelled the
     # other way. A directory is refused (IsADirectoryError) — emptying
-    # one is `rm -r` in the terminal or a checkout that mirrors it; a
+    # one is `rm -r` in the terminal or a take that mirrors it; a
     # path holding nothing raises FileNotFoundError, as `read` does.
 ws.files.put(src, dest=None) -> WriteOutcome # host file → workspace (committed)
 ws.files.get(src, dest=None) -> bytes        # workspace → host (never commits)
@@ -907,19 +907,14 @@ ws.uncommitted: bool     # the store's buffer holds writes no commit took
                          # uncommitted work" is ws.index.status())
 ws.ref: Ref              # this session at its current commit
 ws.commit(info: dict | None = None) -> str   # everything: files+cache+cwd
-ws.checkout(ref) -> str                  # restore a commit of THIS session
+ws.checkout(commit) -> str               # restore a commit of THIS session
                                          # (appends; returns the new commit)
-ws.checkout(ref, paths=[...]) -> str     # TAKE those paths from any ref
+ws.take(ref, paths) -> str               # make those paths match any ref
                                          # (a named directory is mirrored)
 ws.log(*, limit=None, kind="work"|"agent"|"all") -> list[CommitInfo]
                                          # newest first; no limit reads
                                          # and holds the whole branch
 ws.fork(name, *, at=None, inherit="full"|"fresh", paths=None) -> Workspace
-ws.merge(source: str) -> MergeOutcome            # needs caps.merge
-ws.revert(commit: str) -> MergeOutcome            # undo one commit's change
-ws.cherry_pick(ref: str) -> MergeOutcome          # apply one from elsewhere
-ws.apply(base, theirs, *, paths=None, message=None) -> MergeOutcome
-                                                 # the change from one state to another
 ws.land(base, theirs, *, info=None, expect_head=None) -> str | None
                                                  # a fork's result, as a framework commit
 ws.discard() -> None                             # drop staged writes
@@ -937,6 +932,9 @@ ws.index.log(limit=None) -> list[CommitInfo]     # the agent's own commits
 ws.index.head -> str | None                      # the agent's last commit
 ws.index.checkout(commit) -> str                 # restore the tree to one
                                                  # of the AGENT's commits
+ws.index.merge(source: str) -> MergeOutcome      # needs caps.merge
+ws.index.apply(base, theirs, *, paths=None, message=None) -> MergeOutcome
+                                                 # the change from one state to another
 ws.index.tags.add(name, *, at=None, force=False) -> str
 ws.index.tags.list() -> dict[str, str]           # the agent's bookmarks
 ws.index.tags.info(name) -> TagInfo | None       # scope "index"
@@ -973,7 +971,9 @@ agent**, so the host and the agent see one index and one graph. It adds
 the verbs that reach the sessions around this one, the commits behind
 it, and the view this one was given — `branch`, `merge` (with
 `--abort`), `revert`, `cherry-pick`, `worktree`, `sparse-checkout`,
-`tag` and `stash`, the last of which has no host half — and it is
+`tag` and `stash`. Three have no host half: `revert` and `cherry-pick`,
+which are `ws.index.apply` with the two sides chosen for the caller,
+and `stash`. It is
 registered by `nontainer.wsgit.register_wsgit(ws)`, which the embedder
 calls and no adapter calls for it. [ws-git.md](ws-git.md) is the
 reference for every verb, its output and its refusals.
@@ -1005,6 +1005,18 @@ agent's own last commit. `ws.index.commit(message)` is the agent's
 verb: the staged set (everything modified when nothing is staged),
 committed as a point in the agent's graph, with the work in progress
 left in the tree and out of the commit.
+
+**Two families of verbs move state between sessions, and where a verb
+lives says which.** The framework's are on the workspace:
+`ws.checkout(commit)` restores the whole session and
+`ws.land(base, theirs)` lands a fork's result, each moving the
+session's state (files, cache, cwd) as a framework commit and never
+writing a conflict marker; a change `land` cannot make cleanly is
+refused whole. `ws.take(ref, paths)` is the host's too: it makes some
+paths match a ref, as ordinary writes. The agent's git is on
+`ws.index`: `ws.index.merge` and `ws.index.apply` move files, land a
+commit in the agent's graph, and leave conflict markers for the agent
+to resolve, exactly as `ws-git merge` does.
 
 The content hash of the head — the identity of *what* the files and
 cache are, where `head` identifies the point in history — is
@@ -1077,8 +1089,9 @@ already had for a session with no agent commit. The reset lands as a
 for any reader; it is hidden from `ws.log()` and shown by `kind="all"`.
 Every fork lands it, a parent that never used ws-git included: the
 commit is the child's fork POINT as well as its reset, and
-`ws.cherry_pick` / `ws.revert` measure the change in the child's first
-commit against it. The mark is also the child's **base**: until its
+`ws-git cherry-pick` and `ws-git revert` measure the change in the
+child's first commit against it. The mark is also the child's
+**base**: until its
 first commit, `status`, `diff`, `add -A` and `commit` measure from the
 tree it started from, so what it inherited is not work it did and its
 first commit takes only what it changed. A session that is no fork has
@@ -1091,7 +1104,7 @@ paths (directories or files, absolute or relative to the root). So
 "push this content to the delegate" costs no prune commit and the merge
 back stays an ordinary three-way with no rule to special-case. This
 session sees the child's whole branch regardless — `ws.diff`,
-`ws.checkout(ref, paths=)`, `ws.files.attach`.
+`ws.take(ref, paths)`, `ws.files.attach`.
 
 **One write rule, better than git's sparse checkout.** The child may
 CREATE a new path anywhere (it merges as an addition, and notes and
@@ -1112,11 +1125,13 @@ reopened delegate is narrowed exactly as it was, and it merges
 caller. A fork given the whole tree records nothing, so a child of a
 narrowed session does not inherit its blinkers.
 
-**`ws.checkout(ref, paths=[...])`** is the second form of one verb, and
-git's `restore --source=<ref> -- <paths>`: it makes those paths match
-any ref and leaves everything else alone. `ref` is a `session@commit`,
-a session name (that session's last *agent* commit — the same reading
-`merge` takes, so the two cannot disagree about what a delegate said),
+**`ws.take(ref, paths)`** is git's
+`restore --source=<ref> -- <paths>`: it makes those paths match any ref
+and leaves everything else alone (`ws.checkout` restores the whole
+session, and only to one of its own commits). `ref` is a
+`session@commit`, a session name (that
+session's last *agent* commit — the same reading `ws.index.merge`
+takes, so the two cannot disagree about what a delegate said),
 a store tag (the commit it names, read frozen), or a commit of this
 session. A path that names a *directory* mirrors
 that subtree — a file it holds here and the ref does not is removed,
@@ -1193,10 +1208,10 @@ empty tree. `settings` are the rest of `Store.open`'s construction
 keywords, applied to the frozen workspace it returns (see *Frozen opens
 take execution settings* under `store.tags`).
 
-**`ws.merge(source)`** merges another session into this one
-(`caps.merge`). **A merge takes only what has been committed, on both
-sides, and refuses a source that has more — and with `caps.index`
-that means committed by the agent:**
+**`ws.index.merge(source)`** merges another session into this one
+(`caps.merge`), as a commit in the agent's graph. **A merge takes only
+what has been committed, on both sides, and refuses a source that has
+more — and with `caps.index` that means committed by the agent:**
 
 - This session must have nothing modified against its own last ws-git
   commit. Autocommit keeps the store's buffer clean while an agent is
@@ -1216,10 +1231,11 @@ that means committed by the agent:**
 
 A merge is also refused while one of this session's own merges is
 still outstanding — the rule every verb that moves this tree takes
-(`ws.revert`, `ws.cherry_pick`, `ws.index.checkout`, and `stash` and
-`checkout` in the terminal). A second merge would mark files the first
-already marked and record its own context over the first's, leaving a
-clean status over a tree that still holds the first merge's markers.
+(`ws.index.apply`, `ws.index.checkout`, and `revert`, `cherry-pick`,
+`stash` and `checkout` in the terminal). A second merge would mark
+files the first already marked and record its own context over the
+first's, leaving a clean status over a tree that still holds the first
+merge's markers.
 
 File conflicts land as conflict markers IN the merge commit and are
 reported in `MergeOutcome.conflicts` rather than blocking it: resolve
@@ -1239,22 +1255,23 @@ leaves a clean workspace behind a merge. `MergeOutcome.auto_merged` is
 the other half of `conflicts`: the paths the merge changed and settled
 on its own, so the two together are everything the merge touched.
 
-**`ws.revert(commit)` and `ws.cherry_pick(ref)`** apply ONE commit's
-change to the tree as it stands (`caps.merge`). They are one operation
-with the two commits swapped: a three-way whose base is named rather
-than found, resolved by the rules a merge resolves by, landing as a
-new commit whose only parent is the current head. Both return a
-`MergeOutcome`.
+**`ws-git revert <commit>` and `ws-git cherry-pick <session>@<commit>`**
+apply ONE commit's change to the tree as it stands (`caps.merge`). They
+are one operation with the two commits swapped: a three-way whose base
+is named rather than found, resolved by the rules a merge resolves by,
+landing as a new commit whose only parent is the current head. They are
+the agent's verbs and have no host method: each is the engine
+`ws.index.apply` runs, with the two sides chosen for the caller.
 
-- `ws.revert(commit)` undoes the change that commit made. The commit
+- `revert <commit>` undoes the change that commit made. The commit
   stays where it is and the undoing lands on top — history here is
   append-only, and a revert is itself a commit that can be reverted.
   What is undone is the CHANGE, not the state: work done since in
   other files, and elsewhere in the same file, stands.
-- `ws.cherry_pick("session@commit")` applies one commit's change from
+- `cherry-pick <session>@<commit>` applies one commit's change from
   another session (short ids accepted). Its change, not its tree: what
   the commit before it holds is left as yours. Bringing everything a
-  session committed is `ws.merge`. The ref names a session AND a
+  session committed is `merge`. The ref names a session AND a
   commit, and the named session must be one whose history reaches it —
   whole id or short — so a sibling's commit under the wrong name is
   refused rather than applied with a provenance nothing supports.
@@ -1270,7 +1287,7 @@ it inherited, and otherwise the empty tree, so reverting a first
 commit removes the files it introduced. A merge commit reverts to
 ours, the side it was made from, as git's `-m 1` does.
 
-Both refuse work the agent has not committed (the rule `ws.merge`
+Both refuse work the agent has not committed (the rule `ws.index.merge`
 takes, naming the verb that refuses) and a merge still outstanding.
 Conflicts are spelled exactly as a merge's are, under a `## merging`
 line naming what was applied. Where the change is already in this tree,
@@ -1279,9 +1296,9 @@ The commit records where the change came from (`reverted`,
 `picked_from`) as a soft reference, never as a parent — applying one
 commit's change does not make its history this session's.
 
-**`ws.apply(base, theirs, *, paths=None, message=None)`** is the same
-three-way with both states named: what changed from `base` to `theirs`
-lands here. Either is any state a take reads (`session@commit`, a
+**`ws.index.apply(base, theirs, *, paths=None, message=None)`** is the
+same three-way with both states named: what changed from `base` to
+`theirs` lands here. Either is any state a take reads (`session@commit`, a
 session at its last agent commit, a store tag, a commit of this
 session), and `None` is the tree before anything, so applying from
 `None` brings everything `theirs` holds. `paths` narrows the change to
@@ -1289,8 +1306,8 @@ those files and directories, which is how a vendored library upgrades
 with a local fix kept:
 
 ```python
-ws.checkout("sheets/v1", paths=["skills/sheets"])         # vendored, then patched here
-ws.apply("sheets/v1", "sheets/v2", paths="skills/sheets")  # the release's changes; the patch stays
+ws.take("sheets/v1", paths=["skills/sheets"])                   # vendored, then patched here
+ws.index.apply("sheets/v1", "sheets/v2", paths="skills/sheets")  # the release's changes; the patch stays
 ```
 
 It lands in the agent's graph as `ws-git.apply` (`Apply sheets/v1..sheets/v2`
@@ -2609,8 +2626,9 @@ They declare what they can do rather than pretending equivalence, and
 
 A verb a backend lacks raises `NotSupportedError` naming the
 capability, so a narrower substrate is a smaller surface rather than a
-worse emulation. `caps.merge` gates three verbs, not one: `merge`, and
-the `apply` primitive behind `ws.revert` / `ws.cherry_pick`.
+worse emulation. `caps.merge` gates more than `merge`: the `apply`
+primitive behind `ws.index.apply` and ws-git's `revert` and
+`cherry-pick` needs it too.
 
 `codecs="scientific"` on kvgit enables numpy/pandas chunk dedup
 (requires `kvgit[scientific]`).

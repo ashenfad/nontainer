@@ -143,8 +143,8 @@ child.index.commit("refactored auth")
 d = ws.diff(ws.head, child.index.head)
 d.in_seed, d.elsewhere                  # {auth.py}, {notes.md}
 
-ws.merge("refactor")                    # or take a subset instead:
-# ws.checkout("refactor", paths=["auth.py"])
+ws.index.merge("refactor")              # or take a subset instead:
+# ws.take("refactor", paths=["auth.py"])
 child.close()
 ```
 

@@ -69,7 +69,7 @@ ws.index.commit("baseline")         # or compose one and name it yourself
 child = ws.fork("what-if")          # O(1) branch; the original is untouched
 child.files.write("notes.md", "# findings\n")
 child.index.commit("a thought")
-ws.merge("what-if")                 # and bring its work back
+ws.index.merge("what-if")           # and bring its work back
 child.close()
 ```
 

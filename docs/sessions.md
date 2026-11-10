@@ -9,7 +9,7 @@ every other embedder verb is in the [API reference](api.md).
 A session is a branch carrying the whole world — files, cache, cwd,
 the conversation — so a delegate is a fork, and forking is O(1). What
 the delegate does is a branch the parent reads with `ws.diff`, takes
-with `ws.checkout(ref, paths=)` and lands with `ws.merge`. The answer
+with `ws.take(ref, paths)` and lands with `ws.index.merge`. The answer
 names a commit rather than carrying the work.
 
 ## The helper (`nontainer.sessions`)
@@ -17,7 +17,7 @@ names a commit rather than carrying the work.
 Delegation is an **extension**, like apps: `Workspace` knows nothing
 about it, the embedder builds the helper, and the adapters expose it as
 one tool only when a runner is supplied. The helper adds a calling
-convention over `fork`, `diff`, `checkout` and `merge`, not new
+convention over `fork`, `diff`, `take` and `merge`, not new
 primitives.
 
 ```python
@@ -82,7 +82,7 @@ nobody.
 **Nothing lands here on its own.** An ask always leaves a branch, and
 what becomes of it is the caller's own step: read it (`ws.diff`,
 `ws.files.attach`), merge it, take some of its files
-(`ws.checkout(branch, paths=)`), take one of its commits, or leave it
+(`ws.take(branch, paths)`), take one of its commits, or leave it
 where it is. The helper commits nothing for the child and merges
 nothing for the parent. A merge brings the delegate's **files** and
 nothing else: its cache and its conversation stay on its branch, and
@@ -94,7 +94,7 @@ from:
 | scenario | ancestry | result path |
 |---|---|---|
 | fork yourself | the fork point is the common ancestor | `merge` |
-| fork an external session | the child shares ancestry with *them* | merge back into them is real; into you it is `checkout(ref, paths=)` |
+| fork an external session | the child shares ancestry with *them* | merge back into them is real; into you it is `take(ref, paths)` |
 | spawn fresh | a fork with a narrowed view and no conversation; ancestry intact | `merge` |
 
 ### Asking from somewhere else, and asking again
@@ -432,8 +432,8 @@ restart, a second process, or a `Sessions` built fresh over the same
 workspace starts with no jobs and no answers. What survives is what
 the store holds: the child's branch, exactly as the delegate left it.
 `store.sessions()` lists it, `ws-git diff <branch>` and
-`ws.diff(...)` read it, `store.open(branch)` opens it, and `ws.merge`
-or `ws.checkout(branch, paths=)` takes the work. So the recovery after
+`ws.diff(...)` read it, `store.open(branch)` opens it, and
+`ws.index.merge` or `ws.take(branch, paths)` takes the work. So the recovery after
 a restart is the branch, never the job: an embedder that needs job
 records to outlive its process writes them where its own state lives.
 
