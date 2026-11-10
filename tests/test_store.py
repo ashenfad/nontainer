@@ -280,7 +280,7 @@ def test_a_merged_in_commit_is_read_under_the_session_that_made_it(tmp_path):
     child.close()
     parent.files.write("/workspace/c.txt", "the parent's own\n")
     parent.commit(info={"tool": "turn"})
-    parent.merge("parent.child")
+    parent.index.merge("parent.child")
     try:
         with pytest.raises(CommitNotFoundError, match="another line"):
             st.resolve(f"parent@{theirs}")
@@ -402,7 +402,7 @@ def test_a_store_tag_ref_reads_only_while_its_tag_names_it(tmp_path):
                 lambda: ws.expand_ref(ref),
                 lambda: ws.fork("demo.stale", at=ref),
                 lambda: ws.take(ref, paths=["/workspace/b.txt"]),
-                lambda: ws.apply(None, ref, paths="/workspace/b.txt"),
+                lambda: ws.index.apply(None, ref, paths="/workspace/b.txt"),
                 lambda: ws.files.attach(ref, "peek"),
             ):
                 with pytest.raises(WorkspaceError, match="No such store tag"):

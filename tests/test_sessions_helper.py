@@ -4,8 +4,8 @@ The runner here is scripted rather than a model: it opens the child by
 name the way an embedder's loop would, writes files, sometimes commits,
 and returns text or an ``Answer``. What the file asserts is the
 helper's half of the contract — the name it mints, the fork point it
-takes, the commit it makes on the child's behalf so ``merge`` and
-``checkout(ref, paths=)`` accept the delegate, the paths it reports
+takes, the commit it makes on the child's behalf so ``index.merge``
+and ``take`` accept the delegate, the paths it reports
 grouped seed vs elsewhere, and that no job can die with its thread.
 """
 
@@ -235,7 +235,7 @@ def test_a_child_that_never_used_ws_git_merges_at_its_head(parent, store):
         child.close()
     assert answer.uncommitted is False
 
-    out = parent.merge(answer.branch)
+    out = parent.index.merge(answer.branch)
     assert out.merged and not out.conflicts
     assert parent.files.read("/workspace/report.md").decode().endswith("South 7.\n")
 
@@ -265,7 +265,7 @@ def test_a_delegate_that_committed_is_named_at_its_own_commit(parent, store):
     finally:
         child.close()
     assert answer.uncommitted is False
-    assert parent.merge(answer.branch).merged
+    assert parent.index.merge(answer.branch).merged
 
 
 # -- what changed --------------------------------------------------------------
@@ -306,7 +306,7 @@ def test_a_resumed_answer_lists_only_what_is_new_since_the_merge(parent, store):
     with Sessions(parent, ByTask(store, {})) as sessions:
         first = sessions.ask("api.py", wait=True)
         assert first.changed["seed"] == ("/workspace/api.py",)
-        assert parent.merge(first.branch).merged
+        assert parent.index.merge(first.branch).merged
         second = sessions.ask("export.py", resume=first.branch, wait=True)
     assert second.changed == {"seed": ("/workspace/export.py",), "elsewhere": ()}
 
@@ -676,7 +676,7 @@ def test_what_a_delegate_left_uncommitted_is_committed_for_it(parent, store):
     assert "left work uncommitted" not in render_answer(answer)
 
     # and the merge takes all of it
-    assert parent.merge(answer.branch).merged
+    assert parent.index.merge(answer.branch).merged
     assert parent.files.read("/workspace/report.md") == b"polished\n"
     assert parent.files.read("/workspace/notes.md") == b"wip\n"
 
@@ -701,7 +701,7 @@ def test_a_delegate_answering_mid_merge_is_not_committed_for(parent, store):
                     side.close()
                 child.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
                 child.index.commit("north is 7")
-                assert child.merge(f"{session}-side").conflicts
+                assert child.index.merge(f"{session}-side").conflicts
                 child.files.write("/workspace/notes.md", "still deciding\n")
             finally:
                 child.close()
@@ -720,7 +720,7 @@ def test_a_delegate_answering_mid_merge_is_not_committed_for(parent, store):
         child.close()
     assert "left work uncommitted" in render_answer(answer)
     with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
-        parent.merge(answer.branch)
+        parent.index.merge(answer.branch)
 
 
 def test_a_delegate_left_mid_merge_is_refused_rather_than_merged(parent, store):
@@ -744,7 +744,7 @@ def test_a_delegate_left_mid_merge_is_refused_rather_than_merged(parent, store):
                     side.close()
                 child.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
                 child.index.commit("north is 7")
-                assert child.merge(f"{session}-side").conflicts
+                assert child.index.merge(f"{session}-side").conflicts
             finally:
                 child.close()
             return "two figures for north; not settled"
@@ -755,7 +755,7 @@ def test_a_delegate_left_mid_merge_is_refused_rather_than_merged(parent, store):
     assert answer.uncommitted is False
     before = parent.files.read("/workspace/report.md")
     with pytest.raises(WorkspaceError, match="has an unresolved merge from") as exc:
-        parent.merge(answer.branch)
+        parent.index.merge(answer.branch)
     assert "report.md" in str(exc.value)
     assert "ws-git merge --abort in that session" in str(exc.value)
     assert parent.files.read("/workspace/report.md") == before  # nothing landed
@@ -767,7 +767,7 @@ def test_a_delegate_left_mid_merge_is_refused_rather_than_merged(parent, store):
         child.index.commit("north is 7, settled")
     finally:
         child.close()
-    outcome = parent.merge(answer.branch)
+    outcome = parent.index.merge(answer.branch)
     assert outcome.merged and not outcome.conflicts
     assert parent.files.read("/workspace/report.md") == b"# Rates\n\nnorth 7\n"
 
@@ -792,7 +792,7 @@ def test_a_merge_checks_and_takes_one_state_of_a_moving_source(
         kid.files.write("/workspace/report.md", "# Rates\n\nnorth 7\n")
         kid.index.commit("north is 7")
         clean = parent.provider.branch_head("analyst.kid")
-        assert kid.merge("analyst.kid-side").conflicts  # now mid-merge
+        assert kid.index.merge("analyst.kid-side").conflicts  # now mid-merge
     finally:
         kid.close()
 
@@ -809,7 +809,7 @@ def test_a_merge_checks_and_takes_one_state_of_a_moving_source(
         return clean if reads["n"] <= 2 else real(session)
 
     monkeypatch.setattr(parent.provider, "branch_head", moving)
-    outcome = parent.merge("analyst.kid")
+    outcome = parent.index.merge("analyst.kid")
     assert outcome.merged
     report = parent.files.read("/workspace/report.md").decode()
     assert "<<<<<<<" not in report
@@ -852,7 +852,7 @@ def test_a_remainder_that_cannot_be_committed_is_still_reported(
     assert "left work uncommitted" in text
     assert f"ws-git checkout {answer.branch} -- <paths>" in text
     with pytest.raises(WorkspaceError, match="uncommitted ws-git work on"):
-        parent.merge(answer.branch)
+        parent.index.merge(answer.branch)
     parent.take(answer.branch, paths=["report.md"])
     assert parent.files.read("/workspace/report.md") == b"polished\n"
     assert "left work uncommitted" in run_action(sessions, "list")
@@ -1717,7 +1717,7 @@ def test_a_child_forked_from_elsewhere_merges_that_whole_tree(
     # what the child changed is measured from ITS fork point
     assert answer.changed == {"seed": ("/workspace/answer.md",), "elsewhere": ()}
 
-    assert parent.merge(answer.branch).merged
+    assert parent.index.merge(answer.branch).merged
     assert sorted(parent.files.list("/workspace")) == [
         "/workspace/answer.md",  # what the child wrote
         "/workspace/main.py",  # what was already here

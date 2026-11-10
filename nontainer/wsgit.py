@@ -966,7 +966,7 @@ def _stash_pop(git: AgentGit, ws: Any, ctx: Any, word: str | None) -> Any:
         git,
         ws,
         ctx,
-        ws.merge(branch),
+        ws.index.merge(branch),
         branch,
         note=(
             f" The stash is kept as stash@{{{index}}}: drop it "
@@ -1051,9 +1051,9 @@ def _settle(ws: Any) -> None:
     """Commit what this terminal call has written so far, before a verb
     that lands a commit of its own.
 
-    ``ws.merge``, ``ws.revert`` and ``ws.cherry_pick`` refuse a store
-    buffer holding writes no commit took, and tell the host to commit
-    them. An agent cannot, and the writes are usually nothing it would
+    A merge, a revert and a cherry-pick refuse a store buffer holding
+    writes no commit took, and tell the host to commit them. An agent
+    cannot, and the writes are usually nothing it would
     call work: ``cd /workspace && ws-git merge x`` was refused for the
     ``cd``, because the call's own writes are committed only when the
     call ends. Committing them here is the framework's durability
@@ -1079,7 +1079,7 @@ def _merge(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         )
     source = rest[0]
     _settle(ws)
-    return _merged(git, ws, ctx, ws.merge(source), source)
+    return _merged(git, ws, ctx, ws.index.merge(source), source)
 
 
 def _merged(

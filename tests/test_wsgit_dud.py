@@ -151,7 +151,7 @@ def test_dud_merge_status_and_check(ws):
         fork.commit()
         ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         ws.commit()
-        out = ws.merge("worker")
+        out = ws.index.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
     finally:
         fork.close()

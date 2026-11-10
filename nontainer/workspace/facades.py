@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from ..errors import WorkspaceError
-from ..protocol import CommitInfo, TagInfo, WorkspaceStatus
+from ..protocol import CommitInfo, MergeOutcome, TagInfo, WorkspaceStatus
 from .results import RemoveOutcome, WriteOutcome
 
 if TYPE_CHECKING:
@@ -400,6 +400,14 @@ class WorkspaceIndex:
     The framework's own commits (``ws.commit()``, a turn hook, a
     session db) never disturb it: everything here is
     measured against the agent's last commit, not the store's head.
+
+    :meth:`merge` and :meth:`apply` are here because they are the
+    agent's verbs, whoever calls them: they move files, land a commit
+    in the agent's graph, and leave conflict markers for the agent to
+    resolve. The framework's verbs that move state between sessions,
+    ``ws.checkout`` and ``ws.land``, are on the workspace: they move
+    the session's state, land a framework commit, and refuse a
+    conflict rather than mark it.
     """
 
     __slots__ = ("_ws",)
@@ -491,6 +499,77 @@ class WorkspaceIndex:
             ws._check_open()
             ws._require_unmerged(self._git, "checkout")
             return self._git.checkout(commit)
+
+    def merge(self, source: str) -> MergeOutcome:
+        """Merge another session's committed state into this one, as a
+        commit in the agent's graph; returns the outcome.
+
+        A merge takes only what has been COMMITTED, on both sides, and
+        refuses a source that has more. With ``caps.index``, committed
+        means committed by the agent:
+
+        - This session must have nothing modified relative to its own
+          last ws-git commit. Autocommit keeps the store's buffer clean
+          while an agent is composing, so the buffer is not the
+          question; work in flight would otherwise be folded into the
+          merge commit and attributed to the merge.
+        - ``source`` is merged at ITS last agent commit, whose tree is
+          exactly what that agent committed — and it is refused while
+          that agent has anything newer, rather than merged at a state
+          the delegate has already moved past. A session that never
+          used ws-git has no agent commit to differ from and is merged
+          at its store head.
+        - This session must have no merge of its own outstanding. A
+          second merge would mark files the first already marked and
+          record its own context over the first's, leaving a clean
+          status over a tree that still holds the first's markers.
+
+        File conflicts land as conflict markers IN the merge commit and
+        are reported in the outcome rather than blocking it — resolve
+        them with ordinary edits and commit. Requires ``caps.merge``.
+        """
+        return self._ws._merge(source)
+
+    def apply(
+        self,
+        base: "str | Ref | None",
+        theirs: "str | Ref | None",
+        *,
+        paths: "Iterable[str] | str | None" = None,
+        message: str | None = None,
+    ) -> MergeOutcome:
+        """Apply the change from one state to another here, as a NEW
+        commit in the agent's graph; returns the outcome.
+
+        The three-way a merge makes, with the base NAMED rather than
+        found: what changed from ``base`` to ``theirs`` lands on this
+        tree, so work of this session's own that the change doesn't
+        touch stands, and overlapping work comes back with conflict
+        markers IN the commit, reported in the outcome, to resolve with
+        ordinary edits and a commit, as a merge's are. ``base`` and
+        ``theirs`` are any states a take reads: ``session@commit``, a
+        session (its last agent commit), a store tag, or a commit of
+        this session; ``None`` names the tree before anything, so
+        applying from ``None`` brings everything ``theirs`` holds.
+
+        ``paths`` narrows the change to those files and directories
+        (relative to the root, or absolute), which is how a vendored
+        library upgrades: ``ws.index.apply("sheets/v1", "sheets/v2",
+        paths="skills/sheets")`` brings the release's changes and keeps
+        a local fix.
+
+        A narrowed view holds over the files the change resolves to, as
+        it holds over a take's: one the view hides is refused, before
+        anything lands, and one the change creates joins the view.
+
+        The commit lands in the agent's graph (``ws-git.apply``), as a
+        revert does, with ``message`` (default ``Apply <base>..<theirs>``)
+        and both states as soft references, never as parents. Where the
+        change holds nothing this tree lacks, nothing is committed and
+        the outcome says so. Refuses work the agent has not committed
+        and a merge still outstanding. Requires ``caps.merge``.
+        """
+        return self._ws._apply(base, theirs, paths=paths, message=message)
 
     @property
     def tags(self) -> "WorkspaceIndexTags":

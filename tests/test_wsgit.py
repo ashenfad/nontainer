@@ -312,7 +312,7 @@ def test_merge_status_and_diff_check(ws):
         fork.commit()
         ws.files.fs.write("/workspace/doc.txt", b"a\nMAIN\n")
         ws.commit()
-        out = ws.merge("worker")
+        out = ws.index.merge("worker")
         assert out.conflicts == ("/workspace/doc.txt",)
     finally:
         fork.close()
@@ -1324,7 +1324,7 @@ def test_a_merge_does_not_bring_the_sources_tags(ws):
     ws.index.commit("mine")
     ws.index.tag("mine")
     ws.commit()
-    ws.merge("worker")
+    ws.index.merge("worker")
     assert set(ws.index.tags()) == {"mine"}
 
 

@@ -347,7 +347,7 @@ def test_a_merge_from_a_legacy_session_brings_neither_plane(store):
         parent.provider.kv, Index(harness="agno", session="parent", runs=("p1",))
     )
     parent.commit(info={"tool": "turn"})
-    parent.merge("parent.child")
+    parent.index.merge("parent.child")
 
     assert parent.files.read("/workspace/b.txt") == b"from the child\n"
     assert _plane(parent, LEGACY_CONVERSATION_PREFIX) == []

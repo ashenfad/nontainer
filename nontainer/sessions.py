@@ -2,8 +2,8 @@
 the job table.
 
 A subagent is a branch. Everything delegation needs already exists —
-``fork`` gives the child the whole world at a real commit, ``merge``
-and ``checkout(ref, paths=)`` bring its work back, ``diff`` says what
+``fork`` gives the child the whole world at a real commit,
+``index.merge`` and ``take`` bring its work back, ``diff`` says what
 it touched — and what was missing is the calling convention over them:
 who mints the child's name, who hands it to the loop, who collects the
 answer, and who makes the child's work mergeable.
@@ -1516,8 +1516,8 @@ class Sessions:
         when it never touched ws-git,
         because autocommit put every write there and the fiction reads
         such a session at its store head, which is the honest answer
-        for it. Either way this is the same commit ``merge`` and
-        ``checkout(<child>, paths=)`` resolve the name to, so what the
+        for it. Either way this is the same commit ``index.merge`` and
+        ``take(<child>, paths)`` resolve the name to, so what the
         answer cites and what the terminal brings back cannot disagree.
 
         The runner used a handle of its own, so the branch is re-read
