@@ -223,7 +223,7 @@ def test_a_cherry_pick_is_held_to_the_view_too(ws, store):
     try:
         head = child.head
         with pytest.raises(PermissionError, match="outside this session's view"):
-            child.cherry_pick(f"other@{picked[:7]}")
+            child._cherry_pick(f"other@{picked[:7]}")
         assert child.head == head
     finally:
         child.close()

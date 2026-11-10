@@ -1133,7 +1133,7 @@ def _revert(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
     commit = git.resolve(rest[0])
     _settle(ws)
     return _applied(
-        git, ws, ctx, ws.revert(commit), verb="revert", what=commit[:7], noun="Revert"
+        git, ws, ctx, ws._revert(commit), verb="revert", what=commit[:7], noun="Revert"
     )
 
 
@@ -1151,7 +1151,7 @@ def _cherry_pick(git: AgentGit, ws: Any, ctx: Any, rest: list[str]) -> Any:
         git,
         ws,
         ctx,
-        ws.cherry_pick(rest[0]),
+        ws._cherry_pick(rest[0]),
         verb="cherry-pick",
         what=ref,
         noun="Cherry-pick",

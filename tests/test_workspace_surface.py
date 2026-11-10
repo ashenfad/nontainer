@@ -9,8 +9,17 @@ private attribute is the package's to move, a public one is a promise.
 
 import pytest
 
-from nontainer import CommitNotFoundError, Ref, Store, Workspace, store, workspace
+from nontainer import (
+    CommitNotFoundError,
+    NotSupportedError,
+    Ref,
+    Store,
+    Workspace,
+    store,
+    workspace,
+)
 from nontainer.providers import KvgitProvider
+from nontainer.workspace import WorkspaceIndex
 
 # -- what a workspace was opened from ---------------------------------------
 
@@ -169,6 +178,46 @@ def test_factory_workspace_has_a_store(tmp_path):
     assert isinstance(ws.store, Store)
     assert ws.store.sessions() == ["solo"]
     ws.close()
+
+
+# -- the verbs that move state between sessions, by family -------------------
+
+
+def test_each_verb_family_lives_where_it_says():
+    """The framework's verbs move the session's state, land a framework
+    commit and refuse a conflict: they are on the workspace. The agent's
+    git moves files, lands in the agent's graph and marks a conflict: it
+    is on ``ws.index``. Revert and cherry-pick are the terminal's alone."""
+    for name in ("checkout", "take", "land"):
+        assert callable(getattr(Workspace, name)), name
+    for name in ("merge", "apply", "revert", "cherry_pick"):
+        assert not hasattr(Workspace, name), name
+    for name in ("merge", "apply", "checkout", "commit"):
+        assert callable(getattr(WorkspaceIndex, name)), name
+    for name in ("revert", "cherry_pick", "take", "land"):
+        assert not hasattr(WorkspaceIndex, name), name
+
+
+def test_a_frozen_session_refuses_a_take_by_the_name_it_was_called(tmp_path):
+    """The host's ``take`` names itself; the agent typed ``checkout``,
+    and the terminal refuses it in those words."""
+    from nontainer.wsgit import register_wsgit
+
+    s = store(tmp_path / "st")
+    ws = s.open("alice")
+    ws.files.write("/workspace/a.txt", "one")
+    snap = s.resolve(ws.ref)
+    register_wsgit(snap)
+    try:
+        with pytest.raises(NotSupportedError, match="so take is not supported"):
+            snap.take(ws.ref, paths=["/workspace/a.txt"])
+        r = snap.terminal(f"ws-git checkout {ws.ref} -- a.txt")
+        assert r.exit_code == 1
+        assert "so checkout is not supported" in r.stderr
+    finally:
+        snap.close()
+        ws.close()
+        s.close()
 
 
 def test_ws_log_is_a_list():

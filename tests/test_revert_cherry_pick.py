@@ -1,10 +1,15 @@
-"""revert and cherry-pick on the facade: one engine, two signs.
+"""revert and cherry-pick: one engine, two signs.
 
 Applying one commit's change to the tree as it stands now, with the
 base named rather than found: the commit and its parent in one order
 undo it, in the other order bring it from somewhere else. History
 stays append-only — both verbs APPEND a commit, and the commit they
 name is still in the log afterwards.
+
+These are the bodies of ``ws-git revert`` and ``ws-git cherry-pick``,
+called through the workspace's internal entry points so each outcome
+can be asserted on directly; the terminal's spelling of them is
+pinned in ``test_wsgit.py`` and the ws-git script corpus.
 """
 
 import pytest
@@ -42,7 +47,7 @@ def test_revert_of_the_last_commit_appends_and_keeps_it(ws):
     ws.index.commit("second")
     second = ws.index.head
 
-    out = ws.revert(second)
+    out = ws._revert(second)
 
     assert out.merged and out.conflicts == ()
     assert out.auto_merged == ("/workspace/a.txt",)
@@ -66,7 +71,7 @@ def test_revert_of_an_older_commit_leaves_later_work_alone(ws):
     ws.files.write("/workspace/a.txt", "one\nTWO\nTHREE\n")
     ws.index.commit("third")
 
-    out = ws.revert(second)
+    out = ws._revert(second)
 
     assert out.merged and out.conflicts == ()
     assert ws.files.read("/workspace/a.txt") == b"one\ntwo\nTHREE\n"
@@ -81,7 +86,7 @@ def test_a_revert_that_conflicts_leaves_markers_and_the_context(ws):
     ws.files.write("/workspace/a.txt", "one\nLATER\nthree\n")
     ws.index.commit("third")
 
-    out = ws.revert(second)
+    out = ws._revert(second)
 
     assert out.merged
     assert out.conflicts == ("/workspace/a.txt",)
@@ -109,7 +114,7 @@ def test_revert_of_a_first_commit_against_an_edited_file(ws):
     ws.files.write("/workspace/a.txt", "one\nEDITED\nthree\n")
     ws.index.commit("second")
 
-    out = ws.revert(first)
+    out = ws._revert(first)
 
     assert out.merged
     assert out.conflicts == ("/workspace/a.txt",)
@@ -132,7 +137,7 @@ def test_revert_of_a_merge_goes_back_to_ours(ws):
         assert merge.merged
         assert ws.files.exists("/workspace/theirs.txt")
 
-        out = ws.revert(merge.commit)
+        out = ws._revert(merge.commit)
 
         assert out.merged and out.conflicts == ()
         assert not ws.files.exists("/workspace/theirs.txt")
@@ -146,10 +151,10 @@ def test_a_revert_of_nothing_says_so(ws):
     ws.files.write("/workspace/a.txt", "one\n")
     ws.index.commit("first")
     first = ws.index.head
-    ws.revert(first)
+    ws._revert(first)
     head = ws.index.head
 
-    again = ws.revert(first)
+    again = ws._revert(first)
 
     assert not again.merged
     assert again.commit is None and again.conflicts == ()
@@ -169,7 +174,7 @@ def test_cherry_pick_brings_one_commit_of_a_delegate(ws):
         child.files.write("/workspace/three.txt", "three\n")
         child.index.commit("three")
 
-        out = ws.cherry_pick(f"child@{wanted}")
+        out = ws._cherry_pick(f"child@{wanted}")
 
         assert out.merged and out.conflicts == ()
         assert out.auto_merged == ("/workspace/two.txt",)
@@ -189,7 +194,7 @@ def test_cherry_pick_takes_a_short_id(ws):
     try:
         child.files.write("/workspace/one.txt", "one\n")
         child.index.commit("one")
-        out = ws.cherry_pick(f"child@{child.index.head[:7]}")
+        out = ws._cherry_pick(f"child@{child.index.head[:7]}")
         assert out.merged
         assert ws.files.read("/workspace/one.txt") == b"one\n"
     finally:
@@ -212,7 +217,7 @@ def test_cherry_pick_of_a_delegates_first_commit_brings_only_its_work(ws):
         ws.files.write("/workspace/base.txt", "base, edited here\n")
         ws.index.commit("my work")
 
-        out = ws.cherry_pick(f"child@{wanted}")
+        out = ws._cherry_pick(f"child@{wanted}")
 
         assert out.merged and out.conflicts == ()
         assert out.auto_merged == ("/workspace/from_child.txt",)
@@ -238,7 +243,7 @@ def test_cherry_pick_of_a_first_commit_from_a_parent_that_never_used_ws_git(ws):
         ws.files.fs.remove("/workspace/gone.txt")
         ws.commit()
 
-        out = ws.cherry_pick(f"child@{wanted}")
+        out = ws._cherry_pick(f"child@{wanted}")
 
         assert out.merged and out.conflicts == ()
         assert out.auto_merged == ("/workspace/kept.txt",)
@@ -259,7 +264,7 @@ def test_a_cherry_pick_that_conflicts(ws):
         ws.files.write("/workspace/shared.txt", "one\nMINE\nthree\n")
         ws.index.commit("my edit")
 
-        out = ws.cherry_pick(f"child@{wanted}")
+        out = ws._cherry_pick(f"child@{wanted}")
 
         assert out.merged
         assert out.conflicts == ("/workspace/shared.txt",)
@@ -290,17 +295,17 @@ def test_cherry_pick_refuses_a_commit_the_named_session_does_not_hold(ws):
 
         # a real commit, named under a session that never made it
         with pytest.raises(CommitNotFoundError, match="child"):
-            ws.cherry_pick(f"child@{elsewhere}")
+            ws._cherry_pick(f"child@{elsewhere}")
         with pytest.raises(CommitNotFoundError, match="child"):
-            ws.cherry_pick(f"child@{elsewhere[:7]}")
+            ws._cherry_pick(f"child@{elsewhere[:7]}")
         assert not ws.files.exists("/workspace/peer.txt")
 
         # a session that is not there at all
         with pytest.raises(ValueError, match="peerless"):
-            ws.cherry_pick(f"peerless@{elsewhere}")
+            ws._cherry_pick(f"peerless@{elsewhere}")
 
         # and the right pairing still applies
-        out = ws.cherry_pick(f"peer@{elsewhere}")
+        out = ws._cherry_pick(f"peer@{elsewhere}")
         assert out.merged
         assert ws.files.read("/workspace/peer.txt") == b"peer\n"
     finally:
@@ -320,9 +325,9 @@ def test_both_refuse_uncommitted_agent_work(ws):
         assert not ws.uncommitted  # the store has it; the agent has not
 
         with pytest.raises(WorkspaceError, match="uncommitted ws-git work"):
-            ws.revert(first)
+            ws._revert(first)
         with pytest.raises(WorkspaceError, match="uncommitted ws-git work"):
-            ws.cherry_pick(f"child@{child.index.head}")
+            ws._cherry_pick(f"child@{child.index.head}")
     finally:
         child.close()
 
@@ -341,13 +346,13 @@ def test_both_refuse_while_a_merge_is_outstanding(ws):
         assert ws.index.merge("child").conflicts
 
         with pytest.raises(WorkspaceError, match="unresolved merge"):
-            ws.revert(first)
+            ws._revert(first)
         with pytest.raises(WorkspaceError, match="unresolved merge"):
-            ws.cherry_pick(f"child@{picked}")
+            ws._cherry_pick(f"child@{picked}")
 
         ws.files.write("/workspace/shared.txt", "resolved\n")
         ws.terminal("ws-git commit -m resolved")
-        assert ws.revert(first).merged is not None
+        assert ws._revert(first).merged is not None
     finally:
         child.close()
 
@@ -356,7 +361,7 @@ def test_cherry_pick_names_one_commit(ws):
     ws.files.write("/workspace/a.txt", "one\n")
     ws.index.commit("first")
     with pytest.raises(ValueError, match="session@commit"):
-        ws.cherry_pick("child")
+        ws._cherry_pick("child")
 
 
 def test_revert_of_a_commit_that_is_not_there(ws):
@@ -365,7 +370,7 @@ def test_revert_of_a_commit_that_is_not_there(ws):
     ws.files.write("/workspace/a.txt", "one\n")
     ws.index.commit("first")
     with pytest.raises(CommitNotFoundError):
-        ws.revert("0" * 40)
+        ws._revert("0" * 40)
 
 
 def test_a_provider_without_a_merge_engine_refuses_by_name(tmp_path):
@@ -377,9 +382,9 @@ def test_a_provider_without_a_merge_engine_refuses_by_name(tmp_path):
     try:
         assert not ws.caps.merge
         with pytest.raises(NotSupportedError, match="cannot revert"):
-            ws.revert("abc1234")
+            ws._revert("abc1234")
         with pytest.raises(NotSupportedError, match="cannot cherry-pick"):
-            ws.cherry_pick("other@abc1234")
+            ws._cherry_pick("other@abc1234")
     finally:
         ws.close()
 
@@ -392,8 +397,8 @@ def test_agentfs_refuses_revert_and_cherry_pick(tmp_path):
     ws = Workspace(AgentFSProvider(tmp_path / "s1.db", session="s1"))
     try:
         with pytest.raises(NotSupportedError, match="cannot revert"):
-            ws.revert("abc1234")
+            ws._revert("abc1234")
         with pytest.raises(NotSupportedError, match="cannot cherry-pick"):
-            ws.cherry_pick("other@abc1234")
+            ws._cherry_pick("other@abc1234")
     finally:
         ws.close()

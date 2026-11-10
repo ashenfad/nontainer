@@ -2253,8 +2253,13 @@ class Workspace:
                 "--abort in that session), then merge."
             )
 
-    def revert(self, commit: str) -> MergeOutcome:
-        """Undo one commit's change, as a NEW commit; returns the outcome.
+    def _revert(self, commit: str) -> MergeOutcome:
+        """``ws-git revert``: undo one commit's change, as a NEW commit;
+        returns the outcome.
+
+        The engine ``ws.index.apply`` runs, with the two sides chosen
+        for the caller: the commit is the base, and the state it was
+        composed on is theirs.
 
         The commit stays exactly where it is and the undoing lands on
         top of it, git's own spelling: history here is append-only, and
@@ -2459,9 +2464,13 @@ class Workspace:
         commit = self._ref_commit(self.session, str(at))
         return str(Ref(self.session, commit)), commit
 
-    def cherry_pick(self, ref: "str | Ref") -> MergeOutcome:
-        """Apply one commit's change from another session; returns the
-        outcome.
+    def _cherry_pick(self, ref: "str | Ref") -> MergeOutcome:
+        """``ws-git cherry-pick``: apply one commit's change from
+        another session; returns the outcome.
+
+        The engine ``ws.index.apply`` runs, with the two sides chosen
+        for the caller: the state the commit was composed on is the
+        base, and the commit is theirs.
 
         ``ref`` names one commit: ``session@commit``, short ids
         accepted. A session name alone is refused — a session is a
@@ -2593,8 +2602,8 @@ class Workspace:
         info: dict[str, Any],
         paths: "list[str] | None" = None,
     ) -> MergeOutcome:
-        """The body of :meth:`revert`, :meth:`cherry_pick` and
-        :meth:`apply`.
+        """The body of :meth:`_revert`, :meth:`_cherry_pick` and
+        :meth:`_apply`.
 
         One engine, two signs: the two verbs differ in which commit is
         the base and which is theirs, and in what they record. Both
