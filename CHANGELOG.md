@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.12.0 - 2026-11-11
 
 ### Changed
 - **Breaking: `ws.merge` and `ws.apply` are now `ws.index.merge` and `ws.index.apply`.** Same arguments and outcomes; they are the agent's git, so they sit beside `ws.index.commit`, while the framework's `ws.checkout` and `ws.land` stay on the workspace.
