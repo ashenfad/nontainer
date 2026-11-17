@@ -2955,6 +2955,47 @@ logged under the call's id and tool name. Read it as the event arrives,
 not later: the log keeps a run's calls until the run is stored, and a
 model may reuse a call id in its next reply.
 
+**Refusing a call.** An embedder that turns a call away before it runs
+(a capacity limit, a policy) raises from its tool hook instead of
+returning text, because returned text is a success in agno's record
+and reads as a result to the model. `refuse(ws, reason, message="", *,
+retry_after=None)` raises `ToolRefused`, and agno records the call as
+failed under its own id, with its started and completed events:
+
+```python
+from nontainer.adapters.agno import refuse, tool_outcome, tool_refusal
+
+def gate(function_name, function, arguments):
+    if not slots.acquire(blocking=False):
+        refuse(ws, "busy", "every sandbox slot is in use", retry_after=30)
+    try:
+        return function(**arguments)
+    finally:
+        slots.release()
+
+agent = Agent(model=..., tools=[tk], tool_hooks=[tk.deliver, gate])
+```
+
+The model reads `not run: the call was refused before it started (every
+sandbox slot is in use); nothing changed, so make the same call again
+after 30 seconds`. A model told only that a call failed tends to change
+approach rather than wait. agno sets `tool_call_error` on the tool
+message, the `ToolExecution` and the stored run, but passes no error
+flag on to the provider, so the text is all the model gets. Nor does
+`ToolResult.metadata` carry anything: agno never copies it into the
+message, the event or the stored run.
+
+`tool_failed` is true for a refused call. `tool_outcome(ws, ev.tool)`
+says `"refused"`, `"failed"` or `"ok"`, and `tool_refusal(ws, ev.tool)`
+gives back the `ToolRefused` with its `reason`, `message` and
+`retry_after`. Read both as the event arrives, as `tool_failed` is.
+Only the toolkit's own tools are logged as refused: a refused call of
+another tool reaches the model and agno's flag the same way, and reads
+as `"failed"`. agno hands a tool hook no `FunctionCall`, so `refuse`
+finds the call on the stack and must run inside it, in a tool hook or
+the tool itself. agno's traceback for a refusal is dropped from its
+log, and its one-line warning stays.
+
 With `sessions=` wired, every delegate answer that has landed is taken
 at the same delivery point (`Sessions.take()`) and arrives as a
 `mechanism` note — mid-turn instead of on the next one.

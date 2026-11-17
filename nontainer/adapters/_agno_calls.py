@@ -32,6 +32,15 @@ to earlier runs and take nothing from the log.
 later write of the same session hands back a stored run unflagged. A
 tool message already stored as failed stays failed: flags are matched
 by the message's own ``id`` against what is stored.
+
+**Refusals.** An embedder may refuse a call before it runs (a tool hook
+raising ``ToolRefused``). agno flags that call itself, since it raised,
+but the log still holds it, as refused: matching counts on every call
+of the toolkit's tools being logged, and an embedder reading the
+outcome needs to tell a refusal from a failure. Only the toolkit's
+tools are logged this way (:func:`track`): logging some calls of
+another tool and not others would match its later calls to the wrong
+outcomes.
 """
 
 from __future__ import annotations
@@ -39,28 +48,65 @@ from __future__ import annotations
 import threading
 import weakref
 from collections import deque
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Iterable, Mapping
+from typing import Any, Literal, NamedTuple
 
-__all__ = ["OPEN", "CallLog", "flag_failures", "log_of", "note"]
+__all__ = [
+    "OPEN",
+    "Call",
+    "CallLog",
+    "flag_failures",
+    "log_of",
+    "note",
+    "refused",
+    "track",
+]
 
 _LIMIT = 4096
 """Calls a log keeps. Matching reads only the latest under each id, so
 a run of fewer calls than this is always matched in full."""
 
+Kind = Literal["ok", "failed", "refused"]
+
+
+class Call(NamedTuple):
+    """One logged call: its call id and tool name, how it came out, and
+    for a refused call the refusal it was given (never one that was
+    raised, so it holds no traceback)."""
+
+    key: tuple[str, str]
+    kind: Kind
+    refusal: Any = None
+
 
 class CallLog:
     """One workspace's tool calls, oldest first: each call id with
-    its tool's name and whether the call failed, since the last run
+    its tool's name and how the call came out, since the last run
     finished."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._calls: deque[tuple[tuple[str, str], bool]] = deque(maxlen=_LIMIT)
+        self._calls: deque[Call] = deque(maxlen=_LIMIT)
+        self._tools: set[str] = set()
+
+    def track(self, tools: Iterable[str]) -> None:
+        """Name tools every call of which is logged, so a refusal of
+        one of them is logged too."""
+        with self._lock:
+            self._tools.update(tools)
 
     def note(self, call_id: str, tool: str, failed: bool) -> None:
         with self._lock:
-            self._calls.append(((call_id, tool), failed))
+            self._calls.append(Call((call_id, tool), "failed" if failed else "ok"))
+
+    def refuse(self, call_id: str, tool: str, refusal: Any) -> bool:
+        """Log a call refused before it ran, which counts as failed, if
+        its tool is tracked; whether it was logged."""
+        with self._lock:
+            if tool not in self._tools:
+                return False
+            self._calls.append(Call((call_id, tool), "refused", refusal))
+            return True
 
     def close(self) -> None:
         """A run finished: what it logged is stored, and none of it is
@@ -69,11 +115,17 @@ class CallLog:
             self._calls.clear()
 
     def latest(self, key: tuple[str, str], n: int) -> list[bool]:
-        """The outcomes of the latest ``n`` calls under ``key``, a call
-        id and a tool name, oldest first; fewer when fewer were logged."""
+        """Whether each of the latest ``n`` calls under ``key``, a call
+        id and a tool name, failed (a refusal included), oldest first;
+        fewer when fewer were logged."""
         with self._lock:
-            found = [failed for k, failed in self._calls if k == key]
+            found = [call.kind != "ok" for call in self._calls if call.key == key]
         return found[-n:] if n > 0 else []
+
+    def last(self, key: tuple[str, str]) -> Call | None:
+        """The latest call under ``key``, if one was logged."""
+        with self._lock:
+            return next((c for c in reversed(self._calls) if c.key == key), None)
 
 
 OPEN = frozenset({"RUNNING", "PENDING"})
@@ -84,19 +136,43 @@ _LOGS: weakref.WeakKeyDictionary[Any, CallLog] = weakref.WeakKeyDictionary()
 _LOGS_LOCK = threading.Lock()
 
 
-def note(workspace: Any, fc: Any, failed: bool) -> None:
-    """Log one call through the toolkit. ``fc`` is the ``FunctionCall``
-    agno handed the entrypoint; a call without one (an embedder calling
-    the function directly) is not logged."""
-    call_id = getattr(fc, "call_id", None)
-    tool = getattr(getattr(fc, "function", None), "name", None)
-    if call_id is None or tool is None:
-        return
+def _log(workspace: Any) -> CallLog:
     with _LOGS_LOCK:
         log = _LOGS.get(workspace)
         if log is None:
             log = _LOGS[workspace] = CallLog()
-    log.note(str(call_id), str(tool), bool(failed))
+        return log
+
+
+def _key(fc: Any) -> tuple[str, str] | None:
+    call_id = getattr(fc, "call_id", None)
+    tool = getattr(getattr(fc, "function", None), "name", None)
+    if call_id is None or tool is None:
+        return None
+    return str(call_id), str(tool)
+
+
+def track(workspace: Any, tools: Iterable[str]) -> None:
+    """Name the tools a toolkit logs every call of on this workspace."""
+    _log(workspace).track(tools)
+
+
+def note(workspace: Any, fc: Any, failed: bool) -> None:
+    """Log one call through the toolkit. ``fc`` is the ``FunctionCall``
+    agno handed the entrypoint; a call without one (an embedder calling
+    the function directly) is not logged."""
+    key = _key(fc)
+    if key is None:
+        return
+    _log(workspace).note(*key, bool(failed))
+
+
+def refused(workspace: Any, fc: Any, refusal: Any) -> bool:
+    """Log a call refused before it ran, if it is a call of a tool the
+    workspace's toolkit logs (:func:`track`); whether it was logged."""
+    key = _key(fc)
+    log = log_of(workspace)
+    return key is not None and log is not None and log.refuse(*key, refusal)
 
 
 def log_of(workspace: Any) -> CallLog | None:
