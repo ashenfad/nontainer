@@ -36,6 +36,7 @@ every word the agent reads — belongs to the caller.
 from __future__ import annotations
 
 import asyncio
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
@@ -157,6 +158,13 @@ class DriveSpec:
     lands after the report. They may finish one at a time, so the wait
     goes on while they do, and gives up only once none has finished
     for this long. Set it above the handler's own per-request limit."""
+
+    run_over: threading.Event | None = None
+    """Set by the driver when the run is over, before it waits for the
+    requests still being answered. A ``serve`` that checks it can
+    decline a request that hasn't reached a handler yet, which then
+    never runs, so a request still queued when the run ends can't write
+    after the report either."""
 
 
 @dataclass(frozen=True)

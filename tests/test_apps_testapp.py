@@ -1713,3 +1713,127 @@ def test_a_run_cancelled_while_queued_for_a_slot_opens_no_page(chromium_availabl
     report = pending.result(timeout=10)
     assert not report.loaded
     assert "cancelled before it started" in (report.load_error or "")
+
+
+WRITE_HANDLER = """
+def post(req):
+    cache["done"] = True
+    return {"ok": True}
+"""
+
+
+def _writer_rt():
+    ws = Workspace(KvgitProvider.open(None, session="s-declined"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app/api", exist_ok=True)
+    ws.files.fs.write("/workspace/app/api/write.py", WRITE_HANDLER.encode())
+    ws.commit()
+    return ws, rt
+
+
+def test_a_request_the_run_is_over_for_never_reaches_a_handler():
+    import threading
+
+    from nontainer.apps.testapp import _serve
+
+    ws, rt = _writer_rt()
+    try:
+        run_over = threading.Event()
+        serve = _serve(rt, "", run_over=run_over)
+        run_over.set()
+        assert serve("POST", "/api/write", b"{}", {}).status == 503
+        assert ws.cache.get("done") is None
+        run_over.clear()
+        assert serve("POST", "/api/write", b"{}", {}).status == 200
+        assert ws.cache.get("done") is True
+    finally:
+        ws.close()
+
+
+def test_a_request_queued_on_the_lock_when_the_run_ends_never_runs():
+    """Another workspace call holds the lock past the run's end. The
+    request waiting behind it is decided once it has the lock, and by
+    then the run is over."""
+    import threading
+    import time
+
+    from nontainer.apps.testapp import _serve
+
+    ws, rt = _writer_rt()
+    try:
+        run_over = threading.Event()
+        serve = _serve(rt, "", run_over=run_over)
+        answered = []
+        with ws.lock:
+            waiting = threading.Thread(
+                target=lambda: answered.append(
+                    serve("POST", "/api/write", b"{}", {}).status
+                )
+            )
+            waiting.start()
+            time.sleep(0.2)  # the request is queued on the lock
+            run_over.set()
+        waiting.join(timeout=10)
+        assert answered == [503]
+        assert ws.cache.get("done") is None
+    finally:
+        ws.close()
+
+
+def test_a_run_declines_the_requests_still_queued_when_it_ends(chromium_available):
+    """The driver marks the run over before it waits: the request being
+    answered finishes, and the ones queued behind it are declined rather
+    than answered one by one after the run."""
+    import threading
+    import time
+
+    from nontainer.apps.contract import WireResponse
+    from nontainer.apps.driver import DriveSpec
+    from nontainer.apps.driver_playwright import PlaywrightDriver
+
+    one_at_a_time = threading.Lock()
+    run_over = threading.Event()
+    served: list[str] = []
+
+    def serve(method, url, body, headers):
+        if url.startswith("/api/slow"):
+            with one_at_a_time:
+                if run_over.is_set():
+                    return WireResponse(503, b"", "text/plain")
+                time.sleep(1.0)
+                served.append(url)
+            return WireResponse(200, b"{}", "application/json")
+        return WireResponse(200, THREE_SLOW_PAGE, "text/html")
+
+    spec = DriveSpec(
+        serve,
+        "https://t.test/apps/t-test/",
+        ({"read": "#x"},),
+        settle_cap_ms=100,
+        run_over=run_over,
+    )
+    started = time.monotonic()
+    report = PlaywrightDriver().run(spec)
+    assert [a.ok for a in report.actions] == [True]
+    assert run_over.is_set()
+    assert len(served) == 1
+    assert time.monotonic() - started < 2.5
+
+
+def test_cancel_checks_are_asked_on_threads_of_their_own(chromium_available):
+    """Not on the loop's default executor, which a page's requests to
+    serve can fill."""
+    import threading
+
+    from nontainer.apps.driver_playwright import PlaywrightDriver
+
+    asked_on: list[str] = []
+
+    def cancelled() -> bool:
+        asked_on.append(threading.current_thread().name)
+        return False
+
+    spec, _ = _slow_spec([{"wait": 300}], cancelled=cancelled)
+    PlaywrightDriver().run(spec)
+    assert asked_on
+    assert all(name.startswith("nontainer-cancel-check") for name in asked_on)

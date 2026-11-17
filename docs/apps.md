@@ -946,6 +946,9 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   run waits while they keep finishing and gives up only once none has
   finished in the handlers' `request_timeout` plus five seconds (a
   handler that outruns its own limit), with a warning in the log. A
+  request that hasn't reached a handler when the run ends, one still
+  waiting for the workspace's lock behind another call, is declined
+  (503) and never runs, so it can't write after the result either. A
   cancel waits for the same cleanup before it propagates, and a run
   queued for a browser slot when it is cancelled stops there, without
   opening a page.

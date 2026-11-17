@@ -41,11 +41,17 @@ import asyncio
 import json
 import posixpath
 import re
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from .contract import filter_headers, filter_response_headers, make_request
+from .contract import (
+    WireResponse,
+    filter_headers,
+    filter_response_headers,
+    make_request,
+)
 from .csp import (
     blocked_script_note,
     blocks_code,
@@ -579,11 +585,17 @@ def coerce_bind(bind: Any) -> "dict[str, str] | None":
     return dict(bind)
 
 
+#: The answer to a request the run is over for: it never reaches a
+#: handler, and its page is gone, so nobody reads it.
+_DECLINED = WireResponse(503, b"", "text/plain")
+
+
 def _serve(
     runtime: "AppRuntime",
     csp: str,
     bind: tuple[tuple[str, str], ...] = (),
     failed: "list[str] | None" = None,
+    run_over: "threading.Event | None" = None,
 ) -> Any:
     """How the app is served for a run: the same ``dispatch`` the curl
     builtin and the published router use. This is the invariant the
@@ -596,10 +608,24 @@ def _serve(
     binding = dict(bind)
 
     def serve(method: str, url: str, body: bytes, headers: Any) -> Any:
-        wire = runtime.dispatch(
-            make_request(method, url, body=body, headers=filter_headers(headers)),
-            bind=binding,
-        )
+        request = make_request(method, url, body=body, headers=filter_headers(headers))
+        if run_over is None:
+            wire = runtime.dispatch(request, bind=binding)
+        elif runtime.frozen:
+            # Frozen dispatch takes no lock and runs requests side by
+            # side, so a request is declined only if it starts late.
+            if run_over.is_set():
+                return _DECLINED
+            wire = runtime.dispatch(request, bind=binding)
+        else:
+            # Decided under the lock dispatch then takes again (an
+            # RLock): a request still waiting for it when the run ended,
+            # behind another workspace call, never reaches a handler,
+            # so nothing it would write lands after the result.
+            with runtime.workspace.lock:
+                if run_over.is_set():
+                    return _DECLINED
+                wire = runtime.dispatch(request, bind=binding)
         # Verification must see the wire the router would produce, so
         # the same response-header allowlist applies: a handler setting
         # Set-Cookie or Access-Control-Allow-Origin has to fail HERE
@@ -645,6 +671,7 @@ def build_spec(
     bind: tuple[tuple[str, str], ...] = (),
     failed: "list[str] | None" = None,
     cancelled: "Callable[[], bool] | None" = None,
+    run_over: "threading.Event | None" = None,
 ) -> DriveSpec:
     """Everything one run has been decided to be, before a browser is
     involved.
@@ -656,7 +683,9 @@ def build_spec(
     has ended waits for the requests its page left with the handlers,
     so what they write lands before the result does. It waits while they
     keep finishing, and gives up once none has finished in the handlers'
-    own time limit plus a margin."""
+    own time limit plus a margin. Given ``run_over``, a request that has
+    not reached a handler when the run ends is declined and never runs.
+    """
     vp = coerce_viewport(viewport)
     # One declaration (AppsConfig.script_hosts) drives interception AND
     # the served CSP: what verifies headlessly matches what serves.
@@ -680,7 +709,7 @@ def build_spec(
         else ""
     )
     return DriveSpec(
-        serve=_serve(runtime, csp, bind, failed),
+        serve=_serve(runtime, csp, bind, failed, run_over),
         base_url=_BASE_URL,
         actions=tuple(actions or ()),
         start=start,
@@ -695,6 +724,7 @@ def build_spec(
         eval_timeout_ms=eval_timeout_ms,
         run_timeout_ms=run_timeout_ms,
         cancelled=cancelled,
+        run_over=run_over,
         drain_timeout_ms=int(runtime.config.request_timeout * 1000) + _DRAIN_MARGIN_MS,
         settle_cap_ms=int(settle_cap * 1000),
         max_screenshots=max_screenshots,
@@ -892,7 +922,10 @@ def run_test_app(
     bound = check_bind(runtime, kwargs.pop("bind", None))
     failed: list[str] = []
     driver = pick_driver(runtime.config, runtime.workspace)
-    spec = build_spec(runtime, actions, bind=bound, failed=failed, **kwargs)
+    run_over = threading.Event()
+    spec = build_spec(
+        runtime, actions, bind=bound, failed=failed, run_over=run_over, **kwargs
+    )
     try:
         try:
             report = driver.run(spec)
@@ -900,6 +933,8 @@ def run_test_app(
             raise
         except Exception as e:
             report = _driver_failed(driver, e)
+        finally:
+            run_over.set()  # whatever the driver did, the run is over
         return build_result(runtime, spec, report, bound, failed)
     finally:
         _flush_log(runtime)
@@ -917,7 +952,10 @@ async def arun_test_app(
     bound = check_bind(runtime, kwargs.pop("bind", None))
     failed: list[str] = []
     driver = pick_driver(runtime.config, runtime.workspace)
-    spec = build_spec(runtime, actions, bind=bound, failed=failed, **kwargs)
+    run_over = threading.Event()
+    spec = build_spec(
+        runtime, actions, bind=bound, failed=failed, run_over=run_over, **kwargs
+    )
     try:
         try:
             report = await adrive(driver, spec)
@@ -925,6 +963,8 @@ async def arun_test_app(
             raise
         except Exception as e:
             report = _driver_failed(driver, e)
+        finally:
+            run_over.set()  # whatever the driver did, the run is over
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
             None, build_result, runtime, spec, report, bound, failed
