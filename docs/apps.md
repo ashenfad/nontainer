@@ -1141,8 +1141,13 @@ Inside one process, a run already ends cleanly. Every wait in it is
 bounded (`run_timeout_ms`), `cancelled=` stops it early, and it returns
 only after its page is closed and the requests that page sent have been
 answered. Prefer that path when an owner wants a worker to stop: set the
-worker's cancel flag, then wait for `test_app` to return. A worker that
-returns has nothing of the run still running.
+worker's cancel flag, then wait for `test_app` to return. A worker whose
+`test_app` has returned has nothing of the run still running, with one
+exception. A handler that outruns its own limit is given up on: the run
+logs a warning (none of the requests finished in time) and returns while
+that handler's thread is still going. Such a worker isn't finished.
+Don't give it other work, and accept its result only once the process
+has exited.
 
 A handler thread can't be stopped from inside the process; the
 executor's per-request limit (`request_timeout`, `request_tick_limit`)
@@ -1168,10 +1173,15 @@ Killing a worker process is where ownership matters:
   orphaned descendant, and it can then kill and reap them until none
   remain. Using pidfds (`os.pidfd_open`, `signal.pidfd_send_signal`)
   rather than bare PIDs rules out signalling a reused PID.
-- **macOS and other platforms have neither.** A worker there shuts its
-  browser down itself on the way out (`shutdown_browser()`, which
-  `atexit` also runs, though not after `SIGKILL`). A hard kill can leave
-  a Chromium behind, so if that matters, run the worker somewhere whose
+- **Without a cgroup, the worker closes its browser itself.** That
+  covers macOS and other platforms, and Linux without a cgroup per
+  worker. The call is `shutdown_browser()`, which `atexit` runs on a
+  normal exit. Neither `SIGKILL` nor a `SIGTERM` the worker doesn't
+  handle runs `atexit`, and `multiprocessing.Process.terminate()` sends
+  the latter. So stop such a worker with a message it answers by
+  shutting down, or give it a `SIGTERM` handler that calls
+  `shutdown_browser()` and then exits. A hard kill can still leave a
+  Chromium behind. If that matters, run the worker somewhere whose
   teardown takes everything with it, such as a VM or a container.
 - **Import after the worker is gone, never before.** A worker writes
   nothing to the session (both sinks are data), so a killed worker's
