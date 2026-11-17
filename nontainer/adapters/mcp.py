@@ -21,6 +21,7 @@ adapter — see protocol.py's concurrency note).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -44,6 +45,38 @@ async def _off_loop(work: "Callable[[], Any]") -> Any:
     import anyio
 
     return await anyio.to_thread.run_sync(work)
+
+
+async def _off_loop_stoppable(work: "Callable[[Callable[[], bool]], Any]") -> Any:
+    """:func:`_off_loop` for a body that can be told to stop: ``work``
+    is handed a ``stopped()`` to ask.
+
+    A request the client cancels (``notifications/cancelled``) tells the
+    body to stop and then waits for it to return before the cancellation
+    goes on. The body's cleanup is done by the time the request ends,
+    and no thread is left working on the workspace with nobody waiting
+    for it."""
+    import anyio
+
+    stop = threading.Event()
+    returned = threading.Event()
+
+    def body() -> Any:
+        try:
+            return work(stop.is_set)
+        finally:
+            returned.set()
+
+    cancelled = anyio.get_cancelled_exc_class()
+    try:
+        # Abandoning only the wait: the thread goes on, and is waited
+        # for below once it has been told to stop.
+        return await anyio.to_thread.run_sync(body, abandon_on_cancel=True)
+    except cancelled:
+        stop.set()
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(returned.wait)
+        raise
 
 
 def _content(out: ToolOutput) -> list:
@@ -287,9 +320,13 @@ def build_server(
         ) -> list:
             # Off the loop as every tool is, and here it is required:
             # Playwright's sync API refuses to run on a live asyncio
-            # loop thread.
+            # loop thread. A cancelled request stops the run.
             return _content(
-                await _off_loop(lambda: toolset.test_app(actions, viewport, bind))
+                await _off_loop_stoppable(
+                    lambda stopped: toolset.test_app(
+                        actions, viewport, bind, cancelled=stopped
+                    )
+                )
             )
 
     return server

@@ -931,6 +931,20 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   never yields answers neither a screenshot nor an evaluate, so the
   failure screenshot and the policy-refusal harvest each get two
   seconds, and closing the run's context ends the page either way.
+- A run can be stopped from outside. `test_app(cancelled=...)` takes a
+  callable, the caller's and not part of the request, that is asked
+  every 100ms; a true answer stops the run as its budget does, with the
+  action in progress failed as cancelled. The MCP adapter stops a run
+  when the client cancels the request, and the agno adapter when the
+  agno run is cancelled (`Agent.cancel_run`, read through
+  `nontainer.adapters.agno.run_cancelled`). A cancelled
+  `PlaywrightDriver.arun` stops its run the same way.
+- A run returns only once its page is closed and the requests that page
+  sent have been answered. A handler runs in a thread that can't be
+  stopped, so the run waits for it, up to the handlers'
+  `request_timeout` plus five seconds, and nothing a handler writes
+  lands after the result. A cancel waits for the same cleanup before it
+  propagates.
 - `select` is separate from `type` because they are separate
   Playwright calls: `fill()` raises on a `<select>`. It matches the
   option by value, then by visible label — agents pass whichever the

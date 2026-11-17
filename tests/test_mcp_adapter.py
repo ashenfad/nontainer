@@ -390,3 +390,29 @@ async def test_a_resource_read_during_a_slow_tool_leaves_the_loop_free():
     assert tree is not None
     assert ticks >= 10
     ws.close()
+
+
+def test_a_cancelled_request_stops_its_body_and_waits_for_it():
+    """The client's cancel tells the threaded body to stop, and the
+    request ends only after the body has returned."""
+    import time
+
+    import anyio
+
+    from nontainer.adapters.mcp import _off_loop_stoppable
+
+    seen: dict[str, bool] = {}
+
+    def work(stopped):
+        while not stopped():
+            time.sleep(0.01)
+        time.sleep(0.3)  # the body's own cleanup
+        seen["cleaned"] = True
+
+    async def main() -> None:
+        with anyio.move_on_after(0.3):
+            await _off_loop_stoppable(work)
+        seen["when_the_request_ended"] = seen.get("cleaned", False)
+
+    anyio.run(main)
+    assert seen["when_the_request_ended"] is True
