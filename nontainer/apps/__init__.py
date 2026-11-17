@@ -40,6 +40,10 @@ from .testapp import ActionResult, TestAppResult, arun_test_app, render_test_app
 
 
 def __getattr__(name):
+    if name in ("VerificationContext", "VerificationWorker"):
+        from . import verification
+
+        return getattr(verification, name)
     # Lazy: serving needs the optional starlette dependency.
     if name in ("build_router", "mint_token"):
         from . import serve
@@ -67,6 +71,8 @@ __all__ = [
     "DriveSpec",
     "DriveReport",
     "render_test_app",
+    "VerificationContext",
+    "VerificationWorker",
     "arun_test_app",
     "configure_browser",
     "shutdown_browser",

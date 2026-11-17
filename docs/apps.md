@@ -1553,3 +1553,57 @@ relative-URL rule holds unchanged.
   picks the executor's driver or the host browser. An embedder that
   sets a driver on the config gets it for `test_app` and not yet for
   the unit tier.
+
+### Bounded owned verification
+
+`VerificationWorker` implements the pinned-worker protocol above on POSIX hosts.
+It owns the browser, dispatch callbacks and trusted native workers in one process
+group. The whole test has a deadline (180 seconds by default); a Stop event also
+terminates that group. `verify()` returns only after the worker and its living
+descendants have exited. Keep the workspace hold and compute admission around
+that call, including teardown. Cancelling a Future alone is not a cleanup
+acknowledgment.
+
+```python
+from contextlib import contextmanager
+from nontainer import Store
+from nontainer.apps import AppRuntime, AppsConfig, VerificationWorker
+
+# In an importable trusted module, e.g. my_host.verification:
+@contextmanager
+def factory(context, *, log_sink, screenshot_sink):
+    store = Store(context.config["store"])
+    try:
+        with store.resolve(context.ref, python=trusted_python_config()) as snapshot:
+            yield AppRuntime(snapshot, AppsConfig(readonly_handlers=True),
+                             log_sink=log_sink, screenshot_sink=screenshot_sink)
+    finally:
+        store.close()
+
+runner = VerificationWorker("my_host.verification:factory", {"store": store_path},
+                            timeout_seconds=180)
+result = runner.verify(live_runtime, actions, cancelled=run_stop_event)
+```
+
+The host chooses the factory and its JSON configuration. Rebuild the same grants,
+mounts, kits and session-bound host objects used by live serving. Neither factory
+names nor configuration are tool arguments. Both runtimes require read-only
+handlers. Pinning makes a framework durability commit of the current draft; it
+preserves the agent's staging and working directory, including edits made during
+the current turn. It does not roll work back on Stop.
+
+Only the parent imports final validated screenshots and handler logs. Cancelled,
+expired or failed workers cannot import partial output or write to the live
+workspace later. Requests, results, screenshots and handler logs have configurable
+byte budgets. A lifecycle `observer` receives dictionaries with `job_id`, `phase`
+and `deadline_at`; running/stopping/reaped phases also identify `worker_pid` and
+`process_group`. Only the reaped phase reports `cleanup_ack=True`. Recording the running phase
+must succeed before the worker starts its trusted factory. An independent pipe
+watchdog terminates the owned worker group if its parent exits. Keep dead-owner
+allocations charged while recorded descendants still live. The deadline is
+diagnostic metadata, not permission to revoke a still-running allocation.
+
+The worker and trusted callbacks must keep all descendants in that owned process
+group. An embedder that permits detached subprocesses needs stronger ownership
+such as a dedicated cgroup or job container. An OS task that cannot be killed keeps
+teardown pending, and its caller must keep its allocation charged.
