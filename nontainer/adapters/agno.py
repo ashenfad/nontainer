@@ -146,9 +146,13 @@ def tool_failure_result(
     Wrappers that refuse work before the toolkit entrypoint runs still need
     recorded failures. Agno's ToolResult has no error flag; the adapter's call
     log carries that flag into saved runs and streamed tool events.
+    Metadata is attached when the installed Agno exposes that field. Older
+    supported Agno releases keep the content and failure flag; embedders needing
+    machine-readable details there should include them in the content as well.
     """
     _agno_calls.note(workspace, fc, True)
-    return ToolResult(content=content, metadata=metadata)
+    fields = {"metadata": metadata} if "metadata" in ToolResult.model_fields else {}
+    return ToolResult(content=content, **fields)
 
 
 def cut_off(note: str) -> str:
