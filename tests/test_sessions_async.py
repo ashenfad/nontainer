@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-from nontainer import Answer, SessionsError, Store
+from nontainer import Answer, JobRunning, SessionsError, Store
 from nontainer.sessions import Sessions
 from nontainer.wsgit import register_wsgit
 
@@ -207,7 +207,20 @@ def test_cancel_stops_an_async_run_and_frees_the_branch(parent, store):
     asyncio.run(main())
 
 
-def test_a_cancel_before_the_run_starts_frees_its_branch(parent, store):
+def test_a_cancel_before_the_run_starts_frees_its_branch(parent, store, monkeypatch):
+    # The run slot is released before its answer lands on a worker thread.
+    # Force c.py to land before a.py so this does not rely on thread ordering.
+    first_landing, allow_first_landing = threading.Event(), threading.Event()
+    settle = Sessions._settle
+
+    def out_of_order_landing(self, name, task, answer, token):
+        if task == "a.py":
+            first_landing.set()
+            assert allow_first_landing.wait(10)
+        return settle(self, name, task, answer, token)
+
+    monkeypatch.setattr(Sessions, "_settle", out_of_order_landing)
+
     async def main():
         gate = asyncio.Event()
         sessions = Sessions(parent, Writing(store, gate), max_workers=1)
@@ -218,8 +231,20 @@ def test_a_cancel_before_the_run_starts_frees_its_branch(parent, store):
             gate.set()
             answer = await resume_when_free(sessions, second.name, "c.py")
             assert answer.text == "did c.py"
-            assert sessions.result(first.name).text == "did a.py"
+            assert await asyncio.to_thread(first_landing.wait, 5)
+            with pytest.raises(JobRunning):
+                sessions.result(first.name)
+            allow_first_landing.set()
+
+            async def first_answer():
+                async for name, ready in sessions.answers():
+                    if name == first.name:
+                        return ready
+                raise AssertionError("first answer was never delivered")
+
+            assert (await asyncio.wait_for(first_answer(), 5)).text == "did a.py"
         finally:
+            allow_first_landing.set()
             await sessions.aclose()
 
     asyncio.run(main())
