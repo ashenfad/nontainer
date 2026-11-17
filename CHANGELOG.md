@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
+- **An agent's `test_app` call stops on `ws.runtime.interrupt()`** (#318). `Runtime.interrupts` counts the calls, and the toolset's run stops once the count moves after the call began.
 - **`test_app(cancelled=)` stops a run** (#318). The MCP adapter stops one when the client cancels the request, and the agno adapter when its run is cancelled (`run_cancelled`).
 - **`nontainer.adapters.agno.refuse(ws, reason, message, retry_after=)` turns a tool call away before it runs** (#319). Called from an agno tool hook, it fails the call in agno's record under its own id with text saying the call did not run, and `tool_outcome` and `tool_refusal` tell a refusal from a failure.
 

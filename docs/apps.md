@@ -940,7 +940,10 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   when the client cancels the request, and the agno adapter when the
   agno run is cancelled (`Agent.cancel_run`, read through
   `nontainer.adapters.agno.run_cancelled`). A cancelled
-  `PlaywrightDriver.arun` stops its run the same way.
+  `PlaywrightDriver.arun` stops its run the same way. The agent's
+  `test_app` (the toolset's) also stops when the workspace's runtime is
+  interrupted after the call began (`ws.runtime.interrupt()`, how a host
+  stops the turn a call is running in).
 - A run returns only once its page is closed and the requests that page
   sent have been answered. A handler runs in a thread that can't be
   stopped, so the run waits for it, and nothing a handler writes lands

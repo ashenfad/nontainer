@@ -98,6 +98,26 @@ class Tool:
         return await asyncio.to_thread(self.call, **arguments)
 
 
+def _stopped_by_interrupt(
+    workspace: Workspace, cancelled: Callable[[], bool] | None
+) -> Callable[[], bool] | None:
+    """``cancelled``, also answering true once the workspace's runtime
+    has been interrupted since now. Counted from here, before the call
+    waits for the toolset's lock, so a stop that comes while the call
+    waits behind another still stops it."""
+    runtime = workspace.runtime
+    start = getattr(runtime, "interrupts", None)
+    if start is None:
+        return cancelled
+
+    def stopped() -> bool:
+        if runtime.interrupts != start:
+            return True
+        return cancelled is not None and bool(cancelled())
+
+    return stopped
+
+
 def _takes_cancel(apps: Any, cancelled: Any) -> bool:
     """Whether to hand ``apps.test_app`` a ``cancelled`` check: there is
     one, and the method takes it. An embedder's own ``apps`` (one that
@@ -377,7 +397,13 @@ class Toolset:
         the harness's, never the model's: asked while the run goes, a
         true answer stops it, and the call returns once the run's page
         is closed and its requests are answered. It must answer promptly
-        (see ``DriveSpec.cancelled``)."""
+        (see ``DriveSpec.cancelled``).
+
+        The run also stops when the workspace's runtime is interrupted
+        after the call began (``ws.runtime.interrupt()``), which is how a
+        host stops the turn a tool call is running in. An interrupt stops
+        sandboxed code, and a browser run is none, so the run watches
+        ``Runtime.interrupts`` for it."""
         from ..apps import render_test_app
         from ..apps.testapp import coerce_actions, coerce_bind, coerce_viewport
 
@@ -385,6 +411,7 @@ class Toolset:
             raise RuntimeError("test_app needs an AppRuntime (Toolset(apps=...))")
         if cancelled is not None and not callable(cancelled):
             raise TypeError("cancelled must be a callable answering whether to stop")
+        stopped = _stopped_by_interrupt(self.workspace, cancelled)
         try:
             actions = coerce_actions(actions)
             viewport = coerce_viewport(viewport)
@@ -394,9 +421,7 @@ class Toolset:
         with self.lock:
             try:
                 stop = (
-                    {"cancelled": cancelled}
-                    if _takes_cancel(self.apps, cancelled)
-                    else {}
+                    {"cancelled": stopped} if _takes_cancel(self.apps, stopped) else {}
                 )
                 result = self.apps.test_app(
                     actions, viewport=viewport, bind=binding, **stop

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import inspect
 import re
+import threading
 import warnings
 from collections.abc import Callable, Collection, Iterator, Mapping, MutableMapping
 from dataclasses import replace
@@ -149,6 +150,8 @@ class Runtime:
     ) -> None:
         self._ws = ws
         self._closed = False
+        self._interrupts = 0
+        self._interrupts_lock = threading.Lock()
         if python is not None:
             self._python_config = python
         else:
@@ -756,11 +759,25 @@ class Runtime:
         sandbox yet is not touched, so a host stopping a turn calls this
         again while the call is still running. False on a closed
         runtime and on an executor that does not declare ``interrupt``.
+
+        A call that runs no sandboxed code can't be reached that way, and
+        watches :attr:`interrupts` instead. The agent's ``test_app`` does:
+        its browser run stops once this is called after the call began.
         """
         if self._closed:
             return False
+        with self._interrupts_lock:
+            self._interrupts += 1
         interrupt = getattr(self._executor, "interrupt", None)
         return bool(interrupt()) if interrupt is not None else False
+
+    @property
+    def interrupts(self) -> int:
+        """How many times :meth:`interrupt` has been called on this open
+        runtime. A long call that isn't sandboxed code, which ``interrupt``
+        can't stop, notes the count it started at and stops once it
+        moves."""
+        return self._interrupts
 
     def close(self) -> None:
         """Release execution resources. Idempotent. Settles a pending
