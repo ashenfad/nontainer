@@ -3430,9 +3430,13 @@ AppRuntime.dispatch(request: Request, *, bind=None) -> WireResponse
 AppRuntime.test_app(actions=None, *, viewport="desktop", bind=None,
                     max_screenshots=5, load_timeout_ms=10_000,
                     action_timeout_ms=5_000, assert_timeout_ms=2_000,
+                    eval_timeout_ms=10_000, run_timeout_ms=60_000,
                     settle_cap=5.0) -> TestAppResult
 # The arguments are the whole request, all plain data: a worker runs
 # runtime.test_app(**request) (docs/apps.md, "Verifying in a worker").
+# Every wait is bounded: an eval fails after eval_timeout_ms, a wait
+# above action_timeout_ms is refused, and a run still going at
+# run_timeout_ms stops, fails the action in progress, and returns.
 # bind: {"name": "other"} has handlers read host object `other` where
 # they read `name`, for this run's (or this request's) requests only.
 # Nothing is bound unless asked. ws-curl takes it as --bind NAME=OTHER.

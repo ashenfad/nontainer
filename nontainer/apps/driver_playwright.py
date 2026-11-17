@@ -36,6 +36,13 @@ from .driver import ActionOutcome, DriveReport, DriveSpec, PageError, Refusal
 
 _ASSERT_POLL_MS = 50
 
+#: Ceiling on each diagnostic read of a page after something went wrong
+#: (the failure screenshot, the policy-refusal harvest). A page whose
+#: script never yields answers neither a screenshot nor an evaluate,
+#: while closing its context still works at once, so a diagnostic is
+#: bounded and a run never waits on one longer than this.
+_LAST_LOOK_S = 2.0
+
 #: Collects the browser's own policy refusals, which arrive as events
 #: rather than as failed requests: a refused script does not throw, so
 #: nothing else in the page would name it.
@@ -303,9 +310,13 @@ async def _drive(
         These would otherwise be invisible: the block never throws into
         the page, so nothing in the page errors names it either."""
         try:
-            hits = await page.evaluate("window.__nt_csp || []")
+            hits = await asyncio.wait_for(
+                page.evaluate("window.__nt_csp || []"), _LAST_LOOK_S
+            )
         except Exception:
-            return  # page closed / navigated away: a diagnostic, not the run
+            # page closed, navigated away or stuck in its own script: a
+            # diagnostic, not the run
+            return
         for directive, blocked in hits or ():
             _refuse(Refusal(kind="policy", url=blocked, directive=directive))
 
@@ -406,12 +417,15 @@ async def _drive(
         Playwright says only what it waited for, so an agent re-guesses
         blind. A miss is the most common action failure there is."""
         try:
-            found = await page.evaluate(
-                "() => [...new Set(["
-                "  ...[...document.querySelectorAll('[id]')].map(e => '#' + e.id),"
-                "  ...[...document.querySelectorAll('[data-key]')]"
-                '      .map(e => `[data-key="${e.dataset.key}"]`),'
-                "])].slice(0, 25)"
+            found = await asyncio.wait_for(
+                page.evaluate(
+                    "() => [...new Set(["
+                    "  ...[...document.querySelectorAll('[id]')].map(e => '#' + e.id),"
+                    "  ...[...document.querySelectorAll('[data-key]')]"
+                    '      .map(e => `[data-key="${e.dataset.key}"]`),'
+                    "])].slice(0, 25)"
+                ),
+                _LAST_LOOK_S,
             )
         except Exception:
             return ""  # a diagnostic must never replace the real error
@@ -432,6 +446,16 @@ async def _drive(
         path = f"{spec.screenshot_dir}/{label}-{shot_counter}.png"
         screenshots[path] = png
         return path
+
+    async def _last_look(page: Any) -> str | None:
+        """The failure screenshot's path, or ``None`` when there is none:
+        the cap was reached, the capture failed, or the page did not
+        answer within :data:`_LAST_LOOK_S`. A diagnostic never replaces
+        the error it illustrates, nor holds the run up."""
+        try:
+            return await asyncio.wait_for(_capture(page, "failure"), _LAST_LOOK_S)
+        except Exception:
+            return None
 
     async def _capture_tile(page: Any, grid: Any, label: Any) -> tuple[str | None, str]:
         """A frame for a grid. Returns the grid's path, or ``None`` and
@@ -513,247 +537,303 @@ async def _drive(
             page.on("requestfailed", _track_end)
             await context.route("**/*", route_handler)
 
-            try:
-                opened = await page.goto(
-                    base + spec.start, timeout=spec.load_timeout_ms
-                )
-                # A run opened at its first goto's page owes that goto
-                # the warning a busy page gets, as an ordinary goto
-                # would have attached it.
-                opened_note = await settle(page)
-            except Exception as e:
-                await _collect_csp(page)
-                return _report(False, load_error=str(e))
+            progress: dict[str, Any] = {"loaded": False, "action": None}
 
-            for i, action in enumerate(spec.actions):
+            async def _run() -> DriveReport | None:
+                """Open the page and act on it. Returns the report of a
+                load that failed, else ``None``, with each action's
+                outcome kept as it lands."""
                 try:
-                    value: Any = None
-                    note: str | None = None
-                    if "click" in action:
-                        await page.click(
-                            action["click"], timeout=spec.action_timeout_ms
-                        )
-                        note = await settle(page)
-                    elif "type" in action:
-                        sel, text = action["type"]
-                        try:
-                            await page.fill(sel, text, timeout=spec.action_timeout_ms)
-                        except Exception as e:
-                            # Playwright's own message ("Element is not
-                            # an <input>...") names the problem but not
-                            # the fix, and agents rediscover the
-                            # dispatchEvent('change') workaround instead
-                            # of reaching for the action below.
-                            if "not an <input>" in str(e) or "<select>" in str(e):
-                                raise ValueError(
-                                    f"{sel} is a <select> — use "
-                                    f'{{"select": [{sel!r}, value]}}, not "type"'
-                                ) from e
-                            raise
-                        note = await settle(page)
-                    elif "select" in action:
-                        sel, val = action["select"]
-                        try:
-                            await page.select_option(
-                                sel, val, timeout=spec.action_timeout_ms
+                    opened = await page.goto(
+                        base + spec.start, timeout=spec.load_timeout_ms
+                    )
+                    # A run opened at its first goto's page owes that goto
+                    # the warning a busy page gets, as an ordinary goto
+                    # would have attached it.
+                    opened_note = await settle(page)
+                except Exception as e:
+                    await _collect_csp(page)
+                    return _report(False, load_error=str(e))
+                progress["loaded"] = True
+
+                for i, action in enumerate(spec.actions):
+                    progress["action"] = i
+                    try:
+                        value: Any = None
+                        note: str | None = None
+                        if "click" in action:
+                            await page.click(
+                                action["click"], timeout=spec.action_timeout_ms
                             )
-                        except Exception:
-                            # Agents pass whichever of value/label the
-                            # DOM showed them; falling back to the
-                            # visible label keeps that from becoming
-                            # another guess-and-retry cycle.
+                            note = await settle(page)
+                        elif "type" in action:
+                            sel, text = action["type"]
                             try:
-                                await page.select_option(
-                                    sel, label=val, timeout=spec.action_timeout_ms
+                                await page.fill(
+                                    sel, text, timeout=spec.action_timeout_ms
                                 )
                             except Exception as e:
-                                raise ValueError(
-                                    f"{sel}: no option matching {val!r} by "
-                                    f"value or by visible label ({e})"
-                                ) from e
-                        note = await settle(page)
-                    elif "read" in action:
-                        # Settle first: a fetch that STARTED after the
-                        # previous action's settle returned (debounce,
-                        # setTimeout) would otherwise be read as stale
-                        # DOM — the false-green an agent can't catch.
-                        note = await settle(page)
-                        value = await page.text_content(
-                            action["read"], timeout=spec.action_timeout_ms
-                        )
-                    elif "eval" in action:
-                        # Settle first, for the reason `read` does: an
-                        # expression evaluated against a page still
-                        # fetching reads stale DOM and reports it as
-                        # fact. `eval` is where the questions `read`
-                        # cannot express get asked -- counts,
-                        # attributes, computed styles -- so it needs the
-                        # guarantee more, not less.
-                        note = await settle(page)
-                        pending = page.evaluate(action["eval"])
-                        if spec.eval_timeout_ms is None:
-                            value = await pending
-                        else:
-                            # The deadline bounds the WHOLE await: an
-                            # expression that never settles would
-                            # otherwise hang with no output.
-                            value = await asyncio.wait_for(
-                                pending, spec.eval_timeout_ms / 1000
-                            )
-                    elif "assert" in action:
-                        # Web-first assertion: retry the predicate until
-                        # truthy or timeout. Polled from HERE rather than
-                        # with page.wait_for_function, which installs its
-                        # poller into the page and needs `unsafe-eval` —
-                        # blocked by the policy this harness sends, so
-                        # every retry died and an app that merely settles
-                        # asynchronously failed. page.evaluate goes over
-                        # CDP instead and is not subject to page policy.
-                        passed, why = await _poll_assert(
-                            page, action["assert"], spec.assert_timeout_ms
-                        )
-                        outcomes.append(
-                            ActionOutcome(i, ok=passed, value=passed, error=why)
-                        )
-                        continue
-                    elif "screenshot" in action and action.get("grid") is not None:
-                        # One frame of a grid: every shot sharing the name
-                        # comes back as ONE tiled image, so a run can look
-                        # at a dozen states for the context cost of one.
-                        value, skipped = await _capture_tile(
-                            page, action["grid"], action.get("label")
-                        )
-                        if value is None:
-                            outcomes.append(ActionOutcome(i, ok=True, error=skipped))
-                            continue
-                    elif "screenshot" in action:
-                        shot = await _capture(page, "shot")
-                        if shot is None:
-                            # Soft skip, not a failure: hitting the cap
-                            # must not abort the run — later actions
-                            # (especially asserts) still run and count.
-                            outcomes.append(
-                                ActionOutcome(
-                                    i,
-                                    ok=True,
-                                    error=(
-                                        "skipped: screenshot cap "
-                                        f"({spec.max_screenshots}) reached"
-                                    ),
+                                # Playwright's own message ("Element is not
+                                # an <input>...") names the problem but not
+                                # the fix, and agents rediscover the
+                                # dispatchEvent('change') workaround instead
+                                # of reaching for the action below.
+                                if "not an <input>" in str(e) or "<select>" in str(e):
+                                    raise ValueError(
+                                        f"{sel} is a <select> — use "
+                                        f'{{"select": [{sel!r}, value]}}, not "type"'
+                                    ) from e
+                                raise
+                            note = await settle(page)
+                        elif "select" in action:
+                            sel, val = action["select"]
+                            try:
+                                await page.select_option(
+                                    sel, val, timeout=spec.action_timeout_ms
                                 )
+                            except Exception:
+                                # Agents pass whichever of value/label the
+                                # DOM showed them; falling back to the
+                                # visible label keeps that from becoming
+                                # another guess-and-retry cycle.
+                                try:
+                                    await page.select_option(
+                                        sel, label=val, timeout=spec.action_timeout_ms
+                                    )
+                                except Exception as e:
+                                    raise ValueError(
+                                        f"{sel}: no option matching {val!r} by "
+                                        f"value or by visible label ({e})"
+                                    ) from e
+                            note = await settle(page)
+                        elif "read" in action:
+                            # Settle first: a fetch that STARTED after the
+                            # previous action's settle returned (debounce,
+                            # setTimeout) would otherwise be read as stale
+                            # DOM — the false-green an agent can't catch.
+                            note = await settle(page)
+                            value = await page.text_content(
+                                action["read"], timeout=spec.action_timeout_ms
+                            )
+                        elif "eval" in action:
+                            # Settle first, for the reason `read` does: an
+                            # expression evaluated against a page still
+                            # fetching reads stale DOM and reports it as
+                            # fact. `eval` is where the questions `read`
+                            # cannot express get asked -- counts,
+                            # attributes, computed styles -- so it needs the
+                            # guarantee more, not less.
+                            note = await settle(page)
+                            pending = page.evaluate(action["eval"])
+                            if spec.eval_timeout_ms is None:
+                                value = await pending
+                            else:
+                                # The deadline bounds the WHOLE await: an
+                                # expression that never settles would
+                                # otherwise hang with no output.
+                                value = await asyncio.wait_for(
+                                    pending, spec.eval_timeout_ms / 1000
+                                )
+                        elif "assert" in action:
+                            # Web-first assertion: retry the predicate until
+                            # truthy or timeout. Polled from HERE rather than
+                            # with page.wait_for_function, which installs its
+                            # poller into the page and needs `unsafe-eval` —
+                            # blocked by the policy this harness sends, so
+                            # every retry died and an app that merely settles
+                            # asynchronously failed. page.evaluate goes over
+                            # CDP instead and is not subject to page policy.
+                            passed, why = await _poll_assert(
+                                page, action["assert"], spec.assert_timeout_ms
+                            )
+                            outcomes.append(
+                                ActionOutcome(i, ok=passed, value=passed, error=why)
                             )
                             continue
-                        value = shot
-                    elif (
-                        "goto" in action
-                        and i == 0
-                        and spec.start
-                        and str(action["goto"]).lstrip("/") == spec.start
-                    ):
-                        # The run opened here (DriveSpec.start): this
-                        # goto is done, and going again would load the
-                        # page, and run its scripts, twice. Its status is
-                        # the opening load's, held to what any goto is.
-                        if opened is not None and not opened.ok:
-                            raise ValueError(
-                                f"goto {spec.start!r} -> HTTP {opened.status} "
-                                "(the page was not served; check the filename "
-                                "and that it is under the app root)"
+                        elif "screenshot" in action and action.get("grid") is not None:
+                            # One frame of a grid: every shot sharing the name
+                            # comes back as ONE tiled image, so a run can look
+                            # at a dozen states for the context cost of one.
+                            value, skipped = await _capture_tile(
+                                page, action["grid"], action.get("label")
                             )
-                        value = spec.start
-                        note = opened_note
-                    elif "goto" in action:
-                        # Policy refusals live on `window`, so harvest
-                        # them before the navigation discards the page.
-                        await _collect_csp(page)
-                        target = str(action["goto"]).lstrip("/")
-                        response = await page.goto(
-                            base + target, timeout=spec.load_timeout_ms
+                            if value is None:
+                                outcomes.append(
+                                    ActionOutcome(i, ok=True, error=skipped)
+                                )
+                                continue
+                        elif "screenshot" in action:
+                            shot = await _capture(page, "shot")
+                            if shot is None:
+                                # Soft skip, not a failure: hitting the cap
+                                # must not abort the run — later actions
+                                # (especially asserts) still run and count.
+                                outcomes.append(
+                                    ActionOutcome(
+                                        i,
+                                        ok=True,
+                                        error=(
+                                            "skipped: screenshot cap "
+                                            f"({spec.max_screenshots}) reached"
+                                        ),
+                                    )
+                                )
+                                continue
+                            value = shot
+                        elif (
+                            "goto" in action
+                            and i == 0
+                            and spec.start
+                            and str(action["goto"]).lstrip("/") == spec.start
+                        ):
+                            # The run opened here (DriveSpec.start): this
+                            # goto is done, and going again would load the
+                            # page, and run its scripts, twice. Its status is
+                            # the opening load's, held to what any goto is.
+                            if opened is not None and not opened.ok:
+                                raise ValueError(
+                                    f"goto {spec.start!r} -> HTTP {opened.status} "
+                                    "(the page was not served; check the filename "
+                                    "and that it is under the app root)"
+                                )
+                            value = spec.start
+                            note = opened_note
+                        elif "goto" in action:
+                            # Policy refusals live on `window`, so harvest
+                            # them before the navigation discards the page.
+                            await _collect_csp(page)
+                            target = str(action["goto"]).lstrip("/")
+                            response = await page.goto(
+                                base + target, timeout=spec.load_timeout_ms
+                            )
+                            # goto RESOLVES on 4xx/5xx -- it only raises for
+                            # transport failures -- so without this a
+                            # navigation to a missing page is a passing
+                            # action on a 404 document. `response` is None
+                            # for a same-document navigation, which did not
+                            # fetch anything to be wrong about.
+                            if response is not None and not response.ok:
+                                raise ValueError(
+                                    f"goto {target!r} -> HTTP {response.status} "
+                                    "(the page was not served; check the filename "
+                                    "and that it is under the app root)"
+                                )
+                            note = await settle(page)
+                            value = target
+                        elif "press" in action:
+                            # Real key events, through the browser's own
+                            # keyboard: they go to the focused element and
+                            # bubble to document and window, so a page hears
+                            # them wherever it listens. A KeyboardEvent
+                            # dispatched from eval reaches only the target it
+                            # is dispatched on, and agents kept dispatching
+                            # on document for games listening on window.
+                            keys = action["press"]
+                            keys = [keys] if isinstance(keys, str) else list(keys)
+                            if not keys or not all(
+                                isinstance(k, str) and k for k in keys
+                            ):
+                                raise ValueError(
+                                    'press takes a key or a list of keys, like "ArrowLeft", '
+                                    '" " or ["ArrowUp", "Enter"] (Playwright key names)'
+                                )
+                            hold = int(action.get("hold", 0) or 0)
+                            if hold < 0 or hold > spec.action_timeout_ms:
+                                raise ValueError(
+                                    f"hold is milliseconds, 0 to {spec.action_timeout_ms}"
+                                )
+                            if action.get("on"):
+                                await page.focus(
+                                    action["on"], timeout=spec.action_timeout_ms
+                                )
+                            for key in keys:
+                                if hold:
+                                    await page.keyboard.down(key)
+                                    await page.wait_for_timeout(hold)
+                                    await page.keyboard.up(key)
+                                else:
+                                    await page.keyboard.press(key)
+                            note = await settle(page)
+                            value = " ".join(keys)
+                        elif "wait" in action:
+                            # Bounded as a key's hold is: a pause longer
+                            # than an action may wait for its element is
+                            # a run spending its budget on nothing.
+                            pause = int(action["wait"])
+                            if pause < 0 or pause > spec.action_timeout_ms:
+                                raise ValueError(
+                                    "wait is milliseconds, 0 to "
+                                    f"{spec.action_timeout_ms}"
+                                )
+                            await page.wait_for_timeout(pause)
+                        else:
+                            raise ValueError(f"unknown action: {action!r}")
+                        outcomes.append(
+                            ActionOutcome(i, ok=True, value=value, error=note)
                         )
-                        # goto RESOLVES on 4xx/5xx -- it only raises for
-                        # transport failures -- so without this a
-                        # navigation to a missing page is a passing
-                        # action on a 404 document. `response` is None
-                        # for a same-document navigation, which did not
-                        # fetch anything to be wrong about.
-                        if response is not None and not response.ok:
-                            raise ValueError(
-                                f"goto {target!r} -> HTTP {response.status} "
-                                "(the page was not served; check the filename "
-                                "and that it is under the app root)"
+                    except Exception as e:
+                        # asyncio's timeout carries no message, and only the
+                        # spec's own ceilings raise it here.
+                        timed_out = isinstance(e, (TimeoutError, asyncio.TimeoutError))
+                        detail = (
+                            f"the expression did not settle within {spec.eval_timeout_ms}ms"
+                            if timed_out and spec.eval_timeout_ms is not None
+                            else str(e)
+                        )
+                        selector = next(
+                            (action[k] for k in _SELECTOR_ACTIONS if k in action), None
+                        )
+                        if isinstance(selector, (list, tuple)):
+                            selector = selector[0]
+                        if selector and "waiting for locator" in detail:
+                            detail += await _selectors_present(page)
+                        # The run stops here (later actions depend on this
+                        # one), so this is the last look at the page there
+                        # will be. Without it the agent re-runs the whole
+                        # test just to add a screenshot and see the state.
+                        shot = await _last_look(page)
+                        if shot:
+                            detail += f"\n  page at failure: {shot}"
+                        outcomes.append(
+                            ActionOutcome(
+                                i, ok=False, error=detail, timed_out=timed_out
                             )
-                        note = await settle(page)
-                        value = target
-                    elif "press" in action:
-                        # Real key events, through the browser's own
-                        # keyboard: they go to the focused element and
-                        # bubble to document and window, so a page hears
-                        # them wherever it listens. A KeyboardEvent
-                        # dispatched from eval reaches only the target it
-                        # is dispatched on, and agents kept dispatching
-                        # on document for games listening on window.
-                        keys = action["press"]
-                        keys = [keys] if isinstance(keys, str) else list(keys)
-                        if not keys or not all(isinstance(k, str) and k for k in keys):
-                            raise ValueError(
-                                'press takes a key or a list of keys, like "ArrowLeft", '
-                                '" " or ["ArrowUp", "Enter"] (Playwright key names)'
-                            )
-                        hold = int(action.get("hold", 0) or 0)
-                        if hold < 0 or hold > spec.action_timeout_ms:
-                            raise ValueError(
-                                f"hold is milliseconds, 0 to {spec.action_timeout_ms}"
-                            )
-                        if action.get("on"):
-                            await page.focus(
-                                action["on"], timeout=spec.action_timeout_ms
-                            )
-                        for key in keys:
-                            if hold:
-                                await page.keyboard.down(key)
-                                await page.wait_for_timeout(hold)
-                                await page.keyboard.up(key)
-                            else:
-                                await page.keyboard.press(key)
-                        note = await settle(page)
-                        value = " ".join(keys)
-                    elif "wait" in action:
-                        await page.wait_for_timeout(int(action["wait"]))
-                    else:
-                        raise ValueError(f"unknown action: {action!r}")
-                    outcomes.append(ActionOutcome(i, ok=True, value=value, error=note))
-                except Exception as e:
-                    # asyncio's timeout carries no message, and only the
-                    # spec's own ceilings raise it here.
-                    timed_out = isinstance(e, (TimeoutError, asyncio.TimeoutError))
-                    detail = (
-                        f"the expression did not settle within {spec.eval_timeout_ms}ms"
-                        if timed_out and spec.eval_timeout_ms is not None
-                        else str(e)
-                    )
-                    selector = next(
-                        (action[k] for k in _SELECTOR_ACTIONS if k in action), None
-                    )
-                    if isinstance(selector, (list, tuple)):
-                        selector = selector[0]
-                    if selector and "waiting for locator" in detail:
-                        detail += await _selectors_present(page)
-                    # The run stops here (later actions depend on this
-                    # one), so this is the last look at the page there
-                    # will be. Without it the agent re-runs the whole
-                    # test just to add a screenshot and see the state.
-                    try:
-                        shot = await _capture(page, "failure")
-                    except Exception:
-                        shot = None  # a diagnostic must never replace the error
+                        )
+                        break  # later actions depend on earlier ones
+
+                await _collect_csp(page)
+                return None
+
+            async def _out_of_time() -> DriveReport | None:
+                """What a run that reached ``run_timeout_ms`` reports: a
+                failed load when no action had started, else the action
+                in progress, failed as timed out. An action whose outcome
+                had already landed keeps it."""
+                budget = (
+                    f"the run did not finish within its {spec.run_timeout_ms}ms budget"
+                )
+                if not progress["loaded"]:
+                    return _report(False, load_error=f"{budget} (the page was loading)")
+                i = progress["action"]
+                if i is not None and not any(o.index == i for o in outcomes):
+                    detail = f"{budget}; this action was still running"
+                    shot = await _last_look(page)
                     if shot:
                         detail += f"\n  page at failure: {shot}"
                     outcomes.append(
-                        ActionOutcome(i, ok=False, error=detail, timed_out=timed_out)
+                        ActionOutcome(i, ok=False, error=detail, timed_out=True)
                     )
-                    break  # later actions depend on earlier ones
+                return None
 
-            await _collect_csp(page)
+            try:
+                if spec.run_timeout_ms is None:
+                    failed = await _run()
+                else:
+                    failed = await asyncio.wait_for(_run(), spec.run_timeout_ms / 1000)
+            except asyncio.TimeoutError:
+                failed = await _out_of_time()
+            if failed is not None:
+                return failed
         finally:
             await context.close()
         # After a failure too: the frames taken before it are what the

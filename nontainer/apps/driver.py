@@ -132,8 +132,15 @@ class DriveSpec:
     takes that first ``goto`` as done; one that ignores it loads the
     index and then goes, as before.
 
-    Declared last, so a caller constructing the spec by position keeps
-    its fields where they were."""
+    Declared after the fields above, so a caller constructing the spec
+    by position keeps its fields where they were."""
+
+    run_timeout_ms: int | None = None
+    """Ceiling on the whole run, from opening the first page to the last
+    action. A driver that reaches it stops, fails the action in progress
+    as ``timed_out`` (or the load, when no action had started) and
+    reports what it has. ``None`` leaves the run unbounded. Declared
+    after ``start`` for the same reason ``start`` is declared late."""
 
 
 @dataclass(frozen=True)

@@ -1147,6 +1147,8 @@ class AppRuntime:
         load_timeout_ms: int = 10_000,
         action_timeout_ms: int = 5_000,
         assert_timeout_ms: int = 2_000,
+        eval_timeout_ms: int = 10_000,
+        run_timeout_ms: int = 60_000,
         settle_cap: float = 5.0,
     ) -> "TestAppResult":
         """Headless verification via Playwright (see testapp.py).
@@ -1160,6 +1162,12 @@ class AppRuntime:
         runtime the worker builds over the same state (see "Verifying in
         a worker" in docs/apps.md). The result encodes with
         :meth:`TestAppResult.to_dict`.
+
+        Every wait is bounded. An ``eval`` that has not settled within
+        ``eval_timeout_ms`` fails, a ``wait`` longer than
+        ``action_timeout_ms`` is refused, and a run still going at
+        ``run_timeout_ms`` stops, fails the action in progress and
+        returns what it has.
 
         ``bind={"db": "testdb"}`` runs the page's requests against a
         different host object than the session binds under that name,
@@ -1176,6 +1184,8 @@ class AppRuntime:
             load_timeout_ms=load_timeout_ms,
             action_timeout_ms=action_timeout_ms,
             assert_timeout_ms=assert_timeout_ms,
+            eval_timeout_ms=eval_timeout_ms,
+            run_timeout_ms=run_timeout_ms,
             settle_cap=settle_cap,
         )
 

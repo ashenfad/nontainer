@@ -917,10 +917,20 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   a 300ms quiet gap, capped (`settle_cap`, default 5s). A settle that
   exits via the cap attaches a stale-risk note to that action's result
   instead of silently passing — false-green is the failure an agent
-  can't catch. Slow apps use `{"wait": ms}`. Prefer `assert` over
+  can't catch. Slow apps use `{"wait": ms}`, up to `action_timeout_ms`
+  (5s). Prefer `assert` over
   `read`-and-check when a condition is known — it's the robust form
   (no heuristic can wait for a fetch that hasn't *started* yet; retry
   semantics can).
+- Every wait is bounded, so no action can hold a run, and the tool
+  call waiting on it, open. An `eval` whose expression has not settled
+  within `eval_timeout_ms` (10s) fails as timed out, and a run still
+  going at `run_timeout_ms` (60s) stops: the action in progress fails
+  with the budget named, the actions before it keep their results, and
+  the report comes back as any failed run's does. A page whose script
+  never yields answers neither a screenshot nor an evaluate, so the
+  failure screenshot and the policy-refusal harvest each get two
+  seconds, and closing the run's context ends the page either way.
 - `select` is separate from `type` because they are separate
   Playwright calls: `fill()` raises on a `<select>`. It matches the
   option by value, then by visible label — agents pass whichever the
@@ -1046,7 +1056,7 @@ worker process that verifies a pinned state and answers with data. The
 callable. Send the request instead: `test_app`'s own arguments, which
 are all plain data (`actions`, `viewport`, `bind`, `max_screenshots`,
 `load_timeout_ms`, `action_timeout_ms`, `assert_timeout_ms`,
-`settle_cap`). The worker rebuilds everything that isn't data from its
+`eval_timeout_ms`, `run_timeout_ms`, `settle_cap`). The worker rebuilds everything that isn't data from its
 own trusted configuration, so no workspace object, client or browser
 crosses.
 
