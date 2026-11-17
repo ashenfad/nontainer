@@ -173,7 +173,7 @@ async def test_mcp_run_python_reports_ui_artifacts(ws):
     result = await server.call_tool(
         "run_python", {"code": "ui = {'kpis': [{'label': 'n', 'value': 3}]}"}
     )
-    blocks = result[0] if isinstance(result, tuple) else result
+    blocks = result.content
     text = "".join(getattr(b, "text", "") for b in blocks)
     assert "[ui artifacts: kpis -> /workspace/ui/kpis.cards.json]" in text
 

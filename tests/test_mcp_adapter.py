@@ -22,7 +22,7 @@ async def test_mcp_server_tools_and_call():
     assert tools == {"terminal", "run_python", "file_write", "file_edit", "view_image"}
 
     result = await server.call_tool("terminal", {"command": "echo mcp-works"})
-    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+    text = result.content[0].text
     assert "mcp-works" in text
     ws.close()
 
@@ -69,7 +69,7 @@ async def test_mcp_apps_exposure():
     result = await server.call_tool(
         "terminal", {"command": "ws-curl $APP_ORIGIN/api/ping"}
     )
-    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+    text = result.content[0].text
     assert "pong" in text
     ws.close()
 
@@ -102,7 +102,7 @@ async def test_mcp_view_image():
     ws.files.fs.write("/plot.png", PNG)
     server = build_server(ws)
     result = await server.call_tool("view_image", {"path": "/plot.png"})
-    blocks = result[0] if isinstance(result, tuple) else result
+    blocks = result.content
     kinds = {b.type for b in blocks}
     assert "image" in kinds
     img = next(b for b in blocks if b.type == "image")
@@ -115,11 +115,71 @@ async def test_mcp_view_image_errors_are_actionable():
     ws = make_ws()
     server = build_server(ws)
     result = await server.call_tool("view_image", {"path": "/nope.png"})
-    blocks = result[0] if isinstance(result, tuple) else result
+    blocks = result.content
     assert "cannot read" in blocks[0].text
     result = await server.call_tool("view_image", {"path": "/data.csv"})
-    blocks = result[0] if isinstance(result, tuple) else result
+    blocks = result.content
     assert "not a viewable image" in blocks[0].text
+    ws.close()
+
+
+# -- a failed call is an error result -----------------------------------------
+
+
+async def _over_the_wire(server, name, args):
+    """A tool call as an MCP client receives it: through a client
+    session, not FastMCP's in-process call."""
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    async with create_connected_server_and_client_session(server._mcp_server) as client:
+        return await client.call_tool(name, args)
+
+
+@pytest.mark.asyncio
+async def test_a_call_that_did_not_come_out_as_asked_is_an_error_result():
+    """A non-zero exit or a failed edit came back with ``isError`` false,
+    so a client counted every call a success."""
+    ws = make_ws()
+    server = build_server(ws)
+    failed = await _over_the_wire(server, "terminal", {"command": "cat /missing.txt"})
+    ok = await _over_the_wire(server, "terminal", {"command": "echo fine"})
+    edit = await _over_the_wire(
+        server, "file_edit", {"path": "/nope.txt", "old_string": "a", "new_string": "b"}
+    )
+    image = await _over_the_wire(server, "view_image", {"path": "/nope.png"})
+    assert [r.isError for r in (failed, ok, edit, image)] == [True, False, True, True]
+    assert "fine" in ok.content[0].text
+    # a text tool keeps the output schema it advertised, failed or not
+    assert failed.structuredContent == {"result": failed.content[0].text}
+    schema = {t.name: t.outputSchema for t in await server.list_tools()}["terminal"]
+    assert schema["properties"] == {"result": {"title": "Result", "type": "string"}}
+    ws.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_test_app_run_keeps_its_screenshots(monkeypatch):
+    """The screenshot of a failed run is what shows why it failed."""
+    from nontainer.apps import enable_apps
+    from nontainer.apps.testapp import TestAppResult
+
+    ws = make_ws()
+    ws.files.fs.write("/shot.png", PNG)
+    apps = enable_apps(ws)
+    server = build_server(ws, apps=apps)
+    for passed in (False, True):
+        monkeypatch.setattr(
+            apps,
+            "test_app",
+            lambda actions, passed=passed, **kwargs: TestAppResult(
+                ok=passed, screenshots=("/shot.png",)
+            ),
+        )
+        result = await _over_the_wire(
+            server, "test_app", {"actions": [{"screenshot": True}]}
+        )
+        assert result.isError is not passed
+        assert [b.type for b in result.content] == ["text", "image"]
+        assert result.content[1].mimeType == "image/png"
     ws.close()
 
 
@@ -193,7 +253,7 @@ async def test_mcp_file_write_returns_resource_link():
     result = await server.call_tool(
         "file_write", {"path": "/out/report.md", "content": "# done\n"}
     )
-    blocks = result[0] if isinstance(result, tuple) else result
+    blocks = result.content
     link = next(b for b in blocks if b.type == "resource_link")
     assert str(link.uri) == "workspace://out/report.md"
     assert link.name == "report.md"
@@ -250,7 +310,7 @@ async def test_mcp_sessions_tool_round_trips_a_delegate(tmp_path):
 
         async def call(**args) -> str:
             out = await server.call_tool("sessions", args)
-            blocks = out[0] if isinstance(out, tuple) else out
+            blocks = out.content
             return blocks[0].text
 
         text = await call(action="ask", task="polish the report", wait=True)
@@ -303,7 +363,7 @@ async def test_mcp_sessions_tool_asks_from_a_fork_point_and_resumes(tmp_path):
 
         async def call(**args) -> str:
             out = await server.call_tool("sessions", args)
-            blocks = out[0] if isinstance(out, tuple) else out
+            blocks = out.content
             return blocks[0].text
 
         text = await call(
@@ -354,7 +414,7 @@ async def test_a_slow_tool_leaves_the_event_loop_free():
         )
     finally:
         beat.cancel()
-    text = result[0][0].text if isinstance(result, tuple) else result[0].text
+    text = result.content[0].text
     assert "slept" in text
     assert ticks >= 10  # the loop ran throughout, not once at the end
     ws.close()
