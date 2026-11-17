@@ -5,17 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 0.13.0 - 2026-11-17
 
 ### Added
-- **An agent's `test_app` call stops on `ws.runtime.interrupt()`** (#318). `Runtime.interrupts` counts the calls, and the toolset's run stops once the count moves after the call began.
 - **`test_app(cancelled=)` stops a run** (#318). The MCP adapter stops one when the client cancels the request, and the agno adapter when its run is cancelled (`run_cancelled`).
-- **`nontainer.adapters.agno.refuse(ws, reason, message, retry_after=)` turns a tool call away before it runs** (#319). Called from an agno tool hook, it fails the call in agno's record under its own id with text saying the call did not run, and `tool_outcome` and `tool_refusal` tell a refusal from a failure.
+- **An agent's `test_app` call stops on `ws.runtime.interrupt()`** (#318). `Runtime.interrupts` counts the calls, and the toolset's run stops once the count moves after the call began.
+- **`nontainer.adapters.agno.refuse(ws, reason, message, retry_after=)` turns a tool call away before it runs** (#319). agno flags the call failed under its own id, and `tool_outcome` and `tool_refusal` tell a refusal from a failure.
+
+### Changed
+- **Breaking: every `test_app` wait is bounded** (#318). A `wait` above `action_timeout_ms` (5s) is refused, an `eval` fails after `eval_timeout_ms` (10s), and a run stops at `run_timeout_ms` (60s).
+- **Breaking: the MCP tools return a `CallToolResult`, with `isError` set on a failed call** (#319). A failed `test_app` keeps its screenshots; an in-process `server.call_tool` reads `.content`.
+- **Requires `mcp>=1.19` for the `[mcp]` extra,** the first FastMCP that passes a tool's own `CallToolResult` through.
+- **`DriveSpec` gains `run_timeout_ms`, `cancelled`, `drain_timeout_ms` and `run_over`,** declared after `start`; `test_app`'s `serve` declines (503) once the run is over.
 
 ### Fixed
 - **A `test_app` run returns once its page's requests are answered** (#318), and declines those that haven't reached a handler, so no handler write lands after the result.
-- **Every `test_app` wait is bounded** (#318). An `eval` fails after `eval_timeout_ms` (10s), a `wait` above `action_timeout_ms` is refused, and a run stops at `run_timeout_ms` (60s) with the action in progress failed.
-- **An MCP tool call that did not come out as asked is an error result (`isError`).** A non-zero exit, a failed edit or a failed `test_app` came back as a success at the protocol level; a failed call keeps its images, and the `[mcp]` extra now requires mcp 1.19.
 
 ## 0.12.0 - 2026-11-11
 
