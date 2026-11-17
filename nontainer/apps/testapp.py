@@ -41,7 +41,7 @@ import asyncio
 import json
 import posixpath
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -625,6 +625,11 @@ def _serve(
     return serve
 
 
+#: How much longer than a handler's own per-request limit a run that has
+#: ended waits for the requests its page left behind.
+_DRAIN_MARGIN_MS = 5_000
+
+
 def build_spec(
     runtime: "AppRuntime",
     actions: list[dict[str, Any]] | None,
@@ -639,13 +644,18 @@ def build_spec(
     settle_cap: float = 5.0,
     bind: tuple[tuple[str, str], ...] = (),
     failed: "list[str] | None" = None,
+    cancelled: "Callable[[], bool] | None" = None,
 ) -> DriveSpec:
     """Everything one run has been decided to be, before a browser is
     involved.
 
     Every wait is bounded: an action waits ``action_timeout_ms`` for its
     element, an ``eval`` gets ``eval_timeout_ms`` to settle, and the run
-    as a whole stops at ``run_timeout_ms`` and reports what it has."""
+    as a whole stops at ``run_timeout_ms`` and reports what it has.
+    ``cancelled`` stops it the same way when it answers true. A run that
+    has ended waits for the requests its page left with the handlers,
+    for up to the handlers' own time limit plus a margin, so what they
+    write lands before the result does."""
     vp = coerce_viewport(viewport)
     # One declaration (AppsConfig.script_hosts) drives interception AND
     # the served CSP: what verifies headlessly matches what serves.
@@ -683,6 +693,8 @@ def build_spec(
         assert_timeout_ms=assert_timeout_ms,
         eval_timeout_ms=eval_timeout_ms,
         run_timeout_ms=run_timeout_ms,
+        cancelled=cancelled,
+        drain_timeout_ms=int(runtime.config.request_timeout * 1000) + _DRAIN_MARGIN_MS,
         settle_cap_ms=int(settle_cap * 1000),
         max_screenshots=max_screenshots,
         screenshot_dir=runtime._screenshot_dir,

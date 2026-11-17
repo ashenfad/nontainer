@@ -1131,3 +1131,26 @@ def test_a_restarted_run_is_warned_about_once(caplog):
         agent.run("again")  # a first attempt: nothing to say
         assert not [r for r in caplog.records if "restarted run" in r.getMessage()]
     ws.close()
+
+
+def test_run_cancelled_asks_agnos_run_registry():
+    """A long tool learns its run was cancelled from agno's own run
+    registry, by the run id on the call it was handed."""
+    from types import SimpleNamespace
+
+    cancel = pytest.importorskip("agno.run.cancel")
+    from nontainer.adapters.agno import run_cancelled
+
+    fc = SimpleNamespace(
+        function=SimpleNamespace(_run_context=SimpleNamespace(run_id="r-cancel"))
+    )
+    cancel.register_run("r-cancel")
+    try:
+        check = run_cancelled(fc)
+        assert check is not None and not check()
+        cancel.cancel_run("r-cancel")
+        assert check()
+    finally:
+        cancel.cleanup_run("r-cancel")
+    assert run_cancelled(None) is None
+    assert run_cancelled(SimpleNamespace(function=SimpleNamespace())) is None

@@ -142,6 +142,21 @@ class DriveSpec:
     reports what it has. ``None`` leaves the run unbounded. Declared
     after ``start`` for the same reason ``start`` is declared late."""
 
+    cancelled: Callable[[], bool] | None = None
+    """Asked every so often, from a thread of the driver's, while the
+    run goes. Once it answers true, the driver stops as it does at
+    ``run_timeout_ms``, failing the action in progress as cancelled, and
+    still finishes its cleanup before it returns. ``None`` is a run
+    nothing cancels."""
+
+    drain_timeout_ms: int = 10_000
+    """How long a run that has ended waits for the requests ``serve`` is
+    still answering. ``serve`` is synchronous, so a request the page
+    sent before the run ended goes on in its thread. A driver returns
+    once those finish, so nothing a handler writes lands after the
+    report, and stops waiting at this bound. Set it above the handler's
+    own per-request limit."""
+
 
 @dataclass(frozen=True)
 class ActionOutcome:

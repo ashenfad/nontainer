@@ -351,16 +351,23 @@ class Toolset:
         actions: Any,
         viewport: Any = "desktop",
         bind: Any = None,
+        *,
+        cancelled: Callable[[], bool] | None = None,
     ) -> ToolOutput:
         """Verify the app headlessly.
 
         ``actions``, ``viewport`` and ``bind`` may each arrive as JSON
-        strings; they are coerced before anything runs."""
+        strings; they are coerced before anything runs. ``cancelled`` is
+        the harness's, never the model's: asked while the run goes, a
+        true answer stops it, and the call returns once the run's page
+        is closed and its requests are answered."""
         from ..apps import render_test_app
         from ..apps.testapp import coerce_actions, coerce_bind, coerce_viewport
 
         if self.apps is None:
             raise RuntimeError("test_app needs an AppRuntime (Toolset(apps=...))")
+        if cancelled is not None and not callable(cancelled):
+            raise TypeError("cancelled must be a callable answering whether to stop")
         try:
             actions = coerce_actions(actions)
             viewport = coerce_viewport(viewport)
@@ -369,7 +376,9 @@ class Toolset:
             return ToolOutput(f"test_app failed: {e}", is_error=True)
         with self.lock:
             try:
-                result = self.apps.test_app(actions, viewport=viewport, bind=binding)
+                result = self.apps.test_app(
+                    actions, viewport=viewport, bind=binding, cancelled=cancelled
+                )
             except ValueError as e:
                 return ToolOutput(f"test_app failed: {e}", is_error=True)
             shots = (

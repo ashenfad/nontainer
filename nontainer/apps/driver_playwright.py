@@ -25,9 +25,12 @@ screenshot is written — belongs to the caller, and none of it is here.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+import threading
 import time
 from concurrent.futures import Future
+from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -42,6 +45,22 @@ _ASSERT_POLL_MS = 50
 #: while closing its context still works at once, so a diagnostic is
 #: bounded and a run never waits on one longer than this.
 _LAST_LOOK_S = 2.0
+
+_logger = logging.getLogger(__name__)
+
+#: How often a run asks ``DriveSpec.cancelled`` whether to stop.
+_CANCEL_POLL_S = 0.1
+
+
+def _asks(cancelled: Any) -> bool:
+    """One answer from a caller's ``cancelled``. A check that fails is
+    no cancel: it must never be what ends a run."""
+    try:
+        return bool(cancelled())
+    except Exception:
+        _logger.warning("test_app: a cancel check raised", exc_info=True)
+        return False
+
 
 #: Collects the browser's own policy refusals, which arrive as events
 #: rather than as failed requests: a refused script does not throw, so
@@ -178,11 +197,27 @@ class PlaywrightDriver:
             return DriveReport(load_error=f"Playwright/Chromium unavailable: {e}")
 
     async def arun(self, spec: DriveSpec) -> DriveReport:
-        """Async entry for event-loop hosts (MCP): awaits the
-        browser-loop Future without burning a waiting thread."""
+        """Async entry for event-loop hosts: awaits the browser-loop
+        Future without burning a waiting thread.
+
+        Cancelling the awaiting task stops the run rather than leaving
+        it running: the run is told to stop, as ``spec.cancelled`` would
+        tell it, and the cancellation propagates once the run has closed
+        its page and its requests have finished."""
         require_playwright()
+        stop = threading.Event()
+        asked = spec.cancelled
+        spec = replace(
+            spec, cancelled=lambda: stop.is_set() or (asked is not None and asked())
+        )
         try:
-            return await asyncio.wrap_future(self._submit(spec))
+            pending = asyncio.wrap_future(self._submit(spec))
+            try:
+                return await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                stop.set()
+                await asyncio.wait({pending})
+                raise
         except Exception as e:
             return DriveReport(load_error=f"Playwright/Chromium unavailable: {e}")
 
@@ -272,6 +307,8 @@ async def _drive(
     outcomes: list[ActionOutcome] = []
     screenshots: dict[str, bytes] = {}
     refusals: dict[Refusal, None] = {}  # ordered de-dupe
+    # Requests handed to ``serve`` and not yet answered (see _drain).
+    serving: set[asyncio.Future] = set()
     shot_counter = 0
     # Frames bound for a grid, by grid name, and the path each grid's
     # tiled image will be written to. A grid takes its screenshot slot
@@ -337,8 +374,11 @@ async def _drive(
             rel = parts.path[len(prefix) :] or "/"
             url = rel + (f"?{parts.query}" if parts.query else "")
             # sync + CPU-bound: run off the browser loop, where it can
-            # serialize with the rest of the host's work
-            wire = await loop.run_in_executor(
+            # serialize with the rest of the host's work. Shielded, because
+            # a thread cannot be stopped: a request handed to serve runs to
+            # its end whatever becomes of the page, and the run waits for
+            # it before reporting (_drain).
+            answer = loop.run_in_executor(
                 None,
                 spec.serve,
                 request.method,
@@ -346,6 +386,9 @@ async def _drive(
                 request.post_data_buffer or b"",
                 request.headers,
             )
+            serving.add(answer)
+            answer.add_done_callback(serving.discard)
+            wire = await asyncio.shield(answer)
             await route.fulfill(
                 status=wire.status,
                 body=wire.content,
@@ -456,6 +499,24 @@ async def _drive(
             return await asyncio.wait_for(_capture(page, "failure"), _LAST_LOOK_S)
         except Exception:
             return None
+
+    async def _drain() -> None:
+        """Wait for the requests ``serve`` is still answering, up to
+        ``spec.drain_timeout_ms``. A handler goes on in its thread after
+        the page that called it is gone, and what it writes must land
+        before the report rather than after it."""
+        if not serving:
+            return
+        _, pending = await asyncio.wait(
+            set(serving), timeout=spec.drain_timeout_ms / 1000
+        )
+        if pending:
+            _logger.warning(
+                "test_app: %d request(s) to the app still running %dms after "
+                "the run ended; what they write lands after its report",
+                len(pending),
+                spec.drain_timeout_ms,
+            )
 
     async def _capture_tile(page: Any, grid: Any, label: Any) -> tuple[str | None, str]:
         """A frame for a grid. Returns the grid's path, or ``None`` and
@@ -804,38 +865,76 @@ async def _drive(
                 await _collect_csp(page)
                 return None
 
-            async def _out_of_time() -> DriveReport | None:
-                """What a run that reached ``run_timeout_ms`` reports: a
-                failed load when no action had started, else the action
-                in progress, failed as timed out. An action whose outcome
-                had already landed keeps it."""
-                budget = (
-                    f"the run did not finish within its {spec.run_timeout_ms}ms budget"
-                )
+            async def _stopped(why: str, *, timed_out: bool) -> DriveReport | None:
+                """What a run stopped short reports, by its budget or by a
+                cancel: a failed load when no action had started, else the
+                action in progress, failed with ``why``. An action whose
+                outcome had already landed keeps it."""
                 if not progress["loaded"]:
-                    return _report(False, load_error=f"{budget} (the page was loading)")
+                    return _report(False, load_error=f"{why} (the page was loading)")
                 i = progress["action"]
                 if i is not None and not any(o.index == i for o in outcomes):
-                    detail = f"{budget}; this action was still running"
-                    shot = await _last_look(page)
+                    detail = f"{why}; this action was still running"
+                    # A cancelled run's caller is leaving: it gets the
+                    # page closed, not a picture of it.
+                    shot = await _last_look(page) if timed_out else None
                     if shot:
                         detail += f"\n  page at failure: {shot}"
                     outcomes.append(
-                        ActionOutcome(i, ok=False, error=detail, timed_out=True)
+                        ActionOutcome(i, ok=False, error=detail, timed_out=timed_out)
                     )
                 return None
 
+            run = asyncio.ensure_future(_run())
+            stopped_by: list[str] = []
+
+            async def _watch(cancelled: Any) -> None:
+                # Asked off the loop: the check is the caller's (a flag, a
+                # framework's run registry, maybe a remote one), and this
+                # loop drives every run on the shared browser.
+                while not run.done():
+                    if await loop.run_in_executor(None, _asks, cancelled):
+                        stopped_by.append("cancel")
+                        run.cancel()
+                        return
+                    await asyncio.sleep(_CANCEL_POLL_S)
+
+            watch = (
+                asyncio.ensure_future(_watch(spec.cancelled))
+                if spec.cancelled is not None
+                else None
+            )
+            budget = None if spec.run_timeout_ms is None else spec.run_timeout_ms / 1000
             try:
-                if spec.run_timeout_ms is None:
-                    failed = await _run()
-                else:
-                    failed = await asyncio.wait_for(_run(), spec.run_timeout_ms / 1000)
-            except asyncio.TimeoutError:
-                failed = await _out_of_time()
+                await asyncio.wait({run}, timeout=budget)
+            except asyncio.CancelledError:
+                # Cancelled from outside: the run stops with it, and the
+                # cleanup below still runs before the cancellation leaves.
+                run.cancel()
+                await asyncio.wait({run})
+                raise
+            finally:
+                if watch is not None:
+                    watch.cancel()
+            if not run.done():
+                run.cancel()
+                await asyncio.wait({run})
+            if not run.cancelled():
+                failed = run.result()
+            elif stopped_by:
+                failed = await _stopped("the run was cancelled", timed_out=False)
+            else:
+                failed = await _stopped(
+                    f"the run did not finish within its {spec.run_timeout_ms}ms budget",
+                    timed_out=True,
+                )
             if failed is not None:
                 return failed
         finally:
-            await context.close()
+            try:
+                await context.close()
+            finally:
+                await _drain()
         # After a failure too: the frames taken before it are what the
         # agent will want to look at. The app's context is closed first,
         # so tiling takes this run's slot of the semaphore rather than a

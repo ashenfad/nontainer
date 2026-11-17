@@ -1150,6 +1150,7 @@ class AppRuntime:
         eval_timeout_ms: int = 10_000,
         run_timeout_ms: int = 60_000,
         settle_cap: float = 5.0,
+        cancelled: "Callable[[], bool] | None" = None,
     ) -> "TestAppResult":
         """Headless verification via Playwright (see testapp.py).
         Requires the [apps] extra + `playwright install chromium`.
@@ -1167,7 +1168,13 @@ class AppRuntime:
         ``eval_timeout_ms`` fails, a ``wait`` longer than
         ``action_timeout_ms`` is refused, and a run still going at
         ``run_timeout_ms`` stops, fails the action in progress and
-        returns what it has.
+        returns what it has. A run returns only after the requests its
+        page sent have been answered, so nothing a handler writes lands
+        after the result.
+
+        ``cancelled`` is the caller's, not part of the request: asked
+        while the run goes, a true answer stops the run as its budget
+        would, with the action in progress failed as cancelled.
 
         ``bind={"db": "testdb"}`` runs the page's requests against a
         different host object than the session binds under that name,
@@ -1187,6 +1194,7 @@ class AppRuntime:
             eval_timeout_ms=eval_timeout_ms,
             run_timeout_ms=run_timeout_ms,
             settle_cap=settle_cap,
+            cancelled=cancelled,
         )
 
     def save_screenshots(self, shots: "Mapping[str, bytes]") -> tuple[str, ...]:

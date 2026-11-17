@@ -47,6 +47,7 @@ dedicated ``run_python`` tool whose description announces the magic.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from agno.media import Image
@@ -272,6 +273,28 @@ def status_of_error(error_type: str | None) -> RunStatus:
     can resume from in place (``acontinue_run``), and ``"failed"`` for
     anything else."""
     return "interrupted" if error_type in PROVIDER_ERRORS else "failed"
+
+
+def run_cancelled(fc: Any) -> Callable[[], bool] | None:
+    """A check, repeatable while a call runs, of whether the agno run
+    that made the call has been cancelled (``Agent.cancel_run``).
+    ``None`` when there is no telling: no ``FunctionCall`` with a run in
+    hand, or an agno without run cancellation. agno stops a cancelled
+    run between steps and never interrupts a tool, so a long tool asks
+    this to stop sooner."""
+    run_context = getattr(getattr(fc, "function", None), "_run_context", None)
+    run_id = getattr(run_context, "run_id", None)
+    if run_id is None:
+        return None
+    try:
+        from agno.run.cancel import is_cancelled
+    except ImportError:
+        return None
+
+    def cancelled() -> bool:
+        return bool(is_cancelled(run_id))
+
+    return cancelled
 
 
 def tool_failed(workspace: Any, tool: Any) -> bool:
@@ -757,7 +780,9 @@ class WorkspaceTools(Toolkit):
                 fc: FunctionCall = None,  # type: ignore[assignment]
             ) -> ToolResult:
                 """Verify the app headlessly."""
-                out = toolset.test_app(actions, viewport, bind)
+                out = toolset.test_app(
+                    actions, viewport, bind, cancelled=run_cancelled(fc)
+                )
                 return _tool_result(noted(fc, out))
 
             test_app.__doc__ = toolset.description("test_app")

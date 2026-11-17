@@ -1554,3 +1554,98 @@ def test_a_page_stuck_in_its_own_script_still_ends_the_run(quiet_rt):
     assert not result.ok
     assert f"did not settle within {MISS_MS}ms" in result.results[0].error
     assert quiet_rt.test_app([{"read": "#x"}]).ok
+
+
+def test_a_cancelled_run_stops_and_fails_the_action_in_progress(quiet_rt):
+    import threading
+    import time
+
+    flag = threading.Event()
+    threading.Timer(1.0, flag.set).start()
+    started = time.monotonic()
+    result = quiet_rt.test_app(
+        [{"read": "#x"}, {"eval": "new Promise(r => setTimeout(r, 30000))"}],
+        eval_timeout_ms=30_000,
+        cancelled=flag.is_set,
+    )
+    assert time.monotonic() - started < 10
+    assert [r.ok for r in result.results] == [True, False]
+    assert "the run was cancelled" in result.results[1].error
+
+
+SLOW_PAGE = b"""<!doctype html><html><body><p id="x">hi</p>
+<script>fetch('api/slow', {method: 'POST'});</script>
+</body></html>"""
+
+
+def _slow_spec(actions, **fields):
+    """A spec straight to the driver, with no workspace and so no lock:
+    its page leaves a request that takes 1.5s with ``serve``, and
+    ``served`` is set once that request has been answered."""
+    import threading
+    import time
+
+    from nontainer.apps.contract import WireResponse
+    from nontainer.apps.driver import DriveSpec
+
+    served = threading.Event()
+
+    def serve(method, url, body, headers):
+        if url.startswith("/api/slow"):
+            time.sleep(1.5)
+            served.set()
+            return WireResponse(200, b"{}", "application/json")
+        return WireResponse(200, SLOW_PAGE, "text/html")
+
+    spec = DriveSpec(
+        serve,
+        "https://t.test/apps/t-test/",
+        tuple(actions),
+        settle_cap_ms=100,
+        **fields,
+    )
+    return spec, served
+
+
+def test_a_run_returns_after_the_requests_its_page_left(chromium_available):
+    """The run is over before the request its page sent is; the report
+    waits for it, so nothing that request does lands after the report."""
+    from nontainer.apps.driver_playwright import PlaywrightDriver
+
+    spec, served = _slow_spec([{"read": "#x"}])
+    report = PlaywrightDriver().run(spec)
+    assert [a.ok for a in report.actions] == [True]
+    assert served.is_set()
+
+
+def test_cancelling_an_async_run_waits_for_its_cleanup(chromium_available):
+    """A cancelled await stops the run, and the cancellation arrives only
+    once the run's page is closed and its request has been answered."""
+    import asyncio
+    import time
+
+    from nontainer.apps.browser import submit_job
+    from nontainer.apps.driver_playwright import PlaywrightDriver
+
+    spec, served = _slow_spec([{"eval": "new Promise(r => setTimeout(r, 30000))"}])
+    seen: dict[str, object] = {}
+
+    async def go() -> None:
+        run = asyncio.ensure_future(PlaywrightDriver().arun(spec))
+        await asyncio.sleep(0.5)
+        started = time.monotonic()
+        run.cancel()
+        try:
+            await run
+        except asyncio.CancelledError:
+            seen["served"] = served.is_set()
+            seen["took"] = time.monotonic() - started
+
+    asyncio.run(go())
+    assert seen["served"] is True
+    assert seen["took"] < 10
+
+    async def open_contexts(browser, _sema):
+        return len(browser.contexts)
+
+    assert submit_job(open_contexts).result(timeout=10) == 0

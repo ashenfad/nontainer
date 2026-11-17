@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **`test_app(cancelled=)` stops a run** (#318). The MCP adapter stops one when the client cancels the request, and the agno adapter when its run is cancelled (`run_cancelled`).
+
 ### Fixed
+- **A `test_app` run returns once its page's requests are answered** (#318), so no handler write lands after the result; a cancelled run waits for the same cleanup.
 - **Every `test_app` wait is bounded** (#318). An `eval` fails after `eval_timeout_ms` (10s), a `wait` above `action_timeout_ms` is refused, and a run stops at `run_timeout_ms` (60s) with the action in progress failed.
 
 ## 0.12.0 - 2026-11-11
