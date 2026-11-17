@@ -1837,3 +1837,29 @@ def test_cancel_checks_are_asked_on_threads_of_their_own(chromium_available):
     PlaywrightDriver().run(spec)
     assert asked_on
     assert all(name.startswith("nontainer-cancel-check") for name in asked_on)
+
+
+def test_an_interrupt_stops_the_agents_test_app_run(chromium_available):
+    """A host stops the turn with ``ws.runtime.interrupt()``. The agent's
+    test_app holds no workspace lock and runs no sandboxed code, and its
+    browser run stops all the same."""
+    import threading
+    import time
+
+    from nontainer.adapters.tools import Toolset
+
+    ws = Workspace(KvgitProvider.open(None, session="s-interrupt"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", QUIET_PAGE)
+    ws.commit()
+    toolset = Toolset(ws, apps=rt, vision=False)
+    try:
+        threading.Timer(1.0, ws.runtime.interrupt).start()
+        started = time.monotonic()
+        out = toolset.test_app([{"eval": "new Promise(r => setTimeout(r, 8000))"}])
+        assert time.monotonic() - started < 5
+        assert out.is_error
+        assert "the run was cancelled" in out.text
+    finally:
+        ws.close()

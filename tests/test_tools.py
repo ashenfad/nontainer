@@ -204,6 +204,35 @@ def test_test_app_hands_its_cancel_check_only_to_an_apps_that_takes_it(ws, monke
     assert seen == ["plain", True]
 
 
+def test_an_interrupt_after_a_test_app_call_began_stops_its_run(ws, monkeypatch):
+    """A host stops a turn with ``ws.runtime.interrupt()``. A browser run
+    is no sandboxed code, so the call's cancel check watches the count
+    of interrupts from where the call began."""
+    from nontainer.apps import enable_apps
+    from nontainer.apps.testapp import TestAppResult
+
+    apps = enable_apps(ws)
+    toolset = Toolset(ws, apps=apps)
+    ws.runtime.interrupt()  # before the call: not its stop
+    seen = []
+
+    def stoppable(actions, viewport="desktop", bind=None, cancelled=None):
+        seen.append(cancelled())
+        ws.runtime.interrupt()
+        seen.append(cancelled())
+        return TestAppResult(ok=True)
+
+    monkeypatch.setattr(apps, "test_app", stoppable)
+    before = ws.runtime.interrupts
+    toolset.test_app([{"wait": 1}])
+    assert seen == [False, True]
+    assert ws.runtime.interrupts == before + 1
+
+    seen.clear()
+    toolset.test_app([{"wait": 1}])  # a later call counts from its own start
+    assert seen == [False, True]
+
+
 def test_a_test_app_run_that_did_not_pass_is_an_error(ws, monkeypatch):
     """A run that could not load the app, or whose check failed, comes
     back as a result rather than an exception; the flag follows it."""

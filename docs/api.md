@@ -1646,6 +1646,8 @@ rt.reap_idle(max_age: float) -> int   # close workers idle >= max_age
                                       # seconds; how many it closed
 rt.interrupt() -> bool                # stop the code running now;
                                       # whether any was running
+rt.interrupts -> int                  # how many times interrupt() was
+                                      # called (a test_app run watches it)
 rt.close() -> None
 ```
 
@@ -1740,6 +1742,14 @@ doesn't take the workspace's lock, which the running call holds, and is
 safe from any thread. A call that has not reached its sandbox yet is
 not touched, so a host stopping a turn calls it again until the call
 returns.
+
+A call that runs no sandboxed code can't be stopped that way, and
+watches **`rt.interrupts`**, the number of times `interrupt()` has been
+called, instead. The agent's `test_app` (the toolset's) notes the count
+when the call begins, and its browser run stops once the count moves,
+failing the action in progress as cancelled. It holds no workspace
+lock, so a host that interrupts only while the lock is taken should
+interrupt once whenever it stops a turn with a call in flight.
 
 ## Executors
 
