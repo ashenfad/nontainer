@@ -134,6 +134,23 @@ def _tool_result(out: ToolOutput) -> ToolResult:
     )
 
 
+def tool_failure_result(
+    workspace: Any,
+    fc: Any,
+    content: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> ToolResult:
+    """An embedder's rejected tool call, with the toolkit's normal failure log.
+
+    Wrappers that refuse work before the toolkit entrypoint runs still need
+    recorded failures. Agno's ToolResult has no error flag; the adapter's call
+    log carries that flag into saved runs and streamed tool events.
+    """
+    _agno_calls.note(workspace, fc, True)
+    return ToolResult(content=content, metadata=metadata)
+
+
 def cut_off(note: str) -> str:
     """The result a kept run gives a tool call that never got one: a stop
     pressed while the call ran ends the run with the call recorded and

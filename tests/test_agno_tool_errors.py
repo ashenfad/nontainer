@@ -304,3 +304,15 @@ class TestToolFailed:
         ws = self._ws()
         assert tool_failed(ws, self._tool(error=True))
         assert not tool_failed(ws, self._tool())
+
+
+def test_embedder_refusal_retains_native_tool_failure_flag(plain_ws):
+    from types import SimpleNamespace
+    from nontainer.adapters.agno import tool_failure_result
+
+    call = SimpleNamespace(call_id="denied", function=SimpleNamespace(name="terminal"))
+    result = tool_failure_result(
+        plain_ws, call, "Compute busy", metadata={"status": "busy"}
+    )
+    assert result.content == "Compute busy" and result.metadata == {"status": "busy"}
+    assert log_of(plain_ws).latest(("denied", "terminal"), 1) == [True]
