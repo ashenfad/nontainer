@@ -28,6 +28,7 @@ the delegate runs.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -95,6 +96,21 @@ class Tool:
         """The call on a worker thread, so an event loop stays free for
         as long as the tool runs."""
         return await asyncio.to_thread(self.call, **arguments)
+
+
+def _takes_cancel(apps: Any, cancelled: Any) -> bool:
+    """Whether to hand ``apps.test_app`` a ``cancelled`` check: there is
+    one, and the method takes it. An embedder's own ``apps`` (one that
+    forwards runs to a worker) is only required to take ``actions``,
+    ``viewport`` and ``bind``, so an object that takes nothing more is
+    called as before."""
+    if cancelled is None:
+        return False
+    try:
+        params = inspect.signature(apps.test_app).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == "cancelled" or p.kind is p.VAR_KEYWORD for p in params)
 
 
 def _object(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -376,8 +392,13 @@ class Toolset:
             return ToolOutput(f"test_app failed: {e}", is_error=True)
         with self.lock:
             try:
+                stop = (
+                    {"cancelled": cancelled}
+                    if _takes_cancel(self.apps, cancelled)
+                    else {}
+                )
                 result = self.apps.test_app(
-                    actions, viewport=viewport, bind=binding, cancelled=cancelled
+                    actions, viewport=viewport, bind=binding, **stop
                 )
             except ValueError as e:
                 return ToolOutput(f"test_app failed: {e}", is_error=True)
