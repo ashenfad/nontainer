@@ -895,6 +895,13 @@ class AppRuntime:
         same session, under the same lock."""
         return self._ws
 
+    @property
+    def frozen(self) -> bool:
+        """Whether this runtime serves a frozen snapshot: a read-only
+        filesystem and no workspace lock, so its requests run side by
+        side rather than one at a time."""
+        return self._frozen
+
     def close(self) -> None:
         """No-op, retained for API stability (embedders call it): the
         runtime no longer holds long-lived sandbox workers — each

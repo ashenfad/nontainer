@@ -29,7 +29,7 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
@@ -50,6 +50,23 @@ _logger = logging.getLogger(__name__)
 
 #: How often a run asks ``DriveSpec.cancelled`` whether to stop.
 _CANCEL_POLL_S = 0.1
+
+
+_checks: ThreadPoolExecutor | None = None
+_checks_lock = threading.Lock()
+
+
+def _check_pool() -> ThreadPoolExecutor:
+    """The threads cancel checks are asked on. Not the loop's default
+    executor: a page's requests to ``serve`` fill that one, and a check
+    queued behind them would go unasked until they had finished."""
+    global _checks
+    with _checks_lock:
+        if _checks is None:
+            _checks = ThreadPoolExecutor(
+                max_workers=8, thread_name_prefix="nontainer-cancel-check"
+            )
+        return _checks
 
 
 def _asks(cancelled: Any) -> bool:
@@ -546,7 +563,7 @@ async def _drive(
                 done, _ = await asyncio.wait({acquire}, timeout=_CANCEL_POLL_S)
                 if done:
                     return True
-                if await loop.run_in_executor(None, _asks, spec.cancelled):
+                if await loop.run_in_executor(_check_pool(), _asks, spec.cancelled):
                     give_back()
                     return False
         except asyncio.CancelledError:
@@ -600,6 +617,8 @@ async def _drive(
                         )
 
     if not await _take_slot():
+        if spec.run_over is not None:
+            spec.run_over.set()
         return _report(False, load_error="the run was cancelled before it started")
     try:
         context = await browser.new_context(
@@ -930,7 +949,7 @@ async def _drive(
                 # framework's run registry, maybe a remote one), and this
                 # loop drives every run on the shared browser.
                 while not run.done():
-                    if await loop.run_in_executor(None, _asks, cancelled):
+                    if await loop.run_in_executor(_check_pool(), _asks, cancelled):
                         stopped_by.append("cancel")
                         run.cancel()
                         return
@@ -968,6 +987,8 @@ async def _drive(
             if failed is not None:
                 return failed
         finally:
+            if spec.run_over is not None:
+                spec.run_over.set()
             try:
                 await context.close()
             finally:

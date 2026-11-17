@@ -68,19 +68,28 @@ def make_ws(session, build=None, **cfg):
 def test_the_spec_serves_the_app_without_a_browser():
     """The invariant the seam exists for: a driver is handed the
     dispatch the publication will use, so anything that can call a
-    Python function can verify the app."""
-    ws, rt, driver = make_ws("spec-serve")
+    Python function can verify the app. It serves for the run: once the
+    run is over, a request is declined and reaches no handler."""
+    served = {}
+
+    def build(spec):
+        served["api"] = spec.serve("GET", "/api/scores", b"", {})
+        served["page"] = spec.serve("GET", "/", b"", {})
+        return DriveReport(loaded=True)
+
+    ws, rt, driver = make_ws("spec-serve", build)
     try:
         rt.test_app([])
-        (spec,) = driver.specs
-        wire = spec.serve("GET", "/api/scores", b"", {})
+        wire = served["api"]
         assert wire.status == 200
         assert b"alice" in wire.content
-        page = spec.serve("GET", "/", b"", {})
+        page = served["page"]
         assert page.content == INDEX
         # The served policy rides on the HTML, because a policy governs
         # behaviour (eval, blob workers) that no interception can see.
         assert "script-src" in page.headers["content-security-policy"]
+        (spec,) = driver.specs
+        assert spec.serve("GET", "/api/scores", b"", {}).status == 503
     finally:
         ws.close()
 
