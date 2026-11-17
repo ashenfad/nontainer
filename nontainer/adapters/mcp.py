@@ -55,13 +55,21 @@ async def _off_loop_stoppable(work: "Callable[[Callable[[], bool]], Any]") -> An
     body to stop and then waits for it to return before the cancellation
     goes on. The body's cleanup is done by the time the request ends,
     and no thread is left working on the workspace with nobody waiting
-    for it."""
+    for it. A request cancelled before its body started (still waiting
+    for a worker thread) has nothing to wait for: the body is withdrawn,
+    and runs nothing if a thread picks it up later."""
     import anyio
 
     stop = threading.Event()
     returned = threading.Event()
+    gate = threading.Lock()
+    phase = ["queued"]  # then "running", or "withdrawn" if cancelled first
 
     def body() -> Any:
+        with gate:
+            if phase[0] == "withdrawn":
+                return None
+            phase[0] = "running"
         try:
             return work(stop.is_set)
         finally:
@@ -74,8 +82,16 @@ async def _off_loop_stoppable(work: "Callable[[Callable[[], bool]], Any]") -> An
         return await anyio.to_thread.run_sync(body, abandon_on_cancel=True)
     except cancelled:
         stop.set()
-        with anyio.CancelScope(shield=True):
-            await anyio.to_thread.run_sync(returned.wait)
+        with gate:
+            started = phase[0] == "running"
+            if not started:
+                phase[0] = "withdrawn"
+        if started:
+            # Polled rather than waited on in a thread: when every
+            # worker thread is taken, a thread-bound wait could not start.
+            with anyio.CancelScope(shield=True):
+                while not returned.is_set():
+                    await anyio.sleep(0.05)
         raise
 
 
