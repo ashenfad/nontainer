@@ -934,7 +934,9 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
 - A run can be stopped from outside. `test_app(cancelled=...)` takes a
   callable, the caller's and not part of the request, that is asked
   every 100ms; a true answer stops the run as its budget does, with the
-  action in progress failed as cancelled. The MCP adapter stops a run
+  action in progress failed as cancelled. The check must answer
+  promptly, as a flag read does: it is asked on a small pool of threads
+  every run shares, and one that blocks holds a thread of it. The MCP adapter stops a run
   when the client cancels the request, and the agno adapter when the
   agno run is cancelled (`Agent.cancel_run`, read through
   `nontainer.adapters.agno.run_cancelled`). A cancelled
@@ -1142,12 +1144,19 @@ bounded (`run_timeout_ms`), `cancelled=` stops it early, and it returns
 only after its page is closed and the requests that page sent have been
 answered. Prefer that path when an owner wants a worker to stop: set the
 worker's cancel flag, then wait for `test_app` to return. A worker whose
-`test_app` has returned has nothing of the run still running, with one
-exception. A handler that outruns its own limit is given up on: the run
-logs a warning (none of the requests finished in time) and returns while
-that handler's thread is still going. Such a worker isn't finished.
-Don't give it other work, and accept its result only once the process
-has exited.
+`test_app` has returned has nothing of the run still running, with two
+exceptions:
+
+- **A handler that outruns its own limit.** The run gives up on it,
+  logs a warning (none of the requests finished in time), and returns
+  while that handler's thread is still going. Such a worker isn't
+  finished. Don't give it other work, and accept its result only once
+  the process has exited.
+- **A cancel check that blocks.** The run doesn't wait for a check still
+  being asked when it ends, so a check that blocks goes on holding a
+  thread of the small pool every run's checks share, and the process
+  waits for that thread before it exits. Give a worker a check that
+  reads a flag, such as a `threading.Event`'s `is_set`.
 
 A handler thread can't be stopped from inside the process; the
 executor's per-request limit (`request_timeout`, `request_tick_limit`)

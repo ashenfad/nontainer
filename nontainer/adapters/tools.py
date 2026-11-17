@@ -376,7 +376,8 @@ class Toolset:
         strings; they are coerced before anything runs. ``cancelled`` is
         the harness's, never the model's: asked while the run goes, a
         true answer stops it, and the call returns once the run's page
-        is closed and its requests are answered."""
+        is closed and its requests are answered. It must answer promptly
+        (see ``DriveSpec.cancelled``)."""
         from ..apps import render_test_app
         from ..apps.testapp import coerce_actions, coerce_bind, coerce_viewport
 
