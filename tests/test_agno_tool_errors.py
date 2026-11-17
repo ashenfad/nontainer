@@ -314,5 +314,11 @@ def test_embedder_refusal_retains_native_tool_failure_flag(plain_ws):
     result = tool_failure_result(
         plain_ws, call, "Compute busy", metadata={"status": "busy"}
     )
-    assert result.content == "Compute busy" and result.metadata == {"status": "busy"}
+    assert result.content == "Compute busy"
+    if "metadata" in type(result).model_fields:
+        assert result.metadata == {"status": "busy"}
+    else:
+        # Agno 2's ToolResult has no metadata channel. Content and its native
+        # failure flag remain usable without claiming unsupported metadata.
+        assert not hasattr(result, "metadata")
     assert log_of(plain_ws).latest(("denied", "terminal"), 1) == [True]
