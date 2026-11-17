@@ -1135,6 +1135,51 @@ text = render_test_app(result)        # as a direct run renders
 
 Queueing, transport and artifact storage are the embedder's.
 
+#### Stopping a worker
+
+Inside one process, a run already ends cleanly. Every wait in it is
+bounded (`run_timeout_ms`), `cancelled=` stops it early, and it returns
+only after its page is closed and the requests that page sent have been
+answered. Prefer that path when an owner wants a worker to stop: set the
+worker's cancel flag, then wait for `test_app` to return. A worker that
+returns has nothing of the run still running.
+
+A handler thread can't be stopped from inside the process; the
+executor's per-request limit (`request_timeout`, `request_tick_limit`)
+is what bounds it. So the drain a run does is a wait, not a kill: an
+owner that can't afford a handler's full limit has to stop the whole
+worker.
+
+Killing a worker process is where ownership matters:
+
+- **The browser is not in the worker's process group.** On POSIX,
+  Playwright starts Chromium in a process group of its own, so a signal
+  to the worker's group (`killpg`) reaches the worker and Playwright's
+  driver but not the browser, its renderers or its helpers. Those are
+  reparented and keep running, along with the temporary profile
+  directory each one holds.
+- **On Linux, give each worker its own cgroup** (a delegated cgroup v2
+  subtree, or `systemd-run --scope`) and stop it with `cgroup.kill` (Linux 5.14+).
+  That kills every process in the cgroup at once, including any that
+  called `setsid()` or double-forked out of the tree. Wait for the
+  cgroup's `cgroup.events` to read `populated 0` before treating the
+  worker as gone. Without cgroups, a supervisor that sets
+  `PR_SET_CHILD_SUBREAPER` before starting the worker inherits any
+  orphaned descendant, and it can then kill and reap them until none
+  remain. Using pidfds (`os.pidfd_open`, `signal.pidfd_send_signal`)
+  rather than bare PIDs rules out signalling a reused PID.
+- **macOS and other platforms have neither.** A worker there shuts its
+  browser down itself on the way out (`shutdown_browser()`, which
+  `atexit` also runs, though not after `SIGKILL`). A hard kill can leave
+  a Chromium behind, so if that matters, run the worker somewhere whose
+  teardown takes everything with it, such as a VM or a container.
+- **Import after the worker is gone, never before.** A worker writes
+  nothing to the session (both sinks are data), so a killed worker's
+  partial payload is simply dropped. Decode and `save_screenshots` only
+  a payload from a worker that answered and then exited, and bound what
+  you accept: `max_screenshots` caps the captures, and the owner should
+  cap the bytes it reads back.
+
 ## Delivery (where nontainer's concern ends)
 
 nontainer's delivery surface is exactly: the `/workspace/app` convention, the
