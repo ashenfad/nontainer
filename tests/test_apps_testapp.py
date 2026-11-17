@@ -1454,3 +1454,103 @@ def test_drive_spec_keeps_its_positional_fields():
 
     spec = DriveSpec(lambda *a: None, "https://x/", (), 390, 844)
     assert (spec.width, spec.height, spec.start) == (390, 844, "")
+
+
+QUIET_PAGE = b"<!doctype html><html><body><p id='x'>hi</p></body></html>"
+
+
+@pytest.fixture
+def quiet_rt(chromium_available):
+    ws = Workspace(KvgitProvider.open(None, session="s-bounds"))
+    rt = enable_apps(ws)
+    ws.files.fs.makedirs("/workspace/app", exist_ok=True)
+    ws.files.fs.write("/workspace/app/index.html", QUIET_PAGE)
+    ws.commit()
+    try:
+        yield rt
+    finally:
+        ws.close()
+
+
+def test_a_runs_waits_are_bounded_by_default():
+    """test_app's spec bounds an eval and the run as a whole, though a
+    bare `DriveSpec` leaves both to its caller."""
+    from nontainer.apps.testapp import build_spec
+
+    ws = Workspace(KvgitProvider.open(None, session="s-bounds-spec"))
+    try:
+        spec = build_spec(enable_apps(ws), [{"eval": "1"}])
+        assert spec.eval_timeout_ms == 10_000
+        assert spec.run_timeout_ms == 60_000
+    finally:
+        ws.close()
+
+
+def test_an_eval_that_never_settles_fails_at_its_ceiling(quiet_rt):
+    import time
+
+    started = time.monotonic()
+    result = quiet_rt.test_app(
+        [{"eval": "new Promise(() => {})"}], eval_timeout_ms=MISS_MS
+    )
+    assert time.monotonic() - started < 10
+    assert not result.ok
+    assert f"did not settle within {MISS_MS}ms" in result.results[0].error
+
+
+def test_a_wait_longer_than_an_action_may_wait_is_refused(quiet_rt):
+    import time
+
+    started = time.monotonic()
+    result = quiet_rt.test_app([{"wait": 600_000}])
+    assert time.monotonic() - started < 10
+    assert not result.ok
+    assert "wait is milliseconds, 0 to 5000" in result.results[0].error
+
+
+def test_a_run_stops_at_its_budget_and_keeps_what_came_before(quiet_rt):
+    """The action in progress fails with the budget named; the ones
+    before it keep their results, and the ones after it never run."""
+    import time
+
+    started = time.monotonic()
+    result = quiet_rt.test_app(
+        [
+            {"read": "#x"},
+            {"eval": "new Promise(r => setTimeout(r, 30000))"},
+            {"read": "#x"},
+        ],
+        eval_timeout_ms=30_000,
+        run_timeout_ms=1_500,
+    )
+    assert time.monotonic() - started < 10
+    assert not result.ok
+    assert [r.ok for r in result.results] == [True, False]
+    error = result.results[1].error
+    assert "did not finish within its 1500ms budget" in error
+    assert "still running" in error
+
+
+def test_a_budget_spent_loading_fails_the_load(quiet_rt):
+    result = quiet_rt.test_app([{"read": "#x"}], run_timeout_ms=1)
+    assert not result.ok
+    assert "did not finish within its 1ms budget" in (result.load_error or "")
+    assert result.results == ()
+
+
+def test_a_page_stuck_in_its_own_script_still_ends_the_run(quiet_rt):
+    """A page that never yields answers neither a screenshot nor an
+    evaluate; the run's diagnostics give up on it, the run ends, and
+    the shared browser serves the next run."""
+    import time
+
+    started = time.monotonic()
+    result = quiet_rt.test_app(
+        [{"eval": "while (true) {}"}],
+        eval_timeout_ms=MISS_MS,
+        run_timeout_ms=30_000,
+    )
+    assert time.monotonic() - started < 10
+    assert not result.ok
+    assert f"did not settle within {MISS_MS}ms" in result.results[0].error
+    assert quiet_rt.test_app([{"read": "#x"}]).ok

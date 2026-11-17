@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+- **Every `test_app` wait is bounded** (#318). An `eval` fails after `eval_timeout_ms` (10s), a `wait` above `action_timeout_ms` is refused, and a run stops at `run_timeout_ms` (60s) with the action in progress failed.
+
 ## 0.12.0 - 2026-11-11
 
 ### Changed

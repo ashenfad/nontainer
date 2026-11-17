@@ -634,12 +634,18 @@ def build_spec(
     load_timeout_ms: int = 10_000,
     action_timeout_ms: int = 5_000,
     assert_timeout_ms: int = 2_000,
+    eval_timeout_ms: int = 10_000,
+    run_timeout_ms: int = 60_000,
     settle_cap: float = 5.0,
     bind: tuple[tuple[str, str], ...] = (),
     failed: "list[str] | None" = None,
 ) -> DriveSpec:
     """Everything one run has been decided to be, before a browser is
-    involved."""
+    involved.
+
+    Every wait is bounded: an action waits ``action_timeout_ms`` for its
+    element, an ``eval`` gets ``eval_timeout_ms`` to settle, and the run
+    as a whole stops at ``run_timeout_ms`` and reports what it has."""
     vp = coerce_viewport(viewport)
     # One declaration (AppsConfig.script_hosts) drives interception AND
     # the served CSP: what verifies headlessly matches what serves.
@@ -675,6 +681,8 @@ def build_spec(
         load_timeout_ms=load_timeout_ms,
         action_timeout_ms=action_timeout_ms,
         assert_timeout_ms=assert_timeout_ms,
+        eval_timeout_ms=eval_timeout_ms,
+        run_timeout_ms=run_timeout_ms,
         settle_cap_ms=int(settle_cap * 1000),
         max_screenshots=max_screenshots,
         screenshot_dir=runtime._screenshot_dir,
