@@ -1649,3 +1649,67 @@ def test_cancelling_an_async_run_waits_for_its_cleanup(chromium_available):
         return len(browser.contexts)
 
     assert submit_job(open_contexts).result(timeout=10) == 0
+
+
+THREE_SLOW_PAGE = b"""<!doctype html><html><body><p id="x">hi</p>
+<script>for (let i = 0; i < 3; i++) fetch('api/slow', {method: 'POST'});</script>
+</body></html>"""
+
+
+def test_a_run_waits_for_handlers_that_run_one_at_a_time(chromium_available):
+    """A workspace answers its page's requests one at a time. Each
+    handler keeps to its own limit, so the run waits for all of them,
+    though together they take longer than the drain bound."""
+    import threading
+    import time
+
+    from nontainer.apps.contract import WireResponse
+    from nontainer.apps.driver import DriveSpec
+    from nontainer.apps.driver_playwright import PlaywrightDriver
+
+    one_at_a_time = threading.Lock()
+    served: list[str] = []
+
+    def serve(method, url, body, headers):
+        if url.startswith("/api/slow"):
+            with one_at_a_time:
+                time.sleep(1.0)
+                served.append(url)
+            return WireResponse(200, b"{}", "application/json")
+        return WireResponse(200, THREE_SLOW_PAGE, "text/html")
+
+    spec = DriveSpec(
+        serve,
+        "https://t.test/apps/t-test/",
+        ({"read": "#x"},),
+        settle_cap_ms=100,
+        drain_timeout_ms=1_500,
+    )
+    report = PlaywrightDriver().run(spec)
+    assert [a.ok for a in report.actions] == [True]
+    assert len(served) == 3
+
+
+def test_a_run_cancelled_while_queued_for_a_slot_opens_no_page(chromium_available):
+    """Every slot of the browser is taken; a run waiting for one that is
+    cancelled stops there instead of waiting its turn."""
+    import asyncio
+    import threading
+    import time
+
+    from nontainer.apps.browser import submit_job
+    from nontainer.apps.driver_playwright import _drive
+
+    flag = threading.Event()
+    spec, _ = _slow_spec([{"read": "#x"}], cancelled=flag.is_set)
+
+    def queued(browser, _sema):
+        return _drive(browser, asyncio.Semaphore(0), spec)
+
+    pending = submit_job(queued)
+    time.sleep(0.5)
+    assert not pending.done()
+    flag.set()
+    report = pending.result(timeout=10)
+    assert not report.loaded
+    assert "cancelled before it started" in (report.load_error or "")

@@ -941,10 +941,14 @@ holds it: at `"desktop"` every screenshot of it loses its right third.
   `PlaywrightDriver.arun` stops its run the same way.
 - A run returns only once its page is closed and the requests that page
   sent have been answered. A handler runs in a thread that can't be
-  stopped, so the run waits for it, up to the handlers'
-  `request_timeout` plus five seconds, and nothing a handler writes
-  lands after the result. A cancel waits for the same cleanup before it
-  propagates.
+  stopped, so the run waits for it, and nothing a handler writes lands
+  after the result. A workspace runs its handlers one at a time, so the
+  run waits while they keep finishing and gives up only once none has
+  finished in the handlers' `request_timeout` plus five seconds (a
+  handler that outruns its own limit), with a warning in the log. A
+  cancel waits for the same cleanup before it propagates, and a run
+  queued for a browser slot when it is cancelled stops there, without
+  opening a page.
 - `select` is separate from `type` because they are separate
   Playwright calls: `fill()` raises on a `<select>`. It matches the
   option by value, then by visible label — agents pass whichever the
