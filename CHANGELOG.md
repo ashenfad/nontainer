@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **`test_app(cancelled=)` stops a run** (#318). The MCP adapter stops one when the client cancels the request, and the agno adapter when its run is cancelled (`run_cancelled`).
+- **`nontainer.adapters.agno.refuse(ws, reason, message, retry_after=)` turns a tool call away before it runs** (#319). Called from an agno tool hook, it fails the call in agno's record under its own id with text saying the call did not run, and `tool_outcome` and `tool_refusal` tell a refusal from a failure.
 
 ### Fixed
 - **A `test_app` run returns once its page's requests are answered** (#318), and declines those that haven't reached a handler, so no handler write lands after the result.

@@ -38,6 +38,11 @@ A run that errors or is cancelled is an interrupt, not a rollback: the
 workspace keeps what it wrote, and ``keep_aborted_run(db, session_id,
 run_id, note)`` keeps the run in the agent's memory to match.
 
+An embedder's tool hook refuses a call before it runs with
+``refuse(ws, reason, message, retry_after=...)``: the call fails in
+agno's record with text that says it did not run, and
+``tool_outcome(ws, tool)`` reads it back as ``"refused"``.
+
 Exposure follows ``resolve_tools_mode`` (``"auto"`` default): a plain
 python environment gets a single ``terminal`` tool (with the `python`
 builtin); an augmented one (cache / host objects) additionally gets a
@@ -47,8 +52,10 @@ dedicated ``run_python`` tool whose description announces the magic.
 from __future__ import annotations
 
 import logging
+import math
+import sys
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, NoReturn
 
 from agno.media import Image
 from agno.tools import Toolkit
@@ -320,15 +327,210 @@ def tool_failed(workspace: Any, tool: Any) -> bool:
     the toolkit logs that outcome by the call's id and tool name, and
     this reads it. Read it as the event arrives: the log keeps a run's
     calls only until the run is stored, and a later reply may reuse the
-    id."""
+    id. A call refused before it ran (:func:`refuse`) failed too;
+    :func:`tool_outcome` tells the two apart."""
     if getattr(tool, "tool_call_error", False):
         return True
+    call = _logged_call(workspace, tool)
+    return call is not None and call.kind != "ok"
+
+
+def _logged_call(workspace: Any, tool: Any) -> "_agno_calls.Call | None":
+    """The latest call the workspace's log holds under ``tool``'s call
+    id and tool name."""
     call_id = getattr(tool, "tool_call_id", None)
     name = getattr(tool, "tool_name", None)
     log = _agno_calls.log_of(workspace)
     if call_id is None or name is None or log is None:
-        return False
-    return any(log.latest((str(call_id), str(name)), 1))
+        return None
+    return log.last((str(call_id), str(name)))
+
+
+def _refusal_text(reason: str, message: str, retry_after: float | None) -> str:
+    """What the model reads for a refused call. It says the call did
+    not run and changed nothing, and, given a delay, to make the same
+    call again after it: a model told only that a call failed tends to
+    change its approach rather than wait."""
+    text = (
+        f"not run: the call was refused before it started ({message or reason}); "
+        "nothing changed"
+    )
+    if retry_after is None:
+        return text
+    seconds = math.ceil(retry_after)
+    if seconds == 0:
+        return text + ", so make the same call again"
+    unit = "second" if seconds == 1 else "seconds"
+    return f"{text}, so make the same call again after {seconds} {unit}"
+
+
+class ToolRefused(Exception):
+    """A tool call refused before it ran. Raise it with :func:`refuse`.
+
+    agno records a call whose hooks or function raise as failed:
+    ``tool_call_error`` on its tool message, on its ``ToolExecution``
+    and in the stored run, with the exception's text as the result the
+    model reads. That text, ``str(refused)``, says the call did not run
+    and nothing changed, and, given ``retry_after``, when to make the
+    same call again.
+
+    ``reason`` is a stable code for the embedder's own records, such as
+    ``"busy"``. ``message`` is the reason in words for the model, and
+    ``reason`` stands in when it is empty. ``retry_after`` is the delay
+    in seconds before the call is worth making again, or ``None`` when
+    the refusal promises no retry. The model reads it rounded up to
+    whole seconds.
+
+    This is not one of agno's run exceptions (``AgentRunException``),
+    which stop or retry the whole run. A refusal ends one call and the
+    run goes on.
+    """
+
+    def __init__(
+        self, reason: str, message: str = "", retry_after: float | None = None
+    ) -> None:
+        if not isinstance(reason, str) or not reason:
+            raise ValueError(f"reason must be a non-empty string: {reason!r}")
+        if retry_after is not None:
+            retry_after = float(retry_after)
+            if not math.isfinite(retry_after) or retry_after < 0:
+                raise ValueError(
+                    f"retry_after must be a finite number of seconds >= 0: {retry_after!r}"
+                )
+        self.reason = reason
+        self.message = message
+        self.retry_after = retry_after
+        super().__init__(_refusal_text(reason, message, retry_after))
+
+    def __reduce__(self) -> Any:
+        # A copy or a pickle rebuilds from the fields; the text follows
+        # from them.
+        return type(self), (self.reason, self.message, self.retry_after)
+
+
+def _running_call() -> FunctionCall | None:
+    """The agno ``FunctionCall`` this code runs in: the nearest one
+    bound as ``self`` up the stack.
+
+    agno hands a tool hook no ``FunctionCall``. It runs a call's hooks
+    and its function inside that call's own ``execute`` (``aexecute``
+    for async, whose awaiting frames chain the same way), so the call a
+    hook belongs to is the nearest one above it. A nested call, such as
+    a tool that runs an agent of its own, is nearer than the call that
+    started it, and parallel calls run on stacks of their own."""
+    frame: Any = sys._getframe(1)
+    while frame is not None:
+        candidate = frame.f_locals.get("self")
+        if isinstance(candidate, FunctionCall):
+            return candidate
+        frame = frame.f_back
+    return None
+
+
+def refuse(
+    workspace: Any,
+    reason: str,
+    message: str = "",
+    *,
+    retry_after: float | None = None,
+) -> NoReturn:
+    """Refuse the agno tool call this runs in, before it starts: raise
+    :class:`ToolRefused`, logged as the call's outcome.
+
+    Call it from an agno tool hook in place of calling ``function``::
+
+        def gate(function_name, function, arguments):
+            if not slots.acquire(blocking=False):
+                refuse(ws, "busy", "every sandbox slot is in use", retry_after=30)
+            try:
+                return function(**arguments)
+            finally:
+                slots.release()
+
+    The call keeps its id and its started and completed events. agno
+    flags it failed (``tool_call_error``) on its tool message, its
+    ``ToolExecution`` and the stored run, and the model reads the
+    refusal's text. A call of one of the workspace toolkit's tools is
+    also logged as refused, so :func:`tool_outcome` reads it as
+    ``"refused"`` and :func:`tool_refusal` gives back the reason. A
+    refused call of any other tool reaches the model and agno's flag
+    the same way and reads as ``"failed"``: the log holds only the
+    toolkit's calls.
+
+    The call is found on the stack (agno hands a hook none), so this
+    must run inside it: in a tool hook, or in the tool's own function.
+    Outside an agno call it raises all the same, and logs nothing.
+    """
+    error = ToolRefused(reason, message, retry_after)
+    call = _running_call()
+    if call is not None:
+        # The log keeps a copy that is never raised: a raised exception
+        # holds its traceback, and through it every frame on the stack.
+        _agno_calls.refused(workspace, call, ToolRefused(reason, message, retry_after))
+    raise error
+
+
+def tool_refusal(workspace: Any, tool: Any) -> ToolRefused | None:
+    """The refusal a tool call ended in, or ``None`` for a call that was
+    not refused: a :class:`ToolRefused` with the reason, message and
+    retry delay :func:`refuse` was given (a copy, not the one raised).
+
+    ``tool`` is a ``ToolCallCompleted`` event's ``ToolExecution``. Read
+    it as the event arrives, as :func:`tool_failed` is read. Only a
+    refusal of one of the toolkit's tools is known. A refused call
+    raised, so a call agno did not flag was not refused, whatever the
+    log holds under its id."""
+    if not getattr(tool, "tool_call_error", False):
+        return None
+    call = _logged_call(workspace, tool)
+    if call is None or call.kind != "refused":
+        return None
+    return call.refusal
+
+
+def tool_outcome(workspace: Any, tool: Any) -> Literal["ok", "failed", "refused"]:
+    """How a tool call came out: ``"refused"`` before it ran
+    (:func:`refuse`), ``"failed"`` (it ran and did not come out as
+    asked, or raised), or ``"ok"``. :func:`tool_failed` is true for the
+    first two. ``tool`` is a ``ToolCallCompleted`` event's
+    ``ToolExecution``, read as the event arrives."""
+    if tool_refusal(workspace, tool) is not None:
+        return "refused"
+    return "failed" if tool_failed(workspace, tool) else "ok"
+
+
+class _RefusalLog(logging.Filter):
+    """Keeps a refused call's traceback out of agno's log.
+
+    agno logs a call that raises twice: a warning that the function
+    could not run, then the exception itself at ERROR, with its
+    traceback. A refusal is the embedder's decision, not a fault. So
+    the exception's own record is dropped, and so is any traceback
+    agno attaches to the warning (``AGNO_LOG_TRACEBACKS``). The
+    warning's one line stays."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, ToolRefused):
+            return False
+        if record.exc_info and isinstance(record.exc_info[1], ToolRefused):
+            record.exc_info = None
+            record.exc_text = None
+        return True
+
+
+def _hide_refusal_tracebacks() -> None:
+    try:
+        from agno.utils import log
+    except ImportError:  # pragma: no cover - every supported agno has it
+        return
+    for logger in list(vars(log).values()):
+        if isinstance(logger, logging.Logger) and not any(
+            isinstance(f, _RefusalLog) for f in logger.filters
+        ):
+            logger.addFilter(_RefusalLog())
+
+
+_hide_refusal_tracebacks()
 
 
 def finish_turn(
@@ -841,6 +1043,10 @@ class WorkspaceTools(Toolkit):
             sessions_tool.__name__ = "sessions"
             sessions_tool.__doc__ = toolset.description("sessions")
             registered.append(sessions_tool)
+
+        # Every call of these tools is logged, so a refusal of one is
+        # logged too (refuse).
+        _agno_calls.track(workspace, [fn.__name__ for fn in registered])
 
         instructions = toolkit_instructions(
             workspace, split=split, turn_commits=self._turn_commits
