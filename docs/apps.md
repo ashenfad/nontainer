@@ -1556,11 +1556,13 @@ relative-URL rule holds unchanged.
 
 ### Bounded owned verification
 
-`VerificationWorker` implements the pinned-worker protocol above on POSIX hosts.
-It owns the browser, dispatch callbacks and trusted native workers in one process
-group. The whole test has a deadline (180 seconds by default); a Stop event also
-terminates that group. `verify()` returns only after the worker and its living
-descendants have exited. Keep the workspace hold and compute admission around
+`VerificationWorker` implements the pinned-worker protocol above on Linux and
+macOS. A separate minimal supervisor owns the factory, browser, synchronous
+callbacks and native workers. On Linux it becomes a subreaper before launching
+work: detached groups and double-forked orphans are adopted there, and pidfds
+prevent signaling a reused PID. The whole test has a deadline (180 seconds by
+default); Stop and owner-pipe EOF enter the same capture/freeze/kill/reap path.
+`verify()` returns only after that supervisor acknowledges descendant cleanup. Keep the workspace hold and compute admission around
 that call, including teardown. Cancelling a Future alone is not a cleanup
 acknowledgment.
 
@@ -1597,13 +1599,16 @@ expired or failed workers cannot import partial output or write to the live
 workspace later. Requests, results, screenshots and handler logs have configurable
 byte budgets. A lifecycle `observer` receives dictionaries with `job_id`, `phase`
 and `deadline_at`; running/stopping/reaped phases also identify `worker_pid` and
-`process_group`. Only the reaped phase reports `cleanup_ack=True`. Recording the running phase
-must succeed before the worker starts its trusted factory. An independent pipe
-watchdog terminates the owned worker group if its parent exits. Keep dead-owner
-allocations charged while recorded descendants still live. The deadline is
-diagnostic metadata, not permission to revoke a still-running allocation.
+`process_group`, identifying the independent supervisor. Only the reaped phase
+reports `cleanup_ack=True`, with `ownership_mode` and `owned_process_count`.
+Recording the running phase must succeed before the factory starts. The
+supervisor stays alive in its recorded group until physical cleanup completes,
+including after its parent exits. Keep dead-owner allocations charged while that
+group lives; a deadline is not permission to revoke running work.
 
-The worker and trusted callbacks must keep all descendants in that owned process
-group. An embedder that permits detached subprocesses needs stronger ownership
-such as a dedicated cgroup or job container. An OS task that cannot be killed keeps
-teardown pending, and its caller must keep its allocation charged.
+macOS uses tracked descendant birth identities and handles Playwright's detached
+browser groups, but has no Linux subreaper guarantee for daemonized orphans. Use
+Linux supervision or a dedicated OS job container when orphan adoption is
+required. An unkillable OS task or a supervisor that cannot confirm cleanup keeps
+teardown pending and its allocation charged. The parent never kills the supervisor
+as a timeout shortcut.

@@ -83,7 +83,7 @@ def failing_factory(context, **kwargs):
     yield
 
 
-def owner(store_path, phases_path, entered_path, late_path):
+def owner(store_path, phases_path, entered_path, late_path, *, wait_before_ack=False):
     import json
     import tempfile
 
@@ -98,6 +98,8 @@ def owner(store_path, phases_path, entered_path, late_path):
         def observe(event):
             if event["phase"] == "running":
                 Path(phases_path).write_text(json.dumps(event))
+                if wait_before_ack:
+                    threading.Event().wait(60)
 
         VerificationWorker(
             "verification_worker_support:blocked_handler",
@@ -105,3 +107,30 @@ def owner(store_path, phases_path, entered_path, late_path):
             timeout_seconds=60,
             observer=observe,
         ).verify(runtime, [{"eval": "fetch('api/blocked').then(r=>r.json())"}])
+
+
+@contextmanager
+def daemonized(context, *, log_sink, screenshot_sink):
+    # A Linux subreaper must adopt this double-forked, setsid helper even
+    # though its intermediate parent exits before the browser is launched.
+    import time
+
+    child = os.fork()
+    if child == 0:
+        if os.fork():
+            os._exit(0)
+        os.setsid()
+        Path(context.config["daemon_pid"]).write_text(str(os.getpid()))
+        time.sleep(60)
+        Path(context.config["late_write"]).write_text("unsafe daemon callback")
+        os._exit(0)
+    os.waitpid(child, 0)
+    deadline = time.monotonic() + 5
+    while not Path(context.config["daemon_pid"]).exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError("daemon fixture did not report its PID")
+        time.sleep(0.01)
+    with factory(
+        context, log_sink=log_sink, screenshot_sink=screenshot_sink
+    ) as runtime:
+        yield runtime

@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## Unreleased
 
 ### Added
-- Opt-in `VerificationWorker` runs a pinned current draft in an owned POSIX process group, with a whole-test deadline, cooperative Stop input, bounded results/artifacts and lifecycle cleanup acknowledgment. Trusted factories rebuild host objects; browser and synchronous handler callbacks terminate before verification returns.
+- Opt-in `VerificationWorker` runs a pinned current draft in an independent supervisor, with Linux subreaper/pidfd ownership across detached process groups, a whole-test deadline, cooperative Stop input, bounded results/artifacts and lifecycle cleanup acknowledgment. Trusted factories rebuild host objects; browser and synchronous handler callbacks terminate before verification returns.
 - `nontainer.adapters.agno.tool_failure_result` lets admission wrappers return structured rejected-call metadata while preserving saved and streamed failure flags.
 
 ## 0.12.0 - 2026-11-11
