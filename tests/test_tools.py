@@ -178,6 +178,32 @@ async def test_mcp_run_python_reports_ui_artifacts(ws):
     assert "[ui artifacts: kpis -> /workspace/ui/kpis.cards.json]" in text
 
 
+def test_test_app_hands_its_cancel_check_only_to_an_apps_that_takes_it(ws, monkeypatch):
+    """An embedder's `apps` need only take actions, viewport and bind; a
+    cancel check reaches one that also takes `cancelled`."""
+    from nontainer.apps import enable_apps
+    from nontainer.apps.testapp import TestAppResult
+
+    apps = enable_apps(ws)
+    toolset = Toolset(ws, apps=apps)
+    seen = []
+
+    def plain(actions, viewport="desktop", bind=None):
+        seen.append("plain")
+        return TestAppResult(ok=True)
+
+    monkeypatch.setattr(apps, "test_app", plain)
+    assert not toolset.test_app([{"wait": 1}], cancelled=lambda: False).is_error
+
+    def stoppable(actions, viewport="desktop", bind=None, cancelled=None):
+        seen.append(cancelled())
+        return TestAppResult(ok=True)
+
+    monkeypatch.setattr(apps, "test_app", stoppable)
+    assert not toolset.test_app([{"wait": 1}], cancelled=lambda: True).is_error
+    assert seen == ["plain", True]
+
+
 def test_a_test_app_run_that_did_not_pass_is_an_error(ws, monkeypatch):
     """A run that could not load the app, or whose check failed, comes
     back as a result rather than an exception; the flag follows it."""

@@ -1121,7 +1121,10 @@ text = render_test_app(result)        # as a direct run renders
   screenshots at the paths the result names. An object with those two
   members that forwards to a worker, imports the captures, and returns
   the decoded result routes the agent's `test_app` without changing
-  anything else.
+  anything else. If its `test_app` also takes `cancelled=`, the
+  toolset hands it the harness's cancel check (a cancelled MCP request,
+  a cancelled agno run), which the object can pass on to stop its
+  worker's run. One that doesn't take it is called as before.
 
 Queueing, transport and artifact storage are the embedder's.
 
