@@ -1,20 +1,18 @@
 """Bounded whole-app verification in an owned worker process.
 
-The browser and synchronous request callbacks belong to the worker, so a Stop
-or deadline can end all of them before the owner releases its admission lease.
+An independent supervisor owns browser and synchronous callback descendants.
+Linux subreaping and pidfds cover detached process groups before admission ends.
 Only a pinned ref and JSON configuration cross; live workspaces/clients do not.
 """
 
 from __future__ import annotations
 
-import contextlib
 import importlib
 import json
 import logging
 import math
 import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -86,30 +84,29 @@ def _members(group: int) -> list[int]:
     ]
 
 
-def _signal(group: int, sig: int) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(group, sig)
+def _stop(process: subprocess.Popen, root: Path, job_id: str) -> dict:
+    """Wait for the independent supervisor's physical descendant acknowledgment.
 
-
-def _stop(process: subprocess.Popen, grace: float) -> None:
-    """Return only after the process AND its owned descendants cannot run.
-
-    An unkillable OS task keeps this call charged. Reporting a successful
-    cleanup while it could still allocate would be unsafe.
+    It is never killed as a timeout shortcut. Missing acknowledgment keeps the
+    caller charged rather than declaring still-possible native work completed.
     """
-    if process.poll() is None or _members(process.pid):
-        _signal(process.pid, signal.SIGTERM)
-    deadline = time.monotonic() + grace
-    while time.monotonic() < deadline:
-        process.poll()
-        if process.returncode is not None and not _members(process.pid):
-            return
-        time.sleep(0.02)
-    _signal(process.pid, signal.SIGKILL)
+    warned = False
     while True:
         process.poll()
-        if process.returncode is not None and not _members(process.pid):
-            return
+        path = root / "cleanup.json"
+        if process.returncode is not None and path.is_file():
+            data = json.loads(path.read_text())
+            if (
+                data.get("job_id") == job_id
+                and data.get("cleanup_ack") is True
+                and not _members(process.pid)
+            ):
+                return data
+        if process.returncode is not None and not warned:
+            logging.getLogger(__name__).critical(
+                "Verifier supervisor exited without confirmed descendant cleanup; allocation remains charged"
+            )
+            warned = True
         time.sleep(0.02)
 
 
@@ -120,8 +117,10 @@ class VerificationWorker:
     ``factory`` names a trusted ``module:callable``. It receives a
     VerificationContext and keyword ``log_sink``/``screenshot_sink``; its
     context manager yields an AppRuntime opened at the exact pinned draft.
-    The factory must use readonly handlers and keep every descendant in its
-    process group. Host objects are reconstructed there from trusted config.
+    The factory must use readonly handlers. Linux supervision adopts detached
+    descendants and signals them through pidfds; macOS tracks descendant birth
+    identities but cannot adopt daemon orphans. Host objects are reconstructed
+    from trusted configuration, never transported as live clients.
 
     ``observer`` sees lifecycle metadata in the parent, including job id,
     deadline, worker pid and cleanup acknowledgment. It is never sent to the
@@ -167,8 +166,10 @@ class VerificationWorker:
         bind=None,
         cancelled: threading.Event | None = None,
     ):
-        if os.name != "posix":
-            raise RuntimeError("Isolated verification requires POSIX process ownership")
+        if not (sys.platform.startswith("linux") or sys.platform == "darwin"):
+            raise RuntimeError(
+                "Isolated verification requires Linux or macOS process ownership"
+            )
         if not runtime.config.readonly_handlers:
             raise ValueError(
                 "Isolated verification requires readonly_handlers=True for pinned-state parity"
@@ -237,6 +238,7 @@ class VerificationWorker:
                 "max_result_bytes": self.max_result_bytes,
                 "max_artifact_bytes": self.max_artifact_bytes,
                 "max_log_bytes": self.max_log_bytes,
+                "terminate_grace_seconds": self.terminate_grace_seconds,
             }
             raw = _json_bytes(payload)
             if len(raw) > self.max_request_bytes:
@@ -284,15 +286,15 @@ class VerificationWorker:
                     time.sleep(0.02)
             finally:
                 notify("stopping", worker_pid=process.pid, process_group=process.pid)
-                try:
-                    _stop(process, self.terminate_grace_seconds)
-                finally:
-                    os.close(owner_write)
+                os.close(owner_write)
+                cleanup = _stop(process, root, job_id)
                 notify(
                     "reaped",
                     worker_pid=process.pid,
                     process_group=process.pid,
                     cleanup_ack=True,
+                    ownership_mode=cleanup["ownership_mode"],
+                    owned_process_count=cleanup["owned_process_count"],
                 )
             if reason is not None:
                 return TestAppResult(False, load_error=reason)
@@ -365,36 +367,13 @@ class VerificationWorker:
 
 
 def _worker(root: Path, owner_fd: int) -> None:
-    # Only the owner holds the pipe's write end. A separate interpreter (not a
-    # thread sharing a potentially blocked callback/GIL) kills this entire group
-    # on owner death. Embedders retain orphan reservations while the recorded
-    # group still lives. Normal teardown reaps this in-group guard as well.
-    subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            "import os,signal,sys\n"
-            "worker=int(sys.argv[2]); group=os.getpgrp()\n"
-            "try:\n"
-            " os.read(int(sys.argv[1]),1)\n"
-            "finally:\n"
-            " try:\n"
-            "  if os.getppid()==worker: os.kill(worker,signal.SIGKILL)\n"
-            " finally: os.killpg(group,signal.SIGKILL)\n",
-            str(owner_fd),
-            str(os.getpid()),
-        ],
-        pass_fds=(owner_fd,),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-    )
-    os.close(owner_fd)
-    # The parent may register physical ownership in its admission ledger before
-    # acknowledging startup. An observer failure cannot launch heavy work.
-    while not (root / "start").exists():
-        time.sleep(0.01)
+    from ._verification_process import supervise
+
+    data = json.loads((root / "request.json").read_text())
+    raise SystemExit(supervise(root, owner_fd, data))
+
+
+def _body(root: Path) -> None:
     os.umask(0o077)
     data = json.loads((root / "request.json").read_text())
     module, name = data["factory"].split(":", 1)
@@ -447,6 +426,9 @@ def _worker(root: Path, owner_fd: int) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[1] != "--worker":
+    if len(sys.argv) == 4 and sys.argv[1] == "--worker":
+        _worker(Path(sys.argv[2]), int(sys.argv[3]))
+    elif len(sys.argv) == 3 and sys.argv[1] == "--body":
+        _body(Path(sys.argv[2]))
+    else:
         raise SystemExit("This entrypoint is used by VerificationWorker")
-    _worker(Path(sys.argv[2]), int(sys.argv[3]))

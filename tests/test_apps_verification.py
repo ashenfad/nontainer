@@ -1,6 +1,8 @@
 """Whole verifier ownership, cancellation and immutable current-draft parity."""
 
 import os
+import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -9,6 +11,7 @@ import pytest
 
 from nontainer import Store
 from nontainer.apps import AppsConfig, VerificationWorker, enable_apps
+from nontainer.apps._verification_process import processes
 from nontainer.apps.verification import _members
 
 
@@ -184,41 +187,172 @@ def test_ownership_observer_failure_cannot_start_work_or_skip_worker_teardown(ap
     assert not _members(states[-1]["process_group"])
 
 
-def test_owner_process_death_also_terminates_worker_and_browser(app, tmp_path):
+def _family(root):
+    snapshot = processes()
+    family = {root}
+    while True:
+        expanded = family | {pid for pid, p in snapshot.items() if p.parent in family}
+        if expanded == family:
+            return [snapshot[pid] for pid in family if pid in snapshot]
+        family = expanded
+
+
+def _living_original(family):
+    current = processes()
+    return [
+        p
+        for old in family
+        if (p := current.get(old.pid)) is not None
+        and p.birth == old.birth
+        and p.state != "Z"
+    ]
+
+
+def _pause_browser(family):
+    # Pause Node too: otherwise Playwright's own graceful cleanup can hide a
+    # supervisor that cannot kill Chromium's detached process group.
+    browser = [p for p in family if "chrome" in p.command.lower()]
+    # Node changes its process/thread title to MainThread on some builds.
+    # Identify it by the detached browser root's parent, not a display name.
+    launchers = {p.parent for p in browser if p.pid == p.group}
+    node = [p for p in family if p.pid in launchers]
+    assert browser and node
+    for process in [*node, *browser]:
+        os.kill(process.pid, signal.SIGSTOP)
+    return browser
+
+
+def test_hard_stop_reaps_paused_node_and_detached_chromium_before_ack(app, tmp_path):
+    ws, runtime, store = app
+    entered, late = tmp_path / "entered", tmp_path / "late"
+    stop = threading.Event()
+    states, output, family, alive_at_ack = [], [], [], []
+
+    def observe(event):
+        states.append(event)
+        if event["phase"] == "reaped":
+            alive_at_ack.extend(_living_original(family))
+
+    verifier = VerificationWorker(
+        "verification_worker_support:blocked_handler",
+        {"store": str(store.path), "entered": str(entered), "late_write": str(late)},
+        timeout_seconds=20,
+        terminate_grace_seconds=0.2,
+        observer=observe,
+    )
+    thread = threading.Thread(
+        target=lambda: output.append(
+            verifier.verify(
+                runtime,
+                [
+                    {"screenshot": True},
+                    {"eval": "fetch('api/blocked').then(r=>r.json())"},
+                ],
+                cancelled=stop,
+            )
+        )
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 15
+        while not entered.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert entered.exists()
+        group = next(s["process_group"] for s in states if s["phase"] == "running")
+        family.extend(_family(group))
+        browser = _pause_browser(family)
+        assert any(p.group != group for p in browser)
+        stop.set()
+        thread.join(10)
+        assert not thread.is_alive() and not output[0].ok
+        assert states[-1]["cleanup_ack"] and not alive_at_ack
+        assert not _living_original(family)
+        assert not late.exists() and not ws.files.fs.isdir("/workspace/app/screenshots")
+    finally:
+        stop.set()
+        thread.join(5)
+        if thread.is_alive():
+            supervisor = next(
+                (s["process_group"] for s in states if s["phase"] == "running"), None
+            )
+            for process in _living_original(family):
+                if process.pid == supervisor:
+                    continue
+                try:
+                    os.kill(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            thread.join(5)
+
+
+@pytest.mark.parametrize("before_start", [False, True])
+def test_owner_process_death_reaps_full_browser_tree_or_pre_start_supervisor(
+    app, tmp_path, before_start
+):
     import json
+    import shutil
     import subprocess
-    import sys
 
     phases, entered, late = (tmp_path / name for name in ("phases", "entered", "late"))
     command = (
         "from verification_worker_support import owner; owner("
         + ",".join(repr(str(p)) for p in (app[2].path, phases, entered, late))
+        + ", wait_before_ack="
+        + repr(before_start)
         + ")"
     )
     process = subprocess.Popen([sys.executable, "-c", command])
-    group = None
+    family = []
     try:
-        deadline = time.monotonic() + 10
-        while not entered.exists() and time.monotonic() < deadline:
+        marker = phases if before_start else entered
+        deadline = time.monotonic() + 15
+        while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert entered.exists()
+        assert marker.exists()
         group = json.loads(phases.read_text())["process_group"]
+        family = _family(group)
+        if not before_start:
+            _pause_browser(family)
         process.kill()
         process.wait(timeout=5)
-        deadline = time.monotonic() + 5
-        while _members(group) and time.monotonic() < deadline:
+        deadline = time.monotonic() + 10
+        while _living_original(family) and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert not _members(group)
+        assert not _living_original(family)
         assert not late.exists()
     finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
-        if group is not None and _members(group):
-            import signal
-
-            os.killpg(group, signal.SIGKILL)
-        import shutil
-
+        for owned in _living_original(family):
+            try:
+                os.kill(owned.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
         for directory in tmp_path.glob("nontainer-verify-*"):
             shutil.rmtree(directory)
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="Linux subreaper adoption guarantee"
+)
+def test_supervisor_adopts_double_forked_setsid_child_and_reaps_before_ack(
+    app, tmp_path
+):
+    pid_path, late = tmp_path / "daemon-pid", tmp_path / "daemon-late"
+    states = []
+    result = VerificationWorker(
+        "verification_worker_support:daemonized",
+        {
+            "store": str(app[2].path),
+            "daemon_pid": str(pid_path),
+            "late_write": str(late),
+        },
+        observer=states.append,
+    ).verify(app[1], [])
+    assert result.ok, result
+    assert pid_path.exists()
+    assert int(pid_path.read_text()) not in processes()
+    assert not late.exists()
+    assert states[-1]["ownership_mode"] == "linux_subreaper_pidfd"
+    assert states[-1]["cleanup_ack"]
