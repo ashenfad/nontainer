@@ -416,3 +416,33 @@ def test_a_cancelled_request_stops_its_body_and_waits_for_it():
 
     anyio.run(main)
     assert seen["when_the_request_ended"] is True
+
+
+def test_a_request_cancelled_before_its_body_starts_ends_at_once():
+    """Every worker thread is taken, so the body is still waiting for one
+    when the client cancels: the request ends without waiting for it,
+    and the body never runs."""
+    import threading
+    import time
+
+    import anyio
+
+    from nontainer.adapters.mcp import _off_loop_stoppable
+
+    ran: list[bool] = []
+    release = threading.Event()
+
+    async def main() -> float:
+        anyio.to_thread.current_default_thread_limiter().total_tokens = 1
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(anyio.to_thread.run_sync, release.wait)  # the only thread
+            await anyio.sleep(0.1)
+            started = time.monotonic()
+            with anyio.move_on_after(0.3):
+                await _off_loop_stoppable(lambda stopped: ran.append(True))
+            took = time.monotonic() - started
+            release.set()
+        return took
+
+    assert anyio.run(main) < 2
+    assert ran == []
