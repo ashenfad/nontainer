@@ -688,7 +688,7 @@ async def test_mcp_test_app_tool_returns_image_content(app_ws):
     assert "test_app" in tools
 
     result = await server.call_tool("test_app", {"actions": [{"screenshot": True}]})
-    contents = result[0] if isinstance(result, tuple) else result
+    contents = result.content
     types = {type(c).__name__ for c in contents}
     assert "ImageContent" in types
     assert any("PASS" in getattr(c, "text", "") for c in contents)

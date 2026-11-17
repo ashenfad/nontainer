@@ -23,9 +23,10 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import CallToolResult, TextContent
 
 from ..workspace import Workspace
 from .render import ToolsMode
@@ -95,11 +96,37 @@ async def _off_loop_stoppable(work: "Callable[[Callable[[], bool]], Any]") -> An
         raise
 
 
-def _content(out: ToolOutput) -> list:
-    """A toolset result as MCP content: the text, then its images."""
+def _content(out: ToolOutput, *links: Any) -> CallToolResult:
+    """A toolset result as an MCP tool result: the text, any links, then
+    its images, with ``isError`` set when the call did not come out as
+    asked (``ToolOutput.is_error``: a non-zero exit, a failed edit, a
+    ``test_app`` check that failed). The text tells the model either
+    way; the flag tells the client, which otherwise counts every call a
+    success. A failed call keeps its images, so a failed ``test_app``
+    still shows what the page looked like."""
     from mcp.server.fastmcp import Image
 
-    return [out.text, *(Image(data=i.data, format=i.format) for i in out.images)]
+    images = [
+        Image(data=i.data, format=i.format).to_image_content() for i in out.images
+    ]
+    return CallToolResult(
+        content=[TextContent(type="text", text=out.text), *links, *images],
+        isError=out.is_error,
+    )
+
+
+# A text tool's CallToolResult is annotated with str, the type of its
+# text: FastMCP then advertises a {"result": string} output schema and
+# checks each result's structured content against it.
+_TextResult = Annotated[CallToolResult, str]
+
+
+def _text(out: ToolOutput) -> CallToolResult:
+    """:func:`_content` for a text tool, carrying the structured result
+    its output schema promises."""
+    result = _content(out)
+    result.structuredContent = {"result": out.text}
+    return result
 
 
 def build_server(
@@ -161,42 +188,42 @@ def build_server(
     @server.tool(
         name="terminal", description=toolset.description("terminal") + resource_note
     )
-    async def terminal(command: str) -> str:
-        return (await _off_loop(lambda: toolset.terminal(command))).text
+    async def terminal(command: str) -> _TextResult:
+        return _text(await _off_loop(lambda: toolset.terminal(command)))
 
     @server.tool(
         name="file_write",
         description=toolset.description("file_write") + resource_note,
     )
-    async def file_write(path: str, content: str) -> list:
+    async def file_write(path: str, content: str) -> CallToolResult:
         import mcp.types as types
 
         out = await _off_loop(lambda: toolset.file_write(path, content))
         written = out.written or path
         # Ground-truth artifact handle: the link exists because the
         # write succeeded — clients can fetch it without trusting prose.
-        return [
-            out.text,
+        return _content(
+            out,
             types.ResourceLink(
                 type="resource_link",
                 uri=f"workspace://{written.lstrip('/')}",
                 name=written.rsplit("/", 1)[-1],
             ),
-        ]
+        )
 
     @server.tool(name="file_edit", description=toolset.description("file_edit"))
     async def file_edit(
         path: str, old_string: str, new_string: str, replace_all: bool = False
-    ) -> str:
+    ) -> _TextResult:
         out = await _off_loop(
             lambda: toolset.file_edit(
                 path, old_string, new_string, replace_all=replace_all
             )
         )
-        return out.text
+        return _text(out)
 
     @server.tool(name="view_image", description=toolset.description("view_image"))
-    async def view_image(path: str) -> list:
+    async def view_image(path: str) -> CallToolResult:
         return _content(await _off_loop(lambda: toolset.view_image(path)))
 
     # -- workspace files as MCP resources -------------------------------
@@ -287,8 +314,8 @@ def build_server(
             name="run_python",
             description=toolset.description("run_python") + resource_note,
         )
-        async def run_python(code: str) -> str:
-            return (await _off_loop(lambda: toolset.run_python(code))).text
+        async def run_python(code: str) -> _TextResult:
+            return _text(await _off_loop(lambda: toolset.run_python(code)))
 
     if toolset.sessions is not None:
         # One tool with an action argument, the shape test_app has, and
@@ -309,7 +336,7 @@ def build_server(
             fork_from: str = "",
             resume: str = "",
             wait: bool = False,
-        ) -> str:
+        ) -> _TextResult:
             # Off the loop: a wait=true ask blocks for the delegate's
             # whole run. The toolset takes no fence for it.
             out = await _off_loop(
@@ -324,7 +351,7 @@ def build_server(
                     wait=wait,
                 )
             )
-            return out.text
+            return _text(out)
 
     if apps is not None:
 
@@ -333,7 +360,7 @@ def build_server(
             actions: list[dict],
             viewport: str | dict = "desktop",
             bind: dict | str | None = None,
-        ) -> list:
+        ) -> CallToolResult:
             # Off the loop as every tool is, and here it is required:
             # Playwright's sync API refuses to run on a live asyncio
             # loop thread. A cancelled request stops the run.

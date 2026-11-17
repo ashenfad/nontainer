@@ -1206,7 +1206,7 @@ requires-dist = [
     { name = "kvgit", extras = ["disk"], specifier = ">=0.4.3,<0.5" },
     { name = "kvgit", extras = ["postgres"], marker = "extra == 'postgres'", specifier = ">=0.4.3,<0.5" },
     { name = "matplotlib", marker = "extra == 'dev'" },
-    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.0,<2" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.19,<2" },
     { name = "monkeyfs", specifier = ">=0.2.10" },
     { name = "numpy", marker = "extra == 'dev'" },
     { name = "pandas", marker = "extra == 'dev'" },

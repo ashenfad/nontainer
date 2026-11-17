@@ -3311,6 +3311,15 @@ exposes a host directory inside the workspace (read-only unless
 `build_server` for anything the flags don't cover (module grants with
 network/host-fs, host objects, primers).
 
+**Failed calls.** Every tool returns a `CallToolResult` whose `isError`
+is the call's `ToolOutput.is_error`: a non-zero exit, a failed edit, an
+unreadable image, a `test_app` run that did not pass. A failed call
+keeps its images, so a failed `test_app` still shows the page. The text
+tools keep the output schema they advertise (`{"result": string}`) and
+carry it as `structuredContent`, failed or not. FastMCP's in-process
+`server.call_tool(...)` returns the same `CallToolResult`; read
+`.content`.
+
 **Artifact channels.** Every server also registers:
 
 - a `view_image` tool (both adapters; not on an agno toolkit built with

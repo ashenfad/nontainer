@@ -59,8 +59,10 @@ agno = [
 ]
 mcp = [
     # The adapter targets mcp.server.fastmcp, removed in MCP 2.0.
-    # Lift this cap when the MCP 2 adapter migration lands.
-    "mcp>=1.0,<2",
+    # Lift this cap when the MCP 2 adapter migration lands. 1.19 is the
+    # first FastMCP that passes a tool's own CallToolResult through,
+    # which is how a failed call reaches the client with isError set.
+    "mcp>=1.19,<2",
 ]
 postgres = [
     # Store(kv="postgresql://...") or NONTAINER_KV: psycopg 3, one pool per Store.

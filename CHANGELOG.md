@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **A `test_app` run returns once its page's requests are answered** (#318), and declines those that haven't reached a handler, so no handler write lands after the result.
 - **Every `test_app` wait is bounded** (#318). An `eval` fails after `eval_timeout_ms` (10s), a `wait` above `action_timeout_ms` is refused, and a run stops at `run_timeout_ms` (60s) with the action in progress failed.
+- **An MCP tool call that did not come out as asked is an error result (`isError`).** A non-zero exit, a failed edit or a failed `test_app` came back as a success at the protocol level; a failed call keeps its images, and the `[mcp]` extra now requires mcp 1.19.
 
 ## 0.12.0 - 2026-11-11
 
