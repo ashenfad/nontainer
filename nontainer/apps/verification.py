@@ -367,8 +367,8 @@ class VerificationWorker:
 def _worker(root: Path, owner_fd: int) -> None:
     # Only the owner holds the pipe's write end. A separate interpreter (not a
     # thread sharing a potentially blocked callback/GIL) kills this entire group
-    # on owner death, before PID-based lease recovery can admit replacement work.
-    # The guard stays in this group, and normal teardown reaps it too.
+    # on owner death. Embedders retain orphan reservations while the recorded
+    # group still lives. Normal teardown reaps this in-group guard as well.
     subprocess.Popen(
         [
             sys.executable,

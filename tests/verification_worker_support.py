@@ -11,7 +11,7 @@ from nontainer.apps import AppRuntime, AppsConfig
 
 
 @contextmanager
-def factory(context, *, log_sink, screenshot_sink):
+def trusted_store(store_path):
     pool = None
     kv = None
     if os.environ.get("NONTAINER_TEST_KV") == "postgres":
@@ -30,10 +30,23 @@ def factory(context, *, log_sink, screenshot_sink):
             max_size=2,
             kwargs={"autocommit": True},
         )
-        table = "t_" + hashlib.sha1(context.config["store"].encode()).hexdigest()[:24]
+        table = (
+            "t_"
+            + hashlib.sha1(str(Path(store_path) / "kvgit").encode()).hexdigest()[:24]
+        )
         kv = Postgres(pool=pool, table=table)
-    store = Store(context.config["store"], kv=kv)
+    store = Store(store_path, kv=kv)
     try:
+        yield store
+    finally:
+        store.close()
+        if pool is not None:
+            pool.close()
+
+
+@contextmanager
+def factory(context, *, log_sink, screenshot_sink):
+    with trusted_store(context.config["store"]) as store:
         with store.resolve(context.ref) as snapshot:
             yield AppRuntime(
                 snapshot,
@@ -41,10 +54,6 @@ def factory(context, *, log_sink, screenshot_sink):
                 log_sink=log_sink,
                 screenshot_sink=screenshot_sink,
             )
-    finally:
-        store.close()
-        if pool is not None:
-            pool.close()
 
 
 @contextmanager
@@ -82,17 +91,17 @@ def owner(store_path, phases_path, entered_path, late_path):
 
     from nontainer.apps import VerificationWorker, enable_apps
 
-    store = Store(store_path)
-    ws = store.open("draft")
-    runtime = enable_apps(ws, AppsConfig(readonly_handlers=True))
+    with trusted_store(store_path) as store:
+        ws = store.open("draft")
+        runtime = enable_apps(ws, AppsConfig(readonly_handlers=True))
 
-    def observe(event):
-        if event["phase"] == "running":
-            Path(phases_path).write_text(json.dumps(event))
+        def observe(event):
+            if event["phase"] == "running":
+                Path(phases_path).write_text(json.dumps(event))
 
-    VerificationWorker(
-        "verification_worker_support:blocked_handler",
-        {"store": store_path, "entered": entered_path, "late_write": late_path},
-        timeout_seconds=60,
-        observer=observe,
-    ).verify(runtime, [{"eval": "fetch('api/blocked').then(r=>r.json())"}])
+        VerificationWorker(
+            "verification_worker_support:blocked_handler",
+            {"store": store_path, "entered": entered_path, "late_write": late_path},
+            timeout_seconds=60,
+            observer=observe,
+        ).verify(runtime, [{"eval": "fetch('api/blocked').then(r=>r.json())"}])
