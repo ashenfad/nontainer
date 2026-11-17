@@ -3438,8 +3438,10 @@ AppRuntime.test_app(actions=None, *, viewport="desktop", bind=None,
 # above action_timeout_ms is refused, and a run still going at
 # run_timeout_ms stops, fails the action in progress, and returns.
 # cancelled: the caller's, not part of the request: a callable asked
-# while the run goes; a true answer stops it as its budget would. A run
-# returns once its page is closed and the requests it sent are answered.
+# while the run goes; a true answer stops it as its budget would. It
+# must answer promptly (a flag read): a check that blocks holds a thread
+# of the small pool every run's checks share. A run returns once its
+# page is closed and the requests it sent are answered.
 # bind: {"name": "other"} has handlers read host object `other` where
 # they read `name`, for this run's (or this request's) requests only.
 # Nothing is bound unless asked. ws-curl takes it as --bind NAME=OTHER.

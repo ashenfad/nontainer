@@ -148,7 +148,13 @@ class DriveSpec:
     run goes. Once it answers true, the driver stops as it does at
     ``run_timeout_ms``, failing the action in progress as cancelled, and
     still finishes its cleanup before it returns. ``None`` is a run
-    nothing cancels."""
+    nothing cancels.
+
+    It must answer promptly: read a flag, or a registry that answers at
+    once. It is asked on a small pool of threads every run shares, and a
+    run that ends doesn't wait for a check still being asked, so a check
+    that blocks holds a thread of that pool after the run has returned,
+    and enough of them stall every run's checks."""
 
     drain_timeout_ms: int = 10_000
     """How long a run that has ended waits for the next of the requests

@@ -1181,7 +1181,8 @@ class AppRuntime:
 
         ``cancelled`` is the caller's, not part of the request: asked
         while the run goes, a true answer stops the run as its budget
-        would, with the action in progress failed as cancelled.
+        would, with the action in progress failed as cancelled. It must
+        answer promptly (see ``DriveSpec.cancelled``).
 
         ``bind={"db": "testdb"}`` runs the page's requests against a
         different host object than the session binds under that name,
