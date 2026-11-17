@@ -626,7 +626,7 @@ def _serve(
 
 
 #: How much longer than a handler's own per-request limit a run that has
-#: ended waits for the requests its page left behind.
+#: ended waits for the next of the requests its page left behind.
 _DRAIN_MARGIN_MS = 5_000
 
 
@@ -654,8 +654,9 @@ def build_spec(
     as a whole stops at ``run_timeout_ms`` and reports what it has.
     ``cancelled`` stops it the same way when it answers true. A run that
     has ended waits for the requests its page left with the handlers,
-    for up to the handlers' own time limit plus a margin, so what they
-    write lands before the result does."""
+    so what they write lands before the result does. It waits while they
+    keep finishing, and gives up once none has finished in the handlers'
+    own time limit plus a margin."""
     vp = coerce_viewport(viewport)
     # One declaration (AppsConfig.script_hosts) drives interception AND
     # the served CSP: what verifies headlessly matches what serves.

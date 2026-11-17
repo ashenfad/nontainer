@@ -288,7 +288,7 @@ async def _drive(
     browser: Any, sema: "asyncio.Semaphore", spec: DriveSpec
 ) -> DriveReport:
     """Run one spec against a fresh context on the shared browser.
-    Runs on the browser loop-thread; bounded by ``sema``."""
+    Runs on the browser loop-thread; holds one of ``sema``'s slots."""
     started = time.perf_counter()
     base = spec.base_url
     origin = urlsplit(base)
@@ -501,22 +501,57 @@ async def _drive(
             return None
 
     async def _drain() -> None:
-        """Wait for the requests ``serve`` is still answering, up to
-        ``spec.drain_timeout_ms``. A handler goes on in its thread after
-        the page that called it is gone, and what it writes must land
-        before the report rather than after it."""
-        if not serving:
-            return
-        _, pending = await asyncio.wait(
-            set(serving), timeout=spec.drain_timeout_ms / 1000
-        )
-        if pending:
-            _logger.warning(
-                "test_app: %d request(s) to the app still running %dms after "
-                "the run ended; what they write lands after its report",
-                len(pending),
-                spec.drain_timeout_ms,
+        """Wait for the requests ``serve`` is still answering. A handler
+        goes on in its thread after the page that called it is gone, and
+        what it writes must land before the report rather than after it.
+
+        Handlers may run one at a time (a workspace serializes them), so
+        a bound on the whole wait would give up on the last of several
+        that each kept to their own limit. The wait goes on while
+        requests keep finishing, and gives up only once none has
+        finished for ``spec.drain_timeout_ms``."""
+        bound = spec.drain_timeout_ms / 1000
+        while serving:
+            done, pending = await asyncio.wait(
+                set(serving), timeout=bound, return_when=asyncio.FIRST_COMPLETED
             )
+            serving.difference_update(done)
+            if not done:
+                _logger.warning(
+                    "test_app: %d request(s) to the app still running, none "
+                    "finished in %dms; what they write lands after the report",
+                    len(pending),
+                    spec.drain_timeout_ms,
+                )
+                return
+
+    async def _take_slot() -> bool:
+        """Take one of the browser's slots (``sema``), asking
+        ``spec.cancelled`` while waiting: a run queued behind others that
+        is cancelled stops there, without opening a context. ``False``
+        when it was cancelled first."""
+        if spec.cancelled is None:
+            await sema.acquire()
+            return True
+        acquire = asyncio.ensure_future(sema.acquire())
+
+        def give_back() -> None:
+            # An acquire that already finished holds a slot; one that is
+            # cancelled while waiting takes none.
+            if not acquire.cancel() and acquire.exception() is None:
+                sema.release()
+
+        try:
+            while True:
+                done, _ = await asyncio.wait({acquire}, timeout=_CANCEL_POLL_S)
+                if done:
+                    return True
+                if await loop.run_in_executor(None, _asks, spec.cancelled):
+                    give_back()
+                    return False
+        except asyncio.CancelledError:
+            give_back()
+            raise
 
     async def _capture_tile(page: Any, grid: Any, label: Any) -> tuple[str | None, str]:
         """A frame for a grid. Returns the grid's path, or ``None`` and
@@ -564,7 +599,9 @@ async def _drive(
                             error=f"grid {name!r} could not be assembled: {e}",
                         )
 
-    async with sema:
+    if not await _take_slot():
+        return _report(False, load_error="the run was cancelled before it started")
+    try:
         context = await browser.new_context(
             **(
                 {"viewport": {"width": spec.width, "height": spec.height}}
@@ -942,3 +979,5 @@ async def _drive(
         # on open contexts, which is what costs the browser memory.
         await _compose_grids()
         return _report(True)
+    finally:
+        sema.release()

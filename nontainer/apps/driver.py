@@ -150,12 +150,13 @@ class DriveSpec:
     nothing cancels."""
 
     drain_timeout_ms: int = 10_000
-    """How long a run that has ended waits for the requests ``serve`` is
-    still answering. ``serve`` is synchronous, so a request the page
-    sent before the run ended goes on in its thread. A driver returns
-    once those finish, so nothing a handler writes lands after the
-    report, and stops waiting at this bound. Set it above the handler's
-    own per-request limit."""
+    """How long a run that has ended waits for the next of the requests
+    ``serve`` is still answering to finish. ``serve`` is synchronous, so
+    a request the page sent before the run ended goes on in its thread.
+    A driver returns once those finish, so nothing a handler writes
+    lands after the report. They may finish one at a time, so the wait
+    goes on while they do, and gives up only once none has finished
+    for this long. Set it above the handler's own per-request limit."""
 
 
 @dataclass(frozen=True)

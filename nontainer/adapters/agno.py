@@ -289,7 +289,19 @@ def run_cancelled(fc: Any) -> Callable[[], bool] | None:
     try:
         from agno.run.cancel import is_cancelled
     except ImportError:
-        return None
+        # Before is_cancelled, the registry answered only by raising.
+        try:
+            from agno.exceptions import RunCancelledException
+            from agno.run.cancel import raise_if_cancelled
+        except ImportError:
+            return None
+
+        def is_cancelled(run_id: str) -> bool:
+            try:
+                raise_if_cancelled(run_id)
+            except RunCancelledException:
+                return True
+            return False
 
     def cancelled() -> bool:
         return bool(is_cancelled(run_id))
