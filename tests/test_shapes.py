@@ -87,8 +87,6 @@ def test_a_shape_unpickles_where_it_was_never_loaded():
 
 def open_ws(rung, cfg):
     if rung == "dud":
-        if sys.version_info < (3, 11):
-            pytest.skip("dud needs Python 3.11+")
         pytest.importorskip("dud")
         from nontainer.executor_dud import DudExecutor
 

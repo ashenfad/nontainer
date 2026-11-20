@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`store.scratch(ref, name, **open_kwargs)` creates a writable session at the exact commit a ref names** (#327). Its head is that commit, opening it writes nothing, and its first commit's only parent is that commit, so `ws.land` takes the work back.
 
 ### Changed
+- **Breaking: requires Python 3.11 or later.** CI tests 3.11 through 3.15, and the `[dud]` extra no longer needs a version marker.
 - **Storage: the publication registry is kept in the store's kvgit backend, shared by every host on it** (#155). Each host's `publications.json` is merged in on its first use and renamed `.imported`; 0.13 and earlier no longer see the registry.
 
 ### Fixed

@@ -2,7 +2,6 @@
 made as the world opens, forks included."""
 
 import dataclasses
-import sys
 
 import pytest
 from host_types import Row, World, WorldStub
@@ -13,8 +12,6 @@ from nontainer import HostObject, Profile, PythonConfig, Store
 def open_ws(rung, entry, session="lead"):
     cfg = PythonConfig(host_objects={"world": entry})
     if rung == "dud":
-        if sys.version_info < (3, 11):
-            pytest.skip("dud needs Python 3.11+")
         pytest.importorskip("dud")
         from nontainer.executor_dud import DudExecutor
 

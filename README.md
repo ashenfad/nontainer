@@ -137,11 +137,9 @@ uv run pytest -q -n auto      # one worker per core; drop -n for a single test
 uv run ruff check nontainer tests && uv run ruff format --check nontainer tests
 ```
 
-Include `--extra dud` on 3.11+: the DudExecutor tests guard themselves
-with `importorskip`, so without it the whole real-machine suite skips
-silently and the run is green for the wrong reason. (On 3.10 the extra
-installs nothing — it carries a `python_version >= "3.11"` marker — and
-those tests skip by design.)
+Include `--extra dud`: the DudExecutor tests guard themselves with
+`importorskip`, so without it the whole real-machine suite skips
+silently and the run is green for the wrong reason.
 
 ## License
 

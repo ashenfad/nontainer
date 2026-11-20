@@ -4,7 +4,6 @@ postponed annotation works, a ``from __future__`` import takes effect,
 and the cache still holds data, never a class the code defined."""
 
 import dataclasses
-import sys
 
 import pytest
 
@@ -14,8 +13,6 @@ from nontainer.executor_dud import _hoist_future
 
 def open_ws(rung):
     if rung == "dud":
-        if sys.version_info < (3, 11):
-            pytest.skip("dud needs Python 3.11+")
         pytest.importorskip("dud")
         from nontainer.executor_dud import DudExecutor
 

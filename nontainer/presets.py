@@ -82,9 +82,9 @@ _RANDOM_EXCLUDE = ("_*", "*._*", "seed", "getstate", "setstate", "SystemRandom")
 # callables and arguments must already be reachable by agent code.
 _FUNCTOOLS_INCLUDE = ("partial", "reduce", "lru_cache", "cache")
 
-# String-only shell rendering. `split` stays out: on Python 3.10/3.11,
+# String-only shell rendering. `split` stays out: on Python 3.11,
 # split(None) reads sys.stdin, which is too surprising for a default
-# grant (and the project still supports those versions).
+# grant (and the project still supports 3.11).
 _SHLEX_INCLUDE = ("quote", "join")
 
 # The annotation vocabulary and nothing else. get_type_hints and

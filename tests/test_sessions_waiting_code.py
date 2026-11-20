@@ -98,8 +98,6 @@ CASE = textwrap.dedent(
 @pytest.mark.parametrize("how", ["ask_and_wait", "ask_then_wait"])
 def test_code_waiting_for_a_delegate_gets_its_answer(tmp_path, rung, how):
     if rung == "dud":
-        if sys.version_info < (3, 11):
-            pytest.skip("dud needs Python 3.11+")
         pytest.importorskip("dud")
     script = tmp_path / "case.py"
     script.write_text(CASE)
