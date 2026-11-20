@@ -152,6 +152,31 @@ def _holds_nothing(commit: Any) -> bool:
     return commit.root == EMPTY_HASH and not commit.info
 
 
+def _registry_problem(data: Any) -> str | None:
+    """What makes ``data`` something other than a registry file an
+    earlier release wrote, or ``None`` when it is one: a mapping of
+    publication names to records, each with a mapping of versions to
+    rows that name a ``ref``. Checked whole before anything is merged,
+    so a file that is half a registry is refused rather than half
+    imported."""
+    if not isinstance(data, dict):
+        return f"the file holds a {type(data).__name__}, not a mapping of names"
+    for name, record in data.items():
+        if not isinstance(record, dict):
+            return f"{name!r} is a {type(record).__name__}, not a record"
+        versions = record.get("versions", {})
+        if not isinstance(versions, dict):
+            return f"{name!r} has versions that are not a mapping"
+        for version, row in versions.items():
+            if not isinstance(row, dict) or not isinstance(row.get("ref"), str):
+                return f"{name}/{version} names no ref"
+        if not isinstance(record.get("meta", {}), dict):
+            return f"{name!r} has meta that is not a mapping"
+        if not isinstance(record.get("current"), (str, type(None))):
+            return f"{name!r} has a current that is not a version name"
+    return None
+
+
 def _live(record: Any) -> bool:
     """Whether a registry record is a publication: it holds at least one
     recorded version. A record holding only reservations is a lineage
@@ -1236,7 +1261,13 @@ class _Publishing:
                 "publications themselves are tags and branches on the store "
                 "and are still there."
             ) from e
-        records = data if isinstance(data, dict) else {}
+        problem = _registry_problem(data)
+        if problem is not None:
+            raise WorkspaceError(
+                f"{path} is not a publication registry: {problem}. Nothing was "
+                "imported, and the file is left as it is."
+            )
+        records = data
         backed, skipped = self._backed_versions(records)
         if skipped:
             _logger.warning(
@@ -1277,11 +1308,12 @@ class _Publishing:
                     current = record.get("current")
                 if current not in versions:
                     current = sorted(versions, key=_version_order)[-1]
-                shared.update(
-                    versions=versions,
-                    current=current,
-                    meta=shared.get("meta") or record.get("meta") or {},
-                )
+                # A publication the shared registry already holds keeps
+                # its own metadata, an empty one a caller cleared
+                # included; only one the file brings in anew takes the
+                # file's.
+                meta = shared["meta"] if name in registry else record.get("meta")
+                shared.update(versions=versions, current=current, meta=meta or {})
                 registry[name] = shared
 
         self._change_registry(merge)
