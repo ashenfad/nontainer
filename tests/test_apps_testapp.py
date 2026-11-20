@@ -1556,19 +1556,31 @@ def test_a_page_stuck_in_its_own_script_still_ends_the_run(quiet_rt):
     assert quiet_rt.test_app([{"read": "#x"}]).ok
 
 
-def test_a_cancelled_run_stops_and_fails_the_action_in_progress(quiet_rt):
-    import threading
+def test_a_cancelled_run_stops_and_fails_the_action_in_progress(quiet_rt, monkeypatch):
+    """The cancel answers true once the eval is running, which its first
+    step tells the test by asking for the page: it lands during the
+    eval however long the load and the read before it took."""
     import time
 
-    flag = threading.Event()
-    threading.Timer(1.0, flag.set).start()
-    started = time.monotonic()
+    began: list[float] = []
+    dispatch = quiet_rt.dispatch
+
+    def watching(request, **kwargs):
+        if request.params.get("began") == "eval" and not began:
+            began.append(time.monotonic())
+        return dispatch(request, **kwargs)
+
+    monkeypatch.setattr(quiet_rt, "dispatch", watching)
     result = quiet_rt.test_app(
-        [{"read": "#x"}, {"eval": "new Promise(r => setTimeout(r, 30000))"}],
+        [
+            {"read": "#x"},
+            {"eval": "(fetch('?began=eval'), new Promise(r => setTimeout(r, 30000)))"},
+        ],
         eval_timeout_ms=30_000,
-        cancelled=flag.is_set,
+        cancelled=lambda: bool(began),
     )
-    assert time.monotonic() - started < 10
+    assert began, "the eval never asked for the page"
+    assert time.monotonic() - began[0] < 10
     assert [r.ok for r in result.results] == [True, False]
     assert "the run was cancelled" in result.results[1].error
 
@@ -1578,10 +1590,12 @@ SLOW_PAGE = b"""<!doctype html><html><body><p id="x">hi</p>
 </body></html>"""
 
 
-def _slow_spec(actions, **fields):
+def _slow_spec(actions, *, began=None, **fields):
     """A spec straight to the driver, with no workspace and so no lock:
     its page leaves a request that takes 1.5s with ``serve``, and
-    ``served`` is set once that request has been answered."""
+    ``served`` is set once that request has been answered. A request
+    for ``api/began`` is answered at once and sets ``began``, if given:
+    an eval that asks for it first says it is running."""
     import threading
     import time
 
@@ -1594,6 +1608,10 @@ def _slow_spec(actions, **fields):
         if url.startswith("/api/slow"):
             time.sleep(1.5)
             served.set()
+            return WireResponse(200, b"{}", "application/json")
+        if url.startswith("/api/began"):
+            if began is not None:
+                began.set()
             return WireResponse(200, b"{}", "application/json")
         return WireResponse(200, SLOW_PAGE, "text/html")
 
@@ -1620,19 +1638,26 @@ def test_a_run_returns_after_the_requests_its_page_left(chromium_available):
 
 def test_cancelling_an_async_run_waits_for_its_cleanup(chromium_available):
     """A cancelled await stops the run, and the cancellation arrives only
-    once the run's page is closed and its request has been answered."""
+    once the run's page is closed and its request has been answered.
+    The await is cancelled once the eval is running, so the page has
+    loaded and left its request however slow the machine."""
     import asyncio
+    import threading
     import time
 
     from nontainer.apps.browser import submit_job
     from nontainer.apps.driver_playwright import PlaywrightDriver
 
-    spec, served = _slow_spec([{"eval": "new Promise(r => setTimeout(r, 30000))"}])
+    began = threading.Event()
+    spec, served = _slow_spec(
+        [{"eval": "(fetch('api/began'), new Promise(r => setTimeout(r, 30000)))"}],
+        began=began,
+    )
     seen: dict[str, object] = {}
 
     async def go() -> None:
         run = asyncio.ensure_future(PlaywrightDriver().arun(spec))
-        await asyncio.sleep(0.5)
+        assert await asyncio.to_thread(began.wait, 10), "the eval never began"
         started = time.monotonic()
         run.cancel()
         try:
