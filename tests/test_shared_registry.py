@@ -753,3 +753,52 @@ def test_importing_the_own_file_again_points_at_the_renamed_one(tmp_path):
     report = store.import_registry(path / "publications.json.imported")
     assert report.present == ("demo/v1",) and report.imported == ()
     store.close()
+
+
+def test_an_import_keeps_metadata_a_caller_cleared(tmp_path):
+    """An empty meta in the shared registry is one somebody set, and an
+    import adding a version to that publication leaves it empty."""
+    store = Store(tmp_path / "store")
+    with _draft(store, "one", "first") as ws:
+        store.publish(ws, "demo")
+        ws.files.write(PAGE, "second")
+        ws.commit()
+        store.publish(ws, "demo")
+    store.set_meta("demo", {"title": "old"})
+    old = store._registry_read()["demo"]
+    store.set_meta("demo", {})
+    shared = store._registry_read()
+    shared["demo"]["versions"].pop("v2")
+    store.repo.store.set("__nontainer_publications__", json.dumps(shared).encode())
+    legacy = tmp_path / "old.json"
+    legacy.write_text(json.dumps({"demo": old}))
+
+    report = store.import_registry(legacy)
+    assert report.imported == ("demo/v2",)
+    pub = store.publication("demo")
+    assert [v.version for v in pub.versions] == ["v1", "v2"]
+    assert pub.meta == {}
+    store.close()
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [],
+        {"demo": []},
+        {"demo": {"versions": []}},
+        {"demo": {"versions": {"v1": {"tag": "demo/v1"}}}},
+        {"demo": {"versions": {}, "meta": "title"}},
+    ],
+)
+def test_a_file_that_is_not_a_registry_is_refused_and_kept(tmp_path, data, caplog):
+    path = _legacy_store(tmp_path)
+    (path / "publications.json").write_text(json.dumps(data))
+    store = Store(path)
+    with pytest.raises(WorkspaceError, match="not a publication registry"):
+        store.import_registry()
+    with caplog.at_level("WARNING", logger="nontainer.store"):
+        assert store.publications() == {}  # the automatic import logs it
+    assert "publications.json" in caplog.text
+    assert (path / "publications.json").is_file()
+    store.close()
