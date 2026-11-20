@@ -192,3 +192,21 @@ class LandConflict(WorkspaceError):
     def __init__(self, message: str, *, conflicts: "tuple[str, ...]") -> None:
         super().__init__(message)
         self.conflicts = tuple(conflicts)
+
+
+class ChangesTooLarge(WorkspaceError):
+    """A change between two states is larger than the caller would
+    inspect.
+
+    ``store.changes(..., max_entries=, max_bytes=)`` measures the change
+    from the store's own records before it reads anything of it, and
+    raises this when either bound is passed. ``entries`` counts the
+    files, directories and cache keys that changed, and the cwd if it
+    moved; ``stored_bytes`` is what the change stores: the stored size
+    of every file and cache value it adds or replaces.
+    """
+
+    def __init__(self, message: str, *, entries: int, stored_bytes: int) -> None:
+        super().__init__(message)
+        self.entries = entries
+        self.stored_bytes = stored_bytes

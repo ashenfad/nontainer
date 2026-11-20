@@ -41,6 +41,7 @@ from ..protocol import (
     not_on_session,
     validate_session_id,
 )
+from .changes import _Changes
 from .layout import (
     _ANCHOR_BRANCH,
     _PUB_BRANCH_PREFIX,
@@ -63,7 +64,7 @@ if TYPE_CHECKING:
     from ..workspace import Mount, Profile, PythonConfig, Workspace
 
 
-class Store(_Publishing):
+class Store(_Publishing, _Changes):
     """Where sessions live, and everything that outlives one of them.
 
     Args:
@@ -709,7 +710,7 @@ class Store(_Publishing):
         session another caller opened and committed to meanwhile is
         theirs, and is left alone.
         """
-        from kvgit import BranchExistsError, KvgitError, UnknownCommitError
+        from kvgit import BranchExistsError, UnknownCommitError
 
         from ..errors import CommitNotFoundError
         from ..workspace import _profile_fields
@@ -739,27 +740,8 @@ class Store(_Publishing):
                 )
             },
         )
-        parsed = Ref.parse(ref)
-        if parsed.tag is not None:
-            self._require_tag_at(parsed.tag, parsed)
-            commit = parsed.commit
-        else:
-            if not self._is_publication_branch(parsed.session) and (
-                parsed.session not in set(self._branches())
-            ):
-                raise WorkspaceError(
-                    f"No such session on this store: {parsed.session!r} "
-                    f"(creating {name!r} at {str(parsed)!r})"
-                )
-            with self._ref_source_held(parsed, "scratch") as source:
-                op = f"scratch at {source}"
-                self._require_branch(source.session, op)
-                try:
-                    commit = self._commit_on(source.session, source.commit)
-                except KvgitError:
-                    # The session went while its line was walked.
-                    self._require_branch(source.session, op)
-                    raise
+        parsed = self._exact_ref(ref, f"creating {name!r} at")
+        commit = parsed.commit
         repo = self._kvgit_repo(create=True)
         try:
             repo.branches.create(name, at=commit)
@@ -999,6 +981,36 @@ class Store(_Publishing):
             # body failed better than a missing branch does.
             self._require_registered(whole)
             raise
+
+    def _exact_ref(self, ref: "str | Ref", doing: str) -> Ref:
+        """The exact state a ref names, validated as :meth:`resolve`
+        validates one, with its commit spelled whole: a store tag's ref
+        the tag still answers for, or a session's (or a version still
+        published) whose commit is on that line. ``doing`` says what the
+        ref was for, in a refusal."""
+        from kvgit import KvgitError
+
+        parsed = Ref.parse(ref)
+        if parsed.tag is not None:
+            self._require_tag_at(parsed.tag, parsed)
+            return parsed
+        if not self._is_publication_branch(parsed.session) and (
+            parsed.session not in set(self._branches())
+        ):
+            raise WorkspaceError(
+                f"No such session on this store: {parsed.session!r} "
+                f"({doing} {str(parsed)!r})"
+            )
+        with self._ref_source_held(parsed, doing) as source:
+            op = f"{doing} {source}"
+            self._require_branch(source.session, op)
+            try:
+                commit = self._commit_on(source.session, source.commit)
+            except KvgitError:
+                # The session went while its line was walked.
+                self._require_branch(source.session, op)
+                raise
+        return Ref(source.session, commit)
 
     def _expanded_ref(self, ref: Ref) -> Ref:
         """A ref whose commit is spelled in full.

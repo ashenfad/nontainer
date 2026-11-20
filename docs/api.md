@@ -63,6 +63,8 @@ store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at
                                           # session@commit; close it
 store.scratch(ref, name, **open_kwargs) -> Workspace   # a new session,
                                           # writable, its head that commit
+store.changes(base, theirs, *, root=None, max_entries=None,
+              max_bytes=None) -> StateChanges   # what a land would move
 store.clean(*, min_age=3600) -> int       # sweep unreachable commits
 store.migrate_layout(sessions=None, *, dry_run=False)
     -> dict[str, LayoutMigration]         # pre-monkeyfs-0.1.10 heads
@@ -1428,6 +1430,50 @@ whose cwd is the filesystem root (a worker opened with mounts before
 Queueing, retries, validation of what a change may touch, and deleting
 the fork afterwards are the embedder's.
 
+**`store.changes(base, theirs, *, root=None, max_entries=None,
+max_bytes=None)`** describes the change a land would apply, without
+applying it, so a host can judge a result first. It takes the same
+exact states `ws.land` does, validated as `store.resolve` validates a
+ref, and opens, commits and moves nothing.
+
+```python
+StateChanges: .base, .theirs -> Ref
+              .files -> tuple[FileChange, ...]    # by path
+              .cache -> tuple[CacheChange, ...]   # by key
+              .cwd -> tuple[str | None, str] | None   # (before, after)
+              .bookkeeping -> frozenset[str]      # differs; land leaves it
+              .entries -> int, .stored_bytes -> int
+FileChange:   .path, .change ("added" | "removed" | "modified" | "metadata"),
+              .is_dir, .size, .base_size          # bytes, per the file's row
+CacheChange:  .key, .change ("set" | "deleted"), .size   # stored bytes
+```
+
+It describes what a land moves, in its terms. `files` covers files and
+directories, an empty one included. A path whose metadata alone changed
+(its timestamps, say) is `"metadata"`. A cache key set to `None` is
+`"set"`, never `"deleted"`. `cwd` is set when a land would move the cwd,
+by the same rule a land reads it with. `bookkeeping` names the
+framework state that also differs and that a land leaves alone:
+`"ws-git"`, `"view"`, `"conversation"`, `"compaction"` or `"other"`. A
+caller never reads a storage key, and `bool(changes)` is whether a
+land would move anything.
+
+The change is measured from the store's own records before any of it
+is read: which keys differ, and the stored size kvgit keeps beside each
+value. A file that did not change is never read, however large. The
+two measures are `entries`, counting changed paths and cache keys plus
+the cwd if it moves, and `stored_bytes`, the stored size of every file
+and cache value the change writes. `max_entries` and `max_bytes` bound
+them, and a change past either raises `ChangesTooLarge` (with `entries`
+and `stored_bytes`) before anything more is read. Within the bounds,
+the only values read are the changed paths' small metadata rows, which
+tell a directory from a file and give a file's own size.
+
+Both refs name exact commits, so a description never goes stale: what
+was inspected is what `ws.land(base, theirs)` applies, and
+`expect_head` covers a session that moved meanwhile. Commits written
+before monkeyfs 0.1.10's per-file layout are refused.
+
 Unversioned providers raise `NotSupportedError`; `autocommit` is
 forced off for them. With autocommit on, each successful mutating
 tool call commits with `info={"tool": ...}`; read-only calls never
@@ -2781,7 +2827,9 @@ and arguments that don't fit a constructor (`HostObject`,
 head written before monkeyfs 0.1.10, which `store.migrate_layout`
 converts) · `HeadMoved` (`ws.land(expect_head=)` found the session
 elsewhere) · `LandConflict` (a land's change and the session changed
-the same file or cache key differently) · `CacheError` (a cache
+the same file or cache key differently) · `ChangesTooLarge`
+(`store.changes` measured a change past `max_entries` or `max_bytes`) ·
+`CacheError` (a cache
 write that cannot complete — also a `ValueError`) · `HarvestLost` (a
 remote executor lost its guest between a successful exec and the write
 harvest, so the call is torn rather than absent — also a
