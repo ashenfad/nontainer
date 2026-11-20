@@ -697,10 +697,18 @@ class Store(_Publishing, _Changes):
         ``settings`` are :meth:`open`'s keywords, applied to the
         workspace this returns, ``root`` among them: a commit holds
         files at the root of the session that made them, so a session
-        opened at another one passes its own, as for :meth:`resolve`. A
-        head whose layout predates monkeyfs 0.1.10 is refused, as
+        opened at another one passes its own, as for :meth:`resolve`.
+        Opened at a root the commit holds no tree under, a writable open
+        would commit a baseline of its own and the head would no longer
+        be the commit, so that is refused with ``ValueError``. A head
+        whose layout predates monkeyfs 0.1.10 is refused, as
         :meth:`open` refuses one, rather than migrated: migrating would
-        commit. If opening fails, the session is removed again.
+        commit.
+
+        If opening fails or is refused, the session is removed again,
+        but only while its head is still what this call left there: a
+        session another caller opened and committed to meanwhile is
+        theirs, and is left alone.
         """
         from kvgit import BranchExistsError, UnknownCommitError
 
@@ -749,15 +757,48 @@ class Store(_Publishing, _Changes):
                 "longer holds: its session was deleted and the commit swept."
             ) from None
         try:
-            return self.open(name, **settings)
+            ws = self.open(name, **settings)
         except BaseException:
-            # The session is this call's, made a moment ago and not yet
-            # handed to anyone, and the open that failed wrote nothing.
-            try:
-                repo.branches.delete(name)
-            except Exception:  # noqa: BLE001 - the open's error is the one to raise
-                pass
+            self._drop_untouched(repo, name, commit)
             raise
+        if ws.head != commit:
+            # The open committed: a root the commit holds no tree under
+            # is made, with a baseline commit, by a writable open.
+            made, root = ws.head, ws.root
+            try:
+                ws.close()
+            finally:
+                self._drop_untouched(repo, name, made)
+            raise ValueError(
+                f"{str(parsed)!r} holds no tree under root {root!r}, so opening "
+                f"{name!r} there would commit a baseline of its own and its head "
+                "would not be that commit. Pass root= as the session that made "
+                "the commit used it."
+            )
+        return ws
+
+    @staticmethod
+    def _drop_untouched(repo: Any, name: str, head: str) -> bool:
+        """Remove branch ``name`` only while its head is still ``head``;
+        True when it was removed.
+
+        One compare-and-swap expecting the head bytes ``head`` is stored
+        as, so a branch another caller has committed to is left alone.
+        A branch deleted and made again at that very commit cannot be
+        told from the one this call made, and goes, which is the rule
+        kvgit's own delete keeps: what is removed is exactly the state
+        the caller decided to remove.
+        """
+        from kvgit.encoding import dumps
+        from kvgit.versioned.kv import BRANCH_HEAD, BRANCH_HEAD_PREV
+
+        key = BRANCH_HEAD % name
+        try:
+            return repo.store.cas_many(
+                {key: dumps(head)}, {}, (key, BRANCH_HEAD_PREV % name)
+            )
+        except Exception:  # noqa: BLE001 - the caller's own error is the one to raise
+            return False
 
     # ------------------------------------------------------------------
     # store-scoped tags
