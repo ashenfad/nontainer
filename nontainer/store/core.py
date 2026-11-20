@@ -592,10 +592,14 @@ class Store(_Publishing):
         before deleting their session. A store tag keeps a commit past
         its session (:attr:`tags`).
 
-        A commit made with live mounts holds the committed tree alone:
-        the mounted contents were never in it, and nor was the cwd,
-        which the mount composition keeps for itself — so a frozen open
-        of one reads no mount and starts at the workspace root.
+        A commit made with live mounts holds the committed tree and the
+        cwd, a path like any other; the mounted contents were never in
+        it. A frozen open given the same mounts (``mounts=``) reads them
+        and starts where the session stood, even inside a mount. One that
+        cannot reach the stored directory, because it was given no such
+        mount or the directory is gone, starts at the workspace root,
+        and the stored cwd stays as it was. A commit made with mounts
+        before 0.11.12 holds no cwd, and starts at the root too.
 
         ``root`` is the workspace root to read the commit under, for a
         session that was not opened at the default one. A commit holds

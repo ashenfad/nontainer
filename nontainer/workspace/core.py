@@ -2384,12 +2384,14 @@ class Workspace:
         this session's. A narrowed view's rule still holds: a path it
         hides is refused, and one the change creates joins it.
 
-        The cwd lands where ``theirs`` stored one. Two cases leave it
-        where it is: a workspace that keeps the cwd itself (a mount
-        composition, whose cwd is never committed), and work whose
-        commit stored none, which is what a worker opened with mounts
-        leaves behind (the root it parks the filesystem at, read as no
-        cwd, as opening a session reads it). Requires ``caps.land``.
+        The cwd lands where ``theirs`` stored one, mounts or not: a
+        session with mounts commits its cwd like any other, so a worker
+        opened with mounts commits the cwd it moved to, and a land
+        carries it back to a parent with mounts too. Work whose commit
+        stored none leaves the cwd where it is. That is a commit made by
+        a worker opened with mounts before 0.11.12, which committed the
+        filesystem root in place of its cwd, read as none, as opening a
+        session reads it. Requires ``caps.land``.
         """
         with self._lock:
             self._check_open()
