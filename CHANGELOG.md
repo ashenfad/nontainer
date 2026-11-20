@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+- **Storage: the publication registry is kept in the store's kvgit backend, shared by every host on it** (#155). Each change is a compare-and-swap, and a store's `publications.json` is merged in on first use, then renamed `publications.json.imported`.
+
+### Fixed
+- **A version published on one host lists, opens and resolves on the others** (#155). A second host's `store.resolve(version.ref)` raised "No longer published".
+- **A second host on one store no longer deletes the first host's live version** (#155). Its local registry read that version as a dead publish's leftover, and the error told the user to `unpublish` it.
+- **Publish and unpublish reserve a version before touching its branch or tag** (#155). Another call can't claim or clear it meanwhile, and `unpublish` leaves a reserved publish alone until it is older than `min_age`.
+
 ## 0.13.0 - 2026-11-17
 
 ### Added

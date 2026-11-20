@@ -4,19 +4,19 @@ an app is served from, and the registry that says which is current."""
 from __future__ import annotations
 
 import json
+import logging
 import os
+import random
 import re
-import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
-from ..errors import NotSupportedError, WorkspaceError
+from ..errors import CommitNotFoundError, NotSupportedError, WorkspaceError
 from ..protocol import (
     SESSION_ID_RE,
 )
@@ -32,12 +32,35 @@ if TYPE_CHECKING:
     from .core import Store
 
 
+_logger = logging.getLogger("nontainer.store")
+
+
 # The publication registry: the mutable half (which versions exist,
-# which one is current) beside the immutable half (the tags).
-_REGISTRY_FILE = "publications.json"
+# which one is current) beside the immutable half (the tags). A kvgit
+# store keeps it in one key of its own backend, beside the branches and
+# tags it indexes, so every process and every host sharing that backend
+# reads and writes the same registry. The key is outside kvgit's own
+# key families, which kvgit's sweep never leaves, and its leading
+# ``__`` marks it as a value that changes under a fixed key, which a
+# caching tier (``kvgit.kv.composite``) always reads from the
+# authoritative store.
+_REGISTRY_KEY = "__nontainer_publications__"
 
 
-_REGISTRY_LOCK_FILE = "publications.lock"
+# Where releases before the shared registry kept it: a JSON file in the
+# store directory. A store that still has one imports it on first use
+# and renames it with ``_IMPORTED_SUFFIX``, so it stays readable by hand
+# and is not imported again.
+_LEGACY_REGISTRY_FILE = "publications.json"
+
+
+_IMPORTED_SUFFIX = ".imported"
+
+
+# How many times one registry change is read, applied and written
+# before giving up, when other writers keep changing the registry
+# between its read and its write.
+_REGISTRY_ATTEMPTS = 64
 
 
 _VERSION_NUMBER_RE = re.compile(r"^v(\d+)$")
@@ -95,25 +118,87 @@ _DEFAULT_PUBLISH_EXCLUDE = ("app/logs/", "app/screenshots/")
 _DEFAULT_ROOT = "/workspace"
 
 
-# One lock per registry file per process. Two Store objects over the
-# same path are two handles on one file, so the lock cannot live on
-# either of them; the flock underneath covers other processes, and this
-# covers the threads inside this one (flock is per open file
-# description, so two threads flocking the same path do not exclude
-# each other).
-_REGISTRY_LOCKS: dict[str, threading.Lock] = {}
+def _encode_registry(registry: Mapping[str, Any]) -> bytes:
+    """The registry as it is stored: compact JSON, keys sorted, so equal
+    registries are equal bytes."""
+    return json.dumps(registry, sort_keys=True, separators=(",", ":")).encode()
 
 
-_REGISTRY_LOCKS_GUARD = threading.Lock()
+def _decode_registry(raw: bytes | None, where: str) -> dict[str, Any]:
+    """The registry from its stored bytes; empty when nothing is stored.
+
+    Bytes that are not JSON raise rather than read as an empty registry:
+    a store whose registry reads empty looks like a store with nothing
+    published, and the next publish would write over every record.
+    """
+    if raw is None:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError as e:
+        raise WorkspaceError(
+            f"Publication registry is unreadable: {where} ({e}). The "
+            "publications themselves are tags and branches on the store "
+            "and are still there; the registry is the index over them."
+        ) from e
+    return data if isinstance(data, dict) else {}
 
 
-def _registry_lock_for(path: Path) -> threading.Lock:
-    key = str(path)
-    with _REGISTRY_LOCKS_GUARD:
-        lock = _REGISTRY_LOCKS.get(key)
-        if lock is None:
-            lock = _REGISTRY_LOCKS[key] = threading.Lock()
-        return lock
+def _holds_nothing(commit: Any) -> bool:
+    """Whether a kvgit commit is a branch's untouched start: an empty
+    tree and no info, which is what a branch is created at."""
+    from kvgit.hamt import EMPTY_HASH
+
+    return commit.root == EMPTY_HASH and not commit.info
+
+
+def _live(record: Any) -> bool:
+    """Whether a registry record is a publication: it holds at least one
+    recorded version. A record holding only reservations is a lineage
+    still being opened or being removed, and is published nowhere."""
+    return isinstance(record, Mapping) and bool(record.get("versions"))
+
+
+def _same_attempt(entry: Mapping[str, Any], attempt: Mapping[str, Any]) -> bool:
+    """Whether a pending reservation is one publish attempt of
+    ``attempt``: the same source commit, ``paths`` and ``exclude``.
+    Publishing that twice writes the same tree, so two such attempts may
+    share a reservation, a branch and a commit."""
+    return entry.get("op") == "publish" and all(
+        entry.get(key) == value for key, value in attempt.items()
+    )
+
+
+def _busy(name: str, version: str, entry: Mapping[str, Any]) -> str:
+    """Why ``name/version`` is not free: another call holds its
+    reservation, and what to do if that call died."""
+    age = max(0.0, time.time() - float(entry.get("since") or 0.0))
+    branch = f"{_PUB_BRANCH_PREFIX}{name}/{version}"
+    if entry.get("op") == "publish":
+        return (
+            f"{name}/{version} is being published by another call, started "
+            f"{age:.0f}s ago (branch {branch!r}). Publish another version, or "
+            "wait for that one to finish. If it died, "
+            f"store.unpublish({name!r}, {version!r}) clears what it left once "
+            "it is older than min_age (min_age=0 clears it now)."
+        )
+    return (
+        f"{name}/{version} is being unpublished by another call, started "
+        f"{age:.0f}s ago (branch {branch!r}). Publish another version, or "
+        "wait for that one to finish. If it died, "
+        f"store.unpublish({name!r}, {version!r}) finishes it."
+    )
+
+
+class _Claim(NamedTuple):
+    """What :meth:`_Publishing.unpublish` claimed: the live row it took
+    out of the registry (``None`` when there was none), whether another
+    call's reservation was taken over, and the live versions left, for
+    a message naming what the publication does hold."""
+
+    row: dict[str, Any] | None
+    took_over: bool
+    live: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -187,7 +272,7 @@ class Publication:
     new one. ``meta`` reads read-only all the way down for that
     reason — nested mappings are read-only too, and a JSON array reads
     as a tuple — so the way to change it is :meth:`Store.set_meta`,
-    which is where the registry lock and the validation are. It counts
+    which is where the compare-and-swap and the validation are. It counts
     for equality but is left out of the hash, as ``Version.info``
     does: it holds whatever JSON the caller passed, and that is not
     hashable.
@@ -324,7 +409,8 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
     what comes back shares nothing with what the caller passed, so
     editing a nested list afterwards says nothing about the
     publication, and a value the registry could not be written with is
-    refused before the lock rather than halfway through the write.
+    refused before anything is read rather than halfway through the
+    write.
     Both refusals are ``ValueError``: what was passed is the caller's
     to fix.
     """
@@ -339,7 +425,7 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
     except (TypeError, ValueError) as e:
         raise ValueError(
             f"Publication meta must be JSON-serializable, and this is not: "
-            f"{e}. The registry is a JSON file beside the store."
+            f"{e}. The registry is stored as JSON."
         ) from e
 
 
@@ -549,14 +635,24 @@ class _Publishing:
         moving the pointer back with :meth:`set_current` first — or
         publishing with ``current=False``, which never takes it.
 
-        The record lands last, so a process that dies mid-publish
-        leaves a reserved branch, and usually its tag, that no record
-        names. Publishing the same thing again adopts it: a recordless
-        branch whose head names the same source commit and the same
-        ``paths`` was written by that attempt and no other, so its
-        commit becomes this publish's and the record is written over
-        it. A recordless branch of some other attempt is refused by
-        name, and :meth:`unpublish` clears it.
+        The registry is shared by every process and host on the store's
+        backend, and a publish takes three steps through it. It first
+        RESERVES the version in the registry, which is what decides
+        between two publishers wanting one version number, on one host
+        or two. It then writes the branch and the tag, and last it turns
+        the reservation into the version's record. Until then the
+        version is not published: it is listed nowhere and resolves
+        nowhere, and no other call can claim its name or clear what it
+        has written so far.
+
+        A process that dies mid-publish leaves its reservation, a
+        reserved branch and usually its tag. Publishing the same thing
+        again adopts them: an attempt with the same source commit,
+        ``paths`` and ``exclude`` writes the same tree, so its commit
+        becomes this publish's and the record is written over it. A
+        publish of anything else under that version is refused by name,
+        and :meth:`unpublish` clears what the dead attempt left once it
+        is older than ``min_age``.
 
         Args:
             ws: The session to publish from. It must be one this store
@@ -599,15 +695,16 @@ class _Publishing:
                 version, rather than extending the lineage — for a
                 caller that means to open one and would rather hear
                 about a collision than silently publish a second
-                version of somebody else's app. The check runs inside
-                the lock that decides between creating and extending,
-                so two publishers racing to open one lineage get one
-                success and one ``ValueError``. It closes the
-                check-then-publish race only for the caller that stops
-                doing the check: the lock covers this call, not a read
-                the caller made before it, and a name seen free by an
-                earlier ``publication()`` can be taken before this call
-                reaches the lock.
+                version of somebody else's app. The check is part of
+                the reservation, which is one compare-and-swap on the
+                registry, so two publishers racing to open one lineage,
+                on one host or two, get one success and one
+                ``ValueError``. It closes the check-then-publish race
+                only for the caller that stops doing the check: the
+                swap covers this call, not a read the caller made
+                before it, and a name seen free by an earlier
+                ``publication()`` can be taken before this call
+                reserves it.
             info: Extra keys merged into the commit's info, beside the
                 ``tool``/``name``/``version``/``published_from``/``paths``/
                 ``exclude`` this writes itself. They are recorded on the
@@ -633,10 +730,12 @@ class _Publishing:
                 same mistake and raises the same class.
             WorkspaceError: The store is not in a state to publish, and
                 the same call lands once it is — ``ws`` carries staged
-                changes, ``ws`` belongs to another store, an earlier
-                attempt of something else left a tag or a branch of
-                this version's name behind, or the derived commit did
-                not land.
+                changes, ``ws`` belongs to another store, another call
+                holds this version's reservation, an earlier attempt of
+                something else left a tag or a branch of this version's
+                name behind, an unpublish cleared this call's
+                reservation before its record landed, or the derived
+                commit did not land.
             NotSupportedError: This store cannot publish at all: a
                 backend without branches and tags, a
                 ``provider_factory`` layout the store does not own, or
@@ -673,38 +772,30 @@ class _Publishing:
         if isinstance(exclude, str):
             exclude = (exclude,)
 
-        def land(registry: dict[str, Any]) -> Publication:
-            # Everything from "which version number is free" to the
-            # commit itself happens under the registry lock, so two
-            # publishers cannot pick the same number, and no version is
-            # written whose branch and tag did not land.
-            record = registry.get(name) or {"versions": {}, "current": None}
-            versions = dict(record.get("versions") or {})
-            if create_only and versions:
-                raise ValueError(
-                    f"Publication already published: {name!r} — it holds "
-                    f"{', '.join(sorted(versions))} and create_only= asked "
-                    "for a new lineage. Publish under another name, or drop "
-                    "create_only= to add a version to this one."
-                )
-            chosen = _next_version(versions) if version is None else version
-            if chosen in versions:
-                raise ValueError(
-                    f"Version already published: {name}/{chosen} — versions "
-                    "are immutable. Publish a new one, or unpublish that one "
-                    "first."
-                )
+        # A store tag's snapshot reads through a branch it only
+        # borrows, and that branch's name is no record of where the
+        # state came from: the tag's ref is, and it reads back.
+        source_tag = getattr(ws, "_store_tag", None)
+        published_from = (
+            Ref.at_tag(source_tag, head)
+            if source_tag is not None
+            else Ref(session=ws.session, commit=head)
+        )
+        # What identifies this attempt to another one: two publishes of
+        # the same source commit, paths and exclusions write the same
+        # tree, so they may share a reservation and a commit.
+        attempt = {
+            "source": head,
+            "paths": sorted(paths),
+            "exclude": sorted(exclude),
+        }
+        token = uuid.uuid4().hex
+        chosen = self._reserve_version(
+            name, version, attempt, token, create_only=create_only
+        )
+        try:
             tag = f"{name}/{chosen}"
             branch = f"{_PUB_BRANCH_PREFIX}{name}/{chosen}"
-            # A store tag's snapshot reads through a branch it only
-            # borrows, and that branch's name is no record of where the
-            # state came from: the tag's ref is, and it reads back.
-            source_tag = getattr(ws, "_store_tag", None)
-            published_from = (
-                Ref.at_tag(source_tag, head)
-                if source_tag is not None
-                else Ref(session=ws.session, commit=head)
-            )
             commit_info: dict[str, Any] = {
                 "tool": "publish",
                 "name": name,
@@ -714,49 +805,20 @@ class _Publishing:
                 "exclude": sorted(exclude),
                 **(info or {}),
             }
-            # No record holds this version (the check above says so), so
-            # a branch of its name is an attempt that died before its
-            # record landed. One that matches this call is that same
-            # attempt and its commit is taken as this publish's; one
-            # that does not is somebody else's leftover and is refused.
-            # One that holds nothing yet died before committing, and is
-            # simply written.
-            stranded = self._branch_head(branch)[0] is not None
-            resumed = (
-                self._resume_publication(branch, tag, commit_info) if stranded else None
+            commit, landed = self._land_version(
+                ws,
+                head,
+                branch=branch,
+                tag=tag,
+                paths=paths,
+                exclude=exclude,
+                commit_info=commit_info,
             )
-            if resumed is None and stranded:
-                raise WorkspaceError(
-                    f"Publication branch already exists: {branch!r}, no "
-                    "record names it, and its commit is not the one this "
-                    "call would write — an earlier publish of something "
-                    "else left it behind. Clear it with "
-                    f"store.unpublish({name!r}, {chosen!r}), then publish "
-                    "again."
-                )
-            if resumed is None and self._scoped_store_tag(tag) in self._raw_tags():
-                raise WorkspaceError(
-                    f"Tag already exists: {tag!r} in scope 'store' — a "
-                    "publication cannot reuse it."
-                )
             # The record describes the commit that is there, and an
             # adopted commit carries the info the attempt that wrote it
             # was given. A row built from this call's arguments would
             # say something the version does not serve.
-            if resumed is not None:
-                commit, landed = resumed
-            else:
-                landed = commit_info
-                commit = self._write_publication(
-                    ws,
-                    head,
-                    branch=branch,
-                    paths=paths,
-                    exclude=exclude,
-                    tag=tag,
-                    commit_info=commit_info,
-                )
-            versions[chosen] = {
+            row = {
                 "tag": tag,
                 "ref": str(Ref(session=branch, commit=commit)),
                 # The commit's own spelling: an adopted attempt may have
@@ -773,32 +835,32 @@ class _Publishing:
                     k: v for k, v in landed.items() if k not in _RESERVED_INFO_KEYS
                 },
             }
-            pointer = record.get("current")
-            registry[name] = {
-                "versions": versions,
-                # The version that opens a lineage takes the pointer
-                # whatever the caller asked: a publication must point
-                # somewhere, and there is nothing else to point at.
-                "current": chosen if current or pointer not in versions else pointer,
-                # Publishing says nothing about the publication's own
-                # metadata: an existing one keeps what set_meta wrote,
-                # and a new lineage starts with none.
-                "meta": dict(record.get("meta") or {}),
-            }
-            return self._publication(name, registry)
-
-        return self._update_registry(land)
+            return self._record_version(
+                name, chosen, token, attempt, row, current=current
+            )
+        except BaseException:
+            # The reservation is this call's, and a call that failed
+            # gives it back, so the version is free for a retry of
+            # anything. A process that dies here cannot, and its
+            # reservation waits for a retry of the same publish or for
+            # unpublish (see the docstring).
+            self._release_quietly(name, chosen, token)
+            raise
 
     def publications(self) -> dict[str, Publication]:
-        """Every publication on the store, by name."""
+        """Every publication on the store, by name: one registry read."""
         registry = self._registry_read()
-        return {name: self._publication(name, registry) for name in sorted(registry)}
+        return {
+            name: self._publication(name, registry)
+            for name in sorted(registry)
+            if _live(registry[name])
+        }
 
     def publication(self, name: str) -> Publication | None:
         """One publication by name, or ``None`` if nothing of that name
-        was ever published."""
+        is published."""
         registry = self._registry_read()
-        if name not in registry:
+        if not _live(registry.get(name)):
             return None
         return self._publication(name, registry)
 
@@ -814,7 +876,7 @@ class _Publishing:
 
         def point(registry: dict[str, Any]) -> Publication:
             record = registry.get(name)
-            if record is None:
+            if not _live(record):
                 raise ValueError(f"No such publication: {name!r}")
             versions = record.get("versions") or {}
             if version not in versions:
@@ -842,21 +904,22 @@ class _Publishing:
         The mapping is replaced whole rather than merged, so dropping a
         key is spelled the same way as changing one: pass what the
         publication should read as. ``{}`` clears it. Values must be
-        JSON-serializable, because the registry is a JSON file, and
+        JSON-serializable, because the registry is stored as JSON, and
         what lands is a copy: editing a nested list afterwards says
         nothing about the publication. A mapping read back off a
         record is accepted as it comes, so ``set_meta(name, {**pub.meta,
         "title": "New"})`` is the way to change one key.
 
-        The read, the replacement and the write happen under the
-        registry lock, so a concurrent publish or ``set_current`` on
-        another publication is not lost.
+        The read, the replacement and the write are one compare-and-swap
+        on the registry, so a concurrent publish or ``set_current`` on
+        another publication, from this process or another host, is not
+        lost.
         """
         replacement = _validate_meta(meta)
 
         def write(registry: dict[str, Any]) -> Publication:
             record = registry.get(name)
-            if record is None:
+            if not _live(record):
                 raise ValueError(f"No such publication: {name!r}")
             record["meta"] = replacement
             registry[name] = record
@@ -875,163 +938,518 @@ class _Publishing:
         of a publication may be removed however it is pointed at, and
         takes the publication's record with it.
 
-        A version with no record but a branch or a tag of its name —
+        The record goes first, as a reservation of the version that
+        this call holds while it removes the tag and the branch, so no
+        publish can claim the version or write its branch until they
+        are gone. The version stops resolving the moment the record
+        goes.
+
+        A version with no record but a branch or a tag of its name is
         what a publish that died before writing its record leaves
-        behind — is cleared here too: the branch and the tag go, the
-        registry is untouched, and the name is free to publish again.
-        Only what publish itself wrote is removed that way. A store tag
-        may hold a slash, so a durable ``release/prod`` somebody tagged
-        by hand answers to ``unpublish("release", "prod")`` by name
-        alone; the tag's and the branch's own provenance is checked
+        behind, and it is cleared here too: the branch and the tag go,
+        and the name is free to publish again. A publish still under way
+        holds a reservation of the version, on this host or another, and
+        its branch and tag are left alone until the reservation is older
+        than ``min_age``: the age is all that tells a publish that is
+        slow from one that died. Pass ``min_age=0`` to clear one known
+        to be dead. Only what publish itself wrote is removed: a store
+        tag may hold a slash, so a durable ``release/prod`` somebody
+        tagged by hand answers to ``unpublish("release", "prod")`` by
+        name alone; the tag's and the branch's own provenance is checked
         first, and one that does not carry it is left exactly as it is
         and the call raises ``ValueError``.
 
-        ``min_age`` is the orphan sweep's grace period in seconds, as
-        for :meth:`delete`.
+        ``min_age`` is also the orphan sweep's grace period in seconds,
+        as for :meth:`delete`.
         """
         self._require_own_layout("unpublish")
         self._require_kvgit("unpublish")
-
-        def drop(registry: dict[str, Any]) -> None:
-            record = registry.get(name)
-            versions = dict((record or {}).get("versions") or {})
-            if version not in versions:
-                # No record, but a branch or a tag of that name: an
-                # attempt that died before its record landed. Removing
-                # it is the whole job, and it is what frees the name.
-                if self._clear_stranded_attempt(name, version, min_age=min_age):
-                    return
-                if record is None:
+        token = uuid.uuid4().hex
+        claim = self._claim_for_unpublish(name, version, token, min_age=min_age)
+        try:
+            if claim.row is not None:
+                self._remove_version_state(
+                    claim.row.get("tag") or f"{name}/{version}",
+                    f"{_PUB_BRANCH_PREFIX}{name}/{version}",
+                    min_age=min_age,
+                )
+            elif (
+                not self._clear_stranded_attempt(name, version, min_age=min_age)
+                and not claim.took_over
+            ):
+                if not claim.live:
                     raise ValueError(f"No such publication: {name!r}")
                 raise ValueError(
                     f"No such version of {name!r}: {version!r} — have "
-                    f"{', '.join(sorted(versions))}"
+                    f"{', '.join(claim.live)}"
                 )
-            if record.get("current") == version and len(versions) > 1:
-                raise WorkspaceError(
-                    f"{name}/{version} is the current version and is not the "
-                    f"last one. Point {name!r} at another version with "
-                    "store.set_current(name, version) first, or remove the "
-                    "others."
-                )
-            self._remove_version_state(
-                versions[version].get("tag") or f"{name}/{version}",
-                f"{_PUB_BRANCH_PREFIX}{name}/{version}",
-                min_age=min_age,
-            )
-            versions.pop(version)
-            if not versions:
-                registry.pop(name)
-            else:
-                record["versions"] = versions
-                if record.get("current") == version:
-                    record["current"] = sorted(versions)[0]
-                registry[name] = record
-
-        self._update_registry(drop)
+        except BaseException:
+            self._release_quietly(name, version, token)
+            raise
+        self._release(name, version, token)
 
     # -- the publication registry ----------------------------------------
     #
     # The immutable half of a publication is a tag and a branch; this is
-    # the mutable half — which versions exist and which one is current.
-    # A plain JSON file beside the sessions, because it is small, it is
-    # read far more often than written, and an embedder inspecting a
-    # store by hand should be able to read it.
+    # the mutable half — which versions exist and which one is current —
+    # held as one JSON value under ``_REGISTRY_KEY`` in the store's own
+    # kvgit backend. Every change is a read, a decision and a
+    # compare-and-swap expecting the bytes that were read, so it is
+    # atomic across threads, processes and hosts, on disk and on
+    # PostgreSQL alike, with no lock to hold or to lose.
+    #
+    # Beside a publication's live ``versions``, its record may hold
+    # ``pending`` reservations: a version a publish has claimed and not
+    # yet recorded, or one an unpublish is still removing. A reservation
+    # is what keeps two calls off one version while either is writing
+    # outside the registry, and it carries a token, so only the call
+    # that made it (or one that took it over) can give it back.
 
-    def _registry_path(self) -> Path | None:
-        """Where the registry file lives, or ``None`` for a store with
-        no layout of its own, or no directory."""
-        if self._provider_factory is not None or self._path is None:
+    def _legacy_registry_path(self) -> Path | None:
+        """The file a release before the shared registry kept it in, or
+        ``None`` for a store that never had one: one with no directory
+        of its own, or no kvgit backend to publish on."""
+        if (
+            self._provider_factory is not None
+            or self._path is None
+            or self._backend != "kvgit"
+        ):
             return None
-        return self._path / _REGISTRY_FILE
+        return self._path / _LEGACY_REGISTRY_FILE
+
+    def _registry_get(self) -> bytes | None:
+        """The registry's stored bytes, or ``None`` when none are stored.
+
+        A ``provider_factory`` store has no backend of its own to keep
+        the registry in, so it keeps it on this object. It cannot
+        publish (:meth:`publish` needs the store's own layout), so its
+        registry holds only what is written to it directly.
+        """
+        if self._provider_factory is not None:
+            return self._memory_registry
+        if self._backend != "kvgit":
+            return None
+        repo = self._kvgit_repo()
+        return None if repo is None else repo.store.get(_REGISTRY_KEY)
+
+    def _registry_put(self, expected: bytes | None, registry: dict[str, Any]) -> bool:
+        """Store ``registry`` if the stored bytes are still ``expected``
+        (``None``: nothing stored); False, with nothing written, when
+        another writer changed them first."""
+        raw = _encode_registry(registry)
+        if self._provider_factory is not None:
+            with self._memory_registry_lock:
+                if self._memory_registry != expected:
+                    return False
+                self._memory_registry = raw
+                return True
+        if self._backend != "kvgit":
+            raise NotSupportedError(
+                f"The {self._backend!r} backend has no publication registry: "
+                "publishing needs the kvgit backend."
+            )
+        repo = self._kvgit_repo(create=True)
+        return repo.store.cas_many({_REGISTRY_KEY: expected}, {_REGISTRY_KEY: raw})
 
     def _registry_read(self) -> dict[str, Any]:
-        path = self._registry_path()
-        if path is None:
-            return json.loads(json.dumps(self._memory_registry))
-        if not path.is_file():
-            return {}
-        try:
-            data = json.loads(path.read_text())
-        except (OSError, ValueError) as e:
-            raise WorkspaceError(
-                f"Publication registry is unreadable: {path} ({e}). The "
-                "publications themselves are tags and branches on the store "
-                "and are still there; this file is the index over them."
-            ) from e
-        return data if isinstance(data, dict) else {}
+        """The registry as it is now: one read of the backend."""
+        self._import_legacy_registry()
+        return _decode_registry(self._registry_get(), self._registry_where())
 
-    def _registry_write(self, data: dict[str, Any]) -> None:
-        path = self._registry_path()
-        if path is None:
-            self._memory_registry = data
-            return
-        # Write-then-rename: a reader either sees the old registry or
-        # the new one, never half of either. The temp name carries a
-        # uuid as well as the pid, so two threads writing at once cannot
-        # land on one another's file even if the lock above is somehow
-        # bypassed.
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        try:
-            tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-            os.replace(tmp, path)
-        finally:
-            tmp.unlink(missing_ok=True)
-
-    @contextmanager
-    def _registry_locked(self) -> "Iterator[None]":
-        """Exclusive access to the registry for a read-modify-write.
-
-        Two writers that each read the same registry and then replace it
-        would silently drop one another's publication, though its branch
-        and tag exist — so a mutation reads, decides and writes inside
-        this, never around it.
-
-        Two locks, because one process's threads and two processes are
-        different problems: a ``threading.Lock`` keyed by the registry
-        path (``flock`` is per open file description, so it does not
-        exclude two threads of one process), and an ``flock`` on
-        ``publications.lock`` beside the registry for everyone else.
-        """
-        path = self._registry_path()
-        if path is None:
-            with self._memory_registry_lock:
-                yield
-            return
-        with _registry_lock_for(path):
-            try:
-                import fcntl
-            except ImportError:
-                # No flock here (Windows): the process-level lock above
-                # is the whole guarantee, so two processes publishing to
-                # one store can still lose a record. Best effort, said
-                # out loud rather than pretended away.
-                yield
-                return
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path.with_name(_REGISTRY_LOCK_FILE), "a+") as handle:
-                fcntl.flock(handle, fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(handle, fcntl.LOCK_UN)
+    def _registry_where(self) -> str:
+        """Where the registry is, for a message about it."""
+        return f"key {_REGISTRY_KEY!r} of {self!r}"
 
     def _update_registry(self, change: "Callable[[dict[str, Any]], Any]") -> Any:
         """Read the registry, apply ``change`` to it, write it back.
 
         The one path every mutation takes. ``change`` mutates the
         registry it is handed and returns whatever the caller wants
-        back; the read happens INSIDE the lock, so a decision made from
-        it (which version number is next, whether a name is free) is
-        still true when the write lands. Nothing is written if
-        ``change`` raises.
+        back. The write expects the bytes the read returned, so a
+        decision made from the read (which version number is next,
+        whether a name is free) is still true when the write lands; when
+        another writer got there first, the registry is read again and
+        ``change`` applied again, so ``change`` must do nothing but
+        decide. Nothing is written if ``change`` raises, or leaves the
+        registry as it was.
         """
-        with self._registry_locked():
-            registry = self._registry_read()
+        self._import_legacy_registry()
+        return self._change_registry(change)
+
+    def _change_registry(self, change: "Callable[[dict[str, Any]], Any]") -> Any:
+        """:meth:`_update_registry` without the legacy import, which is
+        itself one of these changes."""
+        where = self._registry_where()
+        for attempt in range(_REGISTRY_ATTEMPTS):
+            raw = self._registry_get()
+            before = _decode_registry(raw, where)
+            registry = _decode_registry(raw, where)
             result = change(registry)
-            self._registry_write(registry)
-            return result
+            if registry == before or self._registry_put(raw, registry):
+                return result
+            # Another writer landed between the read and the write. Back
+            # off a little, at random, so writers retrying together
+            # spread out instead of colliding again.
+            time.sleep(random.uniform(0, min(0.05, 0.001 * 2**attempt)))
+        raise WorkspaceError(
+            f"The publication registry kept changing under this call: "
+            f"{_REGISTRY_ATTEMPTS} attempts, each overtaken by another "
+            "writer. Nothing was written; the call lands once the store is "
+            "less busy."
+        )
+
+    def _import_legacy_registry(self) -> None:
+        """Fold a registry file an earlier release kept into the shared
+        registry, once per store object.
+
+        Each host sharing a backend kept a file of its own, so each one
+        imports its own: the file's records are merged into whatever the
+        shared registry already holds, never written over it. A version
+        the shared registry already has, or holds a reservation for,
+        keeps what the registry says. A version whose store tag does not
+        name the commit its record names is not imported: the tag and
+        the branch are shared, and a record they no longer back is one
+        an unpublish on another host already removed, or one written
+        over a version some other host published since. Those are
+        logged rather than raised, since nothing can serve them.
+
+        The file is then renamed ``publications.json.imported``, so it
+        stays readable by hand and is not imported again. A store with
+        no kvgit repository yet has nothing a record could name, and is
+        left alone.
+        """
+        if self._registry_imported:
+            return
+        path = self._legacy_registry_path()
+        if path is None or not path.is_file():
+            self._registry_imported = True
+            return
+        if self._kvgit_repo() is None:
+            return
+        try:
+            data = json.loads(path.read_text())
+        except FileNotFoundError:
+            # Another handle on this directory imported it first.
+            self._registry_imported = True
+            return
+        except (OSError, ValueError) as e:
+            raise WorkspaceError(
+                f"Publication registry is unreadable: {path} ({e}). An "
+                "earlier release kept the registry in this file, and its "
+                "records are imported into the store once it reads. The "
+                "publications themselves are tags and branches on the store "
+                "and are still there."
+            ) from e
+        records = data if isinstance(data, dict) else {}
+        backed, dropped = self._backed_versions(records)
+        if dropped:
+            _logger.warning(
+                "Not importing %s from %s: the store's tags no longer name "
+                "the commits those records name.",
+                ", ".join(dropped),
+                path,
+            )
+
+        def merge(registry: dict[str, Any]) -> None:
+            for name, record in records.items():
+                rows = {
+                    v: row
+                    for v, row in ((record or {}).get("versions") or {}).items()
+                    if (name, v) in backed
+                }
+                if not rows:
+                    continue
+                shared = dict(registry.get(name) or {})
+                versions = dict(shared.get("versions") or {})
+                pending = shared.get("pending") or {}
+                added = {
+                    v: row
+                    for v, row in rows.items()
+                    if v not in versions and v not in pending
+                }
+                if not added:
+                    continue
+                versions.update(added)
+                current = shared.get("current")
+                if current not in versions:
+                    current = record.get("current")
+                if current not in versions:
+                    current = sorted(versions, key=_version_order)[-1]
+                shared.update(
+                    versions=versions,
+                    current=current,
+                    meta=shared.get("meta") or record.get("meta") or {},
+                )
+                registry[name] = shared
+
+        self._change_registry(merge)
+        try:
+            os.replace(path, path.with_name(path.name + _IMPORTED_SUFFIX))
+        except FileNotFoundError:
+            pass  # another handle on this directory imported it first
+        self._registry_imported = True
+
+    def _backed_versions(
+        self, records: Mapping[str, Any]
+    ) -> tuple[set[tuple[str, str]], list[str]]:
+        """Which of a legacy file's versions the store still backs: their
+        store tag names the commit their record names. Returns those as
+        ``(name, version)`` pairs, and the rest spelled ``name/version``
+        for a message."""
+        backed: set[tuple[str, str]] = set()
+        dropped: list[str] = []
+        for name, record in records.items():
+            if not isinstance(record, Mapping):
+                continue
+            for v, row in (record.get("versions") or {}).items():
+                try:
+                    commit = Ref.parse(row["ref"]).commit
+                    tag = self._raw_tag_info(row.get("tag") or f"{name}/{v}")
+                except (KeyError, TypeError, ValueError):
+                    tag = None
+                if tag is not None and not tag.dangling and tag.id == commit:
+                    backed.add((name, v))
+                else:
+                    dropped.append(f"{name}/{v}")
+        return backed, dropped
+
+    def _reserve_version(
+        self,
+        name: str,
+        version: str | None,
+        attempt: Mapping[str, Any],
+        token: str,
+        *,
+        create_only: bool,
+    ) -> str:
+        """Claim the version a publish will write; returns its name.
+
+        One compare-and-swap decides it, so two publishers, on one host
+        or two, never claim one version. ``version=None`` takes the next
+        free ``v<N>``, past every version the lineage holds or another
+        call has reserved, unless an earlier attempt of this same
+        publish reserved a v-numbered version and died: that one is
+        resumed. An explicit version must be unpublished and unreserved,
+        or reserved by an attempt of this same publish.
+        """
+
+        def reserve(registry: dict[str, Any]) -> str:
+            record = dict(registry.get(name) or {})
+            versions = record.get("versions") or {}
+            pending = dict(record.get("pending") or {})
+            others = sorted(
+                (
+                    v
+                    for v, entry in pending.items()
+                    if not _same_attempt(entry, attempt)
+                ),
+                key=_version_order,
+            )
+            if create_only and versions:
+                raise ValueError(
+                    f"Publication already published: {name!r} — it holds "
+                    f"{', '.join(sorted(versions))} and create_only= asked "
+                    "for a new lineage. Publish under another name, or drop "
+                    "create_only= to add a version to this one."
+                )
+            if create_only and others:
+                raise ValueError(
+                    f"Publication already being published: {name!r} — another "
+                    f"call holds {', '.join(others)} and create_only= asked for "
+                    "a new lineage. Publish under another name, or drop "
+                    "create_only= to add a version to this one."
+                )
+            if version is None:
+                resumed = sorted(
+                    (
+                        v
+                        for v, entry in pending.items()
+                        if _same_attempt(entry, attempt) and _VERSION_NUMBER_RE.match(v)
+                    ),
+                    key=_version_order,
+                )
+                chosen = (
+                    resumed[0] if resumed else _next_version({**versions, **pending})
+                )
+            else:
+                chosen = version
+                if chosen in versions:
+                    raise ValueError(
+                        f"Version already published: {name}/{chosen} — versions "
+                        "are immutable. Publish a new one, or unpublish that one "
+                        "first."
+                    )
+                entry = pending.get(chosen)
+                if entry is not None and not _same_attempt(entry, attempt):
+                    raise WorkspaceError(_busy(name, chosen, entry))
+            pending[chosen] = {
+                "op": "publish",
+                "token": token,
+                "since": time.time(),
+                **attempt,
+            }
+            record.setdefault("versions", {})
+            record.setdefault("current", None)
+            record.setdefault("meta", {})
+            record["pending"] = pending
+            registry[name] = record
+            return chosen
+
+        return self._update_registry(reserve)
+
+    def _record_version(
+        self,
+        name: str,
+        version: str,
+        token: str,
+        attempt: Mapping[str, Any],
+        row: dict[str, Any],
+        *,
+        current: bool,
+    ) -> Publication:
+        """Turn a publish's reservation into the version's record.
+
+        The reservation must still be this call's, or one an attempt of
+        this same publish took over: the commit both wrote is the same.
+        A version already recorded at this commit was recorded by such
+        an attempt, and reads as published. Anything else means an
+        unpublish took the reservation over first, and the version is
+        refused rather than recorded over whatever that left.
+        """
+        commit = Ref.parse(row["ref"]).commit
+
+        def record(registry: dict[str, Any]) -> Publication:
+            held = dict(registry.get(name) or {})
+            versions = dict(held.get("versions") or {})
+            pending = dict(held.get("pending") or {})
+            recorded = versions.get(version)
+            if recorded is not None:
+                if Ref.parse(recorded["ref"]).commit == commit:
+                    return self._publication(name, registry)
+                raise WorkspaceError(
+                    f"{name}/{version} was recorded at another commit while this "
+                    "publish held its reservation. Nothing was recorded for "
+                    "this call."
+                )
+            entry = pending.get(version)
+            if entry is None or not (
+                entry.get("token") == token or _same_attempt(entry, attempt)
+            ):
+                raise WorkspaceError(
+                    f"{name}/{version} was cleared before this publish could "
+                    "record it: an unpublish took over its reservation. Nothing "
+                    "was published; publish again."
+                )
+            pointer = held.get("current")
+            # The version that opens a lineage takes the pointer
+            # whatever the caller asked: a publication must point
+            # somewhere, and there is nothing else to point at.
+            held["current"] = version if current or pointer not in versions else pointer
+            versions[version] = row
+            held["versions"] = versions
+            # Publishing says nothing about the publication's own
+            # metadata: an existing one keeps what set_meta wrote, and a
+            # new lineage starts with none.
+            held["meta"] = dict(held.get("meta") or {})
+            pending.pop(version)
+            if pending:
+                held["pending"] = pending
+            else:
+                held.pop("pending", None)
+            registry[name] = held
+            return self._publication(name, registry)
+
+        return self._update_registry(record)
+
+    def _claim_for_unpublish(
+        self, name: str, version: str, token: str, *, min_age: float
+    ) -> _Claim:
+        """Take a version out of the registry and reserve it for the
+        removal of its tag and branch.
+
+        The reservation is taken even when the registry holds nothing
+        of the version, before anything looks for a stranded branch or
+        tag: looking first and claiming after would leave a moment in
+        which a publish could reserve the version and write its branch,
+        and the removal would then take a version that publish is still
+        writing. A publish's reservation younger than ``min_age`` is
+        refused (it may still be writing, here or on another host); an
+        older one, or another unpublish's of any age, is taken over.
+        """
+
+        def claim(registry: dict[str, Any]) -> _Claim:
+            record = dict(registry.get(name) or {})
+            versions = dict(record.get("versions") or {})
+            pending = dict(record.get("pending") or {})
+            row = versions.pop(version, None)
+            took_over = False
+            if row is not None:
+                if record.get("current") == version and versions:
+                    raise WorkspaceError(
+                        f"{name}/{version} is the current version and is not "
+                        f"the last one. Point {name!r} at another version with "
+                        "store.set_current(name, version) first, or remove the "
+                        "others."
+                    )
+                if record.get("current") == version:
+                    record["current"] = None
+            elif version in pending:
+                entry = pending[version]
+                age = time.time() - float(entry.get("since") or 0.0)
+                if entry.get("op") == "publish" and age < min_age:
+                    raise WorkspaceError(_busy(name, version, entry))
+                took_over = True
+            pending[version] = {"op": "unpublish", "token": token, "since": time.time()}
+            record["versions"] = versions
+            record.setdefault("current", None)
+            record.setdefault("meta", {})
+            record["pending"] = pending
+            registry[name] = record
+            return _Claim(
+                row=row,
+                took_over=took_over,
+                live=tuple(sorted(versions, key=_version_order)),
+            )
+
+        return self._update_registry(claim)
+
+    def _release(self, name: str, version: str, token: str) -> None:
+        """Give back a reservation this call holds. A publication left
+        with no versions and no reservations goes, and its ``meta`` with
+        it, so republishing the name starts empty. A reservation another
+        call has taken over is that call's, and is left alone."""
+
+        def release(registry: dict[str, Any]) -> None:
+            record = registry.get(name)
+            pending = dict((record or {}).get("pending") or {})
+            if (pending.get(version) or {}).get("token") != token:
+                return
+            pending.pop(version)
+            record = dict(record)
+            if pending:
+                record["pending"] = pending
+            else:
+                record.pop("pending", None)
+            if record.get("versions") or pending:
+                registry[name] = record
+            else:
+                registry.pop(name)
+
+        self._update_registry(release)
+
+    def _release_quietly(self, name: str, version: str, token: str) -> None:
+        """:meth:`_release` from a call that is already failing: the
+        failure it is handling is the one to raise, and a reservation
+        left behind is cleared by a retry or by :meth:`unpublish`."""
+        try:
+            self._release(name, version, token)
+        except Exception:
+            _logger.warning(
+                "Could not give back the reservation of %s/%s",
+                name,
+                version,
+                exc_info=True,
+            )
 
     def _publication(self, name: str, registry: dict[str, Any]) -> Publication:
         record = registry[name]
@@ -1073,9 +1491,10 @@ class _Publishing:
         serve unpublished content for as long as the orphan sweep's
         grace period, which is the opposite of what unpublish means.
 
-        The re-read and the open share the registry lock, so an
-        unpublish cannot land between them and leave the reserved
-        branch minted again by the open.
+        The re-read and the open need no lock between them. The open is
+        by commit and creates no branch, so an unpublish that lands in
+        between leaves nothing behind it, and the version reads for as
+        long as one opened just before that unpublish would.
 
         The tier is decided here, on the tree the open is about to
         serve: a publication with no handler under ``app/api/`` is
@@ -1087,20 +1506,24 @@ class _Publishing:
         """
         self._require_own_layout("Publication.open")
         self._require_kvgit("Publication.open")
-        with self._registry_locked():
-            registry = self._registry_read()
-            row = ((registry.get(version.name) or {}).get("versions") or {}).get(
-                version.version
-            )
-            if row is None:
-                raise WorkspaceError(
-                    f"No longer published: {version.name}/{version.version} — "
-                    "it was unpublished after this Publication was fetched. "
-                    f"Re-read it with store.publication({version.name!r})."
-                )
-            ref = Ref.parse(row["ref"])
-            root = row.get("root")
+        row = self._registry_row(version.name, version.version)
+        gone = WorkspaceError(
+            f"No longer published: {version.name}/{version.version} — "
+            "it was unpublished after this Publication was fetched. "
+            f"Re-read it with store.publication({version.name!r})."
+        )
+        if row is None:
+            raise gone
+        ref = Ref.parse(row["ref"])
+        root = row.get("root")
+        try:
             provider = self._provider_at_commit(ref.session, ref.commit)
+        except WorkspaceError:
+            # Its branch went after the row was read: an unpublish
+            # landed in between, and says so better than the branch.
+            if self._registry_row(version.name, version.version) is None:
+                raise gone from None
+            raise
         if not _has_handlers(provider.fs, root or _DEFAULT_ROOT):
             from ..executor import NoExecutor
 
@@ -1113,6 +1536,72 @@ class _Publishing:
             )
         return self._frozen_workspace(provider, root=root, **settings)
 
+    def _registry_row(self, name: str, version: str) -> dict[str, Any] | None:
+        """One version's live record, or ``None``: one registry read."""
+        record = self._registry_read().get(name) or {}
+        return (record.get("versions") or {}).get(version)
+
+    def _land_version(
+        self,
+        ws: "Workspace",
+        head: str,
+        *,
+        branch: str,
+        tag: str,
+        paths: "Sequence[str]",
+        exclude: "Sequence[str]",
+        commit_info: dict[str, Any],
+    ) -> "tuple[str, dict[str, Any]]":
+        """Write a reserved version's branch and tag, or adopt what an
+        attempt of this same publish wrote; returns the commit and the
+        info it carries.
+
+        The reservation keeps every other publish of this version away,
+        but not another attempt of this same publish, which may be
+        writing the same tree at the same moment. So the commit is
+        decided by the branch's own compare-and-swap: one attempt's
+        commit lands, and an attempt that finds the branch moved under
+        it adopts that commit instead of writing a second.
+
+        A branch that already holds a commit no record names was left by
+        an attempt that died. Its commit is adopted when it is this same
+        publish's, and refused when it is not.
+        """
+        for _ in range(3):
+            if self._branch_head(branch)[0] is not None:
+                resumed = self._resume_publication(branch, tag, commit_info)
+                if resumed is None:
+                    name, version = commit_info["name"], commit_info["version"]
+                    raise WorkspaceError(
+                        f"Publication branch already exists: {branch!r}, no "
+                        "record names it, and its commit is not the one this "
+                        "call would write — an earlier publish of something "
+                        "else left it behind. Clear it with "
+                        f"store.unpublish({name!r}, {version!r}), then publish "
+                        "again."
+                    )
+                return resumed
+            if self._scoped_store_tag(tag) in self._raw_tags():
+                raise WorkspaceError(
+                    f"Tag already exists: {tag!r} in scope 'store' — a "
+                    "publication cannot reuse it."
+                )
+            commit = self._write_publication(
+                ws,
+                head,
+                branch=branch,
+                paths=paths,
+                exclude=exclude,
+                tag=tag,
+                commit_info=commit_info,
+            )
+            if commit is not None:
+                return commit, commit_info
+        raise WorkspaceError(
+            f"Could not write {branch!r}: it kept changing under this publish. "
+            "Nothing was recorded; publish again."
+        )
+
     def _branch_head(self, branch: str) -> tuple[str | None, dict[str, Any] | None]:
         """The commit at a branch's head and the info it carries.
 
@@ -1123,13 +1612,11 @@ class _Publishing:
         leaves behind. Such a branch holds nobody's state, so it neither
         blocks a retry nor needs anyone's provenance to be cleared.
         """
-        from kvgit.hamt import EMPTY_HASH
-
         with self._repo() as repo:
             if repo is None or branch not in repo.branches:
                 return None, None
             commit = repo.get_commit(repo.branches[branch])
-            if commit.root == EMPTY_HASH and not commit.info:
+            if _holds_nothing(commit):
                 return None, None
             return commit.hash, commit.info
 
@@ -1187,13 +1674,20 @@ class _Publishing:
         holding no registry record that something was cleared. The tag
         goes first: removing it is what makes the commit collectable,
         so the branch deletion's own sweep finishes the job in one
-        pass.
+        pass. One already gone is no failure: an unpublish that took
+        over another's reservation may be removing the same two things
+        beside it.
         """
+        from kvgit import UnknownTagError
+
         from ..providers.kvgit import KvgitProvider
 
         found = self._raw_tag_info(tag) is not None
         if found:
-            self._delete_store_tag(tag)
+            try:
+                self._delete_store_tag(tag)
+            except (CommitNotFoundError, UnknownTagError):
+                pass
         if branch in set(self._branches()):
             found = True
         repo = self._kvgit_repo()
@@ -1204,15 +1698,16 @@ class _Publishing:
     def _resume_publication(
         self, branch: str, tag: str, commit_info: Mapping[str, Any]
     ) -> "tuple[str, dict[str, Any]] | None":
-        """Finish a publish that died before its registry record.
+        """Adopt the commit an attempt of this same publish wrote.
 
-        The branch and the tag are written before the record, so a
-        crash between them leaves a reserved branch no record names.
-        The retry rebuilds the same commit info, and a branch whose
-        head carries the same ``published_from`` commit, the same
-        ``paths`` and the same ``exclude`` was written by that same
-        attempt: its commit is returned to be recorded as this
-        publish's, and the tag is minted if the crash came before it.
+        The branch and the tag are written before the record, so an
+        attempt that died before its record, or one still writing
+        beside this call, leaves a reserved branch no record names. The
+        retry rebuilds the same commit info, and a branch whose head
+        carries the same ``published_from`` commit, the same ``paths``
+        and the same ``exclude`` was written by an attempt of this same
+        publish: its commit is returned to be recorded as this
+        publish's, and the tag is minted if it is not there yet.
         ``None`` says the branch holds some other attempt's commit, which
         this publish may not adopt and may not overwrite.
 
@@ -1229,8 +1724,6 @@ class _Publishing:
         other half is how it was spelled, and a store tag's snapshot
         recorded the branch it borrowed before it recorded the tag.
         """
-        from ..providers.kvgit import KvgitProvider
-
         commit, found = self._branch_head(branch)
         if commit is None:
             return None
@@ -1244,17 +1737,37 @@ class _Publishing:
         ) != _source_commit(commit_info.get("published_from")):
             return None
         landed = dict(found or {})
-        existing = self._raw_tag_info(tag)
-        if existing is None:
-            # Tagged through a provider on the branch that holds the
-            # commit: the provider applies the store scope's name rules.
-            with self._repo() as repo:
-                KvgitProvider(repo, repo.worktree(branch), session=branch).tag(
-                    tag, at=commit, info=landed, scope="store"
-                )
-        elif existing.id != commit:
-            return None
+        with self._repo() as repo:
+            if not self._mint_tag(repo, branch, tag, commit, landed):
+                return None
         return commit, landed
+
+    def _mint_tag(
+        self, repo: Any, branch: str, tag: str, commit: str, info: Mapping[str, Any]
+    ) -> bool:
+        """Name ``commit`` with a version's store tag; False when the tag
+        already names some other commit.
+
+        Two attempts of one publish may both reach here for the same
+        commit, and only one creates the tag: the other finds it naming
+        that commit, which is the outcome it wanted. The tag is created
+        through a provider on the branch that holds the commit, so the
+        store scope's name rules apply.
+        """
+        from ..providers.kvgit import KvgitProvider
+
+        existing = self._raw_tag_info(tag, repo)
+        if existing is None:
+            try:
+                KvgitProvider(repo, repo.worktree(branch), session=branch).tag(
+                    tag, at=commit, info=dict(info), scope="store"
+                )
+                return True
+            except WorkspaceError:
+                existing = self._raw_tag_info(tag, repo)
+                if existing is None:
+                    raise
+        return existing.id == commit
 
     def _write_publication(
         self,
@@ -1266,12 +1779,14 @@ class _Publishing:
         exclude: "Sequence[str]",
         tag: str,
         commit_info: dict[str, Any],
-    ) -> str:
-        """Build the derived commit on its own branch and tag it.
+    ) -> str | None:
+        """Build the derived commit on its own branch and tag it;
+        returns the commit, or ``None`` when another attempt of this
+        same publish committed to the branch first, for the caller to
+        adopt.
 
-        The branch starts at the store's empty root commit — opening a
-        kvgit branch by a name that does not exist creates it empty —
-        so the publication's only ancestor is nothing at all. Into it go
+        The branch is created at the store's empty root commit, so the
+        publication's only ancestor is nothing at all. Into it go
         the selected file blobs and, beside each one, the metadata row
         the source filesystem holds for that path (plus the rows of the
         directories above them), which is what makes a frozen open read
@@ -1282,14 +1797,18 @@ class _Publishing:
         a path with no row), and the table itself never travels. A
         publication is therefore always in the current layout.
 
+        The commit lands only on the empty root it was built over,
+        decided by the branch's compare-and-swap, so a second attempt
+        writing the same tree beside this one never stacks a second
+        commit on the first.
+
         Blobs are copied rather than pointed at. That is fine at app
         sizes, and content addressing in the store below would make the
         copy free — the keys are identical, so the same bytes would land
         under the same hash.
         """
+        from kvgit import BranchExistsError, BranchMovedError
         from monkeyfs import VirtualFS
-
-        from ..providers.kvgit import KvgitProvider
 
         src = ws._provider
         handle = src._snapshot(head)
@@ -1310,7 +1829,14 @@ class _Publishing:
         )
 
         with self._repo(create=True) as repo:
-            pub = repo.worktree(branch, create=True)
+            if branch not in repo.branches:
+                try:
+                    repo.branches.create(branch)  # at the empty root
+                except BranchExistsError:
+                    pass  # another attempt made it; its head decides below
+            pub = repo.worktree(branch)
+            if not _holds_nothing(repo.get_commit(pub.head)):
+                return None
             pub_fs = VirtualFS(pub)
             for key in wanted:
                 pub[key] = handle.get(key)
@@ -1318,14 +1844,19 @@ class _Publishing:
                 pub[pub_fs.metadata_key("/" + row_path)] = json.dumps(
                     fields, sort_keys=True
                 ).encode()
-            result = pub.commit(info=commit_info)
+            try:
+                result = pub.commit(info=commit_info, on_moved="raise")
+            except BranchMovedError:
+                return None
             if not result.merged:
                 raise WorkspaceError(
                     f"publish failed: could not commit the derived tree on "
                     f"{branch!r}: {result}"
                 )
             commit = pub.head
-            KvgitProvider(repo, pub, session=branch).tag(
-                tag, at=commit, info=commit_info, scope="store"
-            )
+            if not self._mint_tag(repo, branch, tag, commit, commit_info):
+                raise WorkspaceError(
+                    f"Tag already exists: {tag!r} in scope 'store', naming "
+                    "another commit — a publication cannot reuse it."
+                )
             return commit

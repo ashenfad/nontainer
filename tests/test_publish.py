@@ -83,8 +83,8 @@ def test_publish_makes_a_branch_a_tag_and_a_record(tmp_path):
     # the branch is the anchor that keeps it openable
     assert "@store/pub/scoreboard/v1" in store._branches()
     assert version.ref.session == "@store/pub/scoreboard/v1"
-    # the record is on disk
-    registry = json.loads((tmp_path / "publications.json").read_text())
+    # the record is in the store's own backend
+    registry = _registry(store)
     assert registry == {
         "scoreboard": {
             "current": "v1",
@@ -315,7 +315,7 @@ def test_the_version_row_carries_the_callers_info(tmp_path):
     assert version.info == {"title": "Scores", "owner": "ann"}
     assert version.paths == ("app/",)
 
-    row = json.loads((tmp_path / "publications.json").read_text())
+    row = _registry(Store(tmp_path))
     row = row["scoreboard"]["versions"]["v1"]
     assert row["info"] == {"title": "Scores", "owner": "ann"}
     # The provenance keys are row fields already; the info mapping is
@@ -329,12 +329,11 @@ def test_a_version_row_written_without_info_reads_as_empty(tmp_path):
     store.publish(ws, "scoreboard")
     ws.close()
 
-    path = tmp_path / "publications.json"
-    registry = json.loads(path.read_text())
+    registry = _registry(store)
     row = registry["scoreboard"]["versions"]["v1"]
     row.pop("info")
     row.pop("paths")
-    path.write_text(json.dumps(registry))
+    _set_registry(store, registry)
 
     version = Store(tmp_path).publication("scoreboard").current_version
     assert version.info == {}
@@ -838,7 +837,7 @@ def test_unpublish_removes_the_tag_the_branch_and_the_record(tmp_path):
     assert store.publication("scoreboard") is None
     assert store.tags.list() == {}
     assert "@store/pub/scoreboard/v1" not in store._branches()
-    assert json.loads((tmp_path / "publications.json").read_text()) == {}
+    assert _registry(store) == {}
     ws.close()
 
 
@@ -860,15 +859,26 @@ def test_unpublish_refuses_the_current_version_while_others_remain(tmp_path):
     ws.close()
 
 
+def _registry(store):
+    """The store's publication registry, as stored in its backend."""
+    return store._registry_read()
+
+
+def _set_registry(store, registry):
+    """Write the registry straight into the backend, as an older release
+    or a hand edit would have left it."""
+    store.repo.store.set("__nontainer_publications__", json.dumps(registry).encode())
+
+
 def _registry_write_dies(monkeypatch):
-    """Make the registry write raise, so a publish dies exactly where
+    """Make the record's write raise, so a publish dies exactly where
     its branch and tag are already in the store and its record is
     not — the one window publish cannot make atomic."""
 
-    def boom(self, data):
+    def boom(self, *args, **kwargs):
         raise RuntimeError("the process died writing the registry")
 
-    monkeypatch.setattr(Store, "_registry_write", boom)
+    monkeypatch.setattr(Store, "_record_version", boom)
 
 
 def test_a_publish_that_died_before_its_record_is_resumed(tmp_path, monkeypatch):
@@ -927,7 +937,7 @@ def test_a_resumed_row_records_the_commits_info_not_the_retrys(tmp_path, monkeyp
     version = pub.current_version
     assert version.info == {"title": "a", "dropped": "yes"}
 
-    row = json.loads((tmp_path / "publications.json").read_text())
+    row = store._registry_read()
     assert row["scoreboard"]["versions"]["v1"]["info"] == dict(version.info)
 
     snapshot = pub.open()
@@ -1143,21 +1153,38 @@ def test_the_registry_survives_reopening_the_store(tmp_path):
 
 
 def test_a_store_with_no_layout_keeps_the_registry_in_memory(tmp_path):
-    """A provider_factory owns where state lives, so there is nowhere to
-    put the file: the registry lives as long as the Store object."""
+    """A provider_factory owns where state lives, so there is no backend
+    of the store's own to keep it in: the registry lives as long as the
+    Store object."""
     store = Store(
         tmp_path, provider_factory=lambda s: KvgitProvider.open(None, session=s)
     )
-    assert store._registry_path() is None
     assert store.publications() == {}
-    store._registry_write({"scoreboard": {"versions": {}, "current": None}})
+    row = {"tag": "scoreboard/v1", "ref": "@store/pub/scoreboard/v1@" + "a" * 40}
+    store._update_registry(
+        lambda r: r.update(scoreboard={"versions": {"v1": row}, "current": "v1"})
+    )
     assert list(store.publications()) == ["scoreboard"]
     assert not (tmp_path / "publications.json").exists()
     assert Store(tmp_path).publications() == {}
 
 
 def test_an_unreadable_registry_says_so(tmp_path):
-    (tmp_path).mkdir(parents=True, exist_ok=True)
+    store = Store(tmp_path)
+    ws = seeded(store)
+    store.publish(ws, "scoreboard")
+    store.repo.store.set("__nontainer_publications__", b"{not json")
+    with pytest.raises(WorkspaceError, match="unreadable"):
+        store.publications()
+    ws.close()
+
+
+def test_an_unreadable_legacy_registry_file_says_so(tmp_path):
+    """A file an earlier release kept is imported on first use, and one
+    that does not parse is refused rather than read as nothing."""
+    store = Store(tmp_path)
+    ws = seeded(store)
+    ws.close()
     (tmp_path / "publications.json").write_text("{not json")
     with pytest.raises(WorkspaceError, match="unreadable"):
         Store(tmp_path).publications()
@@ -1187,7 +1214,7 @@ def test_two_stores_publishing_different_names_both_land(tmp_path):
         t.join()
 
     assert sorted(done) == ["first", "second"]
-    registry = json.loads((tmp_path / "publications.json").read_text())
+    registry = _registry(Store(tmp_path))
     assert sorted(registry) == ["first", "second"]
     for name in ("first", "second"):
         assert Store(tmp_path).publication(name).open().files.exists("app/index.html")
@@ -1248,14 +1275,14 @@ def test_create_only_refuses_a_name_that_is_already_published(tmp_path):
     ws = seeded(store)
     store.publish(ws, "scoreboard")
 
-    registry = json.loads((tmp_path / "publications.json").read_text())
+    registry = _registry(store)
     branches = sorted(store._branches())
     tags = dict(store.tags.list())
 
     with pytest.raises(ValueError, match="already published"):
         store.publish(ws, "scoreboard", create_only=True)
 
-    assert json.loads((tmp_path / "publications.json").read_text()) == registry
+    assert _registry(store) == registry
     assert sorted(store._branches()) == branches
     assert dict(store.tags.list()) == tags
     ws.close()
@@ -1572,10 +1599,9 @@ def test_publication_meta_of_an_old_row_reads_as_empty(tmp_path):
     store.publish(ws, "scoreboard")
     ws.close()
 
-    path = tmp_path / "publications.json"
-    registry = json.loads(path.read_text())
+    registry = _registry(store)
     registry["scoreboard"].pop("meta", None)
-    path.write_text(json.dumps(registry))
+    _set_registry(store, registry)
 
     assert Store(tmp_path).publication("scoreboard").meta == {}
 
@@ -1643,14 +1669,15 @@ def _unpublish_between_check_and_open(tmp_path, read):
     looks like afterwards.
 
     The hook waits for the unpublish rather than racing it, so the
-    window is opened deliberately instead of by timing. When the read
-    holds the registry lock the unpublish cannot land while the hook
-    waits, and the wait times out — which is the point being tested.
+    window is opened deliberately instead of by timing. Nothing holds
+    the unpublish off: the registry is shared across hosts and no lock
+    spans them, so what is tested is that the open after the check
+    creates no branch, and the read either reads the version or says
+    it is no longer published.
 
-    Half a second is ample for an unpublish that is NOT blocked to land
-    (it takes milliseconds), and the timeout is paid on every run where
-    the lock does its job. A machine stalled for longer could only make
-    a missing lock pass unnoticed, never fail a correct one.
+    Half a second is ample for the unpublish to land (it takes
+    milliseconds). A machine stalled for longer could only leave the
+    window closed, which tests less, never fail a correct store.
     """
     store = Store(tmp_path)
     ws = seeded(store)
