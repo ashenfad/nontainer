@@ -3,7 +3,6 @@ rung, and, through a stub, run as host code in-process as they are in
 the host half elsewhere."""
 
 import dataclasses
-import sys
 
 import pytest
 from host_types import MARK, Probe, ProbeStub
@@ -18,8 +17,6 @@ TIMEOUT = 1.0
 def open_ws(rung, host_objects, **kw):
     cfg = PythonConfig(host_objects=host_objects, **kw)
     if rung == "dud":
-        if sys.version_info < (3, 11):
-            pytest.skip("dud needs Python 3.11+")
         pytest.importorskip("dud")
         from nontainer import Workspace
         from nontainer.executor_dud import DudExecutor

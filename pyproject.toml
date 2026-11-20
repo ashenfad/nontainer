@@ -13,14 +13,15 @@ classifiers = [
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Typing :: Typed",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     # The termish, monkeyfs, sandtrap and kvgit floors are the releases
     # whose features nontainer uses; the CHANGELOG says which needed what.
@@ -69,9 +70,7 @@ postgres = [
     "kvgit[postgres]>=0.4.3,<0.5",
 ]
 dud = [
-    # dud needs Python 3.11+; the marker keeps nontainer's 3.10 floor for
-    # everyone else.
-    "dud>=0.4.4; python_version >= '3.11'",
+    "dud>=0.4.4",
 ]
 dev = [
     "ruff",

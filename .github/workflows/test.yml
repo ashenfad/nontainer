@@ -41,9 +41,7 @@ jobs:
         # `dud` included so tests/test_dud_executor.py actually RUNS.
         # It guards itself with importorskip, so without the extra the
         # whole DudExecutor suite skipped silently in CI -- which is how
-        # a dud breaking change reached us unnoticed. The extra carries a
-        # `python_version >= "3.11"` marker, which every version in the
-        # matrix meets.
+        # a dud breaking change reached us unnoticed.
         uv pip install --system -e ".[dev,apps,agno,mcp,dud]"
 
     # The browser is keyed on the Playwright version that was installed,

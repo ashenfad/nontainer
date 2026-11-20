@@ -1941,9 +1941,7 @@ opening, which spawns it then.
 
 ### `DudExecutor` — a real machine (the `[dud]` extra)
 
-`pip install nontainer[dud]`, which needs Python 3.11+: the extra
-carries a `python_version >= "3.11"` marker, so on 3.10 it installs
-nothing.
+`pip install nontainer[dud]`.
 
 - **`backend`** — `"vm"` (the default) resolves per host: vfkit on
   macOS, firecracker on Linux/KVM. Prefer it to naming one, since
