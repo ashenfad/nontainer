@@ -1443,14 +1443,17 @@ StateChanges: .base, .theirs -> Ref
               .cwd -> tuple[str | None, str] | None   # (before, after)
               .bookkeeping -> frozenset[str]      # differs; land leaves it
               .entries -> int, .stored_bytes -> int
-FileChange:   .path, .change ("added" | "removed" | "modified" | "metadata"),
+FileChange:   .path, .change ("added" | "removed" | "modified" |
+                               "replaced" | "metadata"),
               .is_dir, .size, .base_size          # bytes, per the file's row
 CacheChange:  .key, .change ("set" | "deleted"), .size   # stored bytes
 ```
 
 It describes what a land moves, in its terms. `files` covers files and
 directories, an empty one included. A path whose metadata alone changed
-(its timestamps, say) is `"metadata"`. A cache key set to `None` is
+(its timestamps, say) is `"metadata"`, and one that changed type (a
+file become a directory, or the reverse) is `"replaced"`, with `is_dir`
+saying what it is now. A cache key set to `None` is
 `"set"`, never `"deleted"`. `cwd` is set when a land would move the cwd,
 by the same rule a land reads it with. `bookkeeping` names the
 framework state that also differs and that a land leaves alone:

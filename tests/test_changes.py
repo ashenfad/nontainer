@@ -86,6 +86,27 @@ def test_files_directories_and_metadata(store):
     )
 
 
+def test_a_path_that_changed_type_is_a_replacement(store):
+    """A file that became a directory, and a directory that became a
+    file: neither is only removed or only added, since the path is
+    still there after a land."""
+    with store.open("demo", autocommit=False) as ws:
+        ws.files.write("was-file", "1234")
+        ws.terminal("mkdir was-dir")
+        ws.commit()
+        before = ws.ref
+        ws.files.remove("was-file")
+        ws.terminal("mkdir was-file && rm -r was-dir")
+        ws.files.write("was-dir", "123456")
+        ws.commit()
+        after = ws.ref
+
+    assert store.changes(before, after).files == (
+        FileChange("/workspace/was-dir", "replaced", size=6, base_size=None),
+        FileChange("/workspace/was-file", "replaced", is_dir=True, base_size=4),
+    )
+
+
 def test_bookkeeping_is_named_and_not_a_change(store):
     """A fork changes nothing a land moves: its first commit is the
     agent's git state, and a narrowed one records its view."""

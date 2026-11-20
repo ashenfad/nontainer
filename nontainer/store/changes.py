@@ -23,17 +23,19 @@ _DEFAULT_ROOT = "/workspace"
 class FileChange:
     """One file or directory that changed.
 
-    ``change`` is ``"added"``, ``"removed"`` or ``"modified"`` (a
-    file's bytes, or for a directory its existence), or ``"metadata"``:
+    ``change`` is ``"added"`` or ``"removed"`` (the path is new, or
+    gone), ``"modified"`` (a file's bytes changed), ``"replaced"`` (a
+    file became a directory, or a directory a file), or ``"metadata"``:
     only the path's metadata row changed, such as its timestamps, and a
-    file's bytes are the same. ``size`` is the file's size in bytes at
-    ``theirs`` and ``base_size`` at ``base``, as its metadata row
-    records it: ``None`` where it is not there, and always ``None`` for
-    a directory.
+    file's bytes are the same. ``is_dir`` says what the path is at
+    ``theirs``, or for a removed path what it was. ``size`` is the
+    file's size in bytes at ``theirs`` and ``base_size`` at ``base``, as
+    its metadata row records it: ``None`` on a side where the path is
+    not a file.
     """
 
     path: str
-    change: Literal["added", "removed", "modified", "metadata"]
+    change: Literal["added", "removed", "modified", "replaced", "metadata"]
     is_dir: bool = False
     size: int | None = None
     base_size: int | None = None
@@ -133,8 +135,9 @@ class _Changes:
         :attr:`StateChanges.stored_bytes`), and a change past either
         raises :class:`~nontainer.errors.ChangesTooLarge` before anything
         more is read. Within them, the only values read are the changed
-        paths' metadata rows, which are small: they tell a directory from
-        a file and give a file's own size.
+        paths' metadata rows on each side, which are small: they tell a
+        directory from a file, so a path that changed type reads as
+        ``"replaced"``, and give a file's own size.
 
         Both commits must be in the current layout (monkeyfs 0.1.10 and
         later); an older one is refused. A commit written before kvgit's
@@ -228,52 +231,59 @@ class _Changes:
                 stored_bytes=stored,
             )
 
-        # Every changed path's metadata row, on each side it is on: the
-        # rows are small, and they say a directory from a file and give
-        # a file's own size. A row sits beside its blob under the same
-        # encoding.
+        # Every changed path's metadata row, on both sides: the rows are
+        # small, and they say a directory from a file (on each side, so
+        # a path that changed type reads as the replacement it is) and
+        # give a file's own size. A row sits beside its blob under the
+        # same encoding.
         def row_key(path: str) -> str:
             if path in rows:
                 return rows[path][0]
             return VirtualFS.META_PREFIX + blobs[path][0][len(VirtualFS.PREFIX) :]
 
-        def on(path: str, side: str) -> bool:
-            change = (blobs.get(path) or rows[path])[1]
-            return getattr(change, side) is not None
-
-        read = {}
-        for which, side in (("base", "old"), ("theirs", "new")):
-            keys = [row_key(path) for path in paths if on(path, side)]
-            read[which] = sides[which].get_many(*keys) if keys else {}
+        keys = [row_key(path) for path in paths]
+        read = {
+            which: sides[which].get_many(*keys) if keys else {}
+            for which in ("base", "theirs")
+        }
 
         files = []
         for path in sorted(paths):
             before = _parsed_row(_row, read["base"].get(row_key(path)))
             after = _parsed_row(_row, read["theirs"].get(row_key(path)))
-            is_dir = path not in blobs and bool((after or before or {}).get("is_dir"))
-            if path in blobs:
-                change = blobs[path][1]
-                kind = (
-                    "added"
-                    if change.old is None
-                    else "removed"
-                    if change.new is None
-                    else "modified"
-                )
-            elif is_dir and not on(path, "old"):
-                kind = "added"
-            elif is_dir and not on(path, "new"):
-                kind = "removed"
+            blob = blobs[path][1] if path in blobs else None
+            # A path is a file where its bytes are, and otherwise what
+            # its row says; it is there on a side where either is.
+            file_before = blob is not None and blob.old is not None
+            file_after = blob is not None and blob.new is not None
+            dir_before = not file_before and bool((before or {}).get("is_dir"))
+            dir_after = not file_after and bool((after or {}).get("is_dir"))
+            there_before = file_before or before is not None
+            there_after = file_after or after is not None
+            if not there_before:
+                kind, is_dir = "added", dir_after
+            elif not there_after:
+                kind, is_dir = "removed", dir_before
+            elif dir_before != dir_after:
+                kind, is_dir = "replaced", dir_after
+            elif blob is not None:
+                kind, is_dir = "modified", False
             else:
-                kind = "metadata"
+                kind, is_dir = "metadata", dir_after
             files.append(
                 FileChange(
                     path=path,
                     change=kind,
                     is_dir=is_dir,
-                    size=None if is_dir else _file_size(after, blobs, path, "new"),
+                    size=(
+                        _file_size(after, blobs, path, "new")
+                        if there_after and not dir_after
+                        else None
+                    ),
                     base_size=(
-                        None if is_dir else _file_size(before, blobs, path, "old")
+                        _file_size(before, blobs, path, "old")
+                        if there_before and not dir_before
+                        else None
                     ),
                 )
             )
