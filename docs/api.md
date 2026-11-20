@@ -224,7 +224,13 @@ and a refused one creates nothing. `name` must be a session id the
 store does not hold: it is created by one compare-and-swap, so of two
 callers asking for one name one gets it and the other gets
 `WorkspaceError`, and the first's session is left as it is. It is an
-ordinary session from then on, closed and deleted like any other.
+ordinary session from then on, closed and deleted like any other. It
+opens at the root the source session used (pass `root=` for one not at
+the default): at a root the commit holds no tree under, a writable open
+would commit a baseline and move the head, so that is refused with
+`ValueError`. A refused or failed open removes the session again, but
+only while its head is still the commit, so a session another caller
+committed to meanwhile is left alone.
 
 It holds the commit's state as it is: files, cache and cwd, and the
 bookkeeping too (the stored conversation, still the source's, the

@@ -153,6 +153,44 @@ def test_a_failed_open_removes_the_session(store, monkeypatch):
     assert "copy" not in store.sessions()
 
 
+def test_a_failed_open_leaves_a_session_someone_committed_to(
+    store, tmp_path, monkeypatch
+):
+    """The session is visible the moment it is made. If another caller
+    opened it and committed before this open failed, it is theirs, and
+    the cleanup leaves it alone."""
+    ref = _source(store)
+    other = Store(tmp_path)
+
+    def another_caller_got_there(*args, **kwargs):
+        with other.open("copy", autocommit=False) as ws:
+            ws.files.write("theirs.txt", "mine")
+            ws.commit()
+        raise RuntimeError("the open failed")
+
+    monkeypatch.setattr(store, "open", another_caller_got_there)
+    with pytest.raises(RuntimeError):
+        store.scratch(ref, "copy")
+    monkeypatch.undo()
+    assert "copy" in store.sessions()
+    with store.open("copy") as ws:
+        assert ws.files.read("theirs.txt") == b"mine"
+    other.close()
+
+
+def test_a_root_the_commit_holds_nothing_under_is_refused(store):
+    """A writable open at such a root commits a baseline, and the head
+    would no longer be the commit: refused, and nothing left behind."""
+    with store.open("source", autocommit=False, root="/srv") as ws:
+        ws.files.write("data.txt", "here")
+        ws.commit()
+        ref = ws.ref
+    with pytest.raises(ValueError, match="root"):
+        store.scratch(ref, "copy")  # the default root, not the session's
+    assert "copy" not in store.sessions()
+    assert store.repo.branches["source"] == ref.commit
+
+
 def test_a_profile_with_its_own_fields_is_refused_before_creating(store):
     from nontainer import PythonConfig
     from nontainer.workspace import Profile
