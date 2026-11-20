@@ -51,6 +51,7 @@ from .editing import EditOutcome
 from .errors import (
     BookkeepingLost,
     BranchExpired,
+    ChangesTooLarge,
     CommitNotFoundError,
     HeadMoved,
     JobRunning,
@@ -87,7 +88,16 @@ from .protocol import (
     validate_session_id,
 )
 from .runtime import Runtime
-from .store import Publication, Ref, Store, Version, store
+from .store import (
+    CacheChange,
+    FileChange,
+    Publication,
+    Ref,
+    StateChanges,
+    Store,
+    Version,
+    store,
+)
 from .workspace import (
     HostObject,
     ModuleGrant,
@@ -113,6 +123,9 @@ __all__ = [
     "Ref",
     "Publication",
     "Version",
+    "StateChanges",
+    "FileChange",
+    "CacheChange",
     "Workspace",
     "Runtime",
     "PythonConfig",
@@ -162,5 +175,6 @@ __all__ = [
     "TurnInProgress",
     "HeadMoved",
     "LandConflict",
+    "ChangesTooLarge",
     "LayoutMigration",
 ]

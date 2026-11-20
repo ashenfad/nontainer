@@ -160,6 +160,55 @@ def _same(a: Any, b: Any) -> bool:
         return False
 
 
+def state_kind(key: str) -> str | None:
+    """What a key is to ``land``, which moves a session's state and no
+    other key: ``"file"`` (a file's bytes), ``"row"`` (a metadata row, a
+    file's or a directory's, which is how an empty directory exists),
+    ``"cache"`` (one key of ``ws.cache``) or ``"cwd"``. ``None`` is
+    bookkeeping a land never moves (see :func:`bookkeeping_kind`).
+
+    An allowlist, so a plane added later stays put until it is named
+    here.
+    """
+    from monkeyfs import VirtualFS
+
+    from ..migrate import LEGACY_TABLE_KEY
+
+    if not isinstance(key, str):
+        return None
+    if key == VirtualFS.CWD_KEY:
+        return "cwd"
+    if VirtualFS.is_metadata_key(key):
+        return "row"
+    if key.startswith(CACHE_PREFIX):
+        return "cache"
+    if key.startswith(VirtualFS.PREFIX) and key != LEGACY_TABLE_KEY:
+        try:
+            VirtualFS._decode_path(key)
+        except Exception:  # noqa: BLE001 - an undecodable key is not a file
+            return None
+        return "file"
+    return None
+
+
+def bookkeeping_kind(key: str) -> str:
+    """Which framework bookkeeping a key is, for a key :func:`state_kind`
+    leaves out: ``"ws-git"`` (the agent's git state), ``"view"`` (a
+    narrowed view's record), ``"conversation"``, ``"compaction"``, or
+    ``"other"``."""
+    from ..views import VIEW_KEY
+
+    if key == _WS_BLOB_KEY:
+        return "ws-git"
+    if key == VIEW_KEY:
+        return "view"
+    if key.startswith(CONVERSATION_PREFIXES):
+        return "conversation"
+    if key.startswith(COMPACTION_PREFIX):
+        return "compaction"
+    return "other"
+
+
 def _row(value: Any) -> dict | None:
     """One metadata row as a dict, or ``None`` where there is no row.
 
@@ -1924,17 +1973,11 @@ class KvgitProvider:
         key, left alone when ``cwd`` is false because the change's
         commit stored no cwd of its own (see ``Workspace.land``).
         """
-        from monkeyfs import VirtualFS
-
         changed = self._changed_keys(base, theirs, at_base, at_theirs)
-        files = self._file_keys(changed)
         return {
             key
             for key in changed
-            if key in files
-            or VirtualFS.is_metadata_key(key)
-            or key.startswith(CACHE_PREFIX)
-            or (cwd and key == VirtualFS.CWD_KEY)
+            if (kind := state_kind(key)) is not None and (cwd or kind != "cwd")
         }
 
     def _land_rules(
