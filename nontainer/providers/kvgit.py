@@ -1921,7 +1921,8 @@ class KvgitProvider:
         later stays put until it is named here. Files are their blobs
         and their metadata rows (a directory, empty or not, is a row);
         the cache is every key under its prefix; the cwd is its one
-        key, left alone where the workspace keeps the cwd itself.
+        key, left alone when ``cwd`` is false because the change's
+        commit stored no cwd of its own (see ``Workspace.land``).
         """
         from monkeyfs import VirtualFS
 
