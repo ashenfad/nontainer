@@ -297,6 +297,156 @@ def test_hosts_publishing_at_once_get_distinct_versions(hosts):
     assert a._registry_read()["demo"].get("pending") is None
 
 
+def test_an_unpublish_in_flight_is_left_alone_by_another_host(hosts):
+    """A second unpublish that took over the first's reservation would
+    free the version while the first was still removing: a publish
+    could claim it again, and lose its new branch to the first remover."""
+    a, b = hosts
+    with _draft(a, "one", "from a") as ws:
+        a.publish(ws, "demo")
+    entered, release = _pause(a, "_remove_version_state")
+    done = {}
+
+    def unpublish():
+        try:
+            a.unpublish("demo", "v1", min_age=0)
+        except Exception as e:  # noqa: BLE001 - reported below
+            done["error"] = e
+
+    removing = threading.Thread(target=unpublish)
+    removing.start()
+    try:
+        assert entered.wait(timeout=10)
+        assert b.publication("demo") is None
+        with pytest.raises(WorkspaceError, match="being unpublished"):
+            b.unpublish("demo", "v1")
+        with _draft(b, "two", "from b") as other:
+            with pytest.raises(WorkspaceError, match="being unpublished"):
+                b.publish(other, "demo", version="v1")
+    finally:
+        release.set()
+        removing.join(timeout=10)
+    assert "error" not in done
+    assert "@store/pub/demo/v1" not in b._branches()
+    with _draft(b, "three", "again") as other:
+        pub = b.publish(other, "demo", version="v1")
+    assert _read(a, pub.current_version.ref) == b"again"
+
+
+def test_a_failed_unpublish_puts_the_record_back(hosts, monkeypatch):
+    """The record goes before the tag and the branch, so a removal
+    that fails must put it back: the version stays published, rather
+    than vanishing from every listing with its state still there."""
+    a, b = hosts
+    with _draft(a, "one", "first") as ws:
+        a.publish(ws, "demo")
+        ws.files.write(PAGE, "second")
+        ws.commit()
+        a.publish(ws, "demo")
+
+    def fails(*args, **kwargs):
+        raise RuntimeError("the backend went away mid-removal")
+
+    for version in ("v1", "v2"):
+        if version == "v2":
+            a.unpublish("demo", "v1", min_age=0)  # v2 is now the last
+        before = b.publication("demo")
+        monkeypatch.setattr(a, "_remove_version_state", fails)
+        with pytest.raises(RuntimeError):
+            a.unpublish("demo", version, min_age=0)
+        monkeypatch.undo()
+        after = b.publication("demo")
+        assert after.versions == before.versions
+        assert after.current == before.current == "v2"
+        assert _read(b, after.version(version).ref) in (b"first", b"second")
+        assert a._registry_read()["demo"].get("pending") is None
+
+    a.unpublish("demo", "v2", min_age=0)  # and calling it again finishes it
+    assert b.publication("demo") is None
+    assert b.publications() == {}
+
+
+def test_a_publication_open_racing_an_unpublish_says_so(hosts, monkeypatch):
+    """The backend may be the first to notice the branch is gone, while
+    the open walks it: the registry is asked again, and the answer is
+    the unpublish, not the backend's error."""
+    from kvgit import UnknownBranchError
+
+    a, b = hosts
+    with _draft(a, "one", "page") as ws:
+        pub = a.publish(ws, "demo")
+
+    def walked_into_it(*args, **kwargs):
+        b.unpublish("demo", "v1", min_age=0)
+        raise UnknownBranchError("@store/pub/demo/v1")
+
+    monkeypatch.setattr(a, "_provider_at_commit", walked_into_it)
+    with pytest.raises(WorkspaceError, match="No longer published"):
+        pub.open()
+
+
+def _two_roots(store):
+    """One commit read under two workspace roots, each with an app
+    tree of its own under it: relative paths name a different tree at
+    each root."""
+    with store.open("roots", autocommit=False, root="/") as ws:
+        ws.files.write("/a/app/index.html", "under a")
+        ws.files.write("/b/app/index.html", "under b")
+        ws.commit()
+        ref = ws.ref
+    return store.resolve(ref, root="/a"), store.resolve(ref, root="/b")
+
+
+def test_publishes_from_two_roots_are_two_attempts(hosts):
+    """Same commit, same paths, another root: another tree. It never
+    shares the first's reservation."""
+    a, b = hosts
+    at_a, at_b = _two_roots(a)
+    entered, release = _pause(a, "_record_version")
+    done = {}
+    first = threading.Thread(
+        target=lambda: done.setdefault("pub", a.publish(at_a, "demo", version="v1"))
+    )
+    first.start()
+    try:
+        assert entered.wait(timeout=10)
+        with pytest.raises(WorkspaceError, match="being published"):
+            a.publish(at_b, "demo", version="v1")
+    finally:
+        release.set()
+        first.join(timeout=10)
+    with a.publication("demo").open() as served:
+        assert served.root == "/a"
+        assert served.files.read("/a/app/index.html") == b"under a"
+    at_a.close()
+    at_b.close()
+
+
+def test_a_leftover_from_another_root_is_not_adopted(hosts, monkeypatch):
+    """A publish that failed after writing its branch gives back its
+    reservation, and the branch it left records no root. A retry from
+    another root is not the same publish, and is refused rather than
+    recorded over a tree it did not select."""
+    a, b = hosts
+    at_a, at_b = _two_roots(a)
+
+    def died(*args, **kwargs):
+        raise RuntimeError("the record's write failed")
+
+    monkeypatch.setattr(a, "_record_version", died)
+    with pytest.raises(RuntimeError):
+        a.publish(at_a, "demo", version="v1")
+    monkeypatch.undo()
+
+    with pytest.raises(WorkspaceError, match="@store/pub/demo/v1"):
+        a.publish(at_b, "demo", version="v1")
+    pub = a.publish(at_a, "demo", version="v1")  # the same publish adopts it
+    with pub.open() as served:
+        assert served.files.read("/a/app/index.html") == b"under a"
+    at_a.close()
+    at_b.close()
+
+
 # -- the registry file earlier releases kept ---------------------------------
 
 

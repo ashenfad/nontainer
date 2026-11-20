@@ -186,7 +186,8 @@ def _busy(name: str, version: str, entry: Mapping[str, Any]) -> str:
         f"{name}/{version} is being unpublished by another call, started "
         f"{age:.0f}s ago (branch {branch!r}). Publish another version, or "
         "wait for that one to finish. If it died, "
-        f"store.unpublish({name!r}, {version!r}) finishes it."
+        f"store.unpublish({name!r}, {version!r}) finishes it once it is "
+        "older than min_age (min_age=0 finishes it now)."
     )
 
 
@@ -782,10 +783,13 @@ class _Publishing:
             else Ref(session=ws.session, commit=head)
         )
         # What identifies this attempt to another one: two publishes of
-        # the same source commit, paths and exclusions write the same
-        # tree, so they may share a reservation and a commit.
+        # the same source commit, paths and exclusions, from the same
+        # workspace root, write the same tree, so they may share a
+        # reservation and a commit. The root counts because relative
+        # paths are resolved against it.
         attempt = {
             "source": head,
+            "root": ws.root,
             "paths": sorted(paths),
             "exclude": sorted(exclude),
         }
@@ -942,17 +946,19 @@ class _Publishing:
         this call holds while it removes the tag and the branch, so no
         publish can claim the version or write its branch until they
         are gone. The version stops resolving the moment the record
-        goes.
+        goes. If removing them fails, the record is put back and the
+        call raises: a failed unpublish leaves the version published,
+        and calling it again finishes the job.
 
         A version with no record but a branch or a tag of its name is
         what a publish that died before writing its record leaves
         behind, and it is cleared here too: the branch and the tag go,
-        and the name is free to publish again. A publish still under way
-        holds a reservation of the version, on this host or another, and
-        its branch and tag are left alone until the reservation is older
-        than ``min_age``: the age is all that tells a publish that is
-        slow from one that died. Pass ``min_age=0`` to clear one known
-        to be dead. Only what publish itself wrote is removed: a store
+        and the name is free to publish again. A publish or an unpublish
+        still under way holds a reservation of the version, on this host
+        or another, and it is left alone until the reservation is older
+        than ``min_age``: the age is all that tells a call that is slow
+        from one that died. Pass ``min_age=0`` to take over one known to
+        be dead. Only what publish itself wrote is removed: a store
         tag may hold a slash, so a durable ``release/prod`` somebody
         tagged by hand answers to ``unpublish("release", "prod")`` by
         name alone; the tag's and the branch's own provenance is checked
@@ -984,7 +990,10 @@ class _Publishing:
                     f"{', '.join(claim.live)}"
                 )
         except BaseException:
-            self._release_quietly(name, version, token)
+            if claim.row is not None:
+                self._restore_quietly(name, version, token, claim.row)
+            else:
+                self._release_quietly(name, version, token)
             raise
         self._release(name, version, token)
 
@@ -1372,9 +1381,13 @@ class _Publishing:
         tag: looking first and claiming after would leave a moment in
         which a publish could reserve the version and write its branch,
         and the removal would then take a version that publish is still
-        writing. A publish's reservation younger than ``min_age`` is
-        refused (it may still be writing, here or on another host); an
-        older one, or another unpublish's of any age, is taken over.
+        writing. Another call's reservation younger than ``min_age`` is
+        refused, a publish's or an unpublish's alike: that call may still
+        be writing or removing, here or on another host, and an
+        unpublish that took over a live one's reservation would free the
+        version while the first was still removing, so a publish could
+        reclaim it and lose its new branch to the first remover. An
+        older one is taken over.
         """
 
         def claim(registry: dict[str, Any]) -> _Claim:
@@ -1394,9 +1407,12 @@ class _Publishing:
                 if record.get("current") == version:
                     record["current"] = None
             elif version in pending:
+                # Another call's reservation, publish or unpublish: it
+                # may still be writing or removing, here or on another
+                # host, and only its age says it is not.
                 entry = pending[version]
                 age = time.time() - float(entry.get("since") or 0.0)
-                if entry.get("op") == "publish" and age < min_age:
+                if age < min_age:
                     raise WorkspaceError(_busy(name, version, entry))
                 took_over = True
             pending[version] = {"op": "unpublish", "token": token, "since": time.time()}
@@ -1436,6 +1452,48 @@ class _Publishing:
                 registry.pop(name)
 
         self._update_registry(release)
+
+    def _restore_quietly(
+        self, name: str, version: str, token: str, row: dict[str, Any]
+    ) -> None:
+        """Put back the record an unpublish took out, from a call whose
+        removal failed, and give back its reservation with it.
+
+        Whatever the removal got through, the version is published again
+        rather than dropped from every listing with its tag or branch
+        still on the store, and the failed call's own error is the one
+        it raises. A publication the removal left with no versions points
+        at this one again. A reservation another call has taken over is
+        that call's, and is left alone.
+        """
+
+        def restore(registry: dict[str, Any]) -> None:
+            record = registry.get(name)
+            pending = dict((record or {}).get("pending") or {})
+            if (pending.get(version) or {}).get("token") != token:
+                return
+            pending.pop(version)
+            record = dict(record)
+            versions = dict(record.get("versions") or {})
+            versions[version] = row
+            record["versions"] = versions
+            if record.get("current") not in versions:
+                record["current"] = version
+            if pending:
+                record["pending"] = pending
+            else:
+                record.pop("pending", None)
+            registry[name] = record
+
+        try:
+            self._update_registry(restore)
+        except Exception:
+            _logger.warning(
+                "Could not put back the record of %s/%s",
+                name,
+                version,
+                exc_info=True,
+            )
 
     def _release_quietly(self, name: str, version: str, token: str) -> None:
         """:meth:`_release` from a call that is already failing: the
@@ -1516,11 +1574,14 @@ class _Publishing:
             raise gone
         ref = Ref.parse(row["ref"])
         root = row.get("root")
+        from kvgit import KvgitError
+
         try:
             provider = self._provider_at_commit(ref.session, ref.commit)
-        except WorkspaceError:
-            # Its branch went after the row was read: an unpublish
-            # landed in between, and says so better than the branch.
+        except (WorkspaceError, KvgitError):
+            # Its branch went after the row was read, before or while
+            # the open walked it: an unpublish landed in between, and
+            # says so better than the branch or the backend does.
             if self._registry_row(version.name, version.version) is None:
                 raise gone from None
             raise
@@ -1567,9 +1628,22 @@ class _Publishing:
         an attempt that died. Its commit is adopted when it is this same
         publish's, and refused when it is not.
         """
+
+        def holds(commit: str) -> bool:
+            # The tree this call would write lies under its paths at its
+            # own root, outside its exclusions. Relative paths are
+            # resolved against the root, so a call from another root
+            # publishes another tree from the same commit and paths.
+            with self._repo() as repo:
+                files = ws._provider._file_keys(repo.snapshot(commit=commit).keys())
+            return bool(files) and all(
+                _under(path, paths, ws.root) and not _under(path, exclude, ws.root)
+                for path in files.values()
+            )
+
         for _ in range(3):
             if self._branch_head(branch)[0] is not None:
-                resumed = self._resume_publication(branch, tag, commit_info)
+                resumed = self._resume_publication(branch, tag, commit_info, holds)
                 if resumed is None:
                     name, version = commit_info["name"], commit_info["version"]
                     raise WorkspaceError(
@@ -1696,7 +1770,11 @@ class _Publishing:
         return found
 
     def _resume_publication(
-        self, branch: str, tag: str, commit_info: Mapping[str, Any]
+        self,
+        branch: str,
+        tag: str,
+        commit_info: Mapping[str, Any],
+        holds: "Callable[[str], bool]",
     ) -> "tuple[str, dict[str, Any]] | None":
         """Adopt the commit an attempt of this same publish wrote.
 
@@ -1722,7 +1800,11 @@ class _Publishing:
         exclusions — because publishing that twice writes the same files
         either way. The source is compared by its COMMIT: the ref's
         other half is how it was spelled, and a store tag's snapshot
-        recorded the branch it borrowed before it recorded the tag.
+        recorded the branch it borrowed before it recorded the tag. The
+        commit does not record the workspace root its relative paths
+        were resolved against, so ``holds`` asks of its tree instead:
+        whether every file lies where this call would publish from,
+        which a call from another root does not.
         """
         commit, found = self._branch_head(branch)
         if commit is None:
@@ -1735,6 +1817,8 @@ class _Publishing:
         if not _is_publish_attempt(found, expect) or _source_commit(
             (found or {}).get("published_from")
         ) != _source_commit(commit_info.get("published_from")):
+            return None
+        if not holds(commit):
             return None
         landed = dict(found or {})
         with self._repo() as repo:
