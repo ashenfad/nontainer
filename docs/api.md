@@ -61,6 +61,8 @@ store.fork(src, dst, *, at=None, inherit="full", paths=None, **open_kwargs) -> W
 store.delete(sessions, *, min_age=3600) -> None
 store.resolve(ref, *, root=None, **settings) -> Workspace   # frozen, at
                                           # session@commit; close it
+store.scratch(ref, name, **open_kwargs) -> Workspace   # a new session,
+                                          # writable, its head that commit
 store.clean(*, min_age=3600) -> int       # sweep unreachable commits
 store.migrate_layout(sessions=None, *, dry_run=False)
     -> dict[str, LayoutMigration]         # pre-monkeyfs-0.1.10 heads
@@ -210,6 +212,35 @@ with ws.lock:
     ref = ws.ref
 with store.resolve(ref) as snap:  # in the worker
     data = snap.files.read("/workspace/input.txt")
+```
+
+**`store.scratch(ref, name, **open_kwargs)`** is the writable
+counterpart: it creates session `name` with its head at exactly the
+commit `ref` names and opens it. Opening and closing it writes nothing,
+and the first commit made in it has that commit as its only parent, so
+the work lands back with `ws.land(ref, scratch.ref)` and the source is
+untouched until then. The ref is validated as `resolve` validates it,
+and a refused one creates nothing. `name` must be a session id the
+store does not hold: it is created by one compare-and-swap, so of two
+callers asking for one name one gets it and the other gets
+`WorkspaceError`, and the first's session is left as it is. It is an
+ordinary session from then on, closed and deleted like any other.
+
+It holds the commit's state as it is: files, cache and cwd, and the
+bookkeeping too (the stored conversation, still the source's, the
+agent's ws-git state, a narrowed view), which `ws.land` leaves where it
+is. That suits an operation a host runs against the source's state. A
+delegate agent with a conversation and a ws-git of its own is
+`store.fork`, which commits that bookkeeping on the new session first,
+so its head is never the fork point itself.
+
+```python
+with store.scratch(ref, "_op.1", autocommit=False) as op:   # in the worker
+    op.files.write("/workspace/out.txt", compute(op))
+    op.commit({"tool": "op"})
+    result = op.ref
+ws.land(ref, result, expect_head=ref.commit)               # back on the host
+store.delete("_op.1")
 ```
 
 **How long a ref reads.** Heads only move forward — `ws.checkout`

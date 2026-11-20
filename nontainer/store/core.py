@@ -661,6 +661,122 @@ class Store(_Publishing):
             provider = self._provider_at_commit(source.session, source.commit)
         return self._frozen_workspace(provider, root=root, **settings)
 
+    def scratch(self, ref: "str | Ref", name: str, **settings: Any) -> "Workspace":
+        """Create session ``name`` at the exact commit ``ref`` names, and
+        open it writable.
+
+        The writable counterpart of :meth:`resolve`, for running one
+        piece of work from an exact state: the new session's head IS
+        ``ref``'s commit, so opening and closing it writes nothing, and
+        the first commit made in it has that commit as its only parent.
+        The source is not touched. Its owner takes the work back with
+        :meth:`Workspace.land` (``base`` the ref, ``theirs`` the scratch
+        session's ref) when it chooses to, and the scratch session is
+        closed and deleted like any other (:meth:`delete`).
+
+        **It is the commit's state, as it is.** Files, cache, cwd, and
+        everything else the commit holds: the stored conversation, still
+        the source session's, the agent's ws-git state, a narrowed view.
+        :meth:`Workspace.land` leaves all of that bookkeeping where it
+        is, so none of it reaches the source, but work run here sees it.
+        That is what a host running an operation against the source's
+        state wants. A delegate agent of its own, with its own
+        conversation and a fresh ws-git, is :meth:`fork`, which commits
+        that bookkeeping on the new session before handing it back.
+
+        ``ref`` is validated as :meth:`resolve` validates it: the session
+        must exist (or the ref name a store tag, or a version still
+        published), and the commit must be on its line, spelled whole or
+        short. ``name`` must be a session id the store does not hold:
+        the session is created with one compare-and-swap, so of two
+        callers asking for the same name one creates it and the other is
+        refused with :class:`~nontainer.errors.WorkspaceError`, leaving
+        the first's session as it is. A refused source creates nothing.
+
+        ``settings`` are :meth:`open`'s keywords, applied to the
+        workspace this returns, ``root`` among them: a commit holds
+        files at the root of the session that made them, so a session
+        opened at another one passes its own, as for :meth:`resolve`. A
+        head whose layout predates monkeyfs 0.1.10 is refused, as
+        :meth:`open` refuses one, rather than migrated: migrating would
+        commit. If opening fails, the session is removed again.
+        """
+        from kvgit import BranchExistsError, KvgitError, UnknownCommitError
+
+        from ..errors import CommitNotFoundError
+        from ..workspace import _profile_fields
+
+        self._require_own_layout("scratch")
+        if self._backend != "kvgit":
+            raise NotSupportedError(
+                f"The {self._backend!r} backend is not versioned, so it has no "
+                "commits to create a session at. Use the kvgit backend."
+            )
+        validate_session_id(name)
+        if not self._is_session_name(name):
+            raise ValueError(f"{name!r} is reserved by the store, not a session id")
+        # A profile passed with one of its own fields is refused before
+        # the session exists, as Store.fork refuses it.
+        _profile_fields(
+            settings.get("profile"),
+            **{
+                field: settings.get(field)
+                for field in (
+                    "python",
+                    "mounts",
+                    "commands",
+                    "executor_factory",
+                    "root",
+                    "ignore",
+                )
+            },
+        )
+        parsed = Ref.parse(ref)
+        if parsed.tag is not None:
+            self._require_tag_at(parsed.tag, parsed)
+            commit = parsed.commit
+        else:
+            if not self._is_publication_branch(parsed.session) and (
+                parsed.session not in set(self._branches())
+            ):
+                raise WorkspaceError(
+                    f"No such session on this store: {parsed.session!r} "
+                    f"(creating {name!r} at {str(parsed)!r})"
+                )
+            with self._ref_source_held(parsed, "scratch") as source:
+                op = f"scratch at {source}"
+                self._require_branch(source.session, op)
+                try:
+                    commit = self._commit_on(source.session, source.commit)
+                except KvgitError:
+                    # The session went while its line was walked.
+                    self._require_branch(source.session, op)
+                    raise
+        repo = self._kvgit_repo(create=True)
+        try:
+            repo.branches.create(name, at=commit)
+        except BranchExistsError:
+            raise WorkspaceError(
+                f"Session already exists: {name!r}. A scratch session is "
+                "created, never reused: name another, or open this one with "
+                "store.open."
+            ) from None
+        except UnknownCommitError:
+            raise CommitNotFoundError(
+                f"{str(parsed)!r} names commit {commit}, which the store no "
+                "longer holds: its session was deleted and the commit swept."
+            ) from None
+        try:
+            return self.open(name, **settings)
+        except BaseException:
+            # The session is this call's, made a moment ago and not yet
+            # handed to anyone, and the open that failed wrote nothing.
+            try:
+                repo.branches.delete(name)
+            except Exception:  # noqa: BLE001 - the open's error is the one to raise
+                pass
+            raise
+
     # ------------------------------------------------------------------
     # store-scoped tags
     # ------------------------------------------------------------------

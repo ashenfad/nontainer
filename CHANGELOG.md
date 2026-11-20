@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Added
+- **`store.scratch(ref, name, **open_kwargs)` creates a writable session at the exact commit a ref names** (#327). Its head is that commit, opening it writes nothing, and its first commit's only parent is that commit, so `ws.land` takes the work back.
+
 ### Changed
 - **Storage: the publication registry is kept in the store's kvgit backend, shared by every host on it** (#155). Each change is a compare-and-swap, and a store's `publications.json` is merged in on first use, then renamed `publications.json.imported`.
 
